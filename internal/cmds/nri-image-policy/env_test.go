@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"strings"
 	"testing"
@@ -87,8 +88,14 @@ func TestEnvCreationValidatorChecksCumulativeEdits(t *testing.T) {
 		edits   []*api.KeyValue
 		cdi     bool
 		any     bool
+		match   bool
 		want    bool
 	}{
+		{name: "match adjusted", match: true, initial: []string{"MODE=production", "GPU_SERIAL=old"}, edits: []*api.KeyValue{{Key: "GPU_SERIAL", Value: "new"}}, want: true},
+		{name: "match exact tamper", match: true, initial: []string{"MODE=production", "GPU_SERIAL=x"}, edits: []*api.KeyValue{{Key: "MODE", Value: "unsafe"}}},
+		{name: "match extra", match: true, initial: []string{"MODE=production", "GPU_SERIAL=x"}, edits: []*api.KeyValue{{Key: "EXTRA", Value: "x"}}},
+		{name: "match missing", match: true, initial: []string{"MODE=production", "GPU_SERIAL=x"}, edits: []*api.KeyValue{{Key: "-GPU_SERIAL"}}},
+		{name: "match deferred CDI", match: true, initial: []string{"MODE=production", "GPU_SERIAL=x"}, cdi: true},
 		{name: "unchanged", initial: []string{"MODE=production"}, want: true},
 		{name: "override", initial: []string{"MODE=unsafe"}, edits: []*api.KeyValue{{Key: "MODE", Value: "production"}}, want: true},
 		{name: "tamper", initial: []string{"MODE=production"}, edits: []*api.KeyValue{{Key: "MODE", Value: "unsafe"}}},
@@ -104,6 +111,12 @@ func TestEnvCreationValidatorChecksCumulativeEdits(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 			policy := allowlist.EnvPolicy{Policy: allowlist.PolicyExact, Values: map[string]string{"MODE": "production"}}
+			if tc.match {
+				policy = allowlist.EnvPolicy{}
+				if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"exact":"production"},"GPU_SERIAL":{"present":true}}}`), &policy); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tc.any {
 				policy = allowlist.EnvPolicy{Policy: allowlist.PolicyAny}
 			}
