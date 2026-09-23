@@ -87,6 +87,7 @@ func TestHistoryEnvVariantsAndOwnership(t *testing.T) {
 	h.Record("c", "sha256:a", []string{"run"}, a)
 	h.Record("c", "sha256:a", []string{"run"}, b)
 	a.Digest = "mutated"
+	a.VariableDigests["MODE"] = "mutated"
 	_, cs, err := h.Snapshot()
 	if err != nil || len(cs) != 3 {
 		t.Fatalf("history lost variants: %v %v", cs, err)
@@ -97,6 +98,7 @@ func TestHistoryEnvVariantsAndOwnership(t *testing.T) {
 				t.Fatal("history borrowed input")
 			}
 			c.Env.Digest = "mutated"
+			c.Env.VariableDigests["MODE"] = "mutated"
 		}
 	}
 	_, cs, _ = h.Snapshot()
