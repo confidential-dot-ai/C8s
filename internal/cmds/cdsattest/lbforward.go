@@ -44,7 +44,8 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		age, err := strconv.ParseFloat(r.Header.Get(connectionTimeHeader), 64)
-		if err != nil || age < 0 || age > maxConnectionAge.Seconds() {
+		// Written as a positive range so NaN, which fails every comparison, is refused.
+		if err != nil || !(age >= 0 && age <= maxConnectionAge.Seconds()) {
 			http.Error(w, "missing connection time", http.StatusForbidden)
 			return
 		}
