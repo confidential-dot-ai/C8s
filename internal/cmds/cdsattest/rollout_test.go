@@ -6,10 +6,17 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha512"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -65,7 +72,7 @@ func TestRolloutFencesSessions(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		CDSStateURL:          cdsSrv.URL,
+		Rollout:              newRollout(cdsSrv.URL, identity.caFile),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -130,5 +137,139 @@ func TestRolloutFencesSessions(t *testing.T) {
 	}
 	if code := status(); code != http.StatusUnauthorized {
 		t.Fatalf("widened-out session came back = %d, want 401", code)
+	}
+}
+
+func TestRolloutVerifyPeer(t *testing.T) {
+	stamped := writeStampedMeshIdentity(t, "model").leaf
+	inBound := "sha256:" + strings.Repeat("42", 32)
+	for _, tc := range []struct {
+		name  string
+		leaf  *x509.Certificate
+		bound []string
+		ok    bool
+	}{
+		{"stamp in bound", stamped, []string{"sha256:p", inBound}, true},
+		{"stamp outside bound", stamped, []string{"sha256:p"}, false},
+		{"no stamp", writeTestMeshIdentity(t).leaf, []string{inBound}, false},
+	} {
+		r := newRollout("", "")
+		r.bound = tc.bound
+		if err := r.verifyPeer(tc.leaf); (err == nil) != tc.ok {
+			t.Errorf("%s: verifyPeer = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+}
+
+func TestHTTPBackendRunsVerifyPeer(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer upstream.Close()
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: upstream.Certificate().Raw}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, refuse := range []bool{false, true} {
+		backend, err := NewHTTPBackend(upstream.URL, HTTPBackendOptions{
+			TrustedCAFile: caFile,
+			ServerName:    "example.com",
+			VerifyPeer: func(*x509.Certificate) error {
+				if refuse {
+					return errors.New("refused")
+				}
+				return nil
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = backend.Forward(context.Background(), types.TunnelRequest{Method: http.MethodGet, Path: "/"})
+		if (err != nil) != refuse {
+			t.Errorf("Forward with VerifyPeer refusing=%v: %v", refuse, err)
+		}
+	}
+}
+
+func TestLBForwarderFencesConnections(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(connectionTimeHeader) != "" {
+			t.Error("connection time header leaked upstream")
+		}
+		w.Write([]byte("ok"))
+	}))
+	defer upstream.Close()
+	backend, err := NewHTTPBackend(upstream.URL, HTTPBackendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fence := newRollout("", "")
+	fence.lease = 30 * time.Second
+	fence.seenAt = time.Now()
+	fence.widenedAt = time.Now().Add(-10 * time.Second)
+	forwarder, err := newLBForwarder(fence, backend, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := func(connectionTime string) int {
+		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+		if connectionTime != "" {
+			req.Header.Set(connectionTimeHeader, connectionTime)
+		}
+		w := httptest.NewRecorder()
+		forwarder.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	for _, tc := range []struct {
+		name           string
+		connectionTime string
+		want           int
+	}{
+		{"connection opened after the last widening", "1.500", http.StatusOK},
+		{"connection older than the last widening", "20.000", http.StatusServiceUnavailable},
+		{"no connection time", "", http.StatusForbidden},
+	} {
+		if got := status(tc.connectionTime); got != tc.want {
+			t.Errorf("%s: status %d, want %d", tc.name, got, tc.want)
+		}
+	}
+	fence.seenAt = time.Now().Add(-time.Minute)
+	if got := status("1.500"); got != http.StatusServiceUnavailable {
+		t.Errorf("stale state: status %d, want 503", got)
+	}
+}
+
+func TestAttestLBCarriesRolloutState(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	certPath, _ := writeTestServingLeaf(t)
+	srv := NewServer(Config{
+		Evidence:             &capturingProvider{},
+		FrontDoorMode:        types.FrontDoorModeCDS,
+		ServingCertFile:      certPath,
+		MeshIdentityCertFile: identity.certFile,
+		MeshIdentityKeyFile:  identity.keyFile,
+		MeshIdentityCAFile:   identity.caFile,
+		Rollout:              newRollout(cdsSrv.URL, identity.caFile),
+	})
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	nonce := make([]byte, 32)
+	rand.Read(nonce)
+	resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var b types.AttestationBundle
+	if err := json.NewDecoder(resp.Body).Decode(&b); err != nil {
+		t.Fatal(err)
+	}
+	var st types.RolloutState
+	if b.CDSState == nil || json.Unmarshal(b.CDSState.State, &st) != nil || st.Nonce != hex.EncodeToString(nonce) {
+		t.Fatalf("attest-lb bundle state = %+v, want the state bound to nonce %x", b.CDSState, nonce)
 	}
 }

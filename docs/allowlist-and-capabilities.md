@@ -557,15 +557,23 @@ applies writes at once and gives pinned verifiers nothing to rely on.
 
 ### Pinned allowlists
 
-With `router.attest.pinnedAllowlist`, each attest-pq bundle carries
-`cds_state`: the signed state bound to the client's nonce. Its `bound` is the
-session's envelope. The router reads the state every second and closes a
-session once `bound` holds a digest outside its envelope. It also stops
-serving any session while its last state read is older than
-`lease_seconds`. CDS activates a publication only after that lease, so an
-open session never reaches a workload the client did not accept. The router
-forwards only to an https upstream it verifies against the mesh CA. attest-lb
-does not carry the state and makes no such promise.
+With `router.attest.pinnedAllowlist`, attest-pq and attest-lb bundles carry
+`cds_state`: the signed state bound to the client's nonce. The router reads
+the state every second and fences traffic on it:
+
+- An attest-pq session's envelope is the `bound` it was opened under. The
+  router closes the session once `bound` holds a digest outside it.
+- nginx hands every front-door request to the sidecar. The sidecar refuses a
+  request whose connection opened before the router last saw `bound` widen,
+  so an attest-lb client re-attests on a new connection.
+- Nothing is forwarded while the router's last state read is older than
+  `lease_seconds`.
+
+CDS activates a publication only after that lease, so fenced traffic never
+reaches a workload the client did not accept. The router forwards only to
+`router.upstream`, over https. The upstream's mesh leaf must chain to the
+mesh CA and carry a matched-workload stamp whose policy digest is in `bound`,
+so the upstream workload needs a named leaf.
 
 To verify against pinned policies, run:
 

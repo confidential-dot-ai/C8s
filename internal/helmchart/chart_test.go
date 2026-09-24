@@ -7612,7 +7612,22 @@ func TestChartRouterPinnedAllowlist(t *testing.T) {
 		t.Fatalf("helm template (pinned allowlist): %v\n%s", err, out)
 	}
 	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
-		"--cds-state-url=http://127.0.0.1:8801")
+		"--cds-state-url=http://127.0.0.1:8801", "--lb-forward-port=8802")
+	catchAll := renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
+	catchAll.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+	catchAll.assertDirective(t, "proxy_set_header", "X-C8s-Connection-Time", "$connection_time")
+
+	if out, err := helmTemplate(t, noUpstreamArgs(
+		"--set", "router.attest.pinnedAllowlist=true",
+		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
+		"--set", "router.upstream.protocol=https",
+		"--set", "router.routes[0].path=/v1",
+		"--set-string", "router.routes[0].backend.address=other.ns.svc:8443",
+		"--set", "router.routes[0].backend.protocol=https",
+		"--set", "router.routes[0].backend.tls.verify=true",
+	)...); err == nil || !strings.Contains(out+err.Error(), "forwards only to router.upstream") {
+		t.Fatalf("pinned allowlist with explicit routes rendered: %v\n%s", err, out)
+	}
 
 	if out, err := helmTemplate(t, noUpstreamArgs(
 		"--set", "router.attest.pinnedAllowlist=true",

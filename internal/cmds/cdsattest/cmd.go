@@ -2,8 +2,11 @@ package cdsattest
 
 import (
 	"context"
+	"crypto/x509"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +19,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -44,6 +48,7 @@ type config struct {
 	upstreamKeyFile    string
 	upstreamServerName string
 	cdsStateURL        string
+	lbForwardPort      int
 }
 
 // NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
@@ -80,7 +85,8 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.upstreamCAFile, "upstream-ca", "", "PEM CA bundle to verify an https upstream (the mesh CA)")
 	f.StringVar(&cfg.upstreamCertFile, "upstream-cert", "", "client cert presented to an https upstream (the CDS-issued LB cert)")
 	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")
-	f.StringVar(&cfg.cdsStateURL, "cds-state-url", "", "allowlist-proxy base URL (http://127.0.0.1:<port>). Set, attest-pq bundles carry CDS's nonce-bound rollout state and sessions are fenced on it; --upstream must then be https and is verified against --mesh-identity-ca-file")
+	f.StringVar(&cfg.cdsStateURL, "cds-state-url", "", "allowlist-proxy base URL (http://127.0.0.1:<port>). Set, attestation bundles carry CDS's nonce-bound rollout state, sessions are fenced on it, and --upstream must be https with a mesh leaf whose matched-workload stamp names a policy in the bound")
+	f.IntVar(&cfg.lbForwardPort, "lb-forward-port", 0, "with --cds-state-url, loopback port on which nginx hands front-door requests to the sidecar, which fences them on the rollout state and forwards them to --upstream (0 disables)")
 	f.StringVar(&cfg.upstreamServerName, "upstream-server-name", "", "SNI/verification name for an https upstream")
 	return cmd
 }
@@ -128,19 +134,26 @@ func run(cfg config) error {
 	if cfg.cdsStateURL != "" && cfg.meshIdentityCAFile == "" {
 		return fmt.Errorf("--cds-state-url requires --mesh-identity-ca-file to verify the CDS state")
 	}
-	if cfg.cdsStateURL != "" && cfg.upstream != "" {
+	var hb *HTTPBackend
+	var fence *rollout
+	var verifyPeer func(*x509.Certificate) error
+	if cfg.cdsStateURL != "" {
+		fence = newRollout(cfg.cdsStateURL, cfg.meshIdentityCAFile)
+		verifyPeer = fence.verifyPeer
 		// A pinned client's envelope holds only for attested receivers.
-		if !strings.HasPrefix(cfg.upstream, "https://") {
+		if cfg.upstream != "" && !strings.HasPrefix(cfg.upstream, "https://") {
 			return fmt.Errorf("--cds-state-url requires an https --upstream")
 		}
 		cfg.upstreamCAFile = cfg.meshIdentityCAFile
 	}
 	if cfg.upstream != "" {
-		hb, err := NewHTTPBackend(cfg.upstream, HTTPBackendOptions{
+		var err error
+		hb, err = NewHTTPBackend(cfg.upstream, HTTPBackendOptions{
 			TrustedCAFile:  cfg.upstreamCAFile,
 			ClientCertFile: cfg.upstreamCertFile,
 			ClientKeyFile:  cfg.upstreamKeyFile,
 			ServerName:     cfg.upstreamServerName,
+			VerifyPeer:     verifyPeer,
 		})
 		if err != nil {
 			return err
@@ -164,7 +177,7 @@ func run(cfg config) error {
 		Backend:              backend,
 		SessionTTL:           cfg.sessionTTL,
 		SessionMaxAge:        cfg.sessionMaxAge,
-		CDSStateURL:          cfg.cdsStateURL,
+		Rollout:              fence,
 	})
 
 	addr := cfg.host + ":" + strconv.Itoa(cfg.port)
@@ -176,6 +189,26 @@ func run(cfg config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	if fence != nil && hb != nil && cfg.lbForwardPort > 0 {
+		forwarder, err := newLBForwarder(fence, hb, logger)
+		if err != nil {
+			return err
+		}
+		fwdSrv := &http.Server{
+			Addr:              net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.lbForwardPort)),
+			Handler:           forwarder,
+			ReadHeaderTimeout: cfg.readHeaderTimeout,
+		}
+		go cmdsutil.ShutdownOnDone(ctx, fwdSrv, shutdownGrace)
+		go func() {
+			if err := fwdSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				logger.Error("front-door forwarder stopped", "error", err)
+				stop()
+			}
+		}()
+		logger.Info("front-door forwarder listening", "addr", fwdSrv.Addr)
+	}
 
 	logger.Info("LB browser-facing endpoints listening", "addr", addr)
 	return srv.Serve(ctx, httpSrv)

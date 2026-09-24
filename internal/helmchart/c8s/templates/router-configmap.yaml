@@ -311,6 +311,12 @@ data:
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
                 {{- end }}
+                {{- if .Values.router.attest.pinnedAllowlist }}
+                # Pinned allowlist: the sidecar fences the connection on the
+                # CDS rollout state and checks the upstream's stamp.
+                proxy_pass http://127.0.0.1:{{ .Values.router.attest.forwardPort }};
+                proxy_set_header X-C8s-Connection-Time $connection_time;
+                {{- else }}
                 {{- if eq .Values.router.upstream.protocol "https" }}
                 {{- include "router.proxySSLDirectives" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "tlsMountPath" .Values.router.tlsMountPath) | nindent 16 }}
                 {{- end }}
@@ -319,6 +325,7 @@ data:
                 proxy_pass {{ .Values.router.upstream.protocol }}://$backend_addr;
                 {{- else }}
                 proxy_pass {{ .Values.router.upstream.protocol }}://catch_all;
+                {{- end }}
                 {{- end }}
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;

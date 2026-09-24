@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha512"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -37,10 +39,13 @@ type rollout struct {
 	bound  []string
 	lease  time.Duration
 	seenAt time.Time // when the request behind bound was sent
+	// widenedAt is when this router last saw the bound gain a digest; it
+	// starts at process start, since a restart forgets earlier widenings.
+	widenedAt time.Time
 }
 
 func newRollout(url, caFile string) *rollout {
-	return &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}}
+	return &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}, widenedAt: time.Now()}
 }
 
 // challenge fetches the state bound to nonce.
@@ -103,6 +108,9 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte) (
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sent.After(r.seenAt) {
+		if !covers(r.bound, st.Bound) {
+			r.widenedAt = time.Now()
+		}
 		r.seenAt, r.bound, r.lease = sent, st.Bound, time.Duration(st.Lease)*time.Second
 	}
 	return &signed, &st, nil
@@ -147,4 +155,32 @@ func covers(envelope, bound []string) bool {
 		}
 	}
 	return true
+}
+
+// verifyPeer admits an upstream leaf only when its matched-workload stamp
+// names a policy in the current bound.
+func (r *rollout) verifyPeer(leaf *x509.Certificate) error {
+	stamp, err := ratls.MatchedWorkloadFromCert(leaf)
+	if err != nil {
+		return fmt.Errorf("upstream matched-workload stamp: %w", err)
+	}
+	if stamp == nil {
+		return fmt.Errorf("upstream leaf carries no matched-workload stamp")
+	}
+	digest := "sha256:" + hex.EncodeToString(stamp.AllowlistDigest)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !slices.Contains(r.bound, digest) {
+		return fmt.Errorf("upstream %q was admitted under policy %s, outside the bound", stamp.Name, digest)
+	}
+	return nil
+}
+
+// admitsConnection reports whether a request on a front-door connection
+// opened at start may be forwarded at now: the state must be fresh and the
+// bound must not have widened since the client could have checked it.
+func (r *rollout) admitsConnection(start, now time.Time) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return (r.lease == 0 || now.Sub(r.seenAt) < r.lease) && start.After(r.widenedAt)
 }
