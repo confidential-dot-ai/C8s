@@ -1258,7 +1258,7 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 // applyPinPolicy reports the rollout bound and enforces --pin-policy: every
 // policy that may run must be one the caller reviewed and pinned.
 func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
-	if oc.Verified && ev.rollout != nil && ev.rolloutErr == nil {
+	if oc.Verified && ev.fresh && ev.rollout != nil && ev.rolloutErr == nil {
 		oc.AllowlistBound = ev.rollout.Bound
 	}
 	if len(cfg.pinPolicies) == 0 {

@@ -82,3 +82,17 @@ func TestApplyPinPolicy(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPolicyPinPolicyRequiresMeshCA(t *testing.T) {
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:p"}}); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
+		t.Fatalf("buildPolicy(--pin-policy without --mesh-ca) = %v, want the --mesh-ca error", err)
+	}
+}
+
+func TestApplyPinPolicyHidesStaleBound(t *testing.T) {
+	oc := Outcome{Verified: true}
+	applyPinPolicy(&oc, config{}, &evidence{rollout: &types.RolloutState{Bound: []string{"sha256:p"}}})
+	if oc.AllowlistBound != nil {
+		t.Fatalf("offline bundle reported bound %v, want none", oc.AllowlistBound)
+	}
+}
