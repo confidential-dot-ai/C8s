@@ -297,6 +297,9 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 func (s *Store) State() (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.state != nil && s.stateGen == s.gen {
+		return *s.state, nil
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -340,5 +343,6 @@ func (s *Store) State() (State, error) {
 	if err := tx.QueryRow("SELECT target FROM journal_pending").Scan(&st.Pending); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return State{}, err
 	}
+	s.state, s.stateGen = &st, s.gen
 	return st, nil
 }
