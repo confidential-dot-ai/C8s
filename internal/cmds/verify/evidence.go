@@ -148,6 +148,14 @@ type attestationResponse struct {
 	CDSState      *types.SignedRolloutState `json:"cds_state"`
 }
 
+// stateDigest is the transcript commitment to the bundle's rollout state.
+func (r *attestationResponse) stateDigest() []byte {
+	if r.CDSState == nil {
+		return nil
+	}
+	return overenc.StateDigest(r.CDSState.State)
+}
+
 // leafTrust is what a caller can offer to authenticate a leaf body that is
 // only CA-vouched. A self-issued leaf authenticates its own body under the
 // attested key and needs neither of these.
@@ -399,7 +407,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	// The transcript rejects wrong-size keys and nonces: report_data framing is
 	// length-prefixed, so a wrong-size field can never reproduce the served
 	// hash — refuse it here instead of failing report-data match downstream.
-	erd, err := overenc.IdentityTranscriptHash(r.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leaf.Raw, ca.Raw)
+	erd, err := overenc.IdentityTranscriptHash(r.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leaf.Raw, ca.Raw, r.stateDigest())
 	if err != nil {
 		return nil, fmt.Errorf("compute identity transcript: %w", err)
 	}

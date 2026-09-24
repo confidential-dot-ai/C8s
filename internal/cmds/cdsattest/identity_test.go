@@ -162,7 +162,7 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReportData, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionIDRaw, nonce, identity.leaf.Raw, identity.ca.Raw)
+	wantReportData, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionIDRaw, nonce, identity.leaf.Raw, identity.ca.Raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

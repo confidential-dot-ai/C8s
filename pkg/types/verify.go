@@ -101,9 +101,9 @@ type AttestationBundle struct {
 	// observed on its own TLS connection and verify the transcript with that
 	// value — trusting the served field would let a relay substitute the leaf.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
-	// CDSState (attest-pq with a pinned-allowlist router) is CDS's rollout
-	// state bound to this request's nonce. Its Bound is the session's policy
-	// envelope: the router closes the session once the bound outgrows it.
+	// CDSState (pinned-allowlist router) is CDS's rollout state bound to this
+	// request's nonce; both transcripts commit overenc.StateDigest of its
+	// exact state bytes. Its Bound is an attest-pq session's policy envelope.
 	CDSState *SignedRolloutState `json:"cds_state,omitempty"`
 }
 
@@ -123,11 +123,12 @@ type RolloutState struct {
 	Nonce     string   `json:"nonce,omitempty"`
 }
 
-// SignedRolloutState carries the exact RolloutState bytes and an ASN.1 ECDSA
+// SignedRolloutState carries the exact RolloutState JSON bytes, base64 on the
+// wire so every client hashes the bytes CDS signed, and an ASN.1 ECDSA
 // signature over their SHA-384 by the mesh CA key.
 type SignedRolloutState struct {
-	State     json.RawMessage `json:"state"`
-	Signature []byte          `json:"signature"`
+	State     []byte `json:"state"`
+	Signature []byte `json:"signature"`
 }
 
 // HeaderField is one HTTP header field in a tunnel envelope, on the wire a

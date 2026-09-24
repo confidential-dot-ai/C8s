@@ -372,7 +372,7 @@ func fakeSession(fill byte) testSession {
 // this identity and session.
 func (id *endpointIdentity) transcript(t *testing.T, nonce []byte, s testSession) []byte {
 	t.Helper()
-	erd, err := overenc.IdentityTranscriptHash("cds", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw)
+	erd, err := overenc.IdentityTranscriptHash("cds", s.ek, s.ct, s.sid, nonce, id.leaf.Raw, id.ca.Raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +608,7 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		// issuing relationship, which must fail closed.
 		other := mintEndpointIdentity(t)
 		b64u := base64.RawURLEncoding.EncodeToString
-		erd, err := overenc.IdentityTranscriptHash("cds", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw)
+		erd, err := overenc.IdentityTranscriptHash("cds", sess.ek, sess.ct, sess.sid, nonce, id.leaf.Raw, other.ca.Raw, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

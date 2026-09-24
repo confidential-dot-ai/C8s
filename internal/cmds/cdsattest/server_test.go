@@ -97,7 +97,7 @@ func clientChannelFromBundle(t *testing.T, bundle types.AttestationBundle, ck *o
 	if len(certs) != 2 {
 		t.Fatalf("bundle chain has %d certs, want leaf + issuing CA", len(certs))
 	}
-	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw)
+	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw, stateDigest(bundle.CDSState))
 	if err != nil {
 		t.Fatal(err)
 	}
