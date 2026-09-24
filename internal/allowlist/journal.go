@@ -101,7 +101,8 @@ func publishTx(tx *sql.Tx, authority string) error {
 	if err != nil {
 		return err
 	}
-	ev := Event{Protocol: 1, Authority: authority, Type: EventPublished, Version: version, Target: objectDigest(qBytes)}
+	qDigest := objectDigest(qBytes)
+	ev := Event{Protocol: 1, Authority: authority, Type: EventPublished, Version: version, Target: qDigest}
 	if head != nil {
 		if head.Target == ev.Target {
 			return nil
@@ -117,12 +118,16 @@ func publishTx(tx *sql.Tx, authority string) error {
 	if err != nil {
 		return err
 	}
-	for _, b := range [][]byte{qBytes, evBytes} {
-		if _, err := tx.Exec("INSERT OR IGNORE INTO journal_object (digest, body) VALUES (?, ?)", objectDigest(b), b); err != nil {
+	evDigest := objectDigest(evBytes)
+	for _, o := range []struct {
+		digest string
+		body   []byte
+	}{{qDigest, qBytes}, {evDigest, evBytes}} {
+		if _, err := tx.Exec("INSERT OR IGNORE INTO journal_object (digest, body) VALUES (?, ?)", o.digest, o.body); err != nil {
 			return err
 		}
 	}
-	_, err = tx.Exec("INSERT INTO journal_event (position, digest) VALUES (?, ?)", ev.Position, objectDigest(evBytes))
+	_, err = tx.Exec("INSERT INTO journal_event (position, digest) VALUES (?, ?)", ev.Position, evDigest)
 	return err
 }
 
@@ -206,32 +211,23 @@ func (s *Store) State() (State, error) {
 	}
 	defer tx.Rollback()
 
-	rows, err := tx.Query("SELECT digest FROM journal_event ORDER BY position")
+	rows, err := tx.Query(`SELECT e.digest, o.body FROM journal_event e
+		JOIN journal_object o ON o.digest = e.digest ORDER BY e.position`)
 	if err != nil {
 		return State{}, err
 	}
-	var digests []string
-	for rows.Next() {
-		var d string
-		if err := rows.Scan(&d); err != nil {
-			rows.Close()
-			return State{}, err
-		}
-		digests = append(digests, d)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return State{}, err
-	}
-	if len(digests) == 0 {
-		return State{}, errors.New("journal is empty")
-	}
+	defer rows.Close()
 
 	st := State{Protocol: 1, Authority: s.authority}
-	for _, d := range digests {
-		ev, err := eventTx(tx, d)
-		if err != nil {
+	for rows.Next() {
+		var d string
+		var body []byte
+		if err := rows.Scan(&d, &body); err != nil {
 			return State{}, err
+		}
+		var ev Event
+		if err := json.Unmarshal(body, &ev); err != nil {
+			return State{}, fmt.Errorf("decode journal event %s: %w", d, err)
 		}
 		switch {
 		case ev.Type == EventDrained, !ev.DrainRequired && len(st.Bound) <= 1:
@@ -241,6 +237,12 @@ func (s *Store) State() (State, error) {
 			st.Bound = append(st.Bound, ev.Target)
 		}
 		st.Position, st.Head, st.Version, st.Policy = ev.Position, d, ev.Version, ev.Target
+	}
+	if err := rows.Err(); err != nil {
+		return State{}, err
+	}
+	if st.Head == "" {
+		return State{}, errors.New("journal is empty")
 	}
 	return st, nil
 }
