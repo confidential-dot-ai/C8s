@@ -234,6 +234,7 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 		{"connection opened after the last widening", "1.500", http.StatusOK},
 		{"connection older than the last widening", "20.000", http.StatusServiceUnavailable},
 		{"no connection time", "", http.StatusForbidden},
+		{"unrepresentable connection time", "1e20", http.StatusForbidden},
 	} {
 		if got := status(tc.connectionTime); got != tc.want {
 			t.Errorf("%s: status %d, want %d", tc.name, got, tc.want)

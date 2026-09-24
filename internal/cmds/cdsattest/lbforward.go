@@ -14,6 +14,10 @@ import (
 // keepalive connection that is the connection's age, not the request's.
 const connectionTimeHeader = "X-C8s-Connection-Time"
 
+// maxConnectionAge bounds the header so it converts to a Duration without
+// overflowing into a future connection start.
+const maxConnectionAge = 365 * 24 * time.Hour
+
 // newLBForwarder streams front-door requests nginx hands over in pinned mode
 // to the upstream, through the backend's stamp-checking transport. A request
 // is refused when the client's connection predates the router's last view of
@@ -40,7 +44,7 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		age, err := strconv.ParseFloat(r.Header.Get(connectionTimeHeader), 64)
-		if err != nil || age < 0 {
+		if err != nil || age < 0 || age > maxConnectionAge.Seconds() {
 			http.Error(w, "missing connection time", http.StatusForbidden)
 			return
 		}

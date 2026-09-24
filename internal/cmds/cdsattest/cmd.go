@@ -128,6 +128,9 @@ func run(cfg config) error {
 	}
 
 	var backend Backend
+	if cfg.lbForwardPort > 0 && (cfg.cdsStateURL == "" || cfg.upstream == "") {
+		return fmt.Errorf("--lb-forward-port requires --cds-state-url and --upstream")
+	}
 	if cfg.cdsStateURL != "" && !strings.HasPrefix(cfg.cdsStateURL, "http://") && !strings.HasPrefix(cfg.cdsStateURL, "https://") {
 		return fmt.Errorf("--cds-state-url must be an http:// or https:// URL, got %q", cfg.cdsStateURL)
 	}
