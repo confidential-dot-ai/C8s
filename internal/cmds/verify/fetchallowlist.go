@@ -30,6 +30,10 @@ func fetchAllowlists(ctx context.Context, cfg config, oc *Outcome) {
 		fail("allowlist_fetch_failed: the target attested no CDS rollout state (router.attest.pinnedAllowlist)")
 		return
 	}
+	if cfg.url == "" {
+		fail("allowlist_fetch_failed: --fetch-allowlists needs a live target, not --from-file")
+		return
+	}
 	_, baseURL, err := normalizeTarget(cfg.url, defaultPort(cfg))
 	if err != nil {
 		fail("allowlist_fetch_failed: %v", err)
@@ -41,6 +45,10 @@ func fetchAllowlists(ctx context.Context, cfg config, oc *Outcome) {
 	}
 	client := insecureClient(cfg.server, cfg.timeout)
 	for _, digest := range oc.AllowlistBound {
+		if !policyDigestRE.MatchString(digest) {
+			fail("allowlist_fetch_failed: malformed digest %q in the rollout state", digest)
+			return
+		}
 		hexDigest := strings.TrimPrefix(digest, "sha256:")
 		body, err := fetchPolicy(ctx, client, baseURL+"/.well-known/c8s/objects/sha256/"+hexDigest)
 		if err != nil {

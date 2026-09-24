@@ -128,6 +128,7 @@ func TestFetchAllowlists(t *testing.T) {
 		{"attested bytes", []string{digest}, ""},
 		{"bytes that do not match the digest", []string{"sha256:" + strings.Repeat("00", 32)}, "allowlist_digest_mismatch"},
 		{"no attested state", nil, "allowlist_fetch_failed"},
+		{"malformed digest", []string{"sha256:../../etc"}, "malformed digest"},
 	} {
 		dir := t.TempDir()
 		oc := Outcome{Verified: true, AllowlistBound: tc.bound}
