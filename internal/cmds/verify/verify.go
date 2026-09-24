@@ -196,7 +196,7 @@ responder chose).`,
 	f := cmd.Flags()
 	f.StringVar(&cfg.url, "url", "", "target URL or host:port (alternative to the positional argument)")
 	f.StringVar(&cfg.kind, "kind", orDefault(d.Kind, "auto"), "component being verified: cds, lb, workload, or auto")
-	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, or attest-pq")
+	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, attest-pq, or attest-lb")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", defaultDiscoveryPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
@@ -213,7 +213,7 @@ responder chose).`,
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
@@ -243,9 +243,9 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 	// No mode alias: the retired "attestation-endpoint" name (and anything
 	// else unknown) is a usage error, not a silent fall-through to auto.
 	switch cfg.mode {
-	case "", "auto", "ratls-cert", "discovery", "attest-pq":
+	case "", "auto", "ratls-cert", "discovery", "attest-pq", "attest-lb":
 	default:
-		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq)\n", cfg.mode)
+		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq, attest-lb)\n", cfg.mode)
 		return exitUsage
 	}
 
@@ -925,6 +925,8 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		return gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
 	case "attest-pq":
 		return gatherFromEndpoint(ctx, baseURL, cfg.server, cfg.timeout)
+	case "attest-lb":
+		return gatherFromAttestLB(ctx, baseURL, cfg.server, cfg.timeout)
 	default: // auto: try the LB discovery doc (what the chart serves), then the
 		// serving cert. Don't fall back on a security error — surface it.
 		ev, err := gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
@@ -1283,7 +1285,7 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 	case ev.rolloutErr != nil:
 		fail("pinned_state_invalid: %v", ev.rolloutErr)
 	case ev.rollout == nil:
-		fail("pinned_state_absent: --pin-policy needs an attest-pq target serving the CDS rollout state (router.attest.pinnedAllowlist)")
+		fail("pinned_state_absent: --pin-policy needs an attest-pq or attest-lb target serving the CDS rollout state (router.attest.pinnedAllowlist)")
 	case !ev.fresh:
 		fail("pinned_state_stale: the rollout state is not bound to a nonce this run chose")
 	case ev.rollout.Lease <= 0:
