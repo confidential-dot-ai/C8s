@@ -105,6 +105,12 @@ type evidence struct {
 	// sandboxErr records a carried sandbox-ID extension this build cannot
 	// interpret. The verdict fails closed on it.
 	sandboxErr error
+	// rollout is the attest-pq bundle's CDS rollout state, signed by the
+	// transcript-committed mesh CA and bound to the bundle's nonce; nil when
+	// the bundle carries none. rolloutErr records a state that failed either
+	// check. See applyPinPolicy.
+	rollout    *types.RolloutState
+	rolloutErr error
 	// workload is the leaf's matched-workload stamp (cert modes only; nil when
 	// the cert carries none). CA-vouched like the sandbox ID — see
 	// applyWorkloadPolicy.
@@ -129,16 +135,17 @@ func platformOrDefault(p string) string {
 // nonce, session keys, served mesh chain, and identity proof (which together
 // derive and authenticate the REPORTDATA binding) are parsed here.
 type attestationResponse struct {
-	Version       string                   `json:"version"`
-	Platform      string                   `json:"platform"`
-	Nonce         string                   `json:"nonce"`
-	Evidence      json.RawMessage          `json:"evidence"`
-	CDSCertPEM    string                   `json:"cds_cert_pem"`
-	FrontDoorMode types.FrontDoorMode      `json:"front_door_mode"`
-	XWingEK       string                   `json:"xwing_ek"`
-	XWingCT       string                   `json:"xwing_ct"`
-	SessionID     string                   `json:"session_id"`
-	IdentityProof *types.MeshIdentityProof `json:"identity_proof"`
+	Version       string                    `json:"version"`
+	Platform      string                    `json:"platform"`
+	Nonce         string                    `json:"nonce"`
+	Evidence      json.RawMessage           `json:"evidence"`
+	CDSCertPEM    string                    `json:"cds_cert_pem"`
+	FrontDoorMode types.FrontDoorMode       `json:"front_door_mode"`
+	XWingEK       string                    `json:"xwing_ek"`
+	XWingCT       string                    `json:"xwing_ct"`
+	SessionID     string                    `json:"session_id"`
+	IdentityProof *types.MeshIdentityProof  `json:"identity_proof"`
+	CDSState      *types.SignedRolloutState `json:"cds_state"`
 }
 
 // leafTrust is what a caller can offer to authenticate a leaf body that is
@@ -414,7 +421,14 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	// --mesh-ca / --workload enforce them downstream exactly as in cert modes.
 	sandboxID, sandboxErr := ratls.SandboxIDFromCert(leaf)
 	workload, workloadErr := ratls.MatchedWorkloadFromCert(leaf)
+	var rollout *types.RolloutState
+	var rolloutErr error
+	if r.CDSState != nil {
+		rollout, rolloutErr = verifyRolloutState(r.CDSState, ca, nonce)
+	}
 	return &evidence{
+		rollout:          rollout,
+		rolloutErr:       rolloutErr,
 		platform:         platformOrDefault(r.Platform),
 		rawEvidence:      r.Evidence,
 		erd:              erd,
@@ -429,6 +443,27 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 		workload:         workload,
 		workloadErr:      workloadErr,
 	}, nil
+}
+
+// verifyRolloutState checks that ca's key signed the state and that the state
+// answers nonce.
+func verifyRolloutState(signed *types.SignedRolloutState, ca *x509.Certificate, nonce []byte) (*types.RolloutState, error) {
+	key, ok := ca.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("mesh CA key is %T, not ECDSA", ca.PublicKey)
+	}
+	sum := sha512.Sum384(signed.State)
+	if !ecdsa.VerifyASN1(key, sum[:], signed.Signature) {
+		return nil, fmt.Errorf("CDS rollout state signature does not verify against the committed mesh CA")
+	}
+	var st types.RolloutState
+	if err := json.Unmarshal(signed.State, &st); err != nil {
+		return nil, fmt.Errorf("decode CDS rollout state: %w", err)
+	}
+	if st.Nonce != hex.EncodeToString(nonce) {
+		return nil, fmt.Errorf("CDS rollout state answers another nonce")
+	}
+	return &st, nil
 }
 
 // committedMeshChain parses the served mesh chain and returns the leaf plus

@@ -118,6 +118,7 @@ type config struct {
 	sandboxID          string
 	workload           string
 	allowlistFile      string
+	pinPolicies        []string
 	meshCA             string
 	initDataHex        string
 	allowDebug         bool
@@ -211,6 +212,7 @@ responder chose).`,
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
@@ -381,6 +383,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
 	applySandboxPolicy(oc, cfg, ev, opKeys, plan, servedMeasurements)
 	applyWorkloadPolicy(oc, cfg, ev, held)
+	applyPinPolicy(oc, cfg, ev)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
 }
@@ -1071,6 +1074,12 @@ type Outcome struct {
 	WorkloadAllowlistVersion string `json:"workload_allowlist_version,omitempty"`
 	WorkloadAllowlistDigest  string `json:"workload_allowlist_digest,omitempty"`
 	WorkloadNote             string `json:"workload_note,omitempty"`
+
+	// AllowlistBound lists the policy digests CDS says may be running, from
+	// the attest-pq bundle's signed rollout state. Failures of --pin-policy
+	// land in Error (pinned_state_absent, pinned_state_invalid,
+	// pinned_state_stale, pinned_state_unleased, policy_not_pinned).
+	AllowlistBound []string `json:"allowlist_bound,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1240,6 +1249,40 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 	}
 	if oc.Verified {
 		oc.WorkloadNote = "workload_verified: the leaf chains to the supplied mesh CA and the stamp satisfies the pinned policy"
+	}
+}
+
+// applyPinPolicy reports the rollout bound and enforces --pin-policy: every
+// policy that may run must be one the caller reviewed and pinned.
+func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
+	if oc.Verified && ev.rollout != nil && ev.rolloutErr == nil {
+		oc.AllowlistBound = ev.rollout.Bound
+	}
+	if len(cfg.pinPolicies) == 0 {
+		return
+	}
+	fail := func(format string, args ...any) {
+		oc.Verified = false
+		if oc.Error == "" {
+			oc.Error = fmt.Sprintf(format, args...)
+		}
+	}
+	switch {
+	case ev.rolloutErr != nil:
+		fail("pinned_state_invalid: %v", ev.rolloutErr)
+	case ev.rollout == nil:
+		fail("pinned_state_absent: --pin-policy needs an attest-pq target serving the CDS rollout state (router.attest.pinnedAllowlist)")
+	case !ev.fresh:
+		fail("pinned_state_stale: the rollout state is not bound to a nonce this run chose")
+	case ev.rollout.Lease <= 0:
+		fail("pinned_state_unleased: CDS applies allowlist writes without an activation lease, so open sessions are not fenced")
+	default:
+		for _, d := range ev.rollout.Bound {
+			if !slices.Contains(cfg.pinPolicies, d) {
+				fail("policy_not_pinned: policy %s may be running and is not pinned; review it at /.well-known/c8s/objects/sha256/%s", d, strings.TrimPrefix(d, "sha256:"))
+				return
+			}
+		}
 	}
 }
 
@@ -1637,6 +1680,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if oc.Workload != "" {
 		fmt.Fprintf(out, "  workload:     %s  (allowlist version %s, digest %s)\n", oc.Workload, oc.WorkloadAllowlistVersion, oc.WorkloadAllowlistDigest)
 		fmt.Fprintf(out, "                %s\n", oc.WorkloadNote)
+	}
+	if len(oc.AllowlistBound) > 0 {
+		fmt.Fprintf(out, "  allowlist:    %s\n", strings.Join(oc.AllowlistBound, ", "))
 	}
 	if len(oc.OperatorKeys) > 0 {
 		label := "operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):"

@@ -567,6 +567,20 @@ open session never reaches a workload the client did not accept. The router
 forwards only to an https upstream it verifies against the mesh CA. attest-lb
 does not carry the state and makes no such promise.
 
+To verify against pinned policies, run:
+
+```sh
+c8s verify --mode attest-pq --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
+```
+
+- `MESH_CA_PEM`: the mesh CA bundle you pinned out of band.
+- `POLICY_HEX`: a policy digest you reviewed; repeat the flag for each one.
+- `ROUTER_URL`: the router front door.
+
+Verification fails with `policy_not_pinned` once CDS publishes a policy you
+have not pinned. Fetch it from `/.well-known/c8s/objects/sha256/<hex>`, check
+that its SHA-256 matches, review it, and add it as another `--pin-policy`.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component
