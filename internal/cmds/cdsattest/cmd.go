@@ -122,6 +122,9 @@ func run(cfg config) error {
 	}
 
 	var backend Backend
+	if cfg.cdsStateURL != "" && !strings.HasPrefix(cfg.cdsStateURL, "http://") && !strings.HasPrefix(cfg.cdsStateURL, "https://") {
+		return fmt.Errorf("--cds-state-url must be an http:// or https:// URL, got %q", cfg.cdsStateURL)
+	}
 	if cfg.cdsStateURL != "" && cfg.meshIdentityCAFile == "" {
 		return fmt.Errorf("--cds-state-url requires --mesh-identity-ca-file to verify the CDS state")
 	}

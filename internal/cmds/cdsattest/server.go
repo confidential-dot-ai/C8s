@@ -792,7 +792,9 @@ func (s *Server) pollRollout(ctx context.Context) {
 		}
 		bound, err := s.rollout.poll(ctx)
 		if err != nil {
-			s.log.Warn("CDS rollout state poll failed", "error", err)
+			if ctx.Err() == nil {
+				s.log.Warn("CDS rollout state poll failed", "error", err)
+			}
 			continue
 		}
 		s.mu.Lock()
