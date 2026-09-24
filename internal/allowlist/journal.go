@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS journal_event (
 );
 CREATE TABLE IF NOT EXISTS journal_pending (
 	target         TEXT NOT NULL,
-	published_unix INTEGER NOT NULL
+	published_ms   INTEGER NOT NULL
 );
 `
 
@@ -126,7 +126,7 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 	if _, err := tx.Exec("UPDATE allowlist_version SET version = CAST(CAST(version AS INTEGER) - 1 AS TEXT)"); err != nil {
 		return err
 	}
-	_, err = tx.Exec("INSERT INTO journal_pending (target, published_unix) VALUES (?, ?)", head.Target, time.Now().Unix())
+	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, time.Now().UnixMilli())
 	return err
 }
 
@@ -144,14 +144,14 @@ func (s *Store) Activate(now time.Time) (bool, error) {
 
 	var target string
 	var published int64
-	err = tx.QueryRow("SELECT target, published_unix FROM journal_pending").Scan(&target, &published)
+	err = tx.QueryRow("SELECT target, published_ms FROM journal_pending").Scan(&target, &published)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	since := time.Unix(published, 0)
+	since := time.UnixMilli(published)
 	if s.started.After(since) {
 		since = s.started
 	}
