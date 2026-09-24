@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -604,6 +605,11 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// loadHeldAllowlist.
 	if cfg.allowlistFile != "" && cfg.meshCA == "" {
 		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
+	}
+	for _, d := range cfg.pinPolicies {
+		if !policyDigestRE.MatchString(d) {
+			return nil, fmt.Errorf("--pin-policy %q is not sha256:<64 lowercase hex>", d)
+		}
 	}
 	if len(cfg.pinPolicies) > 0 && cfg.meshCA == "" {
 		return nil, fmt.Errorf("--pin-policy requires --mesh-ca: the rollout bound is vouched by CDS's signature, and only a pinned mesh CA says which CDS")
@@ -1254,6 +1260,9 @@ func applyWorkloadPolicy(oc *Outcome, cfg config, ev *evidence, held *heldAllowl
 		oc.WorkloadNote = "workload_verified: the leaf chains to the supplied mesh CA and the stamp satisfies the pinned policy"
 	}
 }
+
+// policyDigestRE is the form of a policy digest in the rollout state.
+var policyDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // applyPinPolicy reports the rollout bound and enforces --pin-policy: every
 // policy that may run must be one the caller reviewed and pinned.

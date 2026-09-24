@@ -84,7 +84,10 @@ func TestApplyPinPolicy(t *testing.T) {
 }
 
 func TestBuildPolicyPinPolicyRequiresMeshCA(t *testing.T) {
-	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:p"}}); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:p"}}); err == nil || !strings.Contains(err.Error(), "is not sha256:") {
+		t.Fatalf("buildPolicy(malformed --pin-policy) = %v, want the format error", err)
+	}
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}}); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
 		t.Fatalf("buildPolicy(--pin-policy without --mesh-ca) = %v, want the --mesh-ca error", err)
 	}
 }
