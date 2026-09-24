@@ -64,3 +64,30 @@ func TestGatherFromAttestLB(t *testing.T) {
 		t.Fatalf("gather over a different serving leaf = %v, want a security error", err)
 	}
 }
+
+func TestEvidenceFromAttestLBJSONRejects(t *testing.T) {
+	nonce := bytes.Repeat([]byte{0x07}, nonceSize)
+	leaf := []byte("serving leaf")
+	for _, tc := range []struct {
+		name     string
+		version  string
+		echoed   []byte
+		security bool
+	}{
+		{"attest-pq binding", types.BindingAttestPQ, nonce, false},
+		{"other nonce", types.BindingAttestLB, bytes.Repeat([]byte{0x08}, nonceSize), true},
+	} {
+		data, err := json.Marshal(map[string]any{
+			"version":  tc.version,
+			"nonce":    base64.RawURLEncoding.EncodeToString(tc.echoed),
+			"evidence": map[string]any{"attestation_report": "AAAA"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = evidenceFromAttestLBJSON(data, nonce, leaf, "test")
+		if err == nil || isSecurityError(err) != tc.security {
+			t.Errorf("%s: err = %v, want an error (security %v)", tc.name, err, tc.security)
+		}
+	}
+}

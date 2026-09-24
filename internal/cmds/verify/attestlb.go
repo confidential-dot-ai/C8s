@@ -62,12 +62,13 @@ func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout ti
 		return nil, &connectError{err: fmt.Errorf("GET %s: %w", u, err)}
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, &connectError{err: fmt.Errorf("GET %s returned %d: %s", u, resp.StatusCode, strings.TrimSpace(string(body)))}
+	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, &connectError{err: fmt.Errorf("read response: %w", err)}
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, &connectError{err: fmt.Errorf("GET %s returned %d: %s", u, resp.StatusCode, strings.TrimSpace(string(data)))}
 	}
 	if servingLeaf == nil {
 		return nil, fmt.Errorf("attest-lb needs a TLS target: no serving certificate was observed")
@@ -123,7 +124,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, source string) (*
 		bindingNote:      "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + the serving leaf this connection presented + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
 		leaf:             leaf,
 		leafChainDerived: true,
-		frontDoor:        frontDoorNone,
+		frontDoor:        frontDoorAttested,
 		sandboxID:        sandboxID,
 		sandboxErr:       sandboxErr,
 		workload:         workload,
