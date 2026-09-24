@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -235,6 +236,7 @@ func (s *Store) State() (State, error) {
 		switch {
 		case ev.Type == EventDrained, !ev.DrainRequired && len(st.Bound) <= 1:
 			st.Bound = []string{ev.Target}
+		case slices.Contains(st.Bound, ev.Target):
 		default:
 			st.Bound = append(st.Bound, ev.Target)
 		}

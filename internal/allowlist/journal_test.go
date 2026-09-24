@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -28,6 +29,7 @@ func TestJournalBound(t *testing.T) {
 		{"addition", func() error { return store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))) }, 1, false},
 		{"second addition", func() error { return store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))) }, 1, false},
 		{"removal", func() error { _, err := store.DeleteWorkload("a"); return err }, 2, true},
+		{"re-addition of a bound policy", func() error { return store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))) }, 2, false},
 		{"addition while draining", func() error { return store.PutWorkload("c", oneContainerWorkload(mustParseDigest(t, digestC))) }, 3, false},
 		{"modified entry", func() error {
 			return store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestA)))
@@ -45,8 +47,8 @@ func TestJournalBound(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: state: %v", step.name, err)
 		}
-		if len(st.Bound) != step.boundSize || st.Bound[len(st.Bound)-1] != st.Policy {
-			t.Errorf("%s: bound = %v, want %d entries ending in %s", step.name, st.Bound, step.boundSize, st.Policy)
+		if len(st.Bound) != step.boundSize || !slices.Contains(st.Bound, st.Policy) {
+			t.Errorf("%s: bound = %v, want %d distinct entries including %s", step.name, st.Bound, step.boundSize, st.Policy)
 		}
 		if step.name == "identical write" {
 			if st.Head != prev.Head {
