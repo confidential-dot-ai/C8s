@@ -68,7 +68,7 @@ func newRouter(deps dependencies) http.Handler {
 	store := deps.AllowlistHandler.Store
 	r.Get(wellKnown+"/objects/sha256/{hex}", handleObject(store))
 	r.Get(wellKnown+"/allowlist/latest", handleLatest(store))
-	r.Get(wellKnown+"/state", handleState(store, deps.StateKey, false))
+	r.Method(http.MethodGet, wellKnown+"/state", deps.protected(handleState(store, deps.StateKey, false)))
 	r.Method(http.MethodPost, wellKnown+"/state/challenge", deps.protected(handleState(store, deps.StateKey, true)))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox

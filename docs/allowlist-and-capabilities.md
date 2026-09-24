@@ -546,6 +546,15 @@ it; each event keeps the authority current when it was appended. A write that
 leaves the document unchanged bumps the `/allowlist` ETag but appends no event,
 so `allowlist_version` is the version at the last publication.
 
+`cds.allowlistActivationLease` (`--allowlist-activation-lease`) stages every
+publication. CDS journals the change and widens `bound` at once. It keeps
+serving the previous document to enforcers, issuance and secret release until
+the lease has run from both the publication and CDS's start. The state shows
+the staged digest as `pending`, and CDS refuses any other write with 409 until
+it activates. `c8s allowlist` reports a staged write as applied. The router
+fences attest-pq sessions on the same lease, so a lease of `0s`, the default,
+applies writes at once and gives pinned verifiers nothing to rely on.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component

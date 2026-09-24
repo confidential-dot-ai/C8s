@@ -74,6 +74,7 @@ func NewCmd() *cobra.Command {
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests and the mesh CA do not survive a restart")
 	flags.StringVar(&cfg.kubeconfig, "kubeconfig", "", "kubeconfig for live node inventory when CDS runs as a host service; empty uses in-cluster credentials")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/ratls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
+	flags.DurationVar(&cfg.activationLease, "allowlist-activation-lease", 0, "delay between publishing an allowlist change and enforcing it; writes are refused with 409 meanwhile, and routers fence attest-pq sessions on the same lease (0 applies writes at once)")
 	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing digests are added, existing entries are left untouched (empty disables seeding)")
 	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (POST/PUT/DELETE) require an operator token signed by one of them (empty = writes disabled, reads still served)")
 
@@ -144,6 +145,7 @@ type config struct {
 	minCAValidity       time.Duration
 	allowlistDB         string
 	allowlistPersistent bool
+	activationLease     time.Duration
 	allowlistSeed       string
 	inventoryCIDRs      []string
 	kubeconfig          string

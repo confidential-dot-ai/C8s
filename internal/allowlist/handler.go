@@ -77,7 +77,7 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.ReplaceAll(al); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h Handler) HandlePutWorkload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 
@@ -123,7 +123,7 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	found, err := h.Store.DeleteWorkload(name)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeError(w, err)
 		return
 	}
 	if !found {
@@ -133,6 +133,16 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("allowlist workload deleted", "name", name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// writeError answers a failed store write: 409 while an update is activating,
+// 500 otherwise.
+func writeError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrUpdatePending) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.

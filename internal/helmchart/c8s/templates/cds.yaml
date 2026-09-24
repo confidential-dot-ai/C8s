@@ -136,6 +136,7 @@ spec:
             - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
             - --allowlist-db={{ .Values.cds.allowlistDB }}
             - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
+            - --allowlist-activation-lease={{ .Values.cds.allowlistActivationLease }}
             {{- if .Values.node.baked }}
             - --allowlist-seed=/run/c8s-node/allowlist-seed.json
             - --operator-keys=/run/c8s-node/operator-pubkey
