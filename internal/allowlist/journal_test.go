@@ -144,3 +144,35 @@ func TestJournalLeaseStagesAndLocks(t *testing.T) {
 		t.Fatalf("write after activation: %v", err)
 	}
 }
+
+// A restart without a lease activates an update an earlier run staged.
+func TestJournalPendingSurvivesLeaseRemoval(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); !errors.Is(err, ErrUpdatePending) {
+		t.Fatalf("write over a pending update without a lease = %v, want ErrUpdatePending", err)
+	}
+	if ok, err := store.Activate(time.Now()); !ok || err != nil {
+		t.Fatalf("Activate without a lease = %v, %v; want true, nil", ok, err)
+	}
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["a"]; !ok {
+		t.Fatalf("activated document = %v, want the staged entry a", doc.Workloads)
+	}
+}

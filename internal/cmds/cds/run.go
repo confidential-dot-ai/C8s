@@ -133,6 +133,11 @@ func run(cfg config) error {
 	if err := allowlistStore.StartJournal(authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo), cfg.activationLease); err != nil {
 		return fmt.Errorf("start allowlist journal: %w", err)
 	}
+	// Without a lease, an update staged by an earlier run activates now
+	// rather than blocking writes forever.
+	if _, err := allowlistStore.Activate(time.Now()); err != nil {
+		return fmt.Errorf("activate pending allowlist update: %w", err)
+	}
 
 	measurements := parseReferenceDigests(cfg.measurements)
 	if len(measurements) == 0 {

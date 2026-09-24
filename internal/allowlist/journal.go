@@ -96,17 +96,16 @@ func (s *Store) StartJournal(authority string, lease time.Duration) error {
 }
 
 // journalTx runs before every mutation commits. It refuses the write while an
-// update is pending, journals the new document and, under a lease, restores
-// the source document and records the target as pending.
+// update is pending, whatever the current lease, journals the new document
+// and, under a lease, restores the source document and records the target as
+// pending.
 func (s *Store) journalTx(tx *sql.Tx) error {
-	if s.lease > 0 {
-		var n int
-		if err := tx.QueryRow("SELECT COUNT(*) FROM journal_pending").Scan(&n); err != nil {
-			return err
-		}
-		if n > 0 {
-			return ErrUpdatePending
-		}
+	var n int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM journal_pending").Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrUpdatePending
 	}
 	source, err := publishTx(tx, s.authority)
 	if err != nil || source == nil || s.lease <= 0 {
