@@ -7616,6 +7616,9 @@ func TestChartRouterPinnedAllowlist(t *testing.T) {
 	catchAll := renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
 	catchAll.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
 	catchAll.assertDirective(t, "proxy_set_header", "X-C8s-Connection-Time", "$connection_time")
+	if strings.Contains(out, "upstream catch_all") {
+		t.Error("pinned mode renders the unused catch_all upstream, which nginx resolves at start")
+	}
 
 	if out, err := helmTemplate(t, noUpstreamArgs(
 		"--set", "router.attest.pinnedAllowlist=true",

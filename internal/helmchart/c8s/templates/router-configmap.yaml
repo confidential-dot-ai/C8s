@@ -145,7 +145,8 @@ data:
         }
 
         {{- end }}
-        {{- if and $upstreamAddress (not $upstreamMeshWrapped) }}
+        {{- /* Pinned mode forwards through the sidecar; an unused upstream would still need DNS at nginx start. */}}
+        {{- if and $upstreamAddress (not $upstreamMeshWrapped) (not .Values.router.attest.pinnedAllowlist) }}
         upstream catch_all {
             server {{ $upstreamAddress }};
         }
