@@ -2,7 +2,10 @@ package cdsattest
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -19,6 +22,13 @@ import (
 type fakeCDSState struct {
 	mu    sync.Mutex
 	bound []string
+	key   *ecdsa.PrivateKey
+}
+
+func (f *fakeCDSState) setKey(key *ecdsa.PrivateKey) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.key = key
 }
 
 func (f *fakeCDSState) setBound(bound ...string) {
@@ -30,6 +40,7 @@ func (f *fakeCDSState) setBound(bound ...string) {
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	st := types.RolloutState{Bound: f.bound, Lease: 30}
+	key := f.key
 	f.mu.Unlock()
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
@@ -37,16 +48,17 @@ func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		st.Nonce = req.Nonce
 	}
 	body, _ := json.Marshal(st)
-	json.NewEncoder(w).Encode(types.SignedRolloutState{State: body})
+	sum := sha512.Sum384(body)
+	sig, _ := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	json.NewEncoder(w).Encode(types.SignedRolloutState{State: body, Signature: sig})
 }
 
 func TestRolloutFencesSessions(t *testing.T) {
-	cds := &fakeCDSState{}
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
 	cds.setBound("sha256:p")
 	cdsSrv := httptest.NewServer(cds)
 	defer cdsSrv.Close()
-
-	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
@@ -94,6 +106,16 @@ func TestRolloutFencesSessions(t *testing.T) {
 	if code := status(); code != http.StatusOK {
 		t.Fatalf("tunnel after a fresh poll = %d, want 200", code)
 	}
+
+	foreign, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cds.setKey(foreign)
+	if _, err := srv.rollout.poll(context.Background()); err == nil {
+		t.Fatal("poll accepted a state the mesh CA did not sign")
+	}
+	cds.setKey(identity.caKey)
 
 	cds.setBound("sha256:p", "sha256:q")
 	if _, err := srv.rollout.poll(context.Background()); err != nil {

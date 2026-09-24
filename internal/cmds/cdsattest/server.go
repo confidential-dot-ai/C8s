@@ -218,7 +218,7 @@ func NewServer(cfg Config) *Server {
 	}
 	var fence *rollout
 	if cfg.CDSStateURL != "" {
-		fence = newRollout(cfg.CDSStateURL)
+		fence = newRollout(cfg.CDSStateURL, cfg.MeshIdentityCAFile)
 	}
 	return &Server{
 		rollout:          fence,
