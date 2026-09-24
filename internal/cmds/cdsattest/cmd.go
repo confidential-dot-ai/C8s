@@ -122,6 +122,9 @@ func run(cfg config) error {
 	}
 
 	var backend Backend
+	if cfg.cdsStateURL != "" && cfg.meshIdentityCAFile == "" {
+		return fmt.Errorf("--cds-state-url requires --mesh-identity-ca-file to verify the CDS state")
+	}
 	if cfg.cdsStateURL != "" && cfg.upstream != "" {
 		// A pinned client's envelope holds only for attested receivers.
 		if !strings.HasPrefix(cfg.upstream, "https://") {

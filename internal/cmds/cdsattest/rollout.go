@@ -59,13 +59,15 @@ func (r *rollout) challenge(ctx context.Context, nonce []byte) (*types.SignedRol
 	return signed, st.Bound, nil
 }
 
-// poll refreshes the state and returns the current bound.
+// poll refreshes the state and returns the newest bound seen, which a
+// concurrent challenge may have stored ahead of this response.
 func (r *rollout) poll(ctx context.Context) ([]string, error) {
-	_, st, err := r.fetch(ctx, http.MethodGet, "/.well-known/c8s/state", nil)
-	if err != nil {
+	if _, _, err := r.fetch(ctx, http.MethodGet, "/.well-known/c8s/state", nil); err != nil {
 		return nil, err
 	}
-	return st.Bound, nil
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.bound, nil
 }
 
 func (r *rollout) fetch(ctx context.Context, method, path string, body []byte) (*types.SignedRolloutState, *types.RolloutState, error) {
