@@ -19,11 +19,13 @@ const maxPolicyBytes = 16 << 20
 // router and keeps it only when its SHA-256 matches the digest the attested
 // state names: the operator-trusting alternative to pinning digests.
 func fetchAllowlists(ctx context.Context, cfg config, oc *Outcome) {
-	if cfg.fetchAllowlists == "" || !oc.Verified {
+	// A partial verdict still verified the attestation that commits the
+	// state; it is the usual outcome without a --mesh-ca pin.
+	if cfg.fetchAllowlists == "" || (!oc.Verified && !oc.Partial) {
 		return
 	}
 	fail := func(format string, args ...any) {
-		oc.Verified = false
+		oc.Verified, oc.Partial = false, false
 		oc.Error = fmt.Sprintf(format, args...)
 	}
 	if len(oc.AllowlistBound) == 0 {

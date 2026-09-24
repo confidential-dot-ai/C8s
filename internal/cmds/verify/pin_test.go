@@ -131,9 +131,9 @@ func TestFetchAllowlists(t *testing.T) {
 		{"malformed digest", []string{"sha256:../../etc"}, "malformed digest"},
 	} {
 		dir := t.TempDir()
-		oc := Outcome{Verified: true, AllowlistBound: tc.bound}
+		oc := Outcome{Partial: true, AllowlistBound: tc.bound}
 		fetchAllowlists(context.Background(), config{url: srv.URL, fetchAllowlists: dir, timeout: 5 * time.Second}, &oc)
-		if (tc.want == "") != oc.Verified || !strings.Contains(oc.Error, tc.want) {
+		if (tc.want == "") != (oc.Error == "") || !strings.Contains(oc.Error, tc.want) {
 			t.Errorf("%s: verified=%v error=%q, want %q", tc.name, oc.Verified, oc.Error, tc.want)
 		}
 		if tc.want == "" {
