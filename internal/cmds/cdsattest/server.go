@@ -160,6 +160,9 @@ type Config struct {
 	// SessionMaxAge is the absolute session lifetime from establishment,
 	// enforced regardless of activity. Defaults to defaultSessionMaxAge.
 	SessionMaxAge time.Duration
+	// CDSStateURL is the allowlist-proxy base URL. Set, attest-pq binds each
+	// session to CDS's nonce-bound rollout state and fences it (rollout.go).
+	CDSStateURL string
 }
 
 type establishedSession struct {
@@ -167,6 +170,7 @@ type establishedSession struct {
 	createdAt time.Time
 	lastUsed  time.Time
 	client    string
+	envelope  []string // policy digests the client accepted; nil without CDSStateURL
 }
 
 // Server serves the c8s-verify endpoints.
@@ -174,6 +178,7 @@ type Server struct {
 	cfg     Config
 	log     *slog.Logger
 	backend Backend
+	rollout *rollout // nil without CDSStateURL
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -211,7 +216,12 @@ func NewServer(cfg Config) *Server {
 	if backend == nil {
 		backend = EchoBackend{}
 	}
+	var fence *rollout
+	if cfg.CDSStateURL != "" {
+		fence = newRollout(cfg.CDSStateURL)
+	}
 	return &Server{
+		rollout:          fence,
 		cfg:              cfg,
 		log:              cfg.Logger,
 		backend:          backend,
@@ -250,6 +260,9 @@ func (s *Server) Serve(ctx context.Context, httpSrv *http.Server) error {
 func (s *Server) maintain(ctx context.Context) {
 	for _, limiter := range []*issuer.IPRateLimiter{s.establishLimiter, s.sessionLimiter, s.clientLimiter} {
 		go limiter.EvictionLoop(ctx, s.evictEvery, s.idleAfter)
+	}
+	if s.rollout != nil {
+		go s.pollRollout(ctx)
 	}
 	ticker := time.NewTicker(s.sweepEvery)
 	defer ticker.Stop()
@@ -476,6 +489,16 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var state *types.SignedRolloutState
+	var envelope []string
+	if s.rollout != nil {
+		if state, envelope, err = s.rollout.challenge(r.Context(), nonce); err != nil {
+			s.log.Error("CDS rollout state unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAttestationUnavailable, "could not obtain the CDS rollout state")
+			return
+		}
+	}
+
 	channel, err := overenc.NewServerChannel(sharedSecret, reportData, sessionID)
 	if err != nil {
 		s.log.Error("derive channel", "error", err)
@@ -484,7 +507,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 	id := base64.RawURLEncoding.EncodeToString(sessionID)
 	now := time.Now()
-	if err := s.addSession(client, id, establishedSession{channel: channel, createdAt: now, lastUsed: now}); err != nil {
+	if err := s.addSession(client, id, establishedSession{channel: channel, createdAt: now, lastUsed: now, envelope: envelope}); err != nil {
 		s.refuseSession(w, err)
 		return
 	}
@@ -501,6 +524,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
 		SessionID:     id,
 		IdentityProof: proof,
+		CDSState:      state,
 	})
 }
 
@@ -755,6 +779,32 @@ func (s *Server) sweep() {
 	}
 }
 
+// pollRollout refreshes the rollout state and drops every session whose
+// envelope no longer covers the bound. It blocks until ctx is cancelled.
+func (s *Server) pollRollout(ctx context.Context) {
+	ticker := time.NewTicker(statePollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		bound, err := s.rollout.poll(ctx)
+		if err != nil {
+			s.log.Warn("CDS rollout state poll failed", "error", err)
+			continue
+		}
+		s.mu.Lock()
+		for id, entry := range s.sessions {
+			if !covers(entry.envelope, bound) {
+				s.dropSession(id)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 // sessionRoom reports why a session for client may not be admitted.
 // handleAttestPQ asks before it mints anything, and addSession decides again
 // under the lock that inserts.
@@ -811,6 +861,15 @@ func (s *Server) useSession(id string) *overenc.Channel {
 	if now.Sub(entry.lastUsed) > s.cfg.SessionTTL || now.Sub(entry.createdAt) > s.cfg.SessionMaxAge {
 		s.dropSession(id)
 		return nil
+	}
+	if s.rollout != nil {
+		ok, drop := s.rollout.admits(entry.envelope, now)
+		if drop {
+			s.dropSession(id)
+		}
+		if !ok {
+			return nil
+		}
 	}
 	entry.lastUsed = now
 	s.sessions[id] = entry

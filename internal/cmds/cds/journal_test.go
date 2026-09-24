@@ -14,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 func TestJournalRoutes(t *testing.T) {
@@ -46,7 +47,7 @@ func TestJournalRoutes(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("POST state/challenge = %d: %s", w.Code, w.Body)
 	}
-	var signed signedState
+	var signed types.SignedRolloutState
 	if err := json.Unmarshal(w.Body.Bytes(), &signed); err != nil {
 		t.Fatal(err)
 	}

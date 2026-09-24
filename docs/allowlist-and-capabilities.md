@@ -555,6 +555,18 @@ it activates. `c8s allowlist` reports a staged write as applied. The router
 fences attest-pq sessions on the same lease, so a lease of `0s`, the default,
 applies writes at once and gives pinned verifiers nothing to rely on.
 
+### Pinned allowlists
+
+With `router.attest.pinnedAllowlist`, each attest-pq bundle carries
+`cds_state`: the signed state bound to the client's nonce. Its `bound` is the
+session's envelope. The router reads the state every second and closes a
+session once `bound` holds a digest outside its envelope. It also stops
+serving any session while its last state read is older than
+`lease_seconds`. CDS activates a publication only after that lease, so an
+open session never reaches a workload the client did not accept. The router
+forwards only to an https upstream it verifies against the mesh CA. attest-lb
+does not carry the state and makes no such promise.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component

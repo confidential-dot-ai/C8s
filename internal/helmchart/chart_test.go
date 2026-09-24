@@ -7601,3 +7601,23 @@ func TestChartSweepMountAdmission(t *testing.T) {
 		})
 	}
 }
+
+func TestChartRouterPinnedAllowlist(t *testing.T) {
+	out, err := helmTemplate(t, noUpstreamArgs(
+		"--set", "router.attest.pinnedAllowlist=true",
+		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
+		"--set", "router.upstream.protocol=https",
+	)...)
+	if err != nil {
+		t.Fatalf("helm template (pinned allowlist): %v\n%s", err, out)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
+		"--cds-state-url=http://127.0.0.1:8801")
+
+	if out, err := helmTemplate(t, noUpstreamArgs(
+		"--set", "router.attest.pinnedAllowlist=true",
+		"--set-string", "router.upstream.address=c8s-abc.ns.svc.cluster.local:80",
+	)...); err == nil || !strings.Contains(out+err.Error(), "router.attest.pinnedAllowlist requires") {
+		t.Fatalf("pinned allowlist with an http upstream rendered: %v", err)
+	}
+}

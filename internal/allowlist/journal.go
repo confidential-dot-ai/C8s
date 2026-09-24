@@ -12,6 +12,7 @@ import (
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // Journal event types. See docs/allowlist-and-capabilities.md, "Rollout journal".
@@ -53,20 +54,8 @@ type Event struct {
 	DrainRequired bool   `json:"drain_required,omitempty"`
 }
 
-// State is the unsigned rollout state CDS signs. Bound lists the policy
-// digests that may still be executing, oldest first.
-type State struct {
-	Protocol  int      `json:"protocol"`
-	Authority string   `json:"authority"`
-	Position  uint64   `json:"position"`
-	Head      string   `json:"head"`
-	Version   string   `json:"allowlist_version"`
-	Policy    string   `json:"policy"`
-	Bound     []string `json:"bound"`
-	Pending   string   `json:"pending,omitempty"`
-	Lease     int64    `json:"lease_seconds"`
-	Nonce     string   `json:"nonce,omitempty"`
-}
+// State is the unsigned rollout state CDS signs.
+type State = types.RolloutState
 
 func objectDigest(b []byte) string {
 	sum := sha256.Sum256(b)
