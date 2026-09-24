@@ -212,7 +212,7 @@ responder chose).`,
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
@@ -604,6 +604,9 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// loadHeldAllowlist.
 	if cfg.allowlistFile != "" && cfg.meshCA == "" {
 		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
+	}
+	if len(cfg.pinPolicies) > 0 && cfg.meshCA == "" {
+		return nil, fmt.Errorf("--pin-policy requires --mesh-ca: the rollout bound is vouched by CDS's signature, and only a pinned mesh CA says which CDS")
 	}
 
 	initDataHash, err := parseInitDataPin(cfg.initDataHex)
