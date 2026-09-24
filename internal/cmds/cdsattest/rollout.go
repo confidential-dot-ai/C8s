@@ -144,7 +144,7 @@ func (r *rollout) admits(envelope []string, now time.Time) (ok, drop bool) {
 	if !covers(envelope, r.bound) {
 		return false, true
 	}
-	return r.lease == 0 || now.Sub(r.seenAt) < r.lease, false
+	return r.fresh(now), false
 }
 
 // covers reports whether every digest in bound is in envelope.
@@ -182,5 +182,11 @@ func (r *rollout) verifyPeer(leaf *x509.Certificate) error {
 func (r *rollout) admitsConnection(start, now time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return (r.lease == 0 || now.Sub(r.seenAt) < r.lease) && start.After(r.widenedAt)
+	return r.fresh(now) && start.After(r.widenedAt)
+}
+
+// fresh reports whether a state has been read and, under a lease, whether the
+// last read is younger than it. Callers hold r.mu.
+func (r *rollout) fresh(now time.Time) bool {
+	return !r.seenAt.IsZero() && (r.lease == 0 || now.Sub(r.seenAt) < r.lease)
 }

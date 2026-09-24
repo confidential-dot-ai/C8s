@@ -202,13 +202,20 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 		t.Fatal(err)
 	}
 	fence := newRollout("", "")
-	fence.lease = 30 * time.Second
-	fence.seenAt = time.Now()
-	fence.widenedAt = time.Now().Add(-10 * time.Second)
 	forwarder, err := newLBForwarder(fence, backend, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(connectionTimeHeader, "0.001")
+	w := httptest.NewRecorder()
+	forwarder.ServeHTTP(w, req)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("request before the first state read = %d, want 503", w.Code)
+	}
+	fence.lease = 30 * time.Second
+	fence.seenAt = time.Now()
+	fence.widenedAt = time.Now().Add(-10 * time.Second)
 	status := func(connectionTime string) int {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		if connectionTime != "" {

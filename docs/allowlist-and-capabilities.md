@@ -566,14 +566,18 @@ the state every second and fences traffic on it:
 - nginx hands every front-door request to the sidecar. The sidecar refuses a
   request whose connection opened before the router last saw `bound` widen,
   so an attest-lb client re-attests on a new connection.
-- Nothing is forwarded while the router's last state read is older than
-  `lease_seconds`.
+- Nothing is forwarded before the router's first state read, or while its
+  last read is older than `lease_seconds`.
+
+A widening reaches the fence within one poll interval.
 
 CDS activates a publication only after that lease, so fenced traffic never
 reaches a workload the client did not accept. The router forwards only to
 `router.upstream`, over https. The upstream's mesh leaf must chain to the
 mesh CA and carry a matched-workload stamp whose policy digest is in `bound`,
-so the upstream workload needs a named leaf.
+so the upstream pod needs a named leaf (see
+[`getcert-workload-binding.md`](getcert-workload-binding.md)). Without one,
+every forward fails.
 
 To verify against pinned policies, run:
 
@@ -588,6 +592,8 @@ c8s verify --mode attest-pq --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX
 Verification fails with `policy_not_pinned` once CDS publishes a policy you
 have not pinned. Fetch it from `/.well-known/c8s/objects/sha256/<hex>`, check
 that its SHA-256 matches, review it, and add it as another `--pin-policy`.
+The failure starts at publication, one lease before CDS enforces the new
+policy, which leaves that lease to review it.
 
 Policy pins cover the CDS-served document only. The NRI base allowlist, exempt
 namespaces and enforcement mode come from the node image's measured boot

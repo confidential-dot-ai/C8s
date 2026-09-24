@@ -116,6 +116,9 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 		}
 		if opts.VerifyPeer != nil {
 			tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return fmt.Errorf("upstream presented no certificate")
+				}
 				return opts.VerifyPeer(cs.PeerCertificates[0])
 			}
 		}

@@ -10,7 +10,8 @@ import (
 )
 
 // connectionTimeHeader carries nginx's $connection_time: how long the client's
-// front-door connection has been open when the request arrived.
+// front-door connection has been open when the request arrived. On a
+// keepalive connection that is the connection's age, not the request's.
 const connectionTimeHeader = "X-C8s-Connection-Time"
 
 // newLBForwarder streams front-door requests nginx hands over in pinned mode
