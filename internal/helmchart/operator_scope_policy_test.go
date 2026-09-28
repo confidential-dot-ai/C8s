@@ -1,7 +1,6 @@
 package helmchart
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
