@@ -78,3 +78,16 @@ spec:
     # Single-replica operator for single-node. Bump for HA control plane.
     operator:
       replicas: 1
+
+    # No exec postStart hook on the agent. The sealed image denies every
+    # runc exec (c8s-runc), and the kubelet runs lifecycle hooks through the
+    # same ExecSync path, so a failed postStart kills the agent on every
+    # start and no node ever becomes Ready. The hook only deletes AWS
+    # VPC-CNI iptables rules, which never exist here. The chart renders it
+    # only while this is true, its default.
+    #
+    # The chart always renders the preStop /cni-uninstall.sh hook while
+    # cni.install is on. It fails only at shutdown, where it leaves the CNI
+    # config in place; it does not restart the agent.
+    cni:
+      iptablesRemoveAWSRules: false
