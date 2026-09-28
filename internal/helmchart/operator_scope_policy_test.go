@@ -39,7 +39,7 @@ func TestOperatorScopePolicyShape(t *testing.T) {
 	var all bool
 	ops := map[admissionregv1.OperationType]bool{}
 	for _, r := range vap.Spec.MatchConstraints.ResourceRules {
-all = all || (len(r.Resources) == 1 && r.Resources[0] == "*/*")
+		all = all || (len(r.Resources) == 1 && r.Resources[0] == "*/*")
 		for _, op := range r.Operations {
 			ops[op] = true
 		}
