@@ -34,19 +34,18 @@ func TestOperatorScopePolicyShape(t *testing.T) {
 	// Every group, resource and subresource, on every mutating operation:
 	// the validations, not the resource match, decide what a c8s:* principal
 	// may do.
-	var all, sub bool
+	// "*/*" is every resource and subresource; the API rejects it beside
+	// any other entry.
+	var all bool
 	ops := map[admissionregv1.OperationType]bool{}
 	for _, r := range vap.Spec.MatchConstraints.ResourceRules {
-		for _, res := range r.Resources {
-			all = all || res == "*"
-			sub = sub || res == "*/*"
-		}
+		all = all || (len(r.Resources) == 1 && r.Resources[0] == "*/*")
 		for _, op := range r.Operations {
 			ops[op] = true
 		}
 	}
-	if !all || !sub {
-		t.Error("matchConstraints must name both \"*\" and \"*/*\" so subresources are covered")
+	if !all {
+		t.Error(`matchConstraints must name exactly "*/*" so every resource and subresource is covered`)
 	}
 	for _, op := range []admissionregv1.OperationType{admissionregv1.Create, admissionregv1.Update, admissionregv1.Delete, admissionregv1.Connect} {
 		if !ops[op] {
