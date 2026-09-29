@@ -185,6 +185,16 @@ func TestChartRouterFromLaunch(t *testing.T) {
 	assertContainerMount(t, acme, "node-config", "/run/c8s-node")
 	assertContainerMount(t, acme, "tls-certs", "/tls")
 
+	// Discovery must report the mode the front door serves, never a
+	// build-time cds while the launch file selects acme.
+	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
+	if !ok {
+		t.Fatal("router certificate sidecar missing")
+	}
+	assertContainerHasArg(t, "c8s-cert", cert.Args, "--discovery-public-tls-mode-file=/run/c8s-node/router/front-door-mode")
+	assertContainerNoArgPrefix(t, "c8s-cert", cert.Args, "--discovery-public-tls-mode=")
+	assertContainerMount(t, cert, "node-config", "/run/c8s-node")
+
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
 	assertContainerMount(t, nginx, "node-config", "/run/c8s-node")
 	if port, ok := findContainerPort(nginx, "http"); !ok || port.ContainerPort != 8080 || port.HostPort != 80 {
@@ -230,7 +240,7 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
-		for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--front-door-mode-file", "--upstream-file", "$c8s_upstream"} {
+		for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file", "--upstream-file", "$c8s_upstream"} {
 			if strings.Contains(out, unwanted) {
 				t.Errorf("render without router.fromLaunch contains %q", unwanted)
 			}

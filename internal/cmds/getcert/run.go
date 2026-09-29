@@ -70,9 +70,12 @@ type config struct {
 	DiscoveryCDSCertURL    string
 	DiscoveryMeshCAURL     string
 	DiscoveryPublicTLSMode string
-	WorkloadClaims         bool
-	WorkloadClaimsTimeout  time.Duration
-	UnnamedRenewInterval   time.Duration
+	// DiscoveryPublicTLSModeFile, when set, replaces DiscoveryPublicTLSMode
+	// with the file's content (a node image's launch-selected mode).
+	DiscoveryPublicTLSModeFile string
+	WorkloadClaims             bool
+	WorkloadClaimsTimeout      time.Duration
+	UnnamedRenewInterval       time.Duration
 }
 
 // inventoryEndpoint returns the compiled admission-inventory endpoint. It is a
@@ -146,6 +149,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
+	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
 	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/ratls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
 	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew this often (plus jitter) while the installed leaf carries no matched-workload stamp, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
@@ -220,6 +224,9 @@ func run(cfg config) error {
 		return err
 	}
 	cfg.SAN = san
+	if err := resolveDiscoveryPublicTLSMode(&cfg); err != nil {
+		return err
+	}
 	slog.Info("starting get-cert", "san", cfg.SAN)
 
 	if err := validateConfig(cfg); err != nil {
@@ -685,6 +692,25 @@ func validateConfig(cfg config) error {
 	if cfg.ContinueOnInitialError && cfg.RenewInterval <= 0 {
 		return fmt.Errorf("%w: --continue-on-initial-error requires --renew-interval", errContinueOnInitialErrorRequiresRenewalLoop)
 	}
+	return nil
+}
+
+// resolveDiscoveryPublicTLSMode reads --discovery-public-tls-mode-file once, so
+// discovery reports the mode the front door actually serves. validateConfig
+// then checks the value like the flag's.
+func resolveDiscoveryPublicTLSMode(cfg *config) error {
+	if cfg.DiscoveryPublicTLSModeFile == "" {
+		return nil
+	}
+	data, err := os.ReadFile(cfg.DiscoveryPublicTLSModeFile)
+	if err != nil {
+		return fmt.Errorf("--discovery-public-tls-mode-file: %w", err)
+	}
+	mode := strings.TrimSpace(string(data))
+	if mode == "" {
+		return fmt.Errorf("%w: --discovery-public-tls-mode-file %s is empty", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSModeFile)
+	}
+	cfg.DiscoveryPublicTLSMode = mode
 	return nil
 }
 
