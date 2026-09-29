@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -185,8 +186,9 @@ derives the same entry as the manifest it was admitted from.`,
 			if len(dropped) > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "dropped %s: injected by c8s\n", strings.Join(dropped, ", "))
 			}
+			requireCrane := sync.OnceValue(crane.Require)
 			resolve := func(image string) ([]string, []string, error) {
-				if err := crane.Require(); err != nil {
+				if err := requireCrane(); err != nil {
 					return nil, nil, err
 				}
 				cfg, err := crane.Config(ctx(cmd), image)

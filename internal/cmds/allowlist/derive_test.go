@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -363,5 +364,13 @@ func TestDeriveContainersResolvesImageArgv(t *testing.T) {
 		if !equalArgv(got[0].Command.Argv, tc.command) || !equalArgv(got[0].Args.Argv, tc.args) {
 			t.Errorf("%s: command %v args %v, want %v %v", tc.name, got[0].Command.Argv, got[0].Args.Argv, tc.command, tc.args)
 		}
+	}
+}
+
+func TestDeriveContainersNamesUnresolvableImage(t *testing.T) {
+	resolve := func(string) ([]string, []string, error) { return nil, nil, errors.New("registry unreachable") }
+	_, err := deriveContainers([]templateContainer{{Name: "app", Image: testImage}}, resolve)
+	if err == nil || !strings.Contains(err.Error(), `container "app" sets no command`) || !strings.Contains(err.Error(), "registry unreachable") {
+		t.Fatalf("deriveContainers(unresolvable image) = %v, want the container and cause named", err)
 	}
 }
