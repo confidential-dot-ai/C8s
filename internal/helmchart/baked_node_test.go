@@ -200,6 +200,7 @@ func TestChartRouterFromLaunch(t *testing.T) {
 	if port, ok := findContainerPort(nginx, "http"); !ok || port.ContainerPort != 8080 || port.HostPort != 80 {
 		t.Error("launch-driven router must publish the ACME challenge port on host 80")
 	}
+	assertRouterFrontDoorPorts(t, out)
 
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	for _, arg := range []string{
