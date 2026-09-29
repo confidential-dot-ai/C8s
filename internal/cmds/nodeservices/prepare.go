@@ -105,7 +105,11 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 	}
 	for name, data := range outputs {
-		if err := fileutil.WriteAtomic(filepath.Join(publicPath, name), data, 0644); err != nil {
+		dst := filepath.Join(publicPath, name)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			return err
+		}
+		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
 			return err
 		}
 	}
@@ -123,17 +127,46 @@ type serverConfig struct {
 	operatorPubKey []byte
 	allowlistSeed  []byte
 	tlsSAN         string
+	router         launchconfig.Router
 }
 
 // serverOutputNames is the set both roles agree on: a server writes exactly
-// these, and an agent clears exactly these.
-var serverOutputNames = []string{"operator-pubkey", "allowlist-seed.json", "tls-san"}
+// these, and an agent clears exactly these. The router files are always
+// written, empty when unset, so the router pod never waits on a missing file.
+var serverOutputNames = []string{
+	"operator-pubkey", "allowlist-seed.json", "tls-san",
+	"router/upstream.conf", "router/upstream", "router/hostnames",
+	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
+}
+
+// line renders an optional single-line value: empty stays empty.
+func line(s string) []byte {
+	if s == "" {
+		return []byte{}
+	}
+	return []byte(s + "\n")
+}
 
 func (c serverConfig) files() map[string][]byte {
+	mode := "cds"
+	if len(c.router.Hostnames) > 0 {
+		mode = "acme"
+	}
+	hostnames := []byte{}
+	for _, name := range c.router.Hostnames {
+		hostnames = append(hostnames, name+"\n"...)
+	}
 	files := map[string][]byte{
 		"operator-pubkey":     c.operatorPubKey,
 		"allowlist-seed.json": c.allowlistSeed,
 		"tls-san":             []byte(c.tlsSAN + "\n"),
+		// nginx includes this in location /; an empty value returns 404.
+		"router/upstream.conf":      []byte(fmt.Sprintf("set $c8s_upstream \"%s\";\n", c.router.Upstream)),
+		"router/upstream":           line(c.router.Upstream),
+		"router/hostnames":          hostnames,
+		"router/acme-email":         line(c.router.ACMEEmail),
+		"router/acme-directory-url": line(c.router.ACMEDirectoryURL),
+		"router/front-door-mode":    []byte(mode + "\n"),
 	}
 	// A server output an agent does not clear would survive a demotion, so
 	// the two sets must not drift apart.
@@ -166,7 +199,23 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if err != nil {
 		return serverConfig{}, err
 	}
-	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN}, nil
+	var router launchconfig.Router
+	if d.Router != nil {
+		router = *d.Router
+	}
+	// LoadStaged validated the document; check again the two values that
+	// reach nginx syntax, so no path can publish an injectable file.
+	if router.Upstream != "" {
+		if err := launchconfig.ValidateRouterUpstream(router.Upstream); err != nil {
+			return serverConfig{}, fmt.Errorf("staged router upstream: %w", err)
+		}
+	}
+	for _, name := range router.Hostnames {
+		if err := launchconfig.ValidateHostname(name); err != nil {
+			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)
+		}
+	}
+	return serverConfig{operatorPubKey: pub, allowlistSeed: seed, tlsSAN: d.TLSSAN, router: router}, nil
 }
 
 // removeServerOutputs clears the server-only inputs from an agent's public

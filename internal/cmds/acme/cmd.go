@@ -40,6 +40,12 @@ type config struct {
 	certDir       string
 	reloadNginx   bool
 	logLevel      string
+
+	// Launch-driven inputs (node image): each file overrides its flag.
+	domainsFile      string
+	emailFile        string
+	directoryURLFile string
+	fallbackCertDir  string
 }
 
 // NewCmd returns the acme subcommand.
@@ -61,7 +67,13 @@ first issuance needs.
 The cert-dir also holds the ACME account key. On a Memory-medium emptyDir the
 state is lost with the pod and re-issued on recreation; point
 --acme-directory-url at a staging directory when testing to stay clear of the
-CA's duplicate-certificate limits.`,
+CA's duplicate-certificate limits.
+
+On a node image the inputs come from the signed launch file:
+--domains-file, --acme-email-file and --acme-directory-url-file. When the
+domains file is empty, no ACME account is used: the sidecar mirrors cert.pem
+and key.pem from --fallback-cert-dir (the mesh leaf) into --cert-dir, re-copies
+them when they change and reloads nginx.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -78,10 +90,50 @@ CA's duplicate-certificate limits.`,
 	f.StringVar(&cfg.certDir, "cert-dir", "/etc/c8s-acme-tls", "directory for cert.pem, key.pem, and the ACME account key")
 	f.BoolVar(&cfg.reloadNginx, "reload-nginx", true, "SIGHUP nginx after a certificate install")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
-
-	_ = cmd.MarkFlagRequired("domains")
+	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --fallback-cert-dir)")
+	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
+	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
+	f.StringVar(&cfg.fallbackCertDir, "fallback-cert-dir", "", "with an empty --domains-file, mirror cert.pem and key.pem from this directory into --cert-dir (re-copied on change, nginx reloaded) instead of using ACME")
 
 	return cmd
+}
+
+// loadFiles applies the file-based inputs. It returns true when the domain
+// file is empty and the sidecar should mirror --fallback-cert-dir instead.
+func loadFiles(cfg *config) (bool, error) {
+	if cfg.domainsFile == "" {
+		return false, nil
+	}
+	if len(cfg.domains) > 0 {
+		return false, fmt.Errorf("--domains and --domains-file are mutually exclusive")
+	}
+	data, err := os.ReadFile(cfg.domainsFile)
+	if err != nil {
+		return false, fmt.Errorf("--domains-file: %w", err)
+	}
+	cfg.domains = strings.Fields(string(data))
+	for _, f := range []struct {
+		path   string
+		target *string
+	}{{cfg.emailFile, &cfg.email}, {cfg.directoryURLFile, &cfg.directoryURL}} {
+		if f.path == "" {
+			continue
+		}
+		data, err := os.ReadFile(f.path)
+		if err != nil {
+			return false, err
+		}
+		if v := strings.TrimSpace(string(data)); v != "" {
+			*f.target = v
+		}
+	}
+	if len(cfg.domains) > 0 {
+		return false, nil
+	}
+	if cfg.fallbackCertDir == "" {
+		return false, fmt.Errorf("--domains-file %s is empty and no --fallback-cert-dir is set", cfg.domainsFile)
+	}
+	return true, nil
 }
 
 func validateConfig(cfg *config) error {
@@ -142,8 +194,14 @@ func run(cfg config) error {
 	}
 	slog.SetDefault(logger)
 
-	if err := validateConfig(&cfg); err != nil {
+	mirror, err := loadFiles(&cfg)
+	if err != nil {
 		return err
+	}
+	if !mirror {
+		if err := validateConfig(&cfg); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(cfg.certDir, 0o700); err != nil {
 		return err
@@ -152,14 +210,18 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, func() {
+	reload := func() {
 		if !cfg.reloadNginx {
 			return
 		}
 		if err := cmdsutil.ReloadNginx(procRoot, logger); err != nil {
 			logger.Error("nginx reload failed", "error", err)
 		}
-	})
+	}
+	if mirror {
+		return runMirror(ctx, cfg, logger, reload)
+	}
+	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, reload)
 	mgr.httpPort = cfg.httpPort
 
 	challengeAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.challengePort))

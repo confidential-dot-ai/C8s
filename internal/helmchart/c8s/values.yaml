@@ -881,6 +881,14 @@ volumed:
 router:
   enabled: true
 
+  # -- Take the catch-all upstream and public hostnames from the node's
+  # signed launch file (/run/c8s-node/router/) at runtime instead of from
+  # upstream.address, san and publicTLS. Set by `c8s node-image render`;
+  # requires node.baked=true. nginx always serves the acme sidecar's cert dir:
+  # an ACME leaf when the launch file names hostnames, else a copy of the
+  # mesh leaf.
+  fromLaunch: false
+
   ## Rollout strategy. Empty resolves by hostPort.enabled: Recreate when the
   ## node port is bound (two concurrent pods on a node would collide on the
   ## host port, and on a single-node cluster a surge pod could never schedule,
