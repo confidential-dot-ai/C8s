@@ -8,6 +8,8 @@
 {{- $serverNames = "_" -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
+{{- $fromLaunch := eq (include "router.fromLaunch" .) "true" -}}
+{{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- include "router.validateProtocol" (required "protocol must be http or https" .Values.router.upstream.protocol) -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
 {{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
@@ -119,7 +121,7 @@ data:
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
 {{- end }}
 
-        {{- if $upstreamMeshWrapped }}
+        {{- if or $upstreamMeshWrapped $fromLaunch }}
         # A mesh-wrapped catch-all is dialed via a variable (see location /), so
         # nginx re-resolves it here at request time per record TTL: a static
         # upstream block would pin the pod IPs the adopted workload's headless
@@ -302,7 +304,30 @@ data:
             }
 
             {{- end }}
-            {{- if $upstreamAddress }}
+            {{- if $fromLaunch }}
+            # The catch-all upstream comes from the signed launch file:
+            # upstream.conf sets $c8s_upstream to a mesh-wrapped
+            # c8s-<id>.<ns>.svc.cluster.local:<port>, or to "" when the launch
+            # file names none. Resolved per request like any mesh-wrapped
+            # upstream (resolver above).
+            location / {
+                include {{ include "router.launchDir" . }}/upstream.conf;
+                if ($c8s_upstream = "") {
+                    return 404;
+                }
+                {{- if default false .Values.router.cors.enabled }}
+                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
+                {{- end }}
+                proxy_pass http://$c8s_upstream;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                # Stream responses through; see the static catch-all below.
+                proxy_buffering off;
+                proxy_http_version 1.1;
+            }
+            {{- else if $upstreamAddress }}
             location / {
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
@@ -351,7 +376,7 @@ data:
                 add_header Content-Type text/plain;
             }
         }
-        {{- if eq $publicTLSMode "acme" }}
+        {{- if $acmeSidecar }}
 
         # Public :80 (hostPort/Service -> acmeHTTPPort): HTTP-01 challenges
         # reach the acme sidecar on loopback; everything else upgrades.

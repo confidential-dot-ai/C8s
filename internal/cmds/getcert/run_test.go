@@ -137,6 +137,43 @@ func TestValidateConfigRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 	}
 }
 
+func TestResolveDiscoveryPublicTLSModeFile(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, data string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	cfg := config{DiscoveryPublicTLSMode: "cds", DiscoveryPublicTLSModeFile: write("mode", "acme\n")}
+	if err := resolveDiscoveryPublicTLSMode(&cfg); err != nil || cfg.DiscoveryPublicTLSMode != "acme" {
+		t.Fatalf("mode = %q, %v; want the file's acme over the flag's cds", cfg.DiscoveryPublicTLSMode, err)
+	}
+	cfg = config{DiscoveryPublicTLSMode: "cds", DiscoveryPublicTLSModeFile: write("empty", "")}
+	if err := resolveDiscoveryPublicTLSMode(&cfg); !errors.Is(err, errInvalidDiscoveryPublicTLSMode) {
+		t.Fatalf("empty file: %v", err)
+	}
+	cfg = config{DiscoveryPublicTLSModeFile: filepath.Join(dir, "missing")}
+	if err := resolveDiscoveryPublicTLSMode(&cfg); err == nil {
+		t.Fatal("missing file was accepted")
+	}
+	// The file's value still passes validateConfig's mode check.
+	cfg = config{
+		CDSURL:                     "http://cds:8443",
+		AttestationApiURL:          "http://attestation-api:8400",
+		SAN:                        "c8s.local",
+		DiscoveryOutPath:           "/tmp/discovery.json",
+		DiscoveryPublicTLSModeFile: write("bad", "other\n"),
+	}
+	if err := resolveDiscoveryPublicTLSMode(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateConfig(cfg); !errors.Is(err, errInvalidDiscoveryPublicTLSMode) {
+		t.Fatalf("invalid file mode: %v", err)
+	}
+}
+
 func TestValidateConfigRejectsInvalidReloadWatchInterval(t *testing.T) {
 	err := validateConfig(config{
 		CDSURL:            "http://cds:8443",
