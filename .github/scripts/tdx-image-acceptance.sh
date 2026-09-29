@@ -29,7 +29,8 @@ validate() {
 identity() {
   local vm=$1 ns=$2 run=$3 repo=$4
   [[ $run =~ ^[0-9]+$ && $vm =~ ^c8s-tdx-${run}-[0-9]+$ ]] || fail 'invalid run-owned VM name'
-  [[ $ns == confai-images && $repo == confidential-dot-ai/c8s ]] || fail 'unexpected acceptance resource scope'
+  # GitHub repository names are case-insensitive, and this one is now C8s.
+  [[ $ns == confai-images && ${repo,,} == confidential-dot-ai/c8s ]] || fail 'unexpected acceptance resource scope'
 }
 
 owned_root() {
