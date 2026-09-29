@@ -384,7 +384,9 @@ volumed resolves the mount point with `RESOLVE_NO_XDEV`.
 The node-CVM DaemonSet is **off by default**: it runs privileged, with `hostPID`
 and a writable bind of the kubelet directory. Turn it on with
 `c8s install --volumes` where volumes are served, or `volumed.enabled=true` for a
-chart consumer. A pod requesting a volume without the node inventory socket
+chart consumer. A measured node image instead runs volumed as the host service
+`volumed.service`, because it fixes the kubelet root, the cgroup layout and the
+inventory socket directory; the chart refuses the DaemonSet on a baked node. A pod requesting a volume without the node inventory socket
 configured is refused at admission rather than left waiting on a mount that
 can never land.
 
