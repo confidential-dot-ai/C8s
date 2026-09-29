@@ -101,10 +101,13 @@ case "$PLATFORM" in
     *)   LABEL_PLATFORM=$PLATFORM ;;
 esac
 mkdir -p "$STAGE_DIR/etc/systemd/system/cred-release.service.d" \
+         "$STAGE_DIR/etc/systemd/system/c8s-join-release.service.d" \
          "$STAGE_DIR/etc/systemd/system/rke2-role.service.d" \
          "$STAGE_DIR/etc/rancher/rke2/config.yaml.d"
 printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
     > "$STAGE_DIR/etc/systemd/system/cred-release.service.d/10-platform.conf"
+printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
+    > "$STAGE_DIR/etc/systemd/system/c8s-join-release.service.d/10-platform.conf"
 # Authenticated role staging verifies the boot evidence for this platform
 # before publishing any launch settings or role marker.
 printf '[Service]\nEnvironment=CRED_PLATFORM=%s\n' "$PLATFORM" \
@@ -237,8 +240,15 @@ render_nri_base() {
 # This command runs only in the mkosi tools tree; no Helm binary, chart archive,
 # install Job or HelmChartConfig is needed by the guest boot path.
 render_node_integration() {
-    local out="$TMP/node-integration" helm_dir="$TMP/helm"
+    local out="$TMP/node-integration" helm_dir="$TMP/helm" command
     local helm_archive="$CACHE_DIR/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+    for command in "node-services join" join-release; do
+        # shellcheck disable=SC2086 # the subcommand path is two words
+        if ! "$C8S_TARGET" $command --help >/dev/null; then
+            echo "c8s sync: FATAL ${C8S_REF} must provide 'c8s $command' for attested enrollment" >&2
+            exit 1
+        fi
+    done
     fetch "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
         "$helm_archive" "$HELM_LINUX_AMD64_SHA256"
     mkdir -p "$helm_dir"

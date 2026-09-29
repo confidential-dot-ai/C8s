@@ -4,9 +4,11 @@ package nodeservices
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/join"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
@@ -54,4 +56,25 @@ func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
 		return err
 	}
 	return fileutil.WriteAtomic(dst, []byte(address+"\n"), 0600)
+}
+
+// JoinConfig builds the agent's enrollment client from a document that already
+// passed LoadStaged. The designated server address is its only role-dependent
+// value; the release side needs nothing from the document, so its unit states
+// every flag itself.
+func JoinConfig(d *launchconfig.Document) (join.JoinConfig, error) {
+	if err := validateRole(d); err != nil {
+		return join.JoinConfig{}, err
+	}
+	if d.Role != launchconfig.Agent {
+		return join.JoinConfig{}, fmt.Errorf("join is an agent-only service")
+	}
+	return join.JoinConfig{
+		ServerAddr:         net.JoinHostPort(d.Server.Address, join.Port),
+		AttestationAPIURL:  launchconfig.DefaultAttestationAPIURL,
+		Platform:           d.Image.Platform,
+		MeasurementsConfig: launchDir + "cds.json",
+		TokenOut:           launchconfig.AgentTokenPath,
+		Timeout:            join.DefaultTimeout,
+	}, nil
 }

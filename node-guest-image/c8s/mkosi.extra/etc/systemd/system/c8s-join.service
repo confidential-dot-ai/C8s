@@ -1,0 +1,28 @@
+[Unit]
+Description=Enroll the measured agent with its authorized server
+Requires=rke2-role.service attestation-api.service
+After=rke2-role.service attestation-api.service
+Before=rke2-agent.service
+ConditionPathExists=/run/confos/role-agent
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Retry via systemd's own restart semantics rather than a shell loop: a real
+# failed state stays observable (systemctl is-failed, OnFailure=), and each
+# attempt is a fresh start job rather than a child this unit must reap.
+# StartLimitIntervalSec=0 keeps the restarts unbounded, so dependent RKE2
+# still starts whenever the server recovers.
+ExecStart=/usr/local/bin/c8s node-services join
+Restart=on-failure
+RestartSec=5
+TimeoutStartSec=300
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

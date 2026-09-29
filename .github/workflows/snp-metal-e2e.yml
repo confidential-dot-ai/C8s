@@ -159,7 +159,7 @@ jobs:
 
       - name: require compatible SNP image and launch metadata
         # A NEW producer contract: the June console image is incompatible.
-        # Seed snp-rke2-image-refs with a c8s-launch/v1 image, its published
+        # Seed snp-rke2-image-refs with a c8s-launch/v2 image, its published
         # manifest, matching IGVM/SMP and a host-data-capable hook image.
         # OCI refs are immutable. No runtime digest learned from an unverified
         # console and no fallback to the old rke2-image-refs ConfigMap.
@@ -168,7 +168,7 @@ jobs:
         run: |
           set -euo pipefail
           kubectl -n "$NS" get cm "$REFS_CM" -o json > /tmp/snp-refs.json
-          jq -e '.data.launchConfigVersion == "c8s-launch/v1" and
+          jq -e '.data.launchConfigVersion == "c8s-launch/v2" and
             (.data.image | test("^ghcr.io/[a-zA-Z0-9_./-]+@sha256:[0-9a-f]{64}$")) and
             (.data.manifestRef | test("^ghcr.io/[a-zA-Z0-9_./-]+@sha256:[0-9a-f]{64}$")) and
             (.data.igvmHookImage | test("^ghcr.io/[a-zA-Z0-9_./-]+@sha256:[0-9a-f]{64}$")) and

@@ -19,10 +19,12 @@ import (
 const (
 	serverMarker     = "/run/confos/role-server"
 	agentMarker      = "/run/confos/role-agent"
-	serverTokenPath  = "/run/confos/rke2-server-token"
-	agentTokenPath   = "/run/confos/rke2-agent-token"
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
 )
+
+// AgentTokenPath is the RAM-backed RKE2 agent credential: the server mints it
+// before RKE2 starts, and an agent's attested enrollment stages it there.
+const AgentTokenPath = "/run/confos/rke2-agent-token"
 
 // Stage authenticates the launch document and writes only fixed boot paths.
 // Both role markers are cleared before verification, and the selected marker
@@ -51,9 +53,14 @@ func clearOutputs(cfg Config) error {
 	// Clear authorization verdicts first, even when removing another stale
 	// output fails. Collect errors so a blocked first marker never prevents
 	// attempting to remove the other.
+	//
+	// The agent token is never a staged input: the server generates it in
+	// RAM on first staging and it belongs to the running cluster, so it is
+	// kept across restaging, including a failed verification. The role gates
+	// still close, so nothing can use it until the document verifies again.
 	var errs []error
-	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
+	paths := []string{serverMarker, agentMarker, rke2FragmentPath}
+	for _, name := range []string{"peers.json", "cds.json", "agents.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
@@ -107,7 +114,6 @@ func stageVerified(cfg Config, v *Verified) error {
 		{Dir + "/cds.json", cds},
 		{Dir + "/operator-pubkey", v.operatorPub},
 		{Dir + "/config.json", append(encoded, '\n')},
-		{agentTokenPath, []byte(doc.RKE2.AgentToken)},
 		{rke2FragmentPath, fragment},
 	}
 	if doc.Workloads != "" {
@@ -115,14 +121,26 @@ func stageVerified(cfg Config, v *Verified) error {
 	}
 	marker := agentMarker
 	if doc.Role == Server {
-		outputs = append(outputs,
-			outputFile{serverTokenPath, []byte(doc.RKE2.ServerToken)},
-		)
+		// RKE2 generates its privileged server token itself; the separate
+		// agent token is minted here so it can never alias the server one.
+		if err := initializeAgentToken(cfg.path(AgentTokenPath)); err != nil {
+			return err
+		}
+		// Agents enroll over attested TLS against this policy: every image and
+		// launch-key tuple the signed document authorizes, minus the server's.
+		if len(v.pins.Images) > 1 {
+			agents, err := refvalues.Format(refvalues.ReferenceValues{Family: v.pins.Family, Images: v.pins.Images[1:]})
+			if err != nil {
+				return fmt.Errorf("format agent enrollment policy: %w", err)
+			}
+			outputs = append(outputs, outputFile{Dir + "/agents.json", agents})
+		}
 		marker = serverMarker
 	}
 	for _, out := range outputs {
 		path := cfg.path(out.path)
-		// /run/confos/launch contains a copy of the signed join credentials.
+		// /run/confos/launch holds the authenticated boot policy, never a
+		// credential from launch media.
 		// Existing parent directories retain their established permissions.
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			return fmt.Errorf("create output parent: %w", err)
@@ -136,7 +154,7 @@ func stageVerified(cfg Config, v *Verified) error {
 }
 
 type roleFragment struct {
-	TokenFile      string `yaml:"token-file"`
+	TokenFile      string `yaml:"token-file,omitempty"`
 	AgentTokenFile string `yaml:"agent-token-file,omitempty"`
 	Server         string `yaml:"server,omitempty"`
 	NodeName       string `yaml:"node-name"`
@@ -145,11 +163,12 @@ type roleFragment struct {
 }
 
 func rke2Fragment(doc *Document) roleFragment {
-	out := roleFragment{TokenFile: agentTokenPath, NodeName: doc.Node.Name, NodeIP: doc.Node.IP, NodeExternalIP: doc.Node.ExternalIP}
+	out := roleFragment{NodeName: doc.Node.Name, NodeIP: doc.Node.IP, NodeExternalIP: doc.Node.ExternalIP}
 	if doc.Role == Server {
-		out.TokenFile = serverTokenPath
-		out.AgentTokenFile = agentTokenPath
+		// No token-file: RKE2 generates its privileged token inside the guest.
+		out.AgentTokenFile = AgentTokenPath
 	} else {
+		out.TokenFile = AgentTokenPath
 		out.Server = "https://" + doc.Server.Address + ":9345"
 	}
 	return out

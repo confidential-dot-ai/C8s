@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/join"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -292,5 +293,20 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 		if len(base.Workloads) != 1 {
 			t.Fatalf("duplicate bootstrap entry: %v", base.Workloads)
 		}
+	}
+}
+
+func TestJoinConfigIsAgentOnlyAndPinsTheDesignatedServer(t *testing.T) {
+	if _, err := JoinConfig(document(t, launchconfig.Server)); err == nil {
+		t.Fatal("server can run agent enrollment")
+	}
+	cfg, err := JoinConfig(document(t, launchconfig.Agent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := join.JoinConfig{ServerAddr: "192.0.2.10:8444", AttestationAPIURL: launchconfig.DefaultAttestationAPIURL,
+		Platform: "tdx", MeasurementsConfig: launchDir + "cds.json", TokenOut: "/run/confos/rke2-agent-token", Timeout: join.DefaultTimeout}
+	if cfg != want {
+		t.Fatalf("enrollment config = %+v, want %+v", cfg, want)
 	}
 }

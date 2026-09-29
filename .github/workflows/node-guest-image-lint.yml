@@ -13,6 +13,8 @@ on:
     paths:
       - "node-guest-image/**"
       - "internal/cmds/launchconfig/**"
+      - "internal/cmds/join/**"
+      - "cmd/c8s/join*.go"
       - "internal/cmds/nodeservices/**"
       - "cmd/c8s/node_image*.go"
       - "cmd/c8s/node_services*.go"

@@ -15,7 +15,6 @@ import (
 	"io"
 	"net/netip"
 	"os"
-	"regexp"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -31,7 +30,7 @@ import (
 )
 
 const (
-	SchemaVersion            = "c8s-launch/v1"
+	SchemaVersion            = "c8s-launch/v2"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
 	Dir               = "/run/confos/launch"
@@ -50,22 +49,22 @@ const (
 	Agent  Role = "agent"
 )
 
-// Document is the signed launch.yaml wire contract. All secrets are boot
-// inputs; agent documents must never carry the control-plane server token.
+// Document is the public signed launch.yaml wire contract. Join credentials
+// are generated inside the guest and never accepted from launch media: the
+// server mints its agent token in RAM and RKE2 generates its own server
+// token, so no field here carries a secret.
 type Document struct {
 	SchemaVersion           string       `yaml:"schemaVersion" json:"schema_version"`
 	ClusterID               string       `yaml:"clusterID" json:"cluster_id"`
 	Role                    Role         `yaml:"role" json:"role"`
 	Image                   Image        `yaml:"image" json:"image"`
 	Node                    Node         `yaml:"node" json:"node"`
-	RKE2                    RKE2         `yaml:"rke2" json:"rke2"`
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
-	Workloads          string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
-	serverTokenPresent bool
+	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
 }
 
 // Image pins this boot's complete software identity. Platform names which
@@ -120,11 +119,6 @@ type Node struct {
 	Name       string `yaml:"name" json:"name"`
 	IP         string `yaml:"ip,omitempty" json:"ip,omitempty"`
 	ExternalIP string `yaml:"externalIP,omitempty" json:"external_ip,omitempty"`
-}
-
-type RKE2 struct {
-	ServerToken string `yaml:"serverToken,omitempty" json:"server_token,omitempty"`
-	AgentToken  string `yaml:"agentToken" json:"agent_token"`
 }
 
 type ServerConfig struct {
@@ -234,8 +228,6 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	}, nil
 }
 
-var tokenRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
-
 func (d *Document) validate() error {
 	if d.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schemaVersion must be %s", SchemaVersion)
@@ -276,19 +268,6 @@ func (d *Document) validate() error {
 		if err := ValidateIPv4(d.Node.ExternalIP, true); err != nil {
 			return fmt.Errorf("node.externalIP: %w", err)
 		}
-	}
-	if !tokenRE.MatchString(d.RKE2.AgentToken) {
-		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
-	}
-	if d.Role == Server {
-		if !tokenRE.MatchString(d.RKE2.ServerToken) {
-			return fmt.Errorf("server requires a 64-character lowercase hex rke2.serverToken")
-		}
-		if d.RKE2.ServerToken == d.RKE2.AgentToken {
-			return fmt.Errorf("server and agent tokens must differ")
-		}
-	} else if d.RKE2.ServerToken != "" || d.serverTokenPresent {
-		return fmt.Errorf("agent must not carry rke2.serverToken")
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
 	if err != nil {

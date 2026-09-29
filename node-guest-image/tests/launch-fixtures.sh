@@ -63,7 +63,16 @@ case "$1 $2" in
     [[ $(cat "$signature") == valid-test-signature ]]
     rm -f /run/confos/role-server /run/confos/role-agent
     case "$(cat "$config")" in
-        server) : > /run/confos/role-server ;;
+        server)
+            # Real staging writes the agent enrollment policy only when the
+            # signed document authorizes agents; the fixture mirrors that so
+            # the release unit's condition is exercised both ways.
+            mkdir -p /run/confos/launch
+            if [[ ! -e "$C8S_ROLE_FIXTURE/no-agents" ]]; then
+                printf '%s\n' '{"test":"authorized-agents"}' > /run/confos/launch/agents.json
+            fi
+            : > /run/confos/role-server
+            ;;
         agent) : > /run/confos/role-agent ;;
         *) exit 31 ;;
     esac

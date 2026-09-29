@@ -1,0 +1,30 @@
+[Unit]
+Description=Release agent credentials to authorized measured agents
+Requires=rke2-role.service attestation-api.service
+After=rke2-role.service attestation-api.service rke2-server.service
+ConditionPathExists=/run/confos/role-server
+ConditionPathExists=/run/confos/launch/agents.json
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# Nothing here comes from the launch document: staging gates the unit on the
+# authorized agent policy, and ${CRED_PLATFORM} comes from the drop-in the c8s
+# sync hook renders. With it unset, --platform= is empty and fails closed.
+# RKE2 writes the CA-pinned agent token once the server has initialised.
+ExecStart=/usr/local/bin/c8s join-release \
+    --listen :8444 \
+    --attestation-api-url http://127.0.0.1:8400 \
+    --platform=${CRED_PLATFORM} \
+    --measurements-config /run/confos/launch/agents.json \
+    --token-path /var/lib/rancher/rke2/server/agent-token
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadWritePaths=/run
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

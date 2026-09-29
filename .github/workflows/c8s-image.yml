@@ -681,7 +681,7 @@ jobs:
             --arg c8s_ref "$short" --arg image "$IMAGE@$cdi_digest" \
             --arg artifact "$IMAGE@$artifact_digest" --arg manifest "$manifest_sha" \
             '{schema: 1, source_sha: $source, run_id: $run, build_attempt: $attempt, c8s_ref: $c8s_ref,
-              variant: "rke2-tdx", launch_config_version: "c8s-launch/v1", image: $image, artifact: $artifact,
+              variant: "rke2-tdx", launch_config_version: "c8s-launch/v2", image: $image, artifact: $artifact,
               manifest_sha256: $manifest}' > "$evidence/acceptance.json"
           bash c8s/.github/scripts/tdx-image-acceptance.sh validate \
             "$evidence" "$HEAD_SHA" "$GITHUB_RUN_ID" >/dev/null

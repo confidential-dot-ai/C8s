@@ -14,7 +14,7 @@ validate() {
   [[ ${GITHUB_RUN_ATTEMPT:-} =~ ^[1-9][0-9]*$ ]] || fail 'invalid expected workflow attempt'
   jq -e --arg source "$source_sha" --arg run "$run_id" --arg attempt "$GITHUB_RUN_ATTEMPT" '
     .schema == 1 and .source_sha == $source and .run_id == $run and
-    .build_attempt == $attempt and .launch_config_version == "c8s-launch/v1" and
+    .build_attempt == $attempt and .launch_config_version == "c8s-launch/v2" and
     .c8s_ref == $source[0:7] and .variant == "rke2-tdx" and
     (.image | type == "string" and test("^ghcr[.]io/confidential-dot-ai/node-guest-base@sha256:[0-9a-f]{64}$")) and
     (.artifact | type == "string" and test("^ghcr[.]io/confidential-dot-ai/node-guest-base@sha256:[0-9a-f]{64}$")) and

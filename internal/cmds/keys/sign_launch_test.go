@@ -63,7 +63,7 @@ func runSign(keyPath, launchPath string, args ...string) error {
 func TestSignLaunchWritesVerifiableSignature(t *testing.T) {
 	keyPath, key := writeOperatorKey(t)
 	dir := t.TempDir()
-	content := []byte("schemaVersion: c8s-launch/v1\nrole: server\n")
+	content := []byte("schemaVersion: c8s-launch/v2\nrole: server\n")
 	launchPath := writeLaunch(t, dir, content)
 
 	if err := runSign(keyPath, launchPath); err != nil {
@@ -92,7 +92,7 @@ func TestSignLaunchWritesVerifiableSignature(t *testing.T) {
 func TestSignLaunchRefusesToOverwrite(t *testing.T) {
 	keyPath, _ := writeOperatorKey(t)
 	dir := t.TempDir()
-	launchPath := writeLaunch(t, dir, []byte("schemaVersion: c8s-launch/v1\nrole: agent\n"))
+	launchPath := writeLaunch(t, dir, []byte("schemaVersion: c8s-launch/v2\nrole: agent\n"))
 	if err := os.WriteFile(launchPath+".sig", []byte("existing"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +111,7 @@ func TestSignLaunchRefusesToOverwrite(t *testing.T) {
 
 func TestSignLaunchRequiresKey(t *testing.T) {
 	dir := t.TempDir()
-	launchPath := writeLaunch(t, dir, []byte("schemaVersion: c8s-launch/v1\nrole: agent\n"))
+	launchPath := writeLaunch(t, dir, []byte("schemaVersion: c8s-launch/v2\nrole: agent\n"))
 	if err := runSign("", launchPath); err == nil {
 		t.Fatal("want an error when --key is missing")
 	}
@@ -120,7 +120,7 @@ func TestSignLaunchRequiresKey(t *testing.T) {
 func TestSignLaunchDetectsTamperedContent(t *testing.T) {
 	keyPath, key := writeOperatorKey(t)
 	dir := t.TempDir()
-	launchPath := writeLaunch(t, dir, []byte("schemaVersion: c8s-launch/v1\nrole: agent\n"))
+	launchPath := writeLaunch(t, dir, []byte("schemaVersion: c8s-launch/v2\nrole: agent\n"))
 	if err := runSign(keyPath, launchPath); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestSignLaunchDetectsTamperedContent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tamperedDigest := sha256.Sum256([]byte("schemaVersion: c8s-launch/v1\nrole: server\n"))
+	tamperedDigest := sha256.Sum256([]byte("schemaVersion: c8s-launch/v2\nrole: server\n"))
 	if ecdsa.VerifyASN1(&key.PublicKey, tamperedDigest[:], der) {
 		t.Fatal("signature verified against tampered content")
 	}

@@ -45,7 +45,6 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 		SchemaVersion: SchemaVersion, ClusterID: "cluster-one", Role: role,
 		Image:                   Image{Platform: platform, Measurement: strings.Repeat("11", 48)},
 		Node:                    Node{Name: "node-one", IP: "10.0.0.2", ExternalIP: "192.0.2.4"},
-		RKE2:                    RKE2{AgentToken: strings.Repeat("a", 64)},
 		Server:                  ServerConfig{Address: "10.0.0.1", OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 	}
@@ -53,7 +52,6 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 		doc.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
 	}
 	if role == Server {
-		doc.RKE2.ServerToken = strings.Repeat("b", 64)
 		return doc, serverKey, serverPub
 	}
 	return doc, agentKey, agentPub
@@ -87,6 +85,11 @@ func testLoader(t *testing.T, doc Document, pub string) {
 
 func testConfig(t *testing.T, doc Document, key *ecdsa.PrivateKey) Config {
 	t.Helper()
+	// The agent token is minted into the rebased /run/confos, which is a
+	// plain temp dir here; production checks the real mount is RAM-backed.
+	oldOpen := openTokenDir
+	t.Cleanup(func() { openTokenDir = oldOpen })
+	openTokenDir = func(_, dir string) (*os.Root, error) { return os.OpenRoot(dir) }
 	cfg := Config{Platform: doc.Image.Platform, RootDir: t.TempDir()}
 	cfg.DocumentPath = filepath.Join(t.TempDir(), "launch.yaml")
 	cfg.SignaturePath = cfg.DocumentPath + ".sig"
@@ -162,23 +165,40 @@ func TestStageBothRolesAndPlatforms(t *testing.T) {
 				if strings.Contains(string(fragment), "node-ip:") {
 					t.Fatal("RKE2 must autodetect 0.0.0.0")
 				}
+				private := []string{DefaultStagedPath, Dir + "/workloads.json", rke2FragmentPath}
+				var roleConfig roleFragment
+				if err := yaml.Unmarshal(fragment, &roleConfig); err != nil {
+					t.Fatal(err)
+				}
 				if role == Server {
 					requirePresent(t, cfg.path(serverMarker))
 					requireAbsent(t, cfg.path(agentMarker))
-					requirePresent(t, cfg.path(serverTokenPath))
-					if !bytes.Contains(fragment, []byte("agent-token-file: "+agentTokenPath)) {
-						t.Fatal("server must configure the separate agent token")
+					// No credential comes from launch media: RKE2 mints its own
+					// server token and the agent token is generated here.
+					requirePresent(t, cfg.path(AgentTokenPath))
+					private = append(private, AgentTokenPath, Dir+"/agents.json")
+					if roleConfig.TokenFile != "" || roleConfig.AgentTokenFile != AgentTokenPath {
+						t.Fatal("server must let RKE2 generate its token and configure the separate agent token")
 					}
-
+					agents, err := refvalues.Load(cfg.path(Dir + "/agents.json"))
+					if err != nil {
+						t.Fatal(err)
+					}
+					if len(agents.Images) != 1 || !bytes.Equal(agents.Images[0].Anchor, []byte(doc.AgentOperatorPublicKeys[0])) {
+						t.Fatal("enrollment policy must contain exactly the authorized agents")
+					}
 				} else {
 					requirePresent(t, cfg.path(agentMarker))
 					requireAbsent(t, cfg.path(serverMarker))
-					requireAbsent(t, cfg.path(serverTokenPath))
-					if !bytes.Contains(fragment, []byte("server: https://10.0.0.1:9345")) {
-						t.Fatal("agent does not join signed server")
+					// Agents receive their token through attested enrollment,
+					// never from staging.
+					requireAbsent(t, cfg.path(AgentTokenPath))
+					requireAbsent(t, cfg.path(Dir+"/agents.json"))
+					if roleConfig.TokenFile != AgentTokenPath || !bytes.Contains(fragment, []byte("server: https://10.0.0.1:9345")) {
+						t.Fatal("agent does not join signed server with the enrolled token")
 					}
 				}
-				for _, path := range []string{DefaultStagedPath, agentTokenPath, Dir + "/workloads.json", rke2FragmentPath} {
+				for _, path := range private {
 					info, err := os.Stat(cfg.path(path))
 					if err != nil {
 						t.Fatal(err)
@@ -204,15 +224,13 @@ func TestVerifyRejectsUnauthorizedRoleOrImage(t *testing.T) {
 		{"rootfs RTMR", Server, func(d *Document) { d.Image.RTMRs[2] = strings.Repeat("44", 48) }, "RTMR[2]"},
 		{"missing RTMR", Server, func(d *Document) { delete(d.Image.RTMRs, 2) }, "exactly RTMR"},
 		{"platform", Server, func(d *Document) { d.Image.Platform = "snp"; d.Image.RTMRs = nil }, "platform"},
-		{"agent as server", Agent, func(d *Document) { d.Role = Server; d.RKE2.ServerToken = strings.Repeat("b", 64) }, "server launch key"},
-		{"server as agent", Server, func(d *Document) { d.Role = Agent; d.RKE2.ServerToken = "" }, "different launch key"},
-		{"agent carries server token", Agent, func(d *Document) { d.RKE2.ServerToken = strings.Repeat("b", 64) }, "must not carry"},
+		{"agent as server", Agent, func(d *Document) { d.Role = Server }, "server launch key"},
+		{"server as agent", Server, func(d *Document) { d.Role = Agent }, "different launch key"},
 		{"shared role keys", Agent, func(d *Document) {
 			d.AgentOperatorPublicKeys = []string{strings.TrimSpace(d.Server.OperatorPublicKey)}
 		}, "distinct"},
 		{"unlisted agent", Agent, func(d *Document) { _, pub := testKey(t); d.AgentOperatorPublicKeys = []string{pub} }, "not in"},
 		{"missing role", Server, func(d *Document) { d.Role = "" }, "role"},
-		{"token equality", Server, func(d *Document) { d.RKE2.ServerToken = d.RKE2.AgentToken }, "must differ"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -248,13 +266,16 @@ func TestParseRejectsAmbiguousOrUnexpectedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	cases := map[string][]byte{
-		"duplicate":          append(append([]byte{}, raw...), []byte("role: server\n")...),
-		"multiple":           append(append([]byte{}, raw...), []byte("---\n{}\n")...),
-		"unknown":            append(append([]byte{}, raw...), []byte("helmValues: {}\n")...),
-		"nested unknown":     bytes.Replace(raw, []byte("    agentToken:"), []byte("    arbitraryFlag: hello\n    agentToken:"), 1),
-		"alias":              bytes.Replace(raw, []byte("role: agent"), []byte("role: &role agent"), 1),
-		"empty server token": bytes.Replace(raw, []byte("    agentToken:"), []byte("    serverToken: ''\n    agentToken:"), 1),
-		"null server token":  bytes.Replace(raw, []byte("    agentToken:"), []byte("    serverToken: null\n    agentToken:"), 1),
+		"duplicate":      append(append([]byte{}, raw...), []byte("role: server\n")...),
+		"multiple":       append(append([]byte{}, raw...), []byte("---\n{}\n")...),
+		"unknown":        append(append([]byte{}, raw...), []byte("helmValues: {}\n")...),
+		"nested unknown": bytes.Replace(raw, []byte("    name:"), []byte("    arbitraryFlag: hello\n    name:"), 1),
+		"alias":          bytes.Replace(raw, []byte("role: agent"), []byte("role: &role agent"), 1),
+		// v2 documents are public: any rke2 block is a credential leak, even an empty one.
+		"empty server token": append(append([]byte{}, raw...), []byte("rke2: {serverToken: ''}\n")...),
+		"null server token":  append(append([]byte{}, raw...), []byte("rke2: {serverToken: null}\n")...),
+		"agent token":        append(append([]byte{}, raw...), []byte("rke2: {agentToken: secret}\n")...),
+		"old schema":         bytes.Replace(raw, []byte(SchemaVersion), []byte("c8s-launch/v1"), 1),
 	}
 	for name, data := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -300,11 +321,15 @@ func TestKeylessAndFailedAttestationNeverStageARole(t *testing.T) {
 	}
 }
 
-func TestFailedRestagingClearsAuthorizationAndSecrets(t *testing.T) {
+func TestFailedRestagingClosesGatesAndPreservesLocalCredential(t *testing.T) {
 	doc, key, pub := testDocument(t, "snp", Server)
 	testLoader(t, doc, pub)
 	cfg := testConfig(t, doc, key)
 	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	token, err := os.ReadFile(cfg.path(AgentTokenPath))
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(cfg.SignaturePath, []byte("invalid"), 0o600); err != nil {
@@ -313,8 +338,23 @@ func TestFailedRestagingClearsAuthorizationAndSecrets(t *testing.T) {
 	if err := Stage(context.Background(), cfg); err == nil {
 		t.Fatal("accepted tampered signature")
 	}
-	for _, path := range []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, DefaultStagedPath, rke2FragmentPath} {
+	// The minted agent token belongs to the running cluster: the role gates
+	// close, but the credential agents already enrolled with is not rotated
+	// underneath them by a failed restaging.
+	requirePresent(t, cfg.path(AgentTokenPath))
+	for _, path := range []string{serverMarker, agentMarker, DefaultStagedPath, rke2FragmentPath, Dir + "/agents.json"} {
 		requireAbsent(t, cfg.path(path))
+	}
+	signDocument(t, cfg, doc, key)
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	again, err := os.ReadFile(cfg.path(AgentTokenPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(token, again) || len(token) != 64 {
+		t.Fatal("successful restaging must keep the same 64-hex agent token")
 	}
 }
 
@@ -453,7 +493,7 @@ func TestMissingMeasuredImageCannotStageARole(t *testing.T) {
 			if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "contains no "+missing) {
 				t.Fatalf("missing %s: %v", missing, err)
 			}
-			for _, path := range []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, DefaultStagedPath} {
+			for _, path := range []string{serverMarker, agentMarker, AgentTokenPath, DefaultStagedPath} {
 				requireAbsent(t, cfg.path(path))
 			}
 		})

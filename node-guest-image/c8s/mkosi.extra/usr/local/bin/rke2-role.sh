@@ -1,6 +1,6 @@
 #!/bin/bash
 # The image is identical for both roles. Only a launch document signed by
-# this boot's measured operator key may select services and join credentials.
+# this boot's measured operator key may select services and membership policy.
 set -euo pipefail
 
 case "${CRED_PLATFORM:-}" in

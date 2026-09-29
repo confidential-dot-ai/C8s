@@ -43,8 +43,6 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"server address v6", Server, func(d *Document) { d.Server.Address = "2001:db8::1" }, "server.address"},
 		{"node ip", Server, func(d *Document) { d.Node.IP = "not-an-ip" }, "node.ip"},
 		{"external ip", Server, func(d *Document) { d.Node.ExternalIP = "127.0.0.1" }, "node.externalIP"},
-		{"agent token", Server, func(d *Document) { d.RKE2.AgentToken = "short" }, "rke2.agentToken"},
-		{"missing server token", Server, func(d *Document) { d.RKE2.ServerToken = "" }, "rke2.serverToken"},
 		{"server key", Server, func(d *Document) { d.Server.OperatorPublicKey = "not a key" }, "server.operatorPublicKey"},
 		{"agent key", Server, func(d *Document) { d.AgentOperatorPublicKeys = []string{"not a key"} }, "agentOperatorPublicKeys"},
 		{"duplicate agent keys", Server, func(d *Document) {
@@ -93,22 +91,6 @@ func TestParseRejectsEmptyAndMalformedYAML(t *testing.T) {
 				t.Fatalf("accepted %s input", name)
 			}
 		})
-	}
-}
-
-func TestYAMLPathPresent(t *testing.T) {
-	var tree yaml.Node
-	if err := yaml.Unmarshal([]byte("rke2:\n  agentToken: a\nrole: server\n"), &tree); err != nil {
-		t.Fatal(err)
-	}
-	if !yamlPathPresent(&tree, "rke2", "agentToken") {
-		t.Error("present nested key not found")
-	}
-	if yamlPathPresent(&tree, "rke2", "serverToken") {
-		t.Error("absent nested key reported present")
-	}
-	if yamlPathPresent(&tree, "role", "nested") {
-		t.Error("descended into a scalar")
 	}
 }
 
@@ -227,12 +209,12 @@ func TestLoadStagedTrustsOnlyCompleteArtifacts(t *testing.T) {
 	if _, err := LoadStaged(filepath.Join(t.TempDir(), "missing")); err == nil {
 		t.Error("loaded a missing artifact")
 	}
-	if _, err := LoadStaged(write(t, []byte(`{"schema_version":"c8s-launch/v1","unknown":1}`))); err == nil || !strings.Contains(err.Error(), "decode staged") {
+	if _, err := LoadStaged(write(t, []byte(`{"schema_version":"c8s-launch/v2","unknown":1}`))); err == nil || !strings.Contains(err.Error(), "decode staged") {
 		t.Errorf("unknown field: %v", err)
 	}
 	// The staged artifact is JSON, so its camelCase YAML spelling is an
 	// unknown field here: a decoder that accepted both would not be strict.
-	if _, err := LoadStaged(write(t, []byte(`{"schemaVersion":"c8s-launch/v1"}`))); err == nil || !strings.Contains(err.Error(), "decode staged") {
+	if _, err := LoadStaged(write(t, []byte(`{"schemaVersion":"c8s-launch/v2"}`))); err == nil || !strings.Contains(err.Error(), "decode staged") {
 		t.Errorf("camelCase staged field: %v", err)
 	}
 	if _, err := LoadStaged(write(t, append(encode(t, doc), []byte("{}")...))); err == nil || !strings.Contains(err.Error(), "trailing data") {
