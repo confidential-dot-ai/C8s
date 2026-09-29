@@ -375,18 +375,36 @@ func (c *DigestsClient) get(ctx context.Context, host, route string) (*http.Resp
 	if err != nil {
 		return nil, err
 	}
+	// The timeout also bounds reading the body, which the caller does after
+	// this returns, so it is cancelled when the body is closed rather than
+	// here. Cancelling on return aborts a body that has not fully arrived yet,
+	// which happens whenever the inventory is on another host.
 	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
 	url := "https://" + net.JoinHostPort(dialHost, strconv.Itoa(dialPort)) + route
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("workloadclaims: reach inventory %s: %w", dialHost, err)
 	}
+	resp.Body = cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 	return resp, nil
+}
+
+// cancelOnClose releases a request's context when its body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // Fetch asks the inventory on host which image digests sandboxID is running.

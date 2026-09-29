@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -450,4 +451,28 @@ func TestDigestsClientRejectsMalformedAnswers(t *testing.T) {
 			t.Fatal("accepted a non-ECDSA inventory key")
 		}
 	})
+}
+
+// An inventory on another host delivers the body after the headers. The
+// request timeout must still cover reading it, not end when the headers arrive.
+func TestFetchSandboxReadsABodyThatArrivesAfterTheHeaders(t *testing.T) {
+	c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		time.Sleep(200 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(SandboxDigestsResponse{
+			Digests:    []string{"sha256:" + strings.Repeat("a", 64)},
+			Containers: []SandboxContainer{{Digest: "sha256:" + strings.Repeat("a", 64)}},
+		})
+	}))
+	// httptest's certificate names example.com, not the routable address.
+	c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+	out, err := c.FetchSandbox(context.Background(), host, "sandbox-1")
+	if err != nil {
+		t.Fatalf("FetchSandbox: %v", err)
+	}
+	if len(out.Containers) != 1 {
+		t.Fatalf("containers = %d, want 1", len(out.Containers))
+	}
 }
