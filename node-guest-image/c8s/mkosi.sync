@@ -149,10 +149,8 @@ if [ "$DEV" = 1 ]; then
         > "$STAGE_DIR/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/60-dev-runc.toml"
 fi
 
-# Required: there is no default ref. Published builds pass the main-push
-# short SHA; the repro gate passes the PR's base commit on main; manual
-# builds must export C8S_REF. A silent fallback once pinned a stale release
-# under every build that forgot to set it.
+# Required: there is no default ref. A silent fallback once pinned a stale
+# release under every build that forgot to set it.
 C8S_REF=$(cat "$SYNC_INPUTS/c8s-ref" 2>/dev/null || true)
 if [ -z "$C8S_REF" ]; then
     echo "c8s sync: FATAL c8s-ref sync-input is empty; export C8S_REF=<published short SHA or tag> (see node-guest-image/build)" >&2

@@ -25,10 +25,7 @@ jobs:
           fail=0
           bash .github/scripts/pin-manifest.sh validate \
             --manifest .github/build-pins.json
-          # mkosi.sync must not carry a C8S_REF default: every build names its
-          # ref explicitly (main-push SHA, PR base SHA, or the operator's
-          # C8S_REF). A fallback once baked a stale release under any build
-          # that forgot to set one.
+          # mkosi.sync must not carry a C8S_REF default (see the comment there).
           if grep -nE '^C8S_REF="\$\{C8S_REF:-' node-guest-image/c8s/mkosi.sync; then
             echo "::error file=node-guest-image/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
           fi

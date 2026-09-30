@@ -74,6 +74,8 @@ case "${C8S_PLATFORM:-}" in
 tdx|snp) ;;
 *)  echo "node-guest-image/build: C8S_PLATFORM must be tdx or snp, got '${C8S_PLATFORM:-}'" >&2; exit 1 ;;
 esac
+[ -n "${C8S_REF:-}" ] \
+    || { echo "node-guest-image/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
 NGI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONFOS_DIR=${CONFOS_DIR:-"$NGI_DIR/../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] || { echo "node-guest-image/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
@@ -120,10 +122,6 @@ else
     echo "$GPU_FPR" > "$GPU_STAMP"
 fi
 bin/confos-fetch-attest-gpu
-if [ -z "${C8S_REF:-}" ]; then
-    echo "node-guest-image/build: C8S_REF is required (published short SHA or release tag)" >&2
-    exit 1
-fi
 if [ -n "${C8S_BINARY:-}" ]; then
     [ -f "$C8S_BINARY" ] || { echo "node-guest-image/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
@@ -134,7 +132,7 @@ exec bin/confos build "${C8S_NAME:-c8s}" \
     --profile-dir "$NGI_DIR/c8s" \
     --module-signing-cert "$NGI_DIR/module-signing.crt" \
     --sync-input "platform=${C8S_PLATFORM}" \
-    --sync-input "c8s-ref=${C8S_REF:-}" \
+    --sync-input "c8s-ref=${C8S_REF}" \
     --sync-input "c8s-registry=${C8S_REGISTRY:-}" \
     --sync-input "c8s-binary=${C8S_BINARY:+1}" \
     --sync-input "dev=${C8S_DEV:-0}" \

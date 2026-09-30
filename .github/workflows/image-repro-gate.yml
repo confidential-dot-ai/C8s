@@ -51,8 +51,7 @@ jobs:
           # every main push publishes :<short-sha> (docker.yml), while PR
           # runs only load images locally, so the PR's own SHA is never in
           # GHCR. The gate therefore tests the PR's host binary and chart
-          # against the containers main currently ships. mkosi.sync has no
-          # default ref.
+          # against the containers main currently ships.
           ref="${BASE_SHA:-$GITHUB_SHA}"
           ref="${ref::7}"
           echo "c8s_ref=$ref" >> "$GITHUB_OUTPUT"
