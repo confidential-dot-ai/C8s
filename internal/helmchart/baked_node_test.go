@@ -9,9 +9,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// bakedArgs is the chart shape `c8s node-image render` produces, less the
-// launch-driven router (see TestChartRouterFromLaunch).
+// bakedArgs is the chart shape `c8s node-image render` produces. A baked
+// router reads its upstream from the launch file, so the shape clears the
+// mesh-wrapped address helmTemplate pins by default.
 var bakedArgs = []string{
+	"--set-string", "router.upstream.address=",
 	"--set", "node.baked=true",
 	"--set", "attestationApi.cvmMode=bare-metal",
 	"--set", "attestationApi.enabled=false",
@@ -134,8 +136,8 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	}
 }
 
-func TestChartRouterFromLaunch(t *testing.T) {
-	args := noUpstreamArgs(append(slices.Clone(bakedArgs), "--set", "router.fromLaunch=true", "--set-string", "nriImagePolicy.distro=rke2")...)
+func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
+	args := append(slices.Clone(bakedArgs), "--set-string", "nriImagePolicy.distro=rke2")
 	out, err := helmTemplate(t, args...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -214,19 +216,14 @@ func TestChartRouterFromLaunch(t *testing.T) {
 	assertContainerMount(t, attest, "node-config", "/run/c8s-node")
 }
 
-func TestChartRouterFromLaunchRejectsReplacedValues(t *testing.T) {
+func TestChartBakedRouterRejectsReplacedValues(t *testing.T) {
 	for name, args := range map[string][]string{
-		"not baked": {"--set", "router.fromLaunch=true"},
-		"upstream":  append(slices.Clone(bakedArgs), "--set", "router.fromLaunch=true", "--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000"),
-		"tls mode":  append(slices.Clone(bakedArgs), "--set", "router.fromLaunch=true", "--set", "router.publicTLS.mode=acme"),
-		"string":    append(slices.Clone(bakedArgs), "--set-string", "router.fromLaunch=true"),
+		"upstream": append(slices.Clone(bakedArgs), "--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000"),
+		"tls mode": append(slices.Clone(bakedArgs), "--set", "router.publicTLS.mode=acme"),
 	} {
 		t.Run(name, func(t *testing.T) {
-			if name != "upstream" {
-				args = noUpstreamArgs(args...)
-			}
 			out, err := helmTemplate(t, args...)
-			if err == nil || !strings.Contains(out, "router.fromLaunch") {
+			if err == nil || !strings.Contains(out, "node.baked takes the") {
 				t.Fatalf("render accepted or failed elsewhere: %v\n%s", err, out)
 			}
 		})
@@ -235,15 +232,13 @@ func TestChartRouterFromLaunchRejectsReplacedValues(t *testing.T) {
 
 // A regular Helm install never reads launch files.
 func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
-	for _, args := range [][]string{nil, bakedArgs} {
-		out, err := helmTemplate(t, args...)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file", "--upstream-file", "$c8s_upstream"} {
-			if strings.Contains(out, unwanted) {
-				t.Errorf("render without router.fromLaunch contains %q", unwanted)
-			}
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file", "--upstream-file", "$c8s_upstream"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("unbaked render contains %q", unwanted)
 		}
 	}
 }

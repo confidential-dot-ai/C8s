@@ -480,26 +480,18 @@ challenge, and HTTP-01-issuable sanList entries.
 {{- end -}}
 
 {{/*
-"true" when router.fromLaunch is on: the node's signed launch file supplies
-the catch-all upstream and the public hostnames at runtime, through the
-files nodeservices writes under /run/c8s-node/router. Only a baked server
-writes them, so the mode requires node.baked. The values it replaces must
-stay unset, so a render never silently ignores them.
+"true" on a baked node: its signed launch file supplies the catch-all upstream
+and the public hostnames at runtime, through the files nodeservices writes
+under /run/c8s-node/router. The chart values they replace must stay unset, so
+a render never silently ignores them.
 */}}
-{{- define "router.fromLaunch" -}}
-{{- $v := .Values.router.fromLaunch -}}
-{{- if and (not (kindIs "invalid" $v)) (not (kindIs "bool" $v)) -}}
-{{- fail (printf "router.fromLaunch must be a boolean; do not set it via --set-string, got: %v" $v) -}}
-{{- end -}}
-{{- if $v -}}
-{{- if not .Values.node.baked -}}
-{{- fail "router.fromLaunch requires node.baked=true: only a baked node publishes the launch file's router inputs" -}}
-{{- end -}}
+{{- define "router.launchDriven" -}}
+{{- if .Values.node.baked -}}
 {{- if ne (printf "%v" .Values.router.publicTLS.mode) "cds" -}}
-{{- fail "router.fromLaunch takes the public TLS mode from the launch file: leave router.publicTLS.mode at cds" -}}
+{{- fail "node.baked takes the public TLS mode from the launch file: leave router.publicTLS.mode at cds" -}}
 {{- end -}}
 {{- if .Values.router.upstream.address -}}
-{{- fail "router.fromLaunch takes the upstream from the launch file: leave router.upstream.address empty" -}}
+{{- fail "node.baked takes the upstream from the launch file: leave router.upstream.address empty" -}}
 {{- end -}}
 true
 {{- end -}}
@@ -507,11 +499,11 @@ true
 
 {{/*
 "true" when the pod runs the acme sidecar and nginx's :80 server: the acme
-public TLS mode, or router.fromLaunch (where the sidecar either issues for
-the launch hostnames or mirrors the mesh leaf).
+public TLS mode, or a baked node (where the sidecar either issues for the
+launch hostnames or serves the fallback mesh leaf).
 */}}
 {{- define "router.acmeSidecar" -}}
-{{- if or (eq (include "router.publicTLSMode" .) "acme") (eq (include "router.fromLaunch" .) "true") -}}
+{{- if or (eq (include "router.publicTLSMode" .) "acme") (eq (include "router.launchDriven" .) "true") -}}
 true
 {{- end -}}
 {{- end -}}
@@ -534,7 +526,7 @@ tlsMountPath (cds).
 */}}
 {{- define "router.publicCertPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
-{{- if eq (include "router.fromLaunch" .) "true" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
 {{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
 {{- else if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.certKey -}}
@@ -547,7 +539,7 @@ tlsMountPath (cds).
 
 {{- define "router.publicKeyPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
-{{- if eq (include "router.fromLaunch" .) "true" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
 {{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
 {{- else if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.keyKey -}}
@@ -571,7 +563,7 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 {{- if .Values.router.discovery.enabled }}
 - --discovery-out={{ include "router.discoveryFilePath" . }}
 - --discovery-cds-cert-url={{ .Values.router.discovery.cdsCertPath }}
-{{- if eq (include "router.fromLaunch" .) "true" }}
+{{- if eq (include "router.launchDriven" .) "true" }}
 - --discovery-public-tls-mode-file={{ include "router.launchDir" . }}/front-door-mode
 {{- else }}
 - --discovery-public-tls-mode={{ include "router.publicTLSMode" . }}

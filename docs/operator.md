@@ -985,9 +985,8 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
 
-On a baked node image (`router.fromLaunch=true`, set by
-`c8s node-image render`), the signed launch file selects the mode and the
-upstream at boot. Mode `acme` applies when its `router.hostnames` is not
+On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
+signed launch file selects the mode and the upstream at boot. Mode `acme` applies when its `router.hostnames` is not
 empty, else mode `cds`. See "Authenticated launch configuration".
 
 ## router upstream

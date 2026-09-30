@@ -159,9 +159,6 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// require that separate install.
 		"--set", "volumed.enabled=false",
 		"--set", "router.attest.enabled=true",
-		// The router's upstream and public hostnames are per cluster, so the
-		// signed launch file supplies them at boot, not the image build.
-		"--set", "router.fromLaunch=true",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")

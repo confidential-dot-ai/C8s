@@ -409,7 +409,6 @@
           }
         },
         "enabled": {},
-        "fromLaunch": {},
         "hostPort": {
           "type": [
             "object",

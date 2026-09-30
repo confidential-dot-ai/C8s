@@ -23,7 +23,7 @@ withheld. */ -}}
 {{- end -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
-{{- $fromLaunch := eq (include "router.fromLaunch" .) "true" -}}
+{{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
 {{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
@@ -95,7 +95,7 @@ spec:
           restartPolicy: Always
           args:
             - acme
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             # The signed launch file names the domains. With none, the
             # sidecar serves a copy of the mesh leaf and never contacts a CA.
             - --domains-file={{ include "router.launchDir" . }}/hostnames
@@ -133,7 +133,7 @@ spec:
           volumeMounts:
             - name: acme-tls
               mountPath: {{ include "router.acmeCertDir" . }}
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             - name: tls-certs
               mountPath: {{ .Values.router.tlsMountPath }}
               readOnly: true
@@ -215,7 +215,7 @@ spec:
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             {{- /* nginx.conf includes router/upstream.conf from here. */}}
             {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
             {{- end }}
@@ -245,7 +245,7 @@ spec:
             - --attestation-api-url={{ default (include "c8s.attestationApiURL" .) .Values.router.attest.attestationApiURL }}
             # attest-lb needs a TEE-held serving key (cds, acme); webpki's
             # host-visible Secret key stays attest-pq-only.
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             - --front-door-mode-file={{ include "router.launchDir" . }}/front-door-mode
             {{- else }}
             - --front-door-mode={{ $publicTLSMode }}
@@ -275,7 +275,7 @@ spec:
             # No adopted workload (empty upstream address) -> omit --upstream
             # entirely; the sidecar then serves attestation with its echo
             # backend instead of crashing on a scheme-only URL.
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             - --upstream-file={{ include "router.launchDir" . }}/upstream
             {{- else if $upstreamAddress }}
             - --upstream={{ .Values.router.upstream.protocol }}://{{ $upstreamAddress }}
@@ -332,7 +332,7 @@ spec:
               mountPath: {{ include "router.acmeCertDir" . }}
               readOnly: true
             {{- end }}
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
             {{- end }}
           securityContext:

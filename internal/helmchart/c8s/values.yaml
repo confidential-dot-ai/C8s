@@ -1,6 +1,12 @@
 ## Render Kubernetes core services into the measured node image at build time.
 ## Signed launch policies are staged on each node at /run/c8s-node; the host
 ## owns attestation, RKE2 and NRI. Ordinary Helm installs leave this off.
+##
+## A baked router takes its catch-all upstream and public hostnames from the
+## launch file at /run/c8s-node/router/ instead of the chart, so
+## router.upstream.address stays empty and router.publicTLS.mode stays cds.
+## nginx then serves the acme sidecar's cert dir: an ACME leaf when the launch
+## file names hostnames, else a copy of the mesh leaf.
 node:
   baked: false
 
@@ -880,14 +886,6 @@ volumed:
 
 router:
   enabled: true
-
-  # -- Take the catch-all upstream and public hostnames from the node's
-  # signed launch file (/run/c8s-node/router/) at runtime instead of from
-  # upstream.address, san and publicTLS. Set by `c8s node-image render`;
-  # requires node.baked=true. nginx always serves the acme sidecar's cert dir:
-  # an ACME leaf when the launch file names hostnames, else a copy of the
-  # mesh leaf.
-  fromLaunch: false
 
   ## Rollout strategy. Empty resolves by hostPort.enabled: Recreate when the
   ## node port is bound (two concurrent pods on a node would collide on the

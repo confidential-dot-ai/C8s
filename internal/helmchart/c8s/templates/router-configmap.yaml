@@ -8,7 +8,7 @@
 {{- $serverNames = "_" -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
-{{- $fromLaunch := eq (include "router.fromLaunch" .) "true" -}}
+{{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- include "router.validateProtocol" (required "protocol must be http or https" .Values.router.upstream.protocol) -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
@@ -121,7 +121,7 @@ data:
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
 {{- end }}
 
-        {{- if or $upstreamMeshWrapped $fromLaunch }}
+        {{- if or $upstreamMeshWrapped $launchDriven }}
         # A mesh-wrapped catch-all is dialed via a variable (see location /), so
         # nginx re-resolves it here at request time per record TTL: a static
         # upstream block would pin the pod IPs the adopted workload's headless
@@ -304,7 +304,7 @@ data:
             }
 
             {{- end }}
-            {{- if $fromLaunch }}
+            {{- if $launchDriven }}
             # The catch-all upstream comes from the signed launch file:
             # upstream.conf sets $c8s_upstream to a mesh-wrapped
             # c8s-<id>.<ns>.svc.cluster.local:<port>, or to "" when the launch
