@@ -149,10 +149,13 @@ if [ "$DEV" = 1 ]; then
         > "$STAGE_DIR/var/lib/rancher/rke2/agent/etc/containerd/config-v3.toml.d/60-dev-runc.toml"
 fi
 
+# Required: there is no default ref. A silent fallback once pinned a stale
+# release under every build that forgot to set it.
 C8S_REF=$(cat "$SYNC_INPUTS/c8s-ref" 2>/dev/null || true)
-# Pinned c8s release: bakes the same component versions the CLI ships as.
-# docker.yml publishes images under v* tags, so the tag itself is the ref.
-C8S_REF="${C8S_REF:-v0.1.0-rc2}"
+if [ -z "$C8S_REF" ]; then
+    echo "c8s sync: FATAL c8s-ref sync-input is empty; export C8S_REF=<published short SHA or tag> (see node-guest-image/build)" >&2
+    exit 1
+fi
 # c8s-binary=1: the build script pre-staged the multi-command binary at
 # usr/local/bin/c8s in mkosi.local (built from a source checkout). The image
 # repro gate uses this so a PR that changes the baked binary or its commands
