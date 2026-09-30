@@ -11,6 +11,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 func TestNodePolicyPinsActualEvidence(t *testing.T) {
@@ -20,9 +21,13 @@ func TestNodePolicyPinsActualEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The fixture contains server and agent identities. Constrain this
-	// verdict to the server, as a client connecting to CDS does.
-	entry := plan.refValues.Images[0]
+	// verdict to the server, as a client connecting to CDS does. The served
+	// set keeps every admitted identity, as --served-policy-file carries it;
+	// the verdict must still reject the agent-key evidence below.
+	serverAndAgents := plan.refValues.Images
+	entry := serverAndAgents[0]
 	plan.refValues.Images = []remote.ImagePin{entry}
+	plan.served = &servedSet{flag: "--served-policy-file", want: refvalues.ReferenceValues{Family: plan.refValues.Family, Images: serverAndAgents}}
 	bound := func(key []byte) *teetypes.VerificationResult {
 		r := &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX}
 		r.Claims.LaunchDigest = hex.EncodeToString(entry.Digest)
@@ -80,8 +85,23 @@ func TestServedNodePolicyDetectsDroppedOperatorKey(t *testing.T) {
 	served.Images = append([]remote.ImagePin(nil), want.Images...)
 	served.Images[0].Anchor = nil
 	fail, messages := collectFailures()
-	checkServedMeasurements(want, measurementsReport{served: served, fetched: true}, fail)
+	checkServedMeasurements("--image-policy-file", want, measurementsReport{served: served, fetched: true}, fail)
 	if len(*messages) != 2 {
 		t.Fatalf("dropped role key did not change the admitted identities: %v", *messages)
+	}
+}
+
+// A --served-policy-file alone is a cross-check input, never an identity pin:
+// the verdict must report itself unpinned.
+func TestServedPolicyFileAloneDoesNotPin(t *testing.T) {
+	plan := &verifyPlan{
+		policy: &ratls.VerifyPolicy{},
+		served: &servedSet{flag: "--served-policy-file", want: refvalues.ReferenceValues{Family: teetypes.FamilyTDX}},
+	}
+	r := &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX}
+	r.Claims.LaunchDigest = strings.Repeat("11", 48)
+	got := newOutcome(config{}, &evidence{platform: "tdx"}, r, nil, plan)
+	if got.Pinned {
+		t.Fatalf("a served-set cross-check became an identity pin: %+v", got)
 	}
 }
