@@ -493,7 +493,7 @@ func TestInventoryHostsBoundsTheCallback(t *testing.T) {
 
 // Fetch must reject a forged address before it opens any connection.
 func TestFetchRejectsForgedAddrBeforeDialing(t *testing.T) {
-	c := &DigestsClient{timeout: time.Second}
+	c := &DigestsClient{}
 	if _, err := c.Fetch(context.Background(), "169.254.169.254", "sandbox-1"); err == nil {
 		t.Fatal("Fetch dialed the metadata service")
 	}
