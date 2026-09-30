@@ -480,6 +480,37 @@ challenge, and HTTP-01-issuable sanList entries.
 {{- end -}}
 
 {{/*
+"true" on a baked node: its signed launch file supplies the catch-all upstream
+and the public hostnames at runtime, through the files nodeservices writes
+under /run/c8s-node/router. The chart values they replace must stay unset, so
+a render never silently ignores them.
+*/}}
+{{- define "router.launchDriven" -}}
+{{- if .Values.node.baked -}}
+{{- if ne (printf "%v" .Values.router.publicTLS.mode) "cds" -}}
+{{- fail "node.baked takes the public TLS mode from the launch file: leave router.publicTLS.mode at cds" -}}
+{{- end -}}
+{{- if .Values.router.upstream.address -}}
+{{- fail "node.baked takes the upstream from the launch file: leave router.upstream.address empty" -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when the pod runs the acme sidecar and nginx's :80 server: the acme
+public TLS mode, or a baked node (where the sidecar either issues for the
+launch hostnames or serves the fallback mesh leaf).
+*/}}
+{{- define "router.acmeSidecar" -}}
+{{- if or (eq (include "router.publicTLSMode" .) "acme") (eq (include "router.launchDriven" .) "true") -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "router.launchDir" -}}/run/c8s-node/router{{- end -}}
+
+{{/*
 ACME constants shared by the acme sidecar args, the deployment mounts, the
 nginx :80 server, and the cert-path helpers below.
 */}}
@@ -495,7 +526,9 @@ tlsMountPath (cds).
 */}}
 {{- define "router.publicCertPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
-{{- if eq $mode "webpki" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
+{{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
+{{- else if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.certKey -}}
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
@@ -506,7 +539,9 @@ tlsMountPath (cds).
 
 {{- define "router.publicKeyPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
-{{- if eq $mode "webpki" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
+{{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
+{{- else if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.keyKey -}}
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
@@ -528,7 +563,11 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 {{- if .Values.router.discovery.enabled }}
 - --discovery-out={{ include "router.discoveryFilePath" . }}
 - --discovery-cds-cert-url={{ .Values.router.discovery.cdsCertPath }}
+{{- if eq (include "router.launchDriven" .) "true" }}
+- --discovery-public-tls-mode-file={{ include "router.launchDir" . }}/front-door-mode
+{{- else }}
 - --discovery-public-tls-mode={{ include "router.publicTLSMode" . }}
+{{- end }}
 {{- if .Values.router.meshCA.expose }}
 - --discovery-mesh-ca-url={{ .Values.router.discovery.meshCAPath }}
 {{- end }}

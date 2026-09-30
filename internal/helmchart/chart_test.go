@@ -2510,19 +2510,7 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if httpSvcPort == nil || httpSvcPort.Port != 80 || httpSvcPort.TargetPort.StrVal != "http" {
 		t.Fatalf("router Service must expose port 80 -> http, got %+v", svc.Spec.Ports)
 	}
-	var np networkingv1.NetworkPolicy
-	if !findDoc(t, out, "NetworkPolicy", "c8s-router-ingress", &np) {
-		t.Fatal("render is missing the router ingress policy")
-	}
-	var npPorts []int32
-	for _, rule := range np.Spec.Ingress {
-		for _, p := range rule.Ports {
-			npPorts = append(npPorts, int32(p.Port.IntValue()))
-		}
-	}
-	if !slices.Contains(npPorts, int32(8080)) {
-		t.Fatalf("router ingress policy must admit the http port 8080, got %v", npPorts)
-	}
+	assertRouterFrontDoorPorts(t, out)
 
 	// hostPort follows the existing gating: disabling it drops both binds.
 	// A reachable front door must remain, so the LB Service takes over.
@@ -2538,6 +2526,7 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if !ok || httpPort.HostPort != 0 {
 		t.Fatalf("hostPort.enabled=false must not bind the node's :80, got (%+v, %v)", httpPort, ok)
 	}
+	assertRouterFrontDoorPorts(t, out)
 }
 
 // findContainerPort returns the named container port.
@@ -3598,6 +3587,76 @@ func assertNoRouterMeshCAVolume(t *testing.T, manifest string) {
 		if volume.Name == "mesh-ca" {
 			t.Fatalf("Deployment/router has mesh-ca volume, want absent: %#v", volume)
 		}
+	}
+}
+
+// assertRouterFrontDoorPorts pins the four sites that must name the same public
+// port set: nginx's listen directives, the nginx containerPorts, the Service's
+// targets, and the ingress policy. A port wired in one and missing from another
+// is unreachable in exactly one direction, and hostPort must bind all of them
+// or none — a partial bind publishes a port the pod does not answer.
+func assertRouterFrontDoorPorts(t *testing.T, manifest string) {
+	t.Helper()
+	var listens []int32
+	for _, server := range renderedRouterNginxConfig(t, manifest).servers {
+		for _, args := range server.directives["listen"] {
+			port, err := strconv.Atoi(args[0])
+			if err != nil {
+				t.Fatalf("nginx listen %v: %v", args, err)
+			}
+			listens = append(listens, int32(port))
+		}
+	}
+
+	nginx := renderedDeploymentContainer(t, manifest, "c8s-router", "nginx")
+	byName := make(map[string]int32, len(nginx.Ports))
+	var declared, hostBound []int32
+	for _, p := range nginx.Ports {
+		byName[p.Name] = p.ContainerPort
+		declared = append(declared, p.ContainerPort)
+		if p.HostPort != 0 {
+			hostBound = append(hostBound, p.ContainerPort)
+		}
+	}
+	assertSamePorts(t, "nginx containerPorts", declared, listens)
+
+	var targeted []int32
+	for _, p := range renderedService(t, manifest, "c8s-router").Spec.Ports {
+		port, ok := byName[p.TargetPort.StrVal]
+		if !ok {
+			t.Fatalf("router Service targets %q, which no nginx port declares", p.TargetPort.StrVal)
+		}
+		targeted = append(targeted, port)
+	}
+	assertSamePorts(t, "Service targets", targeted, listens)
+
+	var np networkingv1.NetworkPolicy
+	if !findDoc(t, manifest, "NetworkPolicy", "c8s-router-ingress", &np) {
+		t.Fatal("render is missing the router ingress policy")
+	}
+	var admitted []int32
+	for _, rule := range np.Spec.Ingress {
+		for _, p := range rule.Ports {
+			if p.Port == nil {
+				t.Fatal("the front-door rule opens every port")
+			}
+			admitted = append(admitted, int32(p.Port.IntValue()))
+		}
+	}
+	assertSamePorts(t, "ingress policy", admitted, listens)
+
+	if len(hostBound) != 0 && len(hostBound) != len(declared) {
+		t.Errorf("hostPort binds %v of the front-door ports %v", hostBound, declared)
+	}
+}
+
+func assertSamePorts(t *testing.T, site string, got, listens []int32) {
+	t.Helper()
+	slices.Sort(got)
+	want := slices.Clone(listens)
+	slices.Sort(want)
+	if !slices.Equal(got, want) {
+		t.Errorf("%s = %v, but nginx listens on %v", site, got, want)
 	}
 }
 
@@ -7418,35 +7477,7 @@ func TestChartRouterIngressPolicyStaysReachableFromOffCluster(t *testing.T) {
 		t.Fatalf("the front-door rule names sources (%v); external clients would be refused", np.Spec.Ingress[0].From)
 	}
 
-	// The allowed port must be the one the Service and hostPort both target,
-	// or external traffic lands on a port the policy does not name.
-	var svc corev1.Service
-	if !findDoc(t, out, "Service", "c8s-router", &svc) {
-		t.Fatal("render is missing the router Service")
-	}
-	if len(svc.Spec.Ports) != 1 {
-		t.Fatalf("router Service exposes %d ports; the policy names one", len(svc.Spec.Ports))
-	}
-	target := svc.Spec.Ports[0].TargetPort.StrVal
-
-	var deploy appsv1.Deployment
-	if !findDoc(t, out, "Deployment", "c8s-router", &deploy) {
-		t.Fatal("render is missing the router Deployment")
-	}
-	var wantPort int32
-	for _, c := range deploy.Spec.Template.Spec.Containers {
-		for _, p := range c.Ports {
-			if p.Name == target {
-				wantPort = p.ContainerPort
-			}
-		}
-	}
-	if wantPort == 0 {
-		t.Fatalf("no containerPort named %q on the router pod", target)
-	}
-	if got := int32(np.Spec.Ingress[0].Ports[0].Port.IntValue()); got != wantPort {
-		t.Errorf("policy admits :%d but the Service targets containerPort :%d — external traffic would be dropped", got, wantPort)
-	}
+	assertRouterFrontDoorPorts(t, out)
 }
 
 // TestChartRTMRPinsFlagThrough confirms cds.rtmrs and ratlsMesh.rtmrs reach
