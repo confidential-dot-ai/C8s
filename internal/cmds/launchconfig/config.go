@@ -66,12 +66,15 @@ type Document struct {
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
+
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
-	Router             *Router `yaml:"router,omitempty" json:"router,omitempty"`
+	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
+
 	serverTokenPresent bool
 }
 

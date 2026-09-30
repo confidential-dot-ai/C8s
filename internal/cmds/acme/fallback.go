@@ -16,17 +16,17 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 )
 
-// mirrorInterval paces the fallback copy once a pair is installed; until then
-// the loop polls at mirrorRetry. Tests tighten both.
+// fallbackInterval paces the copy once a pair is installed; until then the loop
+// polls at fallbackRetry. Tests tighten both.
 var (
-	mirrorInterval = time.Minute
-	mirrorRetry    = 2 * time.Second
+	fallbackInterval = time.Minute
+	fallbackRetry    = 2 * time.Second
 )
 
-// runMirror serves the fallback (mesh) certificate when the launch file names
+// runFallback serves the fallback (mesh) certificate when the launch file names
 // no public hostname: nginx always reads --cert-dir, so this keeps one nginx
 // configuration for both front-door modes. No ACME account is created.
-func runMirror(ctx context.Context, cfg config, logger *slog.Logger, reload func()) error {
+func runFallback(ctx context.Context, cfg config, logger *slog.Logger, reload func()) error {
 	if cfg.readyPort < 0 || cfg.readyPort > 65535 {
 		return fmt.Errorf("--ready-port must be between 0 and 65535, got %d", cfg.readyPort)
 	}
@@ -38,24 +38,26 @@ func runMirror(ctx context.Context, cfg config, logger *slog.Logger, reload func
 			return fmt.Errorf("--ready-port: %w", err)
 		}
 	}
-	logger.Info("no ACME domains: mirroring fallback certificate", "from", cfg.fallbackCertDir, "cert_dir", cfg.certDir)
+	logger.Info("no ACME domains: serving the fallback certificate", "from", cfg.fallbackCertDir, "cert_dir", cfg.certDir)
+
 	installed := false
 	for {
-		changed, err := mirrorOnce(cfg.fallbackCertDir, cfg.certDir)
-		if err != nil {
+		changed, err := copyFallbackPair(cfg.fallbackCertDir, cfg.certDir)
+		switch {
+		case err != nil:
 			logger.Warn("fallback certificate not copied", "error", err)
-		} else if changed {
+		case changed && installed:
+			// nginx starts on the first pair, so only a replacement reloads it.
+			logger.Info("fallback certificate replaced")
+			reload()
+		case changed:
 			logger.Info("fallback certificate installed")
-			// nginx starts only after the first copy (startup probe), so
-			// only later copies need a reload.
-			if installed {
-				reload()
-			}
 			installed = true
 		}
-		wait := mirrorInterval
-		if !installed {
-			wait = mirrorRetry
+
+		wait := fallbackRetry
+		if installed {
+			wait = fallbackInterval
 		}
 		select {
 		case <-ctx.Done():
@@ -66,10 +68,10 @@ func runMirror(ctx context.Context, cfg config, logger *slog.Logger, reload func
 	}
 }
 
-// mirrorOnce copies a matching cert.pem/key.pem pair from src into dst when it
-// differs from what dst holds. A torn pair (one file renewed, not yet the
-// other) fails the key match and waits for the next round.
-func mirrorOnce(src, dst string) (bool, error) {
+// copyFallbackPair copies a matching cert.pem/key.pem pair from src into dst
+// when it differs from what dst holds. A torn pair (one file renewed, not yet
+// the other) fails the key match and waits for the next round.
+func copyFallbackPair(src, dst string) (bool, error) {
 	cert, err := os.ReadFile(filepath.Join(src, certFile))
 	if err != nil {
 		return false, err

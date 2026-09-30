@@ -40,9 +40,9 @@ func TestLoadFiles(t *testing.T) {
 	cfg := validTestConfig()
 	cfg.domains = nil
 	cfg.domainsFile, cfg.emailFile, cfg.directoryURLFile = domains, email, url
-	mirror, err := loadFiles(&cfg)
-	if err != nil || mirror {
-		t.Fatalf("loadFiles = %v, %v; want ACME mode", mirror, err)
+	fallback, err := loadFiles(&cfg)
+	if err != nil || fallback {
+		t.Fatalf("loadFiles = %v, %v; want ACME mode", fallback, err)
 	}
 	if !slices.Equal(cfg.domains, []string{"a.example.com", "b.example.com"}) || cfg.email != "ops@example.com" || cfg.directoryURL != letsEncryptDirectoryURL {
 		t.Fatalf("loaded %+v", cfg)
@@ -62,8 +62,8 @@ func TestLoadFiles(t *testing.T) {
 		t.Fatal("empty domains file without --fallback-cert-dir was accepted")
 	}
 	cfg.fallbackCertDir = dir
-	if mirror, err := loadFiles(&cfg); err != nil || !mirror {
-		t.Fatalf("empty domains file = %v, %v; want mirror mode", mirror, err)
+	if fallback, err := loadFiles(&cfg); err != nil || !fallback {
+		t.Fatalf("empty domains file = %v, %v; want fallback mode", fallback, err)
 	}
 }
 
@@ -86,16 +86,16 @@ func writePair(t *testing.T, dir, cn string) {
 	writeFile(t, filepath.Join(dir, certFile), string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})))
 }
 
-func TestMirrorOnce(t *testing.T) {
+func TestCopyFallbackPair(t *testing.T) {
 	src, dst := t.TempDir(), t.TempDir()
-	if _, err := mirrorOnce(src, dst); err == nil {
+	if _, err := copyFallbackPair(src, dst); err == nil {
 		t.Fatal("missing source pair was accepted")
 	}
 	writePair(t, src, "mesh-1")
-	if changed, err := mirrorOnce(src, dst); err != nil || !changed {
+	if changed, err := copyFallbackPair(src, dst); err != nil || !changed {
 		t.Fatalf("first copy = %v, %v", changed, err)
 	}
-	if changed, err := mirrorOnce(src, dst); err != nil || changed {
+	if changed, err := copyFallbackPair(src, dst); err != nil || changed {
 		t.Fatalf("unchanged copy = %v, %v", changed, err)
 	}
 	info, err := os.Stat(filepath.Join(dst, keyFile))
@@ -107,26 +107,26 @@ func TestMirrorOnce(t *testing.T) {
 	writePair(t, other, "mesh-2")
 	cert, _ := os.ReadFile(filepath.Join(other, certFile))
 	writeFile(t, filepath.Join(src, certFile), string(cert))
-	if _, err := mirrorOnce(src, dst); err == nil {
+	if _, err := copyFallbackPair(src, dst); err == nil {
 		t.Fatal("torn pair was copied")
 	}
 	writePair(t, src, "mesh-3")
-	if changed, err := mirrorOnce(src, dst); err != nil || !changed {
+	if changed, err := copyFallbackPair(src, dst); err != nil || !changed {
 		t.Fatalf("renewed copy = %v, %v", changed, err)
 	}
 }
 
-func TestRunMirrorReloadsOnChange(t *testing.T) {
-	oldInterval, oldRetry := mirrorInterval, mirrorRetry
-	mirrorInterval, mirrorRetry = 10*time.Millisecond, 10*time.Millisecond
-	t.Cleanup(func() { mirrorInterval, mirrorRetry = oldInterval, oldRetry })
+func TestRunFallbackReloadsOnChange(t *testing.T) {
+	oldInterval, oldRetry := fallbackInterval, fallbackRetry
+	fallbackInterval, fallbackRetry = 10*time.Millisecond, 10*time.Millisecond
+	t.Cleanup(func() { fallbackInterval, fallbackRetry = oldInterval, oldRetry })
 
 	src, dst := t.TempDir(), t.TempDir()
 	var reloads atomic.Int32
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	cfg := config{certDir: dst, fallbackCertDir: src}
-	go func() { done <- runMirror(ctx, cfg, slog.Default(), func() { reloads.Add(1) }) }()
+	go func() { done <- runFallback(ctx, cfg, slog.Default(), func() { reloads.Add(1) }) }()
 
 	writePair(t, src, "mesh-1")
 	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(dst, certFile)); return err == nil })
