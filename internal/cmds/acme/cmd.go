@@ -42,10 +42,11 @@ type config struct {
 	logLevel      string
 
 	// Launch-driven inputs (node image): each file overrides its flag.
-	domainsFile      string
-	emailFile        string
-	directoryURLFile string
-	fallbackCertDir  string
+	domainsFile       string
+	emailFile         string
+	directoryURLFile  string
+	publicProbeClient *http.Client // test-only transport; production uses public DNS and port 80
+	fallbackCertDir   string
 }
 
 // NewCmd returns the acme subcommand.
@@ -55,7 +56,10 @@ func NewCmd() *cobra.Command {
 		Use:   "acme",
 		Short: "Run the router in-guest ACME sidecar (acme front-door mode)",
 		Long: `acme runs beside nginx in the router pod and keeps one multi-SAN WebPKI
-certificate for --domains under --cert-dir: cert.pem (full chain) and key.pem.
+certificate under --cert-dir: cert.pem (full chain) and key.pem. It includes
+configured domains whose public HTTP challenge paths reach this router.
+Unavailable domains do not block issuance for reachable domains. They are
+added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
 /.well-known/acme-challenge/ to the loopback challenge listener. The
 certificate is renewed at 2/3 of its lifetime, and nginx is reloaded via
@@ -228,6 +232,8 @@ func run(cfg config) error {
 	}
 	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, reload)
 	mgr.httpPort = cfg.httpPort
+	mgr.probePublic = true
+	mgr.publicProbeClient = cfg.publicProbeClient
 
 	challengeAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.challengePort))
 	if _, err := cmdsutil.ServeInBackground(ctx, challengeAddr, mgr.handler(), logger); err != nil {
