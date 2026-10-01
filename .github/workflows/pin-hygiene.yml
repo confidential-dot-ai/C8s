@@ -25,10 +25,9 @@ jobs:
           fail=0
           bash .github/scripts/pin-manifest.sh validate \
             --manifest .github/build-pins.json
-          ref=$(sed -n "s/^C8S_REF=\"\\\${C8S_REF:-\(.*\)}\"$/\1/p" node-guest-image/c8s/mkosi.sync)
-          release_re="^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-(alpha|beta|rc)[1-9][0-9]*)?$"
-          if [[ ! "$ref" =~ $release_re ]]; then
-            echo "::error file=node-guest-image/c8s/mkosi.sync::C8S_REF default must be a published vX.Y.Z[-alphaN|-betaN|-rcN] release tag, got '$ref'"; fail=1
+          # mkosi.sync must not carry a C8S_REF default (see the comment there).
+          if grep -nE '^C8S_REF="\$\{C8S_REF:-' node-guest-image/c8s/mkosi.sync; then
+            echo "::error file=node-guest-image/c8s/mkosi.sync::C8S_REF must have no default; the c8s-ref sync-input is required"; fail=1
           fi
           # Every third-party action is a 40-hex commit. A tag or branch is
           # whatever its owner repoints it at, on a runner holding GHCR push

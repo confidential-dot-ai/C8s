@@ -115,7 +115,9 @@ The strict `c8s-launch/v1` document selects the role, cluster identity, node
 addresses, RKE2 join credentials, trusted role keys, image pins and TLS SAN.
 It accepts an optional `workloads` string containing a complete
 `c8s.allowlist/v1` JSON document. It does not accept Helm values, arbitrary
-service arguments or component toggles; volume support remains disabled.
+service arguments or component toggles. The measured image runs volumed as a
+host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
+every node without an install.
 
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct

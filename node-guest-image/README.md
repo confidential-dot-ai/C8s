@@ -41,8 +41,9 @@ Layout:
 ## Launch requirements
 
 The `node-image` domain in [`.github/build-pins.json`](../.github/build-pins.json)
-pins confos `7b1f5168`, activating the immutable root merged in
-[confidential-os-builder#120](https://github.com/confidential-dot-ai/confidential-os-builder/pull/120).
+pins the confos commit the image builds with. Every pin since
+[confidential-os-builder#120](https://github.com/confidential-dot-ai/confidential-os-builder/pull/120)
+includes its immutable root.
 The independent `kata-guest` and `kernel-snapshot` pins stay unchanged. The
 node-image invariant gate requires immutable-root support by default and CI
 sets `EXPECT_IMMUTABLE_ROOT=1` explicitly.
@@ -631,9 +632,10 @@ kubectl -n c8s-system get pods -o wide
 kubectl -n c8s-system describe deployment/c8s-router
 ```
 
-The measured kubelet disables remote log and exec handlers. On a debug image
-(`C8S_DEV=1`), use the guest's serial console and local container runtime to
-inspect nginx logs:
+`kubectl logs` works on every image. The locked image denies `kubectl exec`,
+`attach` and `port-forward` (see [Post-start exec](#post-start-exec)). On a
+debug image (`C8S_DEV=1`), you can also use the guest's serial console and
+local container runtime to inspect nginx directly:
 
 ```sh
 export CONTAINER_RUNTIME_ENDPOINT=unix:///run/k3s/containerd/containerd.sock

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 )
 
 // saltBytes is the dm-verity salt length. Fixed, and generated per build: the
@@ -67,7 +68,7 @@ type BuildConfig struct {
 // a way to identify the contents; and the root hash then commits to the data
 // itself rather than to one encryption of it.
 func Build(ctx context.Context, cfg BuildConfig) (Verity, error) {
-	if err := checkSource(cfg.Source); err != nil {
+	if _, err := checkSource(cfg.Source); err != nil {
 		return Verity{}, err
 	}
 	if len(cfg.Key) != KeyBytes {
@@ -160,10 +161,13 @@ func BuildMutable(ctx context.Context, cfg MutableBuildConfig) (uint64, error) {
 	}
 	size := cfg.Size
 	var inodes uint64
+	var rootOwner string
 	if cfg.Source != "" {
-		if err := checkSource(cfg.Source); err != nil {
+		info, err := checkSource(cfg.Source)
+		if err != nil {
 			return 0, err
 		}
+		rootOwner = ownerOf(info)
 		dataBytes, entries, err := treeSize(cfg.Source)
 		if err != nil {
 			return 0, err
@@ -182,7 +186,7 @@ func BuildMutable(ctx context.Context, cfg MutableBuildConfig) (uint64, error) {
 			size, minMutableBytes>>20)
 	}
 
-	b := &mutableImage{source: cfg.Source, size: size, inodes: inodes}
+	b := &mutableImage{source: cfg.Source, rootOwner: rootOwner, size: size, inodes: inodes}
 	if err := buildImage(ctx, BuildConfig{Out: cfg.Out, Key: cfg.Key, WorkDir: cfg.WorkDir, Run: cfg.Run}, b); err != nil {
 		return 0, err
 	}
@@ -190,7 +194,9 @@ func BuildMutable(ctx context.Context, cfg MutableBuildConfig) (uint64, error) {
 }
 
 type mutableImage struct {
-	source       string
+	source string
+	// rootOwner is the source directory's "uid:gid", for the image root.
+	rootOwner    string
 	data         imagePart
 	size, inodes uint64
 }
@@ -214,7 +220,7 @@ func (b *mutableImage) build(ctx context.Context, run Runner) error {
 		return fmt.Errorf("volume: close intermediate image: %w", err)
 	}
 
-	_, err = run(ctx, "mkfs.ext4", ext4Args(dataPath, b.source, b.inodes)...)
+	_, err = run(ctx, "mkfs.ext4", ext4Args(dataPath, b.source, b.rootOwner, b.inodes)...)
 	return err
 }
 
@@ -224,11 +230,17 @@ func (b *mutableImage) build(ctx context.Context, run Runner) error {
 // -e remount-ro matches the platform rootfs: a filesystem error degrades the
 // mount to read-only rather than letting corruption spread — on a volume with
 // no integrity layer, the most likely cause is a host flipping bits.
-// Ownership and modes from the source are preserved, as on the immutable path.
-func ext4Args(dest, source string, inodes uint64) []string {
+// Ownership and modes of the source's entries are preserved, as on the
+// immutable path, but -d skips the root directory itself (mkfs makes it 0:0,
+// 0755): root_owner gives it the source's owner so a non-root consumer can
+// write there. The mode stays 0755; root_perms needs e2fsprogs 1.47.1.
+func ext4Args(dest, source, rootOwner string, inodes uint64) []string {
 	args := []string{"-q", "-F", "-b", fmt.Sprint(ImageBlockSize), "-m", "0", "-e", "remount-ro"}
 	if inodes > 0 {
 		args = append(args, "-N", fmt.Sprint(inodes))
+	}
+	if rootOwner != "" {
+		args = append(args, "-E", "root_owner="+rootOwner)
 	}
 	if source != "" {
 		args = append(args, "-d", source)
@@ -369,18 +381,24 @@ func buildImage(ctx context.Context, cfg BuildConfig, builder imageBuilder) erro
 	return Encrypt(out, io.MultiReader(readers...), cfg.Key)
 }
 
-func checkSource(source string) error {
+func checkSource(source string) (os.FileInfo, error) {
 	if source == "" {
-		return fmt.Errorf("volume: --source is required")
+		return nil, fmt.Errorf("volume: --source is required")
 	}
 	info, err := os.Stat(source)
 	if err != nil {
-		return fmt.Errorf("volume: --source: %w", err)
+		return nil, fmt.Errorf("volume: --source: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("volume: --source %s is not a directory", source)
+		return nil, fmt.Errorf("volume: --source %s is not a directory", source)
 	}
-	return nil
+	return info, nil
+}
+
+// ownerOf returns the "uid:gid" that owns info's file.
+func ownerOf(info os.FileInfo) string {
+	st := info.Sys().(*syscall.Stat_t)
+	return fmt.Sprintf("%d:%d", st.Uid, st.Gid)
 }
 
 func fileSize(path string) (uint64, error) {

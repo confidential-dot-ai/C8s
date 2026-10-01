@@ -10,6 +10,11 @@ on:
         required: false
         type: boolean
         default: false
+      ssh:
+        description: "With dev, also bake an OpenSSH server (confos ssh profile, no keys baked). Pushes :rke2-<platform>-dev-ssh-* tags. Never ship."
+        required: false
+        type: boolean
+        default: false
       c8s_ref:
         description: "Bake c8s components from this published commit (short SHA) instead of the triggering commit. Rebuilds a release against the current CONFOS_REF; pushes only the :<variant>[-cdi]-<ref> tags, leaving the floating tags alone."
         required: false
@@ -39,6 +44,7 @@ jobs:
     uses: ./.github/workflows/c8s-image.yml
     with:
       dev: ${{ inputs.dev }}
+      ssh: ${{ inputs.ssh }}
       c8s_ref: ${{ inputs.c8s_ref }}
       confos_ref: ${{ inputs.confos_ref }}
       gate: ${{ inputs.gate }}
