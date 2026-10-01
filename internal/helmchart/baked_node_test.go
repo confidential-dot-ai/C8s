@@ -244,3 +244,39 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 		}
 	}
 }
+
+// A measured router must also provide the workload identity that clients pin.
+// Image admission alone does not put a matched-workload stamp in its mesh leaf.
+func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
+	out, err := helmTemplate(t, bakedArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+	cert, ok := findContainer(pod.InitContainers, "c8s-cert")
+	if !ok {
+		t.Fatal("router certificate sidecar missing")
+	}
+	assertContainerHasArg(t, "c8s-cert", cert.Args, "--workload-claims")
+	foundMount := false
+	for _, mount := range cert.VolumeMounts {
+		if mount.Name == "workload-claims" && mount.MountPath == "/run/c8s/workload-claims" && mount.ReadOnly {
+			foundMount = true
+		}
+	}
+	if !foundMount {
+		t.Error("router certificate sidecar cannot reach the inventory socket")
+	}
+	foundVolume := false
+	for _, volume := range pod.Volumes {
+		if volume.Name == "workload-claims" && volume.HostPath != nil && volume.HostPath.Path == "/var/run/nri-image-policy" && volume.HostPath.Type != nil && *volume.HostPath.Type == corev1.HostPathDirectory {
+			foundVolume = true
+		}
+	}
+	if !foundVolume {
+		t.Error("router must require the existing node inventory directory")
+	}
+	if pod.SecurityContext == nil || !slices.Contains(pod.SecurityContext.SupplementalGroups, int64(65532)) {
+		t.Error("router certificate sidecar lacks inventory socket access")
+	}
+}
