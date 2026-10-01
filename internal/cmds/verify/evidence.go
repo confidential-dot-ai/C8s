@@ -49,8 +49,6 @@ type evidence struct {
 	platform string
 	// rawEvidence is the platform-specific evidence object, forwarded verbatim.
 	rawEvidence        json.RawMessage
-	nvidiaGPU          json.RawMessage
-	gpuAttested        string
 	servingLeafSHA256  string
 	tlsBindingVerified bool
 	// erd is the expected freshness anchor — the exact bytes the producer bound,
@@ -133,8 +131,6 @@ func platformOrDefault(p string) string {
 // nonce, session keys, served mesh chain, and identity proof (which together
 // derive and authenticate the REPORTDATA binding) are parsed here.
 type attestationResponse struct {
-	GPUAttested         string                   `json:"gpu_attested"`
-	NvidiaGPU           json.RawMessage          `json:"nvidia_gpu"`
 	ServingLeafSHA256   string                   `json:"serving_leaf_sha256"`
 	LegacySessionPubkey json.RawMessage          `json:"session_pubkey"`
 	Version             string                   `json:"version"`
@@ -425,8 +421,6 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	return &evidence{
 		platform:         platformOrDefault(r.Platform),
 		rawEvidence:      r.Evidence,
-		nvidiaGPU:        r.NvidiaGPU,
-		gpuAttested:      r.GPUAttested,
 		erd:              erd,
 		fresh:            fresh,
 		source:           source,
@@ -681,8 +675,6 @@ func evidenceFromAttestLBJSON(data, expectNonce, observedLeafDER []byte, source 
 	return &evidence{
 		platform:    platformOrDefault(r.Platform),
 		rawEvidence: r.Evidence,
-		nvidiaGPU:   r.NvidiaGPU,
-		gpuAttested: r.GPUAttested,
 		erd:         transcript,
 		// A saved receipt is nonce-bound, but an offline check does not prove
 		// that it is current at verification time.
