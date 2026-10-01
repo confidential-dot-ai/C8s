@@ -99,13 +99,23 @@ type Defaults struct {
 }
 
 type config struct {
-	url           string
-	kind          string
-	mode          string
-	server        string
-	timeout       time.Duration
-	fromFile      string
-	discoveryPath string
+	observedServingCert       string
+	attestationNonce          string
+	nvidiaGPUUserNonce        string
+	nvidiaGPURequired         bool
+	nvidiaGPUExpectedArchs    []string
+	nvidiaGPUExpectedCount    int
+	nvidiaSwitchExpectedCount int
+	attestationCLISHA256      string
+	// attestationCLIPath is test-only; production resolves the helper from PATH.
+	attestationCLIPath string
+	url                string
+	kind               string
+	mode               string
+	server             string
+	timeout            time.Duration
+	fromFile           string
+	discoveryPath      string
 
 	measurements       []string
 	measurementsFile   string
@@ -194,7 +204,7 @@ responder chose).`,
 	f := cmd.Flags()
 	f.StringVar(&cfg.url, "url", "", "target URL or host:port (alternative to the positional argument)")
 	f.StringVar(&cfg.kind, "kind", orDefault(d.Kind, "auto"), "component being verified: cds, lb, workload, or auto")
-	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, or attest-pq")
+	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, attest-pq, or attest-lb")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", defaultDiscoveryPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
@@ -221,6 +231,14 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer)")
 
+	f.StringVar(&cfg.nvidiaGPUUserNonce, "nvidia-gpu-user-nonce", "", "hex report-data transcript used as the NVIDIA GPU nonce seed; requires the digest-pinned attestation-cli v0.5.0 NRAS verifier")
+	f.BoolVar(&cfg.nvidiaGPURequired, "nvidia-gpu-required", false, "fail unless NVIDIA GPU evidence exists and verifies with NRAS; requires --nvidia-gpu-user-nonce")
+	f.StringSliceVar(&cfg.nvidiaGPUExpectedArchs, "nvidia-gpu-expected-arch", nil, "accepted NVIDIA GPU architecture: HOPPER or BLACKWELL (repeatable / comma-separated); requires --nvidia-gpu-user-nonce")
+	f.IntVar(&cfg.nvidiaGPUExpectedCount, "nvidia-gpu-expected-count", 0, "exact number of unique signed NVIDIA GPU identities required; 0 does not set a count policy")
+	f.IntVar(&cfg.nvidiaSwitchExpectedCount, "nvidia-switch-expected-count", 0, "exact number of unique signed NVIDIA NVSwitch identities required; 0 does not set a count policy")
+	f.StringVar(&cfg.attestationCLISHA256, "attestation-cli-sha256", "", "lowercase SHA-256 of the attestation-cli binary built from node-guest-image/attestation-rs.ref; required for NVIDIA verification")
+	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "PEM or DER serving leaf observed on the same HTTPS connection as the receipt")
+	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "Canonical unpadded base64url 32-byte receipt challenge")
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
 	f.BoolVar(&cfg.showEvidence, "show-evidence", false, "print the raw report fields")
 
@@ -240,12 +258,18 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 	// No mode alias: the retired "attestation-endpoint" name (and anything
 	// else unknown) is a usage error, not a silent fall-through to auto.
 	switch cfg.mode {
-	case "", "auto", "ratls-cert", "discovery", "attest-pq":
+	case "", "auto", "ratls-cert", "discovery", "attest-pq", "attest-lb":
 	default:
-		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq)\n", cfg.mode)
+		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq, attest-lb)\n", cfg.mode)
 		return exitUsage
 	}
 
+	for _, check := range []func(config) error{validateAttestLBConfig, validateNvidiaGPUConfig} {
+		if err := check(cfg); err != nil {
+			fmt.Fprintf(errOut, "error: %v\n", err)
+			return exitUsage
+		}
+	}
 	plan, err := buildPolicy(cfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "error: %v\n", err)
@@ -365,10 +389,31 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		return exitNoEvidence
 	}
 	oc := newOutcome(cfg, ev, result, verr, plan)
+	if verr == nil && (cfg.nvidiaGPURequired || cfg.nvidiaGPUUserNonce != "") {
+		gpuVerified, nonceBindingOK := false, false
+		oc.GPUVerified = &gpuVerified
+		oc.NonceBindingOK = &nonceBindingOK
+		gpu, gpuErr := verifyNvidiaGPU(ctx, cfg, ev)
+		if gpuErr != nil {
+			oc.Verified = false
+			oc.Error = "NVIDIA GPU verification failed: " + gpuErr.Error()
+		} else if gpu != nil {
+			oc.GPUVerified = &gpu.Verified
+			oc.NonceBindingOK = &gpu.NonceBindingOK
+			oc.GPUDeviceCount = len(gpu.GPUDeviceUEIDs)
+			oc.GPUDeviceUEIDs = append([]string(nil), gpu.GPUDeviceUEIDs...)
+			oc.SwitchDeviceCount = len(gpu.SwitchDeviceUEIDs)
+			oc.SwitchDeviceUEIDs = append([]string(nil), gpu.SwitchDeviceUEIDs...)
+			oc.GPUVerifierSHA256 = gpu.VerifierSHA256
+			oc.GPUVerifierAttestationRSCommit = gpu.VerifierAttestationRSCommit
+		}
+	}
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
 	applyInitDataNote(&oc, result, plan)
+	oc.ServingLeafSHA256 = ev.servingLeafSHA256
+	oc.TLSBindingVerified = ev.tlsBindingVerified && oc.Verified
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
 }
@@ -895,6 +940,21 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		if err != nil {
 			return nil, err
 		}
+		if cfg.mode == "attest-lb" {
+			certData, err := os.ReadFile(cfg.observedServingCert)
+			if err != nil {
+				return nil, fmt.Errorf("read --observed-serving-cert: %w", err)
+			}
+			leafDER, err := parseObservedServingCertificate(certData)
+			if err != nil {
+				return nil, err
+			}
+			nonce, err := parseAttestationNonce(cfg.attestationNonce)
+			if err != nil {
+				return nil, err
+			}
+			return evidenceFromAttestLBJSON(data, nonce, leafDER, "file "+cfg.fromFile)
+		}
 		return gatherFromFile(data, overrideERD, "file "+cfg.fromFile, trust)
 	}
 	if cfg.url == "" {
@@ -907,6 +967,8 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 	}
 
 	switch resolveMode(cfg) {
+	case "attest-lb":
+		return nil, fmt.Errorf("live attest-lb gathering is not supported; save the receipt, challenge, and observed serving certificate")
 	case "ratls-cert":
 		return gatherFromRATLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
 	case "discovery":
@@ -994,12 +1056,24 @@ type Outcome struct {
 	Measurement string    `json:"measurement,omitempty"`
 	ReportData  string    `json:"report_data,omitempty"`
 	// Debug and SMT always serialize, even when false: an absent key reads as false to a CI gate.
-	Debug      bool   `json:"debug"`
-	SMT        bool   `json:"smt"`
-	CurrentTCB string `json:"current_tcb,omitempty"`
-	CertSHA256 string `json:"cert_sha256,omitempty"`
-	Pinned     bool   `json:"measurement_pinned"`
-	Error      string `json:"error,omitempty"`
+	Debug       bool   `json:"debug"`
+	SMT         bool   `json:"smt"`
+	CurrentTCB  string `json:"current_tcb,omitempty"`
+	CertSHA256  string `json:"cert_sha256,omitempty"`
+	GPUVerified *bool  `json:"gpu_verified,omitempty"`
+	// TLSBindingVerified is true only after the saved attest-lb transcript,
+	// mesh proof, observed leaf, caller challenge, and TEE report all verify.
+	TLSBindingVerified             bool     `json:"tls_binding_verified"`
+	ServingLeafSHA256              string   `json:"serving_leaf_sha256,omitempty"`
+	NonceBindingOK                 *bool    `json:"nonce_binding_ok,omitempty"`
+	GPUDeviceCount                 int      `json:"gpu_device_count,omitempty"`
+	GPUDeviceUEIDs                 []string `json:"gpu_device_ueids,omitempty"`
+	SwitchDeviceCount              int      `json:"switch_device_count,omitempty"`
+	SwitchDeviceUEIDs              []string `json:"switch_device_ueids,omitempty"`
+	GPUVerifierSHA256              string   `json:"gpu_verifier_sha256,omitempty"`
+	GPUVerifierAttestationRSCommit string   `json:"gpu_verifier_attestation_rs_commit,omitempty"`
+	Pinned                         bool     `json:"measurement_pinned"`
+	Error                          string   `json:"error,omitempty"`
 
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
@@ -1366,6 +1440,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		return oc
 	}
 	oc.Verified = true
+	oc.TLSBindingVerified = ev.tlsBindingVerified
+	oc.ServingLeafSHA256 = ev.servingLeafSHA256
 
 	return oc
 }
@@ -1659,4 +1735,34 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if cfg.showEvidence {
 		fmt.Fprintf(out, "  report_data:  %s\n", oc.ReportData)
 	}
+}
+
+func validateAttestLBConfig(cfg config) error {
+	usesObservedInputs := cfg.observedServingCert != "" || cfg.attestationNonce != ""
+	if cfg.mode != "attest-lb" {
+		if usesObservedInputs {
+			return fmt.Errorf("--observed-serving-cert and --attestation-nonce require --mode attest-lb")
+		}
+		return nil
+	}
+	if cfg.kind != "workload" {
+		return fmt.Errorf("--mode attest-lb requires --kind workload")
+	}
+	if cfg.fromFile == "" {
+		return fmt.Errorf("--mode attest-lb requires --from-file; save the receipt from the same HTTPS connection as the observed leaf")
+	}
+	if cfg.url != "" {
+		return fmt.Errorf("--mode attest-lb with --from-file does not accept a target URL")
+	}
+	if cfg.observedServingCert == "" {
+		return fmt.Errorf("--mode attest-lb requires --observed-serving-cert")
+	}
+	if cfg.attestationNonce == "" {
+		return fmt.Errorf("--mode attest-lb requires --attestation-nonce")
+	}
+	if cfg.expectedRDHex != "" {
+		return fmt.Errorf("--expected-report-data does not apply to attest-lb; the verifier computes its transcript")
+	}
+	_, err := parseAttestationNonce(cfg.attestationNonce)
+	return err
 }
