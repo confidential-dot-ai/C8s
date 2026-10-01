@@ -152,11 +152,8 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		"--set", "node.baked=true",
 		"--set", "nriImagePolicy.enabled=false",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
-		// volumed is deployed per cluster with `c8s install --volumes`, not
-		// baked: it needs the operator's kubelet-root and cgroup host paths,
-		// which are not known at build time. A baked node therefore serves
-		// plain PVCs through local-path; encrypted volumes (docs/volumes.md)
-		// require that separate install.
+		// A baked node runs volumed as the host service volumed.service, not
+		// the chart DaemonSet, which the chart refuses on a baked node.
 		"--set", "volumed.enabled=false",
 		"--set", "router.attest.enabled=true",
 	)

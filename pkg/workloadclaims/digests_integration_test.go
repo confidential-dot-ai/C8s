@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -104,7 +105,6 @@ func serveDigestsTLS(t *testing.T, resolver SandboxResolver, identity []byte) (*
 	pool := x509.NewCertPool()
 	pool.AddCert(leaf)
 	return &DigestsClient{
-		timeout: 5 * time.Second,
 		http: &http.Client{
 			Timeout:   5 * time.Second,
 			Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS13}},
@@ -317,7 +317,7 @@ func TestInventoryKeyRejectsBadAnswers(t *testing.T) {
 // bound applies to the identity fetch as to the digests fetch, since both are
 // driven by a requester-supplied host.
 func TestInventoryKeyRejectsForgedHost(t *testing.T) {
-	c := &DigestsClient{timeout: time.Second}
+	c := &DigestsClient{}
 	if _, err := c.InventoryKey(context.Background(), "169.254.169.254"); err == nil {
 		t.Fatal("identity fetch dialed the metadata service")
 	}
@@ -343,7 +343,7 @@ func TestDigestsClientTransportAndProtocolFailures(t *testing.T) {
 		dialPort = port
 		t.Cleanup(func() { dialPort = prev })
 
-		c := &DigestsClient{timeout: time.Second, http: &http.Client{Timeout: time.Second}}
+		c := &DigestsClient{http: &http.Client{Timeout: time.Second}}
 		if _, err := c.Fetch(context.Background(), ip.String(), "sandbox-1"); err == nil {
 			t.Fatal("Fetch succeeded against a closed port")
 		}
@@ -398,7 +398,9 @@ func clientAgainst(t *testing.T, h http.Handler) (*DigestsClient, string) {
 	dialPort = port
 	t.Cleanup(func() { dialPort = prev })
 
-	return &DigestsClient{timeout: 5 * time.Second, http: srv.Client()}, ip.String()
+	client := srv.Client()
+	client.Timeout = 5 * time.Second
+	return &DigestsClient{http: client}, ip.String()
 }
 
 // A misbehaving or impersonating inventory must not be able to feed CDS
@@ -450,4 +452,25 @@ func TestDigestsClientRejectsMalformedAnswers(t *testing.T) {
 			t.Fatal("accepted a non-ECDSA inventory key")
 		}
 	})
+}
+
+// A body larger than what arrives with the headers must still be readable
+// after the request returns.
+func TestFetchSandboxReadsALargeBody(t *testing.T) {
+	c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(SandboxDigestsResponse{
+			Containers: []SandboxContainer{{Argv: []string{strings.Repeat("a", 64<<10)}}},
+		})
+	}))
+	// httptest's certificate names example.com, not the routable address.
+	c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+	for range 20 {
+		out, err := c.FetchSandbox(context.Background(), host, "sandbox-1")
+		if err != nil {
+			t.Fatalf("FetchSandbox: %v", err)
+		}
+		if len(out.Containers) != 1 {
+			t.Fatalf("containers = %d, want 1", len(out.Containers))
+		}
+	}
 }

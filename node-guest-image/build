@@ -43,13 +43,13 @@
 #   C8S_NAME=...       output name (default c8s → output/c8s/)
 #   C8S_MEMORY=...     default-memory recorded in the manifest / used by
 #                      `confos run` (default 16G — etcd OOMs at the 4G default)
-#   C8S_REF=...        bake the host binary and core container images
-#                      from a specific c8s COMMIT (short SHA)
-#                      instead of the pin in the c8s profile's mkosi.sync,
-#                      which resolves nri-image-policy:<ref> and cds:<ref> to
-#                      digests. The images must be published first (c8s
-#                      docker.yml on main, or workflow_dispatch for a branch).
-#                      Use to test an unmerged c8s build end-to-end.
+#   C8S_REF=...        REQUIRED. Bake the host binary and core container
+#                      images from a specific c8s COMMIT (short SHA) or
+#                      release tag; mkosi.sync resolves nri-image-policy:<ref>
+#                      and cds:<ref> to digests and has no default. The
+#                      images must be published first (c8s docker.yml on
+#                      main, or workflow_dispatch for a branch). Use a
+#                      branch SHA to test an unmerged c8s build end-to-end.
 #   C8S_BINARY=...     pre-stage this locally built multi-command c8s binary
 #                      instead of pulling nri-image-policy:<C8S_REF>. The
 #                      core container images still resolve from C8S_REF and
@@ -74,6 +74,8 @@ case "${C8S_PLATFORM:-}" in
 tdx|snp) ;;
 *)  echo "node-guest-image/build: C8S_PLATFORM must be tdx or snp, got '${C8S_PLATFORM:-}'" >&2; exit 1 ;;
 esac
+[ -n "${C8S_REF:-}" ] \
+    || { echo "node-guest-image/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
 NGI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONFOS_DIR=${CONFOS_DIR:-"$NGI_DIR/../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] || { echo "node-guest-image/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
@@ -130,7 +132,7 @@ exec bin/confos build "${C8S_NAME:-c8s}" \
     --profile-dir "$NGI_DIR/c8s" \
     --module-signing-cert "$NGI_DIR/module-signing.crt" \
     --sync-input "platform=${C8S_PLATFORM}" \
-    --sync-input "c8s-ref=${C8S_REF:-}" \
+    --sync-input "c8s-ref=${C8S_REF}" \
     --sync-input "c8s-registry=${C8S_REGISTRY:-}" \
     --sync-input "c8s-binary=${C8S_BINARY:+1}" \
     --sync-input "dev=${C8S_DEV:-0}" \
