@@ -8,7 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -331,6 +333,9 @@ func TestBuildMutableProducesSizedDecryptableImage(t *testing.T) {
 	if strings.Contains(argv, " -d ") {
 		t.Errorf("mkfs.ext4 preloads without a source: %s", argv)
 	}
+	if strings.Contains(argv, "root_owner") {
+		t.Errorf("mkfs.ext4 sets a root owner without a source: %s", argv)
+	}
 }
 
 // A source with no size is sized from the tree, grown and rounded, and the
@@ -380,6 +385,76 @@ func TestBuildMutableHonorsAnExplicitSize(t *testing.T) {
 	}
 	if want := uint64(100<<20 + ImageBlockSize); got != want {
 		t.Fatalf("size = %d, want %d (rounded to a whole block)", got, want)
+	}
+}
+
+// mkfs.ext4 -d does not apply the source directory's own owner to the image
+// root, so the build passes it as root_owner: a consumer that owns the seed
+// can then create files at the mount root.
+func TestBuildMutableGivesTheRootTheSourceOwner(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o750); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	f := newFake()
+
+	if _, err := BuildMutable(t.Context(), MutableBuildConfig{
+		Source: src, Out: filepath.Join(dir, "vol.img"), Key: testKey(), Size: 100 << 20, Run: f.run,
+	}); err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	want := fmt.Sprintf("-E root_owner=%d:%d -d %s", os.Getuid(), os.Getgid(), src)
+	if argv := mkfsExt4Call(t, f); !strings.Contains(argv, want) {
+		t.Errorf("mkfs.ext4 argv = %s, want it to contain %q", argv, want)
+	}
+}
+
+// The same arguments with the real mkfs.ext4: the image root is owned by the
+// source directory's owner, and its entries keep their own owner and mode.
+func TestExt4ArgsRootOwnerWithRealMkfs(t *testing.T) {
+	for _, tool := range []string{"mkfs.ext4", "debugfs"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skipf("%s is not installed", tool)
+		}
+	}
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o750); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	owner, err := sourceRootOwner(src)
+	if err != nil {
+		t.Fatalf("source owner: %v", err)
+	}
+	img := filepath.Join(dir, "data.ext4")
+	if err := os.WriteFile(img, nil, 0o600); err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if err := os.Truncate(img, minMutableBytes); err != nil {
+		t.Fatalf("size image: %v", err)
+	}
+	if out, err := exec.Command("mkfs.ext4", ext4Args(img, src, owner, 0)...).CombinedOutput(); err != nil {
+		t.Fatalf("mkfs.ext4: %v: %s", err, out)
+	}
+	stat := func(path string) string {
+		cmd := exec.Command("debugfs", "-R", "stat "+path, img)
+		cmd.Env = append(os.Environ(), "DEBUGFS_PAGER=__none__")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("debugfs stat %s: %v", path, err)
+		}
+		m := regexp.MustCompile(`User:\s+(\d+)\s+Group:\s+(\d+)`).FindStringSubmatch(string(out))
+		if m == nil {
+			t.Fatalf("debugfs stat %s printed no owner: %s", path, out)
+		}
+		return m[1] + ":" + m[2]
+	}
+	if got := stat("/"); got != owner {
+		t.Errorf("image root owner = %s, want the source owner %s", got, owner)
+	}
+	if got := stat("/sub"); got != owner {
+		t.Errorf("image /sub owner = %s, want the source owner %s", got, owner)
 	}
 }
 
