@@ -222,7 +222,8 @@ for marker in 'hostname: cidata-bait' 'assert the host cidata disk is inert' 'se
     exit 1
   fi
 done
-for marker in 'image_acceptance_artifact:' 'bash .github/scripts/tdx-image-acceptance.sh validate'; do
+for marker in 'image_acceptance_artifact_prefix:' 'name: ${{ needs.source.outputs.artifact }}' \
+              'bash .github/scripts/tdx-image-acceptance.sh validate'; do
   if ! grep -qF "$marker" .github/workflows/tdx-image-acceptance.yml; then
     echo "::error::tdx-image-acceptance.yml lost '$marker': exact-image evidence is required"
     exit 1
