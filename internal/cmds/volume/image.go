@@ -68,7 +68,7 @@ type BuildConfig struct {
 // a way to identify the contents; and the root hash then commits to the data
 // itself rather than to one encryption of it.
 func Build(ctx context.Context, cfg BuildConfig) (Verity, error) {
-	if err := checkSource(cfg.Source); err != nil {
+	if _, err := checkSource(cfg.Source); err != nil {
 		return Verity{}, err
 	}
 	if len(cfg.Key) != KeyBytes {
@@ -163,14 +163,11 @@ func BuildMutable(ctx context.Context, cfg MutableBuildConfig) (uint64, error) {
 	var inodes uint64
 	var rootOwner string
 	if cfg.Source != "" {
-		if err := checkSource(cfg.Source); err != nil {
-			return 0, err
-		}
-		owner, err := sourceRootOwner(cfg.Source)
+		info, err := checkSource(cfg.Source)
 		if err != nil {
 			return 0, err
 		}
-		rootOwner = owner
+		rootOwner = ownerOf(info)
 		dataBytes, entries, err := treeSize(cfg.Source)
 		if err != nil {
 			return 0, err
@@ -234,11 +231,9 @@ func (b *mutableImage) build(ctx context.Context, run Runner) error {
 // mount to read-only rather than letting corruption spread — on a volume with
 // no integrity layer, the most likely cause is a host flipping bits.
 // Ownership and modes of the source's entries are preserved, as on the
-// immutable path. -d does not apply them to the root directory itself, which
-// mkfs.ext4 creates as 0:0 — so root_owner copies the source root's owner, or
-// a non-root consumer could not create files at the mount root. The root
-// mode stays mkfs's 0755, which lets that owner write; root_perms would copy
-// the mode too, but e2fsprogs before 1.47.1 rejects it.
+// immutable path, but -d skips the root directory itself (mkfs makes it 0:0,
+// 0755): root_owner gives it the source's owner so a non-root consumer can
+// write there. The mode stays 0755; root_perms needs e2fsprogs 1.47.1.
 func ext4Args(dest, source, rootOwner string, inodes uint64) []string {
 	args := []string{"-q", "-F", "-b", fmt.Sprint(ImageBlockSize), "-m", "0", "-e", "remount-ro"}
 	if inodes > 0 {
@@ -386,31 +381,24 @@ func buildImage(ctx context.Context, cfg BuildConfig, builder imageBuilder) erro
 	return Encrypt(out, io.MultiReader(readers...), cfg.Key)
 }
 
-func checkSource(source string) error {
+func checkSource(source string) (os.FileInfo, error) {
 	if source == "" {
-		return fmt.Errorf("volume: --source is required")
+		return nil, fmt.Errorf("volume: --source is required")
 	}
 	info, err := os.Stat(source)
 	if err != nil {
-		return fmt.Errorf("volume: --source: %w", err)
+		return nil, fmt.Errorf("volume: --source: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("volume: --source %s is not a directory", source)
+		return nil, fmt.Errorf("volume: --source %s is not a directory", source)
 	}
-	return nil
+	return info, nil
 }
 
-// sourceRootOwner returns the "uid:gid" that owns the source directory.
-func sourceRootOwner(source string) (string, error) {
-	info, err := os.Stat(source)
-	if err != nil {
-		return "", fmt.Errorf("volume: --source: %w", err)
-	}
-	st, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return "", fmt.Errorf("volume: --source %s: cannot read its owner", source)
-	}
-	return fmt.Sprintf("%d:%d", st.Uid, st.Gid), nil
+// ownerOf returns the "uid:gid" that owns info's file.
+func ownerOf(info os.FileInfo) string {
+	st := info.Sys().(*syscall.Stat_t)
+	return fmt.Sprintf("%d:%d", st.Uid, st.Gid)
 }
 
 func fileSize(path string) (uint64, error) {

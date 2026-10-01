@@ -410,8 +410,10 @@ func TestBuildMutableGivesTheRootTheSourceOwner(t *testing.T) {
 	}
 }
 
+var debugfsOwnerRE = regexp.MustCompile(`User:\s+(\d+)\s+Group:\s+(\d+)`)
+
 // The same arguments with the real mkfs.ext4: the image root is owned by the
-// source directory's owner, and its entries keep their own owner and mode.
+// source directory's owner, and its entries keep their own owner.
 func TestExt4ArgsRootOwnerWithRealMkfs(t *testing.T) {
 	for _, tool := range []string{"mkfs.ext4", "debugfs"} {
 		if _, err := exec.LookPath(tool); err != nil {
@@ -423,10 +425,11 @@ func TestExt4ArgsRootOwnerWithRealMkfs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o750); err != nil {
 		t.Fatalf("mkdir src: %v", err)
 	}
-	owner, err := sourceRootOwner(src)
+	info, err := os.Stat(src)
 	if err != nil {
-		t.Fatalf("source owner: %v", err)
+		t.Fatalf("stat src: %v", err)
 	}
+	owner := ownerOf(info)
 	img := filepath.Join(dir, "data.ext4")
 	if err := os.WriteFile(img, nil, 0o600); err != nil {
 		t.Fatalf("create image: %v", err)
@@ -444,7 +447,7 @@ func TestExt4ArgsRootOwnerWithRealMkfs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("debugfs stat %s: %v", path, err)
 		}
-		m := regexp.MustCompile(`User:\s+(\d+)\s+Group:\s+(\d+)`).FindStringSubmatch(string(out))
+		m := debugfsOwnerRE.FindStringSubmatch(string(out))
 		if m == nil {
 			t.Fatalf("debugfs stat %s printed no owner: %s", path, out)
 		}

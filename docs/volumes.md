@@ -137,11 +137,10 @@ The consumer pod runs under the Restricted controls, so it declares a numeric
 UID (`runAsUser`, not a user name; the admission check cannot resolve names)
 and the volume's filesystem has to be usable by that UID already. `c8s volume
 create` copies the source tree's ownership and modes into the image unchanged
-— for a mutable volume, the source directory's own owner too, which becomes
-the owner of the mount root (its mode is `0755`) — and nothing on the node
-adjusts them at mount time: volumed mounts the device
-as it is, and `fsGroup` does not reach a mount that lands after the pod has
-started. So pick the UID first and prepare the tree for it. The simplest choice
+(on a mutable volume the mount root takes the source directory's owner but
+always mode `0755`), and nothing on the node adjusts them at mount time:
+volumed mounts the device as it is, and `fsGroup` does not reach a mount that
+lands after the pod has started. So pick the UID first and prepare the tree for it. The simplest choice
 is the UID that owns the tree on the machine you build on (`id -u`); anything
 else needs `chown` as root, or the whole build run under `fakeroot`.
 
