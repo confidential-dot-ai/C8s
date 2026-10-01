@@ -93,6 +93,16 @@ if ! awk '/^    cni:/{c=1;next} c&&/^    [^ ]/{c=0} c&&/^      iptablesRemoveAWS
   exit 1
 fi
 
+# ratls-mesh intercepts in netfilter: eBPF service/masquerade paths bypass it.
+if grep -q '^disable-kube-proxy:[[:space:]]*true' "$rke2_config"; then
+  echo "::error::kube-proxy must stay enabled; ratls-mesh relies on netfilter"
+  exit 1
+fi
+if [ -f "$cilium_config" ] && ! grep -q '^    kubeProxyReplacement:[[:space:]]*false' "$cilium_config"; then
+  echo "::error::Cilium kubeProxyReplacement must be false (eBPF bypasses ratls-mesh netfilter rules)"
+  exit 1
+fi
+
 # The kubelet debugging handlers stay on (they back kubectl logs, which the
 # log-reader credential exists for); exec/attach/port-forward/ephemeral
 # containers are closed at the apiserver by the baked pod-exec-policy AddOn

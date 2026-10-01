@@ -17,7 +17,8 @@
 #   2. One CNI does all the work — no kube-proxy ↔ Cilium ordering races,
 #      no double-NAT, no nftables-vs-iptables backend mismatch.
 cni: cilium
-disable-kube-proxy: true
+# Circle mesh test (variant A): keep RKE2 kube-proxy so service traffic
+# traverses netfilter, where ratls-mesh interception lives.
 
 # This node cluster normally runs inside a KubeVirt pod on an outer RKE2
 # cluster. Do not reuse RKE2's 10.42.0.0/16 pod and 10.43.0.0/16 service

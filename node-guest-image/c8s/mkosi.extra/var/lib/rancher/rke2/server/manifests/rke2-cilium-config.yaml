@@ -27,8 +27,9 @@ metadata:
   namespace: kube-system
 spec:
   valuesContent: |-
-    # eBPF service handling — REQUIRED with disable-kube-proxy.
-    kubeProxyReplacement: true
+    # Circle mesh test (variant A): kube-proxy handles services in netfilter
+    # so ratls-mesh iptables interception is not bypassed by eBPF.
+    kubeProxyReplacement: false
 
     # eBPF masquerade — the recommended pairing with kubeProxyReplacement.
     # Keeps masquerade/NAT entirely in the eBPF datapath instead of Cilium's
@@ -36,7 +37,8 @@ spec:
     # guest: less leaning on the netfilter symbol set, one datapath to
     # reason about.
     bpf:
-      masquerade: true
+      masquerade: false
+      hostLegacyRouting: true
 
     # WireGuard node-to-node encryption — cross-node pod traffic rides the
     # untrusted host fabric. Peer keys ride CiliumNode objects, so peer trust
