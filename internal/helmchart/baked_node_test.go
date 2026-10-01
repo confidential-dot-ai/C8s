@@ -194,6 +194,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 		t.Fatal("router certificate sidecar missing")
 	}
 	assertContainerHasArg(t, "c8s-cert", cert.Args, "--discovery-public-tls-mode-file=/run/c8s-node/router/front-door-mode")
+	assertContainerHasArg(t, "c8s-cert", cert.Args, "--discovery-public-tls-hostnames-file=/run/c8s-node/router/hostnames")
 	assertContainerNoArgPrefix(t, "c8s-cert", cert.Args, "--discovery-public-tls-mode=")
 	assertContainerMount(t, cert, "node-config", "/run/c8s-node")
 

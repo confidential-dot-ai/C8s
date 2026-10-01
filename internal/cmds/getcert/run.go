@@ -73,9 +73,12 @@ type config struct {
 	// DiscoveryPublicTLSModeFile, when set, replaces DiscoveryPublicTLSMode
 	// with the file's content (a node image's launch-selected mode).
 	DiscoveryPublicTLSModeFile string
-	WorkloadClaims             bool
-	WorkloadClaimsTimeout      time.Duration
-	UnnamedRenewInterval       time.Duration
+	// Public hostnames can differ from the CDS mesh certificate SAN.
+	DiscoveryPublicTLSHostnamesFile string
+	DiscoveryPublicTLSHostname      string
+	WorkloadClaims                  bool
+	WorkloadClaimsTimeout           time.Duration
+	UnnamedRenewInterval            time.Duration
 }
 
 // inventoryEndpoint returns the compiled admission-inventory endpoint. It is a
@@ -150,6 +153,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
 	flags.StringVar(&cfg.DiscoveryPublicTLSModeFile, "discovery-public-tls-mode-file", "", "File holding the public TLS mode to report in discovery metadata, read at start; replaces --discovery-public-tls-mode")
+	flags.StringVar(&cfg.DiscoveryPublicTLSHostnamesFile, "discovery-public-tls-hostnames-file", "", "File holding launch-selected public hostnames; report the first name in discovery without changing the CDS certificate SAN")
 	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/ratls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
 	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew this often (plus jitter) while the installed leaf carries no matched-workload stamp, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
@@ -225,6 +229,9 @@ func run(cfg config) error {
 	}
 	cfg.SAN = san
 	if err := resolveDiscoveryPublicTLSMode(&cfg); err != nil {
+		return err
+	}
+	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
 		return err
 	}
 	slog.Info("starting get-cert", "san", cfg.SAN)
@@ -1010,12 +1017,16 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 		return types.DiscoveryDocument{}, fmt.Errorf("parse issued certificate for discovery: %w", err)
 	}
 	fingerprint := sha256.Sum256(cert.Raw)
+	hostname := cfg.DiscoveryPublicTLSHostname
+	if hostname == "" {
+		hostname = cfg.SAN
+	}
 
 	return types.DiscoveryDocument{
 		Version:     "v1",
 		GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		PublicTLS: types.PublicTLSDiscovery{
-			Hostname: cfg.SAN,
+			Hostname: hostname,
 			Mode:     discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode),
 		},
 		CDSTLS: types.CDSTLSDiscovery{
@@ -1030,6 +1041,38 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 			Evidence:  result.Evidence,
 		},
 	}, nil
+}
+
+// resolveDiscoveryPublicTLSHostname uses the same launch input as ACME.
+// An empty list is valid only in CDS mode, which serves the mesh certificate.
+func resolveDiscoveryPublicTLSHostname(cfg *config) error {
+	if cfg.DiscoveryPublicTLSHostnamesFile == "" {
+		cfg.DiscoveryPublicTLSHostname = cfg.SAN
+		return nil
+	}
+	data, err := os.ReadFile(cfg.DiscoveryPublicTLSHostnamesFile)
+	if err != nil {
+		return fmt.Errorf("--discovery-public-tls-hostnames-file: %w", err)
+	}
+	names := strings.Fields(string(data))
+	if len(names) == 0 {
+		if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) != "cds" {
+			return fmt.Errorf("--discovery-public-tls-hostnames-file: public TLS mode requires a hostname")
+		}
+		cfg.DiscoveryPublicTLSHostname = cfg.SAN
+		return nil
+	}
+	for _, name := range names {
+		if err := validateSAN(name); err != nil {
+			return fmt.Errorf("--discovery-public-tls-hostnames-file: %w", err)
+		}
+	}
+	if discoveryPublicTLSMode(cfg.DiscoveryPublicTLSMode) == "cds" {
+		cfg.DiscoveryPublicTLSHostname = cfg.SAN
+	} else {
+		cfg.DiscoveryPublicTLSHostname = names[0]
+	}
+	return nil
 }
 
 func discoveryPublicTLSMode(mode string) string {

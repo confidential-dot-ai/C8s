@@ -565,6 +565,7 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 - --discovery-cds-cert-url={{ .Values.router.discovery.cdsCertPath }}
 {{- if eq (include "router.launchDriven" .) "true" }}
 - --discovery-public-tls-mode-file={{ include "router.launchDir" . }}/front-door-mode
+- --discovery-public-tls-hostnames-file={{ include "router.launchDir" . }}/hostnames
 {{- else }}
 - --discovery-public-tls-mode={{ include "router.publicTLSMode" . }}
 {{- end }}
