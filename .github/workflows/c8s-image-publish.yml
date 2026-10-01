@@ -104,7 +104,7 @@ jobs:
       actions: read
     uses: ./.github/workflows/tdx-image-acceptance.yml
     with:
-      image_acceptance_artifact: node-image-acceptance-rke2-tdx-${{ github.run_attempt }}
+      image_acceptance_artifact_prefix: node-image-acceptance-rke2-tdx
 
   # Wait for both TDX/SNP matrix legs, then preflight every exact alias before
   # creating any of them. Registry publication is not transactional, so a
