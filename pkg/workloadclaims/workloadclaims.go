@@ -91,6 +91,13 @@ func IsSidecarContainer(name string) bool {
 	return name == CertContainerName || name == SecretContainerName || name == VolumeContainerName
 }
 
+// IsSocketConsumer reports which containers receive the read-only node socket
+// directory. cds-attest is authored by an application chart, not injected by
+// the webhook. Keep this separate from IsInjectedContainerName.
+func IsSocketConsumer(name string) bool {
+	return IsSidecarContainer(name) || name == "cds-attest"
+}
+
 // IsInjectedContainerName reports whether name is one the admission webhook
 // injects. Names are host-written, so it holds only over authored input;
 // runtime matching goes by digest and entrypoint (internal/secrets.WorkloadContainers).
