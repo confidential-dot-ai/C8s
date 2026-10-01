@@ -565,6 +565,7 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 - --discovery-cds-cert-url={{ .Values.router.discovery.cdsCertPath }}
 {{- if eq (include "router.launchDriven" .) "true" }}
 - --discovery-public-tls-mode-file={{ include "router.launchDir" . }}/front-door-mode
+- --discovery-public-tls-hostnames-file={{ include "router.launchDir" . }}/hostnames
 {{- else }}
 - --discovery-public-tls-mode={{ include "router.publicTLSMode" . }}
 {{- end }}
@@ -582,7 +583,8 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 
 {{/*
 "true" when the router pod must mount the node inventory's socket directory:
-the readiness gate is on and this is the node-CVM shape.
+workload claims are required and this is the node-CVM shape. A baked
+router always requests claims so clients can verify its workload stamp.
 
 The condition mirrors the operator's own inventory condition
 (operator.yaml): the directory exists only where an installer put it, and a
@@ -592,7 +594,7 @@ condition true in every renderable shape today; the condition is spelled out
 anyway so the two consumers of the socket stay on one rule.
 */}}
 {{- define "router.mountInventorySocket" -}}
-{{- if and .Values.router.attest.expectedWorkload (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if and (or .Values.node.baked .Values.router.attest.expectedWorkload) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -617,9 +619,11 @@ list.
 {{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
-{{- if .Values.router.attest.expectedWorkload -}}
+{{- if or .Values.node.baked .Values.router.attest.expectedWorkload -}}
 
-{{- /* The readiness gate (cds-attest /readyz) demands a matched-workload
+{{- /* A baked router needs the same workload stamp that clients pin, even
+       when the optional ingress readiness gate is unset.
+       The readiness gate (cds-attest /readyz) demands a matched-workload
        stamp on the mesh leaf, which only exists when get-cert redeems a
        sandbox token from the inventory — so wire the claims flow whenever
        the gate is enabled (the deployment fails the render if the gate is

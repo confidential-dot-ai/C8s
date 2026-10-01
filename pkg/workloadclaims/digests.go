@@ -228,8 +228,7 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 // configured — and presents CDS's own RA-TLS certificate, so the inventory can
 // pin CDS in turn.
 type DigestsClient struct {
-	http    *http.Client
-	timeout time.Duration
+	http *http.Client
 }
 
 // NewDigestsClient builds the client. pins hold the launch digests (and any
@@ -277,7 +276,6 @@ func NewDigestsClient(ctx context.Context, platform string, attestFunc func(ctx 
 				IdleConnTimeout:     30 * time.Second,
 			},
 		},
-		timeout: timeout,
 	}, nil
 }
 
@@ -375,8 +373,6 @@ func (c *DigestsClient) get(ctx context.Context, host, route string) (*http.Resp
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, c.timeout)
-	defer cancel()
 	url := "https://" + net.JoinHostPort(dialHost, strconv.Itoa(dialPort)) + route
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
