@@ -36,8 +36,8 @@
 #   C8S_DEV=1          demo/debug build: kernel/c8s-dev.config fragment
 #                      (8250 serial re-enabled) + the dev profile
 #                      (console=ttyS0, passwordless serial autologin) +
-#                      kubelet debugging handlers back on (kubectl
-#                      exec/attach/logs work). Different measurement, root
+#                      no exec denial (kubectl exec/attach/port-forward
+#                      work). Different measurement, root
 #                      shell on the host-visible serial socket — never ship.
 #                      Default name: c8s-dev.
 #   C8S_NAME=...       output name (default c8s → output/c8s/)
