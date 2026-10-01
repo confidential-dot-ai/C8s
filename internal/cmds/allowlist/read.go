@@ -45,13 +45,12 @@ func newExportCmd(o *options) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			// Canonical bytes round-trip with `upload` and cds --allowlist-seed.
+			// Export the exact canonical bytes served by CDS. Workload stamps
+			// hash these bytes, so even a trailing newline changes a client pin.
 			data, err := al.Canonical()
 			if err != nil {
 				return err
 			}
-			data = append(data, '\n')
-
 			if len(args) == 1 && args[0] != "-" {
 				if err := os.WriteFile(args[0], data, 0o644); err != nil {
 					return fmt.Errorf("write %q: %w", args[0], err)
