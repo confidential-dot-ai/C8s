@@ -46,12 +46,15 @@ func runFallback(ctx context.Context, cfg config, logger *slog.Logger, reload fu
 		switch {
 		case err != nil:
 			logger.Warn("fallback certificate not copied", "error", err)
-		case changed && installed:
-			// nginx starts on the first pair, so only a replacement reloads it.
-			logger.Info("fallback certificate replaced")
-			reload()
 		case changed:
+			// The cert volume and nginx can survive a sidecar restart. Reload
+			// even this process's first copy; nginx may still serve the old pair.
+			// The reload callback tolerates nginx not having started yet.
 			logger.Info("fallback certificate installed")
+			reload()
+		}
+		if err == nil {
+			// An unchanged matching pair is also installed after a restart.
 			installed = true
 		}
 

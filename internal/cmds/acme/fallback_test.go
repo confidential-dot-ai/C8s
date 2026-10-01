@@ -121,22 +121,53 @@ func TestRunFallbackReloadsOnChange(t *testing.T) {
 	fallbackInterval, fallbackRetry = 10*time.Millisecond, 10*time.Millisecond
 	t.Cleanup(func() { fallbackInterval, fallbackRetry = oldInterval, oldRetry })
 
-	src, dst := t.TempDir(), t.TempDir()
-	var reloads atomic.Int32
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	cfg := config{certDir: dst, fallbackCertDir: src}
-	go func() { done <- runFallback(ctx, cfg, slog.Default(), func() { reloads.Add(1) }) }()
+	for _, restart := range []bool{false, true} {
+		name := "fresh start"
+		if restart {
+			name = "sidecar restart"
+		}
+		t.Run(name, func(t *testing.T) {
+			src, dst := t.TempDir(), t.TempDir()
+			if restart {
+				// emptyDir and nginx survive a sidecar restart. A renewal may
+				// already be waiting when the replacement sidecar starts.
+				writePair(t, src, "already-served")
+				if _, err := copyFallbackPair(src, dst); err != nil {
+					t.Fatal(err)
+				}
+			}
+			writePair(t, src, "mesh-1")
+			var reloads atomic.Int32
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			cfg := config{certDir: dst, fallbackCertDir: src}
+			reload := func() { reloads.Add(1) }
+			go func() { done <- runFallback(ctx, cfg, slog.Default(), reload) }()
+			t.Cleanup(func() {
+				cancel()
+				if err := <-done; err != nil {
+					t.Error(err)
+				}
+			})
 
-	writePair(t, src, "mesh-1")
-	waitFor(t, func() bool { _, err := os.Stat(filepath.Join(dst, certFile)); return err == nil })
-	if reloads.Load() != 0 {
-		t.Fatal("first copy reloaded nginx before it started")
+			waitFor(t, func() bool { return reloads.Load() >= 1 })
+			writePair(t, src, "mesh-2")
+			waitFor(t, func() bool { return reloads.Load() >= 2 })
+		})
 	}
-	writePair(t, src, "mesh-2")
-	waitFor(t, func() bool { return reloads.Load() >= 1 })
+}
+
+func TestRunFallbackUnchangedPairDoesNotReload(t *testing.T) {
+	src, dst := t.TempDir(), t.TempDir()
+	writePair(t, src, "already-served")
+	if _, err := copyFallbackPair(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	// A cancelled context lets the loop check the existing pair once, then exit.
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := <-done; err != nil {
+	cfg := config{certDir: dst, fallbackCertDir: src}
+	if err := runFallback(ctx, cfg, slog.Default(), func() { t.Error("unchanged pair reloaded nginx") }); err != nil {
 		t.Fatal(err)
 	}
 }
