@@ -1,7 +1,10 @@
 package allowlist
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -214,6 +217,47 @@ func TestExportToStdout(t *testing.T) {
 	}
 	if dashOut != out {
 		t.Fatalf("export - differs from bare export:\n%s\nvs\n%s", dashOut, out)
+	}
+}
+
+func TestExportMatchesServedCanonicalBytes(t *testing.T) {
+	url, _ := servingCDS(t, map[string]string{digA: "registry/app@" + digA})
+	response, err := http.Get(url + "/allowlist")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A workload stamp hashes the served canonical bytes. An export must be
+	// usable as a verifier pin without a different digest from whitespace.
+	for _, mode := range []string{"stdout", "dash", "file"} {
+		t.Run(mode, func(t *testing.T) {
+			args := []string{"export"}
+			file := filepath.Join(t.TempDir(), "allowlist.json")
+			if mode == "dash" {
+				args = append(args, "-")
+			} else if mode == "file" {
+				args = append(args, file)
+			}
+			args = append(args, "--url", url, "--insecure")
+			out, _, err := runCmd(args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := []byte(out)
+			if mode == "file" {
+				got, err = os.ReadFile(file)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("export differs from served bytes: got SHA256 %x, want %x", sha256.Sum256(got), sha256.Sum256(want))
+			}
+		})
 	}
 }
 

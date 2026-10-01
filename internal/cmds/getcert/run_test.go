@@ -174,6 +174,58 @@ func TestResolveDiscoveryPublicTLSModeFile(t *testing.T) {
 	}
 }
 
+func TestDiscoveryLaunchHostnamesDoNotReplaceMeshIdentity(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hostnames")
+	if err := os.WriteFile(path, []byte("api.confidential.ai\ncandidate.api.confidential.ai\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config{SAN: "c8s.local", DiscoveryPublicTLSMode: "acme", DiscoveryPublicTLSHostnamesFile: path}
+	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil {
+		t.Fatal(err)
+	}
+	cert := testCertificatePEM(t)
+	doc, err := buildDiscoveryDocument(cfg, attestclient.CertificateResult{Certificate: cert})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.PublicTLS.Hostname != "api.confidential.ai" || cfg.SAN != "c8s.local" || doc.CDSTLS.CertificatePEM != cert {
+		t.Fatalf("public identity and CDS identity were mixed: hostname=%q SAN=%q", doc.PublicTLS.Hostname, cfg.SAN)
+	}
+	// A CDS front door still serves the CDS certificate, even if names exist.
+	cfg.DiscoveryPublicTLSMode = "cds"
+	if err := resolveDiscoveryPublicTLSHostname(&cfg); err != nil || cfg.DiscoveryPublicTLSHostname != cfg.SAN {
+		t.Fatalf("CDS mode: %q, %v", cfg.DiscoveryPublicTLSHostname, err)
+	}
+}
+
+func TestDiscoveryLaunchHostnamesFailClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name, data, mode string
+		wantError        bool
+	}{
+		{"empty acme", "", "acme", true},
+		{"empty cds", "", "cds", false},
+		{"invalid second name", "api.confidential.ai\nhttps://candidate.api.confidential.ai\n", "acme", true},
+		{"wildcard", "*.confidential.ai\n", "acme", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hostnames")
+			if err := os.WriteFile(path, []byte(tc.data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := config{SAN: "c8s.local", DiscoveryPublicTLSMode: tc.mode, DiscoveryPublicTLSHostnamesFile: path}
+			if err := resolveDiscoveryPublicTLSHostname(&cfg); (err != nil) != tc.wantError {
+				t.Fatalf("error=%v, wantError=%v", err, tc.wantError)
+			}
+		})
+	}
+	cfg := config{SAN: "c8s.local", DiscoveryPublicTLSMode: "acme", DiscoveryPublicTLSHostnamesFile: filepath.Join(t.TempDir(), "missing")}
+	if err := resolveDiscoveryPublicTLSHostname(&cfg); err == nil {
+		t.Fatal("missing file was accepted")
+	}
+}
+
 func TestValidateConfigRejectsInvalidReloadWatchInterval(t *testing.T) {
 	err := validateConfig(config{
 		CDSURL:            "http://cds:8443",

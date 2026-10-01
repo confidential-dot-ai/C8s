@@ -448,7 +448,8 @@ spec:
           configMap:
             name: {{ include "router.fullname" . }}-nginx
         {{- if eq (include "router.mountInventorySocket" .) "true" }}
-        # The readiness gate needs a stamped mesh leaf, so get-cert redeems a
+        # The baked router and the readiness gate need a stamped mesh leaf.
+        # get-cert redeems a
         # sandbox token over the node inventory's Unix socket (see
         # router.getCertContainers). Read-only: the sidecar only connects.
         - name: workload-claims
