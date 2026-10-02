@@ -1,0 +1,10 @@
+# Separate from rke2-canal-config.yaml: this CRD arrives with the chart.
+apiVersion: crd.projectcalico.org/v1
+kind: FelixConfiguration
+metadata:
+  name: default
+spec:
+  # INVARIANT: ratls-mesh's jump blocks stay at the head of filter FORWARD
+  # and nat PREROUTING/OUTPUT; Felix appends its hooks behind them.
+  chainInsertMode: Append
+  nftablesMode: Disabled

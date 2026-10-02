@@ -1,8 +1,9 @@
 #!/bin/sh
 # Gate attested credential release on the live guards: the PodSecurity
 # invariant, the operator-scope policy that keeps cred-release credentials
-# away from the guards themselves, the pod-exec policy, and the two RBAC
-# bindings the issued groups rely on. RKE2 reconciles server/manifests
+# away from the guards themselves, the pod-exec policy, the two RBAC
+# bindings the issued groups rely on, and Felix appending its iptables hooks
+# behind ratls-mesh's cw guard. RKE2 reconciles server/manifests
 # asynchronously after kube-apiserver is ready, so object presence is not
 # enough: prove that every live guard equals its reference copy on the
 # read-only root (server/manifests is on the writable overlay), then prove
@@ -182,6 +183,26 @@ scope_enforcing() {
     return 1
 }
 
+# Felix (Canal) must append its hooks so ratls-mesh's jump blocks keep the
+# chain head. The global config must say Append and no per-node config may
+# override it. The CRD arrives with the chart, so Felix boots in Insert mode.
+felix_err=$KUBECTL_CACHE_DIR/psa-ready-felix.err
+felix_appending() {
+    if ! modes=$(k get felixconfigurations.crd.projectcalico.org -o jsonpath='{range .items[*]}{.metadata.name}={.spec.chainInsertMode}{"\n"}{end}' 2>"$felix_err"); then
+        last_error="FelixConfigurations are not readable: $(cat "$felix_err")"
+        return 1
+    fi
+    if ! printf '%s\n' "$modes" | grep -qx 'default=Append'; then
+        last_error="FelixConfiguration default does not set chainInsertMode: Append (live: $modes)"
+        return 1
+    fi
+    if override=$(printf '%s\n' "$modes" | grep -Ev '^[^=]*=(Append)?$'); then
+        last_error="FelixConfiguration overrides chainInsertMode: $override"
+        return 1
+    fi
+    return 0
+}
+
 last_error='the API server is not ready'
 attempt=1
 while [ "$attempt" -le "$PSA_WAIT_ATTEMPTS" ]; do
@@ -195,8 +216,10 @@ while [ "$attempt" -le "$PSA_WAIT_ATTEMPTS" ]; do
         : # last_error set by psa_enforcing
     elif ! scope_enforcing; then
         : # last_error set by scope_enforcing
+    elif ! felix_appending; then
+        : # last_error set by felix_appending
     else
-        echo "psa-ready: $policy is enforcing the restricted namespace floor; $scope_policy is enforcing the operator scope; live guards match $GUARDS_DIR"
+        echo "psa-ready: $policy is enforcing the restricted namespace floor; $scope_policy is enforcing the operator scope; live guards match $GUARDS_DIR; Felix appends behind ratls-mesh"
         exit 0
     fi
 

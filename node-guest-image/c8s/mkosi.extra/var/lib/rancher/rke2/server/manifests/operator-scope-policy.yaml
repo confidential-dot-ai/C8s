@@ -9,7 +9,7 @@
 #   - cluster-scoped RBAC, admission policies and webhooks, HelmChart/Addon
 #     CRs (helm-controller applies them with full authority),
 #     CustomResourceDefinitions (deleting one cascade-deletes every object of
-#     that kind, the HelmCharts and Cilium policies included), storage
+#     that kind, the HelmCharts and Calico policies included), storage
 #     classes and PersistentVolumes (a hostPath or nodePath volume escapes
 #     restricted PodSecurity through a PVC), API registration, CSR approval,
 #     Node objects;

@@ -169,29 +169,29 @@ jobs:
           sync=node-guest-image/c8s/mkosi.sync
           version=$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$sync")
           core=$(sed -n 's/^RKE2_IMAGES_CORE_SHA256="\(.*\)"$/\1/p' "$sync")
-          cilium=$(sed -n 's/^RKE2_IMAGES_CILIUM_SHA256="\(.*\)"$/\1/p' "$sync")
-          for v in "$version" "$core" "$cilium"; do
+          canal=$(sed -n 's/^RKE2_IMAGES_CANAL_SHA256="\(.*\)"$/\1/p' "$sync")
+          for v in "$version" "$core" "$canal"; do
             [ -n "$v" ] || { echo "::error::could not read the RKE2 pins from $sync"; exit 1; }
           done
           {
             echo "version=$version"
             echo "core=$core"
-            echo "cilium=$cilium"
+            echo "canal=$canal"
           } >> "$GITHUB_OUTPUT"
 
       - name: Fetch the pinned airgap bundles
         env:
           RKE2_VERSION: ${{ steps.pins.outputs.version }}
           CORE_SHA256: ${{ steps.pins.outputs.core }}
-          CILIUM_SHA256: ${{ steps.pins.outputs.cilium }}
+          CANAL_SHA256: ${{ steps.pins.outputs.canal }}
         run: |
           set -euo pipefail
           # '+' is %2B in a release URL, as mkosi.sync does.
           base="https://github.com/rancher/rke2/releases/download/${RKE2_VERSION//+/%2B}"
           curl -fL --retry 3 --retry-delay 5 -o core.tar.zst "$base/rke2-images-core.linux-amd64.tar.zst"
-          curl -fL --retry 3 --retry-delay 5 -o cilium.tar.zst "$base/rke2-images-cilium.linux-amd64.tar.zst"
+          curl -fL --retry 3 --retry-delay 5 -o canal.tar.zst "$base/rke2-images-canal.linux-amd64.tar.zst"
           echo "$CORE_SHA256  core.tar.zst" | sha256sum -c -
-          echo "$CILIUM_SHA256  cilium.tar.zst" | sha256sum -c -
+          echo "$CANAL_SHA256  canal.tar.zst" | sha256sum -c -
 
       - name: The baked base allowlist matches the pinned bundles
         # systemfloor re-derives the system block from the pinned
@@ -203,7 +203,7 @@ jobs:
           go run ./node-guest-image/c8s/systemfloor -check \
             -template node-guest-image/c8s/image-policy.yaml.in \
             -bundle core.tar.zst \
-            -bundle cilium.tar.zst \
+            -bundle canal.tar.zst \
             -manifest "$manifests/local-path-storage.yaml" \
             -manifest "$manifests/nvidia-device-plugin.yaml" \
             -exclude-ref busybox

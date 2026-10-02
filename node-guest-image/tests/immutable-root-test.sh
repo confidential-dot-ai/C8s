@@ -73,8 +73,8 @@ run_test_case() {
         # Exercise atomic replacement of the staged floor and node state.
         for path in \
             etc/rancher/rke2/config.yaml.d/95-gpu-resources.yaml \
-            etc/rancher/node/password etc/cni/net.d/10-cilium.conflist \
-            opt/cni/bin/cilium-cni etc/nri/conf.d/image-policy.yaml \
+            etc/rancher/node/password etc/cni/net.d/10-canal.conflist \
+            opt/cni/bin/calico etc/nri/conf.d/image-policy.yaml \
             var/lib/rancher/rke2/server/token run/immutable-root-test; do
             path="/sysroot/$path"
             mkdir -p "${path%/*}"

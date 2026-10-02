@@ -1,31 +1,30 @@
-# RKE2 server config — single-node cluster, Cilium CNI.
+# RKE2 server config — single-node cluster, Canal CNI.
 #
 # Baked into the verity root so it's in place before rke2-server.service
 # starts at boot. Per-host overrides (cluster join token, alternate
 # encryption key, registries auth) belong in /etc/rancher/rke2/config.yaml.d/
 # at runtime — rke2 merges drop-ins from that dir on top of this file.
 
-# CNI: Cilium. RKE2 deploys it via its bundled helm chart; values overrides
-# live at var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml
-# (HelmChartConfig CRD that the rke2 supervisor reads on startup).
+# CNI: Canal (flannel VXLAN + Calico's Felix for NetworkPolicy). Overrides
+# live in var/lib/rancher/rke2/server/manifests/{rke2-canal,canal-felix}-config.yaml.
 #
-# `disable-kube-proxy: true` removes the in-tree kube-proxy DaemonSet so
-# Cilium can handle service-IP routing in eBPF (kubeProxyReplacement).
-# Two benefits over keeping kube-proxy:
-#   1. Less reliance on the nftables NAT symbol set (kernel/c8s.config has
-#      it, but the eBPF path doesn't depend on it).
-#   2. One CNI does all the work — no kube-proxy ↔ Cilium ordering races,
-#      no double-NAT, no nftables-vs-iptables backend mismatch.
-cni: cilium
-disable-kube-proxy: true
+# INVARIANT: kube-proxy runs in iptables mode. ratls-mesh's cw inbound guard
+# needs Service DNAT to happen in nat PREROUTING before filter FORWARD (see
+# cmd/ratls-mesh/README.md, "Confidential-workload inbound guard").
+cni: canal
+disable-kube-proxy: false
+kube-proxy-arg:
+  - proxy-mode=iptables
+  # Keeps route_localnet=0, so 127.0.0.1 listeners (attestation-api) stay
+  # unreachable from off-host.
+  - iptables-localhost-nodeports=false
 
 # This node cluster normally runs inside a KubeVirt pod on an outer RKE2
 # cluster. Do not reuse RKE2's 10.42.0.0/16 pod and 10.43.0.0/16 service
 # defaults: KubeVirt masquerade preserves the outer client source address, so
-# overlapping routes make the guest send replies into its own Cilium network
-# after Cilium starts. Keep these values in lockstep with the Cilium IPAM pool
-# in rke2-cilium-config.yaml. Deployments that need different ranges can
-# override all three values in config.yaml.d/.
+# overlapping routes make the guest send replies into its own pod network
+# after the CNI starts. Canal takes its pool from cluster-cidr. Deployments
+# that need different ranges can override all three values in config.yaml.d/.
 cluster-cidr: 10.52.0.0/16
 service-cidr: 10.53.0.0/16
 cluster-dns: 10.53.0.10

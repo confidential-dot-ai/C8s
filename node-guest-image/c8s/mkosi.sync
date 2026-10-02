@@ -9,7 +9,7 @@
 #      under usr/local/lib/systemd/system/ — on systemd's unit search path)
 #   2. RKE2 airgap image bundles -> var/lib/rancher/rke2/agent/images/
 #      Baked deliberately: the measurement then covers the exact bytes of
-#      every control-plane image (kube-* static pods, Cilium, CoreDNS) and
+#      every control-plane image (kube-* static pods, Canal, CoreDNS) and
 #      the node boots with zero registry dependency. Costs ~1.6G of disk.raw.
 #   3. nri-image-policy plugin   -> opt/nri/plugins/10-nri-image-policy
 #
@@ -23,7 +23,7 @@
 # in mkosi.pkgcache/c8s after a build):
 #   go run ./node-guest-image/c8s/systemfloor -write \
 #     -template node-guest-image/c8s/image-policy.yaml.in \
-#     -bundle <core bundle> -bundle <cilium bundle> \
+#     -bundle <core bundle> -bundle <canal bundle> \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/local-path-storage.yaml \
 #     -manifest node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/nvidia-device-plugin.yaml \
 #     -exclude-ref busybox
@@ -63,7 +63,7 @@ RKE2_VERSION="v1.36.4+rke2r1"
 REAL_RUNC="/var/lib/rancher/rke2/bin/runc"
 RKE2_TARBALL_SHA256="7bcbd3167d6947e1d79cdf722acdc740b28021fefb50dd5b974a1980776d4079"
 RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
-RKE2_IMAGES_CILIUM_SHA256="6c76903f258b12bc0f322bcb029247ee49544b925170d320409401beeecd41bd"
+RKE2_IMAGES_CANAL_SHA256="4359b651bfdec8f3bcc01b351b33a55ff21f06b18a767366db6f3800d5750871"
 
 # The baked binary and Kubernetes c8s images resolve from a
 # single published ref. The image must include `c8s node-image render`.
@@ -331,7 +331,7 @@ tar -xzf "$CACHE_DIR/rke2-${CACHE_VER}.tar.gz" -C "$STAGE_DIR/usr/local"
 chmod 0755 "$STAGE_DIR/usr/local/bin/rke2" \
            "$STAGE_DIR/usr/local/bin/rke2-killall.sh" \
            "$STAGE_DIR/usr/local/bin/rke2-uninstall.sh"
-# rke2 keeps containerd on the default CNI dirs and the bundled Cilium chart
+# rke2 keeps containerd on the default CNI dirs and the bundled Canal chart
 # hostPath-mounts them. Under confos's immutable root they get a writable
 # overlay (state.d/60-c8s.conf), and the initrd only overlays directories
 # that already exist in the image — so bake them empty here.
@@ -340,19 +340,19 @@ mkdir -p "$STAGE_DIR/opt/cni/bin" "$STAGE_DIR/etc/cni/net.d" \
 # Marker for inspecting a built image.
 echo "$RKE2_VERSION" > "$STAGE_DIR/usr/local/share/rke2/.confos-baked-version"
 
-# --- 2. Airgap image bundles (core + cilium) -----------------------------
+# --- 2. Airgap image bundles (core + canal) ------------------------------
 
 AIRGAP_DIR="$STAGE_DIR/var/lib/rancher/rke2/agent/images"
 fetch "${BASE_URL}/rke2-images-core.linux-amd64.tar.zst" \
       "$CACHE_DIR/rke2-images-core-${CACHE_VER}.tar.zst" \
       "$RKE2_IMAGES_CORE_SHA256"
-fetch "${BASE_URL}/rke2-images-cilium.linux-amd64.tar.zst" \
-      "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" \
-      "$RKE2_IMAGES_CILIUM_SHA256"
+fetch "${BASE_URL}/rke2-images-canal.linux-amd64.tar.zst" \
+      "$CACHE_DIR/rke2-images-canal-${CACHE_VER}.tar.zst" \
+      "$RKE2_IMAGES_CANAL_SHA256"
 stage "$CACHE_DIR/rke2-images-core-${CACHE_VER}.tar.zst" \
       "$AIRGAP_DIR/rke2-images-core.linux-amd64.tar.zst"
-stage "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" \
-      "$AIRGAP_DIR/rke2-images-cilium.linux-amd64.tar.zst"
+stage "$CACHE_DIR/rke2-images-canal-${CACHE_VER}.tar.zst" \
+      "$AIRGAP_DIR/rke2-images-canal.linux-amd64.tar.zst"
 
 # --- 3. nri-image-policy plugin binary ------------------------------------
 
