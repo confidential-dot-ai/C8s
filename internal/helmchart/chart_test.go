@@ -3611,6 +3611,27 @@ func assertRouterUpstreamTimeouts(t *testing.T, route *nginxBlock, readTimeout s
 	}
 }
 
+// assertRouterWebSocketUpgrade checks location / passes a client's WebSocket
+// upgrade on to the upstream.
+func assertRouterWebSocketUpgrade(t *testing.T, cfg nginxConfig, route *nginxBlock) {
+	t.Helper()
+	upgrade := cfg.mapBlock(t, "$http_upgrade", "$connection_upgrade")
+	upgrade.assertDirective(t, "default", "upgrade")
+	upgrade.assertDirective(t, `""`, "close")
+	route.assertDirective(t, "proxy_set_header", "Upgrade", "$http_upgrade")
+	route.assertDirective(t, "proxy_set_header", "Connection", "$connection_upgrade")
+	route.assertDirective(t, "proxy_http_version", "1.1")
+}
+
+func TestChartRouterWebSocketUpgrade(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedRouterNginxConfig(t, out)
+	assertRouterWebSocketUpgrade(t, cfg, cfg.location(t, "prefix", "/"))
+}
+
 func TestChartRouterUpstreamReadTimeout(t *testing.T) {
 	out, err := helmTemplate(t, "--set-string", "router.upstream.readTimeout=900s")
 	if err != nil {
@@ -5224,6 +5245,13 @@ func Example_routerConfig() {
 	//
 	//     sendfile on;
 	//     keepalive_timeout 65;
+	//
+	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
+	//     # other requests keep Connection: close to the upstream.
+	//     map $http_upgrade $connection_upgrade {
+	//         default upgrade;
+	//         "" close;
+	//     }
 	//     upstream route_0 {
 	//         server c8s-cds.c8s-system.svc:8443;
 	//     }
@@ -5298,6 +5326,8 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//             proxy_set_header Upgrade $http_upgrade;
+	//             proxy_set_header Connection $connection_upgrade;
 	//             proxy_buffering off;
 	//             proxy_http_version 1.1;
 	//         }
@@ -7735,7 +7765,9 @@ func TestChartRouterPinnedAllowlist(t *testing.T) {
 	}
 	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
 		"--cds-state-url=http://127.0.0.1:8801", "--lb-forward-port=8802", "--upstream-workload=model")
-	catchAll := renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
+	pinnedCfg := renderedRouterNginxConfig(t, out)
+	catchAll := pinnedCfg.location(t, "prefix", "/")
+	assertRouterWebSocketUpgrade(t, pinnedCfg, catchAll)
 	catchAll.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
 	catchAll.assertDirective(t, "proxy_set_header", "X-C8s-Connection-Time", "$connection_time")
 	assertRouterUpstreamTimeouts(t, catchAll, "3600s")
