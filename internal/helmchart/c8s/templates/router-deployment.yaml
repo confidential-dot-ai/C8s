@@ -235,13 +235,7 @@ spec:
             {{- if .Values.router.attest.expectedWorkload }}
             - --expected-workload={{ .Values.router.attest.expectedWorkload }}
             {{- end }}
-            {{- if .Values.router.attest.pinnedAllowlist }}
-            {{- if not (and $renderAllowlistProxy $attestUsesHTTPSUpstream) }}
-            {{- fail "router.attest.pinnedAllowlist requires router.allowlist.enabled and router.upstream.protocol=https" }}
-            {{- end }}
-            {{- if .Values.router.routes }}
-            {{- fail "router.attest.pinnedAllowlist forwards only to router.upstream; remove router.routes" }}
-            {{- end }}
+            {{- if eq (include "router.pinnedAllowlist" .) "true" }}
             - --cds-state-url=http://127.0.0.1:{{ .Values.router.allowlist.proxyPort }}
             - --lb-forward-port={{ .Values.router.attest.forwardPort }}
             {{- end }}

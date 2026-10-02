@@ -2246,6 +2246,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		"--set-string", "router.publicTLS.certKey=public.crt",
 		"--set-string", "router.publicTLS.keyKey=public.key",
 		"--set", "router.discovery.enabled=true",
+		"--set", "router.attest.pinnedAllowlist=false",
 		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
 		"--set", "router.upstream.protocol=https",
 		"--set", "router.upstream.tls.verify=true",
@@ -2970,7 +2971,8 @@ func TestChartRouterManualUpstreamResolvesAtStartup(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
 		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true")
+		"--set", "router.upstream.tls.verify=true",
+		"--set", "router.attest.pinnedAllowlist=false")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -3026,6 +3028,7 @@ func TestRouterVerifyDerivesProxySSLNameFromUpstream(t *testing.T) {
 		"--set-string", "upstream.address=my-backend.other-ns.svc.cluster.local:443",
 		"--set", "upstream.protocol=https",
 		"--set", "upstream.tls.verify=true",
+		"--set", "attest.pinnedAllowlist=false",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -3766,6 +3769,7 @@ func TestRouterVerifyDepthZeroPreserved(t *testing.T) {
 	out, err := helmTemplateRouter(t,
 		"--set", "upstream.protocol=https",
 		"--set", "upstream.tls.verify=true",
+		"--set", "attest.pinnedAllowlist=false",
 		"--set", "upstream.tls.verifyDepth=0",
 	)
 	if err != nil {
@@ -3929,6 +3933,7 @@ func TestRouterCustomTrustedCAPathDoesNotMountMeshCA(t *testing.T) {
 	out, err := helmTemplateRouter(t,
 		"--set", "upstream.protocol=https",
 		"--set", "upstream.tls.verify=true",
+		"--set", "attest.pinnedAllowlist=false",
 		"--set-string", "upstream.tls.trustedCAPath=/etc/ssl/certs/ca-certificates.crt",
 	)
 	if err != nil {
@@ -3948,6 +3953,7 @@ func TestRouterExplicitTrustedCAPathRendersVerbatim(t *testing.T) {
 	out, err := helmTemplateRouter(t,
 		"--set", "upstream.protocol=https",
 		"--set", "upstream.tls.verify=true",
+		"--set", "attest.pinnedAllowlist=false",
 		"--set-string", "upstream.tls.trustedCAPath=/mesh-ca/ca.pem",
 	)
 	if err != nil {
@@ -3997,7 +4003,7 @@ func TestRouterDiscoveryReportsCDSModeWithoutPublicTLSSecret(t *testing.T) {
 }
 
 func TestRouterRollsOnNginxConfigChange(t *testing.T) {
-	defaultOut, err := helmTemplateRouter(t)
+	defaultOut, err := helmTemplateRouter(t, "--set", "attest.pinnedAllowlist=false")
 	if err != nil {
 		t.Fatalf("helm template default config: %v\n%s", err, defaultOut)
 	}
@@ -4008,6 +4014,7 @@ func TestRouterRollsOnNginxConfigChange(t *testing.T) {
 
 	changedOut, err := helmTemplateRouter(t,
 		"--set-string", "upstream.address=other-upstream:8080",
+		"--set", "attest.pinnedAllowlist=false",
 	)
 	if err != nil {
 		t.Fatalf("helm template changed config: %v\n%s", err, changedOut)
@@ -6447,7 +6454,8 @@ func TestChartRouterUpstreamChoice(t *testing.T) {
 	t.Run("verified-https-upstream-passes-verbatim", func(t *testing.T) {
 		out, err := helmTemplate(t, noUpstreamArgs(
 			"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-			"--set", "router.upstream.protocol=https")...)
+			"--set", "router.upstream.protocol=https",
+			"--set", "router.attest.pinnedAllowlist=false")...)
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
@@ -7599,6 +7607,76 @@ func TestChartSweepMountAdmission(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestChartRouterPinnedAllowlistDefaults(t *testing.T) {
+	httpsUpstream := []string{
+		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
+		"--set", "router.upstream.protocol=https",
+	}
+	pinned := func(t *testing.T, out string) bool {
+		t.Helper()
+		args := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest").Args
+		return slices.Contains(args, "--cds-state-url=http://127.0.0.1:8801")
+	}
+
+	out, err := helmTemplate(t, noUpstreamArgs(httpsUpstream...)...)
+	if err != nil {
+		t.Fatalf("helm template (auto, https upstream): %v\n%s", err, out)
+	}
+	if !pinned(t, out) {
+		t.Error("pinnedAllowlist=auto with an https upstream did not turn pinned mode on")
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-cds", "cds"), "--allowlist-activation-lease=60s")
+
+	out, err = helmTemplate(t, noUpstreamArgs()...)
+	if err != nil {
+		t.Fatalf("helm template (auto, no upstream): %v\n%s", err, out)
+	}
+	if pinned(t, out) {
+		t.Error("pinnedAllowlist=auto without an upstream turned pinned mode on")
+	}
+
+	out, err = helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
+		"--set", "router.routes[0].path=/v1",
+		"--set-string", "router.routes[0].backend.address=other.ns.svc:8443",
+		"--set", "router.routes[0].backend.protocol=https",
+		"--set", "router.routes[0].backend.tls.verify=true",
+	)...)...)
+	if err != nil {
+		t.Fatalf("helm template (auto, routes): %v\n%s", err, out)
+	}
+	if pinned(t, out) {
+		t.Error("pinnedAllowlist=auto with router.routes turned pinned mode on")
+	}
+
+	for _, mode := range []string{"auto", "true"} {
+		for _, lease := range []string{"0s", "0", "0h0m0s", "-5s", "500ms"} {
+			if out, err := helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
+				"--set", "router.attest.pinnedAllowlist="+mode,
+				"--set-string", "cds.allowlistActivationLease="+lease,
+			)...)...); err == nil || !strings.Contains(out+err.Error(), "cds.allowlistActivationLease") {
+				t.Errorf("pinnedAllowlist=%s with lease %q rendered: %v", mode, lease, err)
+			}
+		}
+	}
+
+	out, err = helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
+		"--set", "router.attest.pinnedAllowlist=false",
+		"--set-string", "cds.allowlistActivationLease=0s",
+	)...)...)
+	if err != nil {
+		t.Fatalf("helm template (pinned off, lease 0): %v\n%s", err, out)
+	}
+	if pinned(t, out) {
+		t.Error("pinnedAllowlist=false rendered pinned mode")
+	}
+
+	if out, err := helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
+		"--set-string", "router.attest.pinnedAllowlist=yes",
+	)...)...); err == nil || !strings.Contains(out+err.Error(), "must be true, false or") {
+		t.Errorf("pinnedAllowlist=yes rendered: %v", err)
 	}
 }
 

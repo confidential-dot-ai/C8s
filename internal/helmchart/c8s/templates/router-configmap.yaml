@@ -14,6 +14,7 @@
 {{- $upstreamAddress := .Values.router.upstream.address | trim -}}
 {{- $upstreamMeshWrapped := eq (include "router.meshWrappedUpstream" $upstreamAddress) "true" -}}
 {{- $renderAllowlistRoute := eq (include "router.renderAllowlistRoute" .) "true" -}}
+{{- $pinnedAllowlist := eq (include "router.pinnedAllowlist" .) "true" -}}
 {{- $allowlistProxyPort := 0 -}}
 {{- $allowlistWriteRate := 0 -}}
 {{- $allowlistWriteBurst := 0 -}}
@@ -146,7 +147,7 @@ data:
 
         {{- end }}
         {{- /* Pinned mode forwards through the sidecar; an unused upstream would still need DNS at nginx start. */}}
-        {{- if and $upstreamAddress (not $upstreamMeshWrapped) (not .Values.router.attest.pinnedAllowlist) }}
+        {{- if and $upstreamAddress (not $upstreamMeshWrapped) (not $pinnedAllowlist) }}
         upstream catch_all {
             server {{ $upstreamAddress }};
         }
@@ -312,7 +313,7 @@ data:
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
                 {{- end }}
-                {{- if .Values.router.attest.pinnedAllowlist }}
+                {{- if $pinnedAllowlist }}
                 # Pinned allowlist: the sidecar fences the connection on the
                 # CDS rollout state and checks the upstream's stamp.
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.forwardPort }};
