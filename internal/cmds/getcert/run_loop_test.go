@@ -805,3 +805,38 @@ func TestRunRenewalLoopKeepsRetryingWhileLeafValid(t *testing.T) {
 	}
 	terminateRun(t, done)
 }
+
+// A new pod's first leaf is unnamed; the next renewal must come within
+// seconds, not after a whole --unnamed-renew-interval, so the pod is named
+// soon after its main container starts.
+func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
+	named := namedLeaf(t)
+	named.NotAfter = time.Now().Add(time.Hour)
+	attempts := stubObtainCert(t, func(int) (*x509.Certificate, error) { return named, nil })
+
+	cfg := config{
+		RenewInterval:        time.Hour,
+		UnnamedRenewInterval: 30 * time.Second,
+		WorkloadClaims:       true,
+	}
+	unnamed := &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient("http://127.0.0.1:1"), unnamed, true) }()
+
+	at := waitForAttempts(t, attempts, 1)
+	if gap := at[0].Sub(start); gap > 3*time.Second {
+		t.Fatalf("renewed the unnamed leaf %v after install, want within 3s", gap)
+	}
+	// Named now: no further fast polls.
+	time.Sleep(3 * time.Second)
+	if n := len(attempts()); n != 1 {
+		t.Fatalf("%d renewals after the leaf was named, want 1", n)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("renewLoop returned %v, want nil on shutdown", err)
+	}
+}
