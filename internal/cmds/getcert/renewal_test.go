@@ -37,10 +37,18 @@ func expiring(leaf *x509.Certificate, ttl time.Duration) *x509.Certificate {
 func TestRenewalInterval(t *testing.T) {
 	base := config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true}
 
-	t.Run("unnamed leaf fast-polls with bounded jitter", func(t *testing.T) {
+	t.Run("unnamed leaf fast-polls from 2s with bounded jitter", func(t *testing.T) {
 		got := renewalInterval(base, &x509.Certificate{}, 0)
-		if got < 30*time.Second || got > 38*time.Second {
-			t.Fatalf("interval = %v, want [30s, ~37.5s]", got)
+		if got < 2*time.Second || got > 2500*time.Millisecond {
+			t.Fatalf("interval = %v, want [2s, 2.5s]", got)
+		}
+	})
+	t.Run("unnamed fast poll doubles up to unnamed-renew-interval", func(t *testing.T) {
+		if got := renewalInterval(base, &x509.Certificate{}, 2); got < 8*time.Second || got > 10*time.Second {
+			t.Fatalf("third unnamed interval = %v, want [8s, 10s]", got)
+		}
+		if got := renewalInterval(base, &x509.Certificate{}, 5); got < 30*time.Second || got > 38*time.Second {
+			t.Fatalf("capped unnamed interval = %v, want [30s, ~37.5s]", got)
 		}
 	})
 	t.Run("nil leaf counts as unnamed", func(t *testing.T) {
@@ -70,7 +78,7 @@ func TestRenewalInterval(t *testing.T) {
 	t.Run("fast interval never exceeds renew-interval", func(t *testing.T) {
 		cfg := base
 		cfg.RenewInterval = 10 * time.Second
-		if got := renewalInterval(cfg, &x509.Certificate{}, 0); got < 8*time.Second || got > 10*time.Second {
+		if got := renewalInterval(cfg, &x509.Certificate{}, 5); got < 8*time.Second || got > 10*time.Second {
 			t.Fatalf("interval = %v, want the shorter renew-interval", got)
 		}
 	})

@@ -657,8 +657,9 @@ lifetime and the time until the serving process reloads a replacement unnamed
 leaf.
 
 get-cert discovers `Unnamed → Named` through renewal: with
-`--workload-claims` and a renewal loop it fast-polls (`--unnamed-renew-interval`,
-default 30s plus jitter) while the installed leaf is unnamed and settles to
+`--workload-claims` and a renewal loop it fast-polls while the installed leaf is
+unnamed, starting at 2s and doubling up to `--unnamed-renew-interval` (default
+30s, plus jitter), and settles to
 `--renew-interval` once named. A pod that stays unnamed backs off toward
 `--renew-interval` after a few polls, since being unnamed can be permanent.
 Poll timing never changes the match decision.
