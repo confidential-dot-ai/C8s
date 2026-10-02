@@ -4,7 +4,7 @@
 #
 # This is the ONE generic thing: boot a measured CVM on a platform, attest it,
 # hand a caller-supplied PAYLOAD a way to run commands inside it, tear it down.
-# It knows NOTHING about c8s. c8s-install is just one payload; `cargo test
+# It knows NOTHING about C8s. c8s-install is just one payload; `cargo test
 # --features attest` is another. Consumers stay ~15 lines.
 #
 #   WHAT to test  -> the caller's `payload_b64`   (per-repo)
@@ -247,7 +247,7 @@ jobs:
                           bus: virtio
                           # Golden rootfs is a SHARED ROX verity PVC — open it readonly
                           # so QEMU takes a SHARED lock and the standing keep_alive runner
-                          # + any ephemeral c8s e2e CVM coexist on it. Writable takes an
+                          # + any ephemeral C8s e2e CVM coexist on it. Writable takes an
                           # EXCLUSIVE lock, so only the first VM boots and every other CVM
                           # on the same node is blocked (empty console / VMI stuck
                           # Scheduled). Matches confidential-metal manifests/examples/rke2-cvm.yaml.

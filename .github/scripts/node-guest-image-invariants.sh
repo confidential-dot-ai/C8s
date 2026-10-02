@@ -14,7 +14,7 @@ ngi=node-guest-image
 
 # kernel/c8s.config must be a superset of confos kernel/gpu.config:
 # only one --kernel-config-fragment is accepted per build, so the
-# c8s fragment duplicates the gpu lines verbatim. Catch drift when
+# C8s fragment duplicates the gpu lines verbatim. Catch drift when
 # gpu.config changes under the pinned CONFOS_REF.
 missing=$(grep -E '^CONFIG_|^# CONFIG_.* is not set$' confos/kernel/gpu.config \
           | grep -vFxf "$ngi/kernel/c8s.config" || true)
@@ -37,7 +37,7 @@ for src in "$ngi/kernel/c8s.config" confos/kernel/dev.config; do
   fi
 done
 
-# CONFIG_MODULES=y is a c8s-only widening (the base kernel compiles modules
+# CONFIG_MODULES=y is a C8s-only widening (the base kernel compiles modules
 # out, which is why confos's 99-kspp-hardening.conf omits the key). The
 # profile must therefore latch kernel.modules_disabled itself: the gpu
 # profile's latch is absent from the GPU-less composition.
@@ -68,7 +68,7 @@ if sed '/# BEGIN rke2 system images/,/# END rke2 system images/d' "$policy"     
   exit 1
 fi
 
-# The c8s node is normally nested in an outer RKE2 cluster: its pod
+# The C8s node is normally nested in an outer RKE2 cluster: its pod
 # CIDR must not fall back to the outer cluster's default. Canal takes its
 # pool from this setting.
 rke2_config="$ngi/c8s/mkosi.extra/etc/rancher/rke2/config.yaml"
@@ -409,7 +409,7 @@ grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/syste
   || { echo "::error::50-rke2.preset must disable apparmor.service (only the parser is wanted)"; exit 1; }
 
 # The image renders Kubernetes integration from its staged binary at BUILD
-# time. It must not revive a c8s HelmChart or boot-time values merge.
+# time. It must not revive a C8s HelmChart or boot-time values merge.
 for token in '"$C8S_TARGET" node-image render' '--image-digest "$OPERATOR_DIGEST"' \
              '--kube-version "${RKE2_VERSION%%+*}"' \
              'c8s-integration.yaml' '/usr/lib/c8s/allowlist-seed.json' \

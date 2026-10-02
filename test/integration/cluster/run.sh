@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Cluster integration harness for c8s.
+# Cluster integration harness for C8s.
 #
-# Installs the real c8s chart into a single-node kind cluster — no TEE
+# Installs the real C8s chart into a single-node kind cluster — no TEE
 # hardware — and exercises the operational surface the unit tests and the
-# docker-compose harness (test/integration) cannot: helm install via the c8s
+# docker-compose harness (test/integration) cannot: helm install via the C8s
 # CLI, CRDs, the admission webhook and ValidatingAdmissionPolicies live in a
 # real API server, the NRI image-admission plugin registered against a real
 # containerd, workload-certificate issuance with sandbox-identity claims, the
@@ -179,7 +179,7 @@ node_exec ctr -n k8s.io images pull "$ROUTER_NGINX_REF" >/dev/null \
     || fail "could not pull $ROUTER_NGINX_REF into the node"
 
 log "Writing the allowlist floor"
-# Every image in the node's store (kind system images, the loaded c8s images,
+# Every image in the node's store (kind system images, the loaded C8s images,
 # the pre-pulled fixtures) goes into the install-time floor: with
 # enforceExisting the plugin checks already-running containers against CDS's
 # served allowlist at startup, so anything missing is killed. These fixture
@@ -282,7 +282,7 @@ with open(ds_path, "w") as f:
 print(f"pinned seed entry {next(iter(pinned))} injected into the floor values")
 PYEOF
 
-# Digest-alias the loaded c8s images: the NRI installer renders its pod image
+# Digest-alias the loaded C8s images: the NRI installer renders its pod image
 # as repo@<store digest>; the alias makes containerd resolve that reference
 # to the loaded image without a registry pull.
 while IFS=$'\t' read -r digest ref; do

@@ -1,6 +1,6 @@
 # Fail the boot unless every passed-through NVIDIA GPU is in CC mode and
 # attests. confos's nvidia-cc-ready deliberately tolerates non-CC launches
-# and sets the CC Ready state without any verification; the c8s node must
+# and sets the CC Ready state without any verification; the C8s node must
 # do neither, so this unit runs first and nvidia-cc-ready Requires it.
 [Unit]
 Description=Refuse to start the node unless every NVIDIA GPU is in confidential-compute mode and attests

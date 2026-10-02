@@ -316,13 +316,13 @@ the node.
 
 ### The injected drop set
 
-c8s injects its own containers into every confidential pod. They are not part of
+C8s injects its own containers into every confidential pod. They are not part of
 a workload's declared set, so they are removed before matching — an entry never
-has to enumerate c8s's own sidecars.
+has to enumerate C8s's own sidecars.
 
 A container is dropped when its digest is admitted by some entry under an
 **unconstrained argv policy** (`command` and `args` both `any`) *and* its
-entrypoint is one c8s injects (`get-cert`, `get-secret`, `get-volume`, `/c8s`).
+entrypoint is one C8s injects (`get-cert`, `get-secret`, `get-volume`, `/c8s`).
 Both halves are load-bearing. Admission alone would let a pod add any
 any-argv component image with its entrypoint overridden — and have it ignored.
 
@@ -331,7 +331,7 @@ since it could not run otherwise, and an image bump seeds the new digest's entry
 beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#bootstrap)).
 
 What this rests on, in both directions: no image admitted under an unconstrained
-argv other than c8s's has an executable at one of those entrypoints, and the
+argv other than C8s's has an executable at one of those entrypoints, and the
 injected image's own entry stays unconstrained — an operator who narrows it
 (`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected sidecar
 into a foreign container and every release in the cluster is refused. Allowlist
@@ -408,7 +408,7 @@ declares; a configMap, projected or PVC source classes as `data`, whose
 destination sits below `/mnt/c8s-data/`.
 
 `{"policy": "any"}` admits any mount table, leaving the host free to add one.
-It is what the chart seeds for c8s's own components. See
+It is what the chart seeds for C8s's own components. See
 [`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#mount-policy-mounts).
 
 ## What the inventory reports

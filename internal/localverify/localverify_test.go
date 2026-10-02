@@ -92,7 +92,7 @@ type kdsGetterFunc func(string) ([]byte, error)
 
 func (f kdsGetterFunc) Get(url string) ([]byte, error) { return f(url) }
 
-// Verify must reuse collateral across calls when c8s configures the shared cache.
+// Verify must reuse collateral across calls when C8s configures the shared cache.
 func TestVerify_ReusesCachedVCEK(t *testing.T) {
 	parts := loadGenoaParts(t)
 	vcek := parts.vcek

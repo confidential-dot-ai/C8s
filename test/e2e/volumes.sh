@@ -16,7 +16,7 @@
 #      the mutable volume; delete and recreate the pod and read it again to
 #      prove the write reached the ciphertext device, not a pod-local fs.
 #
-# Needs kubectl pointed at a cluster with c8s installed with --volumes, `c8s`
+# Needs kubectl pointed at a cluster with C8s installed with --volumes, `c8s`
 # and `crane` on PATH, the volume devices already attached to E2E_VOL_NODE
 # (serials c8s-vol-<name>), and:
 #   C8S_MEASUREMENTS    launch measurement pinning the CDS endpoint

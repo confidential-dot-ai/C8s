@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Lint and render the c8s Helm chart for .github/workflows/chart.yml. Runs two
+# Lint and render the C8s Helm chart for .github/workflows/chart.yml. Runs two
 # checks in sequence (they always ran together, unconditionally):
 #   1. helm lint
 #   2. helm template                       (renders cleanly)
@@ -31,8 +31,8 @@ common_set=(
   # representative configuration.
   --set-string router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000
   # The default policy mode is fail-closed, which requires every digest-pinned
-  # c8s component to be covered in the allowlist floor or the plugin would deny
-  # it on its own node. deriveComponents auto-covers the c8s images from their
+  # C8s component to be covered in the allowlist floor or the plugin would deny
+  # it on its own node. deriveComponents auto-covers the C8s images from their
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true

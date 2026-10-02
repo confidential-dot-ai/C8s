@@ -112,7 +112,7 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 	}
 }
 
-// StatusError is a non-2xx answer from CDS. Code is the c8s error-envelope code
+// StatusError is a non-2xx answer from CDS. Code is the C8s error-envelope code
 // its body named, and is empty for a body that is not an envelope.
 type StatusError struct {
 	Code string

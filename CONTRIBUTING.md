@@ -1,6 +1,6 @@
-# Contributing to c8s
+# Contributing to C8s
 
-Thanks for your interest in contributing. c8s is confidential computing
+Thanks for your interest in contributing. C8s is confidential computing
 infrastructure for Kubernetes, and we welcome contributions from anyone —
 bug reports, fixes, features, and documentation.
 
@@ -10,7 +10,7 @@ This document and the repository license are still evolving; see
 Contributions follow the team's
 [engineering standards](docs/engineering-standards.md) — the canonical rules
 for branching and review flow, code style, comments, documentation, and
-releases across Confidential AI repos. This document adds the c8s-specific
+releases across Confidential AI repos. This document adds the C8s-specific
 process on top.
 
 ## Terms
@@ -43,7 +43,7 @@ Using LLMs to write code is accepted and encouraged, with three conditions:
    LLM-generated code yourself before asking others to approve it.
 3. **Understand what you're proposing.** You should be able to explain the
    change — what it does, why it does it, and why it fits into the vision of
-   c8s — without the LLM's help.
+   C8s — without the LLM's help.
 
 If you can't meet all three for a given change, it isn't ready to submit.
 

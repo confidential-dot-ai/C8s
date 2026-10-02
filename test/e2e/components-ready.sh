@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Live-cluster check that the c8s control plane converged: pods in c8s-system
+# Live-cluster check that the C8s control plane converged: pods in c8s-system
 # are Running with every container Ready.
 #
 # With no arguments every pod must be ready. Name-prefix arguments narrow it to
 # those components, for installs that deliberately leave others out.
 #
-# Needs kubectl pointed at a cluster with c8s installed.
+# Needs kubectl pointed at a cluster with C8s installed.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 

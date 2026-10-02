@@ -1,6 +1,6 @@
 # Security Policy
 
-c8s is trust infrastructure: it verifies TEE attestation evidence and issues
+C8s is trust infrastructure: it verifies TEE attestation evidence and issues
 the certificates confidential workloads use to authenticate each other.
 Treat any bug that could weaken that chain — attestation bypass, image
 policy bypass, certificate mis-issuance, plaintext reaching a confidential

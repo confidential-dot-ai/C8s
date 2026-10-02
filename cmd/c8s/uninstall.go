@@ -29,7 +29,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// hostSweepScript sweeps c8s host state off a single node (see the script
+// hostSweepScript sweeps C8s host state off a single node (see the script
 // header for the full inventory). It lives in the chart
 // (files/scripts/host-sweep.sh) so the allowlist pin and the sweep DaemonSet
 // built in hostSweepDaemonSet share one source.
@@ -557,7 +557,7 @@ func imageRefAt(tree map[string]any, path string) (string, bool) {
 	return "", false
 }
 
-// listVolumePods returns "namespace/name" for every pod holding a c8s volume.
+// listVolumePods returns "namespace/name" for every pod holding a C8s volume.
 // The annotation is not a server-side field selector, so the filter runs
 // client-side over a one-line-per-pod jsonpath dump.
 func listVolumePods(ctx context.Context) ([]string, error) {

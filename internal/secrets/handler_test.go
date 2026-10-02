@@ -742,7 +742,7 @@ func TestMethodNotAllowed(t *testing.T) {
 	}
 }
 
-// A pod created before a c8s image bump still runs the previous injected image.
+// A pod created before a C8s image bump still runs the previous injected image.
 // Both digests are configured for the length of an upgrade, so such a pod is
 // not refused its secret until it happens to be recreated.
 func TestInjectedImageFromPreviousReleaseIsDropped(t *testing.T) {
@@ -883,7 +883,7 @@ func TestSecretErrorCodeWireValues(t *testing.T) {
 	}
 }
 
-// An allowlist with no c8s image in it drops nothing, so the injected sidecar
+// An allowlist with no C8s image in it drops nothing, so the injected sidecar
 // looks like a container the entry does not declare and release is refused.
 // (It also has no workloads, so there is nothing to match either.)
 func TestEmptyAllowlistRefuses(t *testing.T) {

@@ -34,7 +34,7 @@
 # bakes no config-v3.toml.tmpl: one that added the import produced a duplicate
 # `imports` key that containerd refuses, and rke2-server never came up.
 #
-# The multi-command c8s binary and c8s container images resolve from one
+# The multi-command c8s binary and C8s container images resolve from one
 # C8S_REF. The binary contains the complete core chart, rendered at build
 # time. Its pinned images are also baked as OCI archives, so guest startup
 # needs neither Helm nor a registry connection.
@@ -65,7 +65,7 @@ RKE2_TARBALL_SHA256="7bcbd3167d6947e1d79cdf722acdc740b28021fefb50dd5b974a1980776
 RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec446a13db86"
 RKE2_IMAGES_CANAL_SHA256="4359b651bfdec8f3bcc01b351b33a55ff21f06b18a767366db6f3800d5750871"
 
-# The baked binary and Kubernetes c8s images resolve from a
+# The baked binary and Kubernetes C8s images resolve from a
 # single published ref. The image must include `c8s node-image render`.
 # Inputs arrive through confos's explicit sync-input files; sudo strips the
 # caller's environment. c8s-registry supports private/air-gapped registries.
@@ -183,7 +183,7 @@ if [ "$C8S_PRESTAGED" = 1 ]; then
 else
     echo "c8s sync: resolving c8s binary + core images at c8s ref ${C8S_REF}"
 fi
-# Resolve each c8s image from the same source ref. The nginx digest remains
+# Resolve each C8s image from the same source ref. The nginx digest remains
 # pinned by the embedded chart rather than duplicated in this script.
 DIGEST_TMPDIR=$(mktemp -d)
 trap 'rm -rf "$DIGEST_TMPDIR"' EXIT

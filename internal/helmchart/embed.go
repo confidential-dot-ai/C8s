@@ -1,6 +1,6 @@
 //go:build !c8s_node
 
-// Package helmchart bundles the c8s Helm chart into the Go binary
+// Package helmchart bundles the C8s Helm chart into the Go binary
 // so `c8s install` is a single-file install tool — no side chart download.
 //
 // The chart lives under c8s/ in this package. Develop it with the

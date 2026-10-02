@@ -1,9 +1,9 @@
-# c8s
+# C8s
 
 [![CI](https://github.com/confidential-dot-ai/c8s/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/confidential-dot-ai/c8s/actions/workflows/ci.yml)
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](LICENCE)
 
-**c8s is confidential Kubernetes.** It runs Kubernetes workloads inside
+**C8s is confidential Kubernetes.** It runs Kubernetes workloads inside
 hardware-backed Trusted Execution Environments, so that the data they process
 (model weights, prompts, responses, datasets, credentials) stays encrypted in
 memory the entire time it is in the cluster, and that property is
@@ -18,7 +18,7 @@ exactly what booted into it, and sign that measurement so a remote party can
 verify it. The infrastructure operator and hypervisor cannot see inside the VM. The
 measured node kernel and its Kubernetes runtime are inside the trust boundary.
 
-c8s applies that model to Kubernetes end to end, following five principles at
+C8s applies that model to Kubernetes end to end, following five principles at
 every layer:
 
 1. **Encrypt the runtime.** Workloads run in hardware-encrypted memory.
@@ -35,20 +35,20 @@ every layer:
    flowing in the clear. The exceptions are cluster DNS (UDP/53 to the
    cluster DNS server, the sanctioned name-resolution path).
 
-c8s is built by [Confidential AI](https://confidential.ai) as the substrate
+C8s is built by [Confidential AI](https://confidential.ai) as the substrate
 for private AI: inference, fine-tuning, training, and agents where the
 infrastructure operator never sees the data. The platform itself is
 workload-agnostic: anything that runs on Kubernetes can run confidentially.
 
 ## Links
 
-- [confidential.ai](https://confidential.ai), the company behind c8s
+- [confidential.ai](https://confidential.ai), the company behind C8s
 - [Documentation](https://confidential.ai/docs/c8s), the full user-facing docs
-- [Whitepaper](https://confidential.ai/docs/whitepapers/c8s), the c8s architecture paper (also on [arXiv](https://arxiv.org/abs/2604.26974))
+- [Whitepaper](https://confidential.ai/docs/whitepapers/c8s), the C8s architecture paper (also on [arXiv](https://arxiv.org/abs/2604.26974))
 - [Your first confidential cluster](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster), an end-to-end tutorial from bare cloud account to verified confidential workload
-- [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a c8s cluster from a browser
-- [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service c8s uses
-- [RA-TLS](docs/ratls.md), how attested TLS works in c8s — the handshake step by step, the guarantees, and which certificate is used where
+- [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a C8s cluster from a browser
+- [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service C8s uses
+- [RA-TLS](docs/ratls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
 
 ## Features
 
@@ -97,7 +97,7 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
   Ready state it attests every GPU through its baked attestation service
   (SPDM evidence verified via NRAS, nonce-bound to the CPU TEE evidence) and
   powers off on any failure. That verdict stays inside the node; it is not
-  wired into the c8s certificate flow, see
+  wired into the C8s certificate flow, see
   [Known gaps](#known-gaps-and-open-items).
 
 - **Verifiable from a browser.** A challenge-response protocol and a
@@ -147,7 +147,7 @@ virtualization (for example Azure AKS).
 
 ## Quickstart
 
-Install c8s onto an existing cluster. The full walkthrough is
+Install C8s onto an existing cluster. The full walkthrough is
 [docs/QUICKSTART.md](docs/QUICKSTART.md); the hosted version with
 provisioning guides is at
 [confidential.ai/docs/c8s](https://confidential.ai/docs/c8s/how-to/install).
@@ -236,7 +236,7 @@ attestation-bound certificate from CDS and renews it. Certificates land in
 
 ## Verifying a cluster from outside
 
-Anyone can verify that a c8s endpoint really terminates inside attested
+Anyone can verify that a C8s endpoint really terminates inside attested
 hardware, without trusting the operator's word for it.
 
 Browsers cannot inspect TLS certificates mid-handshake, so RA-TLS alone is
@@ -276,7 +276,7 @@ attestation and reports the operator keys it pins.
 | [`pkg/workloadclaims`](pkg/workloadclaims/) | Sandbox-token fetch and the admission-inventory socket contract |
 | [`pkg/overenc`](pkg/overenc/) | Post-quantum over-encryption channel and its identity transcript |
 | [`pkg/operatorauth`](pkg/operatorauth/) | Operator-key signing and verification for allowlist and secret writes |
-| [`pkg/types`](pkg/types/) | Shared request/response types for the c8s protocols (the attestation-api wire types live in [attestation-go/remote](https://github.com/confidential-dot-ai/attestation-go)) |
+| [`pkg/types`](pkg/types/) | Shared request/response types for the C8s protocols (the attestation-api wire types live in [attestation-go/remote](https://github.com/confidential-dot-ai/attestation-go)) |
 | [`pkg/runtimemeasure`](pkg/runtimemeasure/) | TDX image-pin manifests and RTMR[3] measurement replay |
 | [`pkg/certutil`](pkg/certutil/) | Certificate utility functions |
 
@@ -454,7 +454,7 @@ evidence verification service, which is built and published from
 
 ## Known gaps and open items
 
-c8s is built around a strong threat model, and we would rather list the holes
+C8s is built around a strong threat model, and we would rather list the holes
 than let you discover them:
 
 - **Measurements are not pinned by default.** Until `cds.measurements` and
@@ -547,12 +547,12 @@ The direction of travel:
 
 ## Standing on the shoulders of the community
 
-c8s exists because a lot of excellent open work came before it, and we want
+C8s exists because a lot of excellent open work came before it, and we want
 to be loud about that:
 
 - [Confidential Containers](https://github.com/confidential-containers)
   helped establish the foundations of confidential container workloads
-  that informed c8s's development.
+  that informed C8s's development.
 
 - The [Confidential Computing Consortium](https://confidentialcomputing.io/)
   and the wider ecosystem (the AMD SEV-SNP and Intel TDX stacks, the IGVM
@@ -570,7 +570,7 @@ policy on LLM-assisted contributions, and the requirement that commits be
 signed.
 
 And before you report anything security-shaped, read
-[SECURITY.md](SECURITY.md). c8s is trust infrastructure: attestation
+[SECURITY.md](SECURITY.md). C8s is trust infrastructure: attestation
 bypasses, policy bypasses, and certificate mis-issuance are security issues.
 **Do not open public issues for them.** Email
 [security@confidential.ai](mailto:security@confidential.ai) instead.
@@ -579,7 +579,7 @@ For anything else: [hello@confidential.ai](mailto:hello@confidential.ai).
 
 ## Licence
 
-c8s is licensed under the [GNU Affero General Public License v3.0](LICENCE).
+C8s is licensed under the [GNU Affero General Public License v3.0](LICENCE).
 Contributions are accepted under the terms in
 [CONTRIBUTING.md](CONTRIBUTING.md).
 

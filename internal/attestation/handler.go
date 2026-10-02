@@ -49,7 +49,7 @@ func ECDSAPublicKeyFromCSR(csr *x509.CertificateRequest) (*ecdsa.PublicKey, erro
 	return pub, nil
 }
 
-// WriteError writes a JSON error response in the c8s error-envelope shape.
+// WriteError writes a JSON error response in the C8s error-envelope shape.
 func WriteError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

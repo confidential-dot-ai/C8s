@@ -1,6 +1,6 @@
 # Engineering Standards
 
-Standards for every Confidential AI repo in the c8s stack, public and private. This
+Standards for every Confidential AI repo in the C8s stack, public and private. This
 file is the canonical version. The [skills repo](https://github.com/confidential-dot-ai/skills)
 holds helpers and LLM prompts, not policy.
 
@@ -190,7 +190,7 @@ Standards that live only in a doc rot. In order of preference:
 2. **Conformance audits** — periodically check every repo against Appendix B
    (automate where cheap: an action or an LLM sweep) and file issues for gaps.
 
-This doc changes by PR to c8s like any other change.
+This doc changes by PR to C8s like any other change.
 
 ## Appendix A — what changes at v0.1.0
 

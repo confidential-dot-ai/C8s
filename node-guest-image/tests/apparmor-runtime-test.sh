@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run against a disposable, single-node c8s image. Requires kubectl + jq. No
+# Run against a disposable, single-node C8s image. Requires kubectl + jq. No
 # exec/logs endpoint, external test image or allowlist change: reuse the baked
 # local-path-provisioner image (Alpine + BusyBox).
 # Admission and the runtime labels are proven from a Restricted pod in this

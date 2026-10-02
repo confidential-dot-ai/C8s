@@ -1,6 +1,6 @@
 # node-guest-image
 
-The c8s node image (`node-guest-base`, `rke2[-cdi]-*` tags), defined in THIS repo
+The C8s node image (`node-guest-base`, `rke2[-cdi]-*` tags), defined in THIS repo
 and built by [confidential-os-builder] acting purely as a builder.
 Tracking issue: [#264].
 
@@ -273,7 +273,7 @@ The Bash test requires GNU coreutils/findutils, grep, cmp, and util-linux
 with mount namespace and overlay support. It stages the actual base, GPU,
 attestation and c8s profile extra trees, then executes the pinned base
 finalizer and initrd unchanged in a private mount namespace and chroot.
-Real overlays must permit c8s state writes and atomic NRI floor replacement
+Real overlays must permit C8s state writes and atomic NRI floor replacement
 while `/usr`, `/opt/nri` and undeclared `/etc` paths stay read-only and the
 lower image stays unchanged.
 A missing declared directory must stop boot before `switch_root`. Sync-created
@@ -413,7 +413,7 @@ The separate real-kernel probe uses Resolute userspace and the Docker host's
 kernel; neither test boots the node image. To verify containerd labels, mount
 denial/control and Unconfined admission rejection on the actual image,
 point `KUBECONFIG` at the operator credentials for a disposable single-node
-c8s cluster and run `make test-node-guest-image-apparmor-runtime` (requires
+C8s cluster and run `make test-node-guest-image-apparmor-runtime` (requires
 `kubectl` and `jq`). This creates and cleans up a test namespace and a
 `kube-system` pod with `SYS_ADMIN`.
 
@@ -492,7 +492,7 @@ denies `runc exec` and passes every other verb to RKE2's runc. All of those
 paths end in that one call, so all of them fail.
 
 The consequences for anything running on such a node: an exec probe never
-passes and a `preStop` exec hook never runs. c8s's own components use HTTP
+passes and a `preStop` exec hook never runs. C8s's own components use HTTP
 probes and SIGTERM handling instead. See
 [docs/node-exec-mode.md](../docs/node-exec-mode.md) for the wrapper, the build
 gate that proves no handler escapes it, and what to do in a new component.
@@ -557,7 +557,7 @@ confos, attestation-rs, and mkosi pins. They validate and export the selected
 domain through `.github/scripts/pin-manifest.sh`; automated pin-watch PRs
 therefore change the manifest rather than workflow files.
 
-`mkosi.sync` resolves c8s container digests from the registry tag `C8S_REF`
+`mkosi.sync` resolves C8s container digests from the registry tag `C8S_REF`
 at build time. The rendered manifests, component seed and measured OCI
 archives record those pins. The NRI system floor comes from the pinned RKE2
 bundles. A rebuild after a mutable `C8S_REF` tag moves will not match.
@@ -602,8 +602,8 @@ must print `Y`, or QEMU refuses to launch TDs.
 
 ### GPU passthrough
 
-Per the install constraints, the GPU **host** setup is not done by c8s.
-Provision it with your host-provisioning system before installing c8s:
+Per the install constraints, the GPU **host** setup is not done by C8s.
+Provision it with your host-provisioning system before installing C8s:
 
 - **vfio-pci binding** of the GPUs (`vfio-pci.ids=10de:...` on the host cmdline,
   nvidia/nouveau blacklisted).
@@ -671,7 +671,7 @@ Migration state (see [#264] for the full plan):
    `.github/build-pins.json`, the NRI
    floor template's no-hardcoded-digest rule, and the nested RKE2
    pod-CIDR check), plus the cloud-init disable gate.
-2. The switch was gated on building the same c8s ref both ways (confos
+2. The switch was gated on building the same C8s ref both ways (confos
    in-tree vs staged from here) with identical `manifest.json`
    measurements; `c8s-image-manual.yml`'s `gate=true` dispatch input reruns that
    A/B check against any confos ref.

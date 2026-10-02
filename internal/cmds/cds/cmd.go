@@ -1,5 +1,5 @@
 // Package cds implements the Certificate Distribution Service subcommand:
-// the c8s trust root (attestation, mesh CA, leaf signing).
+// the C8s trust root (attestation, mesh CA, leaf signing).
 package cds
 
 import (

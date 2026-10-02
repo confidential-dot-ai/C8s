@@ -10,7 +10,7 @@ metadata:
 spec:
   valuesContent: |-
     flannel:
-      # Nested c8s guests run on outer hosts whose own CNI (Cilium/flannel)
+      # Nested C8s guests run on outer hosts whose own CNI (Cilium/flannel)
       # already uses VXLAN UDP/8472; the inner overlay on 8472 is dropped on
       # the outer path. Use 8473 for the inner flannel VXLAN.
       backendPort: 8473

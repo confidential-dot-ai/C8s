@@ -1,10 +1,10 @@
-# RA-TLS: how c8s components authenticate each other
+# RA-TLS: how C8s components authenticate each other
 
 RA-TLS (Remote Attestation TLS) is ordinary TLS 1.3 with one substitution: a
 peer is trusted not because its certificate chains to a CA, but because the
 certificate itself carries hardware attestation evidence proving that the TLS
 key was generated inside a genuine TEE running measured code. Every trust
-decision in c8s that crosses a machine boundary — mesh traffic between pods,
+decision in C8s that crosses a machine boundary — mesh traffic between pods,
 certificate issuance, allowlist reads — rides on it.
 
 This doc walks the process step by step: what is in an RA-TLS certificate, how
@@ -25,7 +25,7 @@ The implementation is [`pkg/ratls`](../pkg/ratls/), with the CDS client flow in
 A TEE (AMD SEV-SNP or Intel TDX guest) can ask its hardware for an
 **attestation report**: a structure, signed by a key fused into the CPU, that
 contains the guest's **launch measurement** (a digest of exactly what booted)
-and 64 bytes of caller-chosen **REPORTDATA**. c8s puts a hash of a
+and 64 bytes of caller-chosen **REPORTDATA**. C8s puts a hash of a
 freshly-generated TLS public key into REPORTDATA. The signed report then says,
 with the silicon vendor's authority: *this public key belongs to a key pair
 created inside this measured guest*.
@@ -92,7 +92,7 @@ extension format in
    }
    ```
 
-The full `1.3.6.1.4.1.66378.1` arc a c8s certificate may carry:
+The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 
 | OID | Extension | Stamped by |
 |---|---|---|
@@ -110,7 +110,7 @@ attestation-go/ratls, which owns the wire format:
   kept raw so an offline SNP verifier can extract it.
 - **Everything else** (`az-snp`, `tdx`, `gcp-tdx`, `az-tdx`): the attestation-api's
   JSON evidence envelope, forwarded verbatim to `/verify` at handshake time. Both
-  TDX shapes must use the envelope (c8s deliberately ships no in-process quote
+  TDX shapes must use the envelope (C8s deliberately ships no in-process quote
   parser — see `verify.go`): the native ones carry a bulky `cc_eventlog` that is
   stripped before embedding, while Azure-vTPM `az-tdx` (the TD quote wrapped in the
   HCL report, alongside the vTPM quote) has no eventlog and is embedded as-is.
@@ -277,7 +277,7 @@ open in practice.
 
 ## What RA-TLS guarantees — and what it does not
 
-A successful handshake against a pinned policy proves, assuming c8s's
+A successful handshake against a pinned policy proves, assuming C8s's
 trust assumptions hold:
 
 1. **Genuine TEE.** The peer's evidence was signed by real AMD/Intel silicon —

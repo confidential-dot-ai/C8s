@@ -34,7 +34,7 @@ rules:
   - apiGroups: [""]
     resources: [services]
     # The operator provisions one headless Service per annotated workload in
-    # the workload's namespace — the only c8s-managed resource outside the
+    # the workload's namespace — the only C8s-managed resource outside the
     # release namespace.
     verbs: [get, list, watch, create, update, delete]
   - apiGroups: [""]

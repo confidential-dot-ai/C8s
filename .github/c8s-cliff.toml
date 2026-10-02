@@ -1,4 +1,4 @@
-# c8s is released as one unit. Breaking changes remain on the 0.x line until
+# C8s is released as one unit. Breaking changes remain on the 0.x line until
 # maintainers deliberately change both this policy and the workflow major gate.
 [git]
 conventional_commits = true

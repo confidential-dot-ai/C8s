@@ -1,5 +1,5 @@
 // Package operatorauth implements the operator-credential scheme that
-// authorizes c8s allowlist mutations (POST/PUT/DELETE /allowlist).
+// authorizes C8s allowlist mutations (POST/PUT/DELETE /allowlist).
 //
 // STOP-GAP DESIGN — pinned public keys. CDS is configured with a set of trusted
 // operator EC public keys. For each write the client mints a short-lived

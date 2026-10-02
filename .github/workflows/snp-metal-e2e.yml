@@ -1,4 +1,4 @@
-# c8s product lane on AMD SEV-SNP metal. This c8s-owned integration boots the
+# C8s product lane on AMD SEV-SNP metal. This C8s-owned integration boots the
 # published measured node image with signed launch configuration. Core services
 # are baked systemd units; Kubernetes receives only pre-rendered integration.
 # confidential-ci's older vendored lane must adopt this launch contract before

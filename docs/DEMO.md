@@ -1,10 +1,10 @@
-# c8s demo
+# C8s demo
 
 This demo uses chart-managed CDS so the certificate bootstrap
 path is self-contained. It is intended for review and demos, not as the final
 production trust boundary.
 
-## 1. Install c8s
+## 1. Install C8s
 
 This demo shows confidential-workload injection, not the public front door, so
 it installs with router disabled. To also expose a workload through router, give
