@@ -614,6 +614,47 @@ var _ net.Conn = (*bufferedConn)(nil)
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
+// CloseWrite forwards the half-close to the wrapped connection. Without it
+// the CloseWrite type assertion in pipe fails on the wrapper and an upstream
+// FIN is never propagated to the peer.
+func (c *bufferedConn) CloseWrite() error { return closeWrite(c.Conn) }
+
+// CloseWrite forwards the half-close to the wrapped connection (see
+// bufferedConn.CloseWrite).
+func (c *idleConn) CloseWrite() error { return closeWrite(c.Conn) }
+
+// closeWrite half-closes c if it supports it (*net.TCPConn, *tls.Conn, or one
+// of our wrappers). Other connections are left untouched; the caller closes
+// them once both pipe directions are done.
+func closeWrite(c net.Conn) error {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
+// abort resets c without a graceful close. It unwraps our wrappers and
+// *tls.Conn to the transport, because tls.Conn.Close sends close_notify, and
+// sets SO_LINGER 0 on TCP so the peer sees an RST rather than a FIN.
+func abort(c net.Conn) {
+	for {
+		switch w := c.(type) {
+		case *idleConn:
+			c = w.Conn
+		case *bufferedConn:
+			c = w.Conn
+		case *tls.Conn:
+			c = w.NetConn()
+		default:
+			if tcp, ok := c.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = c.Close()
+			return
+		}
+	}
+}
+
 // pipeResult holds the byte count and error for one direction of a pipe.
 type pipeResult struct {
 	N   int64
@@ -683,8 +724,15 @@ func (p *Proxy) pipe(a, b net.Conn) (fwd, rev pipeResult) {
 		bufp := pool.Get().(*[]byte)
 		r.N, r.Err = io.CopyBuffer(dst, src, *bufp)
 		pool.Put(bufp)
-		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite()
+		// INVARIANT: a clean EOF from src is the only thing forwarded as a
+		// clean close. A FIN or close_notify after a failed copy would let
+		// the peer read a cut-short stream as complete, so reset dst instead.
+		if r.Err != nil {
+			abort(dst)
+			return
+		}
+		if err := closeWrite(dst); err != nil {
+			abort(dst)
 		}
 	}
 	go cp(a, b, &fwd)
