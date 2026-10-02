@@ -158,6 +158,9 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 	if err := json.Unmarshal(signed.State, &st); err != nil {
 		return nil, nil, fmt.Errorf("decode CDS state: %w", err)
 	}
+	if err := rolloutstate.CheckTime(&st, time.Now()); err != nil {
+		return nil, nil, err
+	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()

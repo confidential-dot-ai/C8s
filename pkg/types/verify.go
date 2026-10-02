@@ -121,6 +121,12 @@ type RolloutState struct {
 	Pending   string   `json:"pending,omitempty"`
 	Lease     int64    `json:"lease_seconds"`
 	Nonce     string   `json:"nonce,omitempty"`
+	// IssuedAt and ExpiresAt (Unix seconds, CDS's clock) bound when the
+	// signature is good for. Verifiers refuse a state outside that window,
+	// allowing for clock skew, so a captured unchallenged state cannot be
+	// replayed indefinitely.
+	IssuedAt  int64 `json:"issued_at"`
+	ExpiresAt int64 `json:"expires_at"`
 }
 
 // SignedRolloutState carries the exact RolloutState JSON bytes, base64 on the
