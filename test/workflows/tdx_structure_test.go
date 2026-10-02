@@ -27,9 +27,10 @@ type workflowDocument struct {
 	Concurrency      yaml.Node
 	Env, Permissions map[string]string
 	Jobs             map[string]struct {
-		Uses  string
-		Needs yaml.Node
-		Steps []workflowStep
+		Uses    string
+		Needs   yaml.Node
+		Outputs map[string]string
+		Steps   []workflowStep
 	}
 }
 
@@ -237,6 +238,14 @@ func TestTDXLifecycleDoesNotAcquireWorkflowSource(t *testing.T) {
 
 func TestTDXExactEvidenceAcquisition(t *testing.T) {
 	exact, staged := readWorkflow(t, exactWorkflow), readWorkflow(t, stagedWorkflow)
+	source := exact.Jobs["source"]
+	if source.Outputs["artifact"] != "${{ steps.artifact.outputs.name }}" {
+		t.Fatal("the evidence name must come from the source job's artifact lookup")
+	}
+	lookup := slices.IndexFunc(source.Steps, func(s workflowStep) bool { return s.ID == "artifact" })
+	if lookup < 0 || !strings.Contains(source.Steps[lookup].Run, `"repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts"`) {
+		t.Fatal("the evidence lookup must list only this run's artifacts")
+	}
 	checkout, download, validate, lifecycle := -1, -1, -1, -1
 	for i, step := range exact.Jobs["e2e"].Steps {
 		switch {
@@ -248,7 +257,7 @@ func TestTDXExactEvidenceAcquisition(t *testing.T) {
 		case strings.HasPrefix(step.Uses, "actions/download-artifact@"):
 			download = i
 			if !reflect.DeepEqual(step.With, map[string]string{
-				"name": "${{ inputs.image_acceptance_artifact }}", "path": "${{ runner.temp }}/tdx-image-acceptance",
+				"name": "${{ needs.source.outputs.artifact }}", "path": "${{ runner.temp }}/tdx-image-acceptance",
 			}) {
 				t.Fatalf("artifact acquisition must stay in this run without repository/run-id/token fallback: %v", step.With)
 			}
