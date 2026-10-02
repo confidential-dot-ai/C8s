@@ -65,6 +65,9 @@ func TestJournalRoutes(t *testing.T) {
 	if st.Nonce != nonce || len(st.Bound) != 1 {
 		t.Fatalf("state = %+v, want nonce %s and a single-policy bound", st, nonce)
 	}
+	if err := rolloutstate.CheckTime(&st, time.Now()); err != nil {
+		t.Fatalf("served state validity window: %v", err)
+	}
 
 	for _, tc := range []struct {
 		path string

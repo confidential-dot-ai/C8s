@@ -545,7 +545,10 @@ SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
 context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and
 `c8s/rollout-state-challenge/v1` for the challenge. The prefix keeps the CA
 key from signing bare JSON, and a state signed for one endpoint does not
-verify as the other. The `authority`
+verify as the other. Each signed state carries `issued_at` and `expires_at`
+(Unix seconds, 60s apart). The router and `c8s verify` refuse a state outside
+that window, with 2 minutes of clock skew allowed, so a captured unchallenged
+state cannot be replayed indefinitely. The `authority`
 field is `sha256:` over that key's SubjectPublicKeyInfo. CDS generates the key
 at each start, so a restart changes the authority and verifiers re-anchor on
 it; each event keeps the authority current when it was appended. A write that

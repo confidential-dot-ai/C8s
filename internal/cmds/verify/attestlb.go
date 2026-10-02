@@ -116,7 +116,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, source string) (*
 	var rollout *types.RolloutState
 	var rolloutErr error
 	if r.CDSState != nil {
-		rollout, rolloutErr = verifyRolloutState(r.CDSState, ca, nonce)
+		rollout, rolloutErr = verifyRolloutState(r.CDSState, ca, nonce, true)
 	}
 	return &evidence{
 		platform:         platformOrDefault(r.Platform),

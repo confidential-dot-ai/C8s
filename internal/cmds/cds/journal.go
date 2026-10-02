@@ -84,6 +84,7 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			}
 			st.Nonce = req.Nonce
 		}
+		rolloutstate.Stamp(&st, time.Now())
 		body, err := json.Marshal(st)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)

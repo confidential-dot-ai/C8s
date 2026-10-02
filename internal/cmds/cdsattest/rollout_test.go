@@ -30,6 +30,7 @@ type fakeCDSState struct {
 	mu    sync.Mutex
 	bound []string
 	key   *ecdsa.PrivateKey
+	age   time.Duration // shifts issued_at; negative issues stale states
 }
 
 func (f *fakeCDSState) setKey(key *ecdsa.PrivateKey) {
@@ -47,6 +48,7 @@ func (f *fakeCDSState) setBound(bound ...string) {
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	st := types.RolloutState{Bound: f.bound, Lease: 30}
+	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
 	context := rolloutstate.ContextState
@@ -303,5 +305,20 @@ func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {
 	r.lease = time.Minute
 	if !r.fresh(now.Add(30*time.Second)) || r.fresh(now.Add(time.Minute)) {
 		t.Fatal("a positive lease does not bound freshness")
+	}
+}
+
+func TestRolloutRefusesExpiredState(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey, age: -(rolloutstate.Validity + rolloutstate.MaxClockSkew + time.Minute)}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("poll of an expired state = %v, want an expiry error", err)
+	}
+	if fence.fresh(time.Now()) {
+		t.Fatal("an expired state made the fence fresh")
 	}
 }
