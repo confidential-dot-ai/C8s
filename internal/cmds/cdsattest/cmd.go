@@ -162,6 +162,11 @@ func run(cfg config) error {
 			return err
 		}
 		backend = hb
+		if fence != nil {
+			// A bound change drops every pooled upstream connection, so the
+			// next request re-handshakes and re-checks the upstream's stamp.
+			fence.onBoundChange(hb.ResetConnections)
+		}
 		logger.Info("forwarding decrypted traffic to upstream", "upstream", cfg.upstream)
 	} else {
 		backend = EchoBackend{}

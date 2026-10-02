@@ -214,7 +214,7 @@ responder chose).`,
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca")
 	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to write every policy in the attested rollout bound to, fetched from the target and checked against its attested digest (attest-pq and attest-lb)")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
@@ -613,6 +613,13 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		if !policyDigestRE.MatchString(d) {
 			return nil, fmt.Errorf("--pin-policy %q is not sha256:<64 lowercase hex>", d)
 		}
+	}
+	// The rollout state is signed by the mesh CA. Without --mesh-ca that CA
+	// is the one the responder committed, so the pinned bound would be
+	// checked against a key the responder chose. verify does not yet derive
+	// the CA from the node image, so --mesh-ca is the only accepted anchor.
+	if len(cfg.pinPolicies) > 0 && cfg.meshCA == "" {
+		return nil, fmt.Errorf("--pin-policy requires --mesh-ca: the CDS rollout state is signed by the mesh CA, and without --mesh-ca that CA is the one the responder chose (fetch it from a trusted CDS, e.g. `c8s cds verify`, and pass its PEM)")
 	}
 
 	initDataHash, err := parseInitDataPin(cfg.initDataHex)

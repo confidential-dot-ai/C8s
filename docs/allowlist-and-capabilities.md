@@ -538,8 +538,33 @@ journal over the same verified CDS proxy as `/allowlist`:
 
 `bound` lists every policy digest that may still run, oldest first. A
 publication that keeps every source entry replaces a single-policy bound; any
-other publication widens it. The signature is ASN.1 ECDSA over SHA-384 of the
-exact `state` bytes, by the mesh CA key that `/ca` certifies. The `authority`
+other publication widens it.
+
+A widened bound shrinks again through a `drained` event. CDS stamps a named
+leaf with the policy it enforces at issuance, and no named leaf lives longer
+than `--named-cert-ttl` (at most 6h). So once `--named-cert-ttl` plus a 5
+minute clock margin has run since CDS last changed the enforced policy (and
+since CDS started), no valid leaf names an earlier policy. CDS then appends a
+`drained` event whose `target` is the enforced policy, and `bound` collapses
+to it. CDS does not drain while an update is pending.
+
+When the NRI plugin pulls a new allowlist, it re-checks every running
+container. With `policy.enforce_existing` (the default), it stops a
+container that the new policy no longer admits, as at startup; exempt
+namespaces and audit mode behave as in the startup check. So a removal
+reaches running containers within one pull interval after activation.
+The drain still bounds the identity: the stopped container's last leaf
+keeps its stamp until it expires.
+
+The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
+SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
+context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and
+`c8s/rollout-state-challenge/v1` for the challenge. The prefix keeps the CA
+key from signing bare JSON, and a state signed for one endpoint does not
+verify as the other. Each signed state carries `issued_at` and `expires_at`
+(Unix seconds, 60s apart). The router and `c8s verify` refuse a state outside
+that window, with 2 minutes of clock skew allowed, so a captured unchallenged
+state cannot be replayed indefinitely. The `authority`
 field is `sha256:` over that key's SubjectPublicKeyInfo. CDS generates the key
 at each start, so a restart changes the authority and verifiers re-anchor on
 it; each event keeps the authority current when it was appended. A write that
@@ -552,12 +577,21 @@ serving the previous document to enforcers, issuance and secret release until
 the lease has run from both the publication and CDS's start. The state shows
 the staged digest as `pending`, and CDS refuses any other write with 409 until
 it activates. `c8s allowlist` reports a staged write as applied. The router
-fences attest-pq sessions on the same lease, so a lease of `0s`, the default,
-applies writes at once and gives pinned verifiers nothing to rely on.
+fences attest-pq sessions on the same lease. The default is `60s`. A lease of
+`0s` applies writes at once and gives pinned verifiers nothing to rely on, so
+the chart refuses `0s` while pinned mode is on, and CDS refuses a positive
+lease under `1s` (the state advertises whole seconds). A router that reads a
+state with `lease_seconds: 0` still treats the read as stale after 5 seconds;
+it never serves on one read forever.
 
 ### Pinned allowlists
 
-With `router.attest.pinnedAllowlist`, attest-pq and attest-lb bundles carry
+`router.attest.pinnedAllowlist` is `auto` by default: pinned mode turns on
+whenever the router has an https `router.upstream`, the built-in allowlist
+route, attest enabled and no `router.routes`. Set it to `true` to fail the
+render when one of those is missing, or `false` to turn pinned mode off.
+
+With pinned mode on, attest-pq and attest-lb bundles carry
 `cds_state`: the signed state bound to the client's nonce, with the state
 JSON as base64 so clients hash the exact bytes CDS signed. Both transcripts
 commit SHA-384 of those bytes, so the state is part of the
@@ -571,35 +605,54 @@ the state every second and fences traffic on it:
   so an attest-lb client re-attests on a new connection.
 - Nothing is forwarded before the router's first state read, or while its
   last read is older than `lease_seconds`.
+- The router refuses a state whose journal went backwards under the same
+  `authority`: a lower `position`, or another `head` at the same position.
+  Its last good read then ages out, so a rolled-back journal stops traffic
+  instead of being served. A state under a new `authority` (CDS restarted
+  and regenerated its key) is accepted and logged as a journal reset.
 
 A widening reaches the fence within one poll interval.
+
+Every change to `bound` (widening or narrowing) also:
+
+- cancels every request the router is forwarding, so a streamed response
+  (SSE, token streams) admitted under the old bound ends, and the client
+  reconnects and attests again;
+- drops the router's pooled upstream connections, so the next request
+  re-handshakes and the upstream's leaf is checked again.
 
 CDS activates a publication only after that lease, so fenced traffic never
 reaches a workload the client did not accept. The router forwards only to
 `router.upstream`, over https. The upstream's mesh leaf must chain to the
-mesh CA and carry a matched-workload stamp whose policy digest is in `bound`,
-so the upstream pod needs a named leaf (see
+mesh CA and carry a named matched-workload stamp. The router does not compare
+the stamped policy digest with `bound`, so a publication that only adds
+entries does not cut off upstreams stamped under the previous policy.
+Removals are enforced on the node: the NRI plugin stops running containers
+that the applied policy no longer admits. The upstream pod needs a named leaf (see
 [`getcert-workload-binding.md`](getcert-workload-binding.md)). Without one,
 every forward fails.
 
 Every attested value can be pinned out of band or taken from the router and
 checked against the attestation. For the mesh CA, pass `--mesh-ca`, or let
 verify use the CA the transcript commits; the verdict then names the anchor
-as responder-chosen. For policies, pin them as below, or pass
+as responder-chosen. `--pin-policy` requires `--mesh-ca`: the pinned bound is
+only as trustworthy as the key that signed it. For policies, pin them as
+below, or pass
 `--fetch-allowlists DIR` to download every policy in the attested bound and
 keep it only if it hashes to its attested digest.
 
 To verify against pinned policies, run:
 
 ```sh
-c8s verify --mode MODE --image-manifest IMAGE_JSON --pin-policy sha256:POLICY_HEX ROUTER_URL
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
 ```
 
 - `MODE`: `attest-pq`, or `attest-lb` to check the TLS front door itself.
-- `IMAGE_JSON`: the node image you trust. On the baked `bare-metal` image,
-  its measured launch config pins the router to a CDS running the same image,
-  so the committed mesh CA is a genuine CDS's. Other installs set the router's
-  CDS pins from Helm values: add `--mesh-ca`.
+- `IMAGE_JSON`: the node image you trust.
+- `MESH_CA_PEM`: the CDS mesh CA, fetched from a CDS you verified (for
+  example with `c8s cds verify`). verify does not yet derive the CA from the
+  node image, so `--pin-policy` without `--mesh-ca` is refused. A CDS
+  restart regenerates the CA, so fetch it again after one.
 - `POLICY_HEX`: a policy digest you reviewed; repeat the flag for each one.
 - `ROUTER_URL`: the router front door.
 

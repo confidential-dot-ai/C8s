@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -32,6 +33,7 @@ func TestNewCmdDurationFlagDefaults(t *testing.T) {
 		{"rate-limiter-evict-interval", "1m0s"},
 		{"rate-limiter-idle-timeout", "5m0s"},
 		{"ratls-cert-ttl", "24h0m0s"},
+		{"allowlist-activation-lease", "1m0s"},
 	} {
 		t.Run(tc.flag, func(t *testing.T) {
 			f := flags.Lookup(tc.flag)
@@ -84,6 +86,23 @@ func TestValidateRATLSPlatformFlag(t *testing.T) {
 		}
 		if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
 			t.Errorf("validateRATLSPlatformFlag(%q) = %v, want substring %q", tc.in, err, tc.wantErr)
+		}
+	}
+}
+
+func TestValidateActivationLease(t *testing.T) {
+	for _, tc := range []struct {
+		lease time.Duration
+		ok    bool
+	}{
+		{0, true},
+		{time.Second, true},
+		{60 * time.Second, true},
+		{-time.Second, false},
+		{500 * time.Millisecond, false},
+	} {
+		if err := validateActivationLease(tc.lease); (err == nil) != tc.ok {
+			t.Errorf("validateActivationLease(%s) = %v, want ok=%v", tc.lease, err, tc.ok)
 		}
 	}
 }

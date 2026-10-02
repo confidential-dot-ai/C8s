@@ -6,10 +6,12 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,17 +20,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 func signRolloutState(t *testing.T, key *ecdsa.PrivateKey, st types.RolloutState) *types.SignedRolloutState {
 	t.Helper()
+	if st.IssuedAt == 0 && st.ExpiresAt == 0 {
+		rolloutstate.Stamp(&st, time.Now())
+	}
 	body, err := json.Marshal(st)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha512.Sum384(body)
-	sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	sig, err := rolloutstate.Sign(key, rolloutstate.ContextChallenge, body)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,18 +52,27 @@ func TestVerifyRolloutState(t *testing.T) {
 	ca := &x509.Certificate{PublicKey: &key.PublicKey}
 	nonce := []byte{1, 2, 3}
 
+	expired := time.Now().Add(-rolloutstate.Validity - rolloutstate.MaxClockSkew - time.Minute)
 	for _, tc := range []struct {
 		name   string
 		signer *ecdsa.PrivateKey
 		nonce  string
+		issued time.Time
+		live   bool
 		want   string
 	}{
-		{"valid", key, hex.EncodeToString(nonce), ""},
-		{"foreign signer", other, hex.EncodeToString(nonce), "signature"},
-		{"other nonce", key, "ff", "nonce"},
+		{"valid", key, hex.EncodeToString(nonce), time.Time{}, true, ""},
+		{"foreign signer", other, hex.EncodeToString(nonce), time.Time{}, true, "signature"},
+		{"other nonce", key, "ff", time.Time{}, true, "nonce"},
+		{"expired live state", key, hex.EncodeToString(nonce), expired, true, "expired"},
+		{"expired saved bundle", key, hex.EncodeToString(nonce), expired, false, ""},
 	} {
-		signed := signRolloutState(t, tc.signer, types.RolloutState{Bound: []string{"sha256:p"}, Nonce: tc.nonce})
-		_, err := verifyRolloutState(signed, ca, nonce)
+		st := types.RolloutState{Bound: []string{"sha256:p"}, Nonce: tc.nonce}
+		if !tc.issued.IsZero() {
+			rolloutstate.Stamp(&st, tc.issued)
+		}
+		signed := signRolloutState(t, tc.signer, st)
+		_, err := verifyRolloutState(signed, ca, nonce, tc.live)
 		if (tc.want == "") != (err == nil) || (err != nil && !strings.Contains(err.Error(), tc.want)) {
 			t.Errorf("%s: verifyRolloutState = %v, want error containing %q", tc.name, err, tc.want)
 		}
@@ -94,8 +108,24 @@ func TestBuildPolicyPinPolicyFormat(t *testing.T) {
 	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:p"}}); err == nil || !strings.Contains(err.Error(), "is not sha256:") {
 		t.Fatalf("buildPolicy(malformed --pin-policy) = %v, want the format error", err)
 	}
-	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}}); err != nil {
-		t.Fatalf("buildPolicy(--pin-policy without --mesh-ca) = %v, want it accepted", err)
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}}); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
+		t.Fatalf("buildPolicy(--pin-policy without --mesh-ca) = %v, want the --mesh-ca error", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "mesh CA"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}, meshCA: caFile}); err != nil {
+		t.Fatalf("buildPolicy(--pin-policy with --mesh-ca) = %v, want it accepted", err)
 	}
 }
 

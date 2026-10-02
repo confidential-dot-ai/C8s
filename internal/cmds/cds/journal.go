@@ -3,9 +3,7 @@ package cds
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
@@ -16,6 +14,8 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -85,13 +85,17 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			}
 			st.Nonce = req.Nonce
 		}
+		rolloutstate.Stamp(&st, time.Now())
 		body, err := json.Marshal(st)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		sum := sha512.Sum384(body)
-		sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+		context := rolloutstate.ContextState
+		if challenge {
+			context = rolloutstate.ContextChallenge
+		}
+		sig, err := rolloutstate.Sign(key, context, body)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
@@ -105,8 +109,24 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// activationLoop enforces a pending allowlist update once its lease has run.
-func activationLoop(ctx context.Context, store *allowlist.Store) {
+// drainClockMargin is added to the named-leaf TTL before CDS drains the
+// bound, for clock skew between CDS and the verifiers that check a leaf's
+// NotAfter.
+const drainClockMargin = 5 * time.Minute
+
+// drainAfter is how long after the served policy changes no leaf stamped
+// under an earlier policy can still be valid: every stamped leaf lives at most
+// namedCertTTL (capped by issuer.MaxNamedLeafTTL), plus a clock margin.
+func drainAfter(namedCertTTL time.Duration) time.Duration {
+	if namedCertTTL <= 0 || namedCertTTL > issuer.MaxNamedLeafTTL {
+		namedCertTTL = issuer.MaxNamedLeafTTL
+	}
+	return namedCertTTL + drainClockMargin
+}
+
+// journalLoop enforces a pending allowlist update once its lease has run, and
+// drains the bound once no leaf stamped under an earlier policy is valid.
+func journalLoop(ctx context.Context, store *allowlist.Store) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
@@ -118,6 +138,11 @@ func activationLoop(ctx context.Context, store *allowlist.Store) {
 				slog.Error("allowlist activation failed", "error", err)
 			} else if ok {
 				slog.Info("allowlist update activated")
+			}
+			if ok, err := store.Drain(now); err != nil {
+				slog.Error("allowlist drain failed", "error", err)
+			} else if ok {
+				slog.Info("allowlist bound drained: no leaf stamped under an earlier policy is still valid")
 			}
 		}
 	}

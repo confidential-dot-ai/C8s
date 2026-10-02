@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -30,6 +30,17 @@ type fakeCDSState struct {
 	mu    sync.Mutex
 	bound []string
 	key   *ecdsa.PrivateKey
+	age   time.Duration // shifts issued_at; negative issues stale states
+
+	authority string
+	position  uint64
+	head      string
+}
+
+func (f *fakeCDSState) setJournal(authority string, position uint64, head string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authority, f.position, f.head = authority, position, head
 }
 
 func (f *fakeCDSState) setKey(key *ecdsa.PrivateKey) {
@@ -46,17 +57,19 @@ func (f *fakeCDSState) setBound(bound ...string) {
 
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	st := types.RolloutState{Bound: f.bound, Lease: 30}
+	st := types.RolloutState{Protocol: 1, Authority: f.authority, Position: f.position, Head: f.head, Bound: f.bound, Lease: 30}
+	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
+	context := rolloutstate.ContextState
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
 		json.NewDecoder(r.Body).Decode(&req)
 		st.Nonce = req.Nonce
+		context = rolloutstate.ContextChallenge
 	}
 	body, _ := json.Marshal(st)
-	sum := sha512.Sum384(body)
-	sig, _ := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	sig, _ := rolloutstate.Sign(key, context, body)
 	json.NewEncoder(w).Encode(types.SignedRolloutState{State: body, Signature: sig})
 }
 
@@ -150,7 +163,9 @@ func TestRolloutVerifyPeer(t *testing.T) {
 		ok    bool
 	}{
 		{"stamp in bound", stamped, []string{"sha256:p", inBound}, true},
-		{"stamp outside bound", stamped, []string{"sha256:p"}, false},
+		// A pure addition replaces the bound with the new policy; an upstream
+		// stamped under the previous policy is still served.
+		{"stamp of the previous policy after a pure addition", stamped, []string{"sha256:p"}, true},
 		{"no stamp", writeTestMeshIdentity(t).leaf, []string{inBound}, false},
 	} {
 		r := newRollout("", "")
@@ -280,5 +295,88 @@ func TestAttestLBCarriesRolloutState(t *testing.T) {
 	var st types.RolloutState
 	if b.CDSState == nil || json.Unmarshal(b.CDSState.State, &st) != nil || st.Nonce != hex.EncodeToString(nonce) {
 		t.Fatalf("attest-lb bundle state = %+v, want the state bound to nonce %x", b.CDSState, nonce)
+	}
+}
+
+func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {
+	r := newRollout("", "")
+	now := time.Now()
+	if r.fresh(now) {
+		t.Fatal("fresh before any state read")
+	}
+	r.seenAt = now
+	if !r.fresh(now.Add(time.Second)) {
+		t.Fatal("zero-lease state is stale one second after the read")
+	}
+	if r.fresh(now.Add(zeroLeaseMaxStateAge)) {
+		t.Fatal("zero-lease state is still fresh after zeroLeaseMaxStateAge")
+	}
+	if r.fresh(now.Add(24 * time.Hour)) {
+		t.Fatal("zero-lease state is fresh forever")
+	}
+	r.lease = time.Minute
+	if !r.fresh(now.Add(30*time.Second)) || r.fresh(now.Add(time.Minute)) {
+		t.Fatal("a positive lease does not bound freshness")
+	}
+}
+
+func TestRolloutRefusesExpiredState(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey, age: -(rolloutstate.Validity + rolloutstate.MaxClockSkew + time.Minute)}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("poll of an expired state = %v, want an expiry error", err)
+	}
+	if fence.fresh(time.Now()) {
+		t.Fatal("an expired state made the fence fresh")
+	}
+}
+
+func TestRolloutRefusesJournalRegression(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	poll := func() error {
+		_, err := fence.poll(context.Background())
+		return err
+	}
+
+	cds.setJournal("sha256:a", 5, "sha256:h5")
+	if err := poll(); err != nil {
+		t.Fatal(err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:h6")
+	if err := poll(); err != nil {
+		t.Fatalf("forward progress refused: %v", err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:h6")
+	if err := poll(); err != nil {
+		t.Fatalf("an unchanged head refused: %v", err)
+	}
+	cds.setJournal("sha256:a", 3, "sha256:h3")
+	if err := poll(); err == nil || !strings.Contains(err.Error(), "backwards") {
+		t.Fatalf("a lower position under the same authority = %v, want refused", err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:other")
+	if err := poll(); err == nil || !strings.Contains(err.Error(), "forked") {
+		t.Fatalf("another head at the same position = %v, want refused", err)
+	}
+	// A refused state is not stored.
+	if fence.position != 6 || fence.head != "sha256:h6" {
+		t.Fatalf("fence journal = %d %s, want 6 sha256:h6", fence.position, fence.head)
+	}
+	// A new authority (a CDS restart) may start over.
+	cds.setJournal("sha256:b", 0, "sha256:g0")
+	if err := poll(); err != nil {
+		t.Fatalf("a new authority's journal refused: %v", err)
+	}
+	if fence.authority != "sha256:b" || fence.position != 0 {
+		t.Fatalf("fence journal = %s %d, want sha256:b 0", fence.authority, fence.position)
 	}
 }
