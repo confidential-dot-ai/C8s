@@ -504,6 +504,7 @@
           "properties": {
             "address": {},
             "protocol": {},
+            "readTimeout": {},
             "tls": {
               "type": [
                 "object",
