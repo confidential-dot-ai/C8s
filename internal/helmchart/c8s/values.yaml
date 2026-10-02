@@ -1193,6 +1193,9 @@ router:
     # digests. Requires allowlist.enabled and upstream.protocol https; the
     # upstream is then verified against the mesh CA.
     pinnedAllowlist: false
+    # -- Loopback port on which nginx hands front-door requests to the sidecar
+    # when pinnedAllowlist is on.
+    forwardPort: 8802
     # -- Container resource requests/limits for the sidecar.
     resources: {}
 

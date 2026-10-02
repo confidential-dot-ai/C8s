@@ -82,6 +82,9 @@ type HTTPBackendOptions struct {
 	// Timeout bounds a single forwarded upstream request. Values <= 0 fall back
 	// to defaultUpstreamTimeout.
 	Timeout time.Duration
+	// VerifyPeer, when set, runs on the chain-verified https upstream leaf of
+	// every new connection and refuses the connection on error.
+	VerifyPeer func(*x509.Certificate) error
 }
 
 // NewHTTPBackend builds an HTTP(S) forwarding backend for base (a full URL).
@@ -110,6 +113,14 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 				return nil, fmt.Errorf("load upstream client cert: %w", err)
 			}
 			tlsCfg.GetClientCertificate = loader.getClientCertificate
+		}
+		if opts.VerifyPeer != nil {
+			tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
+				if len(cs.PeerCertificates) == 0 {
+					return fmt.Errorf("upstream presented no certificate")
+				}
+				return opts.VerifyPeer(cs.PeerCertificates[0])
+			}
 		}
 		transport.TLSClientConfig = tlsCfg
 	} else if !strings.HasPrefix(base, "http://") {

@@ -360,6 +360,7 @@
             "enabled": {},
             "expectedWorkload": {},
             "pinnedAllowlist": {},
+            "forwardPort": {},
             "generation": {},
             "platform": {},
             "port": {},
