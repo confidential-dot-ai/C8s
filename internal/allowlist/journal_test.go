@@ -220,7 +220,9 @@ func TestJournalDrainCollapsesBoundAfterActivation(t *testing.T) {
 	if ok, err := store.Drain(time.Now().Add(24 * time.Hour)); ok || err != nil {
 		t.Fatalf("Drain while the narrowing is pending = %v, %v; want false", ok, err)
 	}
-	activated := time.Now().Add(30 * time.Second)
+	// Far from StartJournal, so the drain clock must start at activation, not
+	// at process start.
+	activated := time.Now().Add(2 * time.Hour)
 	if ok, err := store.Activate(activated); !ok || err != nil {
 		t.Fatalf("activate narrowing = %v, %v", ok, err)
 	}
@@ -307,5 +309,74 @@ func TestJournalDrainDisabled(t *testing.T) {
 	}
 	if ok, err := store.Drain(time.Now().Add(1000 * time.Hour)); ok || err != nil {
 		t.Fatalf("Drain with drainAfter 0 = %v, %v; want false", ok, err)
+	}
+}
+
+// narrowed starts a journal at t0 (lease 0, drainAfter 1h) and leaves the
+// bound widened by a removal published at pub.
+func narrowed(t *testing.T, store *Store, t0, pub time.Time) {
+	t.Helper()
+	store.now = func() time.Time { return t0 }
+	if err := store.StartJournal("sha256:auth", 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+	store.now = func() time.Time { return pub }
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := store.State(); len(st.Bound) != 2 {
+		t.Fatalf("bound after a narrowing = %v, want 2 entries", st.Bound)
+	}
+}
+
+// Without a lease the drain clock starts at the publication, and a restart
+// starts it again.
+func TestJournalDrainClock(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	t0 := time.Now()
+	pub := t0.Add(2 * time.Hour)
+	narrowed(t, &store, t0, pub)
+	if ok, err := store.Drain(pub.Add(59 * time.Minute)); ok || err != nil {
+		t.Fatalf("Drain 59m after a lease-0 publication = %v, %v; want false", ok, err)
+	}
+
+	restart := t0.Add(3 * time.Hour)
+	store.now = func() time.Time { return restart }
+	if err := store.StartJournal("sha256:auth", 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Drain(restart.Add(59 * time.Minute)); ok || err != nil {
+		t.Fatalf("Drain 59m after a restart = %v, %v; want false", ok, err)
+	}
+	if ok, err := store.Drain(restart.Add(time.Hour + time.Second)); !ok || err != nil {
+		t.Fatalf("Drain after drainAfter from the restart = %v, %v; want true", ok, err)
+	}
+}
+
+// A journal written before journal_served existed starts its drain clock at
+// StartJournal.
+func TestJournalDrainLegacyJournal(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	t0 := time.Now()
+	narrowed(t, &store, t0, t0)
+	if _, err := store.db.Exec("DELETE FROM journal_served"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.StartJournal("sha256:auth", 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Drain(t0.Add(time.Hour + time.Second)); !ok || err != nil {
+		t.Fatalf("Drain on a legacy journal = %v, %v; want true", ok, err)
 	}
 }
