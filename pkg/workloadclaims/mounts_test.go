@@ -129,3 +129,31 @@ func TestContainerKeyDistinguishesMissingEnvironment(t *testing.T) {
 		t.Fatal("missing environment collapsed into present evidence")
 	}
 }
+
+func TestVariableEvidenceRoundTripAndIdentity(t *testing.T) {
+	observation, err := allowlist.ObserveEnv([]string{"MODE=production", "GPU_SERIAL=device-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := SandboxContainer{Env: observation}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip SandboxContainer
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Env, roundTrip.Env) || c.Key() != roundTrip.Key() {
+		t.Fatal("variable evidence changed on round trip")
+	}
+	legacy := SandboxContainer{Env: observation.Clone()}
+	legacy.Env.VariableDigests = nil
+	if legacy.Key() == c.Key() {
+		t.Fatal("legacy evidence collapsed into variable evidence")
+	}
+	roundTrip.Env.VariableDigests["MODE"] = observation.VariableDigests["GPU_SERIAL"]
+	if roundTrip.Key() == c.Key() {
+		t.Fatal("changed variable evidence collapsed in inventory")
+	}
+}

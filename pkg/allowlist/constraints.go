@@ -18,7 +18,7 @@ func (c *Container) constraints() []containerConstraint {
 	return []containerConstraint{
 		processConstraint{command: &c.Command, args: &c.Args},
 		mountConstraint{policy: &c.Mounts},
-		envConstraint{policy: &c.Env},
+		newEnvConstraint(&c.Env),
 	}
 }
 
@@ -80,16 +80,35 @@ func (m mountConstraint) isUnconstrained() bool {
 }
 
 type envConstraint struct {
-	policy *EnvPolicy
+	policy   *EnvPolicy
+	behavior envPolicyBehavior
+	err      error
 }
 
-func (e envConstraint) normalize() (string, error) { return "env", normalizeEnv(e.policy) }
+func newEnvConstraint(policy *EnvPolicy) envConstraint {
+	behavior, err := policy.behavior()
+	return envConstraint{policy: policy, behavior: behavior, err: err}
+}
+
+func (e envConstraint) normalize() (string, error) {
+	if e.err != nil {
+		return "env", e.err
+	}
+	if e.behavior.isUnconstrained() {
+		e.policy.Policy = PolicyAny
+	}
+	if e.policy.Values != nil && len(e.policy.Values) == 0 {
+		e.policy.Policy = PolicyDeny
+		e.policy.Values = nil
+	}
+	return "env", nil
+}
 func (e envConstraint) admits(r RunningContainer) bool {
-	return e.policy.admitsObservation(r.Env)
+	return e.err == nil && e.behavior.admits(r.Env)
 }
 func (e envConstraint) hostIndependent() bool {
-	return e.policy.Policy == PolicyDeny || e.policy.Policy == PolicyExact
+	return e.err == nil && e.behavior.hostIndependent()
 }
 func (e envConstraint) isUnconstrained() bool {
-	return e.policy.Policy == PolicyAny || e.policy.Policy == ""
+	return e.err == nil && e.behavior.isUnconstrained()
 }

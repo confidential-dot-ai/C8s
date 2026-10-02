@@ -170,16 +170,37 @@ entry, edit it; do not add a narrower entry for the same image beside it.
 `env` constrains the complete OCI launch environment: `exact` requires
 equality, so all names and values must match, including image defaults and
 runtime additions. `deny` requires an observed empty environment; `any` permits
-any environment. Missing env evidence fails `exact` and `deny`. An empty
+any environment. `match` requires exactly the listed variable names and applies
+each variable’s matcher. Missing env evidence fails `exact`, `deny`, and `match`. An empty
 `exact.values` normalizes to `deny`, and an absent policy defaults to `any`.
 
 ```json
 "env": { "policy": "exact", "values": {"PATH": "/usr/bin:/bin", "MODEL_DIR": "/models"} }
 ```
 
-The NRI plugin enforces env after cumulative NRI adjustments, and the admission
-inventory carries an environment fingerprint for CDS workload matching and
-secret release.
+```yaml
+env:
+  policy: match
+  variables:
+    MODE:
+      exact: production
+    GPU_SERIAL:
+      present: true
+```
+
+Each variable requires exactly one matcher: `exact` pins its string value,
+including `""`; `present: true` accepts any value, including empty. Missing or
+additional variables are rejected. An empty `variables: {}` requires an observed
+empty environment. The allowlisted program and its dependencies must be safe for
+every possible value of a variable matched with `present`.
+
+Supply these policies per container through `c8s allowlist derive --env-file`.
+The NRI plugin enforces env after cumulative NRI adjustments. The admission
+inventory carries the complete environment digest and per-variable digests bound
+to their names for CDS workload matching and secret release. Names are visible;
+raw values are omitted, but digests allow guessing low-entropy values. `match`
+requires per-variable evidence from the node. Deferred CDI edits leave env and
+mount evidence unavailable, so constrained policies reject those launches.
 
 ## Mount policy (`mounts`)
 

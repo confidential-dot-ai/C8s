@@ -42,6 +42,7 @@ const (
 	PolicyDeny  = "deny"
 	PolicyAny   = "any"
 	PolicyExact = "exact"
+	PolicyMatch = "match"
 	PolicyAllow = "allow"
 )
 
@@ -126,8 +127,9 @@ const DataMountPrefix = "/mnt/c8s-data/"
 
 // EnvPolicy constrains the complete OCI launch environment. An absent policy means Any.
 type EnvPolicy struct {
-	Policy string            `json:"policy" yaml:"policy"`
-	Values map[string]string `json:"values,omitempty" yaml:"values,omitempty"`
+	Policy    string                `json:"policy" yaml:"policy"`
+	Values    map[string]string     `json:"values,omitempty" yaml:"values,omitempty"`
+	Variables map[string]EnvMatcher `json:"variables,omitzero" yaml:"variables,omitempty"`
 }
 
 // SecretsPolicy grants secret-store read/write globs to a whole workload entry.
@@ -461,34 +463,6 @@ func validateMountRuleKind(r MountRule) error {
 		return fmt.Errorf("mount destination %q has unsupported kind %q", r.Destination, r.Kind)
 	}
 	return behavior.validate()
-}
-
-func normalizeEnv(p *EnvPolicy) error {
-	switch p.Policy {
-	case PolicyAny, "", PolicyDeny:
-		if p.Values != nil {
-			return fmt.Errorf("%s env policy takes no values", p.Policy)
-		}
-		if p.Policy == "" {
-			p.Policy = PolicyAny
-		}
-	case PolicyExact:
-		if p.Values == nil {
-			return fmt.Errorf("exact env requires values")
-		}
-		for n, v := range p.Values {
-			if !validEnvPair(n, v) {
-				return fmt.Errorf("invalid environment name or value")
-			}
-		}
-		if len(p.Values) == 0 {
-			p.Policy = PolicyDeny
-			p.Values = nil
-		}
-	default:
-		return fmt.Errorf("unknown env policy %q (want deny, any, or exact)", p.Policy)
-	}
-	return nil
 }
 
 // normalizeArgv validates an argv policy and canonicalizes an absent policy to

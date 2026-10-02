@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -15,6 +16,8 @@ import (
 type EnvObservation struct {
 	Format string `json:"format"`
 	Digest string `json:"digest"`
+	// Nil means per-variable evidence is unavailable.
+	VariableDigests map[string]string `json:"variableDigests"`
 }
 
 const EnvFormat = "c8s.env/v1"
@@ -34,7 +37,12 @@ func ObserveEnv(entries []string) (*EnvObservation, error) {
 		}
 		values[name] = value
 	}
-	return fingerprintEnv(values), nil
+	observation := fingerprintEnv(values)
+	observation.VariableDigests = make(map[string]string, len(values))
+	for name, value := range values {
+		observation.VariableDigests[name] = fingerprintEnvVariable(name, value)
+	}
+	return observation, nil
 }
 
 // ObserveLaunchEnv keeps the last value per name, matching runc's launch environment.
@@ -56,7 +64,15 @@ func ObserveLaunchEnv(entries []string) (*EnvObservation, error) {
 }
 
 func validEnvPair(name, value string) bool {
-	return name != "" && !strings.ContainsAny(name, "=\x00") && !strings.ContainsRune(value, 0) && utf8.ValidString(name) && utf8.ValidString(value)
+	return validEnvName(name) && validEnvValue(value)
+}
+
+func validEnvName(name string) bool {
+	return name != "" && !strings.ContainsAny(name, "=\x00") && utf8.ValidString(name)
+}
+
+func validEnvValue(value string) bool {
+	return !strings.ContainsRune(value, 0) && utf8.ValidString(value)
 }
 
 // The encoding is the UTF-8 domain string "c8s.env/v1", a NUL, then Go
@@ -71,12 +87,35 @@ func fingerprintEnv(values map[string]string) *EnvObservation {
 	return &EnvObservation{Format: EnvFormat, Digest: hex.EncodeToString(sum[:])}
 }
 
-func (o *EnvObservation) Valid() bool {
-	if o == nil || o.Format != EnvFormat || len(o.Digest) != 64 {
+// Each variable digest binds its name and value with NUL framing; neither permits NUL.
+func fingerprintEnvVariable(name, value string) string {
+	sum := sha256.Sum256([]byte("c8s.env.variable/v1\x00" + name + "\x00" + value))
+	return hex.EncodeToString(sum[:])
+}
+
+func validEnvDigest(digest string) bool {
+	if len(digest) != 64 {
 		return false
 	}
-	b, err := hex.DecodeString(o.Digest)
-	return err == nil && hex.EncodeToString(b) == o.Digest
+	b, err := hex.DecodeString(digest)
+	return err == nil && hex.EncodeToString(b) == digest
+}
+
+// Valid reports whether the observation is well formed.
+func (o *EnvObservation) Valid() bool {
+	return o.WellFormed()
+}
+
+func (o *EnvObservation) WellFormed() bool {
+	if o == nil || o.Format != EnvFormat || !validEnvDigest(o.Digest) {
+		return false
+	}
+	for name, digest := range o.VariableDigests {
+		if !validEnvName(name) || !validEnvDigest(digest) {
+			return false
+		}
+	}
+	return true
 }
 
 func (o *EnvObservation) Clone() *EnvObservation {
@@ -84,20 +123,13 @@ func (o *EnvObservation) Clone() *EnvObservation {
 		return nil
 	}
 	c := *o
+	c.VariableDigests = maps.Clone(o.VariableDigests)
 	return &c
 }
 
 func (p EnvPolicy) admitsObservation(o *EnvObservation) bool {
-	switch p.Policy {
-	case PolicyAny, "":
-		return true
-	case PolicyDeny:
-		return o.Valid() && *o == *fingerprintEnv(nil)
-	case PolicyExact:
-		return p.Values != nil && o.Valid() && *o == *fingerprintEnv(p.Values)
-	default:
-		return false
-	}
+	behavior, err := p.behavior()
+	return err == nil && behavior.admits(o)
 }
 
 // ParseEnvPoliciesJSON reads per-container policies for CLI derivation. Exact
