@@ -632,21 +632,24 @@ every forward fails.
 Every attested value can be pinned out of band or taken from the router and
 checked against the attestation. For the mesh CA, pass `--mesh-ca`, or let
 verify use the CA the transcript commits; the verdict then names the anchor
-as responder-chosen. For policies, pin them as below, or pass
+as responder-chosen. `--pin-policy` requires `--mesh-ca`: the pinned bound is
+only as trustworthy as the key that signed it. For policies, pin them as
+below, or pass
 `--fetch-allowlists DIR` to download every policy in the attested bound and
 keep it only if it hashes to its attested digest.
 
 To verify against pinned policies, run:
 
 ```sh
-c8s verify --mode MODE --image-manifest IMAGE_JSON --pin-policy sha256:POLICY_HEX ROUTER_URL
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
 ```
 
 - `MODE`: `attest-pq`, or `attest-lb` to check the TLS front door itself.
-- `IMAGE_JSON`: the node image you trust. On the baked `bare-metal` image,
-  its measured launch config pins the router to a CDS running the same image,
-  so the committed mesh CA is a genuine CDS's. Other installs set the router's
-  CDS pins from Helm values: add `--mesh-ca`.
+- `IMAGE_JSON`: the node image you trust.
+- `MESH_CA_PEM`: the CDS mesh CA, fetched from a CDS you verified (for
+  example with `c8s cds verify`). verify does not yet derive the CA from the
+  node image, so `--pin-policy` without `--mesh-ca` is refused. A CDS
+  restart regenerates the CA, so fetch it again after one.
 - `POLICY_HEX`: a policy digest you reviewed; repeat the flag for each one.
 - `ROUTER_URL`: the router front door.
 
