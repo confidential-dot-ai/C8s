@@ -279,6 +279,13 @@ func (r *rollout) verifyPeer(leaf *x509.Certificate) error {
 	return nil
 }
 
+// currentHead is the journal head of the last stored state.
+func (r *rollout) currentHead() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.head
+}
+
 // admitsConnection reports whether a request on a front-door connection
 // opened at start may be forwarded at now: the state must be fresh and the
 // bound must not have widened since the client could have checked it.

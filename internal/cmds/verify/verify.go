@@ -1091,6 +1091,10 @@ type Outcome struct {
 	// land in Error (pinned_state_absent, pinned_state_invalid,
 	// pinned_state_stale, pinned_state_unleased, policy_not_pinned).
 	AllowlistBound []string `json:"allowlist_bound,omitempty"`
+	// VerifiedState is the journal head of that state. In pinned mode the
+	// router forwards a front-door request only when it carries this value in
+	// the X-C8s-Verified-State header.
+	VerifiedState string `json:"verified_state,omitempty"`
 	// AllowlistFiles are the --fetch-allowlists files, one per bound policy.
 	AllowlistFiles []string `json:"allowlist_files,omitempty"`
 }
@@ -1273,6 +1277,7 @@ var policyDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 	if oc.Verified && ev.fresh && ev.rollout != nil && ev.rolloutErr == nil {
 		oc.AllowlistBound = ev.rollout.Bound
+		oc.VerifiedState = ev.rollout.Head
 	}
 	if len(cfg.pinPolicies) == 0 {
 		return
@@ -1699,6 +1704,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	}
 	if len(oc.AllowlistBound) > 0 {
 		fmt.Fprintf(out, "  allowlist:    %s\n", strings.Join(oc.AllowlistBound, ", "))
+	}
+	if oc.VerifiedState != "" {
+		fmt.Fprintf(out, "  state:        %s  (send as X-C8s-Verified-State)\n", oc.VerifiedState)
 	}
 	for _, path := range oc.AllowlistFiles {
 		fmt.Fprintf(out, "                wrote %s\n", path)

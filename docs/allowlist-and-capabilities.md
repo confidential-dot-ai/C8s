@@ -590,6 +590,12 @@ the state every second and fences traffic on it:
   so an attest-lb client re-attests on a new connection.
 - Nothing is forwarded before the router's first state read, or while its
   last read is older than `lease_seconds`.
+- A client that wants each request tied to the state it verified sends
+  `X-C8s-Verified-State: <head>`, the journal `head` of that state
+  (`c8s verify` prints it as `state:`). If the header is not the router's
+  current head, the router answers 503 `state changed: re-verify` and does
+  not forward. Requests without the header are served as before. The
+  router strips the header before forwarding.
 - The router refuses a state whose journal went backwards under the same
   `authority`: a lower `position`, or another `head` at the same position.
   Its last good read then ages out, so a rolled-back journal stops traffic

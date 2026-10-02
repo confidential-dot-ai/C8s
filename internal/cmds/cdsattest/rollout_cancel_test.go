@@ -179,6 +179,7 @@ func TestLBForwarderEndsStreamOnBoundChange(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	cds := &fakeCDSState{key: identity.caKey}
 	cds.setBound("sha256:p")
+	cds.setJournal("sha256:a", 1, "sha256:h1")
 	cdsSrv := httptest.NewServer(cds)
 	defer cdsSrv.Close()
 	fence := newRollout(cdsSrv.URL, identity.caFile)
@@ -194,6 +195,7 @@ func TestLBForwarderEndsStreamOnBoundChange(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, front.URL+"/v1/stream", nil)
 	req.Header.Set(connectionTimeHeader, "0")
+	req.Header.Set(verifiedStateHeader, "sha256:h1")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
