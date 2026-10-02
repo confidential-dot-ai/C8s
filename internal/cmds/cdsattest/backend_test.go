@@ -73,10 +73,11 @@ func TestNewHTTPBackendTimeouts(t *testing.T) {
 			if hb.client.Timeout != tc.want {
 				t.Fatalf("client timeout = %v, want %v", hb.client.Timeout, tc.want)
 			}
-			transport, ok := hb.client.Transport.(*http.Transport)
+			rt, ok := hb.client.Transport.(*resettableTransport)
 			if !ok {
-				t.Fatalf("transport is %T, want *http.Transport", hb.client.Transport)
+				t.Fatalf("transport is %T, want *resettableTransport", hb.client.Transport)
 			}
+			transport := rt.current
 			if transport.IdleConnTimeout != 90*time.Second {
 				t.Fatalf("IdleConnTimeout = %v, want 90s", transport.IdleConnTimeout)
 			}

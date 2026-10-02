@@ -1,6 +1,8 @@
 package cdsattest
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -22,6 +24,9 @@ const maxConnectionAge = 365 * 24 * time.Hour
 // to the upstream, through the backend's stamp-checking transport. A request
 // is refused when the client's connection predates the router's last view of
 // a widened bound, since its attest-lb check may have seen the older bound.
+// A request in flight when the bound changes is cancelled: a streamed
+// response (SSE, token streams) is cut off, and the client must reconnect
+// and attest again.
 func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (http.Handler, error) {
 	target, err := url.Parse(backend.base)
 	if err != nil {
@@ -38,6 +43,11 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			pr.Out.Header.Del(connectionTimeHeader)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(context.Cause(r.Context()), errBoundChanged) {
+				log.Info("front-door forward cancelled: the allowlist bound changed", "path", r.URL.Path)
+				http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
+				return
+			}
 			log.Warn("front-door forward failed", "path", r.URL.Path, "error", err)
 			http.Error(w, "backend error", http.StatusBadGateway)
 		},
@@ -49,11 +59,15 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			http.Error(w, "missing connection time", http.StatusForbidden)
 			return
 		}
+		// Taken before the fence check, so a bound change after it still
+		// cancels the forward.
+		ctx, cancel := fence.requestContext(r.Context())
+		defer cancel()
 		now := time.Now()
 		if !fence.admitsConnection(now.Add(-time.Duration(age*float64(time.Second))), now) {
 			http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
 			return
 		}
-		proxy.ServeHTTP(w, r)
+		proxy.ServeHTTP(w, r.WithContext(ctx))
 	}), nil
 }
