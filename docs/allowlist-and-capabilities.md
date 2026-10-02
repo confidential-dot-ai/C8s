@@ -558,7 +558,10 @@ applies writes at once and gives pinned verifiers nothing to rely on.
 ### Pinned allowlists
 
 With `router.attest.pinnedAllowlist`, attest-pq and attest-lb bundles carry
-`cds_state`: the signed state bound to the client's nonce. The router reads
+`cds_state`: the signed state bound to the client's nonce, with the state
+JSON as base64 so clients hash the exact bytes CDS signed. Both transcripts
+commit SHA-384 of those bytes, so the state is part of the
+attested REPORT_DATA. The router reads
 the state every second and fences traffic on it:
 
 - An attest-pq session's envelope is the `bound` it was opened under. The
@@ -579,14 +582,24 @@ so the upstream pod needs a named leaf (see
 [`getcert-workload-binding.md`](getcert-workload-binding.md)). Without one,
 every forward fails.
 
+Every attested value can be pinned out of band or taken from the router and
+checked against the attestation. For the mesh CA, pass `--mesh-ca`, or let
+verify use the CA the transcript commits; the verdict then names the anchor
+as responder-chosen. For policies, pin them as below, or pass
+`--fetch-allowlists DIR` to download every policy in the attested bound and
+keep it only if it hashes to its attested digest.
+
 To verify against pinned policies, run:
 
 ```sh
-c8s verify --mode MODE --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
+c8s verify --mode MODE --image-manifest IMAGE_JSON --pin-policy sha256:POLICY_HEX ROUTER_URL
 ```
 
 - `MODE`: `attest-pq`, or `attest-lb` to check the TLS front door itself.
-- `MESH_CA_PEM`: the mesh CA bundle you pinned out of band.
+- `IMAGE_JSON`: the node image you trust. On the baked `bare-metal` image,
+  its measured launch config pins the router to a CDS running the same image,
+  so the committed mesh CA is a genuine CDS's. Other installs set the router's
+  CDS pins from Helm values: add `--mesh-ca`.
 - `POLICY_HEX`: a policy digest you reviewed; repeat the flag for each one.
 - `ROUTER_URL`: the router front door.
 
@@ -600,7 +613,7 @@ Policy pins cover the CDS-served document only. The NRI base allowlist, exempt
 namespaces and enforcement mode come from the node image's measured boot
 config, so pin the node image as well (`--image-manifest` or
 `--image-policy-file`). CDS generates its mesh CA at each start, so a CDS
-restart makes you re-pin `--mesh-ca`. With a lease, the install seed is staged
+restart makes a `--mesh-ca` pin stale. With a lease, the install seed is staged
 like any other write: workloads outside the base allowlist wait one lease on a
 fresh install.
 

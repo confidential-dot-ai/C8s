@@ -107,8 +107,8 @@ func checkValidity(now time.Time, cert *x509.Certificate, role string) error {
 	return nil
 }
 
-func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce []byte) ([]byte, *types.MeshIdentityProof, error) {
-	transcriptHash, err := overenc.IdentityTranscriptHash(mode, xwingEK, xwingCT, sessionID, nonce, m.leaf.Raw, m.ca.Raw)
+func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, stateDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
+	transcriptHash, err := overenc.IdentityTranscriptHash(mode, xwingEK, xwingCT, sessionID, nonce, m.leaf.Raw, m.ca.Raw, stateDigest)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,8 +123,8 @@ func (m *meshIdentity) bind(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 // serving leaf alongside the mesh identity and signs that transcript. No
 // session key exists on this path — the TLS handshake itself proves possession
 // of the serving-leaf key.
-func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER, nonce []byte) ([]byte, *types.MeshIdentityProof, error) {
-	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, servingLeafDER, m.leaf.Raw, m.ca.Raw)
+func (m *meshIdentity) bindServingLeaf(mode types.FrontDoorMode, servingLeafDER, nonce, stateDigest []byte) ([]byte, *types.MeshIdentityProof, error) {
+	transcriptHash, err := overenc.LBTranscriptHash(mode, nonce, servingLeafDER, m.leaf.Raw, m.ca.Raw, stateDigest)
 	if err != nil {
 		return nil, nil, err
 	}

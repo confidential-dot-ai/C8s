@@ -453,7 +453,7 @@ func TestChannelGoldenVectors(t *testing.T) {
 	}
 
 	th, err := IdentityTranscriptHash(v.FrontDoorMode, ck.EncapsulationKey(), mustHex(t, v.XWingCT),
-		mustHex(t, v.SessionID), mustHex(t, v.Nonce), mustHex(t, v.LeafDER), mustHex(t, v.CADER))
+		mustHex(t, v.SessionID), mustHex(t, v.Nonce), mustHex(t, v.LeafDER), mustHex(t, v.CADER), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -532,7 +532,7 @@ func writeChannelVectors(t *testing.T) {
 	leafDER, caDER := []byte("leaf-der"), []byte("ca-der")
 	nonce := bytes.Repeat([]byte{0x33}, 32)
 	sessionID := bytes.Repeat([]byte{0x44}, SessionIDBytes)
-	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER)
+	th, err := IdentityTranscriptHash("cds", ck.EncapsulationKey(), ct, sessionID, nonce, leafDER, caDER, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -25,16 +25,26 @@ func TestIdentityTranscriptHashBindsEveryField(t *testing.T) {
 	ca := []byte("ca-der")
 	const mode = "cds"
 
-	base, err := IdentityTranscriptHash(mode, ek, ct, sessionID, nonce, leaf, ca)
+	base, err := IdentityTranscriptHash(mode, ek, ct, sessionID, nonce, leaf, ca, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(base) != sha512.Size384 {
 		t.Fatalf("transcript hash length = %d, want %d", len(base), sha512.Size384)
 	}
-	const vector = "003e433637125a49cb2136a5e8148f6de5fd16c43caa11bcc79e49865da4c5e32625e54f7a9a33476954eb7f745fcae3"
+	const vector = "8f534c54dce6062fbf66e7f9b4317ab98b736786c72f101de5df3b4f1951e090325fccc6f700083b03a132a07d40c9df"
 	if hex.EncodeToString(base) != vector {
 		t.Fatalf("cross-language transcript vector = %x, want %s", base, vector)
+	}
+	withState, err := IdentityTranscriptHash(mode, ek, ct, sessionID, nonce, leaf, ca, StateDigest([]byte(`{"bound":[]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(withState, base) {
+		t.Fatal("state digest does not change the transcript")
+	}
+	if _, err := IdentityTranscriptHash(mode, ek, ct, sessionID, nonce, leaf, ca, []byte{1}); err == nil {
+		t.Fatal("accepted a state digest that is neither empty nor SHA-384")
 	}
 
 	tests := []struct {
@@ -53,7 +63,7 @@ func TestIdentityTranscriptHashBindsEveryField(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := IdentityTranscriptHash(tt.mode, tt.ek, tt.ct, tt.sessionID, tt.nonce, tt.leaf, tt.ca)
+			got, err := IdentityTranscriptHash(tt.mode, tt.ek, tt.ct, tt.sessionID, tt.nonce, tt.leaf, tt.ca, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -71,7 +81,7 @@ func TestLBTranscriptHashBindsEveryField(t *testing.T) {
 	ca := []byte("ca-der")
 	const mode = "cds"
 
-	base, err := LBTranscriptHash(mode, nonce, serving, leaf, ca)
+	base, err := LBTranscriptHash(mode, nonce, serving, leaf, ca, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +105,7 @@ func TestLBTranscriptHashBindsEveryField(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := LBTranscriptHash(tt.mode, tt.nonce, tt.serving, tt.leaf, tt.ca)
+			got, err := LBTranscriptHash(tt.mode, tt.nonce, tt.serving, tt.leaf, tt.ca, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,7 +132,7 @@ func TestLBTranscriptHashValidatesShape(t *testing.T) {
 		{name: "ca empty", mode: "cds", nonce: nonce, serving: []byte{1}, leaf: []byte{2}, wantErr: "lb transcript requires serving leaf, mesh leaf, and CA certificates"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := LBTranscriptHash(tc.mode, tc.nonce, tc.serving, tc.leaf, tc.ca)
+			_, err := LBTranscriptHash(tc.mode, tc.nonce, tc.serving, tc.leaf, tc.ca, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}
@@ -145,6 +155,7 @@ func TestLBTranscriptGoldenVectors(t *testing.T) {
 		ServingLeafB64 string              `json:"serving_leaf_der_b64"`
 		MeshLeafB64    string              `json:"mesh_leaf_der_b64"`
 		MeshCAB64      string              `json:"mesh_ca_der_b64"`
+		StateB64       string              `json:"state_b64"`
 		ReportDataB64  string              `json:"report_data_b64"`
 	}
 	if err := json.Unmarshal(data, &vectors); err != nil {
@@ -162,7 +173,7 @@ func TestLBTranscriptGoldenVectors(t *testing.T) {
 	}
 	for _, v := range vectors {
 		t.Run(v.Description, func(t *testing.T) {
-			got, err := LBTranscriptHash(v.FrontDoorMode, decode(v.NonceB64), decode(v.ServingLeafB64), decode(v.MeshLeafB64), decode(v.MeshCAB64))
+			got, err := LBTranscriptHash(v.FrontDoorMode, decode(v.NonceB64), decode(v.ServingLeafB64), decode(v.MeshLeafB64), decode(v.MeshCAB64), StateDigest(decode(v.StateB64)))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,7 +205,7 @@ func TestIdentityTranscriptHashValidatesShape(t *testing.T) {
 		{name: "ca", mode: "cds", ek: ek, ct: ct, sessionID: id, nonce: nonce, leaf: []byte{1}, wantErr: "identity transcript requires leaf and CA certificates"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := IdentityTranscriptHash(tc.mode, tc.ek, tc.ct, tc.sessionID, tc.nonce, tc.leaf, tc.ca)
+			_, err := IdentityTranscriptHash(tc.mode, tc.ek, tc.ct, tc.sessionID, tc.nonce, tc.leaf, tc.ca, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("err = %v, want %q", err, tc.wantErr)
 			}

@@ -2,28 +2,51 @@
   {
     "description": "repeated single-byte fields",
     "front_door_mode": "cds",
-    "nonce_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
-    "serving_leaf_der_b64": "oKCgoKCgoKA=",
-    "mesh_leaf_der_b64": "sbGxsbGxsbE=",
     "mesh_ca_der_b64": "wsLCwsLCwsI=",
-    "report_data_b64": "tjEfitWK7hKeY6baTNVYhuJewfmJeQQ+ojixCeXzskoohHjjdmVaKEc6C5wTcYzk"
+    "mesh_leaf_der_b64": "sbGxsbGxsbE=",
+    "nonce_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    "report_data_b64": "VcVPNVWQ+b4BVJFY3Yk+Wx9RU5L75U/KZdnDCaA0XxEvPPgwih/CXZ0pwMNVf87T",
+    "serving_leaf_der_b64": "oKCgoKCgoKA=",
+    "state_b64": ""
   },
   {
     "description": "ascii DER placeholders, distinct lengths, acme mode",
     "front_door_mode": "acme",
-    "nonce_b64": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
-    "serving_leaf_der_b64": "c2VydmluZy1sZWFmLWRlcg==",
-    "mesh_leaf_der_b64": "bWVzaC1sZWFmLWRlcg==",
     "mesh_ca_der_b64": "bWVzaC1jYS1kZXI=",
-    "report_data_b64": "Xfm5JNaZwEoJwbaSXXt5q5jEB0R8KNLu1XU79ZH7xF7mOm8NzKU2dj8fPs+AoiX7"
+    "mesh_leaf_der_b64": "bWVzaC1sZWFmLWRlcg==",
+    "nonce_b64": "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    "report_data_b64": "yOTRM1Lmhab/cY0vXTLCxBxs8SJUvnKn5eyBIbFQ7VOdIvwsd9XXnaTncAQkBCCr",
+    "serving_leaf_der_b64": "c2VydmluZy1sZWFmLWRlcg==",
+    "state_b64": ""
   },
   {
     "description": "duplicate serving and mesh leaf bytes are hashed twice, not deduplicated",
     "front_door_mode": "cds",
-    "nonce_b64": "//////////////////////////////////////////8=",
-    "serving_leaf_der_b64": "c2FtZS1kZXI=",
-    "mesh_leaf_der_b64": "c2FtZS1kZXI=",
     "mesh_ca_der_b64": "aXNzdWVyLWRlcg==",
-    "report_data_b64": "k0R8DgYjhwabubDBVr9CgOc9nwx7v6xhv7EvPdd49nBDfR0Jttei16wtHNJ1YA06"
+    "mesh_leaf_der_b64": "c2FtZS1kZXI=",
+    "nonce_b64": "//////////////////////////////////////////8=",
+    "report_data_b64": "HtsfFbZaSp6Au6DmN93hqftR96OX23UYwH0VPcnrGjeVZlUDm7ejfmNYpfA+sYwu",
+    "serving_leaf_der_b64": "c2FtZS1kZXI=",
+    "state_b64": ""
+  },
+  {
+    "description": "rollout state committed",
+    "front_door_mode": "cds",
+    "mesh_ca_der_b64": "wsLCwsLCwsI=",
+    "mesh_leaf_der_b64": "sbGxsbGxsbE=",
+    "nonce_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    "report_data_b64": "IN+wpBf1waGz8fFRHwU0vssd/bsKp3juIhCpUZdSygWeJMLVsDdT2oH1NjGNPyY3",
+    "serving_leaf_der_b64": "oKCgoKCgoKA=",
+    "state_b64": "eyJwcm90b2NvbCI6MSwiYXV0aG9yaXR5Ijoic2hhMjU2OmFhIiwicG9zaXRpb24iOjMsImhlYWQiOiJzaGEyNTY6YmIiLCJhbGxvd2xpc3RfdmVyc2lvbiI6IjQiLCJwb2xpY3kiOiJzaGEyNTY6Y2MiLCJib3VuZCI6WyJzaGEyNTY6Y2MiXSwibGVhc2Vfc2Vjb25kcyI6MzAsIm5vbmNlIjoiMDEwMSJ9"
+  },
+  {
+    "description": "rollout state committed",
+    "front_door_mode": "cds",
+    "mesh_ca_der_b64": "wsLCwsLCwsI=",
+    "mesh_leaf_der_b64": "sbGxsbGxsbE=",
+    "nonce_b64": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+    "report_data_b64": "IN+wpBf1waGz8fFRHwU0vssd/bsKp3juIhCpUZdSygWeJMLVsDdT2oH1NjGNPyY3",
+    "serving_leaf_der_b64": "oKCgoKCgoKA=",
+    "state_b64": "eyJwcm90b2NvbCI6MSwiYXV0aG9yaXR5Ijoic2hhMjU2OmFhIiwicG9zaXRpb24iOjMsImhlYWQiOiJzaGEyNTY6YmIiLCJhbGxvd2xpc3RfdmVyc2lvbiI6IjQiLCJwb2xpY3kiOiJzaGEyNTY6Y2MiLCJib3VuZCI6WyJzaGEyNTY6Y2MiXSwibGVhc2Vfc2Vjb25kcyI6MzAsIm5vbmNlIjoiMDEwMSJ9"
   }
 ]

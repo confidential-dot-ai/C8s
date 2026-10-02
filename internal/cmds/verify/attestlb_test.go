@@ -28,7 +28,7 @@ func attestLBServer(t *testing.T, id *endpointIdentity, bindLeaf []byte) *httpte
 		if leaf == nil {
 			leaf = ts.Certificate().Raw
 		}
-		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw)
+		transcript, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, leaf, id.leaf.Raw, id.ca.Raw, nil)
 		if err != nil {
 			t.Error(err)
 		}
