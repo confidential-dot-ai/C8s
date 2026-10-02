@@ -22,10 +22,10 @@ func TestNewCmdDefaultsAndHelp(t *testing.T) {
 		{"client-ca-cert", defaultClientCACert},
 		{"client-ca-key", defaultClientCAKey},
 		{"server-ca-cert", defaultServerCACert},
-		{"cert-ttl", "1h0m0s"},
+		{"cert-ttl", "168h0m0s"},
 		{"cert-org", "c8s:node-operators"},
 		{"cert-cn", "operator"},
-		{"log-cert-ttl", "24h0m0s"},
+		{"log-cert-ttl", "168h0m0s"},
 		{"log-cert-org", "c8s:log-readers"},
 		{"log-cert-cn", "log-reader"},
 	}
