@@ -170,10 +170,14 @@ data:
 
             {{- if $renderAllowlistRoute }}
             # Built-in control-plane route. The exact + slash-prefix pair
-            # exposes only /allowlist and its API subtree, not lookalike paths.
+            # exposes only /allowlist and its API subtree, not lookalike paths;
+            # the well-known locations expose the rollout journal reads.
             {{- $allowlistLocationArgs := dict "root" $ "proxyPort" $allowlistProxyPort "writeBurst" $allowlistWriteBurst "writeTotalBurst" $allowlistWriteTotalBurst "readBurst" $allowlistReadBurst }}
             {{- include "router.allowlistLocation" (merge (dict "exact" true "path" "/allowlist") $allowlistLocationArgs) | nindent 12 }}
             {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/allowlist/") $allowlistLocationArgs) | nindent 12 }}
+            {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/.well-known/c8s/objects/") $allowlistLocationArgs) | nindent 12 }}
+            {{- include "router.allowlistLocation" (merge (dict "exact" true "path" "/.well-known/c8s/allowlist/latest") $allowlistLocationArgs) | nindent 12 }}
+            {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/.well-known/c8s/state") $allowlistLocationArgs) | nindent 12 }}
 
             {{- end }}
             {{- range $i, $route := .Values.router.routes }}

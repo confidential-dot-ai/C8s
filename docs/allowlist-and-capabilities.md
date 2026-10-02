@@ -521,6 +521,31 @@ mounts at final admission; unavailable evidence fails constrained policies.
 Generated system-image entries explicitly allow mounts and leave the other
 launch fields unconstrained so the platform can start before CDS is reachable.
 
+### Rollout journal
+
+Every write that changes the document appends a `published` event to a
+hash-chained journal in the allowlist database. The event names the source and
+target policy digests (SHA-256 of the canonical bytes) and whether the target
+drops or changes any source entry (`drain_required`). The router exposes the
+journal over the same verified CDS proxy as `/allowlist`:
+
+| Route | Returns |
+|---|---|
+| `GET /.well-known/c8s/objects/sha256/<hex>` | Canonical bytes of a policy or event |
+| `GET /.well-known/c8s/allowlist/latest` | Current version and policy digest |
+| `GET /.well-known/c8s/state` | Signed state: head, position, version, policy and bound |
+| `POST /.well-known/c8s/state/challenge` | The same, with the caller's `{"nonce":"<hex>"}` inside the signature |
+
+`bound` lists every policy digest that may still run, oldest first. A
+publication that keeps every source entry replaces a single-policy bound; any
+other publication widens it. The signature is ASN.1 ECDSA over SHA-384 of the
+exact `state` bytes, by the mesh CA key that `/ca` certifies. The `authority`
+field is `sha256:` over that key's SubjectPublicKeyInfo. CDS generates the key
+at each start, so a restart changes the authority and verifiers re-anchor on
+it; each event keeps the authority current when it was appended. A write that
+leaves the document unchanged bumps the `/allowlist` ETag but appends no event,
+so `allowlist_version` is the version at the last publication.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component
