@@ -1,0 +1,31 @@
+# Canal overrides for RKE2's bundled chart (`rke2-canal`). Felix settings
+# the chart has no values for live in canal-felix-config.yaml; Felix gives env
+# vars precedence over FelixConfiguration, so each setting lives in one file.
+
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: rke2-canal
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    calico:
+      # ratls-mesh's iptables-nft, so both share one ruleset and chain order.
+      felixIptablesBackend: nft
+      # ratls-mesh redirects meshed pod egress to a host listener (INPUT).
+      felixDefaultEndpointToHostAction: ACCEPT
+      # Felix would serve metrics on every interface, the host-facing NIC included.
+      felixPrometheusMetricsEnabled: false
+      # The sealed image denies every runc exec, so exec probes always fail
+      # (the chart's preStop exec fails only at shutdown). Values merge into
+      # the chart default; null drops its exec handler.
+      livenessProbe:
+        exec: null
+        httpGet:
+          path: /liveness
+          port: 9099
+          host: localhost
+        periodSeconds: 10
+        initialDelaySeconds: 10
+        failureThreshold: 6
+        timeoutSeconds: 10

@@ -69,27 +69,42 @@ if sed '/# BEGIN rke2 system images/,/# END rke2 system images/d' "$policy"     
 fi
 
 # The c8s node is normally nested in an outer RKE2 cluster: its pod
-# CIDR must not fall back to the outer cluster's default, and
-# Cilium's pool must exactly match the RKE2 server setting or pods
-# receive unroutable IPs.
+# CIDR must not fall back to the outer cluster's default. Canal takes its
+# pool from this setting.
 rke2_config="$ngi/c8s/mkosi.extra/etc/rancher/rke2/config.yaml"
-cilium_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml"
+canal_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-canal-config.yaml"
 rke2_pod_cidr=$(sed -n 's/^cluster-cidr:[[:space:]]*//p' "$rke2_config")
-cilium_pod_cidr=$(sed -n '/clusterPoolIPv4PodCIDRList:/,/^[^[:space:]]/s/^[[:space:]]*-[[:space:]]*//p' "$cilium_config" | head -n 1)
 if [ -z "$rke2_pod_cidr" ] || [ "$rke2_pod_cidr" = "10.42.0.0/16" ]; then
   echo "::error::c8s RKE2 cluster-cidr must be explicit and must not overlap the outer RKE2 default"
   exit 1
 fi
-if [ "$rke2_pod_cidr" != "$cilium_pod_cidr" ]; then
-  echo "::error::c8s RKE2 cluster-cidr ($rke2_pod_cidr) must match Cilium IPAM ($cilium_pod_cidr)"
+
+# ratls-mesh's cw inbound guard needs iptables-mode kube-proxy (Service DNAT
+# before FORWARD) and its jumps at the head of FORWARD, ahead of Felix's.
+# Localhost NodePorts stay off: they set route_localnet=1, exposing
+# loopback listeners such as the attestation-api.
+kube_proxy_arg() {
+  awk -v want="  - $1" '/^kube-proxy-arg:/{c=1;next} c&&/^[^ ]/{c=0} c&&$0==want{f=1} END{exit !f}' "$rke2_config"
+}
+if ! grep -qx 'disable-kube-proxy: false' "$rke2_config" \
+   || [ "$(grep -c -- '- proxy-mode=' "$rke2_config")" != 1 ] \
+   || ! kube_proxy_arg proxy-mode=iptables \
+   || ! kube_proxy_arg iptables-localhost-nodeports=false; then
+  echo "::error::$rke2_config must run kube-proxy in iptables mode without localhost NodePorts"
+  exit 1
+fi
+felix_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/canal-felix-config.yaml"
+if ! grep -qx 'kind: FelixConfiguration' "$felix_config" \
+   || ! grep -qx '  name: default' "$felix_config" \
+   || ! grep -qx '  chainInsertMode: Append' "$felix_config"; then
+  echo "::error::$felix_config must set Felix chainInsertMode: Append so ratls-mesh's jumps keep the chain head"
   exit 1
 fi
 
-# The sealed image denies every runc exec, lifecycle hooks included, and a
-# failed postStart kills the Cilium agent on every start. The chart renders
-# that hook unless cni.iptablesRemoveAWSRules is false.
-if ! awk '/^    cni:/{c=1;next} c&&/^    [^ ]/{c=0} c&&/^      iptablesRemoveAWSRules:[[:space:]]*false[[:space:]]*$/{f=1} END{exit !f}' "$cilium_config"; then
-  echo "::error::Cilium must set cni.iptablesRemoveAWSRules: false; its exec postStart hook cannot run on a sealed image"
+# The sealed image denies every runc exec, so an exec probe always fails.
+# The liveness override must drop the chart's exec handler, not add to it.
+if ! awk '/^    calico:$/{p=1;next} p&&/^ {0,4}[^ ]/{p=0} p&&/^      livenessProbe:$/{c=1;next} c&&/^ {0,6}[^ ]/{c=0} c&&/^        exec: null$/{e=1} c&&/^        httpGet:$/{h=1} END{exit !(e&&h)}' "$canal_config"; then
+  echo "::error::Canal's calico-node liveness probe must be httpGet with exec: null; exec probes cannot run on a sealed image"
   exit 1
 fi
 

@@ -48,19 +48,19 @@ allowlist:
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
+      hardened-calico-9ad5a45ef284:
+        label: "docker.io/rancher/hardened-calico:v3.32.1-build20260827"
+        containers:
+          - digest: "sha256:9ad5a45ef284f2632590750a21deedab9f38d0d9cd8cc555b776a6a68e6d973b"
+            image: "docker.io/rancher/hardened-calico:v3.32.1-build20260827"
+            command: {policy: any}
+            args: {policy: any}
+            mounts: {policy: any}
       hardened-cluster-autoscaler-c9b9b027e4d2:
         label: "docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819"
         containers:
           - digest: "sha256:c9b9b027e4d2cf1731311f9714f4aa633d37d7b0a72c9d3e6fc7a0594350d27c"
             image: "docker.io/rancher/hardened-cluster-autoscaler:v1.10.3-build20260819"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      hardened-cni-plugins-0d26512c90d9:
-        label: "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717"
-        containers:
-          - digest: "sha256:0d26512c90d935db3180f47a7a716e3dfac0847ec29076fb5487e535125a86a8"
-            image: "docker.io/rancher/hardened-cni-plugins:v1.9.1-build20260717"
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
@@ -85,6 +85,14 @@ allowlist:
         containers:
           - digest: "sha256:4f7ffbb3399c9f8137f5d0dd3ca0eddc7909e5d0155b35f1b0449baf96d61bfa"
             image: "docker.io/rancher/hardened-etcd:v3.6.14-k3s1-build20260819"
+            command: {policy: any}
+            args: {policy: any}
+            mounts: {policy: any}
+      hardened-flannel-89d695035932:
+        label: "docker.io/rancher/hardened-flannel:v0.28.9-build20260819"
+        containers:
+          - digest: "sha256:89d695035932b7b2dc482e8837f83237d80ada7d019a877cdcb379403e32f590"
+            image: "docker.io/rancher/hardened-flannel:v0.28.9-build20260819"
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}
@@ -133,86 +141,6 @@ allowlist:
         containers:
           - digest: "sha256:910944bb0bd94f060a82a56ca1ea1c577d3e49b3473a093a47a985f32e92d94a"
             image: "docker.io/rancher/klipper-lb:v0.4.17"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-certgen-30df3131622e:
-        label: "docker.io/rancher/mirrored-cilium-certgen:v0.4.6"
-        containers:
-          - digest: "sha256:30df3131622e08f3051b171af68cd7997609aa19f7bd692b70b5b6bd6fcd659e"
-            image: "docker.io/rancher/mirrored-cilium-certgen:v0.4.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-cilium-envoy-5f804f48df0c:
-        label: "docker.io/rancher/mirrored-cilium-cilium-envoy:v1.36.9-1782267392-edeb3f2af56c37c407efa1f63f0b32f595399bbc"
-        containers:
-          - digest: "sha256:5f804f48df0c42c66aeff3252f36277ecbfd4e968bf3ec81b0717323355e7add"
-            image: "docker.io/rancher/mirrored-cilium-cilium-envoy:v1.36.9-1782267392-edeb3f2af56c37c407efa1f63f0b32f595399bbc"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-cilium-134ab48d00e6:
-        label: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
-        containers:
-          - digest: "sha256:134ab48d00e67bed72fa43e0492adf2f0c78383e21da7ee1aeb5b7aa8ef2e7ee"
-            image: "docker.io/rancher/mirrored-cilium-cilium:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-clustermesh-apiserver-59ab31ea6250:
-        label: "docker.io/rancher/mirrored-cilium-clustermesh-apiserver:v1.19.6"
-        containers:
-          - digest: "sha256:59ab31ea62509b1596e1dfd436e781f5e7549a15aea82aab05e29657ac099f43"
-            image: "docker.io/rancher/mirrored-cilium-clustermesh-apiserver:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-hubble-relay-1d3cd7f07e11:
-        label: "docker.io/rancher/mirrored-cilium-hubble-relay:v1.19.6"
-        containers:
-          - digest: "sha256:1d3cd7f07e11e451683002b925a25ccba74d9aed2fc2e454a7173d260a2d11bd"
-            image: "docker.io/rancher/mirrored-cilium-hubble-relay:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-hubble-ui-backend-26446592541d:
-        label: "docker.io/rancher/mirrored-cilium-hubble-ui-backend:v0.13.5"
-        containers:
-          - digest: "sha256:26446592541d6e37333850b37bd59cccec69f6f2f02fd50a8588d3f1a136717f"
-            image: "docker.io/rancher/mirrored-cilium-hubble-ui-backend:v0.13.5"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-hubble-ui-9906c0b60c9d:
-        label: "docker.io/rancher/mirrored-cilium-hubble-ui:v0.13.5"
-        containers:
-          - digest: "sha256:9906c0b60c9d65c467ccc541154728ad00886a3f8012fe7b53e88404f06babaa"
-            image: "docker.io/rancher/mirrored-cilium-hubble-ui:v0.13.5"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-operator-aws-2f28e344b83a:
-        label: "docker.io/rancher/mirrored-cilium-operator-aws:v1.19.6"
-        containers:
-          - digest: "sha256:2f28e344b83ac28bf9a561b666dd3e935c7238d8d4be4d2c840053e178718945"
-            image: "docker.io/rancher/mirrored-cilium-operator-aws:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-operator-azure-10b602130d98:
-        label: "docker.io/rancher/mirrored-cilium-operator-azure:v1.19.6"
-        containers:
-          - digest: "sha256:10b602130d98d8de3c40213f938430a962b14ccf4b405cdbcb2af62ba52dd0e6"
-            image: "docker.io/rancher/mirrored-cilium-operator-azure:v1.19.6"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      mirrored-cilium-operator-generic-aadc3b1a2b8b:
-        label: "docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6"
-        containers:
-          - digest: "sha256:aadc3b1a2b8b682f5b4f7b01e182eeeac16f1177af0561b07825abab1d654b2b"
-            image: "docker.io/rancher/mirrored-cilium-operator-generic:v1.19.6"
             command: {policy: any}
             args: {policy: any}
             mounts: {policy: any}

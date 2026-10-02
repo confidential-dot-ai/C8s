@@ -54,6 +54,17 @@ if [[ ${1:-} == get && ${2:-} == -f ]]; then
     exit 0
 fi
 
+if [[ ${1:-} == get && ${2:-} == felixconfigurations.crd.projectcalico.org ]]; then
+    case "$FAKE_MODE" in
+        felix-unreadable) echo "error: the server doesn't have a resource type \"felixconfigurations\"" >&2; exit 1 ;;
+        felix-missing) printf 'node.n1=\n' ;;
+        felix-insert) printf 'default=Insert\n' ;;
+        felix-node-override) printf 'default=Append\nnode.n1=Insert\n' ;;
+        *) printf 'default=Append\nnode.n1=\n' ;;
+    esac
+    exit 0
+fi
+
 if [[ ${1:-} == apply ]]; then
     cat >/dev/null
     [[ $FAKE_MODE != rbac-failure ]]
@@ -135,7 +146,8 @@ ok "reports operator scope" grep -q 'confos-operator-scope is enforcing the oper
 ok "reports guard match" grep -q 'live guards match' "$WORK/stdout"
 ok "renders every reference copy server-side" [ "$(grep -c '^replace --dry-run=server -f ' "$WORK/log")" = "$guard_count" ]
 ok "fetches the live objects of every guard" [ "$(grep -c '^get -f ' "$WORK/log")" = "$guard_count" ]
-ok "waits on nothing but the guards" not grep -Eq '^get [^-]' "$WORK/log"
+ok "waits on nothing but the guards and Felix's chain mode" not grep -Ev '^get (-f|felixconfigurations\.crd\.projectcalico\.org) ' <(grep '^get ' "$WORK/log")
+ok "reports Felix append mode" grep -q 'Felix appends behind ratls-mesh' "$WORK/stdout"
 ok "cleans the probe binding" grep -q '^delete clusterrolebinding confos-psa-readiness-probe ' "$WORK/log"
 ok "cleans the probe role" grep -q '^delete clusterrole confos-psa-readiness-probe ' "$WORK/log"
 
@@ -188,5 +200,21 @@ ok "names the broken allow path" stderr_has 'restricted namespace dry-run was de
 CASE="temporary RBAC cannot be installed"
 ok "fails closed" not run_gate rbac-failure
 ok "names the RBAC failure" stderr_has 'could not install the temporary readiness-probe RBAC'
+
+CASE="FelixConfiguration CRD not installed yet"
+ok "fails closed" not run_gate felix-unreadable
+ok "names the unreadable configs" stderr_has 'FelixConfigurations are not readable'
+
+CASE="no global FelixConfiguration"
+ok "fails closed" not run_gate felix-missing
+ok "names the missing Append" stderr_has 'default does not set chainInsertMode: Append'
+
+CASE="Felix still inserting"
+ok "fails closed" not run_gate felix-insert
+ok "names the live mode" stderr_has 'live: default=Insert'
+
+CASE="a per-node FelixConfiguration overrides the mode"
+ok "fails closed" not run_gate felix-node-override
+ok "names the override" stderr_has 'overrides chainInsertMode: node.n1=Insert'
 
 summarize "psa-ready"
