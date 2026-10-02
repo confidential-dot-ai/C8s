@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -60,7 +60,7 @@ func (r *rollout) challenge(ctx context.Context, nonce []byte) (*types.SignedRol
 	if err != nil {
 		return nil, nil, err
 	}
-	signed, st, err := r.fetch(ctx, http.MethodPost, "/.well-known/c8s/state/challenge", body)
+	signed, st, err := r.fetch(ctx, http.MethodPost, "/.well-known/c8s/state/challenge", body, rolloutstate.ContextChallenge)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -73,7 +73,7 @@ func (r *rollout) challenge(ctx context.Context, nonce []byte) (*types.SignedRol
 // poll refreshes the state and returns the newest bound seen, which a
 // concurrent challenge may have stored ahead of this response.
 func (r *rollout) poll(ctx context.Context) ([]string, error) {
-	if _, _, err := r.fetch(ctx, http.MethodGet, "/.well-known/c8s/state", nil); err != nil {
+	if _, _, err := r.fetch(ctx, http.MethodGet, "/.well-known/c8s/state", nil, rolloutstate.ContextState); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
@@ -81,7 +81,7 @@ func (r *rollout) poll(ctx context.Context) ([]string, error) {
 	return r.bound, nil
 }
 
-func (r *rollout) fetch(ctx context.Context, method, path string, body []byte) (*types.SignedRolloutState, *types.RolloutState, error) {
+func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, sigContext string) (*types.SignedRolloutState, *types.RolloutState, error) {
 	sent := time.Now()
 	req, err := http.NewRequestWithContext(ctx, method, r.url+path, bytes.NewReader(body))
 	if err != nil {
@@ -104,7 +104,7 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte) (
 	if err := json.Unmarshal(raw, &signed); err != nil {
 		return nil, nil, fmt.Errorf("decode CDS state: %w", err)
 	}
-	if err := r.verify(&signed); err != nil {
+	if err := r.verify(&signed, sigContext); err != nil {
 		return nil, nil, err
 	}
 	if err := json.Unmarshal(signed.State, &st); err != nil {
@@ -124,7 +124,7 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte) (
 
 // verify requires the state to be signed by a key in the mesh CA bundle, the
 // CA clients check it against: the proxy's CDS pins are deployment config.
-func (r *rollout) verify(signed *types.SignedRolloutState) error {
+func (r *rollout) verify(signed *types.SignedRolloutState, sigContext string) error {
 	pemBytes, err := os.ReadFile(r.caFile)
 	if err != nil {
 		return fmt.Errorf("read mesh CA: %w", err)
@@ -133,9 +133,8 @@ func (r *rollout) verify(signed *types.SignedRolloutState) error {
 	if err != nil {
 		return fmt.Errorf("parse mesh CA: %w", err)
 	}
-	sum := sha512.Sum384(signed.State)
 	for _, ca := range cas {
-		if key, ok := ca.PublicKey.(*ecdsa.PublicKey); ok && ecdsa.VerifyASN1(key, sum[:], signed.Signature) {
+		if key, ok := ca.PublicKey.(*ecdsa.PublicKey); ok && rolloutstate.Verify(key, sigContext, signed.State, signed.Signature) {
 			return nil
 		}
 	}

@@ -6,7 +6,6 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -27,8 +27,7 @@ func signRolloutState(t *testing.T, key *ecdsa.PrivateKey, st types.RolloutState
 	if err != nil {
 		t.Fatal(err)
 	}
-	sum := sha512.Sum384(body)
-	sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	sig, err := rolloutstate.Sign(key, rolloutstate.ContextChallenge, body)
 	if err != nil {
 		t.Fatal(err)
 	}

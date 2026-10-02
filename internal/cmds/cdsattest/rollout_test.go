@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -49,14 +49,15 @@ func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	st := types.RolloutState{Bound: f.bound, Lease: 30}
 	key := f.key
 	f.mu.Unlock()
+	context := rolloutstate.ContextState
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
 		json.NewDecoder(r.Body).Decode(&req)
 		st.Nonce = req.Nonce
+		context = rolloutstate.ContextChallenge
 	}
 	body, _ := json.Marshal(st)
-	sum := sha512.Sum384(body)
-	sig, _ := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	sig, _ := rolloutstate.Sign(key, context, body)
 	json.NewEncoder(w).Encode(types.SignedRolloutState{State: body, Signature: sig})
 }
 

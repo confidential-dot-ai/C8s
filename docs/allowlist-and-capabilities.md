@@ -538,8 +538,14 @@ journal over the same verified CDS proxy as `/allowlist`:
 
 `bound` lists every policy digest that may still run, oldest first. A
 publication that keeps every source entry replaces a single-policy bound; any
-other publication widens it. The signature is ASN.1 ECDSA over SHA-384 of the
-exact `state` bytes, by the mesh CA key that `/ca` certifies. The `authority`
+other publication widens it.
+
+The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
+SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
+context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and
+`c8s/rollout-state-challenge/v1` for the challenge. The prefix keeps the CA
+key from signing bare JSON, and a state signed for one endpoint does not
+verify as the other. The `authority`
 field is `sha256:` over that key's SubjectPublicKeyInfo. CDS generates the key
 at each start, so a restart changes the authority and verifiers re-anchor on
 it; each event keeps the authority current when it was appended. A write that

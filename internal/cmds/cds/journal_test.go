@@ -4,7 +4,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
@@ -15,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -52,9 +52,11 @@ func TestJournalRoutes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &signed); err != nil {
 		t.Fatal(err)
 	}
-	sum := sha512.Sum384(signed.State)
-	if !ecdsa.VerifyASN1(&key.PublicKey, sum[:], signed.Signature) {
+	if !rolloutstate.Verify(&key.PublicKey, rolloutstate.ContextChallenge, signed.State, signed.Signature) {
 		t.Fatal("state signature does not verify")
+	}
+	if rolloutstate.Verify(&key.PublicKey, rolloutstate.ContextState, signed.State, signed.Signature) {
+		t.Fatal("a challenge state verifies under the state context")
 	}
 	var st allowlist.State
 	if err := json.Unmarshal(signed.State, &st); err != nil {
