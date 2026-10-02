@@ -448,7 +448,7 @@ jobs:
       # prebuilt ATTEST_GPU_BIN + LIBNVAT. Vendor libnvat (Apache-2.0, digest-
       # pinned) and build the binary with NVAT_USE_SYSTEM_LIB=1.
       - name: Setup ORAS
-        uses: oras-project/setup-oras@1d808f7d7f6995cc68b7bf507bfe5c5446e1dc9d # v2.0.1
+        uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
 
       - name: Log in to GHCR
         run: |
