@@ -37,7 +37,7 @@ spec:
       - apiGroups: ["*"]
         apiVersions: ["*"]
         operations: ["CREATE", "UPDATE", "DELETE", "CONNECT"]
-        resources: ["*", "*/*"]
+        resources: ["*/*"]
   matchConditions:
     - name: from-cred-release
       expression: "(has(request.userInfo.groups) ? request.userInfo.groups : []).exists(g, g.startsWith('c8s:'))"

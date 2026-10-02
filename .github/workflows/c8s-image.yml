@@ -15,6 +15,11 @@ on:
         required: false
         type: boolean
         default: false
+      ssh:
+        description: "With dev, add the confos ssh profile (OpenSSH server, no baked keys). Never ship."
+        required: false
+        type: boolean
+        default: false
       c8s_ref:
         required: false
         type: string
@@ -65,7 +70,7 @@ concurrency:
   # path, so the auto path groups exactly as before.
   group: >-
     ${{ github.workflow }}-${{ github.event.workflow_run.head_sha || github.sha
-    }}-${{ inputs.c8s_ref }}-${{ inputs.dev
+    }}-${{ inputs.c8s_ref }}-${{ inputs.dev }}-${{ inputs.ssh
     }}-${{ inputs.confos_ref }}-${{ inputs.release_tag }}-${{ inputs.gate
     }}-${{ inputs.leg }}
   cancel-in-progress: false
@@ -255,8 +260,12 @@ jobs:
         # VARIANT drives C8S_NAME (-> output/$VARIANT/) and the push tags.
         run: |
           echo "IMAGE=${REGISTRY}/confidential-dot-ai/node-guest-base" >> "$GITHUB_ENV"
+          if [ "${{ inputs.ssh }}" = "true" ] && [ "${{ inputs.dev }}" != "true" ]; then
+            echo "::error::ssh=true requires dev=true: SSH builds are debug-only"
+            exit 1
+          fi
           if [ "${{ inputs.dev }}" = "true" ]; then
-            echo "VARIANT=rke2-${{ matrix.platform }}-dev" >> "$GITHUB_ENV"
+            echo "VARIANT=rke2-${{ matrix.platform }}-dev${{ inputs.ssh && '-ssh' || '' }}" >> "$GITHUB_ENV"
             echo "KERNEL_FLAVOR=rke2-dev" >> "$GITHUB_ENV"
             echo "C8S_DEV=1" >> "$GITHUB_ENV"
           else
@@ -279,7 +288,7 @@ jobs:
             confidential-os-builder
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Setup mkosi
         # Local action (repo is checked out under c8s/): pinned mkosi without
@@ -508,7 +517,8 @@ jobs:
           export C8S_REF="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
           # The build script requires an explicit platform (no default). The
           # matrix publishes both measured platform variants.
-          C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/node-guest-image/build
+          C8S_PLATFORM="${{ matrix.platform }}" C8S_NAME="$VARIANT" ../c8s/node-guest-image/build \
+            ${{ inputs.ssh && '--profile ssh' || '' }}
 
       - name: Make the tools trees cache-safe
         # The post-job cache tar runs unprivileged; mkosi builds these trees as

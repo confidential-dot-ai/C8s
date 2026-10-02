@@ -154,3 +154,46 @@ func TestEnvUnicodeAndDuplicatePolicyKeys(t *testing.T) {
 		}
 	}
 }
+
+func TestObserveLaunchEnvResolvesDuplicatesLikeTheRuntime(t *testing.T) {
+	// runc keeps the last value for a repeated name (libcontainer, prepareEnv),
+	// which is how a CDI edit that sets a name the image already set resolves.
+	obs, err := ObserveLaunchEnv([]string{"PATH=/usr/bin", "NVIDIA_VISIBLE_DEVICES=all", "NVIDIA_VISIBLE_DEVICES=void"})
+	if err != nil {
+		t.Fatalf("duplicate name: %v", err)
+	}
+	want, err := ObserveEnv([]string{"PATH=/usr/bin", "NVIDIA_VISIBLE_DEVICES=void"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *obs != *want {
+		t.Error("observation does not describe the environment the runtime execs")
+	}
+}
+
+func TestObserveLaunchEnvKeepsRejectingMalformedEntries(t *testing.T) {
+	for _, bad := range [][]string{
+		{"PATH=/usr/bin", "NOEQUALS"},
+		{"PATH=/usr/bin", "=novalue"},
+		{"PATH=/usr/bin", "NUL\x00NAME=x"},
+	} {
+		if _, err := ObserveLaunchEnv(bad); err == nil {
+			t.Errorf("malformed entry %q was accepted", bad)
+		}
+	}
+}
+
+func TestObserveLaunchEnvMatchesObserveEnvWithoutDuplicates(t *testing.T) {
+	entries := []string{"PATH=/usr/bin", "MODE=production"}
+	a, err := ObserveLaunchEnv(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ObserveEnv(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *a != *b {
+		t.Error("duplicate-free environments must observe identically")
+	}
+}

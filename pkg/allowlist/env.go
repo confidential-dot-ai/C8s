@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -34,6 +35,24 @@ func ObserveEnv(entries []string) (*EnvObservation, error) {
 		values[name] = value
 	}
 	return fingerprintEnv(values), nil
+}
+
+// ObserveLaunchEnv keeps the last value per name, matching runc's launch environment.
+func ObserveLaunchEnv(entries []string) (*EnvObservation, error) {
+	seen := make(map[string]bool, len(entries))
+	out := make([]string, 0, len(entries))
+	for i := len(entries) - 1; i >= 0; i-- {
+		name, _, ok := strings.Cut(entries[i], "=")
+		if ok {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+		}
+		out = append(out, entries[i])
+	}
+	slices.Reverse(out)
+	return ObserveEnv(out)
 }
 
 func validEnvPair(name, value string) bool {

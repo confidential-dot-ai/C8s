@@ -47,7 +47,7 @@ func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.
 	if len(adjust.GetEnv()) == 0 {
 		return ctr, containerEnv(ctr)
 	}
-	if _, err := allowlist.ObserveEnv(ctr.Env); err != nil {
+	if _, err := observeEnv(ctr); err != nil {
 		return ctr, nil
 	}
 	values := map[string]string{}

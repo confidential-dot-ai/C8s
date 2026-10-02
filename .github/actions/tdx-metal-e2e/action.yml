@@ -521,15 +521,6 @@ runs:
     shell: bash
     run: .github/scripts/cidata-tripwire.sh
 
-  - name: assert AppArmor runtime confinement and admission
-    if: inputs.exact_image == 'true'
-    # c8s-local image invariant, alongside the cidata tripwire above.
-    # Keep on re-vendor; the source workflow does not ship this script.
-    env:
-      KUBECONFIG: /tmp/guest.kubeconfig
-    shell: bash
-    run: bash node-guest-image/tests/apparmor-runtime-test.sh
-
   - name: assert components converged
     shell: bash
     run: |
@@ -553,6 +544,17 @@ runs:
         done
         exit 1
       fi
+
+  - name: assert AppArmor runtime confinement and admission
+    if: inputs.exact_image == 'true'
+    # c8s-local image invariant, like the cidata tripwire. The probe pod goes
+    # through the c8s-operator admission webhook, so run it after the
+    # components converge.
+    # Keep on re-vendor; the source workflow does not ship this script.
+    env:
+      KUBECONFIG: /tmp/guest.kubeconfig
+    shell: bash
+    run: bash node-guest-image/tests/apparmor-runtime-test.sh
 
   - name: assert the image floor denies, then opens to a signed write
     # Baked nginx fronts /allowlist; clients pin the complete image tuple

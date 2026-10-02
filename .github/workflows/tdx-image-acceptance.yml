@@ -5,8 +5,11 @@ name: TDX published-image acceptance
 on:
   workflow_call:
     inputs:
-      image_acceptance_artifact:
-        description: 'Immutable evidence from this publication run and attempt.'
+      image_acceptance_artifact_prefix:
+        description: >-
+          Name prefix of the immutable evidence from this publication run. The
+          build appends its run attempt. A rerun of failed jobs reuses the
+          build and its artifact, so the source job takes the newest attempt.
         required: true
         type: string
 permissions:
@@ -25,7 +28,7 @@ jobs:
     # current caller, before allocating that runner.
     # A hosted preflight proves Git ancestry without executing build-source code.
     if: >-
-      inputs.image_acceptance_artifact != '' &&
+      inputs.image_acceptance_artifact_prefix != '' &&
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
@@ -35,8 +38,10 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
+      actions: read
     outputs:
       sha: ${{ steps.source.outputs.sha }}
+      artifact: ${{ steps.artifact.outputs.name }}
     steps:
       - name: Fetch trusted main history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,6 +61,20 @@ jobs:
           git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main
           printf 'sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
+      - name: Find the evidence of the newest build attempt
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREFIX: ${{ inputs.image_acceptance_artifact_prefix }}
+        run: |
+          set -euo pipefail
+          name=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --paginate \
+            --jq '.artifacts[] | select(.expired | not) | .name' |
+            jq -rRs --arg p "$PREFIX-" '[split("\n")[] | select(startswith($p)) | select(ltrimstr($p) | test("^[0-9]+$"))]
+              | sort_by(ltrimstr($p) | tonumber) | last // ""')
+          [ -n "$name" ] || { echo "::error::no $PREFIX-<attempt> artifact in run $GITHUB_RUN_ID"; exit 1; }
+          printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
+
   e2e:
     needs: source
     name: cvm (tdx-metal/rke2-node)
@@ -64,7 +83,7 @@ jobs:
     steps:
       - name: Check out the trusted published build
         if: >-
-          inputs.image_acceptance_artifact != '' &&
+          inputs.image_acceptance_artifact_prefix != '' &&
           github.event_name == 'workflow_run' &&
           github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.event == 'push' &&
@@ -76,14 +95,14 @@ jobs:
           ref: ${{ needs.source.outputs.sha }}
 
       - name: Download this publication's image acceptance evidence
-        if: inputs.image_acceptance_artifact != ''
+        if: inputs.image_acceptance_artifact_prefix != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: ${{ inputs.image_acceptance_artifact }}
+          name: ${{ needs.source.outputs.artifact }}
           path: ${{ runner.temp }}/tdx-image-acceptance
 
       - name: Validate the exact image build and workflow identity
-        if: inputs.image_acceptance_artifact != ''
+        if: inputs.image_acceptance_artifact_prefix != ''
         env:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |

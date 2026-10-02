@@ -85,6 +85,14 @@ if [ "$rke2_pod_cidr" != "$cilium_pod_cidr" ]; then
   exit 1
 fi
 
+# The sealed image denies every runc exec, lifecycle hooks included, and a
+# failed postStart kills the Cilium agent on every start. The chart renders
+# that hook unless cni.iptablesRemoveAWSRules is false.
+if ! awk '/^    cni:/{c=1;next} c&&/^    [^ ]/{c=0} c&&/^      iptablesRemoveAWSRules:[[:space:]]*false[[:space:]]*$/{f=1} END{exit !f}' "$cilium_config"; then
+  echo "::error::Cilium must set cni.iptablesRemoveAWSRules: false; its exec postStart hook cannot run on a sealed image"
+  exit 1
+fi
+
 # The kubelet debugging handlers stay on (they back kubectl logs, which the
 # log-reader credential exists for); exec/attach/port-forward/ephemeral
 # containers are closed at the apiserver by the baked pod-exec-policy AddOn
@@ -214,7 +222,8 @@ for marker in 'hostname: cidata-bait' 'assert the host cidata disk is inert' 'se
     exit 1
   fi
 done
-for marker in 'image_acceptance_artifact:' 'bash .github/scripts/tdx-image-acceptance.sh validate'; do
+for marker in 'image_acceptance_artifact_prefix:' 'name: ${{ needs.source.outputs.artifact }}' \
+              'bash .github/scripts/tdx-image-acceptance.sh validate'; do
   if ! grep -qF "$marker" .github/workflows/tdx-image-acceptance.yml; then
     echo "::error::tdx-image-acceptance.yml lost '$marker': exact-image evidence is required"
     exit 1
@@ -452,9 +461,10 @@ if grep -qE 'joindata|defaulting to server|set_legacy_server_role' "$role_sh"; t
   exit 1
 fi
 
-# Only attestation access, node inventory and credential release remain host
-# services. Core application lifecycle belongs to the baked Kubernetes chart.
-for service in attest-proxy nri-node-ip cred-release; do
+# Only attestation access, node inventory, credential release and volume
+# opening remain host services. Core application lifecycle belongs to the
+# baked Kubernetes chart, which refuses the volumed DaemonSet on a baked node.
+for service in attest-proxy nri-node-ip cred-release volumed; do
   require_launch_dependency "$units/$service.service"
   if ! grep -qxF "enable $service.service" "$preset"; then
     echo "::error::$preset must enable $service.service"
@@ -467,6 +477,10 @@ for service in cds ratls-mesh ratls-mesh-iptables c8s-get-cert cds-attest allowl
     exit 1
   fi
 done
+if ! grep -qF 'ExecStart=/usr/local/bin/c8s volumed --socket-dir=/var/run/nri-image-policy ' "$units/volumed.service"; then
+  echo "::error::volumed must serve in the inventory socket directory the NRI plugin mounts into workload sidecars"
+  exit 1
+fi
 if ! grep -qF 'ExecStart=/usr/local/bin/c8s attest-proxy ' "$units/attest-proxy.service"; then
   echo "::error::host attestation access must retain its fixed proxy entrypoint"
   exit 1

@@ -19,6 +19,8 @@ enable systemd-timesyncd.service
 enable systemd-time-wait-sync.service
 enable cred-release.service
 enable attest-proxy.service
+# Opens c8s encrypted volumes for workload sidecars on both roles.
+enable volumed.service
 # Check the running LSM and exercise a real policy before RKE2 can start.
 enable apparmor-enforce.service
 # The apparmor package supplies apparmor_parser and aa-exec for the boot

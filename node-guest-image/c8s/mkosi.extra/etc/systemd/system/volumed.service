@@ -1,0 +1,25 @@
+[Unit]
+Description=Open c8s encrypted volumes for workloads on this node
+# A node's kubelet root, cgroup layout and inventory socket directory are
+# fixed by this image, so volumed runs here as a host service instead of the
+# chart DaemonSet a non-baked install uses (docs/volumes.md).
+Requires=rke2-role.service
+After=rke2-role.service
+ConditionPathExists=|/run/confos/role-server
+ConditionPathExists=|/run/confos/role-agent
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# volumed refuses to start until the kubelet has created <kubelet-root>/pods,
+# so it restarts until RKE2 is up. Workload sidecars retry for minutes.
+ExecStart=/usr/local/bin/c8s volumed --socket-dir=/var/run/nri-image-policy --kubelet-root=/var/lib/kubelet --cgroup-root=/sys/fs/cgroup --reap-interval=15s --max-mounts=64
+Restart=on-failure
+RestartSec=5
+# No sandboxing: volumed maps device-mapper targets, reads /dev and /sys, and
+# mounts into pod directories under the kubelet root, which must be visible
+# in the host mount namespace. The chart DaemonSet is privileged and hostPID
+# for the same reasons.
+
+[Install]
+WantedBy=multi-user.target
