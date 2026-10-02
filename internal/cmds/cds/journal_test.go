@@ -14,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -28,7 +29,7 @@ func TestJournalRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartJournal("sha256:auth", 0); err != nil {
+	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
@@ -97,7 +98,7 @@ func TestJournalPolicyMatchesSnapshotDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.StartJournal("sha256:auth", 0); err != nil {
+	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := loadPolicySnapshot(&store)
@@ -110,5 +111,19 @@ func TestJournalPolicyMatchesSnapshotDigest(t *testing.T) {
 	}
 	if want := "sha256:" + hex.EncodeToString(snapshot.Digest); st.Policy != want {
 		t.Fatalf("journal policy = %s, want snapshot digest %s", st.Policy, want)
+	}
+}
+
+func TestDrainAfterCoversNamedLeafTTL(t *testing.T) {
+	for _, tc := range []struct {
+		ttl, want time.Duration
+	}{
+		{time.Hour, time.Hour + drainClockMargin},
+		{0, issuer.MaxNamedLeafTTL + drainClockMargin},
+		{100 * time.Hour, issuer.MaxNamedLeafTTL + drainClockMargin},
+	} {
+		if got := drainAfter(tc.ttl); got != tc.want {
+			t.Errorf("drainAfter(%s) = %s, want %s", tc.ttl, got, tc.want)
+		}
 	}
 }

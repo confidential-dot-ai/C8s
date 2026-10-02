@@ -540,6 +540,22 @@ journal over the same verified CDS proxy as `/allowlist`:
 publication that keeps every source entry replaces a single-policy bound; any
 other publication widens it.
 
+A widened bound shrinks again through a `drained` event. CDS stamps a named
+leaf with the policy it enforces at issuance, and no named leaf lives longer
+than `--named-cert-ttl` (at most 6h). So once `--named-cert-ttl` plus a 5
+minute clock margin has run since CDS last changed the enforced policy (and
+since CDS started), no valid leaf names an earlier policy. CDS then appends a
+`drained` event whose `target` is the enforced policy, and `bound` collapses
+to it. CDS does not drain while an update is pending.
+
+CDS does not evict running pods. A container admitted under a policy that a
+later publication removed or changed keeps running until it restarts; the
+node plugin refuses it only at its next start. Its identity, not its
+process, is what the drain bounds: its next leaf is issued unnamed (it no
+longer matches an entry), and the router and pinned verifiers stop
+accepting its old stamp when the bound drains. To stop such a workload
+before that, delete its pods after the publication activates.
+
 The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
 SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
 context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and

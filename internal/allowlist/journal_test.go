@@ -19,7 +19,7 @@ func TestJournalBound(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer store.Close()
-	if err := store.StartJournal("sha256:auth", 0); err != nil {
+	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
 		t.Fatalf("start journal: %v", err)
 	}
 	genesis, err := store.State()
@@ -88,7 +88,7 @@ func TestJournalLeaseStagesAndLocks(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer store.Close()
-	if err := store.StartJournal("sha256:auth", 10*time.Second); err != nil {
+	if err := store.StartJournal("sha256:auth", 10*time.Second, 0); err != nil {
 		t.Fatalf("start journal: %v", err)
 	}
 	_, before, err := store.LoadAll()
@@ -152,7 +152,7 @@ func TestJournalPendingSurvivesLeaseRemoval(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer store.Close()
-	if err := store.StartJournal("sha256:auth", time.Hour); err != nil {
+	if err := store.StartJournal("sha256:auth", time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
@@ -164,7 +164,7 @@ func TestJournalPendingSurvivesLeaseRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := store.StartJournal("sha256:auth", 0); err != nil {
+	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	restarted, err := store.State()
@@ -206,7 +206,7 @@ func TestJournalReplayRefusesBrokenChain(t *testing.T) {
 				t.Fatalf("open: %v", err)
 			}
 			defer store.Close()
-			if err := store.StartJournal("sha256:auth", 0); err != nil {
+			if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
 				t.Fatal(err)
 			}
 			for name, d := range map[string]string{"a": digestA, "b": digestB} {
@@ -222,5 +222,138 @@ func TestJournalReplayRefusesBrokenChain(t *testing.T) {
 				t.Fatalf("State() over a broken chain = %+v, want an error", st)
 			}
 		})
+	}
+}
+
+func headEvent(t *testing.T, store *Store, st State) Event {
+	t.Helper()
+	body, ok, err := store.Object(st.Head)
+	if err != nil || !ok {
+		t.Fatalf("head object: ok=%v err=%v", ok, err)
+	}
+	var ev Event
+	if err := json.Unmarshal(body, &ev); err != nil {
+		t.Fatal(err)
+	}
+	return ev
+}
+
+// A narrowing widens the bound; once the named-leaf TTL has run from its
+// activation, Drain appends a drained event and the bound collapses.
+func TestJournalDrainCollapsesBoundAfterActivation(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 10*time.Second, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Activate(time.Now().Add(11 * time.Second)); !ok || err != nil {
+		t.Fatalf("activate addition = %v, %v", ok, err)
+	}
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	widened, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(widened.Bound) != 2 || widened.Pending == "" {
+		t.Fatalf("state after a narrowing = %+v, want a 2-entry bound and a pending target", widened)
+	}
+	if ok, err := store.Drain(time.Now().Add(24 * time.Hour)); ok || err != nil {
+		t.Fatalf("Drain while the narrowing is pending = %v, %v; want false", ok, err)
+	}
+	activated := time.Now().Add(30 * time.Second)
+	if ok, err := store.Activate(activated); !ok || err != nil {
+		t.Fatalf("activate narrowing = %v, %v", ok, err)
+	}
+	if ok, err := store.Drain(activated.Add(59 * time.Minute)); ok || err != nil {
+		t.Fatalf("Drain before the leaf TTL ran = %v, %v; want false", ok, err)
+	}
+	if ok, err := store.Drain(activated.Add(time.Hour + time.Second)); !ok || err != nil {
+		t.Fatalf("Drain after the leaf TTL = %v, %v; want true", ok, err)
+	}
+	st, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(st.Bound, []string{widened.Policy}) || st.Policy != widened.Policy || st.Position != widened.Position+1 {
+		t.Fatalf("drained state = %+v, want bound [%s] at position %d", st, widened.Policy, widened.Position+1)
+	}
+	ev := headEvent(t, &store, st)
+	if ev.Type != EventDrained || ev.Parent != widened.Head || ev.Target != widened.Policy || ev.Authority != "sha256:auth" {
+		t.Fatalf("drained event = %+v, want a drained event on %s chained to %s", ev, widened.Policy, widened.Head)
+	}
+	if ok, err := store.Drain(activated.Add(2 * time.Hour)); ok || err != nil {
+		t.Fatalf("second Drain = %v, %v; want false (already drained)", ok, err)
+	}
+
+	// The next narrowing widens the drained bound again.
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Activate(activated.Add(3 * time.Hour)); !ok || err != nil {
+		t.Fatalf("activate = %v, %v", ok, err)
+	}
+	if _, err := store.DeleteWorkload("b"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := store.State(); len(st.Bound) != 2 {
+		t.Fatalf("bound after a narrowing over a drained bound = %v, want 2 entries", st.Bound)
+	}
+}
+
+func TestJournalDrainWithoutLease(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	published := time.Now()
+	if st, _ := store.State(); len(st.Bound) != 2 {
+		t.Fatalf("bound after a narrowing = %v, want 2 entries", st.Bound)
+	}
+	if ok, err := store.Drain(published.Add(59 * time.Minute)); ok || err != nil {
+		t.Fatalf("early Drain = %v, %v; want false", ok, err)
+	}
+	if ok, err := store.Drain(published.Add(time.Hour + time.Minute)); !ok || err != nil {
+		t.Fatalf("Drain = %v, %v; want true", ok, err)
+	}
+	if st, _ := store.State(); len(st.Bound) != 1 {
+		t.Fatalf("drained bound = %v, want 1 entry", st.Bound)
+	}
+}
+
+func TestJournalDrainDisabled(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Drain(time.Now().Add(1000 * time.Hour)); ok || err != nil {
+		t.Fatalf("Drain with drainAfter 0 = %v, %v; want false", ok, err)
 	}
 }
