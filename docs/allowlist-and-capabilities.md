@@ -552,12 +552,21 @@ serving the previous document to enforcers, issuance and secret release until
 the lease has run from both the publication and CDS's start. The state shows
 the staged digest as `pending`, and CDS refuses any other write with 409 until
 it activates. `c8s allowlist` reports a staged write as applied. The router
-fences attest-pq sessions on the same lease, so a lease of `0s`, the default,
-applies writes at once and gives pinned verifiers nothing to rely on.
+fences attest-pq sessions on the same lease. The default is `60s`. A lease of
+`0s` applies writes at once and gives pinned verifiers nothing to rely on, so
+the chart refuses `0s` while pinned mode is on, and CDS refuses a positive
+lease under `1s` (the state advertises whole seconds). A router that reads a
+state with `lease_seconds: 0` still treats the read as stale after 5 seconds;
+it never serves on one read forever.
 
 ### Pinned allowlists
 
-With `router.attest.pinnedAllowlist`, attest-pq and attest-lb bundles carry
+`router.attest.pinnedAllowlist` is `auto` by default: pinned mode turns on
+whenever the router has an https `router.upstream`, the built-in allowlist
+route, attest enabled and no `router.routes`. Set it to `true` to fail the
+render when one of those is missing, or `false` to turn pinned mode off.
+
+With pinned mode on, attest-pq and attest-lb bundles carry
 `cds_state`: the signed state bound to the client's nonce, with the state
 JSON as base64 so clients hash the exact bytes CDS signed. Both transcripts
 commit SHA-384 of those bytes, so the state is part of the

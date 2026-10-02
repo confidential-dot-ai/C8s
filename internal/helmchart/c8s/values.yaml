@@ -223,8 +223,9 @@ cds:
   allowlistDB: /data/allowlist.db
   # -- Delay between publishing an allowlist change and enforcing it. Routers
   # fence their attest-pq sessions on the same lease; 0s applies writes at once
-  # and disables pinned-allowlist verification.
-  allowlistActivationLease: 0s
+  # and disables pinned-allowlist verification. A positive lease must be at
+  # least 1s. router.attest.pinnedAllowlist refuses to render with 0s.
+  allowlistActivationLease: 60s
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
@@ -1190,9 +1191,13 @@ router:
     expectedWorkload: ""
     # -- Bind each attest-pq session to CDS's nonce-bound rollout state and
     # fence it on cds.allowlistActivationLease, so clients can pin allowlist
-    # digests. Requires allowlist.enabled and upstream.protocol https; the
-    # upstream is then verified against the mesh CA.
-    pinnedAllowlist: false
+    # digests. Requires allowlist.enabled, an upstream.address with
+    # upstream.protocol https, no routes, and a positive
+    # cds.allowlistActivationLease; the upstream is then verified against the
+    # mesh CA and must present a named (matched-workload stamped) leaf.
+    # "auto" turns it on whenever those requirements hold (a configured https
+    # upstream), true fails the render when they do not, false turns it off.
+    pinnedAllowlist: auto
     # -- Loopback port on which nginx hands front-door requests to the sidecar
     # when pinnedAllowlist is on.
     forwardPort: 8802

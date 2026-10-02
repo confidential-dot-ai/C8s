@@ -282,3 +282,25 @@ func TestAttestLBCarriesRolloutState(t *testing.T) {
 		t.Fatalf("attest-lb bundle state = %+v, want the state bound to nonce %x", b.CDSState, nonce)
 	}
 }
+
+func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {
+	r := newRollout("", "")
+	now := time.Now()
+	if r.fresh(now) {
+		t.Fatal("fresh before any state read")
+	}
+	r.seenAt = now
+	if !r.fresh(now.Add(time.Second)) {
+		t.Fatal("zero-lease state is stale one second after the read")
+	}
+	if r.fresh(now.Add(zeroLeaseMaxStateAge)) {
+		t.Fatal("zero-lease state is still fresh after zeroLeaseMaxStateAge")
+	}
+	if r.fresh(now.Add(24 * time.Hour)) {
+		t.Fatal("zero-lease state is fresh forever")
+	}
+	r.lease = time.Minute
+	if !r.fresh(now.Add(30*time.Second)) || r.fresh(now.Add(time.Minute)) {
+		t.Fatal("a positive lease does not bound freshness")
+	}
+}

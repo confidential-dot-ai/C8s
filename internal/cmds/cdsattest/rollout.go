@@ -25,6 +25,12 @@ import (
 // must stay well under the activation lease CDS advertises.
 const statePollInterval = time.Second
 
+// zeroLeaseMaxStateAge bounds how long a state read stays fresh when CDS
+// advertises no activation lease. CDS then enforces writes at once, so the
+// fence gives pinned clients no guarantee; this only keeps the router from
+// serving on a state it can no longer refresh.
+const zeroLeaseMaxStateAge = 5 * statePollInterval
+
 // rollout tracks CDS's allowlist rollout state for the session fence: a
 // session is served only while the last state read is younger than the lease
 // and its envelope covers the current bound. CDS enforces a newly published
@@ -185,8 +191,14 @@ func (r *rollout) admitsConnection(start, now time.Time) bool {
 	return r.fresh(now) && start.After(r.widenedAt)
 }
 
-// fresh reports whether a state has been read and, under a lease, whether the
-// last read is younger than it. Callers hold r.mu.
+// fresh reports whether a state has been read and whether the last read is
+// younger than the lease. A state advertising no lease is held to
+// zeroLeaseMaxStateAge instead: it is never fresh forever, so the router
+// still stops serving when it loses CDS. Callers hold r.mu.
 func (r *rollout) fresh(now time.Time) bool {
-	return !r.seenAt.IsZero() && (r.lease == 0 || now.Sub(r.seenAt) < r.lease)
+	maxAge := r.lease
+	if maxAge <= 0 {
+		maxAge = zeroLeaseMaxStateAge
+	}
+	return !r.seenAt.IsZero() && now.Sub(r.seenAt) < maxAge
 }

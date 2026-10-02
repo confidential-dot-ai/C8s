@@ -162,6 +162,46 @@ flip on this one predicate.
 {{- end -}}
 
 {{/*
+Return true when the router runs in pinned-allowlist mode.
+router.attest.pinnedAllowlist is true, false or "auto". "auto" turns pinned
+mode on whenever it can work: attest enabled, the built-in allowlist route
+rendered, an https router.upstream, and no router.routes. true fails the
+render when any of those is missing. Pinned mode also needs a positive
+cds.allowlistActivationLease: the router fences clients on that lease, and
+with 0s CDS enforces a write before any router can see it.
+*/}}
+{{- define "router.pinnedAllowlist" -}}
+{{- $mode := .Values.router.attest.pinnedAllowlist -}}
+{{- $possible := and .Values.router.attest.enabled (eq (include "router.renderAllowlistRoute" .) "true") (eq .Values.router.upstream.protocol "https") (ne (.Values.router.upstream.address | toString | trim) "") -}}
+{{- $on := false -}}
+{{- if kindIs "bool" $mode -}}
+{{- if $mode -}}
+{{- if not $possible -}}
+{{- fail "router.attest.pinnedAllowlist requires router.attest.enabled, router.allowlist.enabled, router.upstream.address and router.upstream.protocol=https" -}}
+{{- end -}}
+{{- if .Values.router.routes -}}
+{{- fail "router.attest.pinnedAllowlist forwards only to router.upstream; remove router.routes" -}}
+{{- end -}}
+{{- $on = true -}}
+{{- end -}}
+{{- else if eq (toString $mode) "auto" -}}
+{{- $on = and $possible (not .Values.router.routes) -}}
+{{- else -}}
+{{- fail (printf "router.attest.pinnedAllowlist must be true, false or \"auto\", got: %v" $mode) -}}
+{{- end -}}
+{{- if $on -}}
+{{- $lease := .Values.cds.allowlistActivationLease | toString | trim -}}
+{{- if or (eq $lease "") (hasPrefix "-" $lease) (regexMatch "^\\+?(0+(\\.0*)?|\\.0+)(ns|us|µs|μs|ms|s|m|h)?((0+(\\.0*)?|\\.0+)(ns|us|µs|μs|ms|s|m|h))*$" $lease) -}}
+{{- fail (printf "router.attest.pinnedAllowlist requires a positive cds.allowlistActivationLease, got: %q; set a lease (e.g. 60s) or router.attest.pinnedAllowlist=false" $lease) -}}
+{{- end -}}
+{{- if regexMatch "^\\+?[0-9.]+(ns|us|µs|μs|ms)$" $lease -}}
+{{- fail (printf "cds.allowlistActivationLease must be at least 1s for router.attest.pinnedAllowlist, got: %q" $lease) -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
 Return true when a legacy typed route owns /allowlist. Such a route suppresses
 both the built-in nginx locations and their loopback proxy sidecar.
 */}}
