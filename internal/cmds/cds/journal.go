@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -124,10 +125,26 @@ func drainAfter(namedCertTTL time.Duration) time.Duration {
 	return namedCertTTL + drainClockMargin
 }
 
+// startJournal starts the allowlist journal with cfg's lease and drain wait,
+// and the loop that activates and drains it every tick, with or without a
+// lease.
+func startJournal(ctx context.Context, store *allowlist.Store, authority string, cfg config, tick time.Duration) error {
+	if err := store.StartJournal(authority, cfg.activationLease, drainAfter(cfg.namedCertTTL)); err != nil {
+		return fmt.Errorf("start allowlist journal: %w", err)
+	}
+	// Without a lease, an update staged by an earlier run activates now
+	// rather than blocking writes forever.
+	if _, err := store.Activate(time.Now()); err != nil {
+		return fmt.Errorf("activate pending allowlist update: %w", err)
+	}
+	go journalLoop(ctx, store, tick)
+	return nil
+}
+
 // journalLoop enforces a pending allowlist update once its lease has run, and
 // drains the bound once no leaf stamped under an earlier policy is valid.
-func journalLoop(ctx context.Context, store *allowlist.Store) {
-	ticker := time.NewTicker(time.Second)
+func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration) {
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	for {
 		select {

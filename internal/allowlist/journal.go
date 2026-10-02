@@ -80,7 +80,7 @@ func objectDigest(b []byte) string {
 func (s *Store) StartJournal(authority string, lease, drainAfter time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authority, s.lease, s.drainAfter, s.started = authority, lease, drainAfter, time.Now()
+	s.authority, s.lease, s.drainAfter, s.started = authority, lease, drainAfter, s.clock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -118,6 +118,22 @@ func (s *Store) StartJournal(authority string, lease, drainAfter time.Duration) 
 	return tx.Commit()
 }
 
+// SetClock replaces time.Now for the journal's own timestamps (start,
+// publication, lease-0 serving time). For tests.
+func (s *Store) SetClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
+// clock is the journal's time source: time.Now unless a test sets s.now.
+func (s *Store) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
 // setServedTx records that CDS enforces target from since on.
 func setServedTx(tx *sql.Tx, target string, since time.Time) error {
 	if _, err := tx.Exec("DELETE FROM journal_served"); err != nil {
@@ -153,7 +169,7 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 		if err != nil {
 			return err
 		}
-		return setServedTx(tx, head.Target, time.Now())
+		return setServedTx(tx, head.Target, s.clock())
 	}
 	var prev pkgallowlist.Allowlist
 	if err := json.Unmarshal(source, &prev); err != nil {
@@ -169,7 +185,7 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 	if err := setVersionTx(tx, sourceHead.Version); err != nil {
 		return err
 	}
-	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, time.Now().UnixMilli())
+	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, s.clock().UnixMilli())
 	return err
 }
 

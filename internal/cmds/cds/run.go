@@ -136,13 +136,8 @@ func run(cfg config) error {
 		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
 	)
 	caChainPEM := certutil.EncodeCertPEM(mesh.Cert.Raw)
-	if err := allowlistStore.StartJournal(authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo), cfg.activationLease, drainAfter(cfg.namedCertTTL)); err != nil {
-		return fmt.Errorf("start allowlist journal: %w", err)
-	}
-	// Without a lease, an update staged by an earlier run activates now
-	// rather than blocking writes forever.
-	if _, err := allowlistStore.Activate(time.Now()); err != nil {
-		return fmt.Errorf("activate pending allowlist update: %w", err)
+	if err := startJournal(ctx, &allowlistStore, authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo), cfg, time.Second); err != nil {
+		return err
 	}
 
 	measurements := parseReferenceDigests(cfg.measurements)
@@ -331,7 +326,6 @@ func run(cfg config) error {
 		SecretsExplain:    secretsExplain,
 		StateKey:          mesh.Key,
 	}
-	go journalLoop(ctx, &allowlistStore)
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 

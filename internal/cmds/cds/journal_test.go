@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -125,5 +127,44 @@ func TestDrainAfterCoversNamedLeafTTL(t *testing.T) {
 		if got := drainAfter(tc.ttl); got != tc.want {
 			t.Errorf("drainAfter(%s) = %s, want %s", tc.ttl, got, tc.want)
 		}
+	}
+}
+
+// startJournal runs the drain loop without a lease and with the configured
+// named-leaf TTL: a narrowing collapses once drainAfter has passed.
+func TestStartJournalDrainsWithoutLease(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	// The journal's clock runs one hour behind, so drainAfter (5m plus the
+	// 1ms TTL) has passed for the loop's real clock.
+	store.SetClock(func() time.Time { return time.Now().Add(-time.Hour) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := startJournal(ctx, &store, "sha256:auth", config{namedCertTTL: time.Millisecond}, 10*time.Millisecond); err != nil {
+		t.Fatal(err)
+	}
+	w := pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: digest(t, digestA)}}}
+	if err := store.PutWorkload("a", w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		st, err := store.State()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(st.Bound) == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("bound = %v two seconds after a narrowing, want it drained", st.Bound)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
