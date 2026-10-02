@@ -582,9 +582,10 @@ every forward fails.
 To verify against pinned policies, run:
 
 ```sh
-c8s verify --mode attest-pq --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
+c8s verify --mode MODE --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
 ```
 
+- `MODE`: `attest-pq`, or `attest-lb` to check the TLS front door itself.
 - `MESH_CA_PEM`: the mesh CA bundle you pinned out of band.
 - `POLICY_HEX`: a policy digest you reviewed; repeat the flag for each one.
 - `ROUTER_URL`: the router front door.
