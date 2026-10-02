@@ -4,6 +4,7 @@ package ratlsmesh
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -161,5 +162,46 @@ func TestServerHalfClosePropagates(t *testing.T) {
 				t.Fatal("server did not see client data/EOF after half-close")
 			}
 		})
+	}
+}
+
+// TestPipeBackendResetIsNotACleanClose checks that a backend reset mid-stream
+// reaches the app as an error, not as EOF after a truncated response.
+func TestPipeBackendResetIsNotACleanClose(t *testing.T) {
+	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { backendLn.Close() })
+	go func() {
+		c, err := backendLn.Accept()
+		if err != nil {
+			return
+		}
+		_, _ = c.Write([]byte("partial"))
+		time.Sleep(100 * time.Millisecond)
+		_ = c.(*net.TCPConn).SetLinger(0)
+		_ = c.Close()
+	}()
+
+	app, err := net.Dial("tcp", startMeshChain(t, backendLn.Addr().String(), 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	if err := app.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, len("partial"))
+	if _, err := io.ReadFull(app, buf); err != nil {
+		t.Fatalf("read partial response: %v", err)
+	}
+	n, err := app.Read(make([]byte, 1))
+	if err == nil || err == io.EOF {
+		t.Fatalf("after backend reset: got n=%d err=%v, want a reset error", n, err)
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatalf("after backend reset: timed out, want a reset error")
 	}
 }

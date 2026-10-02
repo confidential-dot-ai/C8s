@@ -633,6 +633,28 @@ func closeWrite(c net.Conn) error {
 	return nil
 }
 
+// abort resets c without a graceful close. It unwraps our wrappers and
+// *tls.Conn to the transport, because tls.Conn.Close sends close_notify, and
+// sets SO_LINGER 0 on TCP so the peer sees an RST rather than a FIN.
+func abort(c net.Conn) {
+	for {
+		switch w := c.(type) {
+		case *idleConn:
+			c = w.Conn
+		case *bufferedConn:
+			c = w.Conn
+		case *tls.Conn:
+			c = w.NetConn()
+		default:
+			if tcp, ok := c.(*net.TCPConn); ok {
+				_ = tcp.SetLinger(0)
+			}
+			_ = c.Close()
+			return
+		}
+	}
+}
+
 // pipeResult holds the byte count and error for one direction of a pipe.
 type pipeResult struct {
 	N   int64
@@ -702,7 +724,16 @@ func (p *Proxy) pipe(a, b net.Conn) (fwd, rev pipeResult) {
 		bufp := pool.Get().(*[]byte)
 		r.N, r.Err = io.CopyBuffer(dst, src, *bufp)
 		pool.Put(bufp)
-		closeWrite(dst)
+		// INVARIANT: a clean EOF from src is the only thing forwarded as a
+		// clean close. A FIN or close_notify after a failed copy would let
+		// the peer read a cut-short stream as complete, so reset dst instead.
+		if r.Err != nil {
+			abort(dst)
+			return
+		}
+		if err := closeWrite(dst); err != nil {
+			abort(dst)
+		}
 	}
 	go cp(a, b, &fwd)
 	go cp(b, a, &rev)
