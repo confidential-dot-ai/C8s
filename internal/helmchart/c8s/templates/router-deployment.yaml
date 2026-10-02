@@ -23,6 +23,8 @@ withheld. */ -}}
 {{- end -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
+{{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
+{{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
 {{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
 {{- $attestUsesHTTPSUpstream := and .Values.router.attest.enabled (eq .Values.router.upstream.protocol "https") -}}
@@ -81,7 +83,7 @@ spec:
       shareProcessNamespace: true
       initContainers:
         {{- include "router.getCertContainers" . | nindent 8 }}
-        {{- if eq $publicTLSMode "acme" }}
+        {{- if $acmeSidecar }}
         # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
         # leaf for the sanList domains, answers HTTP-01 on loopback behind the
         # :80 server, renews at 2/3 lifetime, and SIGHUPs nginx on install —
@@ -93,7 +95,16 @@ spec:
           restartPolicy: Always
           args:
             - acme
+            {{- if $launchDriven }}
+            # The signed launch file names the domains. With none, the
+            # sidecar serves a copy of the mesh leaf and never contacts a CA.
+            - --domains-file={{ include "router.launchDir" . }}/hostnames
+            - --acme-email-file={{ include "router.launchDir" . }}/acme-email
+            - --acme-directory-url-file={{ include "router.launchDir" . }}/acme-directory-url
+            - --fallback-cert-dir={{ .Values.router.tlsMountPath }}
+            {{- else }}
             - --domains={{ include "router.sanList" . | fromJsonArray | join "," }}
+            {{- end }}
             {{- with .Values.router.acme.email }}
             - --acme-email={{ . }}
             {{- end }}
@@ -122,6 +133,12 @@ spec:
           volumeMounts:
             - name: acme-tls
               mountPath: {{ include "router.acmeCertDir" . }}
+            {{- if $launchDriven }}
+            - name: tls-certs
+              mountPath: {{ .Values.router.tlsMountPath }}
+              readOnly: true
+            {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
+            {{- end }}
           securityContext:
             {{- include "c8s.getCertSecurityContext" (dict
               "runAsUser" .Values.router.nginx.runAsUser
@@ -140,7 +157,7 @@ spec:
               hostPort: {{ .Values.router.hostPort.https | default 443 }}
               {{- end }}
               protocol: TCP
-            {{- if eq $publicTLSMode "acme" }}
+            {{- if $acmeSidecar }}
             {{- /* HTTP-01 arrives on public :80; hostPort follows the same
             gating as :443. */}}
             - name: http
@@ -184,7 +201,7 @@ spec:
               mountPath: {{ .Values.router.publicTLS.mountPath }}
               readOnly: true
             {{- end }}
-            {{- if eq $publicTLSMode "acme" }}
+            {{- if $acmeSidecar }}
             - name: acme-tls
               mountPath: {{ include "router.acmeCertDir" . }}
               readOnly: true
@@ -198,6 +215,10 @@ spec:
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
+            {{- if $launchDriven }}
+            {{- /* nginx.conf includes router/upstream.conf from here. */}}
+            {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
+            {{- end }}
             - name: nginx-cache
               mountPath: /var/cache/nginx
             - name: nginx-tmp
@@ -224,7 +245,11 @@ spec:
             - --attestation-api-url={{ default (include "c8s.attestationApiURL" .) .Values.router.attest.attestationApiURL }}
             # attest-lb needs a TEE-held serving key (cds, acme); webpki's
             # host-visible Secret key stays attest-pq-only.
+            {{- if $launchDriven }}
+            - --front-door-mode-file={{ include "router.launchDir" . }}/front-door-mode
+            {{- else }}
             - --front-door-mode={{ $publicTLSMode }}
+            {{- end }}
             # Bind the *exact* leaf nginx presents on the wire (ssl_certificate =
             # publicCertPath), so the attest-lb binding (GET
             # /.well-known/c8s/attest-lb) commits report_data to the leaf DER a
@@ -250,7 +275,9 @@ spec:
             # No adopted workload (empty upstream address) -> omit --upstream
             # entirely; the sidecar then serves attestation with its echo
             # backend instead of crashing on a scheme-only URL.
-            {{- if $upstreamAddress }}
+            {{- if $launchDriven }}
+            - --upstream-file={{ include "router.launchDir" . }}/upstream
+            {{- else if $upstreamAddress }}
             - --upstream={{ .Values.router.upstream.protocol }}://{{ $upstreamAddress }}
             {{- if $attestUsesHTTPSUpstream }}
             - --upstream-ca={{ $upstreamTrustedCAPath }}
@@ -300,10 +327,13 @@ spec:
               mountPath: {{ .Values.router.publicTLS.mountPath }}
               readOnly: true
             {{- end }}
-            {{- if eq $publicTLSMode "acme" }}
+            {{- if $acmeSidecar }}
             - name: acme-tls
               mountPath: {{ include "router.acmeCertDir" . }}
               readOnly: true
+            {{- end }}
+            {{- if $launchDriven }}
+            {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
             {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
@@ -391,7 +421,7 @@ spec:
               - key: {{ .Values.router.publicTLS.keyKey }}
                 path: {{ .Values.router.publicTLS.keyKey }}
         {{- end }}
-        {{- if eq $publicTLSMode "acme" }}
+        {{- if $acmeSidecar }}
         # ACME key, cert, and account state. Memory-medium: TEE-protected and
         # lost on pod recreation, so the sidecar re-issues (LE duplicate-cert
         # limits apply; use the staging directoryURL for tests).

@@ -81,7 +81,7 @@ func stageBundleNode(t *testing.T, dir, node string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if staged.Node.Name != doc.Node.Name || staged.Role != doc.Role {
+	if staged.Node.Name != doc.Node.Name || staged.Role != doc.Role || !reflect.DeepEqual(staged.Router, doc.Router) {
 		t.Fatalf("staged %s %q for bundle entry %q", staged.Role, staged.Node.Name, node)
 	}
 }
@@ -256,4 +256,44 @@ func TestNewBundleCarriesAnInitialAllowlist(t *testing.T) {
 		t.Fatalf("SAN or workloads not carried: %+v", server)
 	}
 	stageBundleNode(t, dir, serverDir)
+}
+
+func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "worker-1",
+		"--router-upstream", "c8s-gateway.confidential-inference.svc.cluster.local:9443",
+		"--router-hostname", "candidate.api.confidential.ai", "--router-hostname", "api.confidential.ai",
+		"--acme-email", "ops@confidential.ai",
+		"--acme-directory-url", "https://acme-staging-v02.api.letsencrypt.org/directory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, data := readBundleDocument(t, dir, serverDir)
+	want := Router{
+		Upstream:         "c8s-gateway.confidential-inference.svc.cluster.local:9443",
+		Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
+		ACMEEmail:        "ops@confidential.ai",
+		ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+	}
+	if server.Router == nil || !reflect.DeepEqual(*server.Router, want) {
+		t.Fatalf("server router = %+v", server.Router)
+	}
+	// The router block sits in the signed bytes: Stage verifies the detached
+	// signature over the whole document, and the staged copy keeps the block.
+	if !bytes.Contains(data, []byte("candidate.api.confidential.ai")) {
+		t.Fatal("router block missing from the signed document")
+	}
+	stageBundleNode(t, dir, serverDir)
+	agent, _ := readBundleDocument(t, dir, "worker-1")
+	if agent.Router != nil {
+		t.Fatalf("agent inherited the server-only router block: %+v", agent.Router)
+	}
+	stageBundleNode(t, dir, "worker-1")
+
+	err = runBundleCmd(t, "new", "--out", filepath.Join(t.TempDir(), "bad"), "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--router-upstream", "gateway.confidential-inference.svc.cluster.local:8080")
+	if err == nil || !strings.Contains(err.Error(), "router.upstream") {
+		t.Fatalf("unmeshed upstream: %v", err)
+	}
 }
