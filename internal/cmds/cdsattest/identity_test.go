@@ -34,6 +34,7 @@ type testMeshIdentity struct {
 	leaf     *x509.Certificate
 	ca       *x509.Certificate
 	key      *ecdsa.PrivateKey
+	caKey    *ecdsa.PrivateKey
 }
 
 func writeTestMeshIdentity(t *testing.T) testMeshIdentity {
@@ -114,7 +115,7 @@ func writeTestMeshIdentityFull(t *testing.T, leafNotBefore, leafNotAfter time.Ti
 	writeTestPEM(t, certFile, "CERTIFICATE", leafDER)
 	writeTestPEM(t, keyFile, "EC PRIVATE KEY", keyDER)
 	writeTestPEM(t, caFile, "CERTIFICATE", caDER)
-	return testMeshIdentity{certFile: certFile, keyFile: keyFile, caFile: caFile, leaf: leaf, ca: ca, key: leafKey}
+	return testMeshIdentity{certFile: certFile, keyFile: keyFile, caFile: caFile, leaf: leaf, ca: ca, key: leafKey, caKey: caKey}
 }
 
 func writeTestPEM(t *testing.T, path, blockType string, der []byte) {

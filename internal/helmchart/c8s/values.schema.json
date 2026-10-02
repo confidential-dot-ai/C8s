@@ -359,6 +359,7 @@
             "attestationApiURL": {},
             "enabled": {},
             "expectedWorkload": {},
+            "pinnedAllowlist": {},
             "generation": {},
             "platform": {},
             "port": {},

@@ -1188,6 +1188,11 @@ router:
     # nothing. The chart fails the render on either mistake. Empty keeps
     # today's always-ready behavior.
     expectedWorkload: ""
+    # -- Bind each attest-pq session to CDS's nonce-bound rollout state and
+    # fence it on cds.allowlistActivationLease, so clients can pin allowlist
+    # digests. Requires allowlist.enabled and upstream.protocol https; the
+    # upstream is then verified against the mesh CA.
+    pinnedAllowlist: false
     # -- Container resource requests/limits for the sidecar.
     resources: {}
 
