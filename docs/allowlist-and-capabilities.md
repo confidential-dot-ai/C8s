@@ -605,6 +605,11 @@ the state every second and fences traffic on it:
   so an attest-lb client re-attests on a new connection.
 - Nothing is forwarded before the router's first state read, or while its
   last read is older than `lease_seconds`.
+- The router refuses a state whose journal went backwards under the same
+  `authority`: a lower `position`, or another `head` at the same position.
+  Its last good read then ages out, so a rolled-back journal stops traffic
+  instead of being served. A state under a new `authority` (CDS restarted
+  and regenerated its key) is accepted and logged as a journal reset.
 
 A widening reaches the fence within one poll interval.
 

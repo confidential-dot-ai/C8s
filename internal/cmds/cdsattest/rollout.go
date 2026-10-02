@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -42,10 +43,17 @@ type rollout struct {
 	caFile string // mesh CA bundle; every state must verify against it
 	client *http.Client
 
-	mu     sync.Mutex
-	bound  []string
-	lease  time.Duration
-	seenAt time.Time // when the request behind bound was sent
+	mu sync.Mutex
+	// authority, position and head are the journal coordinates of the last
+	// stored state. Under one authority the journal only moves forward; a
+	// new authority (a CDS restart, which regenerates the mesh CA) may start
+	// over, and is logged.
+	authority string
+	position  uint64
+	head      string
+	bound     []string
+	lease     time.Duration
+	seenAt    time.Time // when the request behind bound was sent
 	// widenedAt is when this router last saw the bound gain a digest; it
 	// starts at process start, since a restart forgets earlier widenings.
 	widenedAt time.Time
@@ -162,9 +170,17 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 		return nil, nil, err
 	}
 
+	if st.Protocol != stateProtocol {
+		return nil, nil, fmt.Errorf("CDS state protocol %d, want %d", st.Protocol, stateProtocol)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sent.After(r.seenAt) {
+		if err := r.checkProgress(&st); err != nil {
+			return nil, nil, err
+		}
+		r.authority, r.position, r.head = st.Authority, st.Position, st.Head
 		if !covers(r.bound, st.Bound) {
 			r.widenedAt = time.Now()
 		}
@@ -175,6 +191,33 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 		}
 	}
 	return &signed, &st, nil
+}
+
+// stateProtocol is the RolloutState protocol this router understands.
+const stateProtocol = 1
+
+// checkProgress refuses a state whose journal went backwards under the
+// authority of the last stored state: a lower position, or another head at
+// the same position. A state under a new authority is accepted, since a CDS
+// restart regenerates the mesh CA and may start a new journal, and logged.
+// Callers hold r.mu.
+func (r *rollout) checkProgress(st *types.RolloutState) error {
+	if r.seenAt.IsZero() {
+		return nil
+	}
+	if st.Authority != r.authority {
+		slog.Warn("CDS rollout authority changed: accepting a new journal",
+			"old_authority", r.authority, "old_position", r.position,
+			"new_authority", st.Authority, "new_position", st.Position)
+		return nil
+	}
+	switch {
+	case st.Position < r.position:
+		return fmt.Errorf("CDS journal went backwards under authority %s: position %d after %d", st.Authority, st.Position, r.position)
+	case st.Position == r.position && st.Head != r.head:
+		return fmt.Errorf("CDS journal forked under authority %s: head %s at position %d, was %s", st.Authority, st.Head, st.Position, r.head)
+	}
+	return nil
 }
 
 // verify requires the state to be signed by a key in the mesh CA bundle, the

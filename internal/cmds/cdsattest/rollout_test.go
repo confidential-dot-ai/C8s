@@ -31,6 +31,16 @@ type fakeCDSState struct {
 	bound []string
 	key   *ecdsa.PrivateKey
 	age   time.Duration // shifts issued_at; negative issues stale states
+
+	authority string
+	position  uint64
+	head      string
+}
+
+func (f *fakeCDSState) setJournal(authority string, position uint64, head string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authority, f.position, f.head = authority, position, head
 }
 
 func (f *fakeCDSState) setKey(key *ecdsa.PrivateKey) {
@@ -47,7 +57,7 @@ func (f *fakeCDSState) setBound(bound ...string) {
 
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	st := types.RolloutState{Bound: f.bound, Lease: 30}
+	st := types.RolloutState{Protocol: 1, Authority: f.authority, Position: f.position, Head: f.head, Bound: f.bound, Lease: 30}
 	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
@@ -320,5 +330,51 @@ func TestRolloutRefusesExpiredState(t *testing.T) {
 	}
 	if fence.fresh(time.Now()) {
 		t.Fatal("an expired state made the fence fresh")
+	}
+}
+
+func TestRolloutRefusesJournalRegression(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	poll := func() error {
+		_, err := fence.poll(context.Background())
+		return err
+	}
+
+	cds.setJournal("sha256:a", 5, "sha256:h5")
+	if err := poll(); err != nil {
+		t.Fatal(err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:h6")
+	if err := poll(); err != nil {
+		t.Fatalf("forward progress refused: %v", err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:h6")
+	if err := poll(); err != nil {
+		t.Fatalf("an unchanged head refused: %v", err)
+	}
+	cds.setJournal("sha256:a", 3, "sha256:h3")
+	if err := poll(); err == nil || !strings.Contains(err.Error(), "backwards") {
+		t.Fatalf("a lower position under the same authority = %v, want refused", err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:other")
+	if err := poll(); err == nil || !strings.Contains(err.Error(), "forked") {
+		t.Fatalf("another head at the same position = %v, want refused", err)
+	}
+	// A refused state is not stored.
+	if fence.position != 6 || fence.head != "sha256:h6" {
+		t.Fatalf("fence journal = %d %s, want 6 sha256:h6", fence.position, fence.head)
+	}
+	// A new authority (a CDS restart) may start over.
+	cds.setJournal("sha256:b", 0, "sha256:g0")
+	if err := poll(); err != nil {
+		t.Fatalf("a new authority's journal refused: %v", err)
+	}
+	if fence.authority != "sha256:b" || fence.position != 0 {
+		t.Fatalf("fence journal = %s %d, want sha256:b 0", fence.authority, fence.position)
 	}
 }
