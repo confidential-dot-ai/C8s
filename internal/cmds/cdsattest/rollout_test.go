@@ -163,7 +163,9 @@ func TestRolloutVerifyPeer(t *testing.T) {
 		ok    bool
 	}{
 		{"stamp in bound", stamped, []string{"sha256:p", inBound}, true},
-		{"stamp outside bound", stamped, []string{"sha256:p"}, false},
+		// A pure addition replaces the bound with the new policy; an upstream
+		// stamped under the previous policy is still served.
+		{"stamp of the previous policy after a pure addition", stamped, []string{"sha256:p"}, true},
 		{"no stamp", writeTestMeshIdentity(t).leaf, []string{inBound}, false},
 	} {
 		r := newRollout("", "")

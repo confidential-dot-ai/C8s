@@ -619,13 +619,16 @@ Every change to `bound` (widening or narrowing) also:
   (SSE, token streams) admitted under the old bound ends, and the client
   reconnects and attests again;
 - drops the router's pooled upstream connections, so the next request
-  re-handshakes and the upstream's stamp is checked against the new bound.
+  re-handshakes and the upstream's leaf is checked again.
 
 CDS activates a publication only after that lease, so fenced traffic never
 reaches a workload the client did not accept. The router forwards only to
 `router.upstream`, over https. The upstream's mesh leaf must chain to the
-mesh CA and carry a matched-workload stamp whose policy digest is in `bound`,
-so the upstream pod needs a named leaf (see
+mesh CA and carry a named matched-workload stamp. The router does not compare
+the stamped policy digest with `bound`, so a publication that only adds
+entries does not cut off upstreams stamped under the previous policy.
+Removals are enforced on the node: the NRI plugin stops running containers
+that the applied policy no longer admits. The upstream pod needs a named leaf (see
 [`getcert-workload-binding.md`](getcert-workload-binding.md)). Without one,
 every forward fails.
 

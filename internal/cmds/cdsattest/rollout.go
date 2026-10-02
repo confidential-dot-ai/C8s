@@ -262,21 +262,18 @@ func covers(envelope, bound []string) bool {
 	return true
 }
 
-// verifyPeer admits an upstream leaf only when its matched-workload stamp
-// names a policy in the current bound.
+// verifyPeer admits an upstream leaf only when it carries a named
+// matched-workload stamp. It does not compare the stamped allowlist digest
+// with the bound: a publication that only adds entries would otherwise refuse
+// every upstream until its leaf is reissued. Removals are enforced on the
+// node, which stops running containers the applied policy no longer admits.
 func (r *rollout) verifyPeer(leaf *x509.Certificate) error {
 	stamp, err := ratls.MatchedWorkloadFromCert(leaf)
 	if err != nil {
 		return fmt.Errorf("upstream matched-workload stamp: %w", err)
 	}
-	if stamp == nil {
-		return fmt.Errorf("upstream leaf carries no matched-workload stamp")
-	}
-	digest := "sha256:" + hex.EncodeToString(stamp.AllowlistDigest)
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !slices.Contains(r.bound, digest) {
-		return fmt.Errorf("upstream %q was admitted under policy %s, outside the bound", stamp.Name, digest)
+	if stamp == nil || stamp.Name == "" {
+		return fmt.Errorf("upstream leaf carries no named matched-workload stamp")
 	}
 	return nil
 }
