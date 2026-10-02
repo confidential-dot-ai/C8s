@@ -2954,6 +2954,7 @@ func TestChartRouterMeshWrappedUpstreamIsWorkloadDirect(t *testing.T) {
 	// Service, so the pod-IP hop is mesh-wrapped.
 	defaultRoute.assertDirective(t, "set", "$backend_addr", "c8s-infer.c8s-system.svc.cluster.local:8000")
 	defaultRoute.assertDirective(t, "proxy_pass", "http://$backend_addr")
+	assertRouterUpstreamTimeouts(t, defaultRoute, "3600s")
 	if len(cfg.upstreams) != 0 {
 		t.Fatalf("catch-all upstream must be a variable dial, not a static upstream block (it would pin headless pod IPs at startup); got %v", cfg.upstreams)
 	}
@@ -3591,6 +3592,34 @@ func (block *nginxBlock) assertNoDirective(t *testing.T, name string) {
 	t.Helper()
 	if got := block.directives[name]; len(got) > 0 {
 		t.Fatalf("nginx directive %q = %v, want absent", name, got)
+	}
+}
+
+// assertRouterUpstreamTimeouts checks the catch-all route outlives nginx's 60s
+// read/send default (non-streaming LLM responses send nothing until done) and
+// gives up quickly on a dead upstream.
+func assertRouterUpstreamTimeouts(t *testing.T, route *nginxBlock, readTimeout string) {
+	t.Helper()
+	for name, want := range map[string]string{
+		"proxy_connect_timeout": "5s",
+		"proxy_read_timeout":    readTimeout,
+		"proxy_send_timeout":    readTimeout,
+	} {
+		if got := route.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{want}) {
+			t.Errorf("location / %s = %v, want exactly [%s]", name, got, want)
+		}
+	}
+}
+
+func TestChartRouterUpstreamReadTimeout(t *testing.T) {
+	out, err := helmTemplate(t, "--set-string", "router.upstream.readTimeout=900s")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "900s")
+
+	if out, err := helmTemplate(t, "--set-string", "router.upstream.readTimeout=1h; return 200"); err == nil || !strings.Contains(out+err.Error(), "router.upstream.readTimeout must be an nginx time") {
+		t.Errorf("readTimeout with injected directive rendered: %v", err)
 	}
 }
 
@@ -5259,6 +5288,12 @@ func Example_routerConfig() {
 	//             proxy_ssl_verify_depth 2;
 	//             proxy_ssl_trusted_certificate /tls/cert.pem;
 	//             proxy_pass https://catch_all;
+	//             # A non-streaming completion sends nothing until it is done, so
+	//             # nginx's 60s default read timeout would 504 long generations.
+	//             # A dead upstream must fail fast instead.
+	//             proxy_connect_timeout 5s;
+	//             proxy_read_timeout 3600s;
+	//             proxy_send_timeout 3600s;
 	//             proxy_set_header Host $host;
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -7702,6 +7737,7 @@ func TestChartRouterPinnedAllowlist(t *testing.T) {
 	catchAll := renderedRouterNginxConfig(t, out).location(t, "prefix", "/")
 	catchAll.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
 	catchAll.assertDirective(t, "proxy_set_header", "X-C8s-Connection-Time", "$connection_time")
+	assertRouterUpstreamTimeouts(t, catchAll, "3600s")
 	if strings.Contains(out, "upstream catch_all") {
 		t.Error("pinned mode renders the unused catch_all upstream, which nginx resolves at start")
 	}
