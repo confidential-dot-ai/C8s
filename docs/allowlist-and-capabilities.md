@@ -548,13 +548,13 @@ since CDS started), no valid leaf names an earlier policy. CDS then appends a
 `drained` event whose `target` is the enforced policy, and `bound` collapses
 to it. CDS does not drain while an update is pending.
 
-CDS does not evict running pods. A container admitted under a policy that a
-later publication removed or changed keeps running until it restarts; the
-node plugin refuses it only at its next start. Its identity, not its
-process, is what the drain bounds: its next leaf is issued unnamed (it no
-longer matches an entry), and the router and pinned verifiers stop
-accepting its old stamp when the bound drains. To stop such a workload
-before that, delete its pods after the publication activates.
+When the NRI plugin pulls a new allowlist, it re-checks every running
+container. With `policy.enforce_existing` (the default), it stops a
+container that the new policy no longer admits, as at startup; exempt
+namespaces and audit mode behave as in the startup check. So a removal
+reaches running containers within one pull interval after activation.
+The drain still bounds the identity: the stopped container's last leaf
+keeps its stamp until it expires.
 
 The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
 SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
