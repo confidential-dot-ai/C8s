@@ -53,10 +53,10 @@ ExecStart=/usr/local/bin/c8s cred-release \
     --listen :8443 \
     --attestation-api-url http://127.0.0.1:8400 \
     --platform=${CRED_PLATFORM} \
-    --cert-ttl 1h \
+    --cert-ttl 168h \
     --cert-org c8s:node-operators \
     --cert-cn operator \
-    --log-cert-ttl 24h \
+    --log-cert-ttl 168h \
     --log-cert-org c8s:log-readers \
     --log-cert-cn log-reader
 Restart=on-failure

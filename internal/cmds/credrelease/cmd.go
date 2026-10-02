@@ -7,12 +7,13 @@ import (
 )
 
 const (
-	defaultCertTTL = time.Hour
+	defaultCertTTL = 7 * 24 * time.Hour
 	defaultCertOrg = "c8s:node-operators"
 	defaultCertCN  = "operator"
 	// The log-reader identity is handed on to people who cannot re-release
-	// it themselves (only the operator key can), so it lives longer.
-	defaultLogCertTTL = 24 * time.Hour
+	// it themselves (only the operator key can); it lives a week like the
+	// operator cert so released kubeconfigs need weekly, not daily, renewal.
+	defaultLogCertTTL = 7 * 24 * time.Hour
 	defaultLogCertOrg = "c8s:log-readers"
 	defaultLogCertCN  = "log-reader"
 )
