@@ -614,6 +614,25 @@ var _ net.Conn = (*bufferedConn)(nil)
 
 func (c *bufferedConn) Read(b []byte) (int, error) { return c.reader.Read(b) }
 
+// CloseWrite forwards the half-close to the wrapped connection. Without it
+// the CloseWrite type assertion in pipe fails on the wrapper and an upstream
+// FIN is never propagated to the peer.
+func (c *bufferedConn) CloseWrite() error { return closeWrite(c.Conn) }
+
+// CloseWrite forwards the half-close to the wrapped connection (see
+// bufferedConn.CloseWrite).
+func (c *idleConn) CloseWrite() error { return closeWrite(c.Conn) }
+
+// closeWrite half-closes c if it supports it (*net.TCPConn, *tls.Conn, or one
+// of our wrappers). Other connections are left untouched; the caller closes
+// them once both pipe directions are done.
+func closeWrite(c net.Conn) error {
+	if cw, ok := c.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return nil
+}
+
 // pipeResult holds the byte count and error for one direction of a pipe.
 type pipeResult struct {
 	N   int64
@@ -683,9 +702,7 @@ func (p *Proxy) pipe(a, b net.Conn) (fwd, rev pipeResult) {
 		bufp := pool.Get().(*[]byte)
 		r.N, r.Err = io.CopyBuffer(dst, src, *bufp)
 		pool.Put(bufp)
-		if tc, ok := dst.(interface{ CloseWrite() error }); ok {
-			tc.CloseWrite()
-		}
+		closeWrite(dst)
 	}
 	go cp(a, b, &fwd)
 	go cp(b, a, &rev)
