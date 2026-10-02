@@ -145,6 +145,56 @@ type plugin struct {
 	deferredMu   sync.Mutex
 	deferredPods []*api.PodSandbox
 	deferredCtrs []*api.Container
+
+	// running holds every container seen at Synchronize or started since,
+	// until it is removed, so RecheckRunning can check it against a newly
+	// applied policy. recheckMu keeps two rechecks from overlapping.
+	runningMu sync.Mutex
+	running   map[string]runningContainer
+	recheckMu sync.Mutex
+}
+
+type runningContainer struct {
+	pod *api.PodSandbox
+	ctr *api.Container
+}
+
+// trackRunning records containers (with their pods) for RecheckRunning.
+func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
+	podByID := make(map[string]*api.PodSandbox, len(pods))
+	for _, pod := range pods {
+		podByID[pod.GetId()] = pod
+	}
+	p.runningMu.Lock()
+	defer p.runningMu.Unlock()
+	if p.running == nil {
+		p.running = make(map[string]runningContainer)
+	}
+	for _, ctr := range ctrs {
+		if pod := podByID[ctr.GetPodSandboxId()]; pod != nil {
+			p.running[ctr.GetId()] = runningContainer{pod: pod, ctr: ctr}
+		}
+	}
+}
+
+// RecheckRunning runs the existing-container check over every tracked
+// container, so a policy that removes or narrows an entry stops containers
+// it no longer admits. Exempt namespaces, audit mode and enforce_existing
+// apply as in the startup check.
+func (p *plugin) RecheckRunning(ctx context.Context) {
+	p.recheckMu.Lock()
+	defer p.recheckMu.Unlock()
+	p.runningMu.Lock()
+	var pods []*api.PodSandbox
+	var ctrs []*api.Container
+	for _, rc := range p.running {
+		pods = append(pods, rc.pod)
+		ctrs = append(ctrs, rc.ctr)
+	}
+	p.runningMu.Unlock()
+	if len(ctrs) > 0 {
+		p.checkExisting(ctx, p.cfg, pods, ctrs)
+	}
 }
 
 func newPlugin(
@@ -229,11 +279,11 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	mask.Set(api.Event_CREATE_CONTAINER)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	// RecheckRunning's container set must drop removed containers.
+	mask.Set(api.Event_REMOVE_CONTAINER)
 	if p.inventory != nil {
-		// The inventory needs eviction on stop to stay correct across pod churn,
-		// and the pod-sandbox lifecycle to keep its sandbox set (the /sandbox
-		// and /digests routes) live.
-		mask.Set(api.Event_REMOVE_CONTAINER)
+		// The inventory needs the pod-sandbox lifecycle to keep its sandbox
+		// set (the /sandbox and /digests routes) live.
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
 	}
@@ -241,9 +291,12 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 }
 
 // RemoveContainer evicts a stopped container from caller resolution; the
-// sandbox's record keeps it (inventory.remove). Only subscribed when the
-// inventory is enabled (see Configure).
+// sandbox's record keeps it (inventory.remove). It also drops the container
+// from RecheckRunning's set.
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	p.runningMu.Lock()
+	delete(p.running, ctr.GetId())
+	p.runningMu.Unlock()
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -764,6 +817,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	// Load or capture the exempt-namespace snapshot from this connect-time set,
 	// before any container check reads it and regardless of readiness.
 	p.initExempt(ctx, pods, ctrs)
+	p.trackRunning(pods, ctrs)
 
 	if !p.shouldCheckExisting() {
 		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
@@ -916,6 +970,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 			return err
 		}
 		p.recordUncheckedForInventory(pod, ctr, imageRef)
+		p.trackRunning([]*api.PodSandbox{pod}, []*api.Container{ctr})
 		return nil
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
@@ -923,6 +978,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		return fmt.Errorf("%s", reason)
 	}
 	p.recordForInventory(ctx, pod, ctr, imageRef)
+	p.trackRunning([]*api.PodSandbox{pod}, []*api.Container{ctr})
 	return nil
 }
 

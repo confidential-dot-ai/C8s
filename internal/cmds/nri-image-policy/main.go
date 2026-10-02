@@ -220,6 +220,10 @@ func Run(args []string) error {
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
 			logger:   logger,
+			// Stop running containers the new policy no longer admits. The
+			// initial pull needs no hook: RunDeferredCheck checks the
+			// Synchronize set once the plugin is ready.
+			onApply: func() { plugin.RecheckRunning(ctx) },
 		})
 	}
 
@@ -340,6 +344,8 @@ type pullLoopArgs struct {
 	timeout  time.Duration
 	etag     string
 	logger   *slog.Logger
+	// onApply runs after a newly pulled allowlist is applied.
+	onApply func()
 }
 
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
@@ -385,6 +391,9 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"version", version,
 			"etag", etag,
 		)
+		if args.onApply != nil {
+			args.onApply()
+		}
 	}
 }
 
