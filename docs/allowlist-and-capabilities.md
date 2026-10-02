@@ -583,6 +583,14 @@ the state every second and fences traffic on it:
 
 A widening reaches the fence within one poll interval.
 
+Every change to `bound` (widening or narrowing) also:
+
+- cancels every request the router is forwarding, so a streamed response
+  (SSE, token streams) admitted under the old bound ends, and the client
+  reconnects and attests again;
+- drops the router's pooled upstream connections, so the next request
+  re-handshakes and the upstream's stamp is checked against the new bound.
+
 CDS activates a publication only after that lease, so fenced traffic never
 reaches a workload the client did not accept. The router forwards only to
 `router.upstream`, over https. The upstream's mesh leaf must chain to the

@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,10 +49,57 @@ type rollout struct {
 	// widenedAt is when this router last saw the bound gain a digest; it
 	// starts at process start, since a restart forgets earlier widenings.
 	widenedAt time.Time
+	// gen is cancelled, and replaced, every time the bound changes. Every
+	// forwarded request runs under it (requestContext), so no request admitted
+	// under one bound keeps streaming under the next.
+	gen       context.Context
+	cancelGen context.CancelCauseFunc
+	// onChange runs, under mu, before gen is replaced. The upstream backend
+	// registers its connection reset here, so a request admitted under the new
+	// bound never reuses a connection whose peer was checked under the old one.
+	onChange []func()
 }
 
+// errBoundChanged cancels a forwarded request when the bound changes.
+var errBoundChanged = errors.New("the allowlist bound changed")
+
 func newRollout(url, caFile string) *rollout {
-	return &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}, widenedAt: time.Now()}
+	r := &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}, widenedAt: time.Now()}
+	r.gen, r.cancelGen = context.WithCancelCause(context.Background())
+	return r
+}
+
+// onBoundChange registers f to run every time the bound changes.
+func (r *rollout) onBoundChange(f func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onChange = append(r.onChange, f)
+}
+
+// requestContext derives a context from parent that is also cancelled, with
+// cause errBoundChanged, when the bound next changes. Callers take it before
+// they check the fence, so a change between the check and the forward still
+// cancels the request.
+func (r *rollout) requestContext(parent context.Context) (context.Context, context.CancelFunc) {
+	r.mu.Lock()
+	gen := r.gen
+	r.mu.Unlock()
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(gen, func() { cancel(errBoundChanged) })
+	return ctx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
+}
+
+// boundChanged runs the change hooks, then cancels every request admitted
+// under the previous bound. Callers hold r.mu.
+func (r *rollout) boundChanged() {
+	for _, f := range r.onChange {
+		f()
+	}
+	r.cancelGen(errBoundChanged)
+	r.gen, r.cancelGen = context.WithCancelCause(context.Background())
 }
 
 // challenge fetches the state bound to nonce.
@@ -117,7 +165,11 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte) (
 		if !covers(r.bound, st.Bound) {
 			r.widenedAt = time.Now()
 		}
+		changed := !slices.Equal(r.bound, st.Bound)
 		r.seenAt, r.bound, r.lease = sent, st.Bound, time.Duration(st.Lease)*time.Second
+		if changed {
+			r.boundChanged()
+		}
 	}
 	return &signed, &st, nil
 }
