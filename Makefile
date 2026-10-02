@@ -164,8 +164,7 @@ test-e2e-cw-label-policy:
 # bypasses to cw pods fail closed. Needs kubectl pointed at a cluster with
 # the c8s chart installed and a Running confidential workload. Not CI-wired:
 # snp-metal's guest kernel lacks ratls-mesh's netfilter matches (the lane
-# installs ratlsMesh.enabled=false) and tdx-metal's vendored lane runs Cilium
-# kube-proxy-free, so VIP traffic never hits the FORWARD guard this asserts.
+# installs ratlsMesh.enabled=false).
 test-e2e-mesh-cw-enforcement:
 	./test/e2e/mesh-cw-enforcement.sh
 

@@ -334,7 +334,9 @@ endpoint therefore remains closed until `psa-ready.sh` sees both policies,
 both credential bindings, and proves, through server-side dry-runs as a synthetic non-granter,
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
-first-boot reconciliation window.
+first-boot reconciliation window. The same gate waits until the live
+FelixConfigurations make Canal append its iptables hooks behind ratls-mesh's
+cw guard, which Felix only learns after the chart installs its CRDs.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
 `nri-image-policy` mounts the inventory socket directory read-only into credential
@@ -526,7 +528,7 @@ manual and PR gate builds cannot invoke the exact-image acceptance path.
 `kernel/c8s.config` sets `CONFIG_MODULES=y`, which the confos base kernel
 compiles out. It is on for exactly two out-of-tree modules, `nvidia.ko` and
 `nvidia-uvm.ko` (see [MODULE-SIGNING.md](MODULE-SIGNING.md)); every symbol
-kubelet, containerd and Cilium need is `=y`, so nothing modprobes at runtime.
+kubelet, containerd and Canal need is `=y`, so nothing modprobes at runtime.
 
 Because the key exists on this kernel, the runtime lock has to be set here:
 confos's `99-kspp-hardening.conf` omits `kernel.modules_disabled` on the
@@ -664,8 +666,8 @@ Migration state (see [#264] for the full plan):
    invariants that moved here from confos `bin/lint` (fragment supersets
    vs confos's gpu/dev fragments at the `node-image` confos pin in
    `.github/build-pins.json`, the NRI
-   floor template's no-hardcoded-digest rule, and the nested RKE2/Cilium
-   pod-CIDR match), plus the cloud-init disable gate.
+   floor template's no-hardcoded-digest rule, and the nested RKE2
+   pod-CIDR check), plus the cloud-init disable gate.
 2. The switch was gated on building the same c8s ref both ways (confos
    in-tree vs staged from here) with identical `manifest.json`
    measurements; `c8s-image-manual.yml`'s `gate=true` dispatch input reruns that
