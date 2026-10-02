@@ -20,6 +20,13 @@ const connectionTimeHeader = "X-C8s-Connection-Time"
 // overflowing into a future connection start.
 const maxConnectionAge = 365 * 24 * time.Hour
 
+// verifiedStateHeader carries the journal head (the rollout state's "head")
+// the client verified. When a request carries it, the request is forwarded
+// only while it equals the router's current head, so that client never
+// reaches the upstream under a state it has not checked. Requests without it
+// are served as before.
+const verifiedStateHeader = "X-C8s-Verified-State"
+
 // newLBForwarder streams front-door requests nginx hands over in pinned mode
 // to the upstream, through the backend's stamp-checking transport. A request
 // is refused when the client's connection predates the router's last view of
@@ -41,6 +48,7 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			pr.Out.Header["X-Forwarded-For"] = pr.In.Header["X-Forwarded-For"]
 			pr.Out.Header["X-Forwarded-Proto"] = pr.In.Header["X-Forwarded-Proto"]
 			pr.Out.Header.Del(connectionTimeHeader)
+			pr.Out.Header.Del(verifiedStateHeader)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(context.Cause(r.Context()), errBoundChanged) {
@@ -66,6 +74,12 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 		now := time.Now()
 		if !fence.admitsConnection(now.Add(-time.Duration(age*float64(time.Second))), now) {
 			http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
+			return
+		}
+		// Opt-in: a client that sends no header is served as before; one that
+		// sends a state other than the current head must re-verify.
+		if got := r.Header.Get(verifiedStateHeader); got != "" && got != fence.currentHead() {
+			http.Error(w, "state changed: re-verify", http.StatusServiceUnavailable)
 			return
 		}
 		proxy.ServeHTTP(w, r.WithContext(ctx))
