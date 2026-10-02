@@ -152,7 +152,10 @@ role starts. The local attester must precede this gate because launch
 verification uses it. The host attester listens on `127.0.0.1:8400`;
 pods access its Unix socket in the admission-inventory directory. CDS uses
 its Kubernetes Service and server NodePort `30808`; agents join RKE2 at
-`9345`; the router exposes the server's port `443`.
+`9345`; the router exposes the server's port `443`. Canal's flannel VXLAN
+runs on UDP `8473`, not the kernel default `8472`: a nested guest's outer
+host often runs its own VXLAN on `8472` and drops the inner overlay. Open
+UDP `8473` between nodes in any firewall or security group.
 
 `c8s/mkosi.sync` resolves the c8s binary and core image digests from `C8S_REF`,
 then runs `c8s node-image render` with the checksum-pinned build-time Helm
