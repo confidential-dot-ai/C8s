@@ -224,6 +224,16 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "--attestation-api-url",
 		},
 		{
+			name: "sub-second activation lease",
+			// The bad named-cert TTL makes run fail fast even if the lease
+			// were not checked; the lease error must come first.
+			mutate: func(_ *testing.T, cfg *config) {
+				cfg.activationLease = 500 * time.Millisecond
+				cfg.namedCertTTL = 0
+			},
+			wantSub: "--allowlist-activation-lease",
+		},
+		{
 			name:    "invalid config",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.namedCertTTL = 0 },
 			wantSub: "--named-cert-ttl",

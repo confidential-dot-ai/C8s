@@ -35,6 +35,9 @@ type fakeCDSState struct {
 	authority string
 	position  uint64
 	head      string
+
+	protocol     int  // 0 serves protocol 1
+	stateContext bool // signs GET /state under the challenge context
 }
 
 func (f *fakeCDSState) setJournal(authority string, position uint64, head string) {
@@ -57,11 +60,18 @@ func (f *fakeCDSState) setBound(bound ...string) {
 
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	st := types.RolloutState{Protocol: 1, Authority: f.authority, Position: f.position, Head: f.head, Bound: f.bound, Lease: 30}
+	protocol := f.protocol
+	if protocol == 0 {
+		protocol = 1
+	}
+	st := types.RolloutState{Protocol: protocol, Authority: f.authority, Position: f.position, Head: f.head, Bound: f.bound, Lease: 30}
 	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
 	context := rolloutstate.ContextState
+	if f.stateContext {
+		context = rolloutstate.ContextChallenge
+	}
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
 		json.NewDecoder(r.Body).Decode(&req)
@@ -366,8 +376,14 @@ func TestRolloutRefusesJournalRegression(t *testing.T) {
 		t.Fatalf("a lower position under the same authority = %v, want refused", err)
 	}
 	cds.setJournal("sha256:a", 6, "sha256:other")
+	goodRead := fence.seenAt
 	if err := poll(); err == nil || !strings.Contains(err.Error(), "forked") {
 		t.Fatalf("another head at the same position = %v, want refused", err)
+	}
+	// The refused read does not refresh the fence: it closes once the last
+	// good read ages out.
+	if !fence.seenAt.Equal(goodRead) || fence.fresh(goodRead.Add(30*time.Second)) {
+		t.Fatal("a refused state kept the fence open")
 	}
 	// A refused state is not stored.
 	if fence.position != 6 || fence.head != "sha256:h6" {
@@ -426,5 +442,26 @@ func TestLBForwarderRequiresVerifiedState(t *testing.T) {
 	}
 	if code, body := send("sha256:h1"); code != http.StatusServiceUnavailable || !strings.Contains(body, "state changed: re-verify") {
 		t.Fatalf("stale state = %d %q, want 503 re-verify", code, body)
+	}
+}
+
+// A challenge signature (over a caller-chosen nonce) served as GET /state,
+// or a state with an unknown protocol, is refused and leaves the fence closed.
+func TestRolloutRefusesWrongContextAndProtocol(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	for _, cds := range []*fakeCDSState{
+		{key: identity.caKey, stateContext: true},
+		{key: identity.caKey, protocol: 2},
+	} {
+		cds.setBound("sha256:p")
+		cdsSrv := httptest.NewServer(cds)
+		fence := newRollout(cdsSrv.URL, identity.caFile)
+		if _, err := fence.poll(context.Background()); err == nil {
+			t.Errorf("poll accepted state (context swapped %v, protocol %d)", cds.stateContext, cds.protocol)
+		}
+		if fence.fresh(time.Now()) {
+			t.Error("a refused state opened the fence")
+		}
+		cdsSrv.Close()
 	}
 }
