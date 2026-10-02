@@ -18,6 +18,7 @@
       "additionalProperties": false,
       "properties": {
         "allowlistDB": {},
+        "allowlistActivationLease": {},
         "ca": {
           "type": [
             "object",

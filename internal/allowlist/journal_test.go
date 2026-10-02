@@ -2,8 +2,15 @@ package allowlist
 
 import (
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
+	"time"
+
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 func TestJournalBound(t *testing.T) {
@@ -12,7 +19,7 @@ func TestJournalBound(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	defer store.Close()
-	if err := store.StartJournal("sha256:auth"); err != nil {
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
 		t.Fatalf("start journal: %v", err)
 	}
 	genesis, err := store.State()
@@ -72,5 +79,100 @@ func TestJournalBound(t *testing.T) {
 			t.Errorf("%s: policy object %s missing", step.name, st.Policy)
 		}
 		prev = st
+	}
+}
+
+func TestJournalLeaseStagesAndLocks(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 10*time.Second); err != nil {
+		t.Fatalf("start journal: %v", err)
+	}
+	_, before, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	doc, version, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(doc.Workloads) != 0 || version != before {
+		t.Fatalf("staged write is enforced: workloads %v, version %s (was %s)", doc.Workloads, version, before)
+	}
+	st, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Pending != st.Policy || st.Lease != 10 {
+		t.Fatalf("state = %+v, want pending %s and a 10s lease", st, st.Policy)
+	}
+
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); !errors.Is(err, ErrUpdatePending) {
+		t.Fatalf("second write = %v, want ErrUpdatePending", err)
+	}
+	h := Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
+	w := httptest.NewRecorder()
+	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(`{"schema":"`+pkgallowlist.Schema+`","workloads":{}}`)))
+	if w.Code != http.StatusConflict {
+		t.Fatalf("PUT /allowlist while pending = %d, want 409: %s", w.Code, w.Body)
+	}
+	if ok, err := store.Activate(time.Now()); ok || err != nil {
+		t.Fatalf("Activate before the lease = %v, %v; want false, nil", ok, err)
+	}
+	if ok, err := store.Activate(time.Now().Add(11 * time.Second)); !ok || err != nil {
+		t.Fatalf("Activate after the lease = %v, %v; want true, nil", ok, err)
+	}
+
+	doc, version, err = store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["a"]; !ok || version == before {
+		t.Fatalf("activated document = %v at version %s, want entry a at a new version", doc.Workloads, version)
+	}
+	if st, _ := store.State(); st.Pending != "" || st.Version != version {
+		t.Fatalf("state after activation = %+v, want no pending and version %s", st, version)
+	}
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
+		t.Fatalf("write after activation: %v", err)
+	}
+}
+
+// A restart without a lease activates an update an earlier run staged.
+func TestJournalPendingSurvivesLeaseRemoval(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); !errors.Is(err, ErrUpdatePending) {
+		t.Fatalf("write over a pending update without a lease = %v, want ErrUpdatePending", err)
+	}
+	if ok, err := store.Activate(time.Now()); !ok || err != nil {
+		t.Fatalf("Activate without a lease = %v, %v; want true, nil", ok, err)
+	}
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["a"]; !ok {
+		t.Fatalf("activated document = %v, want the staged entry a", doc.Workloads)
 	}
 }

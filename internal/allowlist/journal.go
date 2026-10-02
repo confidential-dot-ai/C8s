@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -28,7 +29,15 @@ CREATE TABLE IF NOT EXISTS journal_event (
 	position INTEGER PRIMARY KEY,
 	digest   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS journal_pending (
+	target         TEXT NOT NULL,
+	published_ms   INTEGER NOT NULL
+);
 `
+
+// ErrUpdatePending rejects a write while a published update waits for
+// activation.
+var ErrUpdatePending = errors.New("an allowlist update is still activating")
 
 // Event is one journal entry. Its canonical bytes are json.Marshal of the
 // struct; Parent chains it to the previous event's digest.
@@ -54,6 +63,8 @@ type State struct {
 	Version   string   `json:"allowlist_version"`
 	Policy    string   `json:"policy"`
 	Bound     []string `json:"bound"`
+	Pending   string   `json:"pending,omitempty"`
+	Lease     int64    `json:"lease_seconds"`
 	Nonce     string   `json:"nonce,omitempty"`
 }
 
@@ -64,59 +75,150 @@ func objectDigest(b []byte) string {
 
 // StartJournal sets the authority fingerprint later events carry and, when the
 // journal is empty, publishes the current document as its first event.
-func (s *Store) StartJournal(authority string) error {
+//
+// A positive lease stages every later publication: the store keeps serving the
+// source document until Activate runs lease after both the publication and
+// this call. Routers fence their sessions on the same lease.
+func (s *Store) StartJournal(authority string, lease time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authority = authority
+	s.authority, s.lease, s.started = authority, lease, time.Now()
 
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	if err := publishTx(tx, authority); err != nil {
+	if _, err := publishTx(tx, authority); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
-// publishTx appends a published event when the document in tx differs from
-// the journal head's target. Every mutation runs it before commit.
-func publishTx(tx *sql.Tx, authority string) error {
-	workloads, err := loadWorkloadsTx(tx)
+// journalTx runs before every mutation commits. It refuses the write while an
+// update is pending, whatever the current lease, journals the new document
+// and, under a lease, restores the source document and records the target as
+// pending.
+func (s *Store) journalTx(tx *sql.Tx) error {
+	var n int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM journal_pending").Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return ErrUpdatePending
+	}
+	source, err := publishTx(tx, s.authority)
+	if err != nil || source == nil || s.lease <= 0 {
+		return err
+	}
+	var prev pkgallowlist.Allowlist
+	if err := json.Unmarshal(source, &prev); err != nil {
+		return err
+	}
+	head, _, err := headTx(tx)
 	if err != nil {
 		return err
+	}
+	if err := replaceContentsTx(tx, &prev); err != nil {
+		return err
+	}
+	if _, err := tx.Exec("UPDATE allowlist_version SET version = CAST(CAST(version AS INTEGER) - 1 AS TEXT)"); err != nil {
+		return err
+	}
+	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, time.Now().UnixMilli())
+	return err
+}
+
+// Activate installs the pending target once the lease has run from both its
+// publication and StartJournal, and reports whether it did.
+func (s *Store) Activate(now time.Time) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var target string
+	var published int64
+	err = tx.QueryRow("SELECT target, published_ms FROM journal_pending").Scan(&target, &published)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	since := time.UnixMilli(published)
+	if s.started.After(since) {
+		since = s.started
+	}
+	if now.Before(since.Add(s.lease)) {
+		return false, nil
+	}
+	body, err := objectTx(tx, target)
+	if err != nil {
+		return false, err
+	}
+	var q pkgallowlist.Allowlist
+	if err := json.Unmarshal(body, &q); err != nil {
+		return false, err
+	}
+	if err := replaceContentsTx(tx, &q); err != nil {
+		return false, err
+	}
+	if err := bumpVersionTx(tx); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec("DELETE FROM journal_pending"); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	s.gen++
+	return true, nil
+}
+
+// publishTx appends a published event when the document in tx differs from
+// the journal head's target, and returns the source document's canonical
+// bytes when it appended one with a source.
+func publishTx(tx *sql.Tx, authority string) ([]byte, error) {
+	workloads, err := loadWorkloadsTx(tx)
+	if err != nil {
+		return nil, err
 	}
 	q := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: workloads}
 	qBytes, err := q.Canonical()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var version string
 	if err := tx.QueryRow("SELECT version FROM allowlist_version LIMIT 1").Scan(&version); err != nil {
-		return err
+		return nil, err
 	}
 
 	head, headDigest, err := headTx(tx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	qDigest := objectDigest(qBytes)
 	ev := Event{Protocol: 1, Authority: authority, Type: EventPublished, Version: version, Target: qDigest}
+	var pBytes []byte
 	if head != nil {
 		if head.Target == ev.Target {
-			return nil
+			return nil, nil
 		}
-		pBytes, err := objectTx(tx, head.Target)
-		if err != nil {
-			return err
+		if pBytes, err = objectTx(tx, head.Target); err != nil {
+			return nil, err
 		}
 		ev.Position, ev.Parent, ev.Source = head.Position+1, headDigest, head.Target
 		ev.DrainRequired = !covers(pBytes, q)
 	}
 	evBytes, err := json.Marshal(ev)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	evDigest := objectDigest(evBytes)
 	for _, o := range []struct {
@@ -124,11 +226,13 @@ func publishTx(tx *sql.Tx, authority string) error {
 		body   []byte
 	}{{qDigest, qBytes}, {evDigest, evBytes}} {
 		if _, err := tx.Exec("INSERT OR IGNORE INTO journal_object (digest, body) VALUES (?, ?)", o.digest, o.body); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	_, err = tx.Exec("INSERT INTO journal_event (position, digest) VALUES (?, ?)", ev.Position, evDigest)
-	return err
+	if _, err := tx.Exec("INSERT INTO journal_event (position, digest) VALUES (?, ?)", ev.Position, evDigest); err != nil {
+		return nil, err
+	}
+	return pBytes, nil
 }
 
 // covers reports whether q retains every workload entry of the canonical
@@ -218,7 +322,7 @@ func (s *Store) State() (State, error) {
 	}
 	defer rows.Close()
 
-	st := State{Protocol: 1, Authority: s.authority}
+	st := State{Protocol: 1, Authority: s.authority, Lease: int64(s.lease / time.Second)}
 	for rows.Next() {
 		var d string
 		var body []byte
@@ -243,6 +347,9 @@ func (s *Store) State() (State, error) {
 	}
 	if st.Head == "" {
 		return State{}, errors.New("journal is empty")
+	}
+	if err := tx.QueryRow("SELECT target FROM journal_pending").Scan(&st.Pending); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return State{}, err
 	}
 	return st, nil
 }

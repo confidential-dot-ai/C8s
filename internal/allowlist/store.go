@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -28,8 +29,10 @@ type Store struct {
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
 	gen uint64
-	// authority is the fingerprint journal events carry (StartJournal).
+	// authority, lease and started are set once by StartJournal.
 	authority string
+	lease     time.Duration
+	started   time.Time
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -190,7 +193,7 @@ func (s *Store) Version() (string, error) {
 // for snapshot-cache invalidation. Every write path goes through it.
 // Callers must hold s.mu.
 func (s *Store) commitTx(tx *sql.Tx) error {
-	if err := publishTx(tx, s.authority); err != nil {
+	if err := s.journalTx(tx); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

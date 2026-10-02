@@ -26,7 +26,7 @@ func TestJournalRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartJournal("sha256:auth"); err != nil {
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
 		t.Fatal(err)
 	}
 	cs := attestation.NewChallengeStore(time.Minute)

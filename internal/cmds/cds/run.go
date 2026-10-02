@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -129,8 +130,13 @@ func run(cfg config) error {
 		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
 	)
 	caChainPEM := certutil.EncodeCertPEM(mesh.Cert.Raw)
-	if err := allowlistStore.StartJournal(authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo)); err != nil {
+	if err := allowlistStore.StartJournal(authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo), cfg.activationLease); err != nil {
 		return fmt.Errorf("start allowlist journal: %w", err)
+	}
+	// Without a lease, an update staged by an earlier run activates now
+	// rather than blocking writes forever.
+	if _, err := allowlistStore.Activate(time.Now()); err != nil {
+		return fmt.Errorf("activate pending allowlist update: %w", err)
 	}
 
 	measurements := parseReferenceDigests(cfg.measurements)
@@ -178,7 +184,9 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		if err := seedStore(&allowlistStore, cfg.allowlistSeed); err != nil {
+		if err := seedStore(&allowlistStore, cfg.allowlistSeed); errors.Is(err, allowlist.ErrUpdatePending) {
+			slog.Warn("allowlist seed deferred to the next start: an update is still activating")
+		} else if err != nil {
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
 	}
@@ -316,6 +324,9 @@ func run(cfg config) error {
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 		StateKey:          mesh.Key,
+	}
+	if cfg.activationLease > 0 {
+		go activationLoop(ctx, &allowlistStore)
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
