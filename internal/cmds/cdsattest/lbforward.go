@@ -27,6 +27,21 @@ const maxConnectionAge = 365 * 24 * time.Hour
 // are served as before.
 const verifiedStateHeader = "X-C8s-Verified-State"
 
+// reconnectStatus refuses a request whose client must open a new connection
+// and attest again. It is private to the loopback hop: nginx cannot close the
+// client's keepalive connection on an upstream 503 or Connection: close, so
+// location / maps this status to a 503 from a location with keepalive off
+// (router-configmap.yaml, @c8s_reconnect). Connection: close is also set for
+// a client that talks to the forwarder directly.
+const reconnectStatus = 590
+
+const reconnectMessage = "the allowlist bound changed: open a new connection and attest again"
+
+func refuseReconnect(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	http.Error(w, reconnectMessage, reconnectStatus)
+}
+
 // newLBForwarder streams front-door requests nginx hands over in pinned mode
 // to the upstream, through the backend's stamp-checking transport. A request
 // is refused when the client's connection predates the router's last view of
@@ -53,7 +68,7 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			if errors.Is(context.Cause(r.Context()), errBoundChanged) {
 				log.Info("front-door forward cancelled: the allowlist bound changed", "path", r.URL.Path)
-				http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
+				refuseReconnect(w)
 				return
 			}
 			log.Warn("front-door forward failed", "path", r.URL.Path, "error", err)
@@ -73,7 +88,7 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 		defer cancel()
 		now := time.Now()
 		if !fence.admitsConnection(now.Add(-time.Duration(age*float64(time.Second))), now) {
-			http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
+			refuseReconnect(w)
 			return
 		}
 		// Opt-in: a client that sends no header is served as before; one that

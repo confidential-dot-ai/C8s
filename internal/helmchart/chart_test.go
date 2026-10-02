@@ -7737,6 +7737,9 @@ func TestChartRouterPinnedAllowlistDefaults(t *testing.T) {
 	if pinned(t, out) {
 		t.Error("pinnedAllowlist=false rendered pinned mode")
 	}
+	if strings.Contains(out, "@c8s_reconnect") {
+		t.Error("pinnedAllowlist=false rendered the reconnect location")
+	}
 
 	if out, err := helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
 		"--set-string", "router.attest.pinnedAllowlist=yes",
@@ -7761,6 +7764,13 @@ func TestChartRouterPinnedAllowlist(t *testing.T) {
 	assertRouterWebSocketUpgrade(t, pinnedCfg, catchAll)
 	catchAll.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
 	catchAll.assertDirective(t, "proxy_set_header", "X-C8s-Connection-Time", "$connection_time")
+	// The sidecar's reconnect refusal (590) becomes a 503 that closes the
+	// client's keepalive connection.
+	catchAll.assertDirective(t, "proxy_intercept_errors", "on")
+	catchAll.assertDirective(t, "error_page", "590", "=", "@c8s_reconnect")
+	reconnect := pinnedCfg.location(t, "prefix", "@c8s_reconnect")
+	reconnect.assertDirective(t, "keepalive_timeout", "0")
+	reconnect.assertDirective(t, "return", "503", `"the`, "allowlist", "bound", "changed:", "open", "a", "new", "connection", "and", "attest", `again\n"`)
 	assertRouterUpstreamTimeouts(t, catchAll, "3600s")
 	if strings.Contains(out, "upstream catch_all") {
 		t.Error("pinned mode renders the unused catch_all upstream, which nginx resolves at start")
