@@ -180,11 +180,13 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 		if err := r.checkProgress(&st); err != nil {
 			return nil, nil, err
 		}
+		// A new authority is a new mesh CA: connections verified under the
+		// old one are dropped like on a bound change.
+		changed := !slices.Equal(r.bound, st.Bound) || (!r.seenAt.IsZero() && st.Authority != r.authority)
 		r.authority, r.position, r.head = st.Authority, st.Position, st.Head
 		if !covers(r.bound, st.Bound) {
 			r.widenedAt = time.Now()
 		}
-		changed := !slices.Equal(r.bound, st.Bound)
 		r.seenAt, r.bound, r.lease = sent, st.Bound, time.Duration(st.Lease)*time.Second
 		if changed {
 			r.boundChanged()

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
@@ -142,16 +143,24 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 	var tlsCfg *tls.Config
 	if strings.HasPrefix(base, "https://") {
 		tlsCfg = &tls.Config{ServerName: opts.ServerName, MinVersion: tls.VersionTLS12}
+		var verifyChain func(tls.ConnectionState) error
 		if opts.TrustedCAFile != "" {
-			caPEM, err := os.ReadFile(opts.TrustedCAFile)
+			// Read once here so a bad path still fails at startup.
+			if _, err := loadUpstreamCAPool(opts.TrustedCAFile); err != nil {
+				return nil, err
+			}
+			name, err := upstreamVerifyName(base, opts.ServerName)
 			if err != nil {
-				return nil, fmt.Errorf("read upstream CA: %w", err)
+				return nil, err
 			}
-			pool := x509.NewCertPool()
-			if !pool.AppendCertsFromPEM(caPEM) {
-				return nil, fmt.Errorf("upstream CA file %q has no certificates", opts.TrustedCAFile)
+			// The mesh CA changes when CDS restarts, and the rollout fence
+			// re-reads the same file for every state. Verify the chain here
+			// against the file as it is at each handshake, not a pool frozen
+			// at startup, so the upstream hop follows the CA the fence uses.
+			tlsCfg.InsecureSkipVerify = true
+			verifyChain = func(cs tls.ConnectionState) error {
+				return verifyUpstreamChain(opts.TrustedCAFile, name, cs.PeerCertificates)
 			}
-			tlsCfg.RootCAs = pool
 		}
 		if opts.ClientCertFile != "" && opts.ClientKeyFile != "" {
 			loader, err := newUpstreamCertLoader(opts.ClientCertFile, opts.ClientKeyFile)
@@ -160,12 +169,20 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 			}
 			tlsCfg.GetClientCertificate = loader.getClientCertificate
 		}
-		if opts.VerifyPeer != nil {
+		if verifyChain != nil || opts.VerifyPeer != nil {
 			tlsCfg.VerifyConnection = func(cs tls.ConnectionState) error {
 				if len(cs.PeerCertificates) == 0 {
 					return fmt.Errorf("upstream presented no certificate")
 				}
-				return opts.VerifyPeer(cs.PeerCertificates[0])
+				if verifyChain != nil {
+					if err := verifyChain(cs); err != nil {
+						return err
+					}
+				}
+				if opts.VerifyPeer != nil {
+					return opts.VerifyPeer(cs.PeerCertificates[0])
+				}
+				return nil
 			}
 		}
 	} else if !strings.HasPrefix(base, "http://") {
@@ -184,6 +201,53 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 		timeout = defaultUpstreamTimeout
 	}
 	return &HTTPBackend{base: base, client: &http.Client{Transport: transport, Timeout: timeout}, transport: transport}, nil
+}
+
+// loadUpstreamCAPool reads the upstream CA bundle.
+func loadUpstreamCAPool(file string) (*x509.CertPool, error) {
+	caPEM, err := os.ReadFile(file)
+	if err != nil {
+		return nil, fmt.Errorf("read upstream CA: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("upstream CA file %q has no certificates", file)
+	}
+	return pool, nil
+}
+
+// upstreamVerifyName is the name the upstream leaf must carry: the
+// configured server name, else the host of base, as crypto/tls would use.
+func upstreamVerifyName(base, serverName string) (string, error) {
+	if serverName != "" {
+		return serverName, nil
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", fmt.Errorf("parse upstream URL: %w", err)
+	}
+	return u.Hostname(), nil
+}
+
+// verifyUpstreamChain does what crypto/tls does with RootCAs and ServerName,
+// against caFile as it is now.
+func verifyUpstreamChain(caFile, name string, certs []*x509.Certificate) error {
+	pool, err := loadUpstreamCAPool(caFile)
+	if err != nil {
+		return err
+	}
+	intermediates := x509.NewCertPool()
+	for _, c := range certs[1:] {
+		intermediates.AddCert(c)
+	}
+	if _, err := certs[0].Verify(x509.VerifyOptions{
+		DNSName:       name,
+		Roots:         pool,
+		Intermediates: intermediates,
+	}); err != nil {
+		return fmt.Errorf("upstream certificate: %w", err)
+	}
+	return nil
 }
 
 // upstreamCertRecheckInterval is how often the upstream client credential is
