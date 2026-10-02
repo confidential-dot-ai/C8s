@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -84,7 +86,13 @@ func argvPolicy(argv []string) allowlist.ArgvPolicy {
 	return allowlist.ArgvPolicy{Policy: allowlist.PolicyExact, Argv: argv}
 }
 
-func deriveContainers(cs []templateContainer) ([]allowlist.Container, error) {
+// imageArgv returns an image's baked Entrypoint and Cmd.
+type imageArgv func(image string) (entrypoint, cmd []string, err error)
+
+// deriveContainers pins each container's argv as the runtime resolves it: an
+// unset command runs the image's Entrypoint, and unset args run its Cmd only
+// when the command is unset too.
+func deriveContainers(cs []templateContainer, resolve imageArgv) ([]allowlist.Container, error) {
 	out := make([]allowlist.Container, 0, len(cs))
 	for _, c := range cs {
 		_, raw, found := strings.Cut(c.Image, "@")
@@ -95,11 +103,28 @@ func deriveContainers(cs []templateContainer) ([]allowlist.Container, error) {
 		if err != nil {
 			return nil, fmt.Errorf("container %q: %w", c.Name, err)
 		}
+		command, args := c.Command, c.Args
+		if len(command) == 0 {
+			entrypoint, cmd, err := resolve(c.Image)
+			if err != nil {
+				return nil, fmt.Errorf("container %q sets no command, so derive needs the image's baked argv: %w", c.Name, err)
+			}
+			command = entrypoint
+			if len(args) == 0 {
+				args = cmd
+			}
+		}
+		// The matcher pins command as a prefix of the whole argv, so an image
+		// with no Entrypoint runs its args (or Cmd) as the command. Pin that
+		// argv exactly; a deny command would admit only an empty argv.
+		if len(command) == 0 {
+			command, args = args, nil
+		}
 		out = append(out, allowlist.Container{
 			Digest:  digest,
 			Image:   c.Image,
-			Command: argvPolicy(c.Command),
-			Args:    argvPolicy(c.Args),
+			Command: argvPolicy(command),
+			Args:    argvPolicy(args),
 		})
 	}
 	return out, nil
@@ -130,7 +155,9 @@ actually running, and handles two things a hand-written entry usually gets
 wrong. Init containers are part of the set CDS matches, so omitting them makes
 every release fail with "no workload entry matches the running containers". And
 a container with a command and no args needs an args policy of "deny", because
-"exact" requires a non-empty argv.
+"exact" requires a non-empty argv. A container that sets no command runs its
+image's Entrypoint, and its Cmd too when it sets no args; derive reads both from
+the registry with crane.
 
 Environment policy must be supplied using --env=any|deny or --env-file, a JSON
 map of container names to env policies. Exact values describe the complete OCI
@@ -165,11 +192,22 @@ derives the same entry as the manifest it was admitted from.`,
 			if len(dropped) > 0 {
 				fmt.Fprintf(cmd.ErrOrStderr(), "dropped %s: injected by c8s\n", strings.Join(dropped, ", "))
 			}
-			containers, err := deriveContainers(spec.Containers)
+			requireCrane := sync.OnceValue(crane.Require)
+			resolve := func(image string) ([]string, []string, error) {
+				if err := requireCrane(); err != nil {
+					return nil, nil, err
+				}
+				cfg, err := crane.Config(ctx(cmd), image)
+				if err != nil {
+					return nil, nil, err
+				}
+				return cfg.Config.Entrypoint, cfg.Config.Cmd, nil
+			}
+			containers, err := deriveContainers(spec.Containers, resolve)
 			if err != nil {
 				return err
 			}
-			initContainers, err := deriveContainers(spec.InitContainers)
+			initContainers, err := deriveContainers(spec.InitContainers, resolve)
 			if err != nil {
 				return err
 			}
