@@ -95,6 +95,14 @@ type imageArgv func(image string) (entrypoint, cmd []string, err error)
 func deriveContainers(cs []templateContainer, resolve imageArgv) ([]allowlist.Container, error) {
 	out := make([]allowlist.Container, 0, len(cs))
 	for _, c := range cs {
+		_, raw, found := strings.Cut(c.Image, "@")
+		if !found {
+			return nil, fmt.Errorf("container %q is not pinned by digest: %s", c.Name, c.Image)
+		}
+		digest, err := types.ParseDigest(raw)
+		if err != nil {
+			return nil, fmt.Errorf("container %q: %w", c.Name, err)
+		}
 		command, args := c.Command, c.Args
 		if len(command) == 0 {
 			entrypoint, cmd, err := resolve(c.Image)
@@ -106,13 +114,11 @@ func deriveContainers(cs []templateContainer, resolve imageArgv) ([]allowlist.Co
 				args = cmd
 			}
 		}
-		_, raw, found := strings.Cut(c.Image, "@")
-		if !found {
-			return nil, fmt.Errorf("container %q is not pinned by digest: %s", c.Name, c.Image)
-		}
-		digest, err := types.ParseDigest(raw)
-		if err != nil {
-			return nil, fmt.Errorf("container %q: %w", c.Name, err)
+		// The matcher pins command as a prefix of the whole argv, so an image
+		// with no Entrypoint runs its args (or Cmd) as the command. Pin that
+		// argv exactly; a deny command would admit only an empty argv.
+		if len(command) == 0 {
+			command, args = args, nil
 		}
 		out = append(out, allowlist.Container{
 			Digest:  digest,
