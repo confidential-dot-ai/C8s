@@ -206,8 +206,8 @@ func TestHTTPBackendRunsVerifyPeer(t *testing.T) {
 
 func TestLBForwarderFencesConnections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(connectionTimeHeader) != "" {
-			t.Error("connection time header leaked upstream")
+		if r.Header.Get(connectionTimeHeader) != "" || r.Header.Get(verifiedStateHeader) != "" {
+			t.Error("fence header leaked upstream")
 		}
 		w.Write([]byte("ok"))
 	}))
@@ -231,11 +231,13 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 	fence.lease = 30 * time.Second
 	fence.seenAt = time.Now()
 	fence.widenedAt = time.Now().Add(-10 * time.Second)
+	fence.head = "sha256:h1"
 	status := func(connectionTime string) int {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		if connectionTime != "" {
 			req.Header.Set(connectionTimeHeader, connectionTime)
 		}
+		req.Header.Set(verifiedStateHeader, "sha256:h1")
 		w := httptest.NewRecorder()
 		forwarder.ServeHTTP(w, req)
 		return w.Code
@@ -378,5 +380,51 @@ func TestRolloutRefusesJournalRegression(t *testing.T) {
 	}
 	if fence.authority != "sha256:b" || fence.position != 0 {
 		t.Fatalf("fence journal = %s %d, want sha256:b 0", fence.authority, fence.position)
+	}
+}
+
+func TestLBForwarderRequiresVerifiedState(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) }))
+	defer upstream.Close()
+	backend, err := NewHTTPBackend(upstream.URL, HTTPBackendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cds.setJournal("sha256:a", 1, "sha256:h1")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	forwarder, err := newLBForwarder(fence, backend, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(state string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set(connectionTimeHeader, "0")
+		if state != "" {
+			req.Header.Set(verifiedStateHeader, state)
+		}
+		w := httptest.NewRecorder()
+		forwarder.ServeHTTP(w, req)
+		return w.Code, w.Body.String()
+	}
+	if code, body := send("sha256:h1"); code != http.StatusOK || body != "ok" {
+		t.Fatalf("matching state = %d %q, want 200 forwarded", code, body)
+	}
+	if code, body := send(""); code != http.StatusOK || body != "ok" {
+		t.Fatalf("absent state header = %d %q, want 200 forwarded", code, body)
+	}
+	cds.setJournal("sha256:a", 2, "sha256:h2")
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := send("sha256:h1"); code != http.StatusServiceUnavailable || !strings.Contains(body, "state changed: re-verify") {
+		t.Fatalf("stale state = %d %q, want 503 re-verify", code, body)
 	}
 }

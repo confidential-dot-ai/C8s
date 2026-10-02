@@ -129,6 +129,14 @@ func TestBuildPolicyPinPolicyFormat(t *testing.T) {
 	}
 }
 
+func TestApplyPinPolicyReportsVerifiedState(t *testing.T) {
+	oc := Outcome{Verified: true}
+	applyPinPolicy(&oc, config{}, &evidence{fresh: true, rollout: &types.RolloutState{Head: "sha256:h", Bound: []string{"sha256:p"}}})
+	if oc.VerifiedState != "sha256:h" {
+		t.Fatalf("verified state = %q, want the journal head sha256:h", oc.VerifiedState)
+	}
+}
+
 func TestApplyPinPolicyHidesStaleBound(t *testing.T) {
 	oc := Outcome{Verified: true}
 	applyPinPolicy(&oc, config{}, &evidence{rollout: &types.RolloutState{Bound: []string{"sha256:p"}}})
