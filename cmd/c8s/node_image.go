@@ -156,12 +156,12 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// the chart DaemonSet, which the chart refuses on a baked node.
 		"--set", "volumed.enabled=false",
 		"--set", "router.attest.enabled=true",
-		// TEST-ONLY (test/dynamic-allowlist-e2e): point the router at the dynal-echo
+		// TEST-ONLY (test/dynamic-allowlist-e2e): point the router at the Open WebUI
 		// https upstream; lease/allowlist/pinnedAllowlist come from chart defaults
 		// (pinnedAllowlist=auto turns on with this https upstream). Not for main.
 		"--set", "router.upstream.protocol=https",
-		"--set-string", "router.upstream.address=dynal-echo.dynal-test.svc.cluster.local:8443",
-		"--set-string", "router.upstream.tls.serverName=c8s-dynal-echo.dynal-test.svc",
+		"--set-string", "router.upstream.address=open-webui.open-webui.svc.cluster.local:8443",
+		"--set-string", "router.upstream.tls.serverName=c8s-open-webui.open-webui.svc",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
