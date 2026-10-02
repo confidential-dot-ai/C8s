@@ -26,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -460,8 +461,7 @@ func verifyRolloutState(signed *types.SignedRolloutState, ca *x509.Certificate, 
 	if !ok {
 		return nil, fmt.Errorf("mesh CA key is %T, not ECDSA", ca.PublicKey)
 	}
-	sum := sha512.Sum384(signed.State)
-	if !ecdsa.VerifyASN1(key, sum[:], signed.Signature) {
+	if !rolloutstate.Verify(key, rolloutstate.ContextChallenge, signed.State, signed.Signature) {
 		return nil, fmt.Errorf("CDS rollout state signature does not verify against the committed mesh CA")
 	}
 	var st types.RolloutState

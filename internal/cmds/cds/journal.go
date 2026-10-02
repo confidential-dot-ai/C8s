@@ -3,9 +3,7 @@ package cds
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
@@ -17,6 +15,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -91,8 +90,11 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		sum := sha512.Sum384(body)
-		sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+		context := rolloutstate.ContextState
+		if challenge {
+			context = rolloutstate.ContextChallenge
+		}
+		sig, err := rolloutstate.Sign(key, context, body)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return

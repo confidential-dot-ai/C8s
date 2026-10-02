@@ -554,8 +554,14 @@ node plugin refuses it only at its next start. Its identity, not its
 process, is what the drain bounds: its next leaf is issued unnamed (it no
 longer matches an entry), and the router and pinned verifiers stop
 accepting its old stamp when the bound drains. To stop such a workload
-before that, delete its pods after the publication activates. The signature is ASN.1 ECDSA over SHA-384 of the
-exact `state` bytes, by the mesh CA key that `/ca` certifies. The `authority`
+before that, delete its pods after the publication activates.
+
+The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
+SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
+context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and
+`c8s/rollout-state-challenge/v1` for the challenge. The prefix keeps the CA
+key from signing bare JSON, and a state signed for one endpoint does not
+verify as the other. The `authority`
 field is `sha256:` over that key's SubjectPublicKeyInfo. CDS generates the key
 at each start, so a restart changes the authority and verifiers re-anchor on
 it; each event keeps the authority current when it was appended. A write that
