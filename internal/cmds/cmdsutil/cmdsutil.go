@@ -1,4 +1,4 @@
-// Package cmdsutil holds tiny helpers shared across the c8s subcommand
+// Package cmdsutil holds tiny helpers shared across the C8s subcommand
 // packages under internal/cmds/. Anything bigger belongs in pkg/.
 package cmdsutil
 

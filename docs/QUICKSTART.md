@@ -1,13 +1,13 @@
-# c8s quickstart
+# C8s quickstart
 
-This is the supported install path for the consolidated c8s chart.
+This is the supported install path for the consolidated C8s chart.
 
 ## Prerequisites
 
 - A Kubernetes cluster with platform-admin permissions.
 - Helm 3 and `kubectl` on PATH, plus `crane` (digest resolution is on by
   default; not needed if you pass `--resolve-digests=false`).
-- c8s images published with the same tag as the release, for example `v0.1.0`,
+- C8s images published with the same tag as the release, for example `v0.1.0`,
   resolved to digests by default or supplied in a values file.
 - One node labelled to run CDS (`role=cds` by default).
 - Nodes with the TEE device shape expected by `attestationApi.teeDevices`.
@@ -18,7 +18,7 @@ This is the supported install path for the consolidated c8s chart.
   SEV-SNP hosts need ≥ 6.11 and Intel TDX ≥ 6.16 — so this is satisfied on any
   supported node.
 
-## Install c8s
+## Install C8s
 
 This installs the supported chart-managed CVM shape: operator, RBAC, CRDs,
 webhook, attestation-api, and CDS.
@@ -52,7 +52,7 @@ adopts them as CWs and resolves their images into the NRI bootstrap allowlist.
 Details and the vLLM router/engine example: [existing workload adoption](operator.md#existing-workload-adoption).
 
 By default `c8s install` resolves each component image tag to its registry
-digest (via `crane`) and pins it. The image policy admits c8s components by
+digest (via `crane`) and pins it. The image policy admits C8s components by
 digest, so this is what lets a plain install satisfy the floor: without pinned
 digests the render fails closed rather than ship a cluster whose own components
 its image policy would deny. `crane` must be on PATH. To pin the digests
@@ -93,7 +93,7 @@ status-mirror controller is disabled.
 
 ## Private registry credentials
 
-When the c8s images (or your mirrors of them) live in a registry that requires
+When the C8s images (or your mirrors of them) live in a registry that requires
 authentication, create a registry-credential Secret in the release namespace
 and pass its name at install time:
 
@@ -124,7 +124,7 @@ c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev
 
 Pass `NAMESPACE=c8s-system` explicitly — the script defaults to `default`,
 and `imagePullSecrets` references are namespace-local, so a Secret there is
-invisible to the c8s pods.
+invisible to the C8s pods.
 
 The chart appends the Secret to every component's `imagePullSecrets` —
 including components that set their own local list — so all pods authenticate

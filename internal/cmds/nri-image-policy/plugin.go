@@ -979,7 +979,7 @@ func observeEnv(ctr *api.Container) (*allowlist.EnvObservation, error) {
 // cdiInjected reports whether the runtime injected CDI devices into this
 // container. The CRI CDIDevices field carries them when the device plugin uses
 // the cdi-cri strategy; the cdi.k8s.io annotations carry them under the
-// cdi-annotations strategy, which is what the c8s node image's NVIDIA device
+// cdi-annotations strategy, which is what the C8s node image's NVIDIA device
 // plugin uses.
 func cdiInjected(ctr *api.Container) bool {
 	if len(ctr.GetCDIDevices()) > 0 {

@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// Default CA paths: where RKE2 (the c8s node image's distribution) keeps its
+// Default CA paths: where RKE2 (the C8s node image's distribution) keeps its
 // CAs. client-ca signs the kube client certs the apiserver trusts; server-ca
 // signs the apiserver SERVING cert and is what the released kubeconfig must
 // carry as certificate-authority-data — RKE2 keeps them distinct, so releasing

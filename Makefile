@@ -93,7 +93,7 @@ test-integration:
 test-integration-cluster:
 	./test/integration/cluster/run.sh
 
-# The byte-exact launch script with device and c8s stubs in disposable Linux.
+# The byte-exact launch script with device and C8s stubs in disposable Linux.
 # Needs Docker; host files are mounted read-only and no privileges are added.
 test-node-guest-image-role:
 	./node-guest-image/tests/rke2-role-test.sh
@@ -116,7 +116,7 @@ test-node-guest-image-apparmor:
 	bash node-guest-image/tests/apparmor-config-test.sh
 	bash node-guest-image/tests/apparmor-enforce-test.sh
 
-# Disposable single-node c8s image and its operator kubeconfig.
+# Disposable single-node C8s image and its operator kubeconfig.
 test-node-guest-image-apparmor-runtime:
 	bash node-guest-image/tests/apparmor-runtime-test.sh
 
@@ -155,34 +155,34 @@ mutation-full:
 	./scripts/mutation-check.sh summary
 
 # Live-cluster check of the cw-label integrity admission policy. Needs
-# kubectl pointed at a cluster with the c8s chart installed. Also runs
+# kubectl pointed at a cluster with the C8s chart installed. Also runs
 # post-merge in the snp-metal-e2e lane's in-guest payload.
 test-e2e-cw-label-policy:
 	./test/e2e/cw-label-policy.sh
 
 # Live-cluster check that the workload path is mesh-wrapped and plaintext
 # bypasses to cw pods fail closed. Needs kubectl pointed at a cluster with
-# the c8s chart installed and a Running confidential workload. Not CI-wired:
+# the C8s chart installed and a Running confidential workload. Not CI-wired:
 # snp-metal's guest kernel lacks ratls-mesh's netfilter matches (the lane
 # installs ratlsMesh.enabled=false).
 test-e2e-mesh-cw-enforcement:
 	./test/e2e/mesh-cw-enforcement.sh
 
 # Live-cluster check that image admission is fail-closed and that a signed
-# allowlist write opens it. Needs kubectl pointed at a cluster with c8s
+# allowlist write opens it. Needs kubectl pointed at a cluster with C8s
 # installed, plus C8S_ALLOWLIST_URL, C8S_MEASUREMENTS and C8S_OPERATOR_KEY.
 # Also runs post-merge in the tdx-metal-e2e lane.
 test-e2e-allowlist-enforcement:
 	./test/e2e/allowlist-enforcement.sh
 
 # Live-cluster check that every c8s-system pod is Running and Ready. Needs
-# kubectl pointed at a cluster with c8s installed. Also runs post-merge in
+# kubectl pointed at a cluster with C8s installed. Also runs post-merge in
 # the tdx-metal-e2e lane.
 test-e2e-components-ready:
 	./test/e2e/components-ready.sh
 
 # Live-cluster check that the sample confidential workload runs with the
-# injected c8s-cert sidecar. Needs kubectl pointed at a cluster with c8s
+# injected c8s-cert sidecar. Needs kubectl pointed at a cluster with C8s
 # installed; under a fail-closed floor also C8S_OPERATOR_KEY,
 # C8S_ALLOWLIST_URL and C8S_MEASUREMENTS. Runs post-merge in both metal lanes.
 test-e2e-cw-workload:

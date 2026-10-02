@@ -1,4 +1,4 @@
-# A plain workload with no c8s opt-in, adopted into the mesh by
+# A plain workload with no C8s opt-in, adopted into the mesh by
 # `c8s install --workload-ref web=adopted/deployment/web:8080 --upstream web`
 # during the harness's upgrade step.
 apiVersion: v1

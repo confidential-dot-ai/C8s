@@ -4,7 +4,7 @@
 node:
   baked: false
 
-## The c8s component image set: the single source the chart and `c8s install`
+## The C8s component image set: the single source the chart and `c8s install`
 ## both enumerate from, so adding a component is one edit here.
 ##   - valuePath:   dotted path to the component's image object (repository/
 ##                  tag/digest live there).
@@ -16,7 +16,7 @@ node:
 ##   - pinnedDigest: the digest `c8s install` pins for this component instead of
 ##                  resolving its repository at --image-tag, for a component
 ##                  released on another repository's cadence and therefore
-##                  absent at a c8s release tag. Only `c8s install` reads it, so
+##                  absent at a C8s release tag. Only `c8s install` reads it, so
 ##                  a chart consumer that sets the component's image.tag or
 ##                  image.digest itself is unaffected.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
@@ -49,7 +49,7 @@ c8sComponents:
     enabledPath: volumed.enabled
     cdsExempt: false
 
-## Operator container image. The same image runs every c8s mode that
+## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
 ## `tag` and `digest` are consumer-supplied — the chart fails to render if
 ## neither is set. TEE measurements depend on the exact binary running,
@@ -75,14 +75,14 @@ operator:
   extraArgs: []
 
 ## Chart-wide image pull secrets, used by every component unless that component
-## sets its own .imagePullSecrets. One entry here covers all c8s images.
+## sets its own .imagePullSecrets. One entry here covers all C8s images.
 imagePullSecrets: []
 
 ## Name of a pre-existing registry-credential Secret
 ## (kubernetes.io/dockerconfigjson) in the release namespace, appended to
 ## every component's imagePullSecrets — both the chart-wide list above and any
 ## component-local override — so all pods pull from an authenticated registry
-## (e.g. a private mirror of the c8s images) from first start, with no
+## (e.g. a private mirror of the C8s images) from first start, with no
 ## manually wired Secret references and no pod restart. Unlike
 ## the imagePullSecrets list, a component-local override does not shed it.
 ## The chart never creates or adopts the Secret itself: create it with
@@ -100,7 +100,7 @@ certProvisioning:
   ## not start without a real mesh cert.
   initialRetryTimeout: "2m"
 
-## Common ServiceAccount settings for the chart-managed top-level c8s
+## Common ServiceAccount settings for the chart-managed top-level C8s
 ## workloads: operator, attestation-api, and CDS. Leave empty to inherit
 ## the chart-wide imagePullSecrets above; set to override for these workloads.
 serviceAccount:
@@ -159,7 +159,7 @@ webhook:
     runAsGroup: 65532
     runAsNonRoot: true
 
-## Certificate Distribution Service (cds): the c8s trust root. One binary, one Service,
+## Certificate Distribution Service (cds): the C8s trust root. One binary, one Service,
 ## one ServiceAccount, and one measurement allowlist serve attestation,
 ## allowlist, and mesh-CA leaf signing.
 ##
@@ -167,7 +167,7 @@ webhook:
 ## only — it is never rendered into a Kubernetes Secret or volume.
 cds:
   ## Pin the deployed image by digest in production to decouple it from a
-  ## floating tag's movement. This applies to every c8s .image.digest field.
+  ## floating tag's movement. This applies to every C8s .image.digest field.
   image:
     repository: ghcr.io/confidential-dot-ai/cds
     tag: ""
@@ -683,7 +683,7 @@ nriImagePolicy:
     enforceExisting: true
     denyMissingAnnotation: true
     # exemptNamespaces: on the hosted lanes (gke/aks), admit each listed
-    # namespace's provider platform pods — which are not on the c8s allowlist —
+    # namespace's provider platform pods — which are not on the C8s allowlist —
     # by the image digests captured running in it, frozen at first admission and
     # scoped to that namespace. `c8s install --cvm-mode=gke|aks` sets
     # [kube-system] unless a -f file writes this key. Empty (the chart default)
@@ -754,17 +754,17 @@ nriImagePolicy:
   # command line is seed-only.
   #
   # Everything needed to reach a Ready CDS on the CDS node and a working kubelet
-  # on every node goes here as any-argv entries — the c8s component images plus
+  # on every node goes here as any-argv entries — the C8s component images plus
   # kube-proxy, coredns, pause/sandbox, CNI — supplied via values or `-f`
   # (resolve digests with crane/skopeo; `c8s allowlist add` writes the same
   # shape). In production you pin the full set here; deriveComponents below is
-  # a demo convenience for the c8s images only.
+  # a demo convenience for the C8s images only.
   bootstrapAllowlist:
     # deriveComponents: a demo convenience (off by default, like
-    # `c8s install --resolve-digests`, which turns it on). When true, the c8s
+    # `c8s install --resolve-digests`, which turns it on). When true, the C8s
     # component images this chart installs (operator, cds, attestation-api,
     # ratls-mesh) are seeded and admitted whenever their image.digest is set,
-    # so a digest-pinned install self-allows the c8s images without an entry
+    # so a digest-pinned install self-allows the C8s images without an entry
     # for each. It never covers the non-c8s system images, so production
     # installs pin the full set in `workloads` instead. nri-image-policy is
     # not derived: the chart seeds it argv-pinned, and a same-named entry
@@ -1032,14 +1032,14 @@ router:
   # leaving the global block enabled. Only the `enabled` key is honored on a
   # per-route cors block.
   #
-  # Independent of this block, the c8s protocol-owned endpoints
+  # Independent of this block, the C8s protocol-owned endpoints
   # (/.well-known/c8s/*, the discovery document and certificate endpoints,
   # and the built-in /allowlist route) serve wide-open CORS by default —
   # see `protocolEndpoints` below.
   cors:
     enabled: false
     # -- Wide-open CORS (Access-Control-Allow-Origin "*", no credentials) on
-    # the c8s protocol-owned endpoints only: /.well-known/c8s/*, the
+    # the C8s protocol-owned endpoints only: /.well-known/c8s/*, the
     # discovery document and certificate endpoints, and the built-in
     # /allowlist route. On by default because those endpoints exist to be
     # verified by any browser anywhere: responses are self-authenticating
@@ -1114,7 +1114,7 @@ router:
     meshCAPath: "/.well-known/mesh-ca.pem"
 
   # -- Mesh CA bundle exposed for demo preflight clients. Defaults match the
-  # chart-managed c8s CDS ConfigMap name.
+  # chart-managed C8s CDS ConfigMap name.
   meshCA:
     # -- Serve and advertise the mesh CA PEM at the discovery meshCAPath when
     # discovery is enabled. The bundle is written by the injected get-cert

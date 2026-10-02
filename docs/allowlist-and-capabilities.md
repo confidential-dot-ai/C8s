@@ -1,6 +1,6 @@
 # Allowlist and capabilities
 
-How c8s decides which container images may run, which commands they may run
+How C8s decides which container images may run, which commands they may run
 with, and — for future key-management integration — which secret paths they may
 read and write. This document complements [`ratls.md`](ratls.md) (how the allowlist is bound
 into attestation).
@@ -23,7 +23,7 @@ The entry name is operator-chosen; the entry `label` and per-container `image`
 are informational. Policy is always resolved by container digest.
 
 An image that may run **however it is invoked** — the standalone and injected
-c8s components (cds, get-cert, the operator, ratls-mesh, the router), whose
+C8s components (cds, get-cert, the operator, ratls-mesh, the router), whose
 argv is per-pod — is an entry whose container `command` and `args` are both
 `any`. Nothing distinguishes such an entry from any other: it is matched,
 stamped and diffed like the rest, and the same digest may also appear
@@ -189,7 +189,7 @@ an `emptyDir`, and a ConfigMap can all be placed at the same destination while
 carrying very different authority over the container.
 
 An absent policy is `deny`, which permits only the platform mounts defined by
-the c8s NRI plugin in the node image. The plugin checks both destination and
+the C8s NRI plugin in the node image. The plugin checks both destination and
 source ownership against this baseline:
 
 | Destination | Required source |
@@ -222,7 +222,7 @@ c8s allowlist derive app pod.json --env=any --mounts=any > entry.json
 
 `--mounts-file` takes explicit per-container policies instead: the file maps
 container names to policies and must include every init and main container the
-entry declares; missing or unknown names are rejected. `derive` drops c8s's own
+entry declares; missing or unknown names are rejected. `derive` drops C8s's own
 injected containers from its input and names them on stderr, so a pod read back
 after admission derives the same entry as the manifest it was admitted from. For
 a pod with an init container named `seed` and main containers named `frontend`
@@ -373,7 +373,7 @@ surfaces names only the violated rules, which are the pod's own spec.
 ### What the node TCB is, and who may declare it
 
 Some containers must hold host privilege — the RKE2 static pods, Canal,
-c8s's own node-level components. They are the node's trusted computing base,
+C8s's own node-level components. They are the node's trusted computing base,
 and the exemption belongs to whoever measured them.
 
 `allowlist.node_tcb: true` in the plugin's boot config marks that config's
@@ -460,11 +460,11 @@ is not implemented and is out of scope here.
 
 ### The injected-container carve-out
 
-c8s injects its own init containers into every confidential pod — `c8s-cert`
+C8s injects its own init containers into every confidential pod — `c8s-cert`
 (get-cert) and `c8s-cert-wait`, joined by `c8s-secret` and `c8s-volume` when the
 pod asks for them. They pass the issuance gate by **digest**, not by name: the
 injected image is seeded as its own entry, so a workload entry never has to
-enumerate c8s's own sidecars. Matching rests on nothing the host writes, and the
+enumerate C8s's own sidecars. Matching rests on nothing the host writes, and the
 container *name* is one of those things; the names identify injection only over
 authored input, where admission reserves them and `c8s allowlist derive` drops
 them. get-cert runs with per-pod dynamic arguments,

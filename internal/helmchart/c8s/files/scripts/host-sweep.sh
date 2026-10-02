@@ -1,5 +1,5 @@
 # shellcheck shell=sh
-# c8s host sweep — run by `c8s uninstall` as a privileged init container on
+# C8s host sweep — run by `c8s uninstall` as a privileged init container on
 # every linux node (a short-lived kubectl-applied DaemonSet; see
 # cmd/c8s/uninstall.go). These bytes are an interface: the chart pins them
 # into the served allowlist (c8s.argvPinnedEntries) and the CLI replays the
@@ -12,13 +12,13 @@
 # hooks need a release healthy enough to run them, a preStop is bounded by
 # the pod's termination grace period (and the runtime restart it triggers can
 # kill the pod mid-cleanup), the mesh preStop deliberately keeps its
-# fail-closed guard, and none of them knows about the c8s-side artifacts
+# fail-closed guard, and none of them knows about the C8s-side artifacts
 # (the RKE2 containerd-prep template). This sweep is the
 # idempotent last word and runs on every uninstall, whatever the release's
 # shape: leftovers may come from a previous install of a different shape,
 # which this release's values cannot see.
 #
-# Baked node image exception: on the c8s node image the NRI plugin, its floor
+# Baked node image exception: on the C8s node image the NRI plugin, its floor
 # config, the containerd drop-in, and the managed RKE2 containerd template
 # are baked into the measured image at the same paths the chart uses. They
 # are node-image state, not release state — deleting them strips the node's

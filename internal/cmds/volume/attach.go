@@ -29,7 +29,7 @@ import (
 // DefaultConfigRoot is the configfs mount LIO is driven through.
 const DefaultConfigRoot = "/sys/kernel/config"
 
-// lioHBA is the fileio HBA every c8s backstore hangs off. Arbitrary but stable:
+// lioHBA is the fileio HBA every C8s backstore hangs off. Arbitrary but stable:
 // detach locates a backstore by this name.
 const lioHBA = "fileio_0"
 

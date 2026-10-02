@@ -51,7 +51,7 @@ func TestVerifyRequiresAttestationApi(t *testing.T) {
 	}
 }
 
-// CheckSandboxPin is the one implementation both the mesh CA path and c8s
+// CheckSandboxPin is the one implementation both the mesh CA path and C8s
 // verify use. Empty is a no-op so callers can invoke it unconditionally.
 func TestCheckSandboxPin(t *testing.T) {
 	withID, err := certWithSandboxID(t, "sandbox-abc")

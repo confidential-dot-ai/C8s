@@ -240,7 +240,7 @@ func equalArgv(a, b []string) bool {
 }
 
 // admittedPodJSON is a pod as the API server returns it after injection: the
-// authored init container and mains, plus the four containers c8s adds, one of
+// authored init container and mains, plus the four containers C8s adds, one of
 // them on a floating tag.
 func admittedPodJSON() string {
 	return `{
@@ -285,7 +285,7 @@ func TestDeriveDropsInjectedContainers(t *testing.T) {
 }
 
 // The policy files describe only the containers that survive the drop, so an
-// operator is never asked to write a mount policy for c8s's own sidecars.
+// operator is never asked to write a mount policy for C8s's own sidecars.
 func TestDeriveDropsInjectedBeforePolicyFiles(t *testing.T) {
 	dir := t.TempDir()
 	mounts := dir + "/mounts.json"
@@ -316,7 +316,7 @@ func TestDeriveRejectsPolicyForDroppedContainer(t *testing.T) {
 	}
 }
 
-// An input with nothing c8s injected is derived without a report, so the
+// An input with nothing C8s injected is derived without a report, so the
 // message only appears when it says something.
 func TestDeriveReportsNothingWhenNothingIsDropped(t *testing.T) {
 	_, stderr, err := runDeriveStderr(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts=any")

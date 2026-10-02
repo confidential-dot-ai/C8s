@@ -312,7 +312,7 @@ func (o *Opener) teardown(ctx context.Context, m *mount) bool {
 	return o.Ops.CryptClose(cleanup, m.cryptDev) == nil
 }
 
-// SweepStale closes the c8s mappings left on this node by an earlier volumed,
+// SweepStale closes the C8s mappings left on this node by an earlier volumed,
 // and reports how many it closed and which it could not.
 //
 // Nothing else on a node can reap these: they outlive the release that made

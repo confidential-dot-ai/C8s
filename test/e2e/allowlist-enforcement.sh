@@ -3,7 +3,7 @@
 # allowlist write opens it: a non-allowlisted image is denied at container
 # creation, and the same image runs once its digest is on the floor.
 #
-# Needs kubectl pointed at a cluster with c8s installed, `c8s` and `crane` on
+# Needs kubectl pointed at a cluster with C8s installed, `c8s` and `crane` on
 # PATH, and:
 #   C8S_ALLOWLIST_URL  RA-TLS router or direct CDS base URL
 #   C8S_MEASUREMENTS_CONFIG complete endpoint image/operator policy (preferred)

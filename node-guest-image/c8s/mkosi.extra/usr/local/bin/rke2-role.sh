@@ -28,7 +28,7 @@ device=$(blkid -L opkeydata) || {
 }
 timeout 10 mount -t iso9660 -o ro,nodev,nosuid,noexec "$device" "$mount_dir"
 mounted=1
-# c8s authenticates the exact bytes before strict parsing and writes the
+# C8s authenticates the exact bytes before strict parsing and writes the
 # selected role marker only after every launch output has been staged.
 c8s launch-config stage --platform="$CRED_PLATFORM" \
     --config="$mount_dir/launch.yaml" --signature="$mount_dir/launch.yaml.sig"

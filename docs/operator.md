@@ -1,6 +1,6 @@
-# c8s operator and Helm chart
+# C8s operator and Helm chart
 
-The c8s operator installs the Kubernetes-facing c8s components. It hosts
+The C8s operator installs the Kubernetes-facing C8s components. It hosts
 status-mirror controllers, serves the pod-injection admission webhook, and
 ships an embedded Helm chart for installing the operator, CRDs, RBAC, webhook
 resources, attestation-api DaemonSet, and CDS (the Certificate
@@ -24,7 +24,7 @@ The operator does not inject the RA-TLS mesh sidecar. Pod-to-pod mTLS remains
 the responsibility of node-level `ratls-mesh`, deployed as a DaemonSet by
 the chart or as systemd services by the measured node image. The chart-managed
 mesh excludes `kube-system` and its own release namespace as local traffic
-sources, so c8s control-plane agents (and, on kind/kubeadm-style clusters where
+sources, so C8s control-plane agents (and, on kind/kubeadm-style clusters where
 the API server runs as a `kube-system` pod, in-cluster webhook callers) do not
 get captured by the pod-to-pod mesh path. The exclusion is one-sided: it
 removes those pods as PREROUTING sources but keeps their IPs in the destination
@@ -49,7 +49,7 @@ Only mesh-delivered traffic and node-local host processes
 
 ## Ownership model
 
-Installing the c8s chart is a platform-admin operation, not a fully
+Installing the C8s chart is a platform-admin operation, not a fully
 self-service application-team workflow.
 
 The install creates or updates cluster-scoped resources such as CRDs, RBAC,
@@ -222,7 +222,7 @@ CDS clients require the authorized server despite identical software images.
 The schema belongs to attestation-go's `refvalues` package: `approver_key`
 maps to `remote.ImagePin.Anchor`. `remote.EnforceImages` checks the image and
 calls `runtimemeasure.VerifyBinding` for that same pin, so an image cannot
-borrow another entry's authorized key. c8s passes these complete pins through
+borrow another entry's authorized key. C8s passes these complete pins through
 `remote.Policy.Images`; legacy flags that cannot carry anchors are refused
 where they would weaken enforcement.
 Boot preparation copies the public identity policies to `/run/c8s-node`;
@@ -236,7 +236,7 @@ policy directory.
 Join tokens remain secret RKE2 enrollment credentials. The RA-TLS mesh protects
 selected pod traffic; it does not wrap the RKE2 supervisor on port `9345` or the
 Kubernetes API on port `6443`. A token holder with network access can attempt
-RKE2 enrollment without a c8s RA-TLS identity, including from a non-confidential
+RKE2 enrollment without a C8s RA-TLS identity, including from a non-confidential
 pod. The server token carries server-enrollment authority; the separate agent
 token only permits agent enrollment. Neither token supplies the launch signing
 key or satisfies the image-and-role-key attestation policy. See
@@ -313,7 +313,7 @@ The ref syntax is `<cw-id>=<namespace>/<kind>/<name>[:<port>]`, where kind is an
 resource exposing a pod template at `spec.template` (`deployment`,
 `statefulset`, `daemonset`, or an operator CRD such as `<kind>.<group>`); the
 optional `:<port>` is the router upstream port, needed on the ref `--upstream`
-selects. After Helm reports the c8s release ready, the CLI patches each workload
+selects. After Helm reports the C8s release ready, the CLI patches each workload
 pod template with `confidential.ai/cw: <id>`. Those rollouts go through the
 webhook, and the workload-service reconciler creates the `c8s-<id>` headless
 Services. `--upstream vllm-router` points router at
@@ -349,7 +349,7 @@ so install-time `-f` overrides are honored. `--host-sweep=false` skips this clea
 The sweep removes:
 
 - the NRI image-policy containerd registration (drop-in or managed config
-  block), binary, config, and state directories. It skips these on the c8s
+  block), binary, config, and state directories. It skips these on the C8s
   node image, detected via the baked-only `nri-node-ip.service`: that stack is
   the image's to keep, not the release's to delete;
 - the `RATLS-MESH` chains and base-chain jumps in `iptables` and `ip6tables`,
@@ -359,7 +359,7 @@ The sweep removes:
 - on RKE2, the sentinel-marked containerd template written by containerd-prep
   and its lock file, skipped on the baked node image by the same rule.
 
-The swept paths are cluster-global, so running two c8s releases in one
+The swept paths are cluster-global, so running two C8s releases in one
 cluster is unsupported: uninstalling either strips the other's host state.
 
 Guardrails:
@@ -645,7 +645,7 @@ optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
 `remote.EnforceImages` checks the image and calls `runtimemeasure.VerifyBinding`
 for that same entry. An image cannot borrow another entry's authorized key.
-c8s passes these entries through `remote.Policy.Images` to its attestation
+C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
 entry, including its launch-key binding when present.
 
@@ -782,7 +782,7 @@ issued.
 `system:masters` is deliberately avoided because it bypasses authorization
 and admission webhooks and cannot be revoked through RBAC. The default group
 is only meaningful where such a binding exists: on a cluster that is not the
-c8s node image, create an equivalent `ClusterRoleBinding` or pass `--cert-org`
+C8s node image, create an equivalent `ClusterRoleBinding` or pass `--cert-org`
 for a group that cluster already authorizes.
 
 #### Bounded operator
@@ -867,7 +867,7 @@ id that names the operator-managed headless Service gets that Service's
 in-cluster DNS name (`c8s-<id>.<namespace>.svc`, which CDS's default
 `--dns-san-pattern` signs); an id that cannot name a Service (dots, length
 over 59) is used as the SAN verbatim and must match a CDS pattern itself.
-A workload adopted into c8s whose clients already dial an existing Service
+A workload adopted into C8s whose clients already dial an existing Service
 name can set `confidential.ai/c8s-san` to that name instead; the annotation
 value is used as the requested SAN verbatim and must match a CDS pattern.
 Injection does not require a CR lookup.
@@ -918,10 +918,10 @@ gates the application containers on the initial cert being written: it blocks
 until the cert exists, then exits, and normal init-completion ordering holds the
 workload until then — fail-closed. Renewals rewrite the file on disk;
 application-level TLS reload remains the workload's responsibility unless the
-pod opts into one of the c8s reload annotations.
+pod opts into one of the C8s reload annotations.
 
 Platform-owned workloads can specialize the same webhook behavior with typed
-c8s annotations for the cert volume, cert/key filenames, renewal interval,
+C8s annotations for the cert volume, cert/key filenames, renewal interval,
 nginx reload, Secret watch paths, discovery output, and get-cert UID/GID.
 (router, living in the webhook-excluded release namespace, renders equivalent
 get-cert containers directly from the chart's templates instead.) The
@@ -1042,7 +1042,7 @@ c8s install --namespace c8s-system \
 ```
 
 Without `--upstream`, `router.upstream.address` is used as-is: an upstream that
-is not a c8s-managed workload (an existing Service, an external address). The
+is not a C8s-managed workload (an existing Service, an external address). The
 chart cannot verify a manual address resolves to pod IPs the mesh intercepts,
 so it must be `protocol: https` with `tls.verify: true`: an upstream that
 terminates and authenticates TLS itself (app-TLS). There is no

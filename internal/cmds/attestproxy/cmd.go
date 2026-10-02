@@ -1,7 +1,7 @@
 // Package attestproxy implements the node-local front door to the
 // attestation-api. The attestation-api binds pod loopback only; this proxy
 // serves its API on a hostPath Unix socket so only on-node consumers (the
-// host NRI plugin, c8s node components, and pods with the socket directory
+// host NRI plugin, C8s node components, and pods with the socket directory
 // mounted in) can request evidence, while nothing routable — another pod, or
 // an off-node host — can reach /attest. Reachability is not authorization:
 // the socket must stay safe against any on-node caller. Socket ownership and

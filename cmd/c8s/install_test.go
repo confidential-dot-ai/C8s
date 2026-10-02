@@ -1258,10 +1258,10 @@ func TestBuildDigestArgsExplainsTagCouplingOnMissingTag(t *testing.T) {
 	}
 }
 
-// A component released on another repository's cadence has no image at a c8s
+// A component released on another repository's cadence has no image at a C8s
 // release tag, so its chart-declared pinnedDigest must be used verbatim and the
 // resolver must never be asked for it — asking is what aborted the whole
-// install, since a c8s tag can only 404 against that repository.
+// install, since a C8s tag can only 404 against that repository.
 func TestBuildDigestArgsUsesPinnedDigestWithoutResolving(t *testing.T) {
 	const pinned = "sha256:00000000000000000000000000000000000000000000000000000000000000ff"
 	comps := []c8sComponent{
@@ -1358,7 +1358,7 @@ func TestChartComponentsFromValues(t *testing.T) {
 		t.Errorf("chart components = %v, want %v", got, want)
 	}
 
-	// Exactly the components released outside the c8s train may carry a
+	// Exactly the components released outside the C8s train may carry a
 	// pinnedDigest. Pinning one that does publish at the install tag would
 	// freeze it there silently, and unpinning attestation-api puts back the
 	// abort that made `--image-tag <release>` uninstallable.

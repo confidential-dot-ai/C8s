@@ -20,7 +20,7 @@ const (
 // NewCmd builds the `cred-release` subcommand: the in-guest service that
 // issues an operator a short-lived kube client cert, gated on possession of
 // the operator key bound into the launch identity (TDX RTMR[3] / SNP
-// HOSTDATA). Baked as a systemd unit in the c8s node image; not run by hand
+// HOSTDATA). Baked as a systemd unit in the C8s node image; not run by hand
 // in normal operation.
 func NewCmd() *cobra.Command {
 	var cfg Config

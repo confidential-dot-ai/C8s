@@ -38,7 +38,7 @@ run_test_case() {
         *) fail "unknown test case: $test_case" ;;
     esac
     cp -a /image-template /image
-    # Package-created base dirs and sync-created c8s paths. The invariant
+    # Package-created base dirs and sync-created C8s paths. The invariant
     # gate separately checks mkosi.sync creates CNI/NRI directories; do not
     # derive these from state.d, which would hide missing build-time dirs.
     for directory in var home root tmp run etc \

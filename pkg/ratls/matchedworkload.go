@@ -198,7 +198,7 @@ func CheckWorkloadPin(cert *x509.Certificate, expectedName string) error {
 //
 // This means it only works on a ServerConfig.ClientCAs listener, the one branch
 // that lets crypto/tls build the chain itself. It returns an error on every
-// other c8s connection today: a ClientPolicy listener verifies through
+// other C8s connection today: a ClientPolicy listener verifies through
 // dualVerifyPeerCallback (which deliberately also admits a self-signed RA-TLS
 // peer) and every mesh client sets InsecureSkipVerify, and neither populates
 // VerifiedChains.

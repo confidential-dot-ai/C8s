@@ -1,4 +1,4 @@
-// Package httputil holds small HTTP-handler utilities shared across c8s
+// Package httputil holds small HTTP-handler utilities shared across C8s
 // internal packages.
 package httputil
 

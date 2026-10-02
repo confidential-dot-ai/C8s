@@ -80,7 +80,7 @@ records the RKE2 version it came from, and the invariants gate compares that to
 
 ## Writing a component that runs on such a node
 
-A c8s-owned exec probe or lifecycle exec hook cannot pass on a locked node, so
+A C8s-owned exec probe or lifecycle exec hook cannot pass on a locked node, so
 the chart renders none outside the kata templates and
 `TestChartRendersNoExecProbesOutsideKata` keeps it that way. Use, in order of
 preference:

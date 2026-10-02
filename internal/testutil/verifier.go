@@ -1,4 +1,4 @@
-// Package testutil provides shared helpers for c8s tests.
+// Package testutil provides shared helpers for C8s tests.
 package testutil
 
 import (

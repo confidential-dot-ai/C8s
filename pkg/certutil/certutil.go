@@ -283,7 +283,7 @@ func NewCATemplate(serial *big.Int, commonName string, notAfter time.Time) *x509
 }
 
 // NewLeafTemplate returns the canonical x509 leaf-certificate template used
-// by the c8s issuers: digital-signature key usage and Server+Client
+// by the C8s issuers: digital-signature key usage and Server+Client
 // extended key usage, anchored at time.Now() with the given TTL. Callers
 // populate DNSNames / IPAddresses on the returned template themselves so
 // SAN policy stays at the call site.

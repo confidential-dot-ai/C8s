@@ -118,13 +118,13 @@ func RequireSidecarSocketDir() error {
 }
 
 // InventorySocketGID owns the inventory's Unix socket. The inventory runs as root, but
-// get-cert connects as the non-root c8s UID/GID over a read-only mount; a
+// get-cert connects as the non-root C8s UID/GID over a read-only mount; a
 // root:root 0660 socket is unreachable by that caller (connect needs write
 // permission on the socket node), so the connect would fail closed and issuance
 // would hang. The inventory chgrps the socket to this group and the webhook
 // injects it as a supplemental group on the get-cert sidecar
 // (pod_mutator.go, ensureSupplementalGroup) — together they let the non-root
-// caller connect. Reuses the c8s distroless nonroot GID, so a default get-cert
+// caller connect. Reuses the C8s distroless nonroot GID, so a default get-cert
 // (RunAsGroup 65532) also reaches it via its primary group. Connecting to a
 // socket is exempt from the read-only-mount write block (sockets are not
 // regular files), so the RO mount still prevents a socket-file swap without

@@ -1,7 +1,7 @@
 # volumed teardown — run as a privileged pre-delete hook on every volumed node.
 #
 # Removes the device-mapper stack volumed opened for the pods on this node:
-# unmount each c8s volume, then close the dm-verity and dm-crypt mappings
+# unmount each C8s volume, then close the dm-verity and dm-crypt mappings
 # behind it. The mappings keep the backing disk open, so a volume they cover
 # cannot be reopened while they are there. Anything this hook cannot close is
 # swept by volumed the next time it starts.
@@ -26,7 +26,7 @@ root="${C8S_TEARDOWN_ROOT:-}"
 
 echo "==> volumed teardown starting"
 
-# 1. Unmount what the c8s devices back. /proc/mounts names the source device,
+# 1. Unmount what the C8s devices back. /proc/mounts names the source device,
 #    which holds even after kubelet has renamed the pod directory. Collect the
 #    targets before unmounting any: /proc/mounts is generated as it is read, so
 #    unmounting mid-scan would shift the rest of the file.

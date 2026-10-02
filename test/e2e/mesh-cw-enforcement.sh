@@ -10,7 +10,7 @@
 # connection counter is the wrap signal; no packet capture (tcpdump on CVM
 # node images is flaky and adds nothing the counters don't prove).
 #
-# Needs: kubectl pointed at a cluster with the c8s chart installed and a
+# Needs: kubectl pointed at a cluster with the C8s chart installed and a
 # Running confidential workload (a pod labeled confidential.ai/cw).
 #
 # Env:

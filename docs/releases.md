@@ -1,6 +1,6 @@
 # Releases
 
-c8s is one versioned release unit. A root `vX.Y.Z` tag versions the CLI,
+C8s is one versioned release unit. A root `vX.Y.Z` tag versions the CLI,
 component images, measured node image, and Helm chart
 together. Maintainers do not calculate or push release tags manually.
 

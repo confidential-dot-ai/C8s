@@ -25,7 +25,7 @@ jobs:
   # scratch-disk wiring and AppArmor checks guarded by node-guest-image-lint.
   # Preserve the separate staged and automatic-only exact-image wrappers
   # when re-vendoring that shared lifecycle. snp-metal-e2e.yml is
-  # c8s-owned; both metal lanes require signed launch configuration.
+  # C8s-owned; both metal lanes require signed launch configuration.
   #
   # NOT a `matrix:`. A reusable-workflow `uses:` takes no expressions, so a
   # matrix would need an if-gated dispatcher, and because every row instantiates

@@ -234,7 +234,7 @@ choice — is the exploitable one.
 `GET /digests/{sandboxID}` returns the **sorted, deduplicated** image digests of
 every container the inventory currently tracks in that sandbox — user init
 containers included (NRI's `CreateContainer` fires for init and regular
-containers alike), and the c8s-injected `c8s-cert` sidecar included too. The
+containers alike), and the C8s-injected `c8s-cert` sidecar included too. The
 pause/sandbox container is not in the answer: it never reaches the plugin's
 `CreateContainer` hook. Unknown sandbox ⇒
 404; a known sandbox with no containers ⇒ `{"digests": []}`.
@@ -249,7 +249,7 @@ pause/sandbox container is not in the answer: it never reaches the plugin's
   containers it *can* describe — a subset passed off as the whole set — it fails
   the whole request, which CDS treats as fail-closed.
 - **CDS checks membership, not composition.** Every image the inventory reports
-  must be allowlisted as some workload container. Injected c8s containers are
+  must be allowlisted as some workload container. Injected C8s containers are
   seeded as their own entries, so they pass by digest, not by name. CDS does not
   require the set to match a whole workload entry — see Corner 4.
 
@@ -509,7 +509,7 @@ socket-file swap — a PodSecurity / filesystem-permission item, not attestation
 A natural challenge: the socket is a filesystem object on the node — what stops
 a malicious host from planting its own and answering for the inventory?
 
-**First, who actually creates it.** Not the c8s installer. The nri-image-policy
+**First, who actually creates it.** Not the C8s installer. The nri-image-policy
 installer DaemonSet only lays down three things on the node: the plugin
 *binary* (into `/opt/nri/plugins`), a *containerd drop-in* that registers it as
 a pre-installed NRI plugin, and the *runtime directory*
@@ -570,10 +570,10 @@ see Enablement.
 
 On the hosted lanes (gke/aks) the provider owns the platform pods in
 `kube-system` — kube-proxy, CoreDNS, the CNI, CSI drivers — and their images are
-not on the c8s allowlist. Nothing baked into the node measures them either;
+not on the C8s allowlist. Nothing baked into the node measures them either;
 unlike node-CVM, whose image carries the RKE2 system floor, these nodes run the
 provider's unmeasured OS and containerd. So admission there needs a source of
-truth for "the platform images this node runs" that the c8s allowlist does not
+truth for "the platform images this node runs" that the C8s allowlist does not
 supply.
 
 `policy.exempt_namespaces` supplies it **without** re-introducing the

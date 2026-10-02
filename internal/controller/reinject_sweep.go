@@ -23,7 +23,7 @@ var systemExcludedNamespaces = []string{
 	"kube-node-lease",
 }
 
-// reinjectSweep deletes pods that opted in to c8s injection
+// reinjectSweep deletes pods that opted in to C8s injection
 // (confidential.ai/cw) but were admitted while the webhook was unavailable, so
 // they never received the get-cert containers. It runs once, on operator
 // startup, after the webhook PKI is patched: a pod created during the gap

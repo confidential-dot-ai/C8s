@@ -138,7 +138,7 @@ func TestInventoryFetchFailureRefuses(t *testing.T) {
 	}
 }
 
-// A sandbox whose only containers are c8s's own has nothing to match an entry
+// A sandbox whose only containers are C8s's own has nothing to match an entry
 // against, so it is refused rather than matched vacuously.
 func TestOnlyInjectedContainersRefuses(t *testing.T) {
 	hn := newHarness(t)

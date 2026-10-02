@@ -1,5 +1,5 @@
 // Package webhook contains the mutating admission webhook that injects
-// the c8s get-cert containers into pods opted in by annotation.
+// the C8s get-cert containers into pods opted in by annotation.
 //
 // The webhook reads one annotation on the pod (not its owning workload,
 // not any CR — pod metadata only):
@@ -41,7 +41,7 @@ import (
 
 // Pod annotations that drive sidecar injection.
 const (
-	// AnnotationWorkload opts a pod in to c8s injection. Required.
+	// AnnotationWorkload opts a pod in to C8s injection. Required.
 	AnnotationWorkload = "confidential.ai/cw"
 
 	// AnnotationInjected is stamped on pods after a successful mutation
@@ -55,7 +55,7 @@ const (
 	LabelWorkload = AnnotationWorkload
 
 	// AnnotationSAN overrides the DNS SAN get-cert requests. For workloads
-	// adopted into c8s whose clients already dial an existing Service name;
+	// adopted into C8s whose clients already dial an existing Service name;
 	// without it the SAN is derived from the cw id (see workloadSAN).
 	AnnotationSAN = "confidential.ai/c8s-san"
 
@@ -99,7 +99,7 @@ const (
 var errInvalidInjectionAnnotation = errors.New("invalid c8s injection annotation")
 
 // defaultCertFSGroup is the shared group used for the injected EmptyDir
-// when the pod does not already specify an fsGroup. The c8s image runs as
+// when the pod does not already specify an fsGroup. The C8s image runs as
 // the distroless nonroot UID/GID 65532, and get-cert creates tls.key 0640 in the setgid certificate volume.
 const defaultCertFSGroup int64 = 65532
 
@@ -1083,7 +1083,7 @@ func secretsVolume() corev1.Volume {
 }
 
 // rejectEphemeralReservedMounts denies an ephemeral container that mounts a
-// volume holding c8s material — the released secrets, or the pod's private key.
+// volume holding C8s material — the released secrets, or the pod's private key.
 //
 // The release check cannot help here: it gates the fetch, and by the time an
 // ephemeral container is attached the file already exists. Without this,
@@ -1112,7 +1112,7 @@ func rejectEphemeralReservedMounts(pod *corev1.Pod) error {
 	return nil
 }
 
-// reservedVolumeNames is the set of volumes holding c8s material on this pod:
+// reservedVolumeNames is the set of volumes holding C8s material on this pod:
 // what the injected sidecars mount, plus the cert volume the annotation names.
 //
 // The sidecars' own mounts are what makes this sound. AnnotationCertVolume
@@ -1372,7 +1372,7 @@ func ensureSupplementalGroup(pod *corev1.Pod, gid int64) {
 	pod.Spec.SecurityContext.SupplementalGroups = append(pod.Spec.SecurityContext.SupplementalGroups, gid)
 }
 
-// injectInitContainers prepends the c8s-managed init containers, in the given
+// injectInitContainers prepends the C8s-managed init containers, in the given
 // order, and drops any existing init container that collides with an injected
 // name. Injection is therefore idempotent (a reinvocation rebuilds the same
 // list) and a pre-declared c8s-cert/c8s-cert-wait cannot shed or shadow the
@@ -1395,7 +1395,7 @@ func injectInitContainers(existing []corev1.Container, injected ...corev1.Contai
 }
 
 // rejectReservedCertContainer denies an opted-in pod that parks a container
-// under a name c8s injects, outside the init-container slot the webhook
+// under a name C8s injects, outside the init-container slot the webhook
 // rebuilds. Such a container would survive injection and collide with the
 // injected init sidecar (names are unique across all three lists), so it can
 // only be an attempt to shed or impersonate it; init-container collisions are
@@ -1448,7 +1448,7 @@ func rejectReservedCertVolume(pod *corev1.Pod, volName string) error {
 // the sidecar-managed leaf key.
 //
 // The fetcher's own read-write mount is unaffected: mountAll runs against the
-// pod's containers before the c8s sidecars are appended, and injectInitContainers
+// pod's containers before the C8s sidecars are appended, and injectInitContainers
 // rebuilds them from scratch afterwards, so a coerced stale copy is discarded on
 // a webhook reinvocation.
 func mountAll(pod *corev1.Pod, mount corev1.VolumeMount) {

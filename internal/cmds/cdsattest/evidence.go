@@ -58,7 +58,7 @@ func (p LiveEvidenceProvider) Evidence(ctx context.Context, reportData []byte) (
 // recorded report_data is fixed, so it cannot bind a live session key+nonce —
 // clients must run with freshness enforcement downgraded. It exists so the LB
 // can serve the full contract (and interoperate with the JS client) without a
-// TEE, mirroring c8s's test/mock-cds.
+// TEE, mirroring C8s's test/mock-cds.
 type FixtureEvidenceProvider struct {
 	Raw        json.RawMessage
 	Platform   string

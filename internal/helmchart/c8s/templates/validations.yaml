@@ -54,7 +54,7 @@
 {{- fail "VALIDATION_ERROR kind=cds_image_digest: nriImagePolicy.enabled requires cds.image.digest to be set. The CDS digest is pinned in every plugin's base allowlist so image policy admits CDS on its own node. A floating tag cannot be admitted by digest. Pass --resolve-digests to c8s install, or set cds.image.digest via -f." -}}
 {{- end -}}
 {{- /*
-  In fail-closed mode with deriveComponents off, every enabled c8s component
+  In fail-closed mode with deriveComponents off, every enabled C8s component
   that is digest-pinned must be admitted under any command and args by a
   bootstrapAllowlist.workloads entry — otherwise the NRI plugin would deny that
   component's pod on its own node. cds.image is exempt: it is always in

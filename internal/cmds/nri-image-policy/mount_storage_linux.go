@@ -80,7 +80,7 @@ func (i linuxStorageInspector) inspect(source string, seen map[string]bool) allo
 	return allowlist.MountUnknown
 }
 
-// isTrustedEncryptedDevice accepts c8s volume mappings and the measured initrd
+// isTrustedEncryptedDevice accepts C8s volume mappings and the measured initrd
 // scratch contract. A host-controlled serial by itself is never sufficient.
 func (i linuxStorageInspector) isTrustedEncryptedDevice(device string, seen map[string]bool) bool {
 	real, err := filepath.EvalSymlinks(device)
