@@ -327,6 +327,12 @@ data:
                 # CDS rollout state and checks the upstream's stamp.
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.forwardPort }};
                 proxy_set_header X-C8s-Connection-Time $connection_time;
+                # The sidecar answers 590 when the client must reconnect and
+                # attest again; @c8s_reconnect turns it into a 503 and closes
+                # the client connection (nginx keeps it open on an upstream
+                # 503, even with Connection: close).
+                proxy_intercept_errors on;
+                error_page 590 = @c8s_reconnect;
                 {{- else }}
                 {{- if eq .Values.router.upstream.protocol "https" }}
                 {{- include "router.proxySSLDirectives" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "tlsMountPath" .Values.router.tlsMountPath) | nindent 16 }}
@@ -377,6 +383,17 @@ data:
                 proxy_buffering off;
                 proxy_http_version 1.1;
             }
+            {{- if $pinnedAllowlist }}
+
+            location @c8s_reconnect {
+                {{- if default false .Values.router.cors.enabled }}
+                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
+                {{- end }}
+                keepalive_timeout 0;
+                default_type text/plain;
+                return 503 "the allowlist bound changed: open a new connection and attest again\n";
+            }
+            {{- end }}
             {{- end }}
 
             location /healthz {

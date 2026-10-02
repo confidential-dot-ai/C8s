@@ -233,8 +233,8 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 	req.Header.Set(connectionTimeHeader, "0.001")
 	w := httptest.NewRecorder()
 	forwarder.ServeHTTP(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("request before the first state read = %d, want 503", w.Code)
+	if w.Code != reconnectStatus {
+		t.Fatalf("request before the first state read = %d, want %d", w.Code, reconnectStatus)
 	}
 	fence.lease = 30 * time.Second
 	fence.seenAt = time.Now()
@@ -257,7 +257,7 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 		want           int
 	}{
 		{"connection opened after the last widening", "1.500", http.StatusOK},
-		{"connection older than the last widening", "20.000", http.StatusServiceUnavailable},
+		{"connection older than the last widening", "20.000", reconnectStatus},
 		{"no connection time", "", http.StatusForbidden},
 		{"unrepresentable connection time", "1e20", http.StatusForbidden},
 		{"NaN connection time", "NaN", http.StatusForbidden},
@@ -267,8 +267,8 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 		}
 	}
 	fence.seenAt = time.Now().Add(-time.Minute)
-	if got := status("1.500"); got != http.StatusServiceUnavailable {
-		t.Errorf("stale state: status %d, want 503", got)
+	if got := status("1.500"); got != reconnectStatus {
+		t.Errorf("stale state: status %d, want %d", got, reconnectStatus)
 	}
 }
 
