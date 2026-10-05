@@ -99,12 +99,27 @@ make test-integration-cluster
 ```
 
 Needs docker (or podman with `KIND_EXPERIMENTAL_PROVIDER=podman`), kind,
-kubectl, helm, go, openssl, curl, python3. The kind node image is pinned by
-digest in run.sh; bump it with the kind release. CI installs kind itself
-(`.github/workflows/ci.yml`, pinned binary sha256). Custom node images must
-provide NRI `ValidateContainerAdjustment` support (the pinned image uses
+kubectl, helm, go, OpenSSL (macOS's LibreSSL lacks `x509 -ext`), curl, and
+python3 with PyYAML. It runs on Linux and macOS hosts: the component images
+get a Linux build of c8s, the install a host build. The kind node image is
+pinned by digest in run.sh; bump it with the kind release. CI installs kind
+itself (`.github/workflows/ci.yml`, pinned binary sha256). Custom node images
+must provide NRI `ValidateContainerAdjustment` support (the pinned image uses
 containerd 2.3.4 / NRI 0.12.0); older runtimes reject the env-enforcing plugin
 at registration.
+
+### Keeping the cluster for another driver
+
+```sh
+C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1 C8S_IT_WORKDIR=/tmp/c8s-it ./test/integration/cluster/run.sh
+```
+
+`C8S_IT_SETUP_ONLY=1` stops once the stack is installed, before the checks;
+`C8S_IT_KEEP=1` leaves the kind cluster and the work directory (operator key,
+`optoken`, floor scan) in place. The run writes `$C8S_IT_WORKDIR/env`; source
+`test/integration/cluster/lib.sh` and then that file to drive the cluster
+with the harness's own helpers (`cds_write`, `node_exec`, `run_pod`,
+`mesh_metric`, …). Delete it with `kind delete cluster --name c8s-it`.
 
 ### Failure notes
 
