@@ -963,6 +963,10 @@ router:
       # <meshCA.mountPath>/<meshCA.key> (and provide that ConfigMap) or another
       # path for a different upstream.
       trustedCAPath: /tls/cert.pem
+    # -- In pinned-allowlist mode, the allowlist entry name the upstream's
+    # matched-workload stamp must carry. Empty admits any entry the bound
+    # holds.
+    workload: ""
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the

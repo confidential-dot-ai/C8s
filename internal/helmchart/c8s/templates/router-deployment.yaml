@@ -238,6 +238,9 @@ spec:
             {{- if eq (include "router.pinnedAllowlist" .) "true" }}
             - --cds-state-url=http://127.0.0.1:{{ .Values.router.allowlist.proxyPort }}
             - --lb-forward-port={{ .Values.router.attest.forwardPort }}
+            {{- with .Values.router.upstream.workload }}
+            - --upstream-workload={{ . }}
+            {{- end }}
             {{- end }}
             # The identity-bound PQ flow must use the TEE-held mesh
             # credential, never the optional publicTLS Secret: report_data

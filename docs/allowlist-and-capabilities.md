@@ -615,8 +615,13 @@ Every change to `bound` (widening or narrowing) also:
 CDS activates a publication only after that lease, so fenced traffic never
 reaches a workload the client did not accept. The router forwards only to
 `router.upstream`, over https. The upstream's mesh leaf must chain to the
-mesh CA and carry a matched-workload stamp whose policy digest is in `bound`,
-so the upstream pod needs a named leaf (see
+mesh CA and carry a matched-workload stamp whose entry a policy in `bound`
+holds unchanged: either the stamped policy is in `bound`, or the router
+fetches the stamped policy from `objects/` and finds the same entry in a
+bound policy. A publication that keeps an entry therefore does not cut off
+the workloads running under it, while a changed or removed entry is refused.
+`router.upstream.workload` (`--upstream-workload`) further requires the
+stamp to name that entry. The upstream pod needs a named leaf (see
 [`getcert-workload-binding.md`](getcert-workload-binding.md)). Without one,
 every forward fails.
 

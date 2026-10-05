@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -14,9 +15,11 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
@@ -65,6 +68,12 @@ type rollout struct {
 	// expired is set once gen was cancelled because the last read went
 	// stale; the next stored state clears it.
 	expired bool
+	// workload, when set, is the only matched-workload name verifyPeer admits.
+	workload string
+	// policies caches policy documents by digest for verifyPeer. A digest
+	// names immutable bytes, so entries never go stale.
+	policiesMu sync.Mutex
+	policies   map[string]*pkgallowlist.Allowlist
 	// onChange runs, under mu, before gen is replaced. The upstream backend
 	// registers its connection reset here, so a request admitted under the new
 	// bound never reuses a connection whose peer was checked under the old one.
@@ -289,22 +298,93 @@ func covers(envelope, bound []string) bool {
 }
 
 // verifyPeer admits an upstream leaf only when its matched-workload stamp
-// names a policy in the current bound.
+// names an entry that a policy in the current bound holds unchanged. A leaf
+// stamped under a policy the bound has moved past stays acceptable while its
+// entry is unchanged, so a publication that keeps an entry does not cut off
+// the workloads running under it.
 func (r *rollout) verifyPeer(leaf *x509.Certificate) error {
 	stamp, err := ratls.MatchedWorkloadFromCert(leaf)
 	if err != nil {
 		return fmt.Errorf("upstream matched-workload stamp: %w", err)
 	}
-	if stamp == nil {
+	if stamp == nil || stamp.Name == "" {
 		return fmt.Errorf("upstream leaf carries no matched-workload stamp")
+	}
+	if r.workload != "" && stamp.Name != r.workload {
+		return fmt.Errorf("upstream is workload %q, want %q", stamp.Name, r.workload)
 	}
 	digest := "sha256:" + hex.EncodeToString(stamp.AllowlistDigest)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if !slices.Contains(r.bound, digest) {
-		return fmt.Errorf("upstream %q was admitted under policy %s, outside the bound", stamp.Name, digest)
+	bound := slices.Clone(r.bound)
+	r.mu.Unlock()
+	if slices.Contains(bound, digest) {
+		return nil
 	}
-	return nil
+	stamped, err := r.policy(digest)
+	if err != nil {
+		return fmt.Errorf("upstream %q policy: %w", stamp.Name, err)
+	}
+	entry, ok := stamped.Workloads[stamp.Name]
+	if !ok {
+		return fmt.Errorf("upstream %q is not an entry of its stamped policy %s", stamp.Name, digest)
+	}
+	for _, d := range bound {
+		p, err := r.policy(d)
+		if err != nil {
+			return fmt.Errorf("bound policy: %w", err)
+		}
+		if current, ok := p.Workloads[stamp.Name]; ok && sameEntry(entry, current) {
+			return nil
+		}
+	}
+	return fmt.Errorf("upstream %q was admitted under policy %s, and no policy in the bound keeps its entry", stamp.Name, digest)
+}
+
+func sameEntry(a, b pkgallowlist.Workload) bool {
+	aj, err1 := json.Marshal(a)
+	bj, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && bytes.Equal(aj, bj)
+}
+
+// maxCachedPolicies bounds the policy cache; a bound holds a few digests.
+const maxCachedPolicies = 64
+
+// policy returns the policy document stored under digest, fetched through the
+// allowlist proxy and checked against the digest.
+func (r *rollout) policy(digest string) (*pkgallowlist.Allowlist, error) {
+	r.policiesMu.Lock()
+	p, ok := r.policies[digest]
+	r.policiesMu.Unlock()
+	if ok {
+		return p, nil
+	}
+	hexDigest, ok := strings.CutPrefix(digest, "sha256:")
+	if !ok {
+		return nil, fmt.Errorf("policy digest %q is not sha256", digest)
+	}
+	resp, err := r.client.Get(r.url + "/.well-known/c8s/objects/sha256/" + hexDigest)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", digest, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil || resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: status %d: %v", digest, resp.StatusCode, err)
+	}
+	if sum := sha256.Sum256(body); "sha256:"+hex.EncodeToString(sum[:]) != digest {
+		return nil, fmt.Errorf("fetched %s does not match its digest", digest)
+	}
+	p = new(pkgallowlist.Allowlist)
+	if err := json.Unmarshal(body, p); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", digest, err)
+	}
+	r.policiesMu.Lock()
+	defer r.policiesMu.Unlock()
+	if r.policies == nil || len(r.policies) >= maxCachedPolicies {
+		r.policies = make(map[string]*pkgallowlist.Allowlist)
+	}
+	r.policies[digest] = p
+	return p, nil
 }
 
 // currentHead is the journal head of the last stored state.
