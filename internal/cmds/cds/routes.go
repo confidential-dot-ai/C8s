@@ -68,6 +68,7 @@ func newRouter(deps dependencies) http.Handler {
 
 	store := deps.AllowlistHandler.Store
 	r.Get(wellKnown+"/objects/sha256/{hex}", handleObject(store))
+	r.Get(wellKnown+"/objects/sha256/{hex}/signature", handleSignature(store))
 	r.Get(wellKnown+"/allowlist/latest", handleLatest(store))
 	// Unmetered like GET /allowlist: routers read the state every second and
 	// once per attest-pq, which a per-node budget shared with /attest cannot

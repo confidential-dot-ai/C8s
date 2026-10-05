@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS journal_event (
 	position INTEGER PRIMARY KEY,
 	digest   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS journal_signature (
+	digest TEXT PRIMARY KEY,
+	token  TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS journal_pending (
 	target         TEXT NOT NULL,
 	published_ms   INTEGER NOT NULL
@@ -371,6 +375,39 @@ func objectTx(tx *sql.Tx, digest string) ([]byte, error) {
 		return nil, fmt.Errorf("journal object %s: %w", digest, err)
 	}
 	return b, nil
+}
+
+// SignPolicy records token, the operator write token that authorized a
+// whole-document write of body, as the signature of the journal object body
+// names. It records nothing when body is not the exact bytes of a journaled
+// policy, as for a body that is not canonical.
+func (s *Store) SignPolicy(body []byte, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	digest := objectDigest(body)
+	var stored []byte
+	err := s.db.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !bytes.Equal(stored, body)) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec("INSERT OR REPLACE INTO journal_signature (digest, token) VALUES (?, ?)", digest, token)
+	return err
+}
+
+// Signature returns the operator write token recorded for digest, or false
+// when the policy is unsigned.
+func (s *Store) Signature(digest string) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var token string
+	err := s.db.QueryRow("SELECT token FROM journal_signature WHERE digest = ?", digest).Scan(&token)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return token, err == nil, err
 }
 
 // Object returns the canonical bytes stored under digest ("sha256:<hex>"),

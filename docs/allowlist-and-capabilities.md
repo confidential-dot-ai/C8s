@@ -683,6 +683,25 @@ that its SHA-256 matches, review it, and add it as another `--pin-policy`.
 The failure starts at publication, one lease before CDS enforces the new
 policy, which leaves that lease to review it.
 
+#### Operator-signed allowlists
+
+To accept any policy the operator signed instead of pinning digests, run:
+
+```sh
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --trust-operator ROUTER_URL
+```
+
+Every policy in the attested bound must carry an operator signature: the
+write token of a `PUT /allowlist` whose body is that policy's exact canonical
+bytes. `c8s allowlist upload` sends canonical bytes, so its writes are
+signed, and CDS serves the token at
+`/.well-known/c8s/objects/sha256/<hex>/signature`. A per-workload write
+(`c8s allowlist add`, `remove`) leaves its policy unsigned: re-upload the
+whole document to sign it. The operator key set is `--operator-keys` when
+given, or else the set the router serves at `/.well-known/c8s/operator-keys`;
+either way its hash must equal the attested `operator_keys`. Verification
+fails with `policy_not_signed` or `operator_keys_mismatch` otherwise.
+
 #### Immutable allowlist
 
 With `cds.allowlistImmutable: true` (`--allowlist-immutable`), CDS refuses

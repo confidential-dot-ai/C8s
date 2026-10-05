@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -79,6 +80,13 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	if err := h.Store.ReplaceAll(al); err != nil {
 		writeError(w, err)
 		return
+	}
+	// The token that authorized a canonical whole document is the operator's
+	// signature over that policy (docs/allowlist-and-capabilities.md).
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		if err := h.Store.SignPolicy(body, token); err != nil {
+			slog.Error("record the operator signature of the allowlist", "error", err)
+		}
 	}
 
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))

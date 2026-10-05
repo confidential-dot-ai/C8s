@@ -306,3 +306,64 @@ func TestJournalDrain(t *testing.T) {
 		t.Fatalf("bound after a narrowing over a drained bound = %v, want 2 entries", st.Bound)
 	}
 }
+
+// A canonical whole-document write records its token as the policy's
+// signature; a non-canonical body or a per-workload write records none.
+func TestJournalSignsCanonicalReplace(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
+		t.Fatal(err)
+	}
+	h := Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
+	put := func(body, token string) {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader(body))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.HandleReplaceAll(w, r)
+		if w.Code != http.StatusNoContent {
+			t.Fatalf("PUT /allowlist = %d: %s", w.Code, w.Body)
+		}
+	}
+	doc := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
+		"a": oneContainerWorkload(mustParseDigest(t, digestA)),
+	}}
+	raw, err := doc.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// ParseJSON fills the defaults the store keeps, as the CLI's loaders do.
+	parsed, err := pkgallowlist.ParseJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := parsed.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	put(string(canonical), "signed")
+	digest := objectDigest(canonical)
+	if token, ok, err := store.Signature(digest); err != nil || !ok || token != "signed" {
+		t.Fatalf("Signature(%s) = %q, %v, %v; want the write token", digest, token, ok, err)
+	}
+
+	put(" "+string(canonical), "padded")
+	if token, _, _ := store.Signature(digest); token != "signed" {
+		t.Fatalf("a non-canonical body replaced the signature with %q", token)
+	}
+
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := store.Signature(st.Policy); ok {
+		t.Fatal("a per-workload write left its policy signed")
+	}
+}

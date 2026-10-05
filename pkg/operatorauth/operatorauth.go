@@ -141,31 +141,40 @@ type Verifier struct {
 // token signed by one of the pinned keys. Any failure returns a non-nil error
 // and the caller must reject the mutation.
 func (v Verifier) Authorize(r *http.Request, body []byte) error {
-	if len(v.Keys) == 0 {
-		return fmt.Errorf("no operator keys configured")
-	}
 	tokenStr, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || tokenStr == "" {
 		return fmt.Errorf("missing operator bearer token")
+	}
+	return verifyToken(v.Keys, tokenStr, r.Method, r.URL.Path, body,
+		jwt.WithLeeway(v.ClockSkew), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
+}
+
+// VerifyStored checks a token that authorized a past request: its signature
+// under one of keys, and its method, path and body binding. It skips the
+// time checks, since a stored token is always expired by the time it is
+// read; the server that accepted the request enforced them. It still
+// requires exp−iat within MaxTokenValidity.
+func VerifyStored(keys []*ecdsa.PublicKey, token, method, path string, body []byte) error {
+	return verifyToken(keys, token, method, path, body, jwt.WithoutClaimsValidation())
+}
+
+func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []byte, opts ...jwt.ParserOption) error {
+	if len(keys) == 0 {
+		return fmt.Errorf("no operator keys configured")
 	}
 
 	// Try each pinned key. A signature made by key N fails verification under
 	// the others, so at most one key yields a valid token; once one does, its
 	// result (including the body-binding check) is authoritative.
 	var lastErr error
-	for _, pub := range v.Keys {
+	for _, pub := range keys {
 		claims := jwt.MapClaims{}
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
 				return nil, fmt.Errorf("unexpected signing method %s", t.Method.Alg())
 			}
 			return pub, nil
-		},
-			jwt.WithValidMethods(validMethods),
-			jwt.WithLeeway(v.ClockSkew),
-			jwt.WithIssuedAt(),
-			jwt.WithExpirationRequired(),
-		)
+		}, append([]jwt.ParserOption{jwt.WithValidMethods(validMethods)}, opts...)...)
 		if err != nil {
 			lastErr = err
 			continue
@@ -190,11 +199,11 @@ func (v Verifier) Authorize(r *http.Request, body []byte) error {
 		if validity := exp.Sub(iat.Time); validity <= 0 || validity > MaxTokenValidity {
 			return fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
 		}
-		if htm, _ := claims[claimHTTPMethod].(string); htm != r.Method {
-			return fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, r.Method)
+		if htm, _ := claims[claimHTTPMethod].(string); htm != method {
+			return fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, method)
 		}
-		if htu, _ := claims[claimHTTPPath].(string); htu != r.URL.Path {
-			return fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, r.URL.Path)
+		if htu, _ := claims[claimHTTPPath].(string); htu != path {
+			return fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, path)
 		}
 
 		// Body binding: the token's pbh must equal SHA-256 of the body the

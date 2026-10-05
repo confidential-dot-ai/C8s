@@ -433,3 +433,39 @@ func TestVerifyUnpinnedKeyErrorKeepsCause(t *testing.T) {
 		t.Fatalf("err = %v, want it to wrap the signature failure", err)
 	}
 }
+
+func TestVerifyStored(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	_, other := genKey(t, elliptic.P256())
+	body := []byte(`{"schema":"x"}`)
+	stale := baseClaims(body)
+	stale["iat"] = time.Now().Add(-time.Hour).Unix()
+	stale["exp"] = time.Now().Add(-59 * time.Minute).Unix()
+	token := strings.TrimPrefix(mintCustom(t, keyPEM, stale), "Bearer ")
+	wide := baseClaims(body)
+	wide["exp"] = time.Now().Add(time.Hour).Unix()
+	wideToken := strings.TrimPrefix(mintCustom(t, keyPEM, wide), "Bearer ")
+	for _, tc := range []struct {
+		name         string
+		keys         []*ecdsa.PublicKey
+		token        string
+		method, path string
+		body         []byte
+		ok           bool
+	}{
+		{"expired token, matching request", []*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist", body, true},
+		{"other key", []*ecdsa.PublicKey{other}, token, http.MethodPost, "/allowlist", body, false},
+		{"other body", []*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist", []byte("{}"), false},
+		{"other method", []*ecdsa.PublicKey{pub}, token, http.MethodPut, "/allowlist", body, false},
+		{"other path", []*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist/workloads/a", body, false},
+		{"validity over the maximum", []*ecdsa.PublicKey{pub}, wideToken, http.MethodPost, "/allowlist", body, false},
+	} {
+		if err := VerifyStored(tc.keys, tc.token, tc.method, tc.path, tc.body); (err == nil) != tc.ok {
+			t.Errorf("%s: VerifyStored = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+	r := reqWith("Bearer " + token)
+	if err := (Verifier{Keys: []*ecdsa.PublicKey{pub}}).Authorize(r, body); err == nil {
+		t.Error("Authorize accepted an expired token")
+	}
+}
