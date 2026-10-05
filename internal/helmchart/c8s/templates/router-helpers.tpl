@@ -194,8 +194,8 @@ with 0s CDS enforces a write before any router can see it.
 {{- if or (eq $lease "") (hasPrefix "-" $lease) (regexMatch "^\\+?(0+(\\.0*)?|\\.0+)(ns|us|µs|μs|ms|s|m|h)?((0+(\\.0*)?|\\.0+)(ns|us|µs|μs|ms|s|m|h))*$" $lease) -}}
 {{- fail (printf "router.attest.pinnedAllowlist requires a positive cds.allowlistActivationLease, got: %q; set a lease (e.g. 60s) or router.attest.pinnedAllowlist=false" $lease) -}}
 {{- end -}}
-{{- if regexMatch "^\\+?[0-9.]+(ns|us|µs|μs|ms)$" $lease -}}
-{{- fail (printf "cds.allowlistActivationLease must be at least 1s for router.attest.pinnedAllowlist, got: %q" $lease) -}}
+{{- if or (regexMatch "^\\+?[0-9.]+(ns|us|µs|μs|ms)$" $lease) (regexMatch "^\\+?0*[0-9](\\.[0-9]*)?s$" $lease) -}}
+{{- fail (printf "cds.allowlistActivationLease must be at least 10s for router.attest.pinnedAllowlist, got: %q" $lease) -}}
 {{- end -}}
 true
 {{- end -}}

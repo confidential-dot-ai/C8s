@@ -224,7 +224,7 @@ cds:
   # -- Delay between publishing an allowlist change and enforcing it. Routers
   # fence their attest-pq sessions on the same lease; 0s applies writes at once
   # and disables pinned-allowlist verification. A positive lease must be at
-  # least 1s. router.attest.pinnedAllowlist refuses to render with 0s.
+  # least 10s. router.attest.pinnedAllowlist refuses to render with 0s.
   allowlistActivationLease: 60s
   jwtClockSkew: 30
   certTTL: 24h

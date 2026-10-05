@@ -96,8 +96,9 @@ func TestValidateActivationLease(t *testing.T) {
 		ok    bool
 	}{
 		{0, true},
-		{time.Second, true},
+		{10 * time.Second, true},
 		{60 * time.Second, true},
+		{9 * time.Second, false},
 		{-time.Second, false},
 		{500 * time.Millisecond, false},
 	} {

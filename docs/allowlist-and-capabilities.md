@@ -564,7 +564,8 @@ it activates. `c8s allowlist` reports a staged write as applied. The router
 fences attest-pq sessions on the same lease. The default is `60s`. A lease of
 `0s` applies writes at once and gives pinned verifiers nothing to rely on, so
 the chart refuses `0s` while pinned mode is on, and CDS refuses a positive
-lease under `1s` (the state advertises whole seconds). A router that reads a
+lease under `10s`, which leaves routers several one-second polls to see a
+publication before it activates. A router that reads a
 state with `lease_seconds: 0` still treats the read as stale after 5 seconds;
 it never serves on one read forever.
 
