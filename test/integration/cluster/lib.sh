@@ -90,18 +90,30 @@ store_digests() {
 
 # --- CDS API helpers ---
 
+cds_healthy() { curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null 2>&1; }
+
+# cds_pf_start opens the CDS port-forward, or reuses the one this WORKDIR
+# opened, so drivers running each helper in its own process share one.
 cds_pf_start() {
-    [ -n "$PF_PID" ] && return 0
+    [ -n "$PF_PID" ] || PF_PID="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
+    [ -n "$PF_PID" ] && kill -0 "$PF_PID" 2>/dev/null && cds_healthy && return 0
     kubectl -n "$NS" port-forward svc/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
     PF_PID=$!
+    echo "$PF_PID" > "$WORKDIR/cds-pf.pid"
     for _ in $(seq 1 30); do
-        curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null 2>&1 && return 0
+        cds_healthy && return 0
         sleep 1
     done
     fail "CDS port-forward never came up"
 }
 
-# cds_write <method> <path> <body-file> -> http code; signed with the operator key.
+cds_pf_stop() {
+    [ -n "$PF_PID" ] || PF_PID="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
+    [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
+    rm -f "$WORKDIR/cds-pf.pid"
+    PF_PID=""
+}
+
 # any_workload <digest> <image>: print a workload entry that admits the digest
 # under any command line and mounts, the body of PUT /allowlist/workloads/<name>.
 any_workload() {
@@ -109,6 +121,7 @@ any_workload() {
         "$2" "$1" "$2"
 }
 
+# cds_write <method> <path> <body-file> -> http code; signed with the operator key.
 cds_write() {
     local method="$1" path="$2" bodyfile="$3" token
     cds_pf_start

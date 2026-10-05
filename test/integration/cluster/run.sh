@@ -43,7 +43,7 @@ WORKDIR="${C8S_IT_WORKDIR:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"
 
 cleanup() {
-    [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
+    cds_pf_stop
     if [ "${C8S_IT_KEEP:-}" = 1 ]; then
         echo "kept: kind cluster $CLUSTER, state in $WORKDIR"
         return
@@ -265,8 +265,6 @@ CLUSTER=$CLUSTER
 NODE=$NODE
 NODE_IP=$NODE_IP
 WORKDIR=$WORKDIR
-NRI_STORE_DIGEST=$NRI_STORE_DIGEST
-CDS_STORE_DIGEST=$CDS_STORE_DIGEST
 EOF
 if [ "${C8S_IT_SETUP_ONLY:-}" = 1 ]; then
     echo "=== Stack installed; checks skipped (C8S_IT_SETUP_ONLY=1) ==="
@@ -627,7 +625,7 @@ pass "router routes the front door to the adopted workload over the mesh"
 log "Checking the served allowlist pins the host sweep argv"
 # The port-forward can point at a CDS pod the second install rolled; recycle
 # it before reading the served document.
-kill "$PF_PID" 2>/dev/null || true; PF_PID=""
+cds_pf_stop
 cds_pf_start
 curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" > "$WORKDIR/served.json" \
     || fail "could not read the served allowlist"

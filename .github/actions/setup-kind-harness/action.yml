@@ -1,0 +1,20 @@
+name: Set up the kind harness tools
+description: >-
+  Install helm and kind at the versions test/integration/cluster/run.sh is
+  run with in CI. kind is not on the runner image, so its release binary is
+  pinned by sha256. Shared with consumers outside this repo that stand the
+  harness up (C8S_IT_KEEP / C8S_IT_SETUP_ONLY).
+
+runs:
+  using: composite
+  steps:
+    - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+      with:
+        version: v3.14.4
+
+    - name: Install kind
+      shell: bash
+      run: |
+        curl -fsSL -o "$RUNNER_TEMP/kind" https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
+        echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  $RUNNER_TEMP/kind" | sha256sum -c -
+        sudo install "$RUNNER_TEMP/kind" /usr/local/bin/kind
