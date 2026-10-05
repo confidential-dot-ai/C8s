@@ -16,6 +16,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -561,5 +562,20 @@ func TestRolloutRefusesWrongContextAndProtocol(t *testing.T) {
 			t.Error("a refused state opened the fence")
 		}
 		cdsSrv.Close()
+	}
+}
+
+func TestServerReadsMeasuredPolicies(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	p := "sha256:" + strings.Repeat("1", 64)
+	if err := os.WriteFile(path, []byte(p+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(Config{MeasuredPoliciesFile: path})
+	if got := srv.measuredPolicies(); !slices.Equal(got, []string{p}) {
+		t.Fatalf("measuredPolicies() = %v, want [%s]", got, p)
+	}
+	if got := NewServer(Config{}).measuredPolicies(); got != nil {
+		t.Fatalf("measuredPolicies() without a file = %v, want none", got)
 	}
 }

@@ -36,6 +36,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
@@ -154,7 +155,11 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
-	Backend          Backend // over-encrypted application backend (nil => EchoBackend)
+	// MeasuredPoliciesFile is the node's journal of allowlist policies
+	// extended into RTMR[3] (internal/policymeasure). Both bundles carry it,
+	// read after the evidence; empty omits it.
+	MeasuredPoliciesFile string
+	Backend              Backend // over-encrypted application backend (nil => EchoBackend)
 	// SessionTTL is the idle TTL: a session unused for this long is dropped.
 	SessionTTL time.Duration
 	// SessionMaxAge is the absolute session lifetime from establishment,
@@ -509,18 +514,19 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
-		Version:       types.BindingAttestPQ,
-		Platform:      platform,
-		Generation:    generation,
-		Nonce:         req.Nonce,
-		Evidence:      evidence,
-		CDSCertPEM:    string(identity.bundlePEM),
-		FrontDoorMode: s.cfg.FrontDoorMode,
-		XWingEK:       req.XWingEK,
-		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
-		SessionID:     id,
-		IdentityProof: proof,
-		CDSState:      state,
+		Version:          types.BindingAttestPQ,
+		Platform:         platform,
+		Generation:       generation,
+		Nonce:            req.Nonce,
+		Evidence:         evidence,
+		CDSCertPEM:       string(identity.bundlePEM),
+		FrontDoorMode:    s.cfg.FrontDoorMode,
+		XWingEK:          req.XWingEK,
+		XWingCT:          base64.RawURLEncoding.EncodeToString(xwingCT),
+		SessionID:        id,
+		IdentityProof:    proof,
+		CDSState:         state,
+		MeasuredPolicies: s.measuredPolicies(),
 	})
 }
 
@@ -593,7 +599,21 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
 		CDSState:          state,
+		MeasuredPolicies:  s.measuredPolicies(),
 	})
+}
+
+// measuredPolicies reads the node's measured-policy journal. A verifier that
+// needs it fails closed without it, so a read error only omits it.
+func (s *Server) measuredPolicies() []string {
+	if s.cfg.MeasuredPoliciesFile == "" {
+		return nil
+	}
+	policies, err := policymeasure.Read(s.cfg.MeasuredPoliciesFile)
+	if err != nil {
+		s.log.Warn("read measured policies", "error", err)
+	}
+	return policies
 }
 
 // stateDigest is the transcript commitment to state, nil without one.

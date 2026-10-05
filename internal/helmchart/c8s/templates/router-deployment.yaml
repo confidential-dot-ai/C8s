@@ -241,6 +241,9 @@ spec:
             {{- with .Values.router.upstream.workload }}
             - --upstream-workload={{ . }}
             {{- end }}
+            {{- if .Values.node.baked }}
+            - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+            {{- end }}
             {{- end }}
             # The identity-bound PQ flow must use the TEE-held mesh
             # credential, never the optional publicTLS Secret: report_data

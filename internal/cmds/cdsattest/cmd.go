@@ -49,6 +49,7 @@ type config struct {
 	upstreamServerName string
 	cdsStateURL        string
 	upstreamWorkload   string
+	measuredPolicies   string
 	lbForwardPort      int
 }
 
@@ -88,6 +89,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")
 	f.StringVar(&cfg.cdsStateURL, "cds-state-url", "", "allowlist-proxy base URL (http://127.0.0.1:<port>). Set, attestation bundles carry CDS's nonce-bound rollout state, sessions are fenced on it, and --upstream must be https with a mesh leaf whose matched-workload stamp names a policy in the bound")
 	f.IntVar(&cfg.lbForwardPort, "lb-forward-port", 0, "with --cds-state-url, loopback port on which nginx hands front-door requests to the sidecar, which fences them on the rollout state and forwards them to --upstream (0 disables)")
+	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into RTMR[3]; attest-pq and attest-lb bundles carry it so verifiers can check the node's policy history")
 	f.StringVar(&cfg.upstreamWorkload, "upstream-workload", "", "with --cds-state-url, the allowlist entry name the upstream's matched-workload stamp must carry (empty admits any entry the bound holds)")
 	f.StringVar(&cfg.upstreamServerName, "upstream-server-name", "", "SNI/verification name for an https upstream")
 	return cmd
@@ -177,6 +179,7 @@ func run(cfg config) error {
 		MeshIdentityKeyFile:  cfg.meshIdentityKeyFile,
 		MeshIdentityCAFile:   cfg.meshIdentityCAFile,
 		ExpectedWorkload:     cfg.expectedWorkload,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
 		Backend:              backend,
 		SessionTTL:           cfg.sessionTTL,
 		SessionMaxAge:        cfg.sessionMaxAge,
