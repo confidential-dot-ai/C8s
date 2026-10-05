@@ -418,3 +418,38 @@ func TestLoadMeasuredIdentityFailsClosedOnUnresolvableMeasurement(t *testing.T) 
 		}
 	})
 }
+
+// The operator-key binding check replays the measured-policy journal, which
+// may run ahead of the report.
+func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
+	journal := filepath.Join(t.TempDir(), "measured-policies")
+	orig := measuredPoliciesPath
+	measuredPoliciesPath = journal
+	t.Cleanup(func() { measuredPoliciesPath = orig })
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	report := func(digests ...string) *teetypes.VerificationResult {
+		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), digests)
+		return &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: teetypes.Claims{
+			PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
+		}}
+	}
+	if err := verifyNodeBinding(report(), operatorPub); err != nil {
+		t.Fatalf("bare seed without a journal = %v", err)
+	}
+	if err := os.WriteFile(journal, []byte(p+"\n"+q+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyNodeBinding(report(p), operatorPub); err != nil {
+		t.Fatalf("a journal ahead of the report = %v", err)
+	}
+	if err := verifyNodeBinding(report(q), operatorPub); err == nil {
+		t.Fatal("a register the journal does not replay was accepted")
+	}
+
+	rec := httptest.NewRecorder()
+	(&Handler{}).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, MeasuredPoliciesPath, nil))
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `["`+p+`","`+q+`"]` {
+		t.Fatalf("GET %s = %d %s, want the journal", MeasuredPoliciesPath, rec.Code, rec.Body)
+	}
+}

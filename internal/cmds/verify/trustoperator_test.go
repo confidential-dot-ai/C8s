@@ -124,4 +124,17 @@ func TestTrustOperator(t *testing.T) {
 	if _, err := buildPolicy(config{trustOperatorKeys: pinned}); err == nil || !strings.Contains(err.Error(), "requires --trust-operator") {
 		t.Fatalf("buildPolicy(--trust-operator-keys alone) = %v, want the --trust-operator error", err)
 	}
+
+	// The node's measured history is held to the same signatures as the bound.
+	for _, tc := range []struct {
+		history []string
+		want    string
+	}{{[]string{signed}, ""}, {[]string{unsigned}, "policy_not_signed"}, {[]string{"sha256:../x"}, "measured policy history"}} {
+		oc := Outcome{Verified: true, MeasuredPolicies: tc.history}
+		ev := evidence{fresh: true, rollout: state(keySet, signed)}
+		trustOperator(context.Background(), config{url: srv.URL, trustOperator: true, trustOperatorKeys: pinned, timeout: 5 * time.Second}, &ev, &oc)
+		if (tc.want == "") != oc.Verified || !strings.Contains(oc.Error, tc.want) {
+			t.Errorf("history %v: verified=%v error=%q, want error containing %q", tc.history, oc.Verified, oc.Error, tc.want)
+		}
+	}
 }

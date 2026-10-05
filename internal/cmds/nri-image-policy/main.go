@@ -27,7 +27,6 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/internal/version"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -286,7 +285,7 @@ func (cfg pullConfig) cdsPins() (ratls.Pins, error) {
 type pullArgs struct {
 	client      allowlistclient.Client
 	store       *policyStore
-	measure     func(*allowlist.Allowlist) error
+	measure     func(digest string) error
 	timeout     time.Duration
 	pluginErrCh <-chan error
 	logger      *slog.Logger
@@ -320,7 +319,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 				err = errInitialAllowlistNotModified
 			} else if wl == nil {
 				err = errInitialAllowlistNil
-			} else if err = measureWith(args.measure, wl); err == nil {
+			} else if err = measureWith(args.measure, served.Digest); err == nil {
 				version := parseVersion(etag)
 				args.store.applyServed(wl, version, served.Digest)
 				args.logger.Info("initial allowlist pulled from CDS",
@@ -350,7 +349,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 type pullLoopArgs struct {
 	client   allowlistclient.Client
 	store    *policyStore
-	measure  func(*allowlist.Allowlist) error
+	measure  func(digest string) error
 	interval time.Duration
 	timeout  time.Duration
 	etag     string
@@ -391,11 +390,17 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			args.logger.Warn("pull loop fetch returned nil allowlist")
 			continue
 		}
-		if err := measureWith(args.measure, wl); err != nil {
+		version := parseVersion(newETag)
+		// A rolled-back document is not enforced, so it is not measured either.
+		if cur := args.store.current(); cur != nil && version < cur.version {
+			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
+				"pulled_version", version, "etag", newETag)
+			continue
+		}
+		if err := measureWith(args.measure, served.Digest); err != nil {
 			args.logger.Error("pull loop: not applying an allowlist this node could not measure", "error", err)
 			continue
 		}
-		version := parseVersion(newETag)
 		if !args.store.applyServed(wl, version, served.Digest) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
 				"pulled_version", version, "etag", newETag)
@@ -578,12 +583,12 @@ func healthListener(addr string) (net.Listener, error) {
 	return l, nil
 }
 
-// measureWith runs measure, which may be nil, on doc.
-func measureWith(measure func(*allowlist.Allowlist) error, doc *allowlist.Allowlist) error {
+// measureWith runs measure, which may be nil, on digest.
+func measureWith(measure func(string) error, digest string) error {
 	if measure == nil {
 		return nil
 	}
-	return measure(doc)
+	return measure(digest)
 }
 
 // policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
@@ -592,9 +597,15 @@ func measureWith(measure func(*allowlist.Allowlist) error, doc *allowlist.Allowl
 // is set, or without a runtime register or an operator anchor, it measures
 // nothing. A measurement failure keeps the node
 // on its current policy.
-func policyMeasurer(cfg *config, logger *slog.Logger) func(*allowlist.Allowlist) error {
-	none := func(*allowlist.Allowlist) error { return nil }
+func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error {
+	none := func(string) error { return nil }
 	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return none
+	}
+	if cfg.WorkloadClaims.SocketDir == "" {
+		// cred-release reads the journal from the runtime directory; a journal
+		// anywhere else would leave it a register it cannot replay.
+		logger.Error("allowlist policies are not measured: workload_claims.socket_dir is unset")
 		return none
 	}
 	anchor, err := credrelease.ReadOperatorPubkey()
@@ -613,8 +624,13 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(*allowlist.Allowlist)
 		// A diverged journal refuses every extend, so updates stop here.
 		logger.Error("allowlist policy measurement journal", "error", err)
 	}
-	return func(doc *allowlist.Allowlist) error {
-		_, err := journal.MeasureOnce(policyDigest(doc))
-		return err
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, policymeasure.JournalName)
+	return func(digest string) error {
+		if _, err := journal.MeasureOnce(digest); err != nil {
+			return err
+		}
+		// The router reads the journal as a non-root user; it lists public
+		// digests.
+		return os.Chmod(path, 0o644)
 	}
 }

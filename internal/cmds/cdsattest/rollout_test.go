@@ -100,6 +100,7 @@ func TestRolloutFencesSessions(t *testing.T) {
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
 		Rollout:              newRollout(cdsSrv.URL, identity.caFile),
+		MeasuredPoliciesFile: measuredJournal(t),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -113,6 +114,9 @@ func TestRolloutFencesSessions(t *testing.T) {
 	bundle := fetchBundle(t, ts.URL, ck, nonce)
 	if bundle.CDSState == nil {
 		t.Fatal("bundle carries no CDS state")
+	}
+	if !slices.Equal(bundle.MeasuredPolicies, []string{testMeasuredPolicy}) {
+		t.Fatalf("attest-pq measured policies = %v, want the journal", bundle.MeasuredPolicies)
 	}
 	var st types.RolloutState
 	if err := json.Unmarshal(bundle.CDSState.State, &st); err != nil || st.Nonce != hex.EncodeToString(nonce) {
@@ -338,6 +342,7 @@ func TestAttestLBCarriesRolloutState(t *testing.T) {
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
 		Rollout:              newRollout(cdsSrv.URL, identity.caFile),
+		MeasuredPoliciesFile: measuredJournal(t),
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -357,6 +362,22 @@ func TestAttestLBCarriesRolloutState(t *testing.T) {
 	if b.CDSState == nil || json.Unmarshal(b.CDSState.State, &st) != nil || st.Nonce != hex.EncodeToString(nonce) {
 		t.Fatalf("attest-lb bundle state = %+v, want the state bound to nonce %x", b.CDSState, nonce)
 	}
+	if !slices.Equal(b.MeasuredPolicies, []string{testMeasuredPolicy}) {
+		t.Fatalf("attest-lb measured policies = %v, want the journal", b.MeasuredPolicies)
+	}
+}
+
+var testMeasuredPolicy = "sha256:" + strings.Repeat("1", 64)
+
+// measuredJournal writes a node measured-policy journal holding
+// testMeasuredPolicy.
+func measuredJournal(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	if err := os.WriteFile(path, []byte(testMeasuredPolicy+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {

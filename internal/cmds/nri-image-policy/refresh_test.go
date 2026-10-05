@@ -2,11 +2,16 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -608,43 +613,68 @@ func TestParseVersion(t *testing.T) {
 }
 
 // A pulled policy the node cannot measure is not applied, and a measured one
-// is measured before it is.
+// is measured, by its served digest, before it is.
 func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 	for _, measureErr := range []error{nil, errors.New("register write failed")} {
-		srv := httptest.NewServer(&flippingHandler{
-			versions: []string{"1"},
-			bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
-		})
-		client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
-		store := newPolicyStore(anyAllowlist(map[string]string{}))
-		var measured atomic.Int32
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			runPullLoop(ctx, pullLoopArgs{
-				client: client, store: store, interval: 20 * time.Millisecond, timeout: time.Second, logger: discardLogger(),
-				measure: func(*allowlist.Allowlist) error {
-					if admitsDigest(store, pushDigestA) {
-						t.Error("policy applied before it was measured")
-					}
-					measured.Add(1)
-					return measureErr
-				},
-			})
-			close(done)
-		}()
-		deadline := time.Now().Add(2 * time.Second)
-		for measured.Load() == 0 || (measureErr == nil && !admitsDigest(store, pushDigestA)) {
-			if time.Now().After(deadline) {
-				t.Fatalf("measureErr %v: measured %d times, applied %v", measureErr, measured.Load(), admitsDigest(store, pushDigestA))
+		t.Run(fmt.Sprint(measureErr), func(t *testing.T) {
+			body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+			sum := sha256.Sum256(body)
+			srv := httptest.NewServer(&flippingHandler{versions: []string{"1"}, bodyByV: map[string][]byte{"1": body}})
+			defer srv.Close()
+			client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
+			store := newPolicyStore(anyAllowlist(map[string]string{}))
+			var measured, early atomic.Int32
+			var digest atomic.Value
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			defer func() { cancel(); <-done }()
+			go func() {
+				defer close(done)
+				runPullLoop(ctx, pullLoopArgs{
+					client: client, store: store, interval: 20 * time.Millisecond, timeout: time.Second, logger: discardLogger(),
+					measure: func(d string) error {
+						if admitsDigest(store, pushDigestA) {
+							early.Add(1)
+						}
+						digest.Store(d)
+						measured.Add(1)
+						return measureErr
+					},
+				})
+			}()
+			deadline := time.Now().Add(2 * time.Second)
+			for measured.Load() == 0 || (measureErr == nil && !admitsDigest(store, pushDigestA)) {
+				if time.Now().After(deadline) {
+					t.Fatalf("measured %d times, applied %v", measured.Load(), admitsDigest(store, pushDigestA))
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
-			time.Sleep(10 * time.Millisecond)
+			if early.Load() != 0 {
+				t.Fatal("policy applied before it was measured")
+			}
+			if want := "sha256:" + hex.EncodeToString(sum[:]); digest.Load() != want {
+				t.Fatalf("measured %v, want the served digest %s", digest.Load(), want)
+			}
+			if measureErr != nil && admitsDigest(store, pushDigestA) {
+				t.Fatal("a policy the node could not measure was applied")
+			}
+		})
+	}
+}
+
+// Policy measuring stays off unless configured, and without a runtime
+// directory to keep the journal in.
+func TestPolicyMeasurerIsOffByDefault(t *testing.T) {
+	dir := t.TempDir()
+	for _, cfg := range []*config{
+		{Platform: "tdx", WorkloadClaims: workloadClaimsConfig{SocketDir: dir}},
+		{Platform: "tdx", Allowlist: allowlistConfig{Pull: pullConfig{MeasurePolicies: true}}},
+	} {
+		if err := policyMeasurer(cfg, discardLogger())("sha256:" + strings.Repeat("1", 64)); err != nil {
+			t.Fatalf("measure = %v, want a no-op", err)
 		}
-		if measureErr != nil && admitsDigest(store, pushDigestA) {
-			t.Fatal("a policy the node could not measure was applied")
-		}
-		cancel()
-		<-done
-		srv.Close()
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("runtime directory holds %v, want no journal", entries)
 	}
 }

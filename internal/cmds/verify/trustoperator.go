@@ -59,6 +59,12 @@ func trustOperator(ctx context.Context, cfg config, ev *evidence, oc *Outcome) {
 		fail("operator_keys_mismatch: the attested state names operator key set %q, not this one (%s)", ev.rollout.OperatorKeys, hash)
 		return
 	}
+	for _, d := range oc.MeasuredPolicies {
+		if !policyDigestRE.MatchString(d) {
+			fail("policy_not_signed: malformed digest %q in the node's measured policy history (RTMR[3])", d)
+			return
+		}
+	}
 	for _, digest := range policyUnion(ev.rollout.Bound, oc.MeasuredPolicies) {
 		if !policyDigestRE.MatchString(digest) {
 			fail("policy_not_signed: malformed digest %q in the rollout state", digest)

@@ -1476,6 +1476,9 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	if !applyRTMRPins(&oc, pins, result) {
 		return oc
 	}
+	if len(ev.measured) > 0 && pins.seed == nil {
+		oc.Warnings = append(oc.Warnings, "the node reported a measured allowlist policy history that was not replayed: pass --operator-pkey to check it against RTMR[3]")
+	}
 	oc.Verified = true
 
 	return oc
