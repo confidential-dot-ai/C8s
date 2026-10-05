@@ -149,6 +149,20 @@ func (v Verifier) Authorize(r *http.Request, body []byte) error {
 		jwt.WithLeeway(v.ClockSkew), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
 }
 
+// TokenExpiry returns the exp claim of a token Authorize or VerifyStored
+// already checked; it does not verify the token itself.
+func TokenExpiry(token string) (time.Time, error) {
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
+		return time.Time{}, err
+	}
+	exp, err := claims.GetExpirationTime()
+	if err != nil || exp == nil {
+		return time.Time{}, fmt.Errorf("operator token missing exp claim")
+	}
+	return exp.Time, nil
+}
+
 // VerifyStored checks a token that authorized a past request: its signature
 // under one of keys, and its method, path and body binding. It skips the
 // time checks, since a stored token is always expired by the time it is

@@ -36,7 +36,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -120,20 +119,17 @@ func run(cfg config) error {
 	} else {
 		slog.Warn("--operator-keys empty: allowlist and secret writes are disabled (reads still served)")
 	}
-	allowlistWriteAuthorizer, allowlistWriters := writeAuthorizer, operatorKeysHash
-	if cfg.allowlistImmutable || operatorKeysHash == "" {
-		allowlistWriteAuthorizer = func(*http.Request, []byte) error {
-			return fmt.Errorf("the allowlist is immutable")
-		}
-		allowlistWriters = types.OperatorKeysNone
-		slog.Info("allowlist is immutable: every allowlist write is refused")
-	}
 
 	allowlistStore, err := allowlist.OpenStore(cfg.allowlistDB)
 	if err != nil {
 		return fmt.Errorf("open allowlist database: %w", err)
 	}
 	defer allowlistStore.Close()
+
+	if operatorKeysHash != "" {
+		writeAuthorizer = singleUse(writeAuthorizer, &allowlistStore, time.Duration(cfg.jwtClockSkew)*time.Second)
+	}
+	allowlistWriteAuthorizer, allowlistWriters := allowlistAuthorizer(cfg.allowlistImmutable, writeAuthorizer, operatorKeysHash)
 
 	// CDS generates its mesh CA in process at startup; the private key never
 	// touches a Kubernetes Secret.

@@ -489,7 +489,9 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins.
+operator public keys it pins. CDS accepts each token once: it records the
+token in the allowlist database until it expires and refuses it after that,
+so the token it publishes as a policy signature cannot redo the write.
 
 ### Refresh and anti-rollback
 

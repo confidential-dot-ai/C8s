@@ -367,3 +367,24 @@ func TestJournalSignsCanonicalReplace(t *testing.T) {
 		t.Fatal("a per-workload write left its policy signed")
 	}
 }
+
+func TestConsumeToken(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	until := time.Now().Add(time.Hour)
+	if err := store.ConsumeToken("t1", until); err != nil {
+		t.Fatalf("first use = %v", err)
+	}
+	if err := store.ConsumeToken("t1", until); !errors.Is(err, ErrTokenReused) {
+		t.Fatalf("reuse = %v, want ErrTokenReused", err)
+	}
+	if err := store.ConsumeToken("t2", time.Now().Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ConsumeToken("t2", until); err != nil {
+		t.Fatalf("reuse after the record expired = %v, want it pruned", err)
+	}
+}

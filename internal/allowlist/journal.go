@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS journal_event (
 	position INTEGER PRIMARY KEY,
 	digest   TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS used_token (
+	digest   TEXT PRIMARY KEY,
+	until_ms INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS journal_signature (
 	digest TEXT PRIMARY KEY,
 	token  TEXT NOT NULL
@@ -375,6 +379,28 @@ func objectTx(tx *sql.Tx, digest string) ([]byte, error) {
 		return nil, fmt.Errorf("journal object %s: %w", digest, err)
 	}
 	return b, nil
+}
+
+// ErrTokenReused refuses an operator token that already authorized a write.
+var ErrTokenReused = errors.New("operator token already used")
+
+// ConsumeToken records that token authorized a write and refuses it, with
+// ErrTokenReused, if it already did. The record lasts until until, after
+// which the token is expired anyway, and survives restarts.
+func (s *Store) ConsumeToken(token string, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.Exec("DELETE FROM used_token WHERE until_ms < ?", time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest, until_ms) VALUES (?, ?)", objectDigest([]byte(token)), until.UnixMilli())
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return errors.Join(ErrTokenReused, err)
+	}
+	return nil
 }
 
 // SignPolicy records token, the operator write token that authorized a

@@ -627,6 +627,9 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// make that responder a genuine router on a genuine node, which takes
 	// its CA only from the CDS its image pins; anything less leaves the CA,
 	// and so the pinned bound, to the responder.
+	if cfg.trustOperatorKeys != "" && !cfg.trustOperator {
+		return nil, fmt.Errorf("--trust-operator-keys requires --trust-operator: it pins the key set operator signatures are checked against")
+	}
 	if cfg.trustOperator && len(cfg.pinPolicies) > 0 {
 		return nil, fmt.Errorf("--trust-operator and --pin-policy are exclusive: either accept what the operator signs, or only what you pinned")
 	}

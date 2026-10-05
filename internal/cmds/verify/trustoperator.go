@@ -88,15 +88,20 @@ func trustOperator(ctx context.Context, cfg config, ev *evidence, oc *Outcome) {
 }
 
 func operatorKeySet(ctx context.Context, cfg config, client *http.Client, baseURL string) ([]*ecdsa.PublicKey, error) {
-	var pemBytes []byte
-	var err error
 	if cfg.trustOperatorKeys != "" {
-		pemBytes, err = os.ReadFile(cfg.trustOperatorKeys)
-	} else {
-		pemBytes, err = fetchPolicy(ctx, client, baseURL+"/.well-known/c8s/operator-keys")
+		pemBytes, err := os.ReadFile(cfg.trustOperatorKeys)
+		if err != nil {
+			return nil, fmt.Errorf("read --trust-operator-keys: %w", err)
+		}
+		keys, err := operatorauth.ParsePublicKeysPEM(pemBytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse --trust-operator-keys: %w", err)
+		}
+		return keys, nil
 	}
+	pemBytes, err := fetchPolicy(ctx, client, baseURL+"/.well-known/c8s/operator-keys")
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("fetch the router's operator keys: %w", err)
 	}
 	return operatorauth.ParsePublicKeysPEM(pemBytes)
 }

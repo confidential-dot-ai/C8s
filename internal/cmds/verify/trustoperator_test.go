@@ -11,6 +11,8 @@ import (
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -87,5 +89,39 @@ func TestTrustOperator(t *testing.T) {
 		if (tc.want == "") != oc.Verified || !strings.Contains(oc.Error, tc.want) {
 			t.Errorf("%s: verified=%v error=%q, want error containing %q", tc.name, oc.Verified, oc.Error, tc.want)
 		}
+	}
+
+	// A pinned key set wins over the one the router serves.
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDER, err := x509.MarshalPKIXPublicKey(&other.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	pinned := filepath.Join(dir, "keys.pem")
+	wrong := filepath.Join(dir, "other.pem")
+	if err := os.WriteFile(pinned, keysPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wrong, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: otherDER}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	objects["/.well-known/c8s/operator-keys"] = string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: otherDER}))
+	for _, tc := range []struct {
+		keys string
+		want string
+	}{{pinned, ""}, {wrong, "operator_keys_mismatch"}} {
+		oc := Outcome{Verified: true}
+		ev := evidence{fresh: true, rollout: state(keySet, signed)}
+		trustOperator(context.Background(), config{url: srv.URL, trustOperator: true, trustOperatorKeys: tc.keys, timeout: 5 * time.Second}, &ev, &oc)
+		if (tc.want == "") != oc.Verified || !strings.Contains(oc.Error, tc.want) {
+			t.Errorf("pinned %s: verified=%v error=%q, want error containing %q", filepath.Base(tc.keys), oc.Verified, oc.Error, tc.want)
+		}
+	}
+	if _, err := buildPolicy(config{trustOperatorKeys: pinned}); err == nil || !strings.Contains(err.Error(), "requires --trust-operator") {
+		t.Fatalf("buildPolicy(--trust-operator-keys alone) = %v, want the --trust-operator error", err)
 	}
 }
