@@ -127,6 +127,15 @@ func TestBuildPolicyPinPolicyFormat(t *testing.T) {
 	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}, meshCA: caFile}); err != nil {
 		t.Fatalf("buildPolicy(--pin-policy with --mesh-ca) = %v, want it accepted", err)
 	}
+	pubPath, _, _ := operatorKeypair(t)
+	baked := config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}, imageManifest: writeTestManifest(t), operatorPubkey: pubPath}
+	if _, err := buildPolicy(baked); err != nil {
+		t.Fatalf("buildPolicy(--pin-policy with a pinned baked node) = %v, want it accepted", err)
+	}
+	baked.operatorPubkey = ""
+	if _, err := buildPolicy(baked); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
+		t.Fatalf("buildPolicy(--pin-policy with an image pin but no RTMR[3]) = %v, want the --mesh-ca error", err)
+	}
 }
 
 func TestApplyPinPolicyReportsVerifiedState(t *testing.T) {
