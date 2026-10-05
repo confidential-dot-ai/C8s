@@ -10,13 +10,17 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -131,29 +135,47 @@ func (f fakeAcker) PolicyAck(_ context.Context, host string) (workloadclaims.Pol
 func TestNodeAcks(t *testing.T) {
 	clean := workloadclaims.PolicyAck{Policy: "sha256:q", Clean: true}
 	for _, tc := range []struct {
-		name  string
-		hosts []string
-		acks  fakeAcker
-		ok    bool
+		name   string
+		nodes  [][]string
+		acks   fakeAcker
+		ok     bool
+		acked  []string
+		reason string
 	}{
-		{"every node clean", []string{"10.0.0.1", "10.0.0.2"}, fakeAcker{"10.0.0.1": clean, "10.0.0.2": clean}, true},
-		{"node clean on one of its addresses", nil, fakeAcker{"10.0.0.1": clean}, true},
-		{"no nodes known", nil, fakeAcker{}, false},
-		{"node unreachable", []string{"10.0.0.1", "10.0.0.2"}, fakeAcker{"10.0.0.1": clean}, false},
-		{"node on another policy", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:p", Clean: true}}, false},
-		{"node still running a denied container", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:q"}}, false},
+		{"every node clean", [][]string{{"10.0.0.1"}, {"10.0.0.2"}}, fakeAcker{"10.0.0.1": clean, "10.0.0.2": clean}, true, []string{"10.0.0.1", "10.0.0.2"}, ""},
+		{"node clean on one of its addresses", [][]string{{"fec0::1", "10.0.0.1"}}, fakeAcker{"10.0.0.1": clean}, true, []string{"10.0.0.1"}, ""},
+		{"no nodes known", nil, fakeAcker{}, false, nil, "no nodes known"},
+		{"node unreachable", [][]string{{"10.0.0.1"}, {"10.0.0.2"}}, fakeAcker{"10.0.0.1": clean}, false, []string{"10.0.0.2"}, "unreachable"},
+		{"node on another policy", [][]string{{"10.0.0.1"}}, fakeAcker{"10.0.0.1": {Policy: "sha256:p", Clean: true}}, false, []string{"10.0.0.1"}, "acknowledges sha256:p"},
+		{"node still running a denied container", [][]string{{"10.0.0.1"}}, fakeAcker{"10.0.0.1": {Policy: "sha256:q"}}, false, []string{"10.0.0.1"}, "denies"},
 	} {
-		groups := make([][]string, 0, len(tc.hosts))
-		for _, h := range tc.hosts {
-			groups = append(groups, []string{h})
+		acks := nodeAcks{client: tc.acks, nodes: func() [][]string { return tc.nodes }}
+		ok, addrs, why := acks.acked(context.Background(), "sha256:q")
+		if ok != tc.ok || !slices.Equal(addrs, tc.acked) || !strings.Contains(why, tc.reason) || (tc.ok && why != "") {
+			t.Errorf("%s: acked = %v, %v, %q; want %v, %v, reason containing %q", tc.name, ok, addrs, why, tc.ok, tc.acked, tc.reason)
 		}
-		if tc.hosts == nil && len(tc.acks) > 0 {
-			groups = [][]string{{"fec0::1", "10.0.0.1"}}
-		}
-		acks := nodeAcks{client: tc.acks, nodes: func() [][]string { return groups }}
-		if ok, _, _ := acks.acked(context.Background(), "sha256:q"); ok != tc.ok {
-			t.Errorf("%s: acked = %v, want %v", tc.name, ok, tc.ok)
-		}
+	}
+}
+
+func TestDrainAcksGroupsNodes(t *testing.T) {
+	if drainAcks(nil, nil, nil) != nil {
+		t.Fatal("drainAcks without an inventory client drains")
+	}
+	var nodes workloadclaims.NodeHosts
+	nodes.SetNodes([]*corev1.Node{{
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			{Type: corev1.NodeInternalIP, Address: "fec0::1"},
+		}},
+	}})
+	ledger := sandboxledger.New(time.Hour, 10)
+	ledger.Record("s1", "10.0.0.1")
+	ledger.Record("s2", "10.0.0.9")
+	acks := drainAcks(&workloadclaims.DigestsClient{}, &nodes, ledger)
+	got := acks.nodes()
+	want := [][]string{{"10.0.0.1", "fec0::1"}, {"10.0.0.9"}}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("drain nodes = %v, want %v", got, want)
 	}
 }
 

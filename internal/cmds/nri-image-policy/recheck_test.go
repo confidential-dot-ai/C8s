@@ -78,3 +78,50 @@ func TestRecheckRunningAfterPolicyChange(t *testing.T) {
 		t.Fatalf("ack after the denied container stopped = %+v, want %s clean", ack, store.current().digest)
 	}
 }
+
+// A container the recheck stopped, or one containerd removed, is not checked
+// again, so it cannot spoil a later acknowledgement.
+func TestRecheckRunningForgetsStoppedAndRemoved(t *testing.T) {
+	entries := func(digests ...string) *allowlist.Allowlist {
+		al := &allowlist.Allowlist{Schema: allowlist.Schema, Workloads: map[string]allowlist.Workload{}}
+		for i, d := range digests {
+			for _, w := range anyAllowlist(map[string]string{d: "image"}).Workloads {
+				al.Workloads[fmt.Sprintf("w%d", i)] = w
+			}
+		}
+		return al
+	}
+	base := entries("sha256:" + strings.Repeat("9", 64))
+	p, store := newCachedPlugin(&config{Allowlist: allowlistConfig{Base: base}, Policy: policyConfig{
+		Mode: ModeFailClosed, EnforceExisting: true,
+	}}, entries(pushDigestA, pushDigestB, pushDigestC))
+	p.SetReady()
+	p.inventory = newAdmissionInventory("")
+	stops := map[string]int{}
+	p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		stops[id]++
+		if stops[id] > 1 {
+			return errors.New("container is not running")
+		}
+		return nil
+	}}
+	pod := makePod("default", "pod1")
+	a := makeCtrWithImage(pod.Id, "a", "registry/repo@"+pushDigestA)
+	b := makeCtrWithImage(pod.Id, "b", "registry/repo@"+pushDigestB)
+	c := makeCtrWithImage(pod.Id, "c", "registry/repo@"+pushDigestC)
+	p.trackRunning([]*api.PodSandbox{pod}, []*api.Container{a, b, c})
+
+	store.apply(entries(pushDigestA, pushDigestC), 2)
+	p.RecheckRunning(context.Background())
+	if err := p.RemoveContainer(context.Background(), pod, c); err != nil {
+		t.Fatal(err)
+	}
+	store.apply(entries(pushDigestA), 3)
+	p.RecheckRunning(context.Background())
+	if stops[b.Id] != 1 || stops[c.Id] != 0 {
+		t.Fatalf("stops = %v, want b stopped once and the removed c never", stops)
+	}
+	if ack := p.inventory.PolicyAck(); !ack.Clean {
+		t.Fatalf("ack after rechecks = %+v, want clean", ack)
+	}
+}

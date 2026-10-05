@@ -2,6 +2,8 @@ package allowlistclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -120,4 +122,23 @@ func mustDigest(t *testing.T, s string) types.Digest {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// The served digest covers the exact bytes, not a re-serialization.
+func TestFetchServedDigestsTheServedBytes(t *testing.T) {
+	body := []byte(`{"schema":"c8s.allowlist/v1",  "workloads":{}}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `W/"1"`)
+		w.Write(body)
+	}))
+	defer srv.Close()
+	served, _, err := NewClientWithHTTP(srv.URL, srv.Client()).FetchServed(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	if want := "sha256:" + hex.EncodeToString(sum[:]); served.Digest != want {
+		t.Fatalf("Digest = %s, want %s", served.Digest, want)
+	}
 }

@@ -8,6 +8,8 @@ package allowlistclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,7 +51,7 @@ type Authorizer = operatorauth.Authorizer
 
 // List returns the current allowlist and its version (the ETag counter).
 func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) {
-	al, etag, notModified, err := c.fetch(ctx, "")
+	al, etag, _, notModified, err := c.fetch(ctx, "")
 	if err != nil {
 		return nil, "", err
 	}
@@ -64,13 +66,29 @@ func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) 
 // (allowlist nil, etag ""); on 200 the parsed allowlist and new ETag are
 // returned. Used by enforcers polling for changes.
 func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allowlist, string, bool, error) {
-	return c.fetch(ctx, ifNoneMatch)
+	served, notModified, err := c.FetchServed(ctx, ifNoneMatch)
+	return served.Allowlist, served.ETag, notModified, err
 }
 
-func (c Client) fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allowlist, string, bool, error) {
+// Served is an allowlist as CDS served it.
+type Served struct {
+	Allowlist *allowlist.Allowlist
+	ETag      string
+	// Digest is "sha256:<hex>" of the exact bytes served: the digest CDS
+	// journals the document under, whatever parsing normalizes away.
+	Digest string
+}
+
+// FetchServed is Fetch, also returning the digest of the served bytes.
+func (c Client) FetchServed(ctx context.Context, ifNoneMatch string) (Served, bool, error) {
+	al, etag, digest, notModified, err := c.fetch(ctx, ifNoneMatch)
+	return Served{Allowlist: al, ETag: etag, Digest: digest}, notModified, err
+}
+
+func (c Client) fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allowlist, string, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist", nil)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("create request: %w", err)
+		return nil, "", "", false, fmt.Errorf("create request: %w", err)
 	}
 	if ifNoneMatch != "" {
 		req.Header.Set("If-None-Match", ifNoneMatch)
@@ -78,31 +96,32 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allow
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, "", false, fmt.Errorf("fetch allowlist: %w", err)
+		return nil, "", "", false, fmt.Errorf("fetch allowlist: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusNotModified {
 		io.Copy(io.Discard, resp.Body)
-		return nil, "", true, nil
+		return nil, "", "", true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		body, _ := readCapped(resp.Body, maxAllowlistResponseBytes)
-		return nil, "", false, &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		return nil, "", "", false, &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
 	}
 	if ct := resp.Header.Get("Content-Type"); !isJSONContentType(ct) {
-		return nil, "", false, fmt.Errorf("fetch allowlist: unexpected content type: %s", ct)
+		return nil, "", "", false, fmt.Errorf("fetch allowlist: unexpected content type: %s", ct)
 	}
 
 	body, err := readCapped(resp.Body, maxAllowlistResponseBytes)
 	if err != nil {
-		return nil, "", false, err
+		return nil, "", "", false, err
 	}
 	al, err := allowlist.ParseServedJSON(body)
 	if err != nil {
-		return nil, "", false, err
+		return nil, "", "", false, err
 	}
-	return al, resp.Header.Get("ETag"), false, nil
+	sum := sha256.Sum256(body)
+	return al, resp.Header.Get("ETag"), "sha256:" + hex.EncodeToString(sum[:]), false, nil
 }
 
 // ReplaceAll atomically replaces the entire allowlist. CDS assigns the new

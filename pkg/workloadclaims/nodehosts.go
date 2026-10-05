@@ -2,6 +2,7 @@ package workloadclaims
 
 import (
 	"net"
+	"slices"
 	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
@@ -117,13 +118,18 @@ func (h *NodeHosts) Contains(host string) bool {
 	return snap != nil && snap.contains(host)
 }
 
-// Nodes lists each node's addresses in the bound, one list per node.
+// Nodes lists each node's addresses in the bound, one list per node. The
+// result is a copy the caller may change.
 func (h *NodeHosts) Nodes() [][]string {
 	nodes := h.nodes.Load()
 	if nodes == nil {
 		return nil
 	}
-	return *nodes
+	out := make([][]string, len(*nodes))
+	for i, addrs := range *nodes {
+		out[i] = slices.Clone(addrs)
+	}
+	return out
 }
 
 func (h *NodeHosts) Empty() bool {

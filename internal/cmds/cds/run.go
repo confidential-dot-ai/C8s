@@ -625,7 +625,7 @@ func drainAcks(client *workloadclaims.DigestsClient, inventoryHosts workloadclai
 	return &nodeAcks{client: client, nodes: func() [][]string {
 		var groups [][]string
 		if nodes != nil {
-			groups = slices.Clone(nodes.Nodes())
+			groups = nodes.Nodes()
 		}
 		for _, h := range bindings.Hosts() {
 			if !slices.ContainsFunc(groups, func(g []string) bool { return slices.Contains(g, h) }) {

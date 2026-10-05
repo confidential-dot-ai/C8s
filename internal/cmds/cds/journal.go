@@ -217,12 +217,13 @@ func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration
 			cancel()
 			if !ok {
 				// Logged once per change: a drain can wait for hours.
-				if wait := fmt.Sprint(st.Policy, nodes, why); wait != lastWait {
+				if wait := fmt.Sprintf("%q %q %q", st.Policy, nodes, why); wait != lastWait {
 					lastWait = wait
 					slog.Info("allowlist bound not drained yet", "policy", st.Policy, "nodes", nodes, "reason", why)
 				}
 				continue
 			}
+			lastWait = ""
 			if ok, err := store.Drain(st.Policy, nodes); err != nil {
 				slog.Error("allowlist drain failed", "error", err)
 			} else if ok {

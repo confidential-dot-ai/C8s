@@ -103,13 +103,19 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 // the untrusted host a persisted file is itself host-controlled. See
 // docs/allowlist-and-capabilities.md.
 func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
-	if cur := s.snap.Load(); cur != nil && version < cur.version {
-		return false
-	}
 	var digest string
 	if b, err := pulled.Canonical(); err == nil {
 		sum := sha256.Sum256(b)
 		digest = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return s.applyServed(pulled, version, digest)
+}
+
+// applyServed is apply for a pulled document whose served digest is known:
+// the node acknowledges exactly the digest CDS journals.
+func (s *policyStore) applyServed(pulled *allowlist.Allowlist, version uint64, digest string) bool {
+	if cur := s.snap.Load(); cur != nil && version < cur.version {
+		return false
 	}
 	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version, digest: digest})
 	return true
@@ -185,6 +191,13 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 			p.running[ctr.GetId()] = runningContainer{pod: pod, ctr: ctr}
 		}
 	}
+}
+
+// untrack drops a container from RecheckRunning's set.
+func (p *plugin) untrack(id string) {
+	p.runningMu.Lock()
+	delete(p.running, id)
+	p.runningMu.Unlock()
 }
 
 // RecheckRunning runs the existing-container check over every tracked
@@ -311,9 +324,7 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 // sandbox's record keeps it (inventory.remove). It also drops the container
 // from RecheckRunning's set.
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
-	p.runningMu.Lock()
-	delete(p.running, ctr.GetId())
-	p.runningMu.Unlock()
+	p.untrack(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -910,6 +921,9 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 			left++
 		} else {
 			killed++
+			// Stopped, not yet removed: a later recheck must not try again and
+			// count the failure against this node's acknowledgement.
+			p.untrack(ctr.GetId())
 		}
 	}
 

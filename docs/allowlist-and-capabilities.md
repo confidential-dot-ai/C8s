@@ -553,8 +553,10 @@ container it denies has stopped.
 While the bound holds more than one policy and no update is pending, CDS asks
 every node for its acknowledgement every 10 seconds. The nodes are those the
 cluster's node objects name, plus every node that vouched for a sandbox whose
-certificate may still be valid. Once each one acknowledges the enforced
-policy with nothing denied left running, CDS appends a `drained` event whose
+certificate may still be valid. A node counts once, on whichever of its
+addresses answers. With `--sandbox-inventory-cidr` there are no node objects
+to name nodes, so only nodes that vouched for a sandbox are asked. Once each
+one acknowledges the enforced policy with nothing denied left running, CDS appends a `drained` event whose
 `target` is that policy, and `bound` collapses to it. An unreachable node, a
 node in audit mode or with `enforce_existing` off that still runs a denied
 container, or a deployment without the sandbox inventory keeps the bound
