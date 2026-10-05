@@ -606,3 +606,45 @@ func TestParseVersion(t *testing.T) {
 		}
 	}
 }
+
+// A pulled policy the node cannot measure is not applied, and a measured one
+// is measured before it is.
+func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
+	for _, measureErr := range []error{nil, errors.New("register write failed")} {
+		srv := httptest.NewServer(&flippingHandler{
+			versions: []string{"1"},
+			bodyByV:  map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))},
+		})
+		client := allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second})
+		store := newPolicyStore(anyAllowlist(map[string]string{}))
+		var measured atomic.Int32
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() {
+			runPullLoop(ctx, pullLoopArgs{
+				client: client, store: store, interval: 20 * time.Millisecond, timeout: time.Second, logger: discardLogger(),
+				measure: func(*allowlist.Allowlist) error {
+					if admitsDigest(store, pushDigestA) {
+						t.Error("policy applied before it was measured")
+					}
+					measured.Add(1)
+					return measureErr
+				},
+			})
+			close(done)
+		}()
+		deadline := time.Now().Add(2 * time.Second)
+		for measured.Load() == 0 || (measureErr == nil && !admitsDigest(store, pushDigestA)) {
+			if time.Now().After(deadline) {
+				t.Fatalf("measureErr %v: measured %d times, applied %v", measureErr, measured.Load(), admitsDigest(store, pushDigestA))
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if measureErr != nil && admitsDigest(store, pushDigestA) {
+			t.Fatal("a policy the node could not measure was applied")
+		}
+		cancel()
+		<-done
+		srv.Close()
+	}
+}
