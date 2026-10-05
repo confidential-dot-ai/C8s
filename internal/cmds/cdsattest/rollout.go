@@ -83,6 +83,10 @@ type rollout struct {
 // errBoundChanged cancels a forwarded request when the bound changes.
 var errBoundChanged = errors.New("the allowlist bound changed")
 
+// errAuthorityChanged cancels a forwarded request when CDS restarts with a new
+// mesh CA, which drops every connection verified under the old one.
+var errAuthorityChanged = errors.New("CDS restarted with a new mesh CA")
+
 // errStateExpired cancels a forwarded request when the router can no longer
 // refresh the state it was admitted under.
 var errStateExpired = errors.New("the allowlist state expired")
@@ -117,12 +121,8 @@ func (r *rollout) requestContext(parent context.Context) (context.Context, conte
 	}
 }
 
-// boundChanged runs the change hooks, then cancels every request admitted
-// under the previous bound. Callers hold r.mu.
-func (r *rollout) boundChanged() {
-	r.resetGen(errBoundChanged)
-}
-
+// resetGen runs the change hooks, then cancels every request admitted under
+// the previous generation with cause. Callers hold r.mu.
 func (r *rollout) resetGen(cause error) {
 	for _, f := range r.onChange {
 		f()
@@ -216,15 +216,19 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 		}
 		// A new authority is a new mesh CA: connections verified under the
 		// old one are dropped like on a bound change.
-		changed := !slices.Equal(r.bound, st.Bound) || (!r.seenAt.IsZero() && st.Authority != r.authority)
+		boundChanged := !slices.Equal(r.bound, st.Bound)
+		authorityChanged := !r.seenAt.IsZero() && st.Authority != r.authority
 		r.authority, r.position, r.head = st.Authority, st.Position, st.Head
 		if !covers(r.bound, st.Bound) {
 			r.widenedAt = time.Now()
 		}
 		r.seenAt, r.bound, r.lease = sent, st.Bound, time.Duration(st.Lease)*time.Second
 		r.expired = false
-		if changed {
-			r.boundChanged()
+		switch {
+		case boundChanged:
+			r.resetGen(errBoundChanged)
+		case authorityChanged:
+			r.resetGen(errAuthorityChanged)
 		}
 	}
 	return &signed, &st, nil
@@ -367,9 +371,12 @@ func (r *rollout) policy(digest string) (*pkgallowlist.Allowlist, error) {
 		return nil, fmt.Errorf("fetch %s: %w", digest, err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("fetch %s: status %d", digest, resp.StatusCode)
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch %s: status %d: %v", digest, resp.StatusCode, err)
+	if err != nil {
+		return nil, fmt.Errorf("fetch %s: %w", digest, err)
 	}
 	if sum := sha256.Sum256(body); "sha256:"+hex.EncodeToString(sum[:]) != digest {
 		return nil, fmt.Errorf("fetched %s does not match its digest", digest)

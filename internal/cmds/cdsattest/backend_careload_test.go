@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -144,11 +145,21 @@ func TestRolloutAuthorityChangeResetsPool(t *testing.T) {
 	if resets.Load() != base {
 		t.Fatal("an unchanged state reset the pool")
 	}
+	ctx, cancel := fence.requestContext(context.Background())
+	defer cancel()
 	cds.setJournal("sha256:b", 0, "sha256:g0")
 	if _, err := fence.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if resets.Load() != base+1 {
 		t.Fatalf("resets after an authority change = %d, want %d", resets.Load(), base+1)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("an authority change did not cancel a forwarded request")
+	}
+	if !errors.Is(context.Cause(ctx), errAuthorityChanged) {
+		t.Fatalf("cause = %v, want errAuthorityChanged", context.Cause(ctx))
 	}
 }
