@@ -82,22 +82,26 @@ func TestVerifyRolloutState(t *testing.T) {
 func TestApplyPinPolicy(t *testing.T) {
 	state := &types.RolloutState{Bound: []string{"sha256:p", "sha256:q"}, Lease: 30}
 	pins := []string{"sha256:p", "sha256:q"}
+	immutable := &types.RolloutState{Bound: pins[:1], OperatorKeys: types.OperatorKeysNone}
 	for _, tc := range []struct {
-		name string
-		pins []string
-		ev   evidence
-		want string
+		name      string
+		pins      []string
+		immutable bool
+		ev        evidence
+		want      string
 	}{
-		{"bound inside pins", pins, evidence{fresh: true, rollout: state}, ""},
-		{"unpinned policy", pins[:1], evidence{fresh: true, rollout: state}, "policy_not_pinned: policy sha256:q"},
-		{"no state", pins, evidence{fresh: true}, "pinned_state_absent"},
-		{"invalid state", pins, evidence{fresh: true, rolloutErr: errSandboxTest}, "pinned_state_invalid"},
-		{"offline bundle", pins, evidence{rollout: state}, "pinned_state_stale"},
-		{"no lease", pins, evidence{fresh: true, rollout: &types.RolloutState{Bound: pins}}, "pinned_state_unleased"},
-		{"no pins", nil, evidence{}, ""},
+		{"bound inside pins", pins, false, evidence{fresh: true, rollout: state}, ""},
+		{"immutable allowlist", pins[:1], true, evidence{fresh: true, rollout: immutable}, ""},
+		{"mutable allowlist", pins, true, evidence{fresh: true, rollout: state}, "allowlist_mutable"},
+		{"unpinned policy", pins[:1], false, evidence{fresh: true, rollout: state}, "policy_not_pinned: policy sha256:q"},
+		{"no state", pins, false, evidence{fresh: true}, "pinned_state_absent"},
+		{"invalid state", pins, false, evidence{fresh: true, rolloutErr: errSandboxTest}, "pinned_state_invalid"},
+		{"offline bundle", pins, false, evidence{rollout: state}, "pinned_state_stale"},
+		{"no lease", pins, false, evidence{fresh: true, rollout: &types.RolloutState{Bound: pins}}, "pinned_state_unleased"},
+		{"no pins", nil, false, evidence{}, ""},
 	} {
 		oc := Outcome{Verified: true}
-		applyPinPolicy(&oc, config{pinPolicies: tc.pins}, &tc.ev)
+		applyPinPolicy(&oc, config{pinPolicies: tc.pins, immutable: tc.immutable}, &tc.ev)
 		if (tc.want == "") != oc.Verified || !strings.Contains(oc.Error, tc.want) {
 			t.Errorf("%s: verified=%v error=%q, want error containing %q", tc.name, oc.Verified, oc.Error, tc.want)
 		}

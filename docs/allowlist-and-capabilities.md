@@ -683,6 +683,24 @@ that its SHA-256 matches, review it, and add it as another `--pin-policy`.
 The failure starts at publication, one lease before CDS enforces the new
 policy, which leaves that lease to review it.
 
+#### Immutable allowlist
+
+With `cds.allowlistImmutable: true` (`--allowlist-immutable`), CDS refuses
+every allowlist write, whatever key signs it, and the rollout state reports
+`operator_keys: none`. Otherwise `operator_keys` is the hash of the key set
+that may write the allowlist (`operatorauth.KeySetHash`). Secret writes keep
+their operator authorization.
+
+To require that the pinned policy can no longer change, add `--immutable`:
+
+```sh
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX --immutable ROUTER_URL
+```
+
+Verification then fails with `allowlist_mutable` unless the state reports
+`operator_keys: none`. Changing the allowlist needs a new install, whose
+policy digest fails the pin.
+
 Policy pins cover the CDS-served document only. The NRI base allowlist, exempt
 namespaces and enforcement mode come from the node image's measured boot
 config, so pin the node image as well (`--image-manifest` or

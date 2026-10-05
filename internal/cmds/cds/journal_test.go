@@ -49,6 +49,7 @@ func TestJournalRoutes(t *testing.T) {
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
 		StateKey:         key,
+		AllowlistWriters: "sha256:writers",
 	})
 
 	nonce := strings.Repeat("ab", 16)
@@ -71,8 +72,8 @@ func TestJournalRoutes(t *testing.T) {
 	if err := json.Unmarshal(signed.State, &st); err != nil {
 		t.Fatal(err)
 	}
-	if st.Nonce != nonce || len(st.Bound) != 1 {
-		t.Fatalf("state = %+v, want nonce %s and a single-policy bound", st, nonce)
+	if st.Nonce != nonce || len(st.Bound) != 1 || st.OperatorKeys != "sha256:writers" {
+		t.Fatalf("state = %+v, want nonce %s, a single-policy bound and operator_keys sha256:writers", st, nonce)
 	}
 	if err := rolloutstate.CheckTime(&st, time.Now()); err != nil {
 		t.Fatalf("served state validity window: %v", err)

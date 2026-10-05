@@ -63,9 +63,10 @@ func handleLatest(store *allowlist.Store) http.HandlerFunc {
 	}
 }
 
-// handleState serves the signed state. With challenge set it reads
-// {"nonce":"<hex>"} and binds the nonce into the signed state.
-func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) http.HandlerFunc {
+// handleState serves the signed state, naming writers as its operator_keys.
+// With challenge set it reads {"nonce":"<hex>"} and binds the nonce into the
+// signed state.
+func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, writers string, challenge bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		st, err := store.State()
 		if err != nil {
@@ -86,6 +87,7 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			}
 			st.Nonce = req.Nonce
 		}
+		st.OperatorKeys = writers
 		rolloutstate.Stamp(&st, time.Now())
 		body, err := json.Marshal(st)
 		if err != nil {

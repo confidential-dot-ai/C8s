@@ -127,7 +127,13 @@ type RolloutState struct {
 	// replayed indefinitely.
 	IssuedAt  int64 `json:"issued_at"`
 	ExpiresAt int64 `json:"expires_at"`
+	// OperatorKeys is the hash (operatorauth.KeySetHash) of the key set that
+	// may write the allowlist, or OperatorKeysNone when nothing may.
+	OperatorKeys string `json:"operator_keys"`
 }
+
+// OperatorKeysNone is RolloutState.OperatorKeys for an immutable allowlist.
+const OperatorKeysNone = "none"
 
 // SignedRolloutState carries the exact RolloutState JSON bytes, base64 on the
 // wire so every client hashes the bytes CDS signed, and an ASN.1 ECDSA

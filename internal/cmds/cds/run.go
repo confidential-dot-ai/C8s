@@ -36,6 +36,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -118,6 +119,14 @@ func run(cfg config) error {
 		slog.Info("operator write authorization enabled (pinned operator keys)", "operator_keys", cfg.operatorKeys, "count", len(keys), "key_set_hash", operatorKeysHash)
 	} else {
 		slog.Warn("--operator-keys empty: allowlist and secret writes are disabled (reads still served)")
+	}
+	allowlistWriteAuthorizer, allowlistWriters := writeAuthorizer, operatorKeysHash
+	if cfg.allowlistImmutable || operatorKeysHash == "" {
+		allowlistWriteAuthorizer = func(*http.Request, []byte) error {
+			return fmt.Errorf("the allowlist is immutable")
+		}
+		allowlistWriters = types.OperatorKeysNone
+		slog.Info("allowlist is immutable: every allowlist write is refused")
 	}
 
 	allowlistStore, err := allowlist.OpenStore(cfg.allowlistDB)
@@ -312,7 +321,7 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   writeAuthorizer,
+			WriteAuthorizer:   allowlistWriteAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
@@ -327,6 +336,7 @@ func run(cfg config) error {
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 		StateKey:          mesh.Key,
+		AllowlistWriters:  allowlistWriters,
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)

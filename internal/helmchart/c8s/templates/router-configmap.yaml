@@ -189,6 +189,7 @@ data:
             {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/.well-known/c8s/objects/") $allowlistLocationArgs) | nindent 12 }}
             {{- include "router.allowlistLocation" (merge (dict "exact" true "path" "/.well-known/c8s/allowlist/latest") $allowlistLocationArgs) | nindent 12 }}
             {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/.well-known/c8s/state") $allowlistLocationArgs) | nindent 12 }}
+            {{- include "router.allowlistLocation" (merge (dict "exact" true "path" "/.well-known/c8s/operator-keys") $allowlistLocationArgs) | nindent 12 }}
 
             {{- end }}
             {{- range $i, $route := .Values.router.routes }}

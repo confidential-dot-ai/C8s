@@ -7694,6 +7694,14 @@ func TestChartRouterPinnedAllowlistDefaults(t *testing.T) {
 		t.Error("pinnedAllowlist=auto with an https upstream did not turn pinned mode on")
 	}
 	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-cds", "cds"), "--allowlist-activation-lease=60s")
+	if slices.Contains(renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args, "--allowlist-immutable") {
+		t.Error("CDS renders --allowlist-immutable by default")
+	}
+	out, err = helmTemplate(t, noUpstreamArgs(append(httpsUpstream, "--set", "cds.allowlistImmutable=true")...)...)
+	if err != nil {
+		t.Fatalf("helm template (immutable allowlist): %v\n%s", err, out)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-cds", "cds"), "--allowlist-immutable")
 
 	out, err = helmTemplate(t, noUpstreamArgs()...)
 	if err != nil {

@@ -32,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // Exit codes. These are a stable contract for CI: a wrong measurement (2) is
@@ -120,6 +121,7 @@ type config struct {
 	workload           string
 	allowlistFile      string
 	pinPolicies        []string
+	immutable          bool
 	fetchAllowlists    string
 	meshCA             string
 	initDataHex        string
@@ -215,6 +217,7 @@ responder chose).`,
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
 	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the mesh CA that --mesh-ca pins (or that a pinned baked node vouches for), answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca, or --image-manifest with an RTMR[3] pin")
+	f.BoolVar(&cfg.immutable, "immutable", false, "with --pin-policy, also require the attested rollout state to report an immutable allowlist (operator_keys: none), so no operator can publish another policy without a new install")
 	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to write every policy in the attested rollout bound to, fetched from the target and checked against its attested digest (attest-pq and attest-lb)")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
@@ -619,6 +622,9 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// make that responder a genuine router on a genuine node, which takes
 	// its CA only from the CDS its image pins; anything less leaves the CA,
 	// and so the pinned bound, to the responder.
+	if cfg.immutable && len(cfg.pinPolicies) == 0 {
+		return nil, fmt.Errorf("--immutable requires --pin-policy: it asserts that the pinned policy can no longer change")
+	}
 	if len(cfg.pinPolicies) > 0 && cfg.meshCA == "" && (pins.image == nil || pins.rtmr3 == nil) {
 		return nil, fmt.Errorf("--pin-policy requires --mesh-ca, or --image-manifest with an RTMR[3] pin: the CDS rollout state is signed by the mesh CA, and without either the CA is the one the responder chose (fetch it from a trusted CDS, e.g. `c8s cds verify`, and pass its PEM)")
 	}
@@ -1304,7 +1310,9 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 		fail("pinned_state_absent: --pin-policy needs an attest-pq or attest-lb target serving the CDS rollout state (router.attest.pinnedAllowlist)")
 	case !ev.fresh:
 		fail("pinned_state_stale: the rollout state is not bound to a nonce this run chose")
-	case ev.rollout.Lease <= 0:
+	case cfg.immutable && ev.rollout.OperatorKeys != types.OperatorKeysNone:
+		fail("allowlist_mutable: --immutable, but CDS accepts allowlist writes from operator key set %q", ev.rollout.OperatorKeys)
+	case !cfg.immutable && ev.rollout.Lease <= 0:
 		fail("pinned_state_unleased: CDS applies allowlist writes without an activation lease, so open sessions are not fenced")
 	default:
 		for _, d := range ev.rollout.Bound {

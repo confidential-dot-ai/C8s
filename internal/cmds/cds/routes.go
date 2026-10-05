@@ -30,6 +30,7 @@ type dependencies struct {
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
 	StateKey          *ecdsa.PrivateKey        // signs /.well-known/c8s/state; the mesh CA key
+	AllowlistWriters  string                   // RolloutState.OperatorKeys
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -71,8 +72,9 @@ func newRouter(deps dependencies) http.Handler {
 	// Unmetered like GET /allowlist: routers read the state every second and
 	// once per attest-pq, which a per-node budget shared with /attest cannot
 	// carry. nginx meters the public route.
-	r.Get(wellKnown+"/state", handleState(store, deps.StateKey, false))
-	r.Method(http.MethodPost, wellKnown+"/state/challenge", capBody(deps.MaxRequestSize, handleState(store, deps.StateKey, true)))
+	r.Get(wellKnown+"/state", handleState(store, deps.StateKey, deps.AllowlistWriters, false))
+	r.Method(http.MethodPost, wellKnown+"/state/challenge", capBody(deps.MaxRequestSize, handleState(store, deps.StateKey, deps.AllowlistWriters, true)))
+	r.Get(wellKnown+"/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
 	// token. PUT is the operator's, on allowlistWrite so it carries the same
