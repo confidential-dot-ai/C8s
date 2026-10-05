@@ -20,10 +20,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/internal/version"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -175,11 +179,13 @@ func Run(args []string) error {
 		}
 	}
 
+	measure := policyMeasurer(cfg, logger)
 	var initialETag string
 	if cfg.PullEnabled() {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
+			measure:     measure,
 			timeout:     cfg.Allowlist.Pull.Timeout,
 			pluginErrCh: pluginErrCh,
 			logger:      logger,
@@ -220,6 +226,7 @@ func Run(args []string) error {
 		go runPullLoop(ctx, pullLoopArgs{
 			client:   wlClient,
 			store:    store,
+			measure:  measure,
 			interval: cfg.Allowlist.Pull.Interval,
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
@@ -279,6 +286,7 @@ func (cfg pullConfig) cdsPins() (ratls.Pins, error) {
 type pullArgs struct {
 	client      allowlistclient.Client
 	store       *policyStore
+	measure     func(*allowlist.Allowlist) error
 	timeout     time.Duration
 	pluginErrCh <-chan error
 	logger      *slog.Logger
@@ -312,7 +320,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 				err = errInitialAllowlistNotModified
 			} else if wl == nil {
 				err = errInitialAllowlistNil
-			} else {
+			} else if err = measureWith(args.measure, wl); err == nil {
 				version := parseVersion(etag)
 				args.store.applyServed(wl, version, served.Digest)
 				args.logger.Info("initial allowlist pulled from CDS",
@@ -342,6 +350,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 type pullLoopArgs struct {
 	client   allowlistclient.Client
 	store    *policyStore
+	measure  func(*allowlist.Allowlist) error
 	interval time.Duration
 	timeout  time.Duration
 	etag     string
@@ -380,6 +389,10 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		}
 		if wl == nil {
 			args.logger.Warn("pull loop fetch returned nil allowlist")
+			continue
+		}
+		if err := measureWith(args.measure, wl); err != nil {
+			args.logger.Error("pull loop: not applying an allowlist this node could not measure", "error", err)
 			continue
 		}
 		version := parseVersion(newETag)
@@ -563,4 +576,41 @@ func healthListener(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen tcp %s: %w", addr, err)
 	}
 	return l, nil
+}
+
+// measureWith runs measure, which may be nil, on doc.
+func measureWith(measure func(*allowlist.Allowlist) error, doc *allowlist.Allowlist) error {
+	if measure == nil {
+		return nil
+	}
+	return measure(doc)
+}
+
+// policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
+// before the node applies it, once per policy, so the register records every
+// policy the node enforced since boot. Without a runtime register or an
+// operator anchor it measures nothing. A measurement failure keeps the node
+// on its current policy.
+func policyMeasurer(cfg *config, logger *slog.Logger) func(*allowlist.Allowlist) error {
+	none := func(*allowlist.Allowlist) error { return nil }
+	anchor, err := credrelease.ReadOperatorPubkey()
+	if err != nil {
+		logger.Info("allowlist policies are not measured: no operator anchor", "error", err)
+		return none
+	}
+	journal, err := policymeasure.Open(cfg.WorkloadClaims.SocketDir, teetypes.PlatformType(cfg.Platform), anchor)
+	if journal == nil {
+		if err != nil {
+			logger.Error("allowlist policies are not measured", "error", err)
+		}
+		return none
+	}
+	if err != nil {
+		// A diverged journal refuses every extend, so updates stop here.
+		logger.Error("allowlist policy measurement journal", "error", err)
+	}
+	return func(doc *allowlist.Allowlist) error {
+		_, err := journal.MeasureOnce(policyDigest(doc))
+		return err
+	}
 }

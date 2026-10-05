@@ -6,7 +6,7 @@ require (
 	cel.dev/cel-go v0.32.0
 	filippo.io/mlkem768 v0.0.0-20260214141301-2e7bebc7d88d
 	github.com/cenkalti/backoff/v5 v5.0.3
-	github.com/confidential-dot-ai/attestation-go v0.7.2
+	github.com/confidential-dot-ai/attestation-go v0.7.3-0.20261005114636-6908a4ceabc5
 	github.com/containerd/containerd/api v1.12.0
 	github.com/containerd/containerd/v2 v2.4.1
 	github.com/containerd/errdefs v1.0.0

@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
@@ -96,6 +98,11 @@ func failingAttest(t *testing.T, status int) *httptest.Server {
 func releaseHandler(t *testing.T, status int, respBody string, gotRole *atomic.Value) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The unauthenticated measured-policy list is no credential request.
+		if r.URL.Path == credrelease.MeasuredPoliciesPath {
+			http.NotFound(w, r)
+			return
+		}
 		if r.URL.Path != credrelease.ReleasePath {
 			t.Errorf("release path = %s, want %s", r.URL.Path, credrelease.ReleasePath)
 		}
@@ -283,7 +290,9 @@ func TestRunRejectsWrongRTMR3(t *testing.T) {
 	// A failure of the explicit nonce gate must prevent the release request.
 	var releaseHits atomic.Int32
 	release := newAttestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		releaseHits.Add(1)
+		if r.URL.Path != credrelease.MeasuredPoliciesPath {
+			releaseHits.Add(1)
+		}
 		releaseHandler(t, http.StatusOK, goodRelease, nil).ServeHTTP(w, r)
 	}))
 	t.Cleanup(release.Close)
@@ -540,4 +549,30 @@ func TestPublicKeyPEMFromPrivateErrors(t *testing.T) {
 			t.Fatal("want PKCS8 parse error, got nil")
 		}
 	})
+}
+
+// A node that measured allowlist policies after its seed binds the operator
+// key once a prefix of its reported list replays the quote's register.
+func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
+	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.exp.operatorPubPEM), append(slices.Clone(env.exp.workloadDigests), p))
+	res := verifiedResultFor(env.exp)
+	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
+	for _, tc := range []struct {
+		name     string
+		policies func() []string
+		ok       bool
+	}{
+		{"list ahead of the quote", func() []string { return []string{p, q} }, true},
+		{"list that does not replay", func() []string { return []string{q} }, false},
+		{"no list", nil, false},
+	} {
+		exp := env.exp
+		exp.policies = tc.policies
+		if err := exp.checkIdentity(res); (err == nil) != tc.ok {
+			t.Errorf("%s: checkIdentity = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
 }

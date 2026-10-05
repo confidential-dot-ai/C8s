@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -24,6 +25,12 @@ const maxBodyBytes = 1 << 16 // 64 KiB
 // exported because getkubeconfig (the operator-side client) marshals these
 // exact shapes; the server package owns the protocol.
 const ReleasePath = "/release-credential"
+
+// MeasuredPoliciesPath serves the allowlist policies this node extended into
+// RTMR[3] after the operator-key seed, as a JSON list in extend order. It is
+// unauthenticated: a verifier replays it against a quote, which is what makes
+// it trustworthy.
+const MeasuredPoliciesPath = "/measured-policies"
 
 // Roles the operator may request. The operator key authorizes every release,
 // so the role is a choice of how much of the operator's own authority the
@@ -134,6 +141,16 @@ func NewHandler(operatorPubPEM []byte, ca *clusterCA, roles Roles) (*Handler, er
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == MeasuredPoliciesPath && r.Method == http.MethodGet {
+		policies, err := policymeasure.Read(measuredPoliciesPath)
+		if err != nil {
+			http.Error(w, "read measured policies", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(append([]string{}, policies...))
+		return
+	}
 	if r.URL.Path != ReleasePath && r.URL.Path != AttestPath {
 		http.NotFound(w, r)
 		return

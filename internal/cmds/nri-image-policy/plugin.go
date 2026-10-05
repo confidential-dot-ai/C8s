@@ -103,12 +103,7 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 // the untrusted host a persisted file is itself host-controlled. See
 // docs/allowlist-and-capabilities.md.
 func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
-	var digest string
-	if b, err := pulled.Canonical(); err == nil {
-		sum := sha256.Sum256(b)
-		digest = "sha256:" + hex.EncodeToString(sum[:])
-	}
-	return s.applyServed(pulled, version, digest)
+	return s.applyServed(pulled, version, policyDigest(pulled))
 }
 
 // applyServed is apply for a pulled document whose served digest is known:
@@ -119,6 +114,17 @@ func (s *policyStore) applyServed(pulled *allowlist.Allowlist, version uint64, d
 	}
 	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version, digest: digest})
 	return true
+}
+
+// policyDigest is sha256:<hex> of the document's canonical bytes, the digest
+// CDS journals it under, or "" when it does not serialize.
+func policyDigest(doc *allowlist.Allowlist) string {
+	b, err := doc.Canonical()
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(b)
+	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
 // containerdOps is the containerd surface admission drives; internal/containerd's
