@@ -6,7 +6,7 @@
 # namespaces), out-of-band cw writes are denied, and ordinary pods are
 # unaffected.
 #
-# Needs: kubectl pointed at a cluster with the c8s chart installed.
+# Needs: kubectl pointed at a cluster with the C8s chart installed.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 

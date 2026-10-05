@@ -1,6 +1,6 @@
 package types
 
-// Stable HTTP error codes returned in the c8s error-envelope shape. Clients
+// Stable HTTP error codes returned in the C8s error-envelope shape. Clients
 // parse these wire-format identifiers; don't rename without a migration plan.
 const (
 	ErrorCodeInvalidRequest            = "invalid_request"
@@ -32,7 +32,7 @@ const (
 	ErrorCodeSecretStoreFull = "secret_store_full"
 )
 
-// ErrorResponse is the body a c8s service returns with a non-2xx status: one
+// ErrorResponse is the body a C8s service returns with a non-2xx status: one
 // of the codes above plus a human-readable message.
 type ErrorResponse struct {
 	Error   string `json:"error"`

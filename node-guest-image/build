@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the c8s node image from THIS repo's profile, using a
+# Build the C8s node image from THIS repo's profile, using a
 # confidential-os-builder checkout purely as the builder (c8s#264).
 # Drop-in replacement for confos's bin/build-c8s: same env contract and
 # profile stack/order — only the c8s profile content (./c8s, staged via
@@ -8,7 +8,7 @@
 # (an exported var never reaches the sync: mkosi runs under sudo, which
 # strips the env).
 #
-# The full GPU node image is base + gpu + attest-gpu + c8s. That takes
+# The full GPU node image is base + gpu + attest-gpu + C8s. That takes
 # four ordered steps because all host-side staging must precede one
 # `confos build` (the Rust driver wipes mkosi.local on build exit) and the
 # NVIDIA modules must compile against the already-built kernel tree:
@@ -44,12 +44,12 @@
 #   C8S_MEMORY=...     default-memory recorded in the manifest / used by
 #                      `confos run` (default 16G — etcd OOMs at the 4G default)
 #   C8S_REF=...        REQUIRED. Bake the host binary and core container
-#                      images from a specific c8s COMMIT (short SHA) or
+#                      images from a specific C8s COMMIT (short SHA) or
 #                      release tag; mkosi.sync resolves nri-image-policy:<ref>
 #                      and cds:<ref> to digests and has no default. The
 #                      images must be published first (c8s docker.yml on
 #                      main, or workflow_dispatch for a branch). Use a
-#                      branch SHA to test an unmerged c8s build end-to-end.
+#                      branch SHA to test an unmerged C8s build end-to-end.
 #   C8S_BINARY=...     pre-stage this locally built multi-command c8s binary
 #                      instead of pulling nri-image-policy:<C8S_REF>. The
 #                      core container images still resolve from C8S_REF and

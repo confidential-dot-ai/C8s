@@ -1,6 +1,6 @@
 # Fail the boot when the confos initrd backed the writable state with the
 # 2G tmpfs fallback instead of the confai-scratch disk. confos deliberately tolerates
-# that fallback; the c8s node must not (rke2 wedges when the tmpfs fills).
+# that fallback; the C8s node must not (rke2 wedges when the tmpfs fills).
 [Unit]
 Description=Refuse to start the node unless writable state is on the scratch disk
 # No After=: the dm mapping exists from the initrd or not at all, so the

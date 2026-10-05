@@ -5,7 +5,7 @@
 // init/main container set; every container binds a digest to the process
 // (argv), bind-mount and environment policy permitted for those bytes, and the
 // entry as a whole carries a secret-store grant. An image that may run however
-// it is invoked — a standalone or injected c8s component, whose argv is
+// it is invoked — a standalone or injected C8s component, whose argv is
 // per-pod — is an entry whose container policy is any. Policy is always looked
 // up by container digest — the entry name and image labels are informational,
 // never a trust-bearing key, because the image reference a pod presents is
@@ -281,7 +281,7 @@ func (w Workload) containers() []Container {
 
 // AdmitsAnyArgv reports whether some entry admits the digest under an
 // unconstrained argv policy. The injected-container drop set (internal/secrets)
-// keys on it: c8s's own images run with per-pod arguments, so they are only
+// keys on it: C8s's own images run with per-pod arguments, so they are only
 // ever admitted this way.
 func (a *Allowlist) AdmitsAnyArgv(digest string) bool {
 	d, err := types.ParseDigest(digest)

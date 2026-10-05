@@ -41,7 +41,7 @@ Type=simple
 # until this gate passes prevents that reconciliation window reaching a tenant.
 ExecStartPre=/usr/local/bin/psa-ready.sh
 TimeoutStartSec=630
-# ${CRED_PLATFORM} comes from a drop-in the c8s sync hook renders from the
+# ${CRED_PLATFORM} comes from a drop-in the C8s sync hook renders from the
 # build's required C8S_PLATFORM. The `=` form matters: with the variable
 # unset systemd would elide a bare word, but --platform= expands to an empty
 # value, which platform validation rejects — fail closed, never a default.

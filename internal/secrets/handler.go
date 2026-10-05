@@ -42,13 +42,13 @@ const (
 )
 
 // InjectedEntrypoints are the argv[0] values the admission webhook injects the
-// c8s image with: get-cert for the cert sidecar, /c8s for the probe-file gate,
+// C8s image with: get-cert for the cert sidecar, /c8s for the probe-file gate,
 // get-secret for the fetcher, and get-volume for the volume fetcher. A
 // container must be running one of these, on an injected digest, to be excluded
 // from workload matching — see WorkloadContainers.
 //
 // An entrypoint added here widens the assumption in docs/secrets.md that no
-// image admitted with an unconstrained argv other than c8s's carries an
+// image admitted with an unconstrained argv other than C8s's carries an
 // executable at one of these names.
 var InjectedEntrypoints = []string{"get-cert", "get-secret", "get-volume", "/c8s"}
 
@@ -428,7 +428,7 @@ func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSa
 
 // workloadContainers asks the bound inventory what the sandbox has run and
 // removes the platform's own injected containers, so a workload entry never has
-// to enumerate c8s's sidecars.
+// to enumerate C8s's sidecars.
 func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowlist, host, sandboxID string) ([]pkgallowlist.RunningContainer, error) {
 	resp, err := h.Inventory.FetchSandbox(ctx, host, sandboxID)
 	if err != nil {
@@ -447,7 +447,7 @@ func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowl
 
 // WorkloadContainers converts an inventory's reported container set to the
 // candidate set workload matching runs on, dropping the platform's own injected
-// containers so a workload entry never has to enumerate c8s's sidecars. It is a
+// containers so a workload entry never has to enumerate C8s's sidecars. It is a
 // pure function of the allowlist and the report — the one drop-set
 // implementation shared by secrets release, the release diagnostic, and CDS
 // certificate issuance. pkg/allowlist stays ignorant of injection by design
@@ -464,10 +464,10 @@ func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.Sa
 	return out
 }
 
-// isInjected reports whether a reported container is one c8s injected: its
-// image is admitted under an unconstrained argv AND its entrypoint is one c8s
+// isInjected reports whether a reported container is one C8s injected: its
+// image is admitted under an unconstrained argv AND its entrypoint is one C8s
 // injects. Both halves are required — an unconstrained image running a shell is
-// not injected. Rests on no unconstrained image other than c8s's carrying an
+// not injected. Rests on no unconstrained image other than C8s's carrying an
 // executable at one of InjectedEntrypoints (docs/secrets.md).
 func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) bool {
 	if len(c.Argv) == 0 {

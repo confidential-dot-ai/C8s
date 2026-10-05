@@ -160,7 +160,7 @@ func checkImports(cfg map[string]any) error {
 
 // render executes RKE2's base template with the node's rendering inputs,
 // through the user template at path when one exists. RKE2 renders the base
-// alone when the profile bakes none (k3s pkg/agent/containerd), and the c8s
+// alone when the profile bakes none (k3s pkg/agent/containerd), and the C8s
 // profile bakes none: the base already emits the drop-in import, and a user
 // template that repeated it produced a duplicate key containerd refused.
 func render(path string, extra extraRuntimes) (string, error) {
@@ -190,7 +190,7 @@ func render(path string, extra extraRuntimes) (string, error) {
 	return out.String(), nil
 }
 
-// renderData mirrors k3s's templates.ContainerdConfig for a c8s node: the
+// renderData mirrors k3s's templates.ContainerdConfig for a C8s node: the
 // fields the base template reads, with the values RKE2 fills in on this image.
 // Only ExtraRuntimes varies, and only for the negative tests.
 func renderData(extra extraRuntimes) map[string]any {

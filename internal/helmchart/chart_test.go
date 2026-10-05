@@ -2318,7 +2318,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 
 // The locked node image's measured runtime wrapper denies every runc exec,
 // and CRI routes exec probes and lifecycle exec hooks through exactly that
-// call (internal/cmds/c8srunc). A c8s-owned exec probe would therefore never
+// call (internal/cmds/c8srunc). A C8s-owned exec probe would therefore never
 // pass on such a node — the component would sit in CrashLoop or never go
 // Ready — so the chart must render none.
 func TestChartRendersNoExecProbes(t *testing.T) {
@@ -3052,7 +3052,7 @@ func TestRouterCORSAllowsSessionHeaderByDefault(t *testing.T) {
 	}
 }
 
-// protocolCORSLocations are the c8s protocol-owned nginx locations that serve
+// protocolCORSLocations are the C8s protocol-owned nginx locations that serve
 // wide-open CORS by default: their responses are self-authenticating or
 // public by design, and browser verifiers on any origin must be able to
 // reach them.
@@ -5097,7 +5097,7 @@ func renderedDeploymentContainer(t *testing.T, manifest, deploymentName, contain
 	return corev1.Container{}
 }
 
-// helmTemplateRouter renders the router component from the parent c8s chart in
+// helmTemplateRouter renders the router component from the parent C8s chart in
 // isolation: siblings are disabled and every caller-supplied --set/--set-string
 // path is prefixed with router. so the existing subchart-relative test values
 // (upstream.*, routes[*], nginx.*) keep working after the hoist. The release is
@@ -5545,10 +5545,10 @@ func TestChartSeedWorkloadsOverrideDerivedEntry(t *testing.T) {
 	}
 }
 
-// TestChartDerivesComponentDigestsIntoAllowlist proves that when the c8s
+// TestChartDerivesComponentDigestsIntoAllowlist proves that when the C8s
 // component images are digest-pinned, each is auto-derived into the NRI
 // allowlist seed with a repo@digest reference matching the rendered pod image —
-// so a digest-pinned install self-allows the c8s components it deploys.
+// so a digest-pinned install self-allows the C8s components it deploys.
 // nri-image-policy is not in the derive set: the chart seeds it argv-pinned
 // (c8s.argvPinnedEntries), which carries the same repo@digest label.
 func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {

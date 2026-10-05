@@ -2,7 +2,7 @@
 # Live-cluster check that a confidential workload runs bound to CDS: the sample
 # cw deployment reaches Ready and carries the injected c8s-cert sidecar.
 #
-# Needs kubectl pointed at a cluster with c8s installed. Under fail-closed image
+# Needs kubectl pointed at a cluster with C8s installed. Under fail-closed image
 # admission the workload digest must be allowlisted first: set C8S_OPERATOR_KEY
 # with C8S_ALLOWLIST_URL and C8S_MEASUREMENTS_CONFIG (or C8S_MEASUREMENTS)
 # and this applies an entry for it.

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Calculate the next stable c8s version and write the release decision to
+# Calculate the next stable C8s version and write the release decision to
 # GITHUB_OUTPUT for .github/workflows/semver-tag.yml.
 #
 # Inputs (env):

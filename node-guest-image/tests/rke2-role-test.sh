@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run the byte-exact production script in a disposable Linux container. Device
-# I/O and c8s are stubs; Go tests cover the actual cryptography and staging.
+# I/O and C8s are stubs; Go tests cover the actual cryptography and staging.
 # No host /run or /etc directories are mutated, and no privileged mount is used.
 set -euo pipefail
 
@@ -61,7 +61,7 @@ for scenario in missing-disk missing-config missing-signature invalid-signature 
         prepare-failure) : > "$C8S_ROLE_FIXTURE/prepare-fails" ;;
     esac
     # Failure cleanup must invalidate a stale prior verdict, including when
-    # failure occurs before c8s can authenticate or clear its own outputs.
+    # failure occurs before C8s can authenticate or clear its own outputs.
     : > /run/confos/role-server
     : > /run/confos/role-agent
     run_script

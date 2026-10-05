@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Validate, export, and atomically update c8s's measured-build pin manifest.
+# Validate, export, and atomically update C8s's measured-build pin manifest.
 
 set -euo pipefail
 

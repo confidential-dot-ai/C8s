@@ -1,4 +1,4 @@
-# c8s install flows and features
+# C8s install flows and features
 
 How `c8s install` assembles the platform on confidential nodes. This overview
 connects the deeper docs:
@@ -22,7 +22,7 @@ nodes for tenants that do not trust each other.
 
 | Mode | Deployment | Evidence |
 |---|---|---|
-| `bare-metal` | c8s measured node image; baked attestation API and NRI plugin | Native SNP/TDX |
+| `bare-metal` | C8s measured node image; baked attestation API and NRI plugin | Native SNP/TDX |
 | `gke` | GKE confidential nodes; chart-managed security services | Native TEE device |
 | `aks` | AKS confidential nodes; chart-managed security services | Azure vTPM |
 
@@ -55,7 +55,7 @@ Because it lives in the chart, this runs for both `c8s install` and GitOps
 
 | Component | Runs on |
 |---|---|
-| c8s operator (webhook + controllers) | Ordinary pod; release namespace is webhook-exempt |
+| C8s operator (webhook + controllers) | Ordinary pod; release namespace is webhook-exempt |
 | MWC `pod-injector` | Cluster resource, tracked by the release |
 | CDS (verify + mesh CA + leaf signing) | Ordinary pod inside the node CVM |
 | attestation API | Baked service in `bare-metal` mode; chart DaemonSet in `gke`/`aks` |

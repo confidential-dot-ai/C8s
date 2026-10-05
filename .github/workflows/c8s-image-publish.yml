@@ -1,5 +1,5 @@
 # Automatic-only entrypoint. Manual builds use c8s-image-manual.yml.
-# Trusted production entrypoint for the reusable c8s image builder. Keeping the
+# Trusted production entrypoint for the reusable C8s image builder. Keeping the
 # write grant and production secrets here lets pull-request callers use the same
 # builder with a read-only token and no inherited secrets.
 name: c8s-image

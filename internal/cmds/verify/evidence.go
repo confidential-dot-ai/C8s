@@ -50,7 +50,7 @@ type evidence struct {
 	// rawEvidence is the platform-specific evidence object, forwarded verbatim.
 	rawEvidence json.RawMessage
 	// erd is the expected freshness anchor — the exact bytes the producer bound,
-	// unpadded (48-byte SHA-384 for c8s bindings). Hardware-report verifiers
+	// unpadded (48-byte SHA-384 for C8s bindings). Hardware-report verifiers
 	// zero-pad it to the 64-byte REPORTDATA field; the Azure vTPM verifiers
 	// compare it raw against the quote's extraData, so a pre-padded value fails
 	// there (PROTOCOL.md "az-snp").

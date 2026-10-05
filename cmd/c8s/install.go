@@ -86,7 +86,7 @@ const (
 var allowedCvmModes = []string{"bare-metal", "gke", "aks"}
 
 // hostedCvmModes are the lanes whose platform pods belong to the cluster
-// provider rather than to c8s, so they are absent from the allowlist the
+// provider rather than to C8s, so they are absent from the allowlist the
 // install derives. cvmMode=bare-metal is not one: its baked floor already carries the
 // system digests.
 var hostedCvmModes = []string{"gke", "aks"}
@@ -314,7 +314,7 @@ func preflightRouterHostPort(ctx context.Context, chartPath, namespace string) e
 		return fmt.Errorf("parse pod list: %w", err)
 	}
 
-	// Ignore the install namespace: c8s's own router pod lives there, so a
+	// Ignore the install namespace: C8s's own router pod lives there, so a
 	// re-install (Recreate) does not flag itself.
 	if blocked, holders := hostPortConflict(list.Items, nodes, port, namespace); blocked {
 		return fmt.Errorf("router wants host port %d but it is already bound on every node by: %s. "+
@@ -376,7 +376,7 @@ func routerHostPort(tree map[string]any) (int32, error) {
 
 // hostPortConflict reports whether port is already bound on every node (so a new
 // host-port pod cannot schedule anywhere), along with the pods that hold it.
-// Pods in ignoreNamespace are skipped so c8s's own router does not self-flag.
+// Pods in ignoreNamespace are skipped so C8s's own router does not self-flag.
 func hostPortConflict(pods []corev1.Pod, nodes []string, port int32, ignoreNamespace string) (bool, []string) {
 	taken := map[string]bool{}
 	holderSet := map[string]bool{}
@@ -623,7 +623,7 @@ func imageRepository(refs ...string) string {
 // workloads plus every pinned component image the chart derives from. The
 // component digests are taken whether or not derivation is on and whether or
 // not the component renders — a digest here that the chart would not actually
-// emit can only mean one fewer image reported, and no c8s component image runs
+// emit can only mean one fewer image reported, and no C8s component image runs
 // in a platform pod.
 func admissibleDigests(values map[string]any, components []c8sComponent) map[string]bool {
 	admitted := map[string]bool{}
@@ -1233,7 +1233,7 @@ func namespaceManifest(namespace string) ([]byte, error) {
 }
 
 // fallbackImageTag is installed whenever the build is not stamped with a
-// release version. It is the branch every c8s component publishes; it is
+// release version. It is the branch every C8s component publishes; it is
 // deliberately not "latest", which cds does not publish (so
 // `crane digest ghcr.io/confidential-dot-ai/cds:latest` under --resolve-digests would
 // abort with MANIFEST_UNKNOWN).
@@ -1667,7 +1667,7 @@ func appendVolumedInstallArgs(setArgs []string, volumes bool) []string {
 
 // appendExemptNamespacesInstallArgs defaults image admission to admitting
 // kube-system by captured digest on the hosted lanes (see hostedCvmModes),
-// where the provider's platform pods are not on the c8s allowlist. Without it a
+// where the provider's platform pods are not on the C8s allowlist. Without it a
 // default install renders digest-only admission and then restarts containerd to
 // register the plugin, which on a self-managed control plane denies the static
 // pods and never brings the API server back.
@@ -1897,7 +1897,7 @@ func adoptedWorkloadImages(ctx context.Context, ref workloadRef) ([]string, erro
 	return podTemplateImages(template), nil
 }
 
-// reportAdoptedImages prints the images c8s pins into the NRI allowlist for one
+// reportAdoptedImages prints the images C8s pins into the NRI allowlist for one
 // adopted workload, and flags each image referenced by a mutable tag rather than
 // a digest. A tag is a TOCTOU risk: the digest read here (and pinned) can differ
 // from what the operator's rollout actually pulls later. An unparseable ref is
@@ -2027,9 +2027,9 @@ func workloadImageAllowlistEntry(image string, resolve func(ref string) (string,
 	return parsed, repo + "@" + parsed.String(), nil
 }
 
-// tagCouplingHint explains a missing component image in terms of the c8s
+// tagCouplingHint explains a missing component image in terms of the C8s
 // publish model, so the operator lands on the right knob instead of retrying
-// tags. The c8s component images (operator, cds, …) publish in lockstep
+// tags. The C8s component images (operator, cds, …) publish in lockstep
 // (docker.yml) and the chart+operator ship as a unit. Falling back to a
 // mismatched component tag is worse than failing: an operator predating the
 // chart's webhook features silently mis-injects.
@@ -2144,7 +2144,7 @@ func overlaySetArgs(tree map[string]any, setArgs []string) error {
 // assembly is testable without a registry.
 //
 // A component carrying a chart-declared pinnedDigest is pinned to it and never
-// resolved: it is released on another repository's cadence, so no c8s tag names
+// resolved: it is released on another repository's cadence, so no C8s tag names
 // an image of it and resolving one can only fail.
 func buildDigestArgs(helmArgs []string, tag string, components []c8sComponent, resolve func(ref string) (string, error), enabled func(valuePath string) (bool, error)) ([]string, error) {
 	for _, c := range components {

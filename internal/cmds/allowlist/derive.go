@@ -57,7 +57,7 @@ func podSpecOf(data []byte) (podTemplate, error) {
 	return podTemplate{}, fmt.Errorf("%s carries no containers: expected a Pod or a workload with a pod template", kind)
 }
 
-// dropInjected removes the containers c8s's admission webhook adds and returns
+// dropInjected removes the containers C8s's admission webhook adds and returns
 // their names.
 func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 	out := make([]templateContainer, 0, len(cs))

@@ -68,7 +68,7 @@ type fakeCDS struct {
 type reply struct {
 	status int
 	value  string // raw value; encoded as base64 in the response
-	code   string // c8s error-envelope code, for a non-2xx body
+	code   string // C8s error-envelope code, for a non-2xx body
 }
 
 func newFakeCDS(t *testing.T, replies map[string][]reply) (*fakeCDS, string) {

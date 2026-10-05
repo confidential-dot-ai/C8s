@@ -221,7 +221,7 @@ policy:
   # devices, CDI injection, OCI hooks and the marks of a privileged container
   # (see docs/allowlist-and-capabilities.md, "Host privilege").
   #
-  # AUDIT, not enforce, and this is the one thing to flip: c8s's own node-level
+  # AUDIT, not enforce, and this is the one thing to flip: C8s's own node-level
   # components (volumed, ratls-mesh, the attestation-api proxy, router, the
   # nri-image-policy installer) legitimately use hostPath and hostNetwork, and
   # they reach this plugin through the CDS-served document rather than through

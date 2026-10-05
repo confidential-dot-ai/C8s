@@ -1,6 +1,6 @@
 # Baked into server/manifests so RKE2 auto-applies it at boot. RKE2's `cis`
 # profile (config.yaml) does NOT ship local-path-provisioner, so without this
-# the confidential node has no StorageClass and any PVC (e.g. c8s tee-proxy
+# the confidential node has no StorageClass and any PVC (e.g. C8s tee-proxy
 # certs, CDI rootdisks) stays Pending forever. v0.0.30 matches the ansible
 # local-path-provisioner role on the outer clusters.
 #
@@ -130,7 +130,7 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: local-path
-  # Default class: c8s (tee-proxy certs) and CDI rootdisk PVCs omit
+  # Default class: C8s (tee-proxy certs) and CDI rootdisk PVCs omit
   # storageClassName, so without a default they never bind.
   annotations:
     storageclass.kubernetes.io/is-default-class: "true"

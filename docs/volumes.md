@@ -14,7 +14,7 @@ StorageClass provisions dynamically — see
 
 ## Why a volume is different from a secret
 
-Every other value c8s protects is RAM-resident and dies with the pod. A volume
+Every other value C8s protects is RAM-resident and dies with the pod. A volume
 does not: its ciphertext sits on storage the host reads and writes freely, and
 the host keeps it.
 
@@ -239,7 +239,7 @@ command. The image path is on the **hypervisor host**:
 -device virtio-blk-pci,drive=volweights,serial=c8s-vol-weights
 ```
 
-This is **cold-plug only** on the c8s node image. Its kernel has PCI hotplug
+This is **cold-plug only** on the C8s node image. Its kernel has PCI hotplug
 disabled, so `device_add virtio-blk-pci` cannot hot-attach a disk, even with a
 PCIe root port.
 
@@ -276,10 +276,10 @@ mounted, and the `target_core_mod`, `target_core_file`, and `tcm_loop` modules
 available. `c8s volume detach <name>` removes that disk, leaving the ciphertext
 and key where they are.
 
-**This fallback is unsupported on the c8s node image:** it omits LIO support
+**This fallback is unsupported on the C8s node image:** it omits LIO support
 (`CONFIG_TARGET_CORE`) and disables module loading after boot. Release images
 also provide no supported root shell for invoking it. Use the hypervisor
-attachment recipes above for c8s QEMU/KVM nodes.
+attachment recipes above for C8s QEMU/KVM nodes.
 
 The serial is a **selector, not a trust input**. The host chooses it and answers
 the query per read. Pointing a pod at the wrong device fails closed: the wrong
@@ -453,8 +453,8 @@ holds the device open through its own mount namespace, so the close fails and
 the hook says which names it could not close. A mapping left open holds the
 backing disk open, so a volume it covers cannot be reopened.
 
-Nothing needs a shell on the node to clear it. volumed sweeps the c8s mappings
-it finds at startup, so **reinstalling c8s reaps whatever an uninstall left** —
+Nothing needs a shell on the node to clear it. volumed sweeps the C8s mappings
+it finds at startup, so **reinstalling C8s reaps whatever an uninstall left** —
 and the kernel refuses to close a mapping something still has mounted, so the
 sweep cannot take a volume from a workload that is still using it. A mapping
 still held after a reinstall means a pod is still holding it: delete the pod

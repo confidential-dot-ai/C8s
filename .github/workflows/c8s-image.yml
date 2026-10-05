@@ -1,4 +1,4 @@
-# Build + publish the c8s confidential node image (TDX-measured RKE2 + NRI +
+# Build + publish the C8s confidential node image (TDX-measured RKE2 + NRI +
 # attestation-api + NVIDIA stack in the verity rootfs). confos is the build
 # tree (pinned CONFOS_REF); callers select the baked commit and publish policy.
 # Output: ghcr.io/confidential-dot-ai/node-guest-base, one image per TEE:

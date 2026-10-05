@@ -30,7 +30,7 @@ service-cidr: 10.53.0.0/16
 cluster-dns: 10.53.0.10
 
 # Drop RKE2's bundled ingress: it binds hostPorts 80/443, which collide with
-# c8s router's hostPort 443 (the attested front door for workloads —
+# C8s router's hostPort 443 (the attested front door for workloads —
 # `c8s install` preflights this exact conflict). RKE2 <= v1.35 bundles
 # rke2-ingress-nginx; v1.36+ bundles rke2-traefik — disable both so the image
 # works across versions. The node image's external surface is router, not a
