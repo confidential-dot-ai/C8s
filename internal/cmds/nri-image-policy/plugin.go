@@ -2,6 +2,8 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,6 +45,9 @@ const (
 type policySnapshot struct {
 	index   *allowlist.Index
 	version uint64
+	// digest is sha256:<hex> of the pulled document's canonical bytes, the
+	// digest CDS journals it under; empty before the first pull.
+	digest string
 }
 
 // policyStore holds the current admission snapshot. A single writer (the pull
@@ -101,7 +106,12 @@ func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
 	if cur := s.snap.Load(); cur != nil && version < cur.version {
 		return false
 	}
-	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version})
+	var digest string
+	if b, err := pulled.Canonical(); err == nil {
+		sum := sha256.Sum256(b)
+		digest = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version, digest: digest})
 	return true
 }
 
@@ -180,10 +190,12 @@ func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
 // RecheckRunning runs the existing-container check over every tracked
 // container, so a policy that removes or narrows an entry stops containers
 // it no longer admits. Exempt namespaces, audit mode and enforce_existing
-// apply as in the startup check.
+// apply as in the startup check. The inventory then acknowledges the policy,
+// clean only when no checked container it denies is left running.
 func (p *plugin) RecheckRunning(ctx context.Context) {
 	p.recheckMu.Lock()
 	defer p.recheckMu.Unlock()
+	policy := p.policy.current().digest
 	p.runningMu.Lock()
 	var pods []*api.PodSandbox
 	var ctrs []*api.Container
@@ -192,8 +204,12 @@ func (p *plugin) RecheckRunning(ctx context.Context) {
 		ctrs = append(ctrs, rc.ctr)
 	}
 	p.runningMu.Unlock()
+	denied := 0
 	if len(ctrs) > 0 {
-		p.checkExisting(ctx, p.cfg, pods, ctrs)
+		denied = p.checkExisting(ctx, p.cfg, pods, ctrs)
+	}
+	if p.inventory != nil && policy != "" {
+		p.inventory.setPolicyAck(workloadclaims.PolicyAck{Policy: policy, Clean: denied == 0})
 	}
 }
 
@@ -841,7 +857,10 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 
 // checkExisting records every container it is handed, checks the ones whose pod
 // sandbox it was also handed, and kills violations when enforce_existing is set.
-func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.PodSandbox, ctrs []*api.Container) {
+//
+// It returns how many denied containers outside an exempt namespace it left
+// running.
+func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.PodSandbox, ctrs []*api.Container) int {
 	p.logger.Info("checking existing containers",
 		"pods", len(pods), "containers", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
 
@@ -851,7 +870,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		podByID[pod.GetId()] = pod
 	}
 
-	var killed, failed int
+	var killed, failed, left int
 	for _, ctr := range ctrs {
 		// Recorded ahead of the lookup that can skip it; the record needs no pod.
 		imageRef := ctr.GetAnnotations()[annotationImageName]
@@ -874,6 +893,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		}
 		// enforce_existing off: the check only feeds the inventory.
 		if cfg.Policy.Mode == ModeAudit || !cfg.Policy.EnforceExisting {
+			left++
 			continue
 		}
 		// A restart of the gated plugin found a running container the current
@@ -886,6 +906,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		if err := p.containerd.StopContainer(ctx, ctr.GetId()); err != nil {
 			p.logger.Error("sync: failed to kill container", "container", ctr.GetName(), "error", err)
 			failed++
+			left++
 		} else {
 			killed++
 		}
@@ -893,6 +914,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 
 	p.logger.Info("existing-container check complete",
 		"killed", killed, "failed", failed, "checked", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
+	return left
 }
 
 // RunDeferredCheck checks the pods/containers that were seen during Synchronize

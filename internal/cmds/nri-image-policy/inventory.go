@@ -25,6 +25,7 @@ type admissionInventory struct {
 	admitted   map[string]admissionhistory.History // sandboxID -> everything ever admitted there
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
+	ack        workloadclaims.PolicyAck
 }
 
 type ctrRec struct {
@@ -41,6 +42,20 @@ func newAdmissionInventory(procRoot string) *admissionInventory {
 		sandboxes:  map[string]struct{}{},
 		procRoot:   procRoot,
 	}
+}
+
+// PolicyAck reports the policy this node last rechecked its running
+// containers against, for CDS's drain (workloadclaims.PolicyAcker).
+func (b *admissionInventory) PolicyAck() workloadclaims.PolicyAck {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.ack
+}
+
+func (b *admissionInventory) setPolicyAck(ack workloadclaims.PolicyAck) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.ack = ack
 }
 
 // record notes an admitted container, injected sidecars included: /digests is

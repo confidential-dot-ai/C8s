@@ -212,7 +212,11 @@ func Run(args []string) error {
 	plugin.SetReady()
 	logger.Info("plugin ready")
 
+	plugin.RunDeferredCheck(ctx)
 	if cfg.PullEnabled() {
+		// Acknowledge the initially pulled policy before the pull loop can
+		// swap it; later pulls do it in onApply.
+		plugin.RecheckRunning(ctx)
 		go runPullLoop(ctx, pullLoopArgs{
 			client:   wlClient,
 			store:    store,
@@ -220,14 +224,11 @@ func Run(args []string) error {
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
 			logger:   logger,
-			// Stop running containers the new policy no longer admits. The
-			// initial pull needs no hook: RunDeferredCheck checks the
-			// Synchronize set once the plugin is ready.
+			// Stop running containers the new policy no longer admits, then
+			// acknowledge it.
 			onApply: func() { plugin.RecheckRunning(ctx) },
 		})
 	}
-
-	plugin.RunDeferredCheck(ctx)
 
 	select {
 	case err := <-pluginErrCh:

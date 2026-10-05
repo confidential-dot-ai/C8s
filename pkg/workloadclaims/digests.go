@@ -367,6 +367,24 @@ func (c *DigestsClient) InventoryKey(ctx context.Context, host string) (*ecdsa.P
 	return pub, nil
 }
 
+// PolicyAck asks the inventory on host which policy it applied and whether
+// every running container satisfies it.
+func (c *DigestsClient) PolicyAck(ctx context.Context, host string) (PolicyAck, error) {
+	var out PolicyAck
+	resp, err := c.get(ctx, host, PolicyPath)
+	if err != nil {
+		return out, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return out, fmt.Errorf("workloadclaims: inventory %s policy returned %d", host, resp.StatusCode)
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+		return out, fmt.Errorf("workloadclaims: decode inventory policy: %w", err)
+	}
+	return out, nil
+}
+
 // get dials the inventory on host at DigestsPort and performs a GET.
 func (c *DigestsClient) get(ctx context.Context, host, route string) (*http.Response, error) {
 	dialHost, err := parseInventoryHost(host)

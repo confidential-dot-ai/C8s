@@ -102,6 +102,19 @@ func (h *NodeHosts) Contains(host string) bool {
 	return snap != nil && snap.contains(host)
 }
 
+// Hosts lists the node addresses in the bound.
+func (h *NodeHosts) Hosts() []string {
+	snap := h.snap.Load()
+	if snap == nil {
+		return nil
+	}
+	hosts := make([]string, 0, len(*snap))
+	for _, n := range *snap {
+		hosts = append(hosts, n.IP.String())
+	}
+	return hosts
+}
+
 func (h *NodeHosts) Empty() bool {
 	snap := h.snap.Load()
 	return snap == nil || len(*snap) == 0

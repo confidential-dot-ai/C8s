@@ -34,10 +34,6 @@ CREATE TABLE IF NOT EXISTS journal_pending (
 	target         TEXT NOT NULL,
 	published_ms   INTEGER NOT NULL
 );
-CREATE TABLE IF NOT EXISTS journal_served (
-	target    TEXT NOT NULL,
-	since_ms  INTEGER NOT NULL
-);
 `
 
 // ErrUpdatePending rejects a write while a published update waits for
@@ -56,6 +52,8 @@ type Event struct {
 	Source        string `json:"source,omitempty"`
 	Target        string `json:"target"`
 	DrainRequired bool   `json:"drain_required,omitempty"`
+	// Nodes lists the nodes whose acknowledgements a drained event rests on.
+	Nodes []string `json:"nodes,omitempty"`
 }
 
 // State is the unsigned rollout state CDS signs.
@@ -72,15 +70,10 @@ func objectDigest(b []byte) string {
 // A positive lease stages every later publication: the store keeps serving the
 // source document until Activate runs lease after both the publication and
 // this call. Routers fence their sessions on the same lease.
-//
-// A positive drainAfter lets Drain collapse the bound: drainAfter after the
-// served document last changed (and after this call), no identity stamped
-// under an earlier policy can still be valid. CDS passes its named-leaf TTL
-// plus a clock margin. Zero disables draining.
-func (s *Store) StartJournal(authority string, lease, drainAfter time.Duration) error {
+func (s *Store) StartJournal(authority string, lease time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authority, s.lease, s.drainAfter, s.started = authority, lease, drainAfter, s.clock()
+	s.authority, s.lease, s.started = authority, lease, s.clock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -100,26 +93,11 @@ func (s *Store) StartJournal(authority string, lease, drainAfter time.Duration) 
 	if _, err := publishTx(tx, authority); err != nil {
 		return err
 	}
-	// A journal written before journal_served existed records no serving
-	// time: start the drain clock now.
-	var served int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM journal_served").Scan(&served); err != nil {
-		return err
-	}
-	if served == 0 {
-		head, _, err := headTx(tx)
-		if err != nil {
-			return err
-		}
-		if err := setServedTx(tx, head.Target, s.started); err != nil {
-			return err
-		}
-	}
 	return tx.Commit()
 }
 
-// SetClock replaces time.Now for the journal's own timestamps (start,
-// publication, lease-0 serving time). For tests.
+// SetClock replaces time.Now for the journal's own timestamps (start and
+// publication). For tests.
 func (s *Store) SetClock(now func() time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -132,15 +110,6 @@ func (s *Store) clock() time.Time {
 		return s.now()
 	}
 	return time.Now()
-}
-
-// setServedTx records that CDS enforces target from since on.
-func setServedTx(tx *sql.Tx, target string, since time.Time) error {
-	if _, err := tx.Exec("DELETE FROM journal_served"); err != nil {
-		return err
-	}
-	_, err := tx.Exec("INSERT INTO journal_served (target, since_ms) VALUES (?, ?)", target, since.UnixMilli())
-	return err
 }
 
 // journalTx runs before every mutation commits. It refuses the write while an
@@ -160,16 +129,8 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 		return err
 	}
 	source, err := publishTx(tx, s.authority)
-	if err != nil || source == nil {
+	if err != nil || source == nil || s.lease <= 0 {
 		return err
-	}
-	if s.lease <= 0 {
-		// Without a lease the new document is enforced as it commits.
-		head, _, err := headTx(tx)
-		if err != nil {
-			return err
-		}
-		return setServedTx(tx, head.Target, s.clock())
 	}
 	var prev pkgallowlist.Allowlist
 	if err := json.Unmarshal(source, &prev); err != nil {
@@ -243,9 +204,6 @@ func (s *Store) Activate(now time.Time) (bool, error) {
 	if _, err := tx.Exec("DELETE FROM journal_pending"); err != nil {
 		return false, err
 	}
-	if err := setServedTx(tx, target, now); err != nil {
-		return false, err
-	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
@@ -253,25 +211,15 @@ func (s *Store) Activate(now time.Time) (bool, error) {
 	return true, nil
 }
 
-// Drain appends a drained event, collapsing the bound to the served policy,
-// once no identity stamped under an earlier policy can still be valid, and
-// reports whether it did.
-//
-// CDS stamps a named leaf with the policy it serves at issuance, and caps the
-// leaf's lifetime at the named-leaf TTL. So drainAfter (that TTL plus a clock
-// margin) after the served policy last changed, and after this process
-// started, every leaf stamped under an earlier policy has expired. Draining
-// waits while an update is pending, since the bound must keep its target.
-//
-// Running containers admitted under a revoked policy are not stopped: their
-// next leaf is issued unnamed, because they no longer match an entry. The
-// drain wait is what bounds how long their old stamp stays acceptable.
-func (s *Store) Drain(now time.Time) (bool, error) {
+// Drain appends a drained event that collapses the bound to target and
+// records nodes, and reports whether it did. CDS calls it once every node in
+// nodes has acknowledged target, the enforced policy, with no running
+// container it denies. It does nothing while an update is pending, once
+// target is no longer the enforced policy, or when the bound already holds
+// target alone.
+func (s *Store) Drain(target string, nodes []string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.drainAfter <= 0 {
-		return false, nil
-	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -279,34 +227,11 @@ func (s *Store) Drain(now time.Time) (bool, error) {
 	}
 	defer tx.Rollback()
 
-	var pending int
-	if err := tx.QueryRow("SELECT COUNT(*) FROM journal_pending").Scan(&pending); err != nil {
-		return false, err
-	}
-	if pending > 0 {
-		return false, nil
-	}
-	var served string
-	var sinceMS int64
-	err = tx.QueryRow("SELECT target, since_ms FROM journal_served").Scan(&served, &sinceMS)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	since := time.UnixMilli(sinceMS)
-	if s.started.After(since) {
-		since = s.started
-	}
-	if now.Before(since.Add(s.drainAfter)) {
-		return false, nil
-	}
 	st, err := replayTx(tx, s.authority, s.lease)
 	if err != nil {
 		return false, err
 	}
-	if st.Policy != served || slices.Equal(st.Bound, []string{served}) {
+	if st.Pending != "" || st.Policy != target || slices.Equal(st.Bound, []string{target}) {
 		return false, nil
 	}
 	head, headDigest, err := headTx(tx)
@@ -315,7 +240,7 @@ func (s *Store) Drain(now time.Time) (bool, error) {
 	}
 	ev := Event{
 		Protocol: 1, Authority: s.authority, Position: head.Position + 1, Parent: headDigest,
-		Type: EventDrained, Version: head.Version, Target: served,
+		Type: EventDrained, Version: head.Version, Target: target, Nodes: slices.Sorted(slices.Values(nodes)),
 	}
 	evBytes, err := json.Marshal(ev)
 	if err != nil {

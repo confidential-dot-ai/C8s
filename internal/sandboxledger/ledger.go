@@ -103,6 +103,23 @@ func (l *Ledger) Lookup(sandboxID string) (string, bool) {
 }
 
 // Len reports the number of live bindings, for metrics and tests.
+// Hosts lists the distinct inventory hosts of unexpired bindings: the nodes
+// running a sandbox that may still hold a certificate.
+func (l *Ledger) Hosts() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := l.now()
+	seen := map[string]bool{}
+	var hosts []string
+	for _, b := range l.bindings {
+		if now.Before(b.expires) && !seen[b.host] {
+			seen[b.host] = true
+			hosts = append(hosts, b.host)
+		}
+	}
+	return hosts
+}
+
 func (l *Ledger) Len() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()

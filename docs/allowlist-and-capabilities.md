@@ -540,21 +540,25 @@ journal over the same verified CDS proxy as `/allowlist`:
 publication that keeps every source entry replaces a single-policy bound; any
 other publication widens it.
 
-A widened bound shrinks again through a `drained` event. CDS stamps a named
-leaf with the policy it enforces at issuance, and no named leaf lives longer
-than `--named-cert-ttl` (at most 6h). So once `--named-cert-ttl` plus a 5
-minute clock margin has run since CDS last changed the enforced policy (and
-since CDS started), no valid leaf names an earlier policy. CDS then appends a
-`drained` event whose `target` is the enforced policy, and `bound` collapses
-to it. CDS does not drain while an update is pending.
+A widened bound shrinks again through a `drained` event, once every node
+acknowledges the enforced policy. When the NRI plugin applies a pulled
+allowlist, it re-checks every running container. With
+`policy.enforce_existing` (the default), it stops a container that the new
+policy no longer admits, as at startup; exempt namespaces and audit mode
+behave as in the startup check. The plugin then acknowledges the policy on
+its CDS-facing endpoint (`GET /policy` on `:1019`, see
+[`ratls.md`](ratls.md)): the digest it applied, and whether every checked
+container it denies has stopped.
 
-When the NRI plugin pulls a new allowlist, it re-checks every running
-container. With `policy.enforce_existing` (the default), it stops a
-container that the new policy no longer admits, as at startup; exempt
-namespaces and audit mode behave as in the startup check. So a removal
-reaches running containers within one pull interval after activation.
-The drain still bounds the identity: the stopped container's last leaf
-keeps its stamp until it expires.
+While the bound holds more than one policy and no update is pending, CDS asks
+every node for its acknowledgement every 10 seconds. The nodes are those the
+cluster's node objects name, plus every node that vouched for a sandbox whose
+certificate may still be valid. Once each one acknowledges the enforced
+policy with nothing denied left running, CDS appends a `drained` event whose
+`target` is that policy, and `bound` collapses to it. An unreachable node, a
+node in audit mode or with `enforce_existing` off that still runs a denied
+container, or a deployment without the sandbox inventory keeps the bound
+widened.
 
 The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
 SHA-384 of a context string, a zero byte, and the exact `state` bytes. The

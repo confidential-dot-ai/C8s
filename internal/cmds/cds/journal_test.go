@@ -7,18 +7,21 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestJournalRoutes(t *testing.T) {
@@ -31,7 +34,7 @@ func TestJournalRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
 		t.Fatal(err)
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
@@ -100,7 +103,7 @@ func TestJournalPolicyMatchesSnapshotDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.StartJournal("sha256:auth", 0, 0); err != nil {
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
 		t.Fatal(err)
 	}
 	snapshot, err := loadPolicySnapshot(&store)
@@ -116,34 +119,46 @@ func TestJournalPolicyMatchesSnapshotDigest(t *testing.T) {
 	}
 }
 
-func TestDrainAfterCoversNamedLeafTTL(t *testing.T) {
+type fakeAcker map[string]workloadclaims.PolicyAck
+
+func (f fakeAcker) PolicyAck(_ context.Context, host string) (workloadclaims.PolicyAck, error) {
+	ack, ok := f[host]
+	if !ok {
+		return ack, errors.New("unreachable")
+	}
+	return ack, nil
+}
+
+func TestNodeAcks(t *testing.T) {
+	clean := workloadclaims.PolicyAck{Policy: "sha256:q", Clean: true}
 	for _, tc := range []struct {
-		ttl, want time.Duration
+		name  string
+		hosts []string
+		acks  fakeAcker
+		ok    bool
 	}{
-		{time.Hour, time.Hour + drainClockMargin},
-		{0, issuer.MaxNamedLeafTTL + drainClockMargin},
-		{100 * time.Hour, issuer.MaxNamedLeafTTL + drainClockMargin},
+		{"every node clean", []string{"10.0.0.1", "10.0.0.2"}, fakeAcker{"10.0.0.1": clean, "10.0.0.2": clean}, true},
+		{"no nodes known", nil, fakeAcker{}, false},
+		{"node unreachable", []string{"10.0.0.1", "10.0.0.2"}, fakeAcker{"10.0.0.1": clean}, false},
+		{"node on another policy", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:p", Clean: true}}, false},
+		{"node still running a denied container", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:q"}}, false},
 	} {
-		if got := drainAfter(tc.ttl); got != tc.want {
-			t.Errorf("drainAfter(%s) = %s, want %s", tc.ttl, got, tc.want)
+		acks := nodeAcks{client: tc.acks, hosts: func() []string { return tc.hosts }}
+		if ok, nodes := acks.acked(context.Background(), "sha256:q"); ok != tc.ok || (ok && !slices.Equal(nodes, tc.hosts)) {
+			t.Errorf("%s: acked = %v, want %v", tc.name, ok, tc.ok)
 		}
 	}
 }
 
-// startJournal runs the drain loop without a lease and with the configured
-// named-leaf TTL: a narrowing collapses once drainAfter has passed.
-func TestStartJournalDrainsWithoutLease(t *testing.T) {
+// journalLoop drains a widened bound once every node acknowledges the
+// enforced policy, and not before.
+func TestJournalLoopDrainsOnAcks(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	// The journal's clock runs one hour behind, so drainAfter (5m plus the
-	// 1ms TTL) has passed for the loop's real clock.
-	store.SetClock(func() time.Time { return time.Now().Add(-time.Hour) })
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := startJournal(ctx, &store, "sha256:auth", config{namedCertTTL: time.Millisecond}, 10*time.Millisecond); err != nil {
+	if err := startJournal(&store, "sha256:auth", config{}); err != nil {
 		t.Fatal(err)
 	}
 	w := pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: digest(t, digestA)}}}
@@ -153,18 +168,43 @@ func TestStartJournalDrainsWithoutLease(t *testing.T) {
 	if _, err := store.DeleteWorkload("a"); err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	st, err := store.State()
+	if err != nil || len(st.Bound) != 2 {
+		t.Fatalf("state after a narrowing = %+v, %v; want a 2-entry bound", st, err)
+	}
+	var mu sync.Mutex
+	acker := fakeAcker{"10.0.0.1": {Policy: st.Policy}}
+	acks := &nodeAcks{client: lockedAcker{&mu, acker}, hosts: func() []string { return []string{"10.0.0.1"} }, every: time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go journalLoop(ctx, &store, time.Millisecond, acks)
+
+	time.Sleep(50 * time.Millisecond)
+	if st, _ := store.State(); len(st.Bound) != 2 {
+		t.Fatalf("bound = %v with a node not clean, want it kept", st.Bound)
+	}
+	mu.Lock()
+	acker["10.0.0.1"] = workloadclaims.PolicyAck{Policy: st.Policy, Clean: true}
+	mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
 	for {
-		st, err := store.State()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(st.Bound) == 1 {
+		if st, _ := store.State(); len(st.Bound) == 1 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("bound = %v two seconds after a narrowing, want it drained", st.Bound)
+			t.Fatal("bound not drained after every node acknowledged the enforced policy")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+type lockedAcker struct {
+	mu *sync.Mutex
+	f  fakeAcker
+}
+
+func (l lockedAcker) PolicyAck(ctx context.Context, host string) (workloadclaims.PolicyAck, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.f.PolicyAck(ctx, host)
 }

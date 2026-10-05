@@ -29,11 +29,10 @@ type Store struct {
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
 	gen uint64
-	// authority, lease, drainAfter and started are set once by StartJournal.
-	authority  string
-	lease      time.Duration
-	drainAfter time.Duration
-	started    time.Time
+	// authority, lease and started are set once by StartJournal.
+	authority string
+	lease     time.Duration
+	started   time.Time
 	// now overrides time.Now for the journal's timestamps (tests only).
 	now func() time.Time
 	// state memoizes State until the next committed mutation.

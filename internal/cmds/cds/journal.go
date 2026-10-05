@@ -15,9 +15,9 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // wellKnown prefixes the public rollout-journal routes.
@@ -110,26 +110,10 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// drainClockMargin is added to the named-leaf TTL before CDS drains the
-// bound, for clock skew between CDS and the verifiers that check a leaf's
-// NotAfter.
-const drainClockMargin = 5 * time.Minute
-
-// drainAfter is how long after the served policy changes no leaf stamped
-// under an earlier policy can still be valid: every stamped leaf lives at most
-// namedCertTTL (capped by issuer.MaxNamedLeafTTL), plus a clock margin.
-func drainAfter(namedCertTTL time.Duration) time.Duration {
-	if namedCertTTL <= 0 || namedCertTTL > issuer.MaxNamedLeafTTL {
-		namedCertTTL = issuer.MaxNamedLeafTTL
-	}
-	return namedCertTTL + drainClockMargin
-}
-
-// startJournal starts the allowlist journal with cfg's lease and drain wait,
-// and the loop that activates and drains it every tick, with or without a
-// lease.
-func startJournal(ctx context.Context, store *allowlist.Store, authority string, cfg config, tick time.Duration) error {
-	if err := store.StartJournal(authority, cfg.activationLease, drainAfter(cfg.namedCertTTL)); err != nil {
+// startJournal starts the allowlist journal with cfg's lease, and activates
+// an update an earlier run staged once its lease has run.
+func startJournal(store *allowlist.Store, authority string, cfg config) error {
+	if err := store.StartJournal(authority, cfg.activationLease); err != nil {
 		return fmt.Errorf("start allowlist journal: %w", err)
 	}
 	// Without a lease, an update staged by an earlier run activates now
@@ -137,15 +121,59 @@ func startJournal(ctx context.Context, store *allowlist.Store, authority string,
 	if _, err := store.Activate(time.Now()); err != nil {
 		return fmt.Errorf("activate pending allowlist update: %w", err)
 	}
-	go journalLoop(ctx, store, tick)
 	return nil
 }
 
+// policyAcker asks one node's inventory for its policy acknowledgement.
+type policyAcker interface {
+	PolicyAck(ctx context.Context, host string) (workloadclaims.PolicyAck, error)
+}
+
+// nodeAcks decides when the rollout bound may drain: every node that may run
+// a workload must acknowledge the enforced policy clean. hosts lists those
+// nodes; an empty list never drains, since nothing vouches that no node runs
+// an earlier policy.
+type nodeAcks struct {
+	client policyAcker
+	hosts  func() []string
+	// every spaces the node polls; zero means drainCheckInterval.
+	every time.Duration
+}
+
+func (a nodeAcks) interval() time.Duration {
+	if a.every > 0 {
+		return a.every
+	}
+	return drainCheckInterval
+}
+
+// acked reports whether every node acknowledges policy clean. It returns the
+// nodes that did, or the first node that did not.
+func (a nodeAcks) acked(ctx context.Context, policy string) (bool, []string) {
+	hosts := a.hosts()
+	if len(hosts) == 0 {
+		return false, nil
+	}
+	for _, host := range hosts {
+		ack, err := a.client.PolicyAck(ctx, host)
+		if err != nil || ack.Policy != policy || !ack.Clean {
+			return false, []string{host}
+		}
+	}
+	return true, hosts
+}
+
+// drainCheckInterval spaces the node polls while the bound holds more than
+// one policy, by default.
+const drainCheckInterval = 10 * time.Second
+
 // journalLoop enforces a pending allowlist update once its lease has run, and
-// drains the bound once no leaf stamped under an earlier policy is valid.
-func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration) {
+// drains a widened bound once every node acknowledges the enforced policy.
+// acks nil never drains.
+func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration, acks *nodeAcks) {
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+	var lastCheck time.Time
 	for {
 		select {
 		case <-ctx.Done():
@@ -156,10 +184,25 @@ func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration
 			} else if ok {
 				slog.Info("allowlist update activated")
 			}
-			if ok, err := store.Drain(now); err != nil {
+			if acks == nil || now.Sub(lastCheck) < acks.interval() {
+				continue
+			}
+			st, err := store.State()
+			if err != nil || len(st.Bound) < 2 || st.Pending != "" {
+				continue
+			}
+			lastCheck = now
+			checkCtx, cancel := context.WithTimeout(ctx, acks.interval())
+			ok, nodes := acks.acked(checkCtx, st.Policy)
+			cancel()
+			if !ok {
+				slog.Debug("allowlist bound not drained: a node has not acknowledged the enforced policy", "policy", st.Policy, "nodes", nodes)
+				continue
+			}
+			if ok, err := store.Drain(st.Policy, nodes); err != nil {
 				slog.Error("allowlist drain failed", "error", err)
 			} else if ok {
-				slog.Info("allowlist bound drained: no leaf stamped under an earlier policy is still valid")
+				slog.Info("allowlist bound drained: every node acknowledged the enforced policy", "policy", st.Policy)
 			}
 		}
 	}

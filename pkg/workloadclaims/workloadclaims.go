@@ -42,7 +42,24 @@ const (
 	SandboxPath          = "/sandbox"
 	SandboxDigestsPrefix = "/digests/"
 	IdentityPath         = "/identity"
+	// PolicyPath serves the node's PolicyAck on the digests endpoint.
+	PolicyPath = "/policy"
 )
+
+// PolicyAck is the node's acknowledgement of an allowlist policy: Policy is
+// the digest of the document it last applied, and Clean reports that no
+// running container outside an exempt namespace is denied by it. CDS drains
+// the rollout bound only once every node acknowledges the enforced policy
+// clean.
+type PolicyAck struct {
+	Policy string `json:"policy"`
+	Clean  bool   `json:"clean"`
+}
+
+// PolicyAcker is implemented by an inventory that reports a PolicyAck.
+type PolicyAcker interface {
+	PolicyAck() PolicyAck
+}
 
 // InventoryIdentity is the IdentityPath answer: the inventory's sandbox-token
 // signing key, PKIX DER. Served on the same privileged-port listener as the
@@ -306,6 +323,12 @@ func ServeDigests(ctx context.Context, l net.Listener, resolver SandboxResolver,
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(InventoryIdentity{PublicKey: identity})
 	})
+	if acker, ok := resolver.(PolicyAcker); ok {
+		mux.HandleFunc("GET "+PolicyPath, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(acker.PolicyAck())
+		})
+	}
 	mux.HandleFunc("GET "+SandboxDigestsPrefix+"{sandboxID}", func(w http.ResponseWriter, r *http.Request) {
 		digests, containers, known, err := resolver.DigestsForSandbox(r.PathValue("sandboxID"))
 		if err != nil {

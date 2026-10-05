@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -33,8 +34,13 @@ func TestRecheckRunningAfterPolicyChange(t *testing.T) {
 		Mode: ModeFailClosed, EnforceExisting: true, ExemptNamespaces: []string{"kube-system"},
 	}}, entries(pushDigestA, pushDigestB))
 	p.SetReady()
+	p.inventory = newAdmissionInventory("")
 	var killed []string
+	stopErr := error(nil)
 	p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		if stopErr != nil {
+			return stopErr
+		}
 		killed = append(killed, id)
 		return nil
 	}}
@@ -52,9 +58,23 @@ func TestRecheckRunningAfterPolicyChange(t *testing.T) {
 		t.Fatalf("an added entry stopped containers: %v", killed)
 	}
 
+	if ack := p.inventory.PolicyAck(); ack.Policy != store.current().digest || !ack.Clean {
+		t.Fatalf("ack after an addition = %+v, want %s clean", ack, store.current().digest)
+	}
+
+	stopErr = errors.New("stop failed")
 	store.apply(entries(pushDigestA), 3)
+	p.RecheckRunning(context.Background())
+	if ack := p.inventory.PolicyAck(); ack.Policy != store.current().digest || ack.Clean {
+		t.Fatalf("ack with a denied container left running = %+v, want %s not clean", ack, store.current().digest)
+	}
+
+	stopErr = nil
 	p.RecheckRunning(context.Background())
 	if !slices.Equal(killed, []string{removed.Id}) {
 		t.Fatalf("stopped %v after an entry was removed, want only %s (exempt %s must survive)", killed, removed.Id, exempt.Id)
+	}
+	if ack := p.inventory.PolicyAck(); ack.Policy != store.current().digest || !ack.Clean {
+		t.Fatalf("ack after the denied container stopped = %+v, want %s clean", ack, store.current().digest)
 	}
 }

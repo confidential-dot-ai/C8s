@@ -366,7 +366,7 @@ sandbox. It serves two disjoint surfaces (`pkg/workloadclaims`):
 | Surface | Route | Listener | Caller bound by |
 |---|---|---|---|
 | tokens | `POST /sandbox` | a node-local Unix socket | kernel peer credentials (`SO_PEERCRED` + `SO_PEERPIDFD`) |
-| identity + digests | `GET /identity`, `GET /digests/{sandboxID}` | `:1019` (`workloadclaims.DigestsPort`), mutually-attested RA-TLS | the client leaf's launch measurement (CDS's) |
+| identity + digests | `GET /identity`, `GET /digests/{sandboxID}`, `GET /policy` | `:1019` (`workloadclaims.DigestsPort`), mutually-attested RA-TLS | the client leaf's launch measurement (CDS's) |
 
 The token surface cannot enumerate other sandboxes; the network surface cannot
 mint identity.
