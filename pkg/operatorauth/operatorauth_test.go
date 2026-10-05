@@ -7,10 +7,12 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -467,5 +469,38 @@ func TestVerifyStored(t *testing.T) {
 	r := reqWith("Bearer " + token)
 	if err := (Verifier{Keys: []*ecdsa.PublicKey{pub}}).Authorize(r, body); err == nil {
 		t.Error("Authorize accepted an expired token")
+	}
+}
+
+// TestOperatorSignatureVector pins the stored-token check and the key-set hash
+// to testdata/operator_signature_vector.json, which TEErminator and
+// c8s-verify-js reproduce.
+func TestOperatorSignatureVector(t *testing.T) {
+	raw, err := os.ReadFile("testdata/operator_signature_vector.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v struct {
+		OperatorKeysPEM  string `json:"operator_keys_pem"`
+		OperatorKeysHash string `json:"operator_keys_hash"`
+		PolicyB64        string `json:"policy_b64"`
+		Token            string `json:"token"`
+	}
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+	keys, err := ParsePublicKeysPEM([]byte(v.OperatorKeysPEM))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := KeySetHash(keys); err != nil || got != v.OperatorKeysHash {
+		t.Fatalf("KeySetHash = %s, %v; want %s", got, err, v.OperatorKeysHash)
+	}
+	policy, err := base64.StdEncoding.DecodeString(v.PolicyB64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyStored(keys, v.Token, http.MethodPut, "/allowlist", policy); err != nil {
+		t.Fatalf("VerifyStored(vector) = %v", err)
 	}
 }
