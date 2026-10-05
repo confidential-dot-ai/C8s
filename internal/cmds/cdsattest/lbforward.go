@@ -51,9 +51,9 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			pr.Out.Header.Del(verifiedStateHeader)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if errors.Is(context.Cause(r.Context()), errBoundChanged) {
-				log.Info("front-door forward cancelled: the allowlist bound changed", "path", r.URL.Path)
-				http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
+			if cause := context.Cause(r.Context()); errors.Is(cause, errBoundChanged) || errors.Is(cause, errStateExpired) {
+				log.Info("front-door forward cancelled", "path", r.URL.Path, "cause", cause)
+				http.Error(w, cause.Error()+": open a new connection and attest again", http.StatusServiceUnavailable)
 				return
 			}
 			log.Warn("front-door forward failed", "path", r.URL.Path, "error", err)

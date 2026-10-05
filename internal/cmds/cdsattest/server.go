@@ -814,6 +814,7 @@ func (s *Server) pollRollout(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+		s.rollout.expire(time.Now())
 		bound, err := s.rollout.poll(ctx)
 		if err != nil {
 			if ctx.Err() == nil {

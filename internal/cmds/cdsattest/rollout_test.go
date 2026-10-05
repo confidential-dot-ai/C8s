@@ -325,8 +325,58 @@ func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {
 		t.Fatal("zero-lease state is fresh forever")
 	}
 	r.lease = time.Minute
-	if !r.fresh(now.Add(30*time.Second)) || r.fresh(now.Add(time.Minute)) {
-		t.Fatal("a positive lease does not bound freshness")
+	if !r.fresh(now.Add(29*time.Second)) || r.fresh(now.Add(30*time.Second)) {
+		t.Fatal("a positive lease does not bound freshness to half of it")
+	}
+}
+
+func TestRolloutExpireCancelsForwards(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resets := 0
+	fence.onBoundChange(func() { resets++ })
+	ctx, cancel := fence.requestContext(context.Background())
+	defer cancel()
+
+	fence.expire(time.Now())
+	if ctx.Err() != nil {
+		t.Fatal("expire cancelled a request on a fresh state")
+	}
+	fence.expire(time.Now().Add(time.Hour))
+	waitDone(t, ctx)
+	if !errors.Is(context.Cause(ctx), errStateExpired) || resets != 1 {
+		t.Fatalf("after expiry: cause %v, resets %d; want errStateExpired, 1", context.Cause(ctx), resets)
+	}
+	fence.expire(time.Now().Add(time.Hour))
+	if resets != 1 {
+		t.Fatalf("a second expire on the same stale state reset the pool again (%d resets)", resets)
+	}
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh, cancelFresh := fence.requestContext(context.Background())
+	defer cancelFresh()
+	fence.expire(time.Now().Add(time.Hour))
+	waitDone(t, fresh)
+	if !errors.Is(context.Cause(fresh), errStateExpired) {
+		t.Fatal("a new read did not re-arm expiry")
+	}
+}
+
+// waitDone waits for ctx, which context.AfterFunc cancels asynchronously.
+func waitDone(t *testing.T, ctx context.Context) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("request context not cancelled")
 	}
 }
 

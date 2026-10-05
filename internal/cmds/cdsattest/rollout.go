@@ -62,6 +62,9 @@ type rollout struct {
 	// under one bound keeps streaming under the next.
 	gen       context.Context
 	cancelGen context.CancelCauseFunc
+	// expired is set once gen was cancelled because the last read went
+	// stale; the next stored state clears it.
+	expired bool
 	// onChange runs, under mu, before gen is replaced. The upstream backend
 	// registers its connection reset here, so a request admitted under the new
 	// bound never reuses a connection whose peer was checked under the old one.
@@ -70,6 +73,10 @@ type rollout struct {
 
 // errBoundChanged cancels a forwarded request when the bound changes.
 var errBoundChanged = errors.New("the allowlist bound changed")
+
+// errStateExpired cancels a forwarded request when the router can no longer
+// refresh the state it was admitted under.
+var errStateExpired = errors.New("the allowlist state expired")
 
 func newRollout(url, caFile string) *rollout {
 	r := &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}, widenedAt: time.Now()}
@@ -85,7 +92,8 @@ func (r *rollout) onBoundChange(f func()) {
 }
 
 // requestContext derives a context from parent that is also cancelled, with
-// cause errBoundChanged, when the bound next changes. Callers take it before
+// cause errBoundChanged or errStateExpired, when the bound next changes or the
+// state expires. Callers take it before
 // they check the fence, so a change between the check and the forward still
 // cancels the request.
 func (r *rollout) requestContext(parent context.Context) (context.Context, context.CancelFunc) {
@@ -93,7 +101,7 @@ func (r *rollout) requestContext(parent context.Context) (context.Context, conte
 	gen := r.gen
 	r.mu.Unlock()
 	ctx, cancel := context.WithCancelCause(parent)
-	stop := context.AfterFunc(gen, func() { cancel(errBoundChanged) })
+	stop := context.AfterFunc(gen, func() { cancel(context.Cause(gen)) })
 	return ctx, func() {
 		stop()
 		cancel(context.Canceled)
@@ -103,11 +111,28 @@ func (r *rollout) requestContext(parent context.Context) (context.Context, conte
 // boundChanged runs the change hooks, then cancels every request admitted
 // under the previous bound. Callers hold r.mu.
 func (r *rollout) boundChanged() {
+	r.resetGen(errBoundChanged)
+}
+
+func (r *rollout) resetGen(cause error) {
 	for _, f := range r.onChange {
 		f()
 	}
-	r.cancelGen(errBoundChanged)
+	r.cancelGen(cause)
 	r.gen, r.cancelGen = context.WithCancelCause(context.Background())
+}
+
+// expire cancels every forwarded request once the last read is stale. A
+// router that stops seeing CDS cannot see a widening either, so requests it
+// admitted must end before the publication it missed can activate.
+func (r *rollout) expire(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.expired || r.seenAt.IsZero() || r.fresh(now) {
+		return
+	}
+	r.expired = true
+	r.resetGen(errStateExpired)
 }
 
 // challenge fetches the state bound to nonce.
@@ -186,6 +211,7 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 		}
 		changed := !slices.Equal(r.bound, st.Bound)
 		r.seenAt, r.bound, r.lease = sent, st.Bound, time.Duration(st.Lease)*time.Second
+		r.expired = false
 		if changed {
 			r.boundChanged()
 		}
@@ -296,11 +322,13 @@ func (r *rollout) admitsConnection(start, now time.Time) bool {
 }
 
 // fresh reports whether a state has been read and whether the last read is
-// younger than the lease. A state advertising no lease is held to
-// zeroLeaseMaxStateAge instead: it is never fresh forever, so the router
-// still stops serving when it loses CDS. Callers hold r.mu.
+// younger than half the lease, which leaves expire and the clocks of CDS and
+// this router a margin before a missed publication activates. A state
+// advertising no lease is held to zeroLeaseMaxStateAge instead: it is never
+// fresh forever, so the router still stops serving when it loses CDS.
+// Callers hold r.mu.
 func (r *rollout) fresh(now time.Time) bool {
-	maxAge := r.lease
+	maxAge := r.lease / 2
 	if maxAge <= 0 {
 		maxAge = zeroLeaseMaxStateAge
 	}
