@@ -194,7 +194,14 @@ with 0s CDS enforces a write before any router can see it.
 {{- if or (eq $lease "") (hasPrefix "-" $lease) (regexMatch "^\\+?(0+(\\.0*)?|\\.0+)(ns|us|µs|μs|ms|s|m|h)?((0+(\\.0*)?|\\.0+)(ns|us|µs|μs|ms|s|m|h))*$" $lease) -}}
 {{- fail (printf "router.attest.pinnedAllowlist requires a positive cds.allowlistActivationLease, got: %q; set a lease (e.g. 60s) or router.attest.pinnedAllowlist=false" $lease) -}}
 {{- end -}}
-{{- if or (regexMatch "^\\+?[0-9.]+(ns|us|µs|μs|ms)$" $lease) (regexMatch "^\\+?0*[0-9](\\.[0-9]*)?s$" $lease) -}}
+{{- /* Mirrors CDS's minActivationLease, so a lease CDS refuses never renders. */ -}}
+{{- if not (regexMatch "^\\+?[0-9]+(\\.[0-9]+)?(ns|us|µs|μs|ms|s|m|h)$" $lease) -}}
+{{- fail (printf "cds.allowlistActivationLease must be one number and one unit (e.g. 60s or 2m) for router.attest.pinnedAllowlist, got: %q" $lease) -}}
+{{- end -}}
+{{- $unitSeconds := dict "ns" 0.000000001 "us" 0.000001 "µs" 0.000001 "μs" 0.000001 "ms" 0.001 "s" 1.0 "m" 60.0 "h" 3600.0 -}}
+{{- $number := regexReplaceAll "^\\+?([0-9.]+).*$" $lease "${1}" | float64 -}}
+{{- $unit := regexReplaceAll "^\\+?[0-9.]+" $lease "" -}}
+{{- if lt (mulf $number (get $unitSeconds $unit)) 10.0 -}}
 {{- fail (printf "cds.allowlistActivationLease must be at least 10s for router.attest.pinnedAllowlist, got: %q" $lease) -}}
 {{- end -}}
 true

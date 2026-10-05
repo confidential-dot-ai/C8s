@@ -90,11 +90,11 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		context := rolloutstate.ContextState
+		sigContext := rolloutstate.ContextState
 		if challenge {
-			context = rolloutstate.ContextChallenge
+			sigContext = rolloutstate.ContextChallenge
 		}
-		sig, err := rolloutstate.Sign(key, context, body)
+		sig, err := rolloutstate.Sign(key, sigContext, body)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return

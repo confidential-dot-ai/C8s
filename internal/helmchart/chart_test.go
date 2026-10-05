@@ -7652,13 +7652,21 @@ func TestChartRouterPinnedAllowlistDefaults(t *testing.T) {
 	}
 
 	for _, mode := range []string{"auto", "true"} {
-		for _, lease := range []string{"0s", "0", "0h0m0s", "-5s", "500ms", "9s", "9.5s"} {
+		for _, lease := range []string{"0s", "0", "0h0m0s", "-5s", "500ms", "9s", "9.5s", "0.15m", "9s500ms"} {
 			if out, err := helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
 				"--set", "router.attest.pinnedAllowlist="+mode,
 				"--set-string", "cds.allowlistActivationLease="+lease,
 			)...)...); err == nil || !strings.Contains(out+err.Error(), "cds.allowlistActivationLease") {
 				t.Errorf("pinnedAllowlist=%s with lease %q rendered: %v", mode, lease, err)
 			}
+		}
+	}
+	for _, lease := range []string{"10s", "10000ms", "0.5m", "1h"} {
+		if out, err := helmTemplate(t, noUpstreamArgs(append(httpsUpstream,
+			"--set", "router.attest.pinnedAllowlist=true",
+			"--set-string", "cds.allowlistActivationLease="+lease,
+		)...)...); err != nil {
+			t.Errorf("pinnedAllowlist with lease %q refused: %v\n%s", lease, err, out)
 		}
 	}
 

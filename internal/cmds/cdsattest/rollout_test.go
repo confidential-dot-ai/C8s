@@ -51,15 +51,15 @@ func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
-	context := rolloutstate.ContextState
+	sigContext := rolloutstate.ContextState
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
 		json.NewDecoder(r.Body).Decode(&req)
 		st.Nonce = req.Nonce
-		context = rolloutstate.ContextChallenge
+		sigContext = rolloutstate.ContextChallenge
 	}
 	body, _ := json.Marshal(st)
-	sig, _ := rolloutstate.Sign(key, context, body)
+	sig, _ := rolloutstate.Sign(key, sigContext, body)
 	json.NewEncoder(w).Encode(types.SignedRolloutState{State: body, Signature: sig})
 }
 
