@@ -290,4 +290,3 @@ and Helm rendering for `hostNetwork`, `iptables-sync`, and hostPort behavior.
 ## Security
 
 - [RA-TLS](../../docs/ratls.md) — the attested handshake, what it guarantees, and what it does not
-- Sharp edge: guests bake `C8S_MESH_INBOUND_PASSTHROUGH=tcp:8443`, so inbound :8443 is unmeshed in every guest
