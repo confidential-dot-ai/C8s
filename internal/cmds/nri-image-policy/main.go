@@ -588,11 +588,15 @@ func measureWith(measure func(*allowlist.Allowlist) error, doc *allowlist.Allowl
 
 // policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
 // before the node applies it, once per policy, so the register records every
-// policy the node enforced since boot. Without a runtime register or an
-// operator anchor it measures nothing. A measurement failure keeps the node
+// policy the node enforced since boot. Unless allowlist.pull.measure_policies
+// is set, or without a runtime register or an operator anchor, it measures
+// nothing. A measurement failure keeps the node
 // on its current policy.
 func policyMeasurer(cfg *config, logger *slog.Logger) func(*allowlist.Allowlist) error {
 	none := func(*allowlist.Allowlist) error { return nil }
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return none
+	}
 	anchor, err := credrelease.ReadOperatorPubkey()
 	if err != nil {
 		logger.Info("allowlist policies are not measured: no operator anchor", "error", err)
