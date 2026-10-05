@@ -210,6 +210,7 @@ func (p *plugin) RecheckRunning(ctx context.Context) {
 	}
 	if p.inventory != nil && policy != "" {
 		p.inventory.setPolicyAck(workloadclaims.PolicyAck{Policy: policy, Clean: denied == 0})
+		p.logger.Info("acknowledged allowlist policy", "policy", policy, "denied_running", denied)
 	}
 }
 

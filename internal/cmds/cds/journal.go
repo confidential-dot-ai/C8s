@@ -148,19 +148,24 @@ func (a nodeAcks) interval() time.Duration {
 }
 
 // acked reports whether every node acknowledges policy clean. It returns the
-// nodes that did, or the first node that did not.
-func (a nodeAcks) acked(ctx context.Context, policy string) (bool, []string) {
+// nodes that did, or else the first node that did not and why.
+func (a nodeAcks) acked(ctx context.Context, policy string) (bool, []string, string) {
 	hosts := a.hosts()
 	if len(hosts) == 0 {
-		return false, nil
+		return false, nil, "no nodes known"
 	}
 	for _, host := range hosts {
 		ack, err := a.client.PolicyAck(ctx, host)
-		if err != nil || ack.Policy != policy || !ack.Clean {
-			return false, []string{host}
+		switch {
+		case err != nil:
+			return false, []string{host}, err.Error()
+		case ack.Policy != policy:
+			return false, []string{host}, "acknowledges " + ack.Policy
+		case !ack.Clean:
+			return false, []string{host}, "still runs a container the policy denies"
 		}
 	}
-	return true, hosts
+	return true, hosts, ""
 }
 
 // drainCheckInterval spaces the node polls while the bound holds more than
@@ -174,6 +179,7 @@ func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	var lastCheck time.Time
+	var lastWait string
 	for {
 		select {
 		case <-ctx.Done():
@@ -193,10 +199,14 @@ func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration
 			}
 			lastCheck = now
 			checkCtx, cancel := context.WithTimeout(ctx, acks.interval())
-			ok, nodes := acks.acked(checkCtx, st.Policy)
+			ok, nodes, why := acks.acked(checkCtx, st.Policy)
 			cancel()
 			if !ok {
-				slog.Debug("allowlist bound not drained: a node has not acknowledged the enforced policy", "policy", st.Policy, "nodes", nodes)
+				// Logged once per change: a drain can wait for hours.
+				if wait := fmt.Sprint(st.Policy, nodes, why); wait != lastWait {
+					lastWait = wait
+					slog.Info("allowlist bound not drained yet", "policy", st.Policy, "nodes", nodes, "reason", why)
+				}
 				continue
 			}
 			if ok, err := store.Drain(st.Policy, nodes); err != nil {

@@ -144,7 +144,7 @@ func TestNodeAcks(t *testing.T) {
 		{"node still running a denied container", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:q"}}, false},
 	} {
 		acks := nodeAcks{client: tc.acks, hosts: func() []string { return tc.hosts }}
-		if ok, nodes := acks.acked(context.Background(), "sha256:q"); ok != tc.ok || (ok && !slices.Equal(nodes, tc.hosts)) {
+		if ok, nodes, _ := acks.acked(context.Background(), "sha256:q"); ok != tc.ok || (ok && !slices.Equal(nodes, tc.hosts)) {
 			t.Errorf("%s: acked = %v, want %v", tc.name, ok, tc.ok)
 		}
 	}
