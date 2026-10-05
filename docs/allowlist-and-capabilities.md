@@ -697,8 +697,8 @@ bytes. `c8s allowlist upload` sends canonical bytes, so its writes are
 signed, and CDS serves the token at
 `/.well-known/c8s/objects/sha256/<hex>/signature`. A per-workload write
 (`c8s allowlist add`, `remove`) leaves its policy unsigned: re-upload the
-whole document to sign it. The operator key set is `--operator-keys` when
-given, or else the set the router serves at `/.well-known/c8s/operator-keys`;
+whole document to sign it. The operator key set is `--trust-operator-keys`
+when given, or else the set the router serves at `/.well-known/c8s/operator-keys`;
 either way its hash must equal the attested `operator_keys`. Verification
 fails with `policy_not_signed` or `operator_keys_mismatch` otherwise.
 

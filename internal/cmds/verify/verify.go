@@ -123,6 +123,7 @@ type config struct {
 	pinPolicies        []string
 	immutable          bool
 	trustOperator      bool
+	trustOperatorKeys  string
 	fetchAllowlists    string
 	meshCA             string
 	initDataHex        string
@@ -218,7 +219,8 @@ responder chose).`,
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
 	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the mesh CA that --mesh-ca pins (or that a pinned baked node vouches for), answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca, or --image-manifest with an RTMR[3] pin")
-	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "attest-pq and attest-lb only: accept every policy in the attested rollout bound that the operator signed, under the key set the attested state names (--operator-keys pins it; otherwise it is fetched from the target and checked against the state)")
+	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "attest-pq and attest-lb only: accept every policy in the attested rollout bound that the operator signed, under the key set the attested state names (--trust-operator-keys pins it; otherwise it is fetched from the target and checked against the state)")
+	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from")
 	f.BoolVar(&cfg.immutable, "immutable", false, "with --pin-policy, also require the attested rollout state to report an immutable allowlist (operator_keys: none), so no operator can publish another policy without a new install")
 	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to write every policy in the attested rollout bound to, fetched from the target and checked against its attested digest (attest-pq and attest-lb)")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")

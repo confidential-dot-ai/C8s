@@ -15,8 +15,9 @@ import (
 
 // trustOperator enforces --trust-operator: every policy in the attested bound
 // must carry the operator's signature, the write token that published it,
-// under the key set the attested state names. The key set is --operator-keys
-// when given, else the one the router serves, checked against the state.
+// under the key set the attested state names. The key set is
+// --trust-operator-keys when given, else the one the router serves, checked
+// against the state.
 func trustOperator(ctx context.Context, cfg config, ev *evidence, oc *Outcome) {
 	if !cfg.trustOperator || (!oc.Verified && !oc.Partial) {
 		return
@@ -89,8 +90,8 @@ func trustOperator(ctx context.Context, cfg config, ev *evidence, oc *Outcome) {
 func operatorKeySet(ctx context.Context, cfg config, client *http.Client, baseURL string) ([]*ecdsa.PublicKey, error) {
 	var pemBytes []byte
 	var err error
-	if cfg.operatorKeys != "" {
-		pemBytes, err = os.ReadFile(cfg.operatorKeys)
+	if cfg.trustOperatorKeys != "" {
+		pemBytes, err = os.ReadFile(cfg.trustOperatorKeys)
 	} else {
 		pemBytes, err = fetchPolicy(ctx, client, baseURL+"/.well-known/c8s/operator-keys")
 	}
