@@ -130,12 +130,12 @@ type policyAcker interface {
 }
 
 // nodeAcks decides when the rollout bound may drain: every node that may run
-// a workload must acknowledge the enforced policy clean. hosts lists those
-// nodes; an empty list never drains, since nothing vouches that no node runs
-// an earlier policy.
+// a workload must acknowledge the enforced policy clean. nodes lists those
+// nodes, each as the addresses it may answer on; an empty list never drains,
+// since nothing vouches that no node runs an earlier policy.
 type nodeAcks struct {
 	client policyAcker
-	hosts  func() []string
+	nodes  func() [][]string
 	// every spaces the node polls; zero means drainCheckInterval.
 	every time.Duration
 }
@@ -147,25 +147,39 @@ func (a nodeAcks) interval() time.Duration {
 	return drainCheckInterval
 }
 
-// acked reports whether every node acknowledges policy clean. It returns the
-// nodes that did, or else the first node that did not and why.
+// acked reports whether every node acknowledges policy clean on one of its
+// addresses. It returns the addresses that did, or else the addresses of the
+// first node that did not and why.
 func (a nodeAcks) acked(ctx context.Context, policy string) (bool, []string, string) {
-	hosts := a.hosts()
-	if len(hosts) == 0 {
+	nodes := a.nodes()
+	if len(nodes) == 0 {
 		return false, nil, "no nodes known"
 	}
-	for _, host := range hosts {
-		ack, err := a.client.PolicyAck(ctx, host)
-		switch {
-		case err != nil:
-			return false, []string{host}, err.Error()
-		case ack.Policy != policy:
-			return false, []string{host}, "acknowledges " + ack.Policy
-		case !ack.Clean:
-			return false, []string{host}, "still runs a container the policy denies"
+	var acked []string
+	for _, addrs := range nodes {
+		why := "no address"
+		for _, host := range addrs {
+			ack, err := a.client.PolicyAck(ctx, host)
+			switch {
+			case err != nil:
+				why = err.Error()
+			case ack.Policy != policy:
+				why = "acknowledges " + ack.Policy
+			case !ack.Clean:
+				why = "still runs a container the policy denies"
+			default:
+				why = ""
+			}
+			if why == "" {
+				acked = append(acked, host)
+				break
+			}
+		}
+		if why != "" {
+			return false, addrs, why
 		}
 	}
-	return true, hosts, ""
+	return true, acked, ""
 }
 
 // drainCheckInterval spaces the node polls while the bound holds more than

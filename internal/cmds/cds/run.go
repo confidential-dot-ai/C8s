@@ -614,23 +614,24 @@ func readinessFn(svcReady func() bool, caCert *x509.Certificate, minCAValidity t
 }
 
 // drainAcks lists every node that may run a workload: those the cluster's
-// node objects name, and those that vouched for a sandbox whose certificate
-// may still be valid. It returns nil, which never drains, without a sandbox
-// inventory to ask.
+// node objects name, with all their addresses, and those that vouched for a
+// sandbox whose certificate may still be valid and no node object names. It
+// returns nil, which never drains, without a sandbox inventory to ask.
 func drainAcks(client *workloadclaims.DigestsClient, inventoryHosts workloadclaims.InventoryHosts, bindings *sandboxledger.Ledger) *nodeAcks {
 	if client == nil {
 		return nil
 	}
 	nodes, _ := inventoryHosts.(*workloadclaims.NodeHosts)
-	return &nodeAcks{client: client, hosts: func() []string {
-		hosts := bindings.Hosts()
+	return &nodeAcks{client: client, nodes: func() [][]string {
+		var groups [][]string
 		if nodes != nil {
-			for _, h := range nodes.Hosts() {
-				if !slices.Contains(hosts, h) {
-					hosts = append(hosts, h)
-				}
+			groups = slices.Clone(nodes.Nodes())
+		}
+		for _, h := range bindings.Hosts() {
+			if !slices.ContainsFunc(groups, func(g []string) bool { return slices.Contains(g, h) }) {
+				groups = append(groups, []string{h})
 			}
 		}
-		return hosts
+		return groups
 	}}
 }

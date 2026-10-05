@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -138,13 +137,21 @@ func TestNodeAcks(t *testing.T) {
 		ok    bool
 	}{
 		{"every node clean", []string{"10.0.0.1", "10.0.0.2"}, fakeAcker{"10.0.0.1": clean, "10.0.0.2": clean}, true},
+		{"node clean on one of its addresses", nil, fakeAcker{"10.0.0.1": clean}, true},
 		{"no nodes known", nil, fakeAcker{}, false},
 		{"node unreachable", []string{"10.0.0.1", "10.0.0.2"}, fakeAcker{"10.0.0.1": clean}, false},
 		{"node on another policy", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:p", Clean: true}}, false},
 		{"node still running a denied container", []string{"10.0.0.1"}, fakeAcker{"10.0.0.1": {Policy: "sha256:q"}}, false},
 	} {
-		acks := nodeAcks{client: tc.acks, hosts: func() []string { return tc.hosts }}
-		if ok, nodes, _ := acks.acked(context.Background(), "sha256:q"); ok != tc.ok || (ok && !slices.Equal(nodes, tc.hosts)) {
+		groups := make([][]string, 0, len(tc.hosts))
+		for _, h := range tc.hosts {
+			groups = append(groups, []string{h})
+		}
+		if tc.hosts == nil && len(tc.acks) > 0 {
+			groups = [][]string{{"fec0::1", "10.0.0.1"}}
+		}
+		acks := nodeAcks{client: tc.acks, nodes: func() [][]string { return groups }}
+		if ok, _, _ := acks.acked(context.Background(), "sha256:q"); ok != tc.ok {
 			t.Errorf("%s: acked = %v, want %v", tc.name, ok, tc.ok)
 		}
 	}
@@ -174,7 +181,7 @@ func TestJournalLoopDrainsOnAcks(t *testing.T) {
 	}
 	var mu sync.Mutex
 	acker := fakeAcker{"10.0.0.1": {Policy: st.Policy}}
-	acks := &nodeAcks{client: lockedAcker{&mu, acker}, hosts: func() []string { return []string{"10.0.0.1"} }, every: time.Millisecond}
+	acks := &nodeAcks{client: lockedAcker{&mu, acker}, nodes: func() [][]string { return [][]string{{"10.0.0.1"}} }, every: time.Millisecond}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go journalLoop(ctx, &store, time.Millisecond, acks)
