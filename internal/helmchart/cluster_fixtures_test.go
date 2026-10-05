@@ -22,13 +22,19 @@ import (
 
 const clusterFixtureDir = "../../test/integration/cluster"
 
+// clusterFixtureHarness is the harness source: run.sh and the lib.sh it sources.
 func clusterFixtureHarness(t *testing.T) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(clusterFixtureDir, "run.sh"))
-	if err != nil {
-		t.Fatal(err)
+	var harness strings.Builder
+	for _, file := range []string{"lib.sh", "run.sh"} {
+		data, err := os.ReadFile(filepath.Join(clusterFixtureDir, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		harness.Write(data)
+		harness.WriteString("\n")
 	}
-	return string(data)
+	return harness.String()
 }
 
 func clusterFixtureImage(t *testing.T, harness, variable string) string {
@@ -232,7 +238,7 @@ func TestClusterHarnessKeepsImageAndBackendRoutingAligned(t *testing.T) {
 		`grep -Fq "docker.io/$WORKLOAD_IMAGE" "$WORKDIR/floor.tsv"`,
 		`--workload-ref web=adopted/deployment/web:8080`,
 		`{ port: 80, targetPort: 8080 }`,
-		`python3 "$SCRIPT_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"`,
+		`python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"`,
 	} {
 		if !strings.Contains(harness, required) {
 			t.Errorf("cluster harness lost fixture wiring %q", required)
