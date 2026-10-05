@@ -21,10 +21,10 @@ const connectionTimeHeader = "X-C8s-Connection-Time"
 const maxConnectionAge = 365 * 24 * time.Hour
 
 // verifiedStateHeader carries the journal head (the rollout state's "head")
-// the client verified. When a request carries it, the request is forwarded
-// only while it equals the router's current head, so that client never
-// reaches the upstream under a state it has not checked. Requests without it
-// are served as before.
+// the client verified. A request carrying it is admitted only if it equals
+// the router's head at admission; a request already streaming is cancelled
+// by a bound change, not by a head change that leaves the bound unchanged.
+// Requests without it are served as before.
 const verifiedStateHeader = "X-C8s-Verified-State"
 
 // newLBForwarder streams front-door requests nginx hands over in pinned mode

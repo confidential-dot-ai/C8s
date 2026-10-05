@@ -1091,9 +1091,10 @@ type Outcome struct {
 	// land in Error (pinned_state_absent, pinned_state_invalid,
 	// pinned_state_stale, pinned_state_unleased, policy_not_pinned).
 	AllowlistBound []string `json:"allowlist_bound,omitempty"`
-	// VerifiedState is the journal head of that state. In pinned mode the
-	// router forwards a front-door request only when it carries this value in
-	// the X-C8s-Verified-State header.
+	// VerifiedState is the journal head of that state. A client that sends
+	// it as X-C8s-Verified-State has each front-door request admitted only
+	// while it equals the router's head; requests without the header are
+	// served as before.
 	VerifiedState string `json:"verified_state,omitempty"`
 	// AllowlistFiles are the --fetch-allowlists files, one per bound policy.
 	AllowlistFiles []string `json:"allowlist_files,omitempty"`

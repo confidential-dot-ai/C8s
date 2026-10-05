@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,11 +107,16 @@ func TestRolloutBoundChangeResetsUpstreamPool(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("held request never reached the upstream")
 	}
+	// Released on the failure path too, so upstream.Close does not wait on
+	// the held request.
+	var once sync.Once
+	releaseHeld := func() { once.Do(func() { close(release) }) }
+	defer releaseHeld()
 	cds.setBound("sha256:r")
 	poll()
 	forward()
 	want(4, "for a request while another connection is busy across the change")
-	close(release)
+	releaseHeld()
 	if err := <-held; err != nil {
 		t.Fatal(err)
 	}
@@ -243,6 +249,7 @@ func (b *blockingBackend) Forward(ctx context.Context, _ types.TunnelRequest) (t
 	case <-ctx.Done():
 		b.cause <- context.Cause(ctx)
 	case <-b.stop:
+		return types.TunnelResponse{}, context.Canceled
 	}
 	return types.TunnelResponse{}, ctx.Err()
 }
