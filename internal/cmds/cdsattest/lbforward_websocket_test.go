@@ -83,7 +83,7 @@ func TestLBForwarderWebSocketUpgrade(t *testing.T) {
 	}
 
 	fence.mu.Lock()
-	fence.boundChanged()
+	fence.resetGen(errBoundChanged)
 	fence.mu.Unlock()
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	if got, err := br.ReadString('\n'); err != io.EOF {
