@@ -107,8 +107,8 @@ func TestHandlerReleasesServerCA(t *testing.T) {
 	roots := x509.NewCertPool()
 	roots.AddCert(ca.cert)
 	leaf := parseLeaf(t, []byte(resp.CertPEM))
-	if !leaf.NotBefore.Equal(issuedAt.Add(-time.Minute)) || !leaf.NotAfter.Equal(issuedAt.Add(time.Hour)) {
-		t.Errorf("certificate validity = %v..%v, want injected clock %v with one-minute backdate and one-hour TTL", leaf.NotBefore, leaf.NotAfter, issuedAt)
+	if !leaf.NotBefore.Equal(issuedAt.Add(-time.Minute)) || !leaf.NotAfter.Equal(issuedAt.Add(defaultCertTTL)) {
+		t.Errorf("certificate validity = %v..%v, want injected clock %v with one-minute backdate and the default TTL", leaf.NotBefore, leaf.NotAfter, issuedAt)
 	}
 	if _, err := leaf.Verify(x509.VerifyOptions{
 		Roots:       roots,
