@@ -98,7 +98,7 @@ instead covered by the signed release statement below.
 
 Each release tag after `v0.34.2` has a GitHub release with two assets:
 
-- `release-statement.json`: `{"commit":"<sha>","repository":"confidential-dot-ai/c8s","tag":"vX.Y.Z"}`.
+- `release-statement.json`: `{"commit":"<sha>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}`.
 - `release-statement.sigstore.json`: a Sigstore bundle over that file. The
   `sign` job of `semver-tag.yml` makes it with keyless cosign signing through
   GitHub Actions OIDC, so there is no signing key to store. Only that job has
@@ -116,10 +116,14 @@ gh release download "$tag" --repo confidential-dot-ai/c8s \
   --pattern release-statement.json --pattern release-statement.sigstore.json
 cosign verify-blob \
   --bundle release-statement.sigstore.json \
-  --certificate-identity https://github.com/confidential-dot-ai/c8s/.github/workflows/semver-tag.yml@refs/heads/main \
+  --certificate-identity https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/main \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   release-statement.json
 ```
+
+The identity and the `repository` field use the GitHub name of this
+repository, `confidential-dot-ai/C8s`, with a capital C: Fulcio keeps its
+case and cosign compares the identity exactly.
 
 The signature proves only that the statement came from `semver-tag.yml` on
 `main`. Then check its fields against the tag:
@@ -127,7 +131,7 @@ The signature proves only that the statement came from `semver-tag.yml` on
 ```sh
 commit=$(gh api "repos/confidential-dot-ai/c8s/commits/$tag" --jq .sha)
 jq -e --arg tag "$tag" --arg commit "$commit" \
-  '.repository == "confidential-dot-ai/c8s" and .tag == $tag and .commit == $commit' \
+  '.repository == "confidential-dot-ai/C8s" and .tag == $tag and .commit == $commit' \
   release-statement.json
 ```
 

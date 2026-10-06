@@ -21,7 +21,9 @@ env:
   GIT_CLIFF_SHA256: 200d2535da6d9703f3bcc8a4d159c3b55eacdb01cf2148c55b3eee9dd04d5249
   GIT_CLIFF_VERSION: "2.13.1"
   ORAS_VERSION: "1.2.3"
-  RELEASE_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/c8s/.github/workflows/semver-tag.yml@refs/heads/main
+  # Fulcio and GITHUB_REPOSITORY keep the case of the repository name, and
+  # cosign compares the identity exactly.
+  RELEASE_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/main
   RELEASE_SIGNER_ISSUER: https://token.actions.githubusercontent.com
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
@@ -629,6 +631,11 @@ jobs:
           }
 
           [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
+          if [ "https://github.com/$GITHUB_REPOSITORY/.github/workflows/semver-tag.yml@refs/heads/main" \
+               != "$RELEASE_SIGNER_IDENTITY" ]; then
+            echo "::error::the repository name changed; update RELEASE_SIGNER_IDENTITY and docs/releases.md"
+            exit 1
+          fi
           IFS=$'\t' read -r ref_type ref_sha <<< "$(
             github_api "/repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
               --jq '[.object.type, .object.sha] | @tsv'
