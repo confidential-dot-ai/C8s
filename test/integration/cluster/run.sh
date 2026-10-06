@@ -36,9 +36,7 @@ cd "$REPO_ROOT"
 
 . "$SCRIPT_DIR/lib.sh"
 
-# C8S_IT_KEEP=1 leaves the cluster and WORKDIR (C8S_IT_WORKDIR) behind for
-# another driver; C8S_IT_SETUP_ONLY=1 stops once the stack is installed, before
-# the checks. Either way "$WORKDIR/env" names the cluster for lib.sh.
+# C8S_IT_KEEP, C8S_IT_SETUP_ONLY, C8S_IT_WORKDIR: docs/integration-tests.md.
 WORKDIR="${C8S_IT_WORKDIR:-$(mktemp -d)}"
 mkdir -p "$WORKDIR"
 
@@ -63,8 +61,7 @@ log "Building component images"
 # The component Dockerfiles copy a prebuilt build/c8s: build it for the
 # docker host's Linux first, then the host's own below, for `c8s install`.
 # On a Linux host of the same arch the second build is a cache hit.
-DOCKER_ARCH="$(docker info --format '{{.Architecture}}')"
-case "$DOCKER_ARCH" in x86_64) DOCKER_ARCH=amd64 ;; aarch64) DOCKER_ARCH=arm64 ;; esac
+DOCKER_ARCH="$(docker version --format '{{.Server.Arch}}')"
 GOOS=linux GOARCH="$DOCKER_ARCH" make build-c8s >/dev/null
 docker build -q -f cmd/c8s/Dockerfile               -t "ghcr.io/confidential-dot-ai/c8s-operator:$IMAGE_TAG"     . >/dev/null
 docker build -q -f cmd/cds/Dockerfile               -t "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG"              . >/dev/null
@@ -260,7 +257,9 @@ node_exec test -S /var/run/nri-image-policy/workload-claims.sock \
     || fail "admission inventory socket missing on the node"
 pass "NRI plugin registered with containerd and serves the admission inventory"
 
+kind get kubeconfig --name "$CLUSTER" > "$WORKDIR/kubeconfig"
 cat > "$WORKDIR/env" <<EOF
+export KUBECONFIG=$WORKDIR/kubeconfig
 CLUSTER=$CLUSTER
 NODE=$NODE
 NODE_IP=$NODE_IP

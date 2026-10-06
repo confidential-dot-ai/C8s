@@ -116,7 +116,8 @@ C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1 C8S_IT_WORKDIR=/tmp/c8s-it ./test/integration/
 
 `C8S_IT_SETUP_ONLY=1` stops once the stack is installed, before the checks;
 `C8S_IT_KEEP=1` leaves the kind cluster and the work directory (operator key,
-`optoken`, floor scan) in place. The run writes `$C8S_IT_WORKDIR/env`; source
+`optoken`, floor scan) in place. The run writes `$C8S_IT_WORKDIR/env`, which exports a `KUBECONFIG` for
+the kept cluster whatever kubectl's current context is; source
 `test/integration/cluster/lib.sh` and then that file to drive the cluster
 with the harness's own helpers (`cds_write`, `node_exec`, `run_pod`,
 `mesh_metric`, …). The CDS port-forward they open is shared through

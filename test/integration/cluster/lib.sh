@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Shared state and helpers for the kind cluster harness. run.sh sources it,
 # and so can anything driving a cluster run.sh left up (C8S_IT_KEEP=1): source
-# this file, then "$C8S_IT_WORKDIR/env", and the helpers below address that
-# cluster. Callers set WORKDIR, and NODE / NODE_IP once the cluster exists.
+# this file, then "$C8S_IT_WORKDIR/env" (which exports its KUBECONFIG), and
+# the helpers below address that cluster. Callers set WORKDIR, and NODE / NODE_IP once the cluster exists.
 
 CLUSTER_HARNESS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -30,7 +30,6 @@ pod_fixture() {
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"
 }
 
-PF_PID="${PF_PID:-}"
 NODE="${NODE:-}"  # kind node container name, resolved after cluster creation
 NODE_IP="${NODE_IP:-}"
 
@@ -51,9 +50,11 @@ diagnostics() {
 # The mesh assertions are counter and membership claims, and neither survives
 # into the log otherwise: a failed one leaves no way to tell a stale ipset from
 # a rule that never fired from a workload reached in plaintext.
+mesh_pod() { kubectl -n "$NS" get pod -l app=c8s-ratls-mesh -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
+
 mesh_diagnostics() {
     local pod
-    pod="$(kubectl -n "$NS" get pod -l app=c8s-ratls-mesh -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    pod="$(mesh_pod)"
     [ -n "$pod" ] || return 0
     echo "--- ratls-mesh counters ---"
     kubectl -n "$NS" exec "$pod" -c iptables-sync -- \
@@ -93,13 +94,14 @@ store_digests() {
 cds_healthy() { curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null 2>&1; }
 
 # cds_pf_start opens the CDS port-forward, or reuses the one this WORKDIR
-# opened, so drivers running each helper in its own process share one.
+# opened (its pid file), so drivers running each helper in its own process
+# share one.
 cds_pf_start() {
-    [ -n "$PF_PID" ] || PF_PID="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
-    [ -n "$PF_PID" ] && kill -0 "$PF_PID" 2>/dev/null && cds_healthy && return 0
+    local pid
+    pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cds_healthy && return 0
     kubectl -n "$NS" port-forward svc/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
-    PF_PID=$!
-    echo "$PF_PID" > "$WORKDIR/cds-pf.pid"
+    echo "$!" > "$WORKDIR/cds-pf.pid"
     for _ in $(seq 1 30); do
         cds_healthy && return 0
         sleep 1
@@ -108,10 +110,10 @@ cds_pf_start() {
 }
 
 cds_pf_stop() {
-    [ -n "$PF_PID" ] || PF_PID="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
-    [ -n "$PF_PID" ] && kill "$PF_PID" 2>/dev/null || true
+    local pid
+    pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$WORKDIR/cds-pf.pid"
-    PF_PID=""
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest
@@ -178,7 +180,7 @@ MESH_POD=""
 await_ipset() {
     local set="$1" ip="$2"
     if [ -z "$MESH_POD" ]; then
-        MESH_POD="$(kubectl -n "$NS" get pod -l app=c8s-ratls-mesh -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+        MESH_POD="$(mesh_pod)"
         [ -n "$MESH_POD" ] || fail "ratls-mesh pod not found"
     fi
     for _ in $(seq 1 18); do
