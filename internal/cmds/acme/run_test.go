@@ -50,14 +50,15 @@ func TestRunIssuesAndReloads(t *testing.T) {
 
 	certDir := filepath.Join(t.TempDir(), "tls")
 	cfg := config{
-		domains:       []string{"lb.example.com", "infer.lb.example.com"},
-		directoryURL:  fake.directoryURL(),
-		email:         "ops@example.com",
-		challengePort: port,
-		httpPort:      serverPort(t, frontDoor.URL),
-		certDir:       certDir,
-		reloadNginx:   true,
-		logLevel:      "debug",
+		publicProbeClient: testPublicProbeClient(t, frontDoor.URL),
+		domains:           []string{"lb.example.com", "infer.lb.example.com"},
+		directoryURL:      fake.directoryURL(),
+		email:             "ops@example.com",
+		challengePort:     port,
+		httpPort:          serverPort(t, frontDoor.URL),
+		certDir:           certDir,
+		reloadNginx:       true,
+		logLevel:          "debug",
 	}
 	done := make(chan error, 1)
 	go func() { done <- run(cfg) }()
