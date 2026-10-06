@@ -12,6 +12,8 @@ def main():
     parser.add_argument("namespace")
     parser.add_argument("image")
     parser.add_argument("command", nargs="+")
+    parser.add_argument("--node", help="pin the pod to this node")
+    parser.add_argument("--pull-policy", help="the container's imagePullPolicy")
     args = parser.parse_args()
 
     container = {
@@ -37,6 +39,10 @@ def main():
             "containers": [container],
         },
     }
+    if args.node:
+        pod["spec"]["nodeName"] = args.node
+    if args.pull_policy:
+        container["imagePullPolicy"] = args.pull_policy
     if args.mode == "bad-label":
         pod["metadata"]["labels"] = {"confidential.ai/cw": "rogue"}
     elif args.mode == "bad-hostnet":

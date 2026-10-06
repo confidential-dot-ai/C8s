@@ -192,16 +192,7 @@ jobs:
 
       - uses: ./.github/actions/setup-go-c8s
 
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.14.4
-
-      # kind is not on the runner image; pin the release binary by sha256.
-      - name: Install kind
-        run: |
-          curl -fsSL -o kind https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64
-          echo "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d  kind" | sha256sum -c -
-          sudo install kind /usr/local/bin/kind
+      - uses: ./.github/actions/setup-kind-harness
 
       - name: Run the cluster integration harness
         run: make test-integration-cluster
