@@ -697,6 +697,13 @@ provided). These independent inputs remain available for policies expressed as
 a digest list and a shared register set. Mesh peers and CDS can use separate
 files; `--cds-image-policy-file` selects the CDS-only policy for `ratls-mesh`.
 
+With `c8s verify --kind workload`, the complete policy checks the receipt's
+hardware image and launch-key binding. A workload receipt has no CDS
+`/measurements` endpoint. The verifier does not require that readback for an
+explicit workload target. Use a separate `c8s verify --kind cds` call to check
+the set that CDS enforces. That call still fails if the readback is missing
+or differs from the held policy.
+
 `c8s install` and `c8s render-values` accept image policies only when every
 image has identical RTMR pins and no `approver_key`. The Helm NRI installer
 configures CDS trust through a digest list and one shared register set, so

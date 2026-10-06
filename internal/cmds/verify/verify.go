@@ -1214,6 +1214,11 @@ func checkMeasurementsConfig(cfg config, plan *verifyPlan, served measurementsRe
 	if cfg.measurementsConfig == "" {
 		return
 	}
+	// Workload receipts carry no CDS policy endpoint. newOutcome still checks
+	// their hardware claims against every image and launch-key pin in the file.
+	if cfg.kind == "workload" {
+		return
+	}
 	checkServedMeasurements(plan.refValues, served, fail)
 }
 

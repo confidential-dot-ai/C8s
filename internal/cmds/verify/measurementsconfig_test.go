@@ -45,6 +45,25 @@ func TestCheckServedMeasurementsExactMatch(t *testing.T) {
 	}
 }
 
+func TestMeasurementsReadbackScope(t *testing.T) {
+	want := mcSet(t, `{"name":"a","measurement":"00`+mcDigestA+`"}`)
+	plan := &verifyPlan{refValues: want}
+	for _, kind := range []string{"cds", "auto", "lb", "workload"} {
+		t.Run(kind, func(t *testing.T) {
+			fail, messages := collectFailures()
+			checkMeasurementsConfig(config{kind: kind, measurementsConfig: "policy.json"}, plan,
+				measurementsReport{note: "no CDS policy endpoint"}, fail)
+			if kind == "workload" {
+				if len(*messages) != 0 {
+					t.Fatalf("workload receipt required a CDS readback: %v", *messages)
+				}
+			} else if len(*messages) != 1 || !strings.Contains((*messages)[0], "cannot be checked") {
+				t.Fatalf("CDS policy readback did not fail closed: %v", *messages)
+			}
+		})
+	}
+}
+
 // An image the target admits and the operator did not pin is the substitution
 // this check exists to catch.
 func TestCheckServedMeasurementsReportsAnExtraImage(t *testing.T) {
