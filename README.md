@@ -36,13 +36,13 @@ every layer:
    cluster DNS server, the sanctioned name-resolution path).
 
 C8s is built by [Confidential AI](https://confidential.ai) as the substrate
-for private AI: inference, fine-tuning, training, and agents where the
+for private AI: inference, agents, training, and fine-tuning where the
 infrastructure operator never sees the data. The platform itself is
 workload-agnostic: anything that runs on Kubernetes can run confidentially.
 
 ## Links
 
-- [confidential.ai](https://confidential.ai), the company behind C8s
+- [Confidential AI](https://confidential.ai), the company behind C8s
 - [Documentation](https://confidential.ai/docs/c8s), the full user-facing docs
 - [Whitepaper](https://confidential.ai/docs/whitepapers/c8s), the C8s architecture paper (also on [arXiv](https://arxiv.org/abs/2604.26974))
 - [Your first confidential cluster](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster), an end-to-end tutorial from bare cloud account to verified confidential workload
