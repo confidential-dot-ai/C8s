@@ -79,6 +79,28 @@ esac
 NGI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONFOS_DIR=${CONFOS_DIR:-"$NGI_DIR/../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] || { echo "node-guest-image/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
+# Check the signing key before kernel work. Keep secret files in tmpfs.
+NGI_SIGN_KEY_TEMP=""
+cleanup_signing_key() {
+    if [ -n "$NGI_SIGN_KEY_TEMP" ]; then rm -f "$NGI_SIGN_KEY_TEMP"; fi
+}
+trap cleanup_signing_key EXIT
+if [ -n "${MODULE_SIG_KEY_PEM:-}" ]; then
+    NGI_SIGN_KEY_TEMP=$(mktemp /dev/shm/c8s-module-signing.XXXXXX)
+    chmod 0600 "$NGI_SIGN_KEY_TEMP"
+    printf '%s\n' "$MODULE_SIG_KEY_PEM" > "$NGI_SIGN_KEY_TEMP"
+    export MODULE_SIG_KEY="$NGI_SIGN_KEY_TEMP"
+    unset MODULE_SIG_KEY_PEM
+fi
+[ -f "${MODULE_SIG_KEY:-}" ] \
+    || { echo "node-guest-image/build: supply the module signing private key through MODULE_SIG_KEY or MODULE_SIG_KEY_PEM" >&2; exit 1; }
+NGI_KEY_PUBLIC=$(openssl pkey -in "$MODULE_SIG_KEY" -pubout 2>/dev/null) \
+    || { echo "node-guest-image/build: cannot read the module signing private key" >&2; exit 1; }
+NGI_CERT_PUBLIC=$(openssl x509 -in "$NGI_DIR/module-signing.crt" -pubkey -noout) \
+    || { echo "node-guest-image/build: cannot read the module signing certificate" >&2; exit 1; }
+[ "$NGI_KEY_PUBLIC" = "$NGI_CERT_PUBLIC" ] \
+    || { echo "node-guest-image/build: the module signing key does not match the measured certificate" >&2; exit 1; }
+unset NGI_KEY_PUBLIC NGI_CERT_PUBLIC
 cd "$CONFOS_DIR"
 FRAGMENT="$NGI_DIR/kernel/c8s.config"
 DEV_PROFILE=()
@@ -126,7 +148,7 @@ if [ -n "${C8S_BINARY:-}" ]; then
     [ -f "$C8S_BINARY" ] || { echo "node-guest-image/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
 fi
-exec bin/confos build "${C8S_NAME:-c8s}" \
+bin/confos build "${C8S_NAME:-c8s}" \
     "${PROFILES[@]}" \
     ${DEV_PROFILE[@]+"${DEV_PROFILE[@]}"} \
     --profile-dir "$NGI_DIR/c8s" \

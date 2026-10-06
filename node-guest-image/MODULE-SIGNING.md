@@ -86,3 +86,13 @@ Rotating the certificate changes the kernel measurement, so it is a reviewed
 PR plus an attestation reference-value refresh — the same procedure as any
 pin bump. Rotating **only** the private key is not possible: the certificate
 carries its public half, so both move together.
+
+## Build check
+
+The node image build checks that the private key matches this certificate
+before it builds the kernel. This check also runs when GPU cache files exist.
+A missing key or a different key stops the build.
+
+When `MODULE_SIG_KEY_PEM` supplies the key, the wrapper puts it in a private
+file under `/dev/shm`. It gives that path to the GPU builder and deletes the
+file when the build exits. Use tmpfs for a file supplied by `MODULE_SIG_KEY`.

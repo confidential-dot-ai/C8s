@@ -214,7 +214,7 @@ func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount
 	return m.GetDestination() == workloadclaims.SidecarSocketDir &&
 		slices.Contains(m.GetOptions(), "ro") &&
 		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
-		workloadclaims.IsSidecarContainer(ctr.GetName())
+		workloadclaims.IsSocketConsumer(ctr.GetName())
 }
 
 // writableKernelFS returns the destinations of sysfs and cgroup mounts that are

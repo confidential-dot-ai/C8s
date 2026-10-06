@@ -66,9 +66,12 @@ func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist
 	if err != nil {
 		t.Fatal(err)
 	}
-	rendered, err := exec.CommandContext(t.Context(), "helm", args...).CombinedOutput()
+	cmd := exec.CommandContext(t.Context(), "helm", args...)
+	var diagnostics bytes.Buffer
+	cmd.Stderr = &diagnostics
+	rendered, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, rendered)
+		t.Fatalf("helm template: %v\n%s\n%s", err, rendered, diagnostics.Bytes())
 	}
 	desired := pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{}}
 	for name, raw := range nodeImageDocuments(t, rendered) {

@@ -817,3 +817,10 @@ Adjacent surfaces that are deliberately **not** RA-TLS:
 6. [getcert-workload-binding.md](getcert-workload-binding.md) — how a pod's
    sandbox identity is established and how CDS gates issuance on what that
    sandbox runs.
+
+### Node address checks
+
+The iptables sync command first checks that each supplied node address is
+bound to a local interface. It then finds an address for a missing IP family.
+An invalid supplied address returns a local address error before discovery.
+This order keeps the error the same on hosts with different IPv6 interfaces.

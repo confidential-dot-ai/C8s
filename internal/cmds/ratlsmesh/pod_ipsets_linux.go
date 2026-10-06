@@ -104,6 +104,9 @@ func runIptablesSync(ctx context.Context, cfg *iptablesSyncConfig) error {
 	if err != nil {
 		return err
 	}
+	if err := verifyNodeIPsLocal(nodeIPsByFamily); err != nil {
+		return err
+	}
 	// Dual-stack: the chart only passes status.hostIP (IPv4 on most nodes),
 	// so pod-originated IPv6 TCP was never redirected. Auto-discover the
 	// missing family's address from local interfaces; verifyNodeIPsLocal

@@ -480,6 +480,37 @@ challenge, and HTTP-01-issuable sanList entries.
 {{- end -}}
 
 {{/*
+"true" on a baked node: its signed launch file supplies the catch-all upstream
+and the public hostnames at runtime, through the files nodeservices writes
+under /run/c8s-node/router. The chart values they replace must stay unset, so
+a render never silently ignores them.
+*/}}
+{{- define "router.launchDriven" -}}
+{{- if .Values.node.baked -}}
+{{- if ne (printf "%v" .Values.router.publicTLS.mode) "cds" -}}
+{{- fail "node.baked takes the public TLS mode from the launch file: leave router.publicTLS.mode at cds" -}}
+{{- end -}}
+{{- if .Values.router.upstream.address -}}
+{{- fail "node.baked takes the upstream from the launch file: leave router.upstream.address empty" -}}
+{{- end -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when the pod runs the acme sidecar and nginx's :80 server: the acme
+public TLS mode, or a baked node (where the sidecar either issues for the
+launch hostnames or serves the fallback mesh leaf).
+*/}}
+{{- define "router.acmeSidecar" -}}
+{{- if or (eq (include "router.publicTLSMode" .) "acme") (eq (include "router.launchDriven" .) "true") -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{- define "router.launchDir" -}}/run/c8s-node/router{{- end -}}
+
+{{/*
 ACME constants shared by the acme sidecar args, the deployment mounts, the
 nginx :80 server, and the cert-path helpers below.
 */}}
@@ -495,7 +526,9 @@ tlsMountPath (cds).
 */}}
 {{- define "router.publicCertPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
-{{- if eq $mode "webpki" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
+{{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
+{{- else if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.certKey -}}
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
@@ -506,7 +539,9 @@ tlsMountPath (cds).
 
 {{- define "router.publicKeyPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
-{{- if eq $mode "webpki" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
+{{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
+{{- else if eq $mode "webpki" -}}
 {{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.keyKey -}}
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
@@ -528,7 +563,12 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 {{- if .Values.router.discovery.enabled }}
 - --discovery-out={{ include "router.discoveryFilePath" . }}
 - --discovery-cds-cert-url={{ .Values.router.discovery.cdsCertPath }}
+{{- if eq (include "router.launchDriven" .) "true" }}
+- --discovery-public-tls-mode-file={{ include "router.launchDir" . }}/front-door-mode
+- --discovery-public-tls-hostnames-file={{ include "router.launchDir" . }}/hostnames
+{{- else }}
 - --discovery-public-tls-mode={{ include "router.publicTLSMode" . }}
+{{- end }}
 {{- if .Values.router.meshCA.expose }}
 - --discovery-mesh-ca-url={{ .Values.router.discovery.meshCAPath }}
 {{- end }}
@@ -543,7 +583,8 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 
 {{/*
 "true" when the router pod must mount the node inventory's socket directory:
-the readiness gate is on and this is the node-CVM shape.
+workload claims are required and this is the node-CVM shape. A baked
+router always requests claims so clients can verify its workload stamp.
 
 The condition mirrors the operator's own inventory condition
 (operator.yaml): the directory exists only where an installer put it, and a
@@ -553,7 +594,7 @@ condition true in every renderable shape today; the condition is spelled out
 anyway so the two consumers of the socket stay on one rule.
 */}}
 {{- define "router.mountInventorySocket" -}}
-{{- if and .Values.router.attest.expectedWorkload (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if and (or .Values.node.baked .Values.router.attest.expectedWorkload) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -578,9 +619,11 @@ list.
 {{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
-{{- if .Values.router.attest.expectedWorkload -}}
+{{- if or .Values.node.baked .Values.router.attest.expectedWorkload -}}
 
-{{- /* The readiness gate (cds-attest /readyz) demands a matched-workload
+{{- /* A baked router needs the same workload stamp that clients pin, even
+       when the optional ingress readiness gate is unset.
+       The readiness gate (cds-attest /readyz) demands a matched-workload
        stamp on the mesh leaf, which only exists when get-cert redeems a
        sandbox token from the inventory — so wire the claims flow whenever
        the gate is enabled (the deployment fails the render if the gate is
