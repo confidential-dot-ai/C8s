@@ -148,7 +148,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
 	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/ratls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
-	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew this often (plus jitter) while the installed leaf carries no matched-workload stamp, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
+	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew while the installed leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
 
 	_ = cmd.MarkFlagRequired("cds-url")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
@@ -426,6 +426,10 @@ const (
 	// for its whole lifetime.
 	unnamedBackoffAfter = 10
 
+	// unnamedFirstPoll is the first delay while the installed leaf is
+	// unnamed; it doubles per unnamed renewal up to --unnamed-renew-interval.
+	unnamedFirstPoll = 2 * time.Second
+
 	defaultRenewJitterPercent = 20
 )
 
@@ -445,7 +449,7 @@ var renewalRetryBase = 15 * time.Second
 // dead leaf for a full interval.
 //
 // Under that ceiling a workload-claims leaf carrying no matched-workload stamp
-// fast-polls at --unnamed-renew-interval, so a pod picks up its name at the
+// fast-polls from unnamedFirstPoll up to --unnamed-renew-interval, so a pod picks up its name at the
 // first post-completion renewal. unnamedRuns is the number of consecutive
 // renewals that came back unnamed; see unnamedBackoffAfter.
 //
@@ -464,11 +468,12 @@ func renewalInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) time.D
 	if spread := int64(delay) * int64(cfg.RenewJitterPercent) / 100; spread > 0 {
 		delay -= time.Duration(mrand.Int64N(spread + 1))
 	}
-	if fast := unnamedPollInterval(cfg, leaf, unnamedRuns); fast > 0 && fast < delay {
-		delay = fast
-	}
 	if delay < minRenewalDelay {
 		delay = min(minRenewalDelay, cfg.RenewInterval)
+	}
+	// The unnamed poll is under the floor at first; its own backoff bounds it.
+	if fast := unnamedPollInterval(cfg, leaf, unnamedRuns); fast > 0 && fast < delay {
+		delay = fast
 	}
 	return delay
 }
@@ -481,7 +486,15 @@ func unnamedPollInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) ti
 	if !cfg.WorkloadClaims || cfg.UnnamedRenewInterval <= 0 || isNamedLeaf(leaf) {
 		return 0
 	}
-	iv := cfg.UnnamedRenewInterval
+	// Start at unnamedFirstPoll and double per unnamed renewal up to the flag:
+	// a new pod is named as soon as its main container runs, which is often
+	// seconds after the cert container, and the router cannot reach it until
+	// then.
+	iv := min(unnamedFirstPoll, cfg.UnnamedRenewInterval)
+	for i := 0; i < unnamedRuns && iv < cfg.UnnamedRenewInterval; i++ {
+		iv *= 2
+	}
+	iv = min(iv, cfg.UnnamedRenewInterval)
 	// Doubling past unnamedBackoffAfter bounds a permanently-unnamed pod to a
 	// handful of fast polls; the caller's clamp lands it on --renew-interval.
 	// The loop cannot run away: it stops at the clamp, so at most log2 steps.
