@@ -599,7 +599,11 @@ jobs:
       deployment: false
     env:
       BUNDLE: release-statement.sigstore.json
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
       STATEMENT: release-statement.json
+      TARGET_SHA: ${{ inputs.target-sha }}
+      UPDATE_LATEST: ${{ needs.calculate.outputs.update-latest }}
     steps:
       - name: Install pinned cosign
         run: |
@@ -616,12 +620,10 @@ jobs:
           echo "COSIGN_BIN=$binary" >> "$GITHUB_ENV"
 
       # The statement names the commit that the published tag object points
-      # at, read back from GitHub rather than taken from the caller.
+      # at, read back from GitHub rather than taken from the caller. In a
+      # called workflow GITHUB_REPOSITORY is the caller, so the identity check
+      # also refuses to sign for any other repository.
       - name: Write release statement
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
-          TARGET_SHA: ${{ inputs.target-sha }}
         run: |
           set -euo pipefail
 
@@ -633,7 +635,7 @@ jobs:
           [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
           if [ "https://github.com/$GITHUB_REPOSITORY/.github/workflows/semver-tag.yml@refs/heads/main" \
                != "$RELEASE_SIGNER_IDENTITY" ]; then
-            echo "::error::the repository name changed; update RELEASE_SIGNER_IDENTITY and docs/releases.md"
+            echo "::error::$GITHUB_REPOSITORY does not match RELEASE_SIGNER_IDENTITY; if this repository was renamed, update it and docs/releases.md"
             exit 1
           fi
           IFS=$'\t' read -r ref_type ref_sha <<< "$(
@@ -641,6 +643,7 @@ jobs:
               --jq '[.object.type, .object.sha] | @tsv'
           )"
           test "$ref_type" = tag
+          [[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]]
           IFS=$'\t' read -r target_type target_sha <<< "$(
             github_api "/repos/$GITHUB_REPOSITORY/git/tags/$ref_sha" \
               --jq '[.object.type, .object.sha] | @tsv'
@@ -648,30 +651,27 @@ jobs:
           test "$target_type" = commit
           test "$target_sha" = "$TARGET_SHA"
 
-          mkdir -p "$RUNNER_TEMP/statement"
           jq -cnS \
             --arg repository "$GITHUB_REPOSITORY" \
             --arg tag "$RELEASE_TAG" \
             --arg commit "$TARGET_SHA" \
             '{repository: $repository, tag: $tag, commit: $commit}' \
-            > "$RUNNER_TEMP/statement/$STATEMENT"
-          cat "$RUNNER_TEMP/statement/$STATEMENT"
+            > "$STATEMENT"
+          cat "$STATEMENT"
 
       # A retry verifies existing assets instead of replacing them. The
       # release is marked Latest only when this tag is the newest stable
       # release, so a repair run for an older tag cannot take Latest back.
       - name: Sign and publish or verify release statement
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
-          TARGET_SHA: ${{ inputs.target-sha }}
-          UPDATE_LATEST: ${{ needs.calculate.outputs.update-latest }}
         run: |
           set -euo pipefail
 
           [[ "$UPDATE_LATEST" =~ ^(true|false)$ ]]
-          cd "$RUNNER_TEMP/statement"
 
+          gh_release() {
+            timeout --kill-after=5s "$GH_API_TIMEOUT" \
+              gh release "$@" --repo "$GITHUB_REPOSITORY"
+          }
           verify() {
             "$COSIGN_BIN" verify-blob \
               --bundle "$BUNDLE" \
@@ -680,22 +680,16 @@ jobs:
               "$STATEMENT"
           }
 
-          if assets="$(
-            timeout --kill-after=5s "$GH_API_TIMEOUT" \
-              gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-                --json assets --jq '.assets[].name'
-          )"; then
+          if assets="$(gh_release view "$RELEASE_TAG" --json assets --jq '.assets[].name')"; then
             release_exists=true
           else
             release_exists=false
-            assets=""
           fi
 
           if grep -Fxq -- "$STATEMENT" <<< "$assets" && grep -Fxq -- "$BUNDLE" <<< "$assets"; then
             mkdir published
-            timeout --kill-after=5s "$GH_API_TIMEOUT" \
-              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-                --dir published --pattern "$STATEMENT" --pattern "$BUNDLE"
+            gh_release download "$RELEASE_TAG" \
+              --dir published --pattern "$STATEMENT" --pattern "$BUNDLE"
             cmp "$STATEMENT" "published/$STATEMENT"
             cp "published/$BUNDLE" "$BUNDLE"
             verify
@@ -711,10 +705,9 @@ jobs:
           verify
 
           if [ "$release_exists" = true ]; then
-            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-              "$STATEMENT" "$BUNDLE"
+            gh_release upload "$RELEASE_TAG" "$STATEMENT" "$BUNDLE"
           else
-            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            gh_release create "$RELEASE_TAG" \
               --verify-tag \
               --latest="$UPDATE_LATEST" \
               --title "$RELEASE_TAG" \

@@ -112,7 +112,7 @@ Verify with cosign 3 or later:
 
 ```sh
 tag=vX.Y.Z
-gh release download "$tag" --repo confidential-dot-ai/c8s \
+gh release download "$tag" --repo confidential-dot-ai/C8s \
   --pattern release-statement.json --pattern release-statement.sigstore.json
 cosign verify-blob \
   --bundle release-statement.sigstore.json \
@@ -129,7 +129,7 @@ The signature proves only that the statement came from `semver-tag.yml` on
 `main`. Then check its fields against the tag:
 
 ```sh
-commit=$(gh api "repos/confidential-dot-ai/c8s/commits/$tag" --jq .sha)
+commit=$(gh api "repos/confidential-dot-ai/C8s/commits/$tag" --jq .sha)
 jq -e --arg tag "$tag" --arg commit "$commit" \
   '.repository == "confidential-dot-ai/C8s" and .tag == $tag and .commit == $commit' \
   release-statement.json
@@ -137,11 +137,10 @@ jq -e --arg tag "$tag" --arg commit "$commit" \
 
 Parse the fields; do not compare the file bytes with your own JSON.
 
-The workflow creates the GitHub release with `--latest` only when the tag is
-the newest stable release, the same rule as the `latest` image alias. A rerun
-for an older tag cannot take the Latest mark back. A rerun verifies existing
-statement assets and does not replace them. Releases made with `GITHUB_TOKEN`
-start no other workflow.
+The GitHub release is marked Latest under the same rule as the `latest` image
+alias, so a rerun for an older tag cannot take it back. A rerun verifies
+existing statement assets and does not replace them. Releases made with
+`GITHUB_TOKEN` start no other workflow.
 
 ## Consistency and recovery
 
@@ -154,10 +153,10 @@ Creating `refs/tags/vX.Y.Z` reserves the version. Registry publication is not a
 cross-system transaction, so a failure after tag creation can leave that release
 temporarily incomplete. Re-run the failed **Docker** workflow to repair its
 component/chart publication and the signed release statement, or rerun the
-downstream **c8s-image** workflow to repair measured node aliases. Missing aliases are created and matching ones are
-verified; neither workflow moves a Git release tag or overwrites an exact image
-tag whose digest differs. A pulled existing Helm chart must match the
-deterministic package byte-for-byte.
+downstream **c8s-image** workflow to repair measured node aliases. Missing
+aliases are created and matching ones are verified; neither workflow moves a
+Git release tag or overwrites an exact image tag whose digest differs. A pulled
+existing Helm chart must match the deterministic package byte-for-byte.
 
 The moving `X.Y` image aliases advance only when the run's Git tag is the latest
 stable patch in that series. The global `latest` alias advances only for the
