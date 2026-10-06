@@ -624,3 +624,21 @@ README and [`operator.md`](operator.md). Rotating the pinned set rolls CDS, and
 a verifier detects a changed write policy by comparing the served
 `/operator-keys` list against its own bundle. Secret grants (`secrets`) are
 managed with the same `edit`/`apply` flow.
+
+### Apply an exact finding review
+
+`c8s allowlist apply --accepted-lint-findings review.json` can accept listed
+search-path findings for one exact input file. This supports measured driver
+files that the host-mount lint rule treats as operator data. Review the source,
+the read-only mount, and the measured node image before you create this record.
+
+The record uses `schema: c8s.allowlist-review/v1`, `documentSha256` (lowercase
+SHA-256 of the complete input file bytes), `reviewedBy`, `reason`, and
+`findings` (the exact lint lines, including `error:`). A changed file, an
+absent finding, or a repeated finding fails. All other errors still block the
+write. A review cannot accept a collision with the live allowlist or an invalid
+policy. The command prints every accepted finding before the write.
+
+Keep the review record with the deployment receipt. It does not change the
+allowlist or its runtime enforcement. `lint --strict` continues to report the
+findings so that a later review can see them.

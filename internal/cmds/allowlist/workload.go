@@ -39,6 +39,7 @@ func newGetCmd(o *options) *cobra.Command {
 
 func newApplyCmd(o *options) *cobra.Command {
 	var dryRun bool
+	var acceptedFindings string
 	cmd := &cobra.Command{
 		Use:   "apply <file|->",
 		Short: "Upsert entries from a file (whole-entry replace)",
@@ -77,6 +78,10 @@ replaced whole — this never field-merges into a live entry.`,
 			// served. Only pairs that span both are added here, since a
 			// collision inside the file is already reported above.
 			findings = append(findings, collisionsWithLive(entries, live)...)
+			findings, err = acceptReviewedFindings(cmd, data, findings, acceptedFindings)
+			if err != nil {
+				return err
+			}
 			for _, f := range findings {
 				fmt.Fprintf(cmd.ErrOrStderr(), "lint: %s\n", f)
 			}
@@ -117,6 +122,7 @@ replaced whole — this never field-merges into a live entry.`,
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "show the diff without writing any entry")
+	cmd.Flags().StringVar(&acceptedFindings, "accepted-lint-findings", "", "review record pinned to these exact input bytes; accepts only listed search-path findings")
 	return cmd
 }
 

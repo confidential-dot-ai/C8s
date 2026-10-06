@@ -119,11 +119,12 @@ policy. This reads the registry only; it never contacts CDS.`,
 
 // finding is one lint result.
 //
-// An error is a document that cannot work rather than a judgement an operator
-// may accept, so it fails a lint whatever --strict says and blocks a write.
+// Errors fail lint and block writes. A byte-exact review can accept only
+// search-path findings; invalid policies and ambiguous matches always fail.
 type finding struct {
-	err bool
-	msg string
+	err        bool
+	msg        string
+	reviewable bool
 }
 
 func (f finding) String() string {
@@ -292,7 +293,9 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 				}
 				for _, rule := range c.Mounts.Rules {
 					if searchPathLoadsMountedContent(value, rule) {
-						out = append(out, errorf("workload %q container %s pins %s to a search path overlapping %s mount %q; operator-supplied content could be loaded as code", name, c.Digest.String(), variable, rule.Kind, rule.Destination))
+						f := errorf("workload %q container %s pins %s to a search path overlapping %s mount %q; operator-supplied content could be loaded as code", name, c.Digest.String(), variable, rule.Kind, rule.Destination)
+						f.reviewable = true
+						out = append(out, f)
 					}
 				}
 			}
