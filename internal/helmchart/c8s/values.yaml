@@ -1197,7 +1197,7 @@ router:
     image:
       repository: nginxinc/nginx-unprivileged
       # Resolve nginxinc/nginx-unprivileged:1.30.5-alpine-slim to bump this digest.
-      digest: "sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
+      digest: "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
       tag: ""
       pullPolicy: IfNotPresent
     # -- Number of nginx replicas.
