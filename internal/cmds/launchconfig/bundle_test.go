@@ -161,6 +161,21 @@ func TestNewBundleBootsServerAndAgentsOnBothPlatforms(t *testing.T) {
 				!bytes.Equal(policy.Images[0].Digest, want.Images[0].Digest) {
 				t.Fatalf("server.json pins %+v, want the server entry %+v", policy, want.Images[0])
 			}
+			// peers.json is the full set CDS admits and serves: the server
+			// entry plus one agent entry under the bundle's agent key.
+			peers, err := refvalues.Load(filepath.Join(dir, peersPolicy))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(peers, want) {
+				t.Fatalf("peers.json = %+v, want server.referenceValues() %+v", peers, want)
+			}
+			if len(peers.Images) != 2 || bytes.Equal(peers.Images[0].Anchor, peers.Images[1].Anchor) {
+				t.Fatalf("peers.json must hold two entries with distinct launch-key anchors: %+v", peers.Images)
+			}
+			if !reflect.DeepEqual(policy.Images[0], peers.Images[0]) {
+				t.Fatal("server.json is not the server entry of peers.json")
+			}
 			for _, f := range []string{serverKeyFile, agentKeyFile, filepath.Join(serverDir, documentFile), filepath.Join("demo-f1", signatureFile)} {
 				info, err := os.Stat(filepath.Join(dir, f))
 				if err != nil {

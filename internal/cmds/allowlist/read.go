@@ -41,20 +41,26 @@ func newExportCmd(o *options) *cobra.Command {
 		Short: "Write the full allowlist as canonical JSON (default stdout) for backup or re-upload",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			al, _, err := o.fetch(ctx(cmd))
+			if err := o.validate(); err != nil {
+				return err
+			}
+			client, err := o.client(ctx(cmd))
 			if err != nil {
 				return err
 			}
-			// Canonical bytes round-trip with `upload` and cds --allowlist-seed.
-			data, err := al.Canonical()
+			// Export the exact canonical bytes served by CDS. Workload stamps
+			// hash these bytes, so even a trailing newline changes a client pin.
+			data, _, err := client.CanonicalBytes(ctx(cmd))
 			if err != nil {
 				return err
 			}
-			data = append(data, '\n')
-
 			if len(args) == 1 && args[0] != "-" {
 				if err := os.WriteFile(args[0], data, 0o644); err != nil {
 					return fmt.Errorf("write %q: %w", args[0], err)
+				}
+				al, err := pkgallowlist.ParseServedJSON(data)
+				if err != nil {
+					return err
 				}
 				fmt.Fprintf(cmd.ErrOrStderr(), "wrote %d workload(s) to %s\n", len(al.Workloads), args[0])
 				return nil

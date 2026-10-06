@@ -99,6 +99,9 @@ type Defaults struct {
 }
 
 type config struct {
+	observedServingCert string
+	attestationNonce    string
+
 	url           string
 	kind          string
 	mode          string
@@ -115,6 +118,7 @@ type config struct {
 	rtmrs              []string
 	operatorKeys       string
 	measurementsConfig string
+	servedPolicyFile   string
 	sandboxID          string
 	workload           string
 	allowlistFile      string
@@ -194,7 +198,7 @@ responder chose).`,
 	f := cmd.Flags()
 	f.StringVar(&cfg.url, "url", "", "target URL or host:port (alternative to the positional argument)")
 	f.StringVar(&cfg.kind, "kind", orDefault(d.Kind, "auto"), "component being verified: cds, lb, workload, or auto")
-	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, or attest-pq")
+	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, attest-pq, or attest-lb")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", defaultDiscoveryPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
@@ -206,8 +210,9 @@ responder chose).`,
 	f.StringVar(&cfg.expectedRTMR3Hex, "expected-rtmr3", "", "DEPRECATED, prefer --rtmr 3=<sha384-hex>: identical pin under identical rules, one flag for every register. Retained so existing invocations keep working")
 	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the operator PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by `openssl ec -pubout`) — derives and pins RTMR[3] as the bare operator-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. The bare seed is the value a node with no per-workload RTMR[3] extends reports, which today is every node. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy; excludes --measurements, --measurements-file and --image-manifest")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy against it, unless --served-policy-file names the set for that check; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys; verification fails unless the key set the attested target serves at /operator-keys matches it (kind=cds targets)")
+	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
@@ -221,6 +226,8 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer)")
 
+	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "PEM or DER serving leaf observed on the same HTTPS connection as the receipt")
+	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "Canonical unpadded base64url 32-byte receipt challenge")
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
 	f.BoolVar(&cfg.showEvidence, "show-evidence", false, "print the raw report fields")
 
@@ -240,12 +247,18 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 	// No mode alias: the retired "attestation-endpoint" name (and anything
 	// else unknown) is a usage error, not a silent fall-through to auto.
 	switch cfg.mode {
-	case "", "auto", "ratls-cert", "discovery", "attest-pq":
+	case "", "auto", "ratls-cert", "discovery", "attest-pq", "attest-lb":
 	default:
-		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq)\n", cfg.mode)
+		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq, attest-lb)\n", cfg.mode)
 		return exitUsage
 	}
 
+	for _, check := range []func(config) error{validateAttestLBConfig} {
+		if err := check(cfg); err != nil {
+			fmt.Fprintf(errOut, "error: %v\n", err)
+			return exitUsage
+		}
+	}
 	plan, err := buildPolicy(cfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "error: %v\n", err)
@@ -295,7 +308,7 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "error: could not obtain evidence: %v\n", err)
 		return exitNoEvidence
 	}
-	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev), gatherMeasurements(ctx, cfg, ev), out, errOut)
+	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev), gatherMeasurements(ctx, cfg, plan, ev), out, errOut)
 }
 
 // targetDescription names the evidence source for a verdict produced before
@@ -365,10 +378,13 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		return exitNoEvidence
 	}
 	oc := newOutcome(cfg, ev, result, verr, plan)
+
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
 	applyInitDataNote(&oc, result, plan)
+	oc.ServingLeafSHA256 = ev.servingLeafSHA256
+	oc.TLSBindingVerified = ev.tlsBindingVerified && oc.Verified
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
 }
@@ -493,8 +509,20 @@ type verifyPlan struct {
 	// initDataHash is the parsed --init-data pin, nil when the flag is unset.
 	initDataHash []byte
 	// refValues is the parsed --image-policy-file, empty when unset. It
-	// both pins the target and is compared against what the target serves.
+	// pins the target's own identity.
 	refValues refvalues.ReferenceValues
+	// served is the /measurements equality check's input, nil when neither
+	// --served-policy-file nor --image-policy-file asked for the check. It
+	// never feeds the target's own identity pin (refValues above).
+	served *servedSet
+}
+
+// servedSet pairs the policy the target must serve and enforce at
+// /measurements with the flag it came from, so failure messages name the
+// file that disagrees.
+type servedSet struct {
+	flag string
+	want refvalues.ReferenceValues
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -541,6 +569,22 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	measurements, err := cmdsutil.LoadMeasurements(cfg.measurements, cfg.measurementsFile)
 	if err != nil {
 		return nil, err
+	}
+
+	// --served-policy-file supplies the served-set equality check's expected
+	// set; without it the check falls back to --image-policy-file.
+	var served *servedSet
+	if cfg.servedPolicyFile != "" {
+		values, err := refvalues.Load(cfg.servedPolicyFile)
+		if err != nil {
+			return nil, fmt.Errorf("--served-policy-file: %w", err)
+		}
+		served = &servedSet{flag: "--served-policy-file", want: values}
+	} else if cfg.measurementsConfig != "" && cfg.kind != "workload" {
+		served = &servedSet{flag: "--image-policy-file", want: refvalues.ReferenceValues{
+			Family: refValues.Family,
+			Images: append([]remote.ImagePin(nil), refValues.Images...),
+		}}
 	}
 
 	// --image-manifest carries MRTD in the same tuple as RTMR[1]/[2]. It is
@@ -622,6 +666,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		meshCA:       caPool,
 		initDataHash: initDataHash,
 		refValues:    refValues,
+		served:       served,
 	}, nil
 }
 
@@ -895,6 +940,21 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		if err != nil {
 			return nil, err
 		}
+		if cfg.mode == "attest-lb" {
+			certData, err := os.ReadFile(cfg.observedServingCert)
+			if err != nil {
+				return nil, fmt.Errorf("read --observed-serving-cert: %w", err)
+			}
+			leafDER, err := parseObservedServingCertificate(certData)
+			if err != nil {
+				return nil, err
+			}
+			nonce, err := parseAttestationNonce(cfg.attestationNonce)
+			if err != nil {
+				return nil, err
+			}
+			return evidenceFromAttestLBJSON(data, nonce, leafDER, "file "+cfg.fromFile)
+		}
 		return gatherFromFile(data, overrideERD, "file "+cfg.fromFile, trust)
 	}
 	if cfg.url == "" {
@@ -907,6 +967,8 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 	}
 
 	switch resolveMode(cfg) {
+	case "attest-lb":
+		return nil, fmt.Errorf("live attest-lb gathering is not supported; save the receipt, challenge, and observed serving certificate")
 	case "ratls-cert":
 		return gatherFromRATLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
 	case "discovery":
@@ -998,8 +1060,12 @@ type Outcome struct {
 	SMT        bool   `json:"smt"`
 	CurrentTCB string `json:"current_tcb,omitempty"`
 	CertSHA256 string `json:"cert_sha256,omitempty"`
-	Pinned     bool   `json:"measurement_pinned"`
-	Error      string `json:"error,omitempty"`
+	// TLSBindingVerified is true only after the saved attest-lb transcript,
+	// mesh proof, observed leaf, caller challenge, and TEE report all verify.
+	TLSBindingVerified bool   `json:"tls_binding_verified"`
+	ServingLeafSHA256  string `json:"serving_leaf_sha256,omitempty"`
+	Pinned             bool   `json:"measurement_pinned"`
+	Error              string `json:"error,omitempty"`
 
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
@@ -1135,7 +1201,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 		}
 	}
 
-	checkMeasurementsConfig(cfg, plan, servedMeasurements, fail)
+	checkServedPolicy(plan, servedMeasurements, fail)
 
 	// The served key list is authenticated by being fetched over the attested
 	// serving cert. A failed fetch fails closed when the operator asked for the
@@ -1172,14 +1238,14 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	}
 }
 
-// checkMeasurementsConfig compares the set the target reports enforcing against
+// checkServedPolicy compares the set the target reports enforcing against
 // the operator's own file. A swapped config leaves the launch measurement
 // untouched, so this is what makes the substitution visible.
-func checkMeasurementsConfig(cfg config, plan *verifyPlan, served measurementsReport, fail func(string, ...any)) {
-	if cfg.measurementsConfig == "" {
+func checkServedPolicy(plan *verifyPlan, report measurementsReport, fail func(string, ...any)) {
+	if plan.served == nil {
 		return
 	}
-	checkServedMeasurements(plan.refValues, served, fail)
+	checkServedMeasurements(plan.served.flag, plan.served.want, report, fail)
 }
 
 // applyWorkloadPolicy surfaces the leaf's matched-workload stamp and enforces
@@ -1366,6 +1432,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		return oc
 	}
 	oc.Verified = true
+	oc.TLSBindingVerified = ev.tlsBindingVerified
+	oc.ServingLeafSHA256 = ev.servingLeafSHA256
 
 	return oc
 }
@@ -1659,4 +1727,34 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if cfg.showEvidence {
 		fmt.Fprintf(out, "  report_data:  %s\n", oc.ReportData)
 	}
+}
+
+func validateAttestLBConfig(cfg config) error {
+	usesObservedInputs := cfg.observedServingCert != "" || cfg.attestationNonce != ""
+	if cfg.mode != "attest-lb" {
+		if usesObservedInputs {
+			return fmt.Errorf("--observed-serving-cert and --attestation-nonce require --mode attest-lb")
+		}
+		return nil
+	}
+	if cfg.kind != "workload" {
+		return fmt.Errorf("--mode attest-lb requires --kind workload")
+	}
+	if cfg.fromFile == "" {
+		return fmt.Errorf("--mode attest-lb requires --from-file; save the receipt from the same HTTPS connection as the observed leaf")
+	}
+	if cfg.url != "" {
+		return fmt.Errorf("--mode attest-lb with --from-file does not accept a target URL")
+	}
+	if cfg.observedServingCert == "" {
+		return fmt.Errorf("--mode attest-lb requires --observed-serving-cert")
+	}
+	if cfg.attestationNonce == "" {
+		return fmt.Errorf("--mode attest-lb requires --attestation-nonce")
+	}
+	if cfg.expectedRDHex != "" {
+		return fmt.Errorf("--expected-report-data does not apply to attest-lb; the verifier computes its transcript")
+	}
+	_, err := parseAttestationNonce(cfg.attestationNonce)
+	return err
 }

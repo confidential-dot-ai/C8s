@@ -155,6 +155,7 @@ The bundle directory is created new and never reused:
 | `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes |
 | `demo/agent.key` | the agent launch key every agent boots with |
 | `demo/server.json` | `C8S_MEASUREMENTS_CONFIG` for clients of this cluster |
+| `demo/peers.json` | every launch identity CDS admits and serves; `c8s cds verify --served-policy-file` |
 | `demo/server/` | `pubkey`, `launch.yaml`, `launch.yaml.sig`: the server's opkeydata |
 | `demo/<agent>/` | the same three files for each agent |
 
@@ -570,6 +571,21 @@ c8s cds verify https://localhost:8443 --measurements-file digests.txt -o json
 
 PKI/SAN mismatch when dialing localhost or a pod IP is fine — `verify` trusts
 the attestation embedded in the serving cert, not the certificate chain.
+
+On a cluster created with `c8s launch-config new`, `--image-policy-file` alone
+cannot pass: it pins the CDS server's identity, but the served-set check
+against `/measurements` is exact, and CDS admits the agents' launch keys
+beside the server's. The bundle carries both policies — pin the target with
+`server.json` and name the served set with `peers.json`:
+
+```bash
+c8s cds verify https://$SERVER:30808 --image-policy-file demo/server.json \
+  --served-policy-file demo/peers.json --operator-keys demo/server/pubkey
+```
+
+Passing `demo/peers.json` for both flags also verifies — either entry admits
+this image — but is the weaker pin: evidence carrying an agent launch key
+would pass too. Prefer the split form.
 
 The launch digest(s) to pin are the same values discussed under measurement
 pinning (the node CVM digest). They
@@ -990,6 +1006,33 @@ is attest-pq-only.
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode and the upstream at boot. Mode `acme` applies when its `router.hostnames` is not
 empty, else mode `cds`. See "Authenticated launch configuration".
+
+### Verify a saved TLS receipt
+
+Save the `attest-lb` response and the serving leaf certificate from the same
+HTTPS connection. Keep the 32-byte challenge that the client sent. Do not
+fetch the certificate on a second connection.
+
+```bash
+c8s workload verify --mode attest-lb --from-file receipt.json \
+  --observed-serving-cert serving-leaf.pem --attestation-nonce "$NONCE" \
+  --image-policy-file server.json --mesh-ca mesh-ca.pem \
+  --allowlist canonical-allowlist.json --workload "$ROUTER_WORKLOAD" -o json
+```
+
+The verifier checks the challenge, the serving certificate hash, the mesh
+identity proof, and the hardware report. A saved receipt reports
+`fresh=false`. It does not prove that a new connection is current.
+`tls_binding_verified=true` requires the transcript and all selected policy
+checks to pass. Live `attest-lb` collection is not supported by this command.
+
+For workload receipts, `--image-policy-file` pins the image and launch key.
+It does not require a CDS `/measurements` endpoint. For CDS verification,
+use `--served-policy-file` to check the complete policy that CDS serves.
+
+`c8s allowlist export` now writes the exact validated bytes served by CDS.
+It does not add a newline or format them again. Use those bytes for the
+workload certificate digest and client allowlist pins.
 
 ## router upstream
 
