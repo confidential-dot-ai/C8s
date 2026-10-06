@@ -14,11 +14,15 @@ env:
   CHART_DIR: internal/helmchart/c8s
   CHART_IMAGE: ghcr.io/confidential-dot-ai/charts/c8s
   CHART_REPO: ghcr.io/confidential-dot-ai/charts
+  COSIGN_SHA256: 4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71
+  COSIGN_VERSION: "3.1.3"
   GH_API_TIMEOUT: 30s
   GITHUB_API_VERSION: "2026-03-10"
   GIT_CLIFF_SHA256: 200d2535da6d9703f3bcc8a4d159c3b55eacdb01cf2148c55b3eee9dd04d5249
   GIT_CLIFF_VERSION: "2.13.1"
   ORAS_VERSION: "1.2.3"
+  RELEASE_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/c8s/.github/workflows/semver-tag.yml@refs/heads/main
+  RELEASE_SIGNER_ISSUER: https://token.actions.githubusercontent.com
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
   RELEASE_WAIT_INTERVAL: 15s
@@ -575,3 +579,138 @@ jobs:
             --destination "$RUNNER_TEMP/chart-verify"
           cmp "dist/c8s-$VERSION.tgz" \
             "$RUNNER_TEMP/chart-verify/c8s-$VERSION.tgz"
+
+  # A keyless Sigstore signature over {repository, tag, commit} lets
+  # downstream automation trust a tag without trusting everyone who can push
+  # tags. Only this job holds an OIDC token. It neither checks out nor runs
+  # repository source.
+  sign:
+    name: Sign release tag
+    needs: [calculate, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+    environment:
+      name: release
+      deployment: false
+    env:
+      BUNDLE: release-statement.sigstore.json
+      STATEMENT: release-statement.json
+    steps:
+      - name: Install pinned cosign
+        run: |
+          set -euo pipefail
+
+          binary="$RUNNER_TEMP/cosign"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --connect-timeout 10 --max-time 120 --retry 3 --retry-all-errors \
+            --output "$binary" \
+            "https://github.com/sigstore/cosign/releases/download/v$COSIGN_VERSION/cosign-linux-amd64"
+          printf '%s  %s\n' "$COSIGN_SHA256" "$binary" | sha256sum --check --status
+          chmod +x "$binary"
+          "$binary" version --json | jq -e --arg v "v$COSIGN_VERSION" '.gitVersion == $v' > /dev/null
+          echo "COSIGN_BIN=$binary" >> "$GITHUB_ENV"
+
+      # The statement names the commit that the published tag object points
+      # at, read back from GitHub rather than taken from the caller.
+      - name: Write release statement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
+          TARGET_SHA: ${{ inputs.target-sha }}
+        run: |
+          set -euo pipefail
+
+          github_api() {
+            timeout --kill-after=5s "$GH_API_TIMEOUT" \
+              gh api -H "X-GitHub-Api-Version: $GITHUB_API_VERSION" "$@"
+          }
+
+          [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
+          IFS=$'\t' read -r ref_type ref_sha <<< "$(
+            github_api "/repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
+              --jq '[.object.type, .object.sha] | @tsv'
+          )"
+          test "$ref_type" = tag
+          IFS=$'\t' read -r target_type target_sha <<< "$(
+            github_api "/repos/$GITHUB_REPOSITORY/git/tags/$ref_sha" \
+              --jq '[.object.type, .object.sha] | @tsv'
+          )"
+          test "$target_type" = commit
+          test "$target_sha" = "$TARGET_SHA"
+
+          mkdir -p "$RUNNER_TEMP/statement"
+          jq -cnS \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$RELEASE_TAG" \
+            --arg commit "$TARGET_SHA" \
+            '{repository: $repository, tag: $tag, commit: $commit}' \
+            > "$RUNNER_TEMP/statement/$STATEMENT"
+          cat "$RUNNER_TEMP/statement/$STATEMENT"
+
+      # A retry verifies existing assets instead of replacing them. The
+      # release is marked Latest only when this tag is the newest stable
+      # release, so a repair run for an older tag cannot take Latest back.
+      - name: Sign and publish or verify release statement
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
+          TARGET_SHA: ${{ inputs.target-sha }}
+          UPDATE_LATEST: ${{ needs.calculate.outputs.update-latest }}
+        run: |
+          set -euo pipefail
+
+          [[ "$UPDATE_LATEST" =~ ^(true|false)$ ]]
+          cd "$RUNNER_TEMP/statement"
+
+          verify() {
+            "$COSIGN_BIN" verify-blob \
+              --bundle "$BUNDLE" \
+              --certificate-identity "$RELEASE_SIGNER_IDENTITY" \
+              --certificate-oidc-issuer "$RELEASE_SIGNER_ISSUER" \
+              "$STATEMENT"
+          }
+
+          if assets="$(
+            timeout --kill-after=5s "$GH_API_TIMEOUT" \
+              gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --json assets --jq '.assets[].name'
+          )"; then
+            release_exists=true
+          else
+            release_exists=false
+            assets=""
+          fi
+
+          if grep -Fxq -- "$STATEMENT" <<< "$assets" && grep -Fxq -- "$BUNDLE" <<< "$assets"; then
+            mkdir published
+            timeout --kill-after=5s "$GH_API_TIMEOUT" \
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+                --dir published --pattern "$STATEMENT" --pattern "$BUNDLE"
+            cmp "$STATEMENT" "published/$STATEMENT"
+            cp "published/$BUNDLE" "$BUNDLE"
+            verify
+            echo "existing release statement for $RELEASE_TAG verified"
+            exit 0
+          fi
+          if grep -Fxq -e "$STATEMENT" -e "$BUNDLE" <<< "$assets"; then
+            echo "::error::release $RELEASE_TAG has only part of its signed statement; delete that asset and rerun"
+            exit 1
+          fi
+
+          "$COSIGN_BIN" sign-blob --yes --bundle "$BUNDLE" "$STATEMENT"
+          verify
+
+          if [ "$release_exists" = true ]; then
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              "$STATEMENT" "$BUNDLE"
+          else
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag \
+              --latest="$UPDATE_LATEST" \
+              --title "$RELEASE_TAG" \
+              --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT." \
+              "$STATEMENT" "$BUNDLE"
+          fi

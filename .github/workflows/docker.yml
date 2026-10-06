@@ -369,7 +369,8 @@ jobs:
     uses: ./.github/workflows/semver-tag.yml
     permissions:
       actions: read # The called workflow serializes against older Docker runs.
-      contents: write # Create the annotated release tag.
+      contents: write # Create the annotated release tag and its GitHub release.
+      id-token: write # Sign the release statement keyless with Sigstore.
       packages: write # Alias component images and publish the Helm chart.
     with:
       target-sha: ${{ github.sha }}
