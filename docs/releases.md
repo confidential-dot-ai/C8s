@@ -96,7 +96,7 @@ instead covered by the signed release statement below.
 
 ## Verify a release tag
 
-Each release tag after `v0.34.2` has a GitHub release with two assets:
+Each release tag from `v0.36.0` on has a GitHub release with two assets:
 
 - `release-statement.json`: `{"commit":"<sha>","repository":"confidential-dot-ai/C8s","tag":"vX.Y.Z"}`.
 - `release-statement.sigstore.json`: a Sigstore bundle over that file. The
@@ -104,7 +104,7 @@ Each release tag after `v0.34.2` has a GitHub release with two assets:
   GitHub Actions OIDC, so there is no signing key to store. Only that job has
   `id-token: write`.
 
-Tags up to `v0.34.2` have no statement. A downstream check must treat a
+Tags up to `v0.35.0` have no statement. A downstream check must treat a
 statement or bundle that is present but does not verify as a failure, not as
 an unsigned tag.
 
