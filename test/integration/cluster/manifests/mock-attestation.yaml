@@ -5,7 +5,7 @@
 # :8400 (where cvmMode=bare-metal consumers dial the node-baked api), so it runs
 # hostNetwork. attest-proxy is the same sidecar the chart's DaemonSet runs:
 # it publishes the api on the hostPath unix socket the host NRI plugin
-# verifies CDS RA-TLS through.
+# verifies CDS ARmTLS through.
 #
 # Recreate: on a single-node cluster a rolling update keeps the old pod
 # holding host :8400 and the new pod can never bind.

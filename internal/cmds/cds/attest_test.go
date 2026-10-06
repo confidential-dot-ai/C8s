@@ -30,8 +30,8 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -310,7 +310,7 @@ func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode challenge: %v", err)
 	}
-	want, err := ratls.ReportDataForKey(&csrKey.PublicKey, challengeBytes)
+	want, err := armtls.ReportDataForKey(&csrKey.PublicKey, challengeBytes)
 	if err != nil {
 		t.Fatalf("ReportDataForKey: %v", err)
 	}
@@ -392,7 +392,7 @@ func TestAttest_AcceptsCSRWithAllowedDNSSAN(t *testing.T) {
 func TestAttest_RejectsCSRWithBadCN(t *testing.T) {
 	stub := newStubAttestationApi(t, "x")
 	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Policy.AllowedCNPattern = regexp.MustCompile(`^ratls-mesh-[0-9.]+$`)
+	h.Policy.AllowedCNPattern = regexp.MustCompile(`^armtls-mesh-[0-9.]+$`)
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSRWith(t, pkix.Name{CommonName: "evil"}, nil, nil)
 

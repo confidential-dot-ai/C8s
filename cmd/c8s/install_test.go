@@ -942,12 +942,12 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
 		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to the components that name their RA-TLS
+		// propagates the CPU TEE to the components that name their ARmTLS
 		// platform, or CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
 			out = append(out,
-				"--set-string", "cds.ratlsPlatform=tdx",
-				"--set-string", "ratlsMesh.platform=tdx",
+				"--set-string", "cds.armtlsPlatform=tdx",
+				"--set-string", "armtlsMesh.platform=tdx",
 			)
 		}
 		// The attest sidecar's platform names the evidence shape the sidecar
@@ -976,7 +976,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		// node: the node image bakes attestation-api + nri-image-policy, so the
 		// attestation-api copy is skipped and the NRI installer switches to its
 		// baked form — the only path that reaches the baked plugin's CDS pins.
-		// ratlsMesh is not baked, stays on.
+		// armtlsMesh is not baked, stays on.
 		if mode == "bare-metal" {
 			out = append(out,
 				"--set", "attestationApi.enabled=false",
@@ -995,7 +995,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		"gke + tdx":            {"gke", "tdx", build("gke", "tdx", "false", "true", "false")},
 		"bare-metal + tdx":     {"bare-metal", "tdx", build("bare-metal", "tdx", "false", "true", "false")},
 		"aks + sev-snp":        {"aks", "sev-snp", build("aks", "sev-snp", "false", "false", "true")},
-		// az-tdx: Azure vTPM (tpm=true, no guest device) + TDX RA-TLS platform.
+		// az-tdx: Azure vTPM (tpm=true, no guest device) + TDX ARmTLS platform.
 		"aks + tdx (az-tdx)": {"aks", "tdx", build("aks", "tdx", "false", "false", "true")},
 	}
 	for name, tc := range cases {
@@ -1033,15 +1033,15 @@ func TestAppendCvmModeInstallArgsMeasurements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.measurements[0]=" + m0, "ratlsMesh.measurements[0]=" + m0,
-		"cds.measurements[1]=" + m1, "ratlsMesh.measurements[1]=" + m1,
+		"cds.measurements[0]=" + m0, "armtlsMesh.measurements[0]=" + m0,
+		"cds.measurements[1]=" + m1, "armtlsMesh.measurements[1]=" + m1,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)
 		}
 	}
 	// The blank must not produce an empty index-2 pin.
-	for _, bad := range []string{"cds.measurements[2]=", "ratlsMesh.measurements[2]="} {
+	for _, bad := range []string{"cds.measurements[2]=", "armtlsMesh.measurements[2]="} {
 		if slices.Contains(got, bad) {
 			t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
 		}
@@ -1066,7 +1066,7 @@ func TestAppendCvmModeInstallArgsRejectsUnknownHardwarePlatform(t *testing.T) {
 func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 	// aks + tdx is the Azure-vTPM TDX (az-tdx) shape: the node's vTPM HCL report
 	// wraps a TD quote, so it needs the vTPM device (tpm=true, no guest device)
-	// and the TDX RA-TLS platform on CDS/mesh — not a refusal.
+	// and the TDX ARmTLS platform on CDS/mesh — not a refusal.
 	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "aks", "tdx")
 	if err != nil {
 		t.Fatalf("appendCvmModeInstallArgs(aks, tdx): unexpected error %v", err)
@@ -1076,8 +1076,8 @@ func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 		"attestationApi.cvmMode=aks",
 		"attestationApi.teeDevices.tpm=true",
 		"attestationApi.teeDevices.tdxGuest=false",
-		"cds.ratlsPlatform=tdx",
-		"ratlsMesh.platform=tdx",
+		"cds.armtlsPlatform=tdx",
+		"armtlsMesh.platform=tdx",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("aks+tdx args missing %q; got %v", want, got)
@@ -1092,7 +1092,7 @@ var testComponents = []c8sComponent{
 	{valuePrefix: "image", repository: "ghcr.io/confidential-dot-ai/c8s-operator"},
 	{valuePrefix: "attestationApi.image", repository: "ghcr.io/confidential-dot-ai/attestation-api", enabledPath: "attestationApi.enabled"},
 	{valuePrefix: "cds.image", repository: "ghcr.io/confidential-dot-ai/cds"},
-	{valuePrefix: "ratlsMesh.image", repository: "ghcr.io/confidential-dot-ai/ratls-mesh", enabledPath: "ratlsMesh.enabled"},
+	{valuePrefix: "armtlsMesh.image", repository: "ghcr.io/confidential-dot-ai/armtls-mesh", enabledPath: "armtlsMesh.enabled"},
 	{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/confidential-dot-ai/nri-image-policy", enabledPath: "nriImagePolicy.enabled"},
 }
 
@@ -1111,7 +1111,7 @@ func TestBuildDigestArgsPinsEveryComponent(t *testing.T) {
 			return "sha256:00000000000000000000000000000000000000000000000000000000000000bb", nil
 		case "ghcr.io/confidential-dot-ai/cds:v1":
 			return "sha256:00000000000000000000000000000000000000000000000000000000000000cc", nil
-		case "ghcr.io/confidential-dot-ai/ratls-mesh:v1":
+		case "ghcr.io/confidential-dot-ai/armtls-mesh:v1":
 			return "sha256:00000000000000000000000000000000000000000000000000000000000000dd", nil
 		case "ghcr.io/confidential-dot-ai/nri-image-policy:v1":
 			return "sha256:00000000000000000000000000000000000000000000000000000000000000ee", nil
@@ -1134,8 +1134,8 @@ func TestBuildDigestArgsPinsEveryComponent(t *testing.T) {
 		"--set-string", "attestationApi.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000bb",
 		"--set-string", "cds.image.repository=ghcr.io/confidential-dot-ai/cds",
 		"--set-string", "cds.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000cc",
-		"--set-string", "ratlsMesh.image.repository=ghcr.io/confidential-dot-ai/ratls-mesh",
-		"--set-string", "ratlsMesh.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000dd",
+		"--set-string", "armtlsMesh.image.repository=ghcr.io/confidential-dot-ai/armtls-mesh",
+		"--set-string", "armtlsMesh.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000dd",
 		"--set-string", "nriImagePolicy.image.repository=ghcr.io/confidential-dot-ai/nri-image-policy",
 		"--set-string", "nriImagePolicy.image.digest=sha256:00000000000000000000000000000000000000000000000000000000000000ee",
 		// Resolving component digests enables their derivation into the NRI allowlist.
@@ -1195,7 +1195,7 @@ func TestBuildDigestArgsSkipsDisabledComponent(t *testing.T) {
 	// Enabled components still pin both repository and digest.
 	for _, want := range []string{
 		"cds.image.repository=ghcr.io/confidential-dot-ai/cds",
-		"ratlsMesh.image.repository=ghcr.io/confidential-dot-ai/ratls-mesh",
+		"armtlsMesh.image.repository=ghcr.io/confidential-dot-ai/armtls-mesh",
 		"image.repository=ghcr.io/confidential-dot-ai/c8s-operator",
 	} {
 		if !slices.Contains(args, want) {
@@ -1350,7 +1350,7 @@ func TestChartComponentsFromValues(t *testing.T) {
 		"image":                "ghcr.io/confidential-dot-ai/c8s-operator",
 		"attestationApi.image": "ghcr.io/confidential-dot-ai/attestation-api",
 		"cds.image":            "ghcr.io/confidential-dot-ai/cds",
-		"ratlsMesh.image":      "ghcr.io/confidential-dot-ai/ratls-mesh",
+		"armtlsMesh.image":     "ghcr.io/confidential-dot-ai/armtls-mesh",
 		"nriImagePolicy.image": "ghcr.io/confidential-dot-ai/nri-image-policy",
 		"volumed.image":        "ghcr.io/confidential-dot-ai/volumed",
 	}
@@ -1763,7 +1763,7 @@ func TestDeniedPlatformImages(t *testing.T) {
 		// A platform image already in the floor is admitted.
 		daemonSetPod("kube-system", "csi-node-a", "example.test/csi:v1", "example.test/csi@"+pinned),
 		// The release's own components are torn up and replaced by this install.
-		daemonSetPod(release, "c8s-ratls-mesh-a", "ghcr.io/confidential-dot-ai/ratls-mesh:main", "ghcr.io/confidential-dot-ai/ratls-mesh@"+tenant),
+		daemonSetPod(release, "c8s-armtls-mesh-a", "ghcr.io/confidential-dot-ai/armtls-mesh:main", "ghcr.io/confidential-dot-ai/armtls-mesh@"+tenant),
 	}
 	admitted := map[string]bool{pinned: true}
 
@@ -1892,7 +1892,7 @@ func TestReportExemptedImages(t *testing.T) {
 }
 
 // --rtmrs completes the TDX pin: the entries fan into cds.rtmrs and
-// ratlsMesh.rtmrs, normalized and in index order.
+// armtlsMesh.rtmrs, normalized and in index order.
 func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 	prev := installRegisters
 	defer func() { installRegisters = prev }()
@@ -1904,8 +1904,8 @@ func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.rtmrs[0]=1=" + r1, "ratlsMesh.rtmrs[0]=1=" + r1,
-		"cds.rtmrs[1]=2=" + r2, "ratlsMesh.rtmrs[1]=2=" + r2,
+		"cds.rtmrs[0]=1=" + r1, "armtlsMesh.rtmrs[0]=1=" + r1,
+		"cds.rtmrs[1]=2=" + r2, "armtlsMesh.rtmrs[1]=2=" + r2,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)

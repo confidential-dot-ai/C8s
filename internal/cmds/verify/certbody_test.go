@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // mintAttestedLeaf builds a self-issued cert with a genuine (fake-SNP)
@@ -21,8 +21,8 @@ import (
 // re-signed by an attacker who does not hold the attested key.
 func mintAttestedLeaf(t *testing.T, holder *ecdsa.PublicKey, signer *ecdsa.PrivateKey, notBefore, notAfter time.Time) *x509.Certificate {
 	t.Helper()
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-	attExt, err := ratls.MarshalExtension(att)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	attExt, err := armtls.MarshalExtension(att)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,8 +61,8 @@ func testKey(t *testing.T) *ecdsa.PrivateKey {
 // verifies against it.
 func mintForgedIssuerLeaf(t *testing.T, holder *ecdsa.PublicKey, notAfter time.Time) *x509.Certificate {
 	t.Helper()
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-	attExt, err := ratls.MarshalExtension(att)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	attExt, err := armtls.MarshalExtension(att)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 		}
 	})
 
-	// A live RA-TLS dial is different in kind: completing the handshake proves
+	// A live ARmTLS dial is different in kind: completing the handshake proves
 	// the peer holds the attested private key, which a re-minted body around
 	// someone else's SPKI cannot do. That path records the proof instead of
 	// demanding a chain.
@@ -177,8 +177,8 @@ func TestMeshCAAuthenticatesCAIssuedCertBody(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-	attExt, err := ratls.MarshalExtension(att)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	attExt, err := armtls.MarshalExtension(att)
 	if err != nil {
 		t.Fatal(err)
 	}

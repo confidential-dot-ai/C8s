@@ -58,7 +58,7 @@ func TestInstallPinsEmitsFileAndFlatValues(t *testing.T) {
 		t.Errorf("rtmrs = %v, want the two shared register pins", rtmrs)
 	}
 	joined := strings.Join(helmArgs, " ")
-	for _, want := range []string{"cds.measurementsConfig=" + path, "ratlsMesh.measurementsConfig=" + path} {
+	for _, want := range []string{"cds.measurementsConfig=" + path, "armtlsMesh.measurementsConfig=" + path} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("helm args %v missing %s", helmArgs, want)
 		}

@@ -17,7 +17,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -69,7 +69,7 @@ func RateKey(r *http.Request) string {
 	if err != nil {
 		return ""
 	}
-	id, err := ratls.SandboxIDFromCert(leaf)
+	id, err := armtls.SandboxIDFromCert(leaf)
 	if err != nil || id == "" {
 		return ""
 	}
@@ -314,7 +314,7 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 	if err != nil {
 		return grant{}, deny("%v", err)
 	}
-	sandboxID, err := ratls.SandboxIDFromCert(leaf)
+	sandboxID, err := armtls.SandboxIDFromCert(leaf)
 	if err != nil || sandboxID == "" {
 		return grant{}, deny("client certificate carries no sandbox ID")
 	}

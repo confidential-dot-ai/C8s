@@ -247,7 +247,7 @@ any-argv bootstrap digests. Argv-pinned images are admitted by the served seed.
 {{- define "nri-image-policy.bootConfig" -}}
 {{- $root := .root -}}
 {{/* Must stay the value CDS runs with: the two ends of one mutually-attested connection. */}}
-platform: {{ $root.Values.cds.ratlsPlatform | quote }}
+platform: {{ $root.Values.cds.armtlsPlatform | quote }}
 plugin:
   health_addr: {{ printf "unix://%s" (include "nri-image-policy.hostHealthSocket" $root) | quote }}
 workload_claims:

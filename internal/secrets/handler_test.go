@@ -24,7 +24,7 @@ import (
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -160,7 +160,7 @@ func leafFor(t *testing.T, sandboxID string) (*x509.Certificate, *ecdsa.PrivateK
 		NotAfter:     time.Now().Add(time.Hour),
 	}
 	if sandboxID != "" {
-		ext, err := ratls.MarshalSandboxIDExtension(sandboxID)
+		ext, err := armtls.MarshalSandboxIDExtension(sandboxID)
 		if err != nil {
 			t.Fatal(err)
 		}

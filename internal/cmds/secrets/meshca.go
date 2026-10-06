@@ -11,7 +11,7 @@ import (
 )
 
 // errMeshCARequired is the refusal an operator gets for a write that names no
-// mesh CA. RA-TLS proves the peer is a TEE running a pinned build; a launch
+// mesh CA. ARmTLS proves the peer is a TEE running a pinned build; a launch
 // measurement does not distinguish instances running the same node image.
 // The mesh CA key is generated per CDS and is the anchor that
 // `c8s verify --mesh-ca` and every workload already hold.

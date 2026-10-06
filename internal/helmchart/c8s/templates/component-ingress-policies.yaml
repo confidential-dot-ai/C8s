@@ -7,7 +7,7 @@ which port answers. router stays reachable from off-cluster, cds from every
 node, the operator from the API server. A policy with no `ingress:` key at all
 (volumed) is the one that refuses everything.
 
-Ingress only. NetworkPolicies union, and ratls-mesh's tcp-only-egress selects
+Ingress only. NetworkPolicies union, and armtls-mesh's tcp-only-egress selects
 every pod in the namespace and allows all TCP, so an egress rule added here
 would be allowed by that one anyway.
 
@@ -32,7 +32,7 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # RA-TLS from anywhere: get-cert runs beside every adopted workload, and the
+    # ARmTLS from anywhere: get-cert runs beside every adopted workload, and the
     # NodePort route arrives off-cluster.
     - ports:
         - protocol: TCP

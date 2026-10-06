@@ -29,7 +29,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volumed"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // config is everything the sidecar needs. The webhook renders all of it.
@@ -143,7 +143,7 @@ func closeWith(ctx context.Context, daemon *http.Client, base string) error {
 // openAll fetches and opens every requested volume in one pass. The daemon is
 // idempotent for a repeated identical request, so a pass that fails partway is
 // safe to run again.
-func openAll(ctx context.Context, cfg config, pins ratls.Pins) error {
+func openAll(ctx context.Context, cfg config, pins armtls.Pins) error {
 	client, pub, err := sidecar.NewClient(cfg.Config, pins)
 	if err != nil {
 		return err

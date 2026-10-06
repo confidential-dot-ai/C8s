@@ -116,7 +116,7 @@ c8s get-kubeconfig --node "$SERVER_IP" \
   --out demo/kubeconfig --release-wait 5m
 ```
 
-Bootstrap uses the RA-TLS credential service on port 8443 for both the
+Bootstrap uses the ARmTLS credential service on port 8443 for both the
 operator-authenticated nonce attestation and credential release. The raw
 attester stays on loopback. The client verifies the full image and launch-key
 binding in both the serving certificate and the fresh report before requesting
@@ -141,7 +141,7 @@ application services:
 | Local attestation API and Unix-socket proxy | systemd services | Every node |
 | NRI image admission | Required containerd plugin | Every node, before pods |
 | RKE2 | systemd service | Authenticated server or agent role |
-| RA-TLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
+| ARmTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
 | CDS | Singleton Deployment | Server |
 | Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
 | Operator, webhook and admission integration | Kubernetes resources | Cluster-wide |
@@ -338,7 +338,7 @@ both credential bindings, and proves, through server-side dry-runs as a syntheti
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
 first-boot reconciliation window. The same gate waits until the live
-FelixConfigurations make Canal append its iptables hooks behind ratls-mesh's
+FelixConfigurations make Canal append its iptables hooks behind armtls-mesh's
 cw guard, which Felix only learns after the chart installs its CRDs.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,

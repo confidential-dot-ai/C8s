@@ -506,7 +506,7 @@ runs:
       done
       [ "$ready" = 1 ] || { echo "::error::credential release did not start; signed launch or measured service startup failed"; exit 1; }
 
-  - name: get an attested, operator-key-bound kubeconfig (RA-TLS)
+  - name: get an attested, operator-key-bound kubeconfig (ARmTLS)
     shell: bash
     run: |
       set -euo pipefail

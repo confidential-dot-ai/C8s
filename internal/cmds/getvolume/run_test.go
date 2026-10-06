@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestParseVolumeSpec(t *testing.T) {
@@ -139,7 +139,7 @@ func TestOpenAllWithoutLeaf(t *testing.T) {
 	cfg := validConfig()
 	cfg.CertPath = filepath.Join(t.TempDir(), "absent.crt")
 	cfg.KeyPath = filepath.Join(t.TempDir(), "absent.key")
-	if err := openAll(context.Background(), cfg, ratls.Pins{}); err == nil {
+	if err := openAll(context.Background(), cfg, armtls.Pins{}); err == nil {
 		t.Fatal("a missing leaf was accepted")
 	}
 }

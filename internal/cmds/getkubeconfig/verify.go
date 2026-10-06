@@ -131,7 +131,7 @@ func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error 
 // verifyEvidence verifies an evidence envelope with attestation-go (HW chain +
 // report_data binding) and enforces the full measured-identity policy on the
 // verified claims. expectedReportData is what the quote must be bound to: the
-// caller's nonce on the attest gate, the cert-key hash on the RA-TLS dial.
+// caller's nonce on the attest gate, the cert-key hash on the ARmTLS dial.
 // Both paths funnel through here so the two gates cannot diverge. Fails
 // closed on any missing piece.
 func verifyEvidence(envelopeJSON, expectedReportData []byte, exp platformVerifier) (*teetypes.VerificationResult, error) {
@@ -273,7 +273,7 @@ const snpAttestTimeout = 30 * time.Second
 // verifySNPEvidence verifies a bare-metal SNP envelope through localverify —
 // which accepts the raw-report shape and pulls the VCEK from AMD KDS, rather
 // than requiring the guest to have volunteered it inline — then enforces the
-// same measured identity the RA-TLS dial does.
+// same measured identity the ARmTLS dial does.
 //
 // The engine already enforces both pins (Measurements, ExpectedInitDataHash);
 // checkIdentity re-checks them over the returned claims so a
@@ -281,7 +281,7 @@ const snpAttestTimeout = 30 * time.Second
 func (exp measuredPolicy) verifySNPEvidence(env teetypes.AttestationEvidence, expectedReportData []byte) (*teetypes.VerificationResult, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), snpAttestTimeout)
 	defer cancel()
-	res, err := verifySNPRATLS(ctx, string(env.Platform), env.Evidence, exp.verificationParams(expectedReportData))
+	res, err := verifySNPARMTLS(ctx, string(env.Platform), env.Evidence, exp.verificationParams(expectedReportData))
 	if err != nil {
 		return nil, fmt.Errorf("verify evidence: %w", err)
 	}

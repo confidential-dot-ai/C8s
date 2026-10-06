@@ -6,7 +6,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // verifyInProcess verifies already-gathered evidence with the shared engine
@@ -20,7 +20,7 @@ import (
 //
 // MinTCB is passed here AND re-checked in newOutcome (enforceMinTCB): the
 // engine consumes it on the SNP path only, and silently drops it on TDX.
-func verifyInProcess(ctx context.Context, ev *evidence, policy *ratls.VerifyPolicy, initDataHash []byte, minTCB *teetypes.SnpTcb) (*teetypes.VerificationResult, error) {
+func verifyInProcess(ctx context.Context, ev *evidence, policy *armtls.VerifyPolicy, initDataHash []byte, minTCB *teetypes.SnpTcb) (*teetypes.VerificationResult, error) {
 	res, err := localverify.Verify(ctx, ev.platform, ev.rawEvidence, localverify.Params{
 		ExpectedReportData:   ev.erd,
 		ExpectedInitDataHash: initDataHash,

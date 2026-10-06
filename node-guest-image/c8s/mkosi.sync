@@ -75,9 +75,9 @@ C8S_REGISTRY="${C8S_REGISTRY:-ghcr.io/confidential-dot-ai}"
 NRI_REPO="${C8S_REGISTRY}/nri-image-policy"
 OPERATOR_REPO="${C8S_REGISTRY}/c8s-operator"
 CDS_REPO="${C8S_REGISTRY}/cds"
-MESH_REPO="${C8S_REGISTRY}/ratls-mesh"
+MESH_REPO="${C8S_REGISTRY}/armtls-mesh"
 # The image's TEE platform, from build's --sync-input. Required: the NRI
-# base allowlist types the RA-TLS identity CDS checks against attestation
+# base allowlist types the ARmTLS identity CDS checks against attestation
 # evidence,
 # so a wrong or defaulted value denies every adopted workload a certificate.
 PLATFORM=$(cat "$SYNC_INPUTS/platform" 2>/dev/null || true)
@@ -95,7 +95,7 @@ esac
 # The label key is the one consumer with its own vocabulary: the chart
 # selector and c8s install use confidential.ai/sev-snp (NOT /snp — nothing
 # selects on that), while cred-release and the NRI base allowlist normalize
-# snp themselves (ratls.NormalizePlatform).
+# snp themselves (armtls.NormalizePlatform).
 case "$PLATFORM" in
     snp) LABEL_PLATFORM=sev-snp ;;
     *)   LABEL_PLATFORM=$PLATFORM ;;
@@ -265,8 +265,8 @@ render_node_integration() {
         --image-digest "$OPERATOR_DIGEST" \
         --cds-image-repository "$CDS_REPO" \
         --cds-image-digest "$CDS_DIGEST" \
-        --ratls-mesh-image-repository "$MESH_REPO" \
-        --ratls-mesh-image-digest "$MESH_DIGEST" \
+        --armtls-mesh-image-repository "$MESH_REPO" \
+        --armtls-mesh-image-digest "$MESH_DIGEST" \
         --output-dir "$out"; then
         echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image render'; publish this branch's images and select that C8S_REF" >&2
         exit 1
@@ -360,7 +360,7 @@ PLUGIN_TARGET="$STAGE_DIR/opt/nri/plugins/10-nri-image-policy"
 # The same multi-command binary, also staged under its own name (C8S_TARGET,
 # set above) so the cred-release systemd unit can invoke `c8s cred-release`
 # (argv[0]="c8s" falls through to normal cobra dispatch — only
-# get-cert/nri-image-policy/ratls-mesh are argv-aliased).
+# get-cert/nri-image-policy/armtls-mesh are argv-aliased).
 # Content-addressed by the image digest: a cached copy skips the GHCR pull
 # entirely (oras digest-verifies the blobs on the pull that populates it).
 PLUGIN_CACHE="$CACHE_DIR/nri-image-policy-${NRI_IMAGE##*@sha256:}"

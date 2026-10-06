@@ -30,16 +30,16 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --cds-url must be refused, not quietly served over a client
-	// that skips RA-TLS attestation of CDS.
+	// that skips ARmTLS attestation of CDS.
 	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
 		if _, err := cdsHTTPClient(config{CDSURL: scheme, AttestationApiURL: "http://attestation-api:8400"}); err == nil {
 			t.Fatalf("cdsHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
@@ -47,7 +47,7 @@ func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	}
 }
 
-func TestCDSHTTPClientUsesRATLSForHTTPS(t *testing.T) {
+func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	client, err := cdsHTTPClient(config{
 		CDSURL:            "https://cds:8443",
 		AttestationApiURL: "http://attestation-api:8400",
@@ -56,7 +56,7 @@ func TestCDSHTTPClientUsesRATLSForHTTPS(t *testing.T) {
 		t.Fatalf("cdsHTTPClient: %v", err)
 	}
 	if client == http.DefaultClient {
-		t.Fatal("client = http.DefaultClient, want RA-TLS client")
+		t.Fatal("client = http.DefaultClient, want ARmTLS client")
 	}
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
@@ -66,7 +66,7 @@ func TestCDSHTTPClientUsesRATLSForHTTPS(t *testing.T) {
 		t.Fatal("TLSClientConfig is nil")
 	}
 	if !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want RA-TLS verification path")
+		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want ARmTLS verification path")
 	}
 }
 
@@ -622,7 +622,7 @@ func TestCreateCSR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ratlsExt := pkix.Extension{Id: ratls.OIDRATLSAttestation, Value: []byte{0x30, 0x03, 0x02, 0x01, 0x42}}
+	armtlsExt := pkix.Extension{Id: armtls.OIDARMTLSAttestation, Value: []byte{0x30, 0x03, 0x02, 0x01, 0x42}}
 
 	parseCSR := func(t *testing.T, csrPEM []byte) *x509.CertificateRequest {
 		t.Helper()
@@ -638,29 +638,29 @@ func TestCreateCSR(t *testing.T) {
 	}
 
 	t.Run("dns san", func(t *testing.T) {
-		csrPEM, err := createCSR(key, "host.example.com", ratlsExt)
+		csrPEM, err := createCSR(key, "host.example.com", armtlsExt)
 		if err != nil {
 			t.Fatalf("createCSR: %v", err)
 		}
 		csr := parseCSR(t, csrPEM)
-		// INVARIANT: the CSR carries the RA-TLS extension so CDS can copy it
-		// into the issued leaf for downstream ratls-mode re-verification.
+		// INVARIANT: the CSR carries the ARmTLS extension so CDS can copy it
+		// into the issued leaf for downstream armtls-mode re-verification.
 		found := false
 		for _, ext := range csr.Extensions {
-			if ext.Id.Equal(ratls.OIDRATLSAttestation) {
+			if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
 				found = true
-				if string(ext.Value) != string(ratlsExt.Value) {
-					t.Fatalf("RA-TLS ext value = %x, want %x", ext.Value, ratlsExt.Value)
+				if string(ext.Value) != string(armtlsExt.Value) {
+					t.Fatalf("ARmTLS ext value = %x, want %x", ext.Value, armtlsExt.Value)
 				}
 			}
 		}
 		if !found {
-			t.Fatal("CSR missing the RA-TLS attestation extension")
+			t.Fatal("CSR missing the ARmTLS attestation extension")
 		}
 	})
 
 	t.Run("ip san", func(t *testing.T) {
-		csrPEM, err := createCSR(key, "10.0.0.5", ratlsExt)
+		csrPEM, err := createCSR(key, "10.0.0.5", armtlsExt)
 		if err != nil {
 			t.Fatalf("createCSR: %v", err)
 		}
@@ -669,12 +669,12 @@ func TestCreateCSR(t *testing.T) {
 		}
 	})
 
-	// The workload-claims flow embeds an RA-TLS attestation extension into the
-	// CSR so CDS copies it onto the leaf (docs/ratls.md). Confirm an extra
+	// The workload-claims flow embeds an ARmTLS attestation extension into the
+	// CSR so CDS copies it onto the leaf (docs/armtls.md). Confirm an extra
 	// extension survives into the request.
 	t.Run("carries extra extension", func(t *testing.T) {
 		want := []byte{0x30, 0x03, 0x02, 0x01, 0x2A}
-		csrPEM, err := createCSR(key, "host.example.com", pkix.Extension{Id: ratls.OIDRATLSAttestation, Value: want})
+		csrPEM, err := createCSR(key, "host.example.com", pkix.Extension{Id: armtls.OIDARMTLSAttestation, Value: want})
 		if err != nil {
 			t.Fatalf("createCSR: %v", err)
 		}
@@ -685,7 +685,7 @@ func TestCreateCSR(t *testing.T) {
 		}
 		found := false
 		for _, ext := range csr.Extensions {
-			if ext.Id.Equal(ratls.OIDRATLSAttestation) {
+			if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
 				found = true
 				if !bytes.Equal(ext.Value, want) {
 					t.Fatalf("extension value = %x, want %x", ext.Value, want)
@@ -693,14 +693,14 @@ func TestCreateCSR(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatal("RA-TLS extension not carried into the CSR")
+			t.Fatal("ARmTLS extension not carried into the CSR")
 		}
 	})
 }
 
 // The extension embedded in the CSR must bind the bare public key: REPORTDATA
 // = SHA-384(pubkey) with NO nonce, or downstream verifiers calling
-// ratls.VerifyCert(cert, policy, nil) can never re-verify the issued leaf
+// armtls.VerifyCert(cert, policy, nil) can never re-verify the issued leaf
 // (the report_data mismatch bug this flow fixes).
 func TestAttestationExtensionBindsBareKey(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -728,7 +728,7 @@ func TestAttestationExtensionBindsBareKey(t *testing.T) {
 		t.Fatalf("AttestationExtension: %v", err)
 	}
 
-	want, err := ratls.ReportDataForKey(&key.PublicKey, nil)
+	want, err := armtls.ReportDataForKey(&key.PublicKey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -736,11 +736,11 @@ func TestAttestationExtensionBindsBareKey(t *testing.T) {
 		t.Fatalf("report_data sent to attestation-api = %x, want SHA-384(pubkey) = %x", sawReportData, want[:sha512.Size384])
 	}
 
-	att, err := ratls.UnmarshalExtension(ext.Value)
+	att, err := armtls.UnmarshalExtension(ext.Value)
 	if err != nil {
 		t.Fatalf("unmarshal extension: %v", err)
 	}
-	if att.Family != ratls.TEETypeSEVSNP {
+	if att.Family != armtls.TEETypeSEVSNP {
 		t.Fatalf("TEEType = %v, want SEV-SNP", att.Family)
 	}
 }
@@ -1050,7 +1050,7 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 	if err == nil {
 		t.Fatal("obtainCert succeeded, want attestation extension error")
 	}
-	if !strings.Contains(err.Error(), "build RA-TLS attestation extension") {
+	if !strings.Contains(err.Error(), "build ARmTLS attestation extension") {
 		t.Fatalf("error = %v, want attestation extension error", err)
 	}
 }

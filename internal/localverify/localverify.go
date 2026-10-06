@@ -3,7 +3,7 @@
 // auto-detecting the platform from the envelope tag. It backs the
 // operator-side tools (`c8s verify`, `c8s allowlist`); in-cluster components
 // delegate to their same-TCB attestation-api instead
-// (ratls.VerifyPolicy.AttestationApiURL).
+// (armtls.VerifyPolicy.AttestationApiURL).
 package localverify
 
 import (
@@ -20,12 +20,12 @@ import (
 
 	"github.com/google/go-sev-guest/verify/trust"
 
+	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
-	agratls "github.com/confidential-dot-ai/attestation-go/ratls"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // KDS getter bounds: the retry backoff is capped so several attempts fit inside
@@ -99,7 +99,7 @@ func Verify(ctx context.Context, platform string, evidence json.RawMessage, p Pa
 		Platform: teetypes.NormalizePlatform(platform),
 		Evidence: evidence,
 	}
-	// A bare RA-TLS serving cert carries the SNP report with no inline VCEK;
+	// A bare ARmTLS serving cert carries the SNP report with no inline VCEK;
 	// the Getter lets the snp and gcp-snp arms fetch it from AMD KDS, bounded
 	// by ctx. Nothing else here reaches the network.
 	res, err := teeverify.VerifyEnvelope(ctx, envelope, p.VerifyParams, teeverify.Options{
@@ -146,7 +146,7 @@ func enforceResult(res *teetypes.VerificationResult, p Params) error {
 	return nil
 }
 
-// CertEnvelope extracts the RA-TLS attestation from a certificate and returns
+// CertEnvelope extracts the ARmTLS attestation from a certificate and returns
 // the evidence envelope plus the expected REPORTDATA anchor — SHA-384 over the
 // public key (no per-request nonce, so no freshness proof).
 //
@@ -154,7 +154,7 @@ func enforceResult(res *teetypes.VerificationResult, p Params) error {
 // raw SEV-SNP report is wrapped as {attestation_report, cert_chain.vcek?}, with
 // the VCEK inline when the extension carried one.
 func CertEnvelope(cert *x509.Certificate) (platform string, evidence json.RawMessage, expectedReportData []byte, err error) {
-	att, err := ratls.ExtractAttestation(cert)
+	att, err := armtls.ExtractAttestation(cert)
 	if err != nil {
 		return "", nil, nil, err
 	}
@@ -162,7 +162,7 @@ func CertEnvelope(cert *x509.Certificate) (platform string, evidence json.RawMes
 	if err != nil {
 		return "", nil, nil, err
 	}
-	rd, err := agratls.ReportDataForKey(cert.PublicKey, nil)
+	rd, err := agarmtls.ReportDataForKey(cert.PublicKey, nil)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("compute expected REPORTDATA: %w", err)
 	}

@@ -26,7 +26,7 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // helmFailMessage extracts the user-visible message from a `helm template`
@@ -169,7 +169,7 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	}
 	for _, label := range [][2]string{
 		{"app.kubernetes.io/component", "cds"},
-		{"app.kubernetes.io/name", "ratls-mesh"},
+		{"app.kubernetes.io/name", "armtls-mesh"},
 		{"app.kubernetes.io/name", "nri-image-policy"},
 		{"app.kubernetes.io/name", "router"},
 	} {
@@ -222,12 +222,12 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	}
 }
 
-func TestChartRendersRATLSHostRoutingDefaults(t *testing.T) {
+func TestChartRendersARMTLSHostRoutingDefaults(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 
 	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
 	if !ok {
@@ -238,8 +238,8 @@ func TestChartRendersRATLSHostRoutingDefaults(t *testing.T) {
 		{"--resync-period", "30s"},
 		{"--watchdog-period", "2s"},
 		{"--ipset-maxelem", "262144"},
-		{"--ready-file", "/tmp/ratls-iptables-ready"},
-		{"--iptables-metrics-file", "/tmp/ratls-iptables-metrics.json"},
+		{"--ready-file", "/tmp/armtls-iptables-ready"},
+		{"--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json"},
 		// The release namespace must NOT be excluded: router egress to
 		// workload pod IPs (headless-Service dials) needs mesh interception.
 		{"--exclude-source-namespaces", "kube-system"},
@@ -257,21 +257,21 @@ func TestChartRendersRATLSHostRoutingDefaults(t *testing.T) {
 		t.Errorf("iptables-sync command missing --cw-inbound-passthrough=udp:53,tcp:53; command=%q", sync.Command)
 	}
 
-	mesh, ok := findContainer(ds.Spec.Template.Spec.Containers, "ratls-mesh")
+	mesh, ok := findContainer(ds.Spec.Template.Spec.Containers, "armtls-mesh")
 	if !ok {
-		t.Fatalf("ratls-mesh container missing; have %v", containerNames(ds.Spec.Template.Spec.Containers))
+		t.Fatalf("armtls-mesh container missing; have %v", containerNames(ds.Spec.Template.Spec.Containers))
 	}
-	if !argvContainsFlagValue(mesh.Args, "--iptables-metrics-file", "/tmp/ratls-iptables-metrics.json") {
-		t.Errorf("ratls-mesh args missing the shared iptables metrics file flag; args=%q", mesh.Args)
+	if !argvContainsFlagValue(mesh.Args, "--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json") {
+		t.Errorf("armtls-mesh args missing the shared iptables metrics file flag; args=%q", mesh.Args)
 	}
-	// --platform is the RA-TLS TEE type; an empty value (the old missing
+	// --platform is the ARmTLS TEE type; an empty value (the old missing
 	// default) trips the binary's "--platform is required" check, so the mesh
 	// pod never starts. Pin the non-empty default.
 	if !argvContainsFlagValue(mesh.Args, "--platform", "sev-snp") {
-		t.Errorf("ratls-mesh args must default --platform to sev-snp; args=%q", mesh.Args)
+		t.Errorf("armtls-mesh args must default --platform to sev-snp; args=%q", mesh.Args)
 	}
 	if hp, ok := containerHostPort(mesh, "inbound"); !ok || hp != 15006 {
-		t.Errorf("ratls-mesh inbound port must publish hostPort 15006; got %d (found=%v)", hp, ok)
+		t.Errorf("armtls-mesh inbound port must publish hostPort 15006; got %d (found=%v)", hp, ok)
 	}
 	for _, banned := range []int32{15001, 15021} {
 		if containers := containersExposingHostPort(ds, banned); len(containers) > 0 {
@@ -296,7 +296,7 @@ func TestChartRendersRATLSHostRoutingDefaults(t *testing.T) {
 	// mesh pods. volumed's is absent here because volumed is off by default.
 	wantPolicies := []string{
 		"c8s-attestation-api",
-		"ratls-mesh-tcp-only-egress",
+		"armtls-mesh-tcp-only-egress",
 		"c8s-cds-ingress",
 		"c8s-operator-ingress",
 		"c8s-router-ingress",
@@ -316,11 +316,11 @@ func TestChartCWInboundPassthrough(t *testing.T) {
 	// An empty passthrough renders the strict fail-closed posture (no
 	// exemptions), and the flag is present-but-empty so the manifest still
 	// self-documents that the guard is on.
-	out, err := helmTemplate(t, "--set", "ratlsMesh.cwInboundEnforcement.passthrough=[]")
+	out, err := helmTemplate(t, "--set", "armtlsMesh.cwInboundEnforcement.passthrough=[]")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
 	if !ok {
 		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
@@ -331,15 +331,15 @@ func TestChartCWInboundPassthrough(t *testing.T) {
 
 	// A custom passthrough list renders in order as proto:port,proto:port.
 	out, err = helmTemplate(t,
-		"--set", "ratlsMesh.cwInboundEnforcement.passthrough[0].protocol=udp",
-		"--set", "ratlsMesh.cwInboundEnforcement.passthrough[0].sourcePort=53",
-		"--set", "ratlsMesh.cwInboundEnforcement.passthrough[1].protocol=tcp",
-		"--set", "ratlsMesh.cwInboundEnforcement.passthrough[1].sourcePort=8443",
+		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[0].protocol=udp",
+		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[0].sourcePort=53",
+		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[1].protocol=tcp",
+		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[1].sourcePort=8443",
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds = findRATLSMeshDaemonSet(t, out)
+	ds = findARMTLSMeshDaemonSet(t, out)
 	sync, _ = findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
 	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=udp:53,tcp:8443") {
 		t.Errorf("iptables-sync command missing --cw-inbound-passthrough=udp:53,tcp:8443; command=%q", sync.Command)
@@ -348,7 +348,7 @@ func TestChartCWInboundPassthrough(t *testing.T) {
 	// A wrong-typed value (e.g. --set-string) fails loudly instead of silently
 	// rendering strict drop-all, which would reproduce the DNS-resolution
 	// outage this guard exists to prevent.
-	out, err = helmTemplate(t, "--set-string", "ratlsMesh.cwInboundEnforcement.passthrough=udp:53")
+	out, err = helmTemplate(t, "--set-string", "armtlsMesh.cwInboundEnforcement.passthrough=udp:53")
 	if err == nil {
 		t.Fatalf("helm template succeeded on a string passthrough, want a fail\n%s", out)
 	}
@@ -359,7 +359,7 @@ func TestChartCWInboundPassthrough(t *testing.T) {
 	// A malformed entry fails at render, not at daemon startup — a rendered
 	// "udp:<nil>" would crash-loop the init container. The key prefix is elided
 	// to pt for readability.
-	const pt = "ratlsMesh.cwInboundEnforcement.passthrough"
+	const pt = "armtlsMesh.cwInboundEnforcement.passthrough"
 	for _, bad := range [][]string{
 		{"--set", pt + "[0].protocol=udp"},                                       // missing sourcePort
 		{"--set", pt + "[0].protocol=icmp", "--set", pt + "[0].sourcePort=53"},   // bad protocol
@@ -469,25 +469,25 @@ func renderedKinds(t *testing.T, helmOut string) map[string]int {
 //  2. iptables-cleanup must be the FIRST initContainer; native sidecars
 //     terminate in reverse-init order, so a swap with iptables-sync stops
 //     cleanup before sync loses its chains.
-func TestChartRATLSNativeSidecarShape(t *testing.T) {
+func TestChartARMTLSNativeSidecarShape(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 
 	// hostNetwork + dnsPolicy are part of the routing contract: iptables-sync
 	// must run in the host netns to see pre-DNAT pod traffic, and the
 	// matching dnsPolicy keeps in-cluster service DNS working from that
 	// netns. A refactor that templated either to a value and accidentally
 	// toggled it via overlay defaults would still match the substring check
-	// in TestChartRendersRATLSHostRoutingDefaults; assert against the typed
+	// in TestChartRendersARMTLSHostRoutingDefaults; assert against the typed
 	// PodSpec so the contract is unambiguous.
 	if !ds.Spec.Template.Spec.HostNetwork {
-		t.Errorf("ratls-mesh DaemonSet must set hostNetwork: true; got %v", ds.Spec.Template.Spec.HostNetwork)
+		t.Errorf("armtls-mesh DaemonSet must set hostNetwork: true; got %v", ds.Spec.Template.Spec.HostNetwork)
 	}
 	if got := ds.Spec.Template.Spec.DNSPolicy; got != corev1.DNSClusterFirstWithHostNet {
-		t.Errorf("ratls-mesh DaemonSet must set dnsPolicy: ClusterFirstWithHostNet (paired with hostNetwork); got %q", got)
+		t.Errorf("armtls-mesh DaemonSet must set dnsPolicy: ClusterFirstWithHostNet (paired with hostNetwork); got %q", got)
 	}
 
 	init := ds.Spec.Template.Spec.InitContainers
@@ -551,14 +551,14 @@ func TestChartRATLSNativeSidecarShape(t *testing.T) {
 		t.Errorf("iptables-cleanup must clean up on SIGTERM, not through a lifecycle hook; got %+v", cleanup.Lifecycle)
 	}
 	command := strings.Join(cleanup.Command, " ")
-	for _, want := range []string{"ratls-mesh iptables-cleanup", "--on-shutdown"} {
+	for _, want := range []string{"armtls-mesh iptables-cleanup", "--on-shutdown"} {
 		if !strings.Contains(command, want) {
 			t.Errorf("iptables-cleanup command %q must contain %q", command, want)
 		}
 	}
 }
 
-// TestChartRATLSKubeVersionPinned guards the chart's Kubernetes base
+// TestChartARMTLSKubeVersionPinned guards the chart's Kubernetes base
 // against accidental relaxation. Two contracts pin it:
 //   - native sidecars (SidecarContainers default-on from 1.29): with the
 //     gate off, iptables-cleanup is invalid as a native sidecar, its preStop
@@ -567,7 +567,7 @@ func TestChartRATLSNativeSidecarShape(t *testing.T) {
 //     UID, workload-integrity, and Restricted pod-security policies, so a
 //     pre-1.30 apply fails mid-install on unknown kinds anyway — the
 //     kubeVersion constraint makes helm fail early and clearly instead.
-func TestChartRATLSKubeVersionPinned(t *testing.T) {
+func TestChartARMTLSKubeVersionPinned(t *testing.T) {
 	const path = "c8s/Chart.yaml"
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -750,12 +750,12 @@ func TestChartUIDAdmissionPolicySplitsPodAndEphemeral(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	var podPolicy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-ratls-mesh-uid", &podPolicy) {
-		t.Fatal("missing deny-ratls-mesh-uid ValidatingAdmissionPolicy")
+	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid", &podPolicy) {
+		t.Fatal("missing deny-armtls-mesh-uid ValidatingAdmissionPolicy")
 	}
 	var ephemeralPolicy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-ratls-mesh-uid-ephemeral", &ephemeralPolicy) {
-		t.Fatal("missing deny-ratls-mesh-uid-ephemeral ValidatingAdmissionPolicy")
+	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid-ephemeral", &ephemeralPolicy) {
+		t.Fatal("missing deny-armtls-mesh-uid-ephemeral ValidatingAdmissionPolicy")
 	}
 
 	resources := func(p admissionregv1.ValidatingAdmissionPolicy) []string {
@@ -797,8 +797,8 @@ func TestChartTCPEgressPolicyDefaultOnRendersNoNamespaces(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	var np networkingv1.NetworkPolicy
-	if !findDoc(t, out, "NetworkPolicy", "ratls-mesh-tcp-only-egress", &np) {
-		t.Fatal("default render missing ratls-mesh-tcp-only-egress NetworkPolicy")
+	if !findDoc(t, out, "NetworkPolicy", "armtls-mesh-tcp-only-egress", &np) {
+		t.Fatal("default render missing armtls-mesh-tcp-only-egress NetworkPolicy")
 	}
 	if !slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress) {
 		t.Errorf("policyTypes = %v, want Egress (default-deny)", np.Spec.PolicyTypes)
@@ -824,21 +824,21 @@ func TestChartTCPEgressPolicyDefaultOnRendersNoNamespaces(t *testing.T) {
 		t.Fatalf("read %s: %v", valuesPath, err)
 	}
 	var vals struct {
-		RatlsMesh struct {
+		ArmtlsMesh struct {
 			TCPEgressPolicy struct {
 				Enabled    bool     `yaml:"enabled"`
 				Namespaces []string `yaml:"namespaces"`
 			} `yaml:"tcpEgressPolicy"`
-		} `yaml:"ratlsMesh"`
+		} `json:"armtlsMesh"`
 	}
 	if err := sigsyaml.Unmarshal(raw, &vals); err != nil {
 		t.Fatalf("decode values.yaml: %v", err)
 	}
-	if !vals.RatlsMesh.TCPEgressPolicy.Enabled {
+	if !vals.ArmtlsMesh.TCPEgressPolicy.Enabled {
 		t.Error("tcpEgressPolicy must default to enabled:true")
 	}
-	if len(vals.RatlsMesh.TCPEgressPolicy.Namespaces) != 0 {
-		t.Errorf("tcpEgressPolicy must default to namespaces:[] (got %v)", vals.RatlsMesh.TCPEgressPolicy.Namespaces)
+	if len(vals.ArmtlsMesh.TCPEgressPolicy.Namespaces) != 0 {
+		t.Errorf("tcpEgressPolicy must default to namespaces:[] (got %v)", vals.ArmtlsMesh.TCPEgressPolicy.Namespaces)
 	}
 }
 
@@ -902,7 +902,7 @@ func TestChartCDSDeploymentHasNoNodeSelectorUnderEmptySelector(t *testing.T) {
 	}
 }
 
-func findRATLSMeshDaemonSet(t *testing.T, helmOut string) *appsv1.DaemonSet {
+func findARMTLSMeshDaemonSet(t *testing.T, helmOut string) *appsv1.DaemonSet {
 	t.Helper()
 	var ds *appsv1.DaemonSet
 	iterateManifests(t, helmOut, func(doc []byte) bool {
@@ -914,18 +914,18 @@ func findRATLSMeshDaemonSet(t *testing.T, helmOut string) *appsv1.DaemonSet {
 		}
 		if err := sigsyaml.Unmarshal(doc, &head); err != nil ||
 			head.Kind != "DaemonSet" ||
-			!strings.Contains(head.Metadata.Name, "ratls-mesh") {
+			!strings.Contains(head.Metadata.Name, "armtls-mesh") {
 			return false
 		}
 		var decoded appsv1.DaemonSet
 		if err := sigsyaml.Unmarshal(doc, &decoded); err != nil {
-			t.Fatalf("decode ratls-mesh DaemonSet: %v\n%s", err, doc)
+			t.Fatalf("decode armtls-mesh DaemonSet: %v\n%s", err, doc)
 		}
 		ds = &decoded
 		return true
 	})
 	if ds == nil {
-		t.Fatalf("ratls-mesh DaemonSet not found in helm template output\n%s", helmOut)
+		t.Fatalf("armtls-mesh DaemonSet not found in helm template output\n%s", helmOut)
 	}
 	return ds
 }
@@ -995,7 +995,7 @@ type prometheusRule struct {
 	} `json:"spec"`
 }
 
-func findRATLSMeshPrometheusRule(t *testing.T, helmOut string) prometheusRule {
+func findARMTLSMeshPrometheusRule(t *testing.T, helmOut string) prometheusRule {
 	t.Helper()
 	var found prometheusRule
 	var ok bool
@@ -1008,43 +1008,43 @@ func findRATLSMeshPrometheusRule(t *testing.T, helmOut string) prometheusRule {
 		}
 		if err := sigsyaml.Unmarshal(doc, &head); err != nil ||
 			head.Kind != "PrometheusRule" ||
-			!strings.Contains(head.Metadata.Name, "ratls-mesh") {
+			!strings.Contains(head.Metadata.Name, "armtls-mesh") {
 			return false
 		}
 		var rule prometheusRule
 		if err := sigsyaml.Unmarshal(doc, &rule); err != nil {
-			t.Fatalf("decode ratls-mesh PrometheusRule: %v\n%s", err, doc)
+			t.Fatalf("decode armtls-mesh PrometheusRule: %v\n%s", err, doc)
 		}
 		found = rule
 		ok = true
 		return true
 	})
 	if !ok {
-		t.Fatalf("ratls-mesh PrometheusRule not found in helm template output\n%s", helmOut)
+		t.Fatalf("armtls-mesh PrometheusRule not found in helm template output\n%s", helmOut)
 	}
 	return found
 }
 
-// TestChartRATLSRoutingAlerts pins routing-path alerts that fire on signals
+// TestChartARMTLSRoutingAlerts pins routing-path alerts that fire on signals
 // downstream consumers should not have to reconstruct by hand: a wedged
 // iptables-sync sidecar (its in-process counters stop publishing), unavailable
 // local CIDR route cross-checking, and direct dials to :15001 outside the
 // REDIRECT path. Drop any alert and a refactor of
 // prometheus-rules.yaml could silently lose the corresponding production
 // signal.
-func TestChartRATLSRoutingAlerts(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "ratlsMesh.prometheusRules.enabled=true")
+func TestChartARMTLSRoutingAlerts(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "armtlsMesh.prometheusRules.enabled=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	rule := findRATLSMeshPrometheusRule(t, out)
+	rule := findARMTLSMeshPrometheusRule(t, out)
 
 	want := map[string]string{
-		"RATLSMeshIptablesSyncWedged":             "ratls_mesh_iptables_metrics_file_updated_at_seconds",
-		"RATLSMeshLocalCIDRRouteCheckUnavailable": "ratls_mesh_resolver_local_cidrs == 0",
-		"RATLSMeshOutboundDirectDial":             `reason="host_addr"`,
-		"RATLSMeshIptablesIPSetOverflow":          "ratls_mesh_iptables_ipset_overflow_total",
-		"RATLSMeshJumpPositionViolations":         "ratls_mesh_iptables_jump_position_violations_total",
+		"ARMTLSMeshIptablesSyncWedged":             "armtls_mesh_iptables_metrics_file_updated_at_seconds",
+		"ARMTLSMeshLocalCIDRRouteCheckUnavailable": "armtls_mesh_resolver_local_cidrs == 0",
+		"ARMTLSMeshOutboundDirectDial":             `reason="host_addr"`,
+		"ARMTLSMeshIptablesIPSetOverflow":          "armtls_mesh_iptables_ipset_overflow_total",
+		"ARMTLSMeshJumpPositionViolations":         "armtls_mesh_iptables_jump_position_violations_total",
 	}
 	got := make(map[string]string)
 	for _, g := range rule.Spec.Groups {
@@ -1073,7 +1073,7 @@ func TestChartRATLSRoutingAlerts(t *testing.T) {
 // that misconfig ship. The bound is derived, not hardcoded, so changes to
 // either underlying value reshape it automatically.
 func TestChartRejectsExcessivePreStopSleep(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "ratlsMesh.iptablesCleanup.preStopSleepSeconds=30")
+	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=30")
 	if err == nil {
 		t.Fatalf("helm template succeeded, want preStopSleepSeconds upper-bound failure\n%s", out)
 	}
@@ -1084,7 +1084,7 @@ func TestChartRejectsExcessivePreStopSleep(t *testing.T) {
 }
 
 func TestChartRejectsNegativePreStopSleep(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "ratlsMesh.iptablesCleanup.preStopSleepSeconds=-1")
+	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=-1")
 	if err == nil {
 		t.Fatalf("helm template succeeded, want preStopSleepSeconds lower-bound failure\n%s", out)
 	}
@@ -1123,11 +1123,11 @@ func TestChartRendersOperatorKeysPEM(t *testing.T) {
 }
 
 func TestChartAcceptsPreStopSleepAtBoundary(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "ratlsMesh.iptablesCleanup.preStopSleepSeconds=15")
+	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=15")
 	if err != nil {
 		t.Fatalf("helm template at boundary should succeed: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	cleanup, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-cleanup")
 	if !ok {
 		t.Fatalf("iptables-cleanup init container missing")
@@ -1144,30 +1144,30 @@ func TestChartAcceptsPreStopSleepAtBoundary(t *testing.T) {
 // pins that the durationSeconds helper handles each correctly.
 func TestChartPreStopBoundFollowsGracePeriodAndDrain(t *testing.T) {
 	out, err := helmTemplate(t,
-		"--set-string", "ratlsMesh.terminationGracePeriod=2m",
-		"--set-string", "ratlsMesh.drainTimeout=60s",
-		"--set", "ratlsMesh.iptablesCleanup.preStopSleepSeconds=45",
+		"--set-string", "armtlsMesh.terminationGracePeriod=2m",
+		"--set-string", "armtlsMesh.drainTimeout=60s",
+		"--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=45",
 	)
 	if err != nil {
 		t.Fatalf("helm template at (tgp=2m, drain=60s, sleep=45) should succeed: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	if ds.Spec.Template.Spec.TerminationGracePeriodSeconds == nil {
 		t.Fatalf("DaemonSet.terminationGracePeriodSeconds is nil")
 	}
 	if got := *ds.Spec.Template.Spec.TerminationGracePeriodSeconds; got != 120 {
 		t.Errorf("terminationGracePeriodSeconds = %d, want 120 (from 2m)", got)
 	}
-	args := containerArgs(t, ds, "ratls-mesh")
+	args := containerArgs(t, ds, "armtls-mesh")
 	if got, ok := containerArgValue(args, "--drain-timeout"); !ok || got != "60s" {
 		t.Errorf("--drain-timeout = (%q, %v), want (\"60s\", true)", got, ok)
 	}
 
 	// Same knobs, sleep one above the derived bound — must fail.
 	out, err = helmTemplate(t,
-		"--set-string", "ratlsMesh.terminationGracePeriod=2m",
-		"--set-string", "ratlsMesh.drainTimeout=60s",
-		"--set", "ratlsMesh.iptablesCleanup.preStopSleepSeconds=61",
+		"--set-string", "armtlsMesh.terminationGracePeriod=2m",
+		"--set-string", "armtlsMesh.drainTimeout=60s",
+		"--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=61",
 	)
 	if err == nil {
 		t.Fatalf("helm template succeeded above derived bound, want failure\n%s", out)
@@ -1183,8 +1183,8 @@ func TestChartPreStopBoundFollowsGracePeriodAndDrain(t *testing.T) {
 // DaemonSet.
 func TestChartRejectsZeroPreStopBudget(t *testing.T) {
 	out, err := helmTemplate(t,
-		"--set-string", "ratlsMesh.terminationGracePeriod=30s",
-		"--set-string", "ratlsMesh.drainTimeout=30s",
+		"--set-string", "armtlsMesh.terminationGracePeriod=30s",
+		"--set-string", "armtlsMesh.drainTimeout=30s",
 	)
 	if err == nil {
 		t.Fatalf("helm template succeeded with zero preStop budget, want failure\n%s", out)
@@ -1200,7 +1200,7 @@ func TestChartRejectsZeroPreStopBudget(t *testing.T) {
 // int parsing (which would otherwise read "1m30s" as 1 second).
 func TestChartRejectsCompoundDurations(t *testing.T) {
 	out, err := helmTemplate(t,
-		"--set-string", "ratlsMesh.drainTimeout=1m30s",
+		"--set-string", "armtlsMesh.drainTimeout=1m30s",
 	)
 	if err == nil {
 		t.Fatalf("helm template succeeded for compound duration, want failure\n%s", out)
@@ -1215,7 +1215,7 @@ func TestChartRejectsCompoundDurations(t *testing.T) {
 // helper can't remove the unit check without flagging in tests.
 func TestChartRejectsUnitlessDuration(t *testing.T) {
 	out, err := helmTemplate(t,
-		"--set-string", "ratlsMesh.drainTimeout=30",
+		"--set-string", "armtlsMesh.drainTimeout=30",
 	)
 	if err == nil {
 		t.Fatalf("helm template succeeded for unitless duration, want failure\n%s", out)
@@ -1226,12 +1226,12 @@ func TestChartRejectsUnitlessDuration(t *testing.T) {
 	}
 }
 
-func TestChartRendersRATLSCustomOutboundPortConsistently(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "ratlsMesh.ports.outbound=16001")
+func TestChartRendersARMTLSCustomOutboundPortConsistently(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "armtlsMesh.ports.outbound=16001")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
 	if !ok {
 		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
@@ -1239,9 +1239,9 @@ func TestChartRendersRATLSCustomOutboundPortConsistently(t *testing.T) {
 	if !argvContainsFlagValue(sync.Command, "--outbound-port", "16001") {
 		t.Fatalf("iptables-sync missing --outbound-port 16001; command=%q", sync.Command)
 	}
-	meshArgs := containerArgs(t, ds, "ratls-mesh")
+	meshArgs := containerArgs(t, ds, "armtls-mesh")
 	if got, ok := containerArgValue(meshArgs, "--outbound-port"); !ok || got != "16001" {
-		t.Fatalf("ratls-mesh --outbound-port = (%q, %v), want (\"16001\", true)", got, ok)
+		t.Fatalf("armtls-mesh --outbound-port = (%q, %v), want (\"16001\", true)", got, ok)
 	}
 	for _, c := range allContainers(ds) {
 		if argvContainsFlagValue(c.Command, "--outbound-port", "15001") || argvContainsFlagValue(c.Args, "--outbound-port", "15001") {
@@ -1363,7 +1363,7 @@ func TestChartWebhookOptsOutOfAKSAdmissionsEnforcer(t *testing.T) {
 	}
 }
 
-func TestChartManagedRATLSServiceTargetPortsMatchContainerPorts(t *testing.T) {
+func TestChartManagedARMTLSServiceTargetPortsMatchContainerPorts(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -1493,12 +1493,12 @@ func TestChartOperatorDialsTrustRootOverHTTPS(t *testing.T) {
 	assertContainerNoArgPrefix(t, "operator", operatorArgs, "--cds-url=http://")
 }
 
-// TestChartRatlsMeshCDSMeasurementsFlagsThrough confirms the single
+// TestChartArmtlsMeshCDSMeasurementsFlagsThrough confirms the single
 // cds.measurements reaches the daemonset's --cds-measurements flag — without
-// this the RA-TLS handshake accepts any measurement and the H1 defence
-// collapses to "trust the cluster network". ratls-mesh reads the parent's
+// this the ARmTLS handshake accepts any measurement and the H1 defence
+// collapses to "trust the cluster network". armtls-mesh reads the parent's
 // cds.measurements directly, so there is no mirror to drift.
-func TestChartRatlsMeshCDSMeasurementsFlagsThrough(t *testing.T) {
+func TestChartArmtlsMeshCDSMeasurementsFlagsThrough(t *testing.T) {
 	const measurement = "abc1230000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff"
 	out, err := helmTemplate(t,
 		"--set", "cds.measurements[0]="+measurement,
@@ -1506,10 +1506,10 @@ func TestChartRatlsMeshCDSMeasurementsFlagsThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	args := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh").Args
+	args := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
 	i := slices.Index(args, "--cds-measurements")
 	if i < 0 || i+1 >= len(args) {
-		t.Fatalf("ratls-mesh container missing --cds-measurements <value>\nargs: %v", args)
+		t.Fatalf("armtls-mesh container missing --cds-measurements <value>\nargs: %v", args)
 	}
 	if got := args[i+1]; got != measurement {
 		t.Fatalf("--cds-measurements = %q, want %q", got, measurement)
@@ -1706,7 +1706,7 @@ func TestChartRejectsPlaintextNRIAllowlist(t *testing.T) {
 	if err == nil {
 		t.Fatalf("helm template succeeded, want plaintext NRI allowlist failure\n%s", out)
 	}
-	assertHelmFailMessage(t, out, `nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got "http://c8s-cds.c8s-system.svc:8443"): the host plugin must fetch the allowlist over RA-TLS`)
+	assertHelmFailMessage(t, out, `nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got "http://c8s-cds.c8s-system.svc:8443"): the host plugin must fetch the allowlist over ARmTLS`)
 }
 
 // parseValidationErrorKind extracts kind=<id> from helm's stderr when the
@@ -1875,7 +1875,7 @@ func TestChartWebhookRendersSecurityKnobs(t *testing.T) {
 		"--set", "webhook.getCert.runAsUser=0",
 		"--set", "webhook.getCert.runAsGroup=0",
 		"--set", "webhook.getCert.runAsNonRoot=false",
-		"--set", "ratlsMesh.enabled=false",
+		"--set", "armtlsMesh.enabled=false",
 		"--set", "router.enabled=false",
 	)
 	if err != nil {
@@ -1908,7 +1908,7 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	dir := t.TempDir()
 	vals := filepath.Join(dir, "vals.yaml")
 	if err := os.WriteFile(vals, []byte(
-		"ratlsMesh:\n  uid: 7000000\n"+
+		"armtlsMesh:\n  uid: 7000000\n"+
 			"router:\n  nginx:\n    runAsUser: 7000000\n    runAsGroup: 7000000\n"+
 			"webhook:\n  certVolume:\n    fsGroup: 1500000\n  getCert:\n    runAsUser: 2000000000\n",
 	), 0o600); err != nil {
@@ -1930,15 +1930,15 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	if got := nginx.SecurityContext.RunAsGroup; got == nil || *got != 7000000 {
 		t.Errorf("nginx runAsGroup = %v, want 7000000", got)
 	}
-	mesh := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh")
+	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
 	if got := mesh.SecurityContext.RunAsUser; got == nil || *got != 7000000 {
-		t.Errorf("ratls-mesh runAsUser = %v, want 7000000", got)
+		t.Errorf("armtls-mesh runAsUser = %v, want 7000000", got)
 	}
 	// The CEL admission policy, where int != double would be an uninstallable
 	// compile error.
 	var policy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-ratls-mesh-uid", &policy) {
-		t.Fatalf("missing deny-ratls-mesh-uid ValidatingAdmissionPolicy\n%s", out)
+	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid", &policy) {
+		t.Fatalf("missing deny-armtls-mesh-uid ValidatingAdmissionPolicy\n%s", out)
 	}
 	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
 		return strings.Contains(v.Expression, "runAsUser != 7000000")
@@ -2036,7 +2036,7 @@ func hasHostIPEnv(c corev1.Container) bool {
 }
 
 // TestChartBareMetalModeAttestationApiURLUsesHostIP proves cvmMode=bare-metal points the
-// pod-netns components (cds, router's cert sidecar, ratls-mesh) at the
+// pod-netns components (cds, router's cert sidecar, armtls-mesh) at the
 // node-baked host attestation-api via the $(HOST_IP) downward-API env var, since
 // there is no in-cluster Service and pods cannot reach host loopback. The
 // operator is the exception: it forwards its --attestation-api-url verbatim into
@@ -2094,20 +2094,20 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 	}
 
 	// router allowlist proxy: pod-netns, uses the same verifier endpoint for
-	// the RA-TLS hop to CDS.
+	// the ARmTLS hop to CDS.
 	allowlistProxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
 	assertContainerArgs(t, allowlistProxy, hostIPURL)
 	if !hasHostIPEnv(allowlistProxy) {
 		t.Errorf("router allowlist-proxy missing HOST_IP downward-API env; have %+v", allowlistProxy.Env)
 	}
 
-	// ratls-mesh: hostNetwork, so $(HOST_IP) is its own node IP. Two-arg form.
-	mesh := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh")
+	// armtls-mesh: hostNetwork, so $(HOST_IP) is its own node IP. Two-arg form.
+	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
 	if !slices.Contains(mesh.Args, "http://$(HOST_IP):8400") {
-		t.Errorf("ratls-mesh missing http://$(HOST_IP):8400 arg; have %v", mesh.Args)
+		t.Errorf("armtls-mesh missing http://$(HOST_IP):8400 arg; have %v", mesh.Args)
 	}
 	if !hasHostIPEnv(mesh) {
-		t.Errorf("ratls-mesh missing HOST_IP downward-API env; have %+v", mesh.Env)
+		t.Errorf("armtls-mesh missing HOST_IP downward-API env; have %+v", mesh.Env)
 	}
 
 	// operator: forwards the string verbatim; the placeholder must NOT be
@@ -2158,13 +2158,13 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 				t.Errorf("container %s carries the socket URL but no attestation-api-socket mount; mounts %+v", c.Name, c.VolumeMounts)
 			}
 			assertHasSocketMount(cds)
-			mesh := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh")
+			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
 			if !slices.Contains(mesh.Args, "unix:///var/run/nri-image-policy/attestation-api.sock") {
-				t.Errorf("ratls-mesh missing the socket URL arg; have %v", mesh.Args)
+				t.Errorf("armtls-mesh missing the socket URL arg; have %v", mesh.Args)
 			}
 			assertHasSocketMount(mesh)
-			if sc := renderedDaemonSet(t, out, "c8s-ratls-mesh").Spec.Template.Spec.SecurityContext; sc == nil || !slices.Contains(sc.SupplementalGroups, int64(65532)) {
-				t.Errorf("ratls-mesh pod must carry supplementalGroups [65532] to connect to the socket; got %+v", sc)
+			if sc := renderedDaemonSet(t, out, "c8s-armtls-mesh").Spec.Template.Spec.SecurityContext; sc == nil || !slices.Contains(sc.SupplementalGroups, int64(65532)) {
+				t.Errorf("armtls-mesh pod must carry supplementalGroups [65532] to connect to the socket; got %+v", sc)
 			}
 			assertHasSocketMount(routerGetCertContainer(t, out, "c8s-cert"))
 			assertHasSocketMount(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"))
@@ -2217,10 +2217,10 @@ func TestChartGlobalImagePullSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The global reaches a non-overriding component (ratls-mesh).
-	rm := renderedDaemonSet(t, out, "c8s-ratls-mesh")
+	// The global reaches a non-overriding component (armtls-mesh).
+	rm := renderedDaemonSet(t, out, "c8s-armtls-mesh")
 	if !hasPullSecret(rm.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
-		t.Errorf("ratls-mesh missing global pull secret: %v", rm.Spec.Template.Spec.ImagePullSecrets)
+		t.Errorf("armtls-mesh missing global pull secret: %v", rm.Spec.Template.Spec.ImagePullSecrets)
 	}
 	// router's own value overrides the global.
 	lb := renderedDeployment(t, out, "c8s-router")
@@ -3225,7 +3225,7 @@ func TestRouterAllowlistRateLimitsAreConfigurable(t *testing.T) {
 }
 
 func TestRouterAllowlistProxyPinsCDSMeasurements(t *testing.T) {
-	measurement := strings.Repeat("ab", ratls.SNPMeasurementSize)
+	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
 	out, err := helmTemplate(t,
 		"--set-string", "cds.measurements[0]="+measurement,
 	)
@@ -4441,7 +4441,7 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "ratlsMesh.image.tag=dev",
+		"--set", "armtlsMesh.image.tag=dev",
 		"--set", "nriImagePolicy.image.tag=dev",
 		// volumed is off by default, so its image is unused unless a test
 		// enables it; set the tag here so those tests need not repeat it (its
@@ -4635,7 +4635,7 @@ func TestChartCDSIsInMemorySingleton(t *testing.T) {
 }
 
 // TestChartPointsClientsAtCDS proves the operator-injected get-cert and the
-// ratls-mesh daemonset both resolve their single --cds-url to the cds Service,
+// armtls-mesh daemonset both resolve their single --cds-url to the cds Service,
 // and the mesh runs in cds cert-mode — this locks that wiring.
 func TestChartPointsClientsAtCDS(t *testing.T) {
 	out, err := helmTemplate(t)
@@ -4647,12 +4647,12 @@ func TestChartPointsClientsAtCDS(t *testing.T) {
 	operatorArgs := renderedOperatorArgs(t, out)
 	assertContainerHasArg(t, "operator", operatorArgs, "--cds-url="+wantURL)
 
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh").Args
+	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
 	if got, ok := containerArgValue(meshArgs, "--cds-url"); !ok || got != wantURL {
-		t.Fatalf("ratls-mesh --cds-url = (%q, %v), want %q\nargs: %v", got, ok, wantURL, meshArgs)
+		t.Fatalf("armtls-mesh --cds-url = (%q, %v), want %q\nargs: %v", got, ok, wantURL, meshArgs)
 	}
 	if got, ok := containerArgValue(meshArgs, "--cert-mode"); !ok || got != "cds" {
-		t.Fatalf("ratls-mesh --cert-mode = (%q, %v), want cds\nargs: %v", got, ok, meshArgs)
+		t.Fatalf("armtls-mesh --cert-mode = (%q, %v), want cds\nargs: %v", got, ok, meshArgs)
 	}
 }
 
@@ -4700,19 +4700,19 @@ func TestChartCDSAllowlistPersistentTracksPVC(t *testing.T) {
 	})
 }
 
-// TestChartCDSServesRATLS confirms the cds container renders with a non-empty
-// --ratls-platform by default, i.e. RA-TLS serving is ON. An empty platform
+// TestChartCDSServesARMTLS confirms the cds container renders with a non-empty
+// --armtls-platform by default, i.e. ARmTLS serving is ON. An empty platform
 // makes cds serve /attest over plaintext HTTP,
 // collapsing the H1 bootstrap-channel MITM defence — a regression this guards.
-func TestChartCDSServesRATLS(t *testing.T) {
+func TestChartCDSServesARMTLS(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
-	// Default cds.ratlsPlatform is snp; an empty value would render
-	// "--ratls-platform=" and serve plaintext. Assert the exact default token.
-	assertContainerHasArg(t, "cds", args, "--ratls-platform=snp")
+	// Default cds.armtlsPlatform is snp; an empty value would render
+	// "--armtls-platform=" and serve plaintext. Assert the exact default token.
+	assertContainerHasArg(t, "cds", args, "--armtls-platform=snp")
 }
 
 // TestChartCDSDnsSanPatternAcceptsAnyNamespace pins the always-present
@@ -4738,7 +4738,7 @@ func TestChartCDSDnsSanPatternAcceptsAnyNamespace(t *testing.T) {
 	}
 	for _, san := range []string{
 		"c8s-router.c8s-system.svc",
-		"ratls-mesh.c8s-system.svc",
+		"armtls-mesh.c8s-system.svc",
 		"acme-vllm-router-service.vllm.svc",
 		"acme-vllm-acme-opt-125m-engine-service.vllm.svc",
 	} {
@@ -5118,7 +5118,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "ratlsMesh.enabled=false",
+		"--set", "armtlsMesh.enabled=false",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest so the render is valid
 		// (the seed admits it argv-pinned). Output is scoped to the router
@@ -5160,7 +5160,7 @@ func prefixRouterSetArgs(args []string) []string {
 }
 
 // Example_routerConfig renders the router ConfigMap for a representative route
-// set — one plaintext HTTP backend (/allowlist) and one RA-TLS-verified HTTPS
+// set — one plaintext HTTP backend (/allowlist) and one ARmTLS-verified HTTPS
 // backend (/tenant/) — and prints the generated nginx.conf. It doubles as a
 // golden test of templates/configmap.yaml: a template edit that changes the
 // rendered config must be reflected in the Output block, so the full config
@@ -5564,7 +5564,7 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 		"--set-string", "image.digest="+opD,
 		"--set-string", "attestationApi.image.digest="+asD,
 		"--set-string", "cds.image.digest="+cdsD,
-		"--set-string", "ratlsMesh.image.digest="+rmD,
+		"--set-string", "armtlsMesh.image.digest="+rmD,
 		"--set-string", "nriImagePolicy.image.digest="+nriD,
 	)
 	if err != nil {
@@ -5583,7 +5583,7 @@ func TestChartDerivesComponentDigestsIntoAllowlist(t *testing.T) {
 		opD:  "ghcr.io/confidential-dot-ai/c8s-operator@" + opD,
 		asD:  "ghcr.io/confidential-dot-ai/attestation-api@" + asD,
 		cdsD: "ghcr.io/confidential-dot-ai/cds@" + cdsD,
-		rmD:  "ghcr.io/confidential-dot-ai/ratls-mesh@" + rmD,
+		rmD:  "ghcr.io/confidential-dot-ai/armtls-mesh@" + rmD,
 		nriD: "ghcr.io/confidential-dot-ai/nri-image-policy@" + nriD,
 	}
 	for digest, ref := range want {
@@ -5746,7 +5746,7 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 // bakes the plugin with empty cds_measurements, and the chart is the only thing
 // that knows this release's pins — so an install that does not carry them into
 // the baked config leaves the component deciding which images may run on the
-// node willing to take its allowlist from ANY RA-TLS-attested CDS, and its
+// node willing to take its allowlist from ANY ARmTLS-attested CDS, and its
 // sandbox-digests endpoint willing to answer any of them. Regression for a
 // bare-metal run that found exactly that (2026-08-26).
 func TestChartPinsCDSInBareMetalMode(t *testing.T) {
@@ -5809,7 +5809,7 @@ func TestChartPinsCDSInBareMetalMode(t *testing.T) {
 // TestChartServesAllowlistSeedInBareMetalMode guards the node-as-CVM seed path: even
 // with chart nriImagePolicy disabled, the baked plugin pulls the live allowlist
 // from CDS. If the seed is not served, CDS starts empty and every un-baked
-// component (operator, ratls-mesh, router's nginx) is denied until an operator
+// component (operator, armtls-mesh, router's nginx) is denied until an operator
 // hand-runs `c8s allowlist add`. The seed ConfigMap must render, be mounted,
 // and carry the deployed digests.
 func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
@@ -5823,7 +5823,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 		"--set", "nriImagePolicy.enabled=false",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "image.digest="+opD,
-		"--set-string", "ratlsMesh.image.digest="+rmD,
+		"--set-string", "armtlsMesh.image.digest="+rmD,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -5834,13 +5834,13 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("bare-metal-mode seed JSON does not parse (CDS would start empty): %v\n%s", err, cm.Data["allowlist-seed.json"])
 	}
-	// The un-baked components denied in the un-seeded case: operator, ratls-mesh,
+	// The un-baked components denied in the un-seeded case: operator, armtls-mesh,
 	// and router's nginx (default digest from values.yaml).
 	if got := seedLabel(seed, opD); got != "ghcr.io/confidential-dot-ai/c8s-operator@"+opD {
 		t.Errorf("bare-metal-mode seed missing operator entry; got %q\nseed: %v", got, seed.Workloads)
 	}
-	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/ratls-mesh@"+rmD {
-		t.Errorf("bare-metal-mode seed missing ratls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
+	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/armtls-mesh@"+rmD {
+		t.Errorf("bare-metal-mode seed missing armtls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
 	}
 	const nginxD = "sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
 	if _, ok := seedEntry(seed, nginxD); !ok {
@@ -6202,7 +6202,7 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "ratlsMesh.enabled=false",
+		"--set", "armtlsMesh.enabled=false",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest (the seed admits it
 		// argv-pinned). The render is scoped to the router ConfigMap, so nri
@@ -6307,7 +6307,7 @@ func TestChartImagePullSecretReachesEveryPodSpecWithoutCreatingASecret(t *testin
 		return false
 	})
 	// The default render ships at least operator, cds, and router Deployments
-	// plus the attestation-api, ratls-mesh, and nri-image-policy DaemonSets;
+	// plus the attestation-api, armtls-mesh, and nri-image-policy DaemonSets;
 	// fewer means the decode regressed and the loop below passes vacuously.
 	if len(workloads) < 6 {
 		t.Fatalf("decoded only %d pod-bearing workloads, want >= 6", len(workloads))
@@ -6365,11 +6365,11 @@ func TestChartImagePullSecretDedupsExplicitReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	names := pullSecretNames(ds.Spec.Template.Spec.ImagePullSecrets)
 	want := []string{"ghcr-secret"}
 	if !reflect.DeepEqual(names, want) {
-		t.Errorf("ratls-mesh imagePullSecrets = %v, want %v (no duplicate)", names, want)
+		t.Errorf("armtls-mesh imagePullSecrets = %v, want %v (no duplicate)", names, want)
 	}
 }
 
@@ -6925,7 +6925,7 @@ func TestChartDaemonSetShutdownCleanupKeepsGuard(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	var found int
 	for _, c := range allContainers(ds) {
 		command := strings.Join(c.Command, " ")
@@ -6940,7 +6940,7 @@ func TestChartDaemonSetShutdownCleanupKeepsGuard(t *testing.T) {
 		}
 	}
 	if found == 0 {
-		t.Fatal("no iptables-cleanup container found in the ratls-mesh DaemonSet")
+		t.Fatal("no iptables-cleanup container found in the armtls-mesh DaemonSet")
 	}
 }
 
@@ -6953,7 +6953,7 @@ func TestChartIptablesSyncNamesNoClusterDNS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findRATLSMeshDaemonSet(t, out)
+	ds := findARMTLSMeshDaemonSet(t, out)
 	var flags []string
 	for _, c := range allContainers(ds) {
 		if c.Name != "iptables-sync" {
@@ -7366,7 +7366,7 @@ func TestChartComponentIngressPoliciesAreDefaultDeny(t *testing.T) {
 			if !findDoc(t, out, "NetworkPolicy", tc.policy, &np) {
 				t.Fatalf("render is missing NetworkPolicy %q", tc.policy)
 			}
-			// Ingress only: ratls-mesh's tcp-only-egress selects every pod and
+			// Ingress only: armtls-mesh's tcp-only-egress selects every pod and
 			// allows all TCP, so an egress rule here would be unioned away.
 			if len(np.Spec.PolicyTypes) != 1 || np.Spec.PolicyTypes[0] != networkingv1.PolicyTypeIngress {
 				t.Errorf("policyTypes = %v, want [Ingress]", np.Spec.PolicyTypes)
@@ -7449,7 +7449,7 @@ func TestChartRouterIngressPolicyStaysReachableFromOffCluster(t *testing.T) {
 	}
 }
 
-// TestChartRTMRPinsFlagThrough confirms cds.rtmrs and ratlsMesh.rtmrs reach
+// TestChartRTMRPinsFlagThrough confirms cds.rtmrs and armtlsMesh.rtmrs reach
 // every consumer the way cds.measurements does: without the fan-out a TDX
 // install's RTMR pins would validate in values and enforce nowhere.
 func TestChartRTMRPinsFlagThrough(t *testing.T) {
@@ -7462,7 +7462,7 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 		"--set", "cds.measurements[0]="+measurement,
 		"--set", "cds.rtmrs[0]="+rtmr1,
 		"--set", "cds.rtmrs[1]="+rtmr2,
-		"--set", "ratlsMesh.rtmrs[0]="+rtmr1,
+		"--set", "armtlsMesh.rtmrs[0]="+rtmr1,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -7472,12 +7472,12 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	assertContainerHasArg(t, "cds", cdsArgs, "--rtmrs="+joined)
 
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh").Args
+	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
 	if i := slices.Index(meshArgs, "--cds-rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != joined {
-		t.Fatalf("ratls-mesh missing --cds-rtmrs %q\nargs: %v", joined, meshArgs)
+		t.Fatalf("armtls-mesh missing --cds-rtmrs %q\nargs: %v", joined, meshArgs)
 	}
 	if i := slices.Index(meshArgs, "--rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != rtmr1 {
-		t.Fatalf("ratls-mesh missing --rtmrs %q\nargs: %v", rtmr1, meshArgs)
+		t.Fatalf("armtls-mesh missing --rtmrs %q\nargs: %v", rtmr1, meshArgs)
 	}
 
 	operatorArgs := renderedOperatorArgs(t, out)
@@ -7502,7 +7502,7 @@ func TestChartNoRTMRPinsRendersNoFlags(t *testing.T) {
 	}
 	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	assertContainerNoArgPrefix(t, "cds", cdsArgs, "--rtmrs")
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-ratls-mesh", "ratls-mesh").Args
+	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
 	if slices.Contains(meshArgs, "--rtmrs") || slices.Contains(meshArgs, "--cds-rtmrs") {
 		t.Fatalf("unpinned render emitted RTMR flags\nargs: %v", meshArgs)
 	}

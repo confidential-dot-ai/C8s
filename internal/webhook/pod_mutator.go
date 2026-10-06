@@ -6,8 +6,8 @@
 //
 //	confidential.ai/cw=<workload-id>     required to opt in
 //
-// Pod-to-pod mTLS is handled by the node-level ratls-mesh DaemonSet
-// (cmd/ratls-mesh/), so the webhook does not inject any mesh sidecar.
+// Pod-to-pod mTLS is handled by the node-level armtls-mesh DaemonSet
+// (cmd/armtls-mesh/), so the webhook does not inject any mesh sidecar.
 // Its only job is to add get-cert containers that fetch and renew the
 // workload's own identity cert when the pod opts in.
 //
@@ -198,7 +198,7 @@ type Config struct {
 	// directory at workloadclaims.SidecarSocketDir into the injected sidecars
 	// (an NRI mount, never a pod-spec hostPath — PodSecurity baseline and
 	// restricted forbid hostPath); the webhook injects --workload-claims so
-	// get-cert redeems a sandbox token over that socket (docs/ratls.md).
+	// get-cert redeems a sandbox token over that socket (docs/armtls.md).
 	WorkloadClaimsHostDir string
 }
 

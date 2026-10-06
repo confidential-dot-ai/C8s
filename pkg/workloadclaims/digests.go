@@ -1,6 +1,6 @@
 // The sandbox-digests callback: CDS asks the inventory that admitted a pod
 // what that pod is actually running, at issuance time, over mutually-attested
-// RA-TLS (docs/ratls.md, "Sandbox identity").
+// ARmTLS (docs/armtls.md, "Sandbox identity").
 //
 // Direction matters. The requester never reports its own images — it only
 // proves, via the inventory-signed sandbox token, which sandbox it is in. CDS
@@ -28,7 +28,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // DigestsPort is the port every inventory serves its digests endpoint on, and
@@ -161,17 +161,17 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 }
 
 // DigestsServerTLSConfig builds the inventory's listener config for
-// ServeDigests: it presents an RA-TLS certificate proving the inventory runs in
+// ServeDigests: it presents an ARmTLS certificate proving the inventory runs in
 // a TEE, and requires the caller to present a hardware-attested one too. With
 // cdsPins set the caller must satisfy them (launch measurement, and TDX RTMRs
 // when pinned), so the endpoint discloses what a node runs only to a CDS on an
 // expected measurement; zero pins accept any TEE on the network. UNSAFE
 // outside development; callers warn.
-func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins ratls.Pins, certTTL time.Duration) (*tls.Config, *ratls.CertManager, error) {
+func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, certTTL time.Duration) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
 	}
-	return ratls.NewServerTLSConfig(&ratls.ServerConfig{
+	return armtls.NewServerTLSConfig(&armtls.ServerConfig{
 		Platform:     platform,
 		AttestFunc:   attestFunc,
 		CertTTL:      certTTL,
@@ -180,7 +180,7 @@ func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context
 }
 
 // requireAttestationApi rejects an empty attestation-api URL at construction.
-// Both sides feed it to a ratls.VerifyPolicy, which fails closed without one —
+// Both sides feed it to a armtls.VerifyPolicy, which fails closed without one —
 // catching it here makes a missing URL a startup error instead of a handshake
 // failure inside the first pod's issuance deadline.
 func requireAttestationApi(url string) error {
@@ -198,7 +198,7 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins ratls.Pins) error {
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins) error {
 	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0)
 	if err != nil {
 		return err
@@ -223,9 +223,9 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 	return nil
 }
 
-// DigestsClient is CDS's side of the callback: an RA-TLS client that verifies
+// DigestsClient is CDS's side of the callback: an ARmTLS client that verifies
 // the inventory's attestation — pinning its launch measurement when one is
-// configured — and presents CDS's own RA-TLS certificate, so the inventory can
+// configured — and presents CDS's own ARmTLS certificate, so the inventory can
 // pin CDS in turn.
 type DigestsClient struct {
 	http *http.Client
@@ -233,19 +233,19 @@ type DigestsClient struct {
 
 // NewDigestsClient builds the client. pins hold the launch digests (and any
 // TDX RTMR pins) an inventory may present — the same allowlist CDS pins for
-// the inventory's RA-TLS certificate, so a sandbox token and the callback that
-// follows it are held to one standard. Zero pins accept any RA-TLS-attested
+// the inventory's ARmTLS certificate, so a sandbox token and the callback that
+// follows it are held to one standard. Zero pins accept any ARmTLS-attested
 // inventory, matching what an empty allowlist already means for the certificate:
 // UNSAFE outside development; callers warn.
 //
-// It warms its own RA-TLS certificate before returning: provisioning costs an
+// It warms its own ARmTLS certificate before returning: provisioning costs an
 // attestation round-trip, and paying it lazily would put it inside the first
 // pod's issuance deadline.
-func NewDigestsClient(ctx context.Context, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, pins ratls.Pins, timeout time.Duration) (*DigestsClient, error) {
+func NewDigestsClient(ctx context.Context, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, pins armtls.Pins, timeout time.Duration) (*DigestsClient, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, err
 	}
-	tlsCfg, certMgr, err := ratls.NewClientTLSConfig(&ratls.ClientConfig{
+	tlsCfg, certMgr, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
 		Policy:     pins.VerifyPolicy(attestationApiURL),
 		Platform:   platform,
 		AttestFunc: attestFunc,
@@ -287,7 +287,7 @@ const (
 	warmUpInterval = time.Second
 )
 
-// certWarmer is the slice of ratls.CertManager this needs, so the retry can be
+// certWarmer is the slice of armtls.CertManager this needs, so the retry can be
 // tested without provisioning a real certificate.
 type certWarmer interface {
 	WarmUp(context.Context) error
@@ -339,7 +339,7 @@ var ErrSandboxUnknown = fmt.Errorf("workloadclaims: inventory does not know this
 // InventoryKey fetches the sandbox-token signing key of the inventory on host.
 //
 // This is what gives an inventory an identity CDS can check. The key arrives
-// over RA-TLS from DigestsPort — a privileged port in the node's own network
+// over ARmTLS from DigestsPort — a privileged port in the node's own network
 // namespace — so answering here requires a privilege the chart's
 // deny-host-namespaces policy withholds from tenant pods. Sharing the node's
 // launch measurement, which every pod on a node-CVM does, is not enough.
@@ -408,7 +408,7 @@ var ErrSandboxContainersUnsupported = fmt.Errorf("workloadclaims: inventory does
 // digests.
 func (c *DigestsClient) FetchSandbox(ctx context.Context, host, sandboxID string) (SandboxDigestsResponse, error) {
 	var out SandboxDigestsResponse
-	if err := ratls.ValidateSandboxID(sandboxID); err != nil {
+	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
 		return out, err
 	}
 	resp, err := c.get(ctx, host, SandboxDigestsPrefix+sandboxID)

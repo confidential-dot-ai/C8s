@@ -27,7 +27,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // tdxEnvelope is a minimal self-describing evidence envelope; the actual
@@ -35,7 +35,7 @@ import (
 const tdxEnvelope = `{"platform":"tdx","evidence":{}}`
 
 // newAttestedTLSServer starts a TLS httptest server whose serving cert is a
-// genuine RA-TLS attested cert (quote envelope embedded, self-signed), the
+// genuine ARmTLS attested cert (quote envelope embedded, self-signed), the
 // same shape the cred-release endpoint serves.
 func newAttestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
@@ -48,17 +48,17 @@ func newPlatformAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &ratls.Attestation{Family: ratls.TEETypeTDX, Report: []byte(tdxEnvelope)}
+	att := &armtls.Attestation{Family: armtls.TEETypeTDX, Report: []byte(tdxEnvelope)}
 	if platform == teetypes.PlatformSNP {
-		rd, err := ratls.ReportDataForKey(&key.PublicKey, nil)
+		rd, err := armtls.ReportDataForKey(&key.PublicKey, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		report := make([]byte, 1184)
 		copy(report[0x50:], rd[:])
-		att = &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: report}
+		att = &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: report}
 	}
-	der, err := ratls.CreateAttestedCert(key, att, nil)
+	der, err := armtls.CreateAttestedCert(key, att, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func releaseHandler(t *testing.T, status int, respBody string, gotRole *atomic.V
 }
 
 // testEnv wires up a full fake node: operator key + image manifest on disk,
-// the caller's attest endpoint URL, RA-TLS cred-release endpoint, and a
+// the caller's attest endpoint URL, ARmTLS cred-release endpoint, and a
 // stubbed verifier that accepts iff the claims satisfy the full
 // measured-identity policy.
 type testEnv struct {
@@ -191,7 +191,7 @@ func (e testEnv) config() Config {
 }
 
 // TestRunEndToEnd drives the full client flow against fake endpoints: attest
-// gate, RA-TLS dial (verified via the stub), operator-signed CSR exchange, and
+// gate, ARmTLS dial (verified via the stub), operator-signed CSR exchange, and
 // kubeconfig assembly on disk.
 func TestRunEndToEnd(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
@@ -299,9 +299,9 @@ func TestRunRejectsWrongRTMR3(t *testing.T) {
 	}
 }
 
-// TestRATLSClientRejectsPlainCert confirms the RA-TLS dial fails closed
+// TestARMTLSClientRejectsPlainCert confirms the ARmTLS dial fails closed
 // against a server whose cert carries no attestation envelope (a host MITM).
-func TestRATLSClientRejectsPlainCert(t *testing.T) {
+func TestARMTLSClientRejectsPlainCert(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
 	plain := httptest.NewTLSServer(releaseHandler(t, http.StatusOK, goodRelease, nil))
 	t.Cleanup(plain.Close)
@@ -309,8 +309,8 @@ func TestRATLSClientRejectsPlainCert(t *testing.T) {
 	cfg := env.config()
 	cfg.ReleaseBaseURL = plain.URL
 	err := Run(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "carries no RA-TLS attestation extension") {
-		t.Fatalf("want RA-TLS handshake failure (no RA-TLS extension), got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "carries no ARmTLS attestation extension") {
+		t.Fatalf("want ARmTLS handshake failure (no ARmTLS extension), got %v", err)
 	}
 }
 

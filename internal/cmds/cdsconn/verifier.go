@@ -11,7 +11,7 @@ import (
 )
 
 // PinVerifier verifies evidence and enforces the endpoint's identity policy.
-// Both discovery and direct RA-TLS connections use the same verifier.
+// Both discovery and direct ARmTLS connections use the same verifier.
 type PinVerifier interface {
 	Verify(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error)
 }

@@ -119,7 +119,7 @@ jobs:
           CDS: "false"
           GET_CERT: "false"
           NRI_IMAGE_POLICY: "false"
-          RATLS_MESH: "false"
+          ARMTLS_MESH: "false"
           SHARED: "true"
           VOLUMED: "false"
         run: .github/scripts/docker-build-matrix.sh

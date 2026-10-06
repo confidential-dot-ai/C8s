@@ -350,7 +350,7 @@ func TestTDXMRTDOnlyWarns(t *testing.T) {
 // mode, including the empty one --from-file leaves behind, is rejected when
 // there is no pinned anchor at all.
 func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
-	for _, mode := range []string{"", "auto", "ratls-cert", "discovery", "attest-pq"} {
+	for _, mode := range []string{"", "auto", "armtls-cert", "discovery", "attest-pq"} {
 		cfg := config{mode: mode, measurements: []string{testMRTD}}
 		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
 		if oc.Verified {

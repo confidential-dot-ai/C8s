@@ -18,7 +18,7 @@ import (
 
 // config represents the plugin configuration.
 type config struct {
-	// Platform types the RA-TLS identity the sandbox-digests endpoint serves
+	// Platform types the ARmTLS identity the sandbox-digests endpoint serves
 	// to CDS, as an attestation-api platform string; empty means snp. It must
 	// name the node's actual CPU TEE — CDS fails closed when the certificate's
 	// TEE type and the evidence envelope's platform disagree.
@@ -40,7 +40,7 @@ type pluginConfig struct {
 }
 
 // workloadClaimsConfig configures the node-CVM admission inventory
-// (docs/ratls.md).
+// (docs/armtls.md).
 type workloadClaimsConfig struct {
 	// SocketDir is the host directory the inventory creates its socket in (as the
 	// compiled workloadclaims.SocketName); the plugin NRI-mounts it into c8s-cert
@@ -251,8 +251,8 @@ func foldHexPins(vals []string) []string {
 }
 
 // NormalizedPlatform folds the az-/gcp- variants onto the two TEE families the
-// RA-TLS extension records, matching what CDS does with its own
-// --ratls-platform. Defaulting here rather than in loadConfig keeps every
+// ARmTLS extension records, matching what CDS does with its own
+// --armtls-platform. Defaulting here rather than in loadConfig keeps every
 // construction path on the same value, including callers that build a config
 // literal and validate it directly.
 func (c *config) NormalizedPlatform() string {
@@ -333,7 +333,7 @@ func (c *config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("allowlist.pull.url: %w", err)
 		}
-		// CDS serves RA-TLS only, so the pull URL must be https — a plaintext
+		// CDS serves ARmTLS only, so the pull URL must be https — a plaintext
 		// pull would defeat the attestation handshake entirely.
 		if parsed.Scheme != "https" {
 			return fmt.Errorf("allowlist.pull.url scheme must be https, got %q", parsed.Scheme)

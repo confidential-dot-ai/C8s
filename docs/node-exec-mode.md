@@ -89,10 +89,10 @@ preference:
 2. A minimal in-process health endpoint, when the service otherwise listens
    only on a Unix socket. `attest-proxy --health-addr` serves `GET /healthz` by
    making the same round-trip over its own socket that its exec probe used to
-   make; `ratls-mesh iptables-sync --ready-addr` and `acme --ready-port` do the
+   make; `armtls-mesh iptables-sync --ready-addr` and `acme --ready-port` do the
    same for their readiness signals.
 3. SIGTERM handling instead of a `preStop` hook. The mesh's cleanup sidecar
-   runs `ratls-mesh iptables-cleanup --on-shutdown`, which idles until SIGTERM
+   runs `armtls-mesh iptables-cleanup --on-shutdown`, which idles until SIGTERM
    and then cleans up; native sidecars stop in reverse init order, so it still
    runs after the proxy drains.
 

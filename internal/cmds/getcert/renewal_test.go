@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func namedLeaf(t *testing.T) *x509.Certificate {
 	t.Helper()
-	ext, err := ratls.MarshalMatchedWorkloadExtension(&ratls.MatchedWorkload{
+	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
 		Name:             "api",
 		AllowlistVersion: "1",
 		AllowlistDigest:  bytes.Repeat([]byte{0x11}, 32),

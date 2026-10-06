@@ -9,7 +9,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -38,10 +38,10 @@ func containersView(digests ...string) []workloadclaims.SandboxContainer {
 
 // issueWithInventory drives a full token-bearing /attest against the given
 // store and inventory answer and returns the parsed leaf.
-func issueWithInventory(t *testing.T, store policyStore, digests []string, containers []workloadclaims.SandboxContainer, tune func(*AttestHandler)) *ratls.MatchedWorkload {
+func issueWithInventory(t *testing.T, store policyStore, digests []string, containers []workloadclaims.SandboxContainer, tune func(*AttestHandler)) *armtls.MatchedWorkload {
 	t.Helper()
 	leaf := leafFromInventory(t, store, digests, containers, tune)
-	matched, err := ratls.MatchedWorkloadFromCert(leaf)
+	matched, err := armtls.MatchedWorkloadFromCert(leaf)
 	if err != nil {
 		t.Fatalf("MatchedWorkloadFromCert: %v", err)
 	}

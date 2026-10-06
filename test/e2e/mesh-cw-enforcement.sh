@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Live-cluster verification that the workload path is mesh-wrapped and that
 # plaintext bypass to confidential-workload pods fails closed
-# (ratlsMesh.cwInboundEnforcement). Proves on a real cluster what unit and
+# (armtlsMesh.cwInboundEnforcement). Proves on a real cluster what unit and
 # chart tests cannot: a dial to a cw pod IP is actually intercepted and
 # wrapped (the mesh inbound counter moves on the workload's node), the
 # FORWARD drop actually fires on this cluster's CNI for Service-VIP and
@@ -20,14 +20,14 @@
 #   CLIENT_UID      numeric non-root UID declared by that image (default 100,
 #                   the verified curl_user UID in the pinned default)
 #   EXCLUDED_NS     mesh-excluded source namespace (default kube-system)
-#   MESH_HEALTH_PORT     ratls-mesh health/metrics port (chart
-#                        ratlsMesh.ports.health; default 15021)
+#   MESH_HEALTH_PORT     armtls-mesh health/metrics port (chart
+#                        armtlsMesh.ports.health; default 15021)
 #   MESH_NS              namespace the chart is installed in (default
-#                        c8s-system), read for the ratls-mesh DaemonSet
+#                        c8s-system), read for the armtls-mesh DaemonSet
 #   METRIC_WAIT_SECONDS  how long to wait for a counter to move; also the
 #                        abort budget for a baseline that never gets a
 #                        successful scrape (default 75; raise it above ~2x
-#                        ratlsMesh.iptablesSync.resyncPeriod on clusters tuned
+#                        armtlsMesh.iptablesSync.resyncPeriod on clusters tuned
 #                        to a longer resync)
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -91,7 +91,7 @@ client_node_ip=$(kubectl get node "$client_node" -o jsonpath='{.status.addresses
 
 client_curl() { kubectl exec -n "$ns" "$client" -- curl -s "$@"; }
 
-# Sum a mesh metric from a node's ratls-mesh /metrics (hostNetwork). The
+# Sum a mesh metric from a node's armtls-mesh /metrics (hostNetwork). The
 # health port is a node IP, never a pod IP, so this scrape is not itself
 # mesh-intercepted. Exit 1 with no output marks a failed scrape, kept distinct
 # from a genuine 0 (curl -f fails on HTTP errors; kubectl exec propagates the
@@ -139,7 +139,7 @@ await_metric_above() {
 
 # --- positive: a pod-IP dial is mesh-wrapped --------------------------------
 
-inbound='^ratls_mesh_connections_total.*direction="inbound"'
+inbound='^armtls_mesh_connections_total.*direction="inbound"'
 base_inbound=$(metric_baseline "$cw_node_ip" "$inbound" "mesh inbound connections on $cw_node")
 
 client_curl -o /dev/null --max-time 10 "http://${cw_ip}:${cw_port}/" \
@@ -175,7 +175,7 @@ until kubectl get endpointslices -n "$cw_ns" -l "kubernetes.io/service-name=$vip
   sleep 2
 done
 
-drops='^ratls_mesh_iptables_cw_inbound_drops_total'
+drops='^armtls_mesh_iptables_cw_inbound_drops_total'
 # The drop fires on the client's node: iptables-mode kube-proxy DNATs the VIP
 # there, and the post-DNAT packet hits that node's FORWARD guard (cw ipset is
 # cluster-wide). Under IPVS/nftables kube-proxy the VIP is rewritten off the
@@ -190,7 +190,7 @@ client_curl -o /dev/null --max-time 5 "http://${vip}:${cw_port}/" || rc=$?
 # = the bypass reached the workload; 7 = connection refused, i.e. the packet was
 # rejected not dropped (a listener/NetworkPolicy artifact, not our guard); other
 # codes = kubectl exec itself failed, which would false-green a bare "nonzero".
-[ "$rc" -ne 0 ] || fail "VIP bypass reached the workload: curl http://$vip:$cw_port succeeded. Is the ratls-mesh DaemonSet rolled with the cw guard (RATLS-MESH-CW chain present)?"
+[ "$rc" -ne 0 ] || fail "VIP bypass reached the workload: curl http://$vip:$cw_port succeeded. Is the armtls-mesh DaemonSet rolled with the cw guard (ARMTLS-MESH-CW chain present)?"
 [ "$rc" -eq 28 ] || fail "VIP dial to $vip:$cw_port exited $rc, expected 28 (timeout from a DROP); a non-timeout failure is not proof the cw guard blocked it"
 echo "ok: VIP bypass blocked (curl exit 28 = timeout from DROP)"
 
@@ -227,16 +227,16 @@ await_metric_above "$excluded_node_ip" "$drops" "$base_excluded_drops" \
 # A cw pod that loses DNS still reaches Running, so this is asserted against
 # the chain the node actually runs rather than against the pod's health. Read
 # on the workload's node, in the sidecar that programs it.
-mesh_pod=$(kubectl get pods -n "$mesh_ns" -l app=c8s-ratls-mesh \
+mesh_pod=$(kubectl get pods -n "$mesh_ns" -l app=c8s-armtls-mesh \
   --field-selector="spec.nodeName=$cw_node" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-[ -n "$mesh_pod" ] || fail "no ratls-mesh pod on $cw_node in namespace $mesh_ns (set MESH_NS)"
+[ -n "$mesh_pod" ] || fail "no armtls-mesh pod on $cw_node in namespace $mesh_ns (set MESH_NS)"
 
 egress_chain=$(kubectl exec -n "$mesh_ns" "$mesh_pod" -c iptables-sync -- \
-  iptables -L RATLS-MESH-CW-EGRESS -n -v -x 2>/dev/null) \
-  || fail "RATLS-MESH-CW-EGRESS not readable on $cw_node; is the cw egress guard installed?"
+  iptables -L ARMTLS-MESH-CW-EGRESS -n -v -x 2>/dev/null) \
+  || fail "ARMTLS-MESH-CW-EGRESS not readable on $cw_node; is the cw egress guard installed?"
 
 dns_rows=$(awk '/udp/ && /dpt:53/' <<<"$egress_chain")
-[ -n "$dns_rows" ] || fail "RATLS-MESH-CW-EGRESS carries no UDP/53 carve-out on $cw_node; cw pods cannot resolve:
+[ -n "$dns_rows" ] || fail "ARMTLS-MESH-CW-EGRESS carries no UDP/53 carve-out on $cw_node; cw pods cannot resolve:
 $egress_chain"
 
 # The carve-out names no destination, so it survives kube-proxy's Service DNAT
@@ -261,8 +261,8 @@ echo "ok: cw egress DNS carve-out is unscoped and ordered above the drop"
 # Membership is what the guard keys on. An empty set is enforcement that is not
 # running, and reads identically to a guard that is simply not being exercised.
 cw_members=$(kubectl exec -n "$mesh_ns" "$mesh_pod" -c iptables-sync -- \
-  ipset list RATLS-MESH-CW-PODS 2>/dev/null | awk '/^Number of entries:/ {print $NF}')
-[ "${cw_members:-0}" -gt 0 ] || fail "ipset RATLS-MESH-CW-PODS on $cw_node holds no members while $cw_ns/$cw_pod is Running; the guard is not enforcing on any cw pod"
+  ipset list ARMTLS-MESH-CW-PODS 2>/dev/null | awk '/^Number of entries:/ {print $NF}')
+[ "${cw_members:-0}" -gt 0 ] || fail "ipset ARMTLS-MESH-CW-PODS on $cw_node holds no members while $cw_ns/$cw_pod is Running; the guard is not enforcing on any cw pod"
 echo "ok: cw ipset on $cw_node holds $cw_members member(s)"
 
 echo "PASS: workload path mesh-wrapped; VIP and excluded-source plaintext bypasses fail closed; egress DNS carve-out matchable"

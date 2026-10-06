@@ -36,7 +36,7 @@ updates:
       - /cmd/cds
       - /cmd/get-cert
       - /cmd/nri-image-policy
-      - /cmd/ratls-mesh
+      - /cmd/armtls-mesh
       - /cmd/volumed
       - /test/mock-attestation
       - /test/mock-cds

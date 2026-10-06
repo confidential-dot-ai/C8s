@@ -30,7 +30,7 @@ func NewCmd() *cobra.Command {
 			"images; on SEV-SNP the pinned per-SMP launch digest plus the\n" +
 			"operator-key HOSTDATA binding. It then exchanges a CSR for a\n" +
 			"short-lived kube client cert over the cred-release endpoint and writes\n" +
-			"a kubeconfig. Fresh attestation uses the authenticated RA-TLS release\n" +
+			"a kubeconfig. Fresh attestation uses the authenticated ARmTLS release\n" +
 			"endpoint; the guest raw attester can remain on loopback. Verification\n" +
 			"runs in-process (attestation-go).",
 		RunE: func(cmd *cobra.Command, _ []string) error {

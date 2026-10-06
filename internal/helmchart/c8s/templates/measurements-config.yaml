@@ -1,6 +1,6 @@
 {{- /*
 The measurements config: the VM images this cluster runs, each pinned as a
-whole image. Shared by every component that verifies one — cds, ratls-mesh,
+whole image. Shared by every component that verifies one — cds, armtls-mesh,
 router's allowlist-proxy and the operator — so it lives in its own ConfigMap
 rather than beside a single component's own material.
 
@@ -8,9 +8,9 @@ Public policy, not secret: these are the digests a verifier compares evidence
 against.
 */ -}}
 {{- $cds := .Values.cds.measurementsConfig | default "" }}
-{{- $mesh := .Values.ratlsMesh.measurementsConfig | default "" }}
+{{- $mesh := .Values.armtlsMesh.measurementsConfig | default "" }}
 {{- if or $cds $mesh }}
-{{- range $name, $doc := dict "cds.measurementsConfig" $cds "ratlsMesh.measurementsConfig" $mesh }}
+{{- range $name, $doc := dict "cds.measurementsConfig" $cds "armtlsMesh.measurementsConfig" $mesh }}
 {{- if $doc }}
 {{- if not (hasPrefix "{" (trim $doc)) }}
 {{- fail (printf "%s must be the JSON content of the measurements config, not a file path — use `c8s install --image-policy-file <file>`, `c8s render-values --image-policy-file <file>`, or helm --set-file %s=<file>" $name $name) }}
@@ -29,7 +29,7 @@ data:
   cds.json: {{ $cds | quote }}
   {{- end }}
   {{- if $mesh }}
-  ratls-mesh.json: {{ $mesh | quote }}
+  armtls-mesh.json: {{ $mesh | quote }}
   {{- end }}
 ---
 {{- end }}

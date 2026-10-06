@@ -23,9 +23,9 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -108,7 +108,7 @@ type evidence struct {
 	// workload is the leaf's matched-workload stamp (cert modes only; nil when
 	// the cert carries none). CA-vouched like the sandbox ID — see
 	// applyWorkloadPolicy.
-	workload *ratls.MatchedWorkload
+	workload *armtls.MatchedWorkload
 	// workloadErr records a carried matched-workload extension this build
 	// cannot interpret (or a duplicate). The verdict fails closed on it.
 	workloadErr error
@@ -158,13 +158,13 @@ type leafTrust struct {
 	meshCA *x509.CertPool
 }
 
-// gatherFromRATLSCert dials an RA-TLS TLS endpoint, captures the serving
+// gatherFromARMTLSCert dials an ARmTLS TLS endpoint, captures the serving
 // certificate without trusting PKI (trust comes from the embedded hardware
 // attestation), and binds REPORTDATA to the certificate key.
-func gatherFromRATLSCert(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*evidence, error) {
+func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*evidence, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		// INVARIANT: PKI verification is intentionally skipped — the RA-TLS
+		// INVARIANT: PKI verification is intentionally skipped — the ARmTLS
 		// attestation in the cert extension is the trust anchor, verified below.
 		Config: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}
@@ -183,7 +183,7 @@ func gatherFromRATLSCert(ctx context.Context, addr, serverName string, timeout t
 	// attested key: that is the proof of possession this path relies on, not
 	// the certificate body's own bytes.
 	trust.keyProven = true
-	return evidenceFromCert(certs[0], fmt.Sprintf("RA-TLS serving certificate at %s", addr), trust)
+	return evidenceFromCert(certs[0], fmt.Sprintf("ARmTLS serving certificate at %s", addr), trust)
 }
 
 // authenticateLeafBody runs the shared certificate-body checks on an
@@ -255,8 +255,8 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 		return nil, err
 	}
 	binding := "REPORTDATA binds the certificate public key (no per-request nonce — replayable within the authenticated certificate validity window, which is the only freshness bound on this path)"
-	sandboxID, sandboxErr := ratls.SandboxIDFromCert(cert)
-	workload, workloadErr := ratls.MatchedWorkloadFromCert(cert)
+	sandboxID, sandboxErr := armtls.SandboxIDFromCert(cert)
+	workload, workloadErr := armtls.MatchedWorkloadFromCert(cert)
 	sum := sha256.Sum256(cert.Raw)
 	return &evidence{
 		platform:          platform,
@@ -412,8 +412,8 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 
 	// The CA-vouched leaf stamps, read off the transcript-committed mesh leaf.
 	// --mesh-ca / --workload enforce them downstream exactly as in cert modes.
-	sandboxID, sandboxErr := ratls.SandboxIDFromCert(leaf)
-	workload, workloadErr := ratls.MatchedWorkloadFromCert(leaf)
+	sandboxID, sandboxErr := armtls.SandboxIDFromCert(leaf)
+	workload, workloadErr := armtls.MatchedWorkloadFromCert(leaf)
 	return &evidence{
 		platform:         platformOrDefault(r.Platform),
 		rawEvidence:      r.Evidence,
@@ -526,7 +526,7 @@ func verifyCommittedChain(leaf, ca *x509.Certificate) error {
 
 // keyAnchor extracts the unpadded SHA-384 anchor from ReportDataForKey's
 // zero-padded 64-byte REPORTDATA — the form producers bind (see
-// attestclient.MakeSNPRATLSAttestFunc) and Azure vTPM quotes carry raw.
+// attestclient.MakeSNPARMTLSAttestFunc) and Azure vTPM quotes carry raw.
 func keyAnchor(rd [64]byte) []byte { return rd[:sha512.Size384] }
 
 // gatherFromFile loads evidence from a saved PEM certificate or attestation

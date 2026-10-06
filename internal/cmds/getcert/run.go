@@ -35,9 +35,9 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -123,8 +123,8 @@ alongside a workload that uses the obtained certificate.`,
 	flags := cmd.Flags()
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443)")
-	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS RA-TLS verification (empty = accept any attested CDS)")
-	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's RA-TLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
+	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS ARmTLS verification (empty = accept any attested CDS)")
+	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's ARmTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)")
 	flags.StringVarP(&cfg.OutPath, "out", "o", "", "Path to write the signed certificate chain PEM (prints to stdout if omitted)")
 	flags.StringVar(&cfg.CAOutPath, "ca-out", "", "Path to write just the mesh CA bundle PEM (the issuer certs trailing the leaf in the CDS chain), e.g. for nginx to serve at a discovery endpoint without a separate ConfigMap")
@@ -146,7 +146,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
 	flags.StringVar(&cfg.DiscoveryPublicTLSMode, "discovery-public-tls-mode", "cds", "Public TLS mode to report in discovery metadata (cds, webpki, or acme)")
-	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/ratls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
+	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/armtls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
 	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew while the installed leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
 
@@ -181,34 +181,34 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
-	// CDS is reached over RA-TLS: the scheme MUST be https so the client
+	// CDS is reached over ARmTLS: the scheme MUST be https so the client
 	// verifies CDS's TEE attestation. A plaintext http:// URL would fall back
 	// to a client that skips attestation entirely and impersonation by any
 	// on-path peer becomes trivial. The chart only ever renders https URLs, so
 	// a non-https value is a misconfiguration, not a supported mode.
 	if parsed.Scheme != "https" {
-		return nil, fmt.Errorf("--cds-url must use https (RA-TLS); got scheme %q", parsed.Scheme)
+		return nil, fmt.Errorf("--cds-url must use https (ARmTLS); got scheme %q", parsed.Scheme)
 	}
 
 	pins, err := cdsPins(cfg)
 	if err != nil {
 		return nil, err
 	}
-	client, err := ratls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, fmt.Errorf("cds RA-TLS client: %w", err)
+		return nil, fmt.Errorf("cds ARmTLS client: %w", err)
 	}
 	return client, nil
 }
 
-func cdsPins(cfg config) (ratls.Pins, error) {
+func cdsPins(cfg config) (armtls.Pins, error) {
 	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
 		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
 	if err != nil {
-		return ratls.Pins{}, err
+		return armtls.Pins{}, err
 	}
-	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any RA-TLS-attested CDS measurement")
-	return ratls.Pins(policy), nil
+	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any ARmTLS-attested CDS measurement")
+	return armtls.Pins(policy), nil
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
@@ -533,7 +533,7 @@ func isNamedLeaf(leaf *x509.Certificate) bool {
 	if leaf == nil {
 		return false
 	}
-	matched, err := ratls.MatchedWorkloadFromCert(leaf)
+	matched, err := armtls.MatchedWorkloadFromCert(leaf)
 	return err == nil && matched != nil
 }
 
@@ -571,7 +571,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x
 
 	// Fetch the CDS challenge up front so one single-use nonce binds both the
 	// sandbox token and the evidence REPORTDATA — freshness without a clock
-	// (docs/ratls.md, "Sandbox identity").
+	// (docs/armtls.md, "Sandbox identity").
 	challenge, err := client.AuthenticateContext(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("authenticate: %w", err)
@@ -586,12 +586,12 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x
 		return nil, err
 	}
 
-	// Always embed a nonce-free RA-TLS .1.1 extension so a downstream ratls-mode
-	// verifier (secret-inventory --peer-verify=ratls) can re-verify the leaf —
-	// the same nonce-free embed the mesh client uses (docs/ratls.md).
+	// Always embed a nonce-free ARmTLS .1.1 extension so a downstream armtls-mode
+	// verifier (secret-inventory --peer-verify=armtls) can re-verify the leaf —
+	// the same nonce-free embed the mesh client uses (docs/armtls.md).
 	ext, err := client.AttestationExtension(ctx, cfg.AttestationApiURL, &privateKey.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("build RA-TLS attestation extension: %w", err)
+		return nil, fmt.Errorf("build ARmTLS attestation extension: %w", err)
 	}
 
 	csrPEM, err := createCSR(privateKey, cfg.SAN, ext)
@@ -618,7 +618,7 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x
 }
 
 // fetchSandboxToken redeems this pod's kernel peer credentials at the
-// inventory for a signed token naming its sandbox (docs/ratls.md, "Sandbox
+// inventory for a signed token naming its sandbox (docs/armtls.md, "Sandbox
 // identity"). pub is the CSR key the token is bound to; nonce is the CDS
 // challenge it must carry for CDS to accept it as fresh.
 //
@@ -834,7 +834,7 @@ func generateKey() (*ecdsa.PrivateKey, []byte, error) {
 }
 
 // createCSR builds a PEM-encoded certificate signing request with the given
-// SAN. extraExts are carried as CSR extensions (e.g. the RA-TLS attestation
+// SAN. extraExts are carried as CSR extensions (e.g. the ARmTLS attestation
 // extension CDS copies onto the leaf); nil for the plain flow.
 func createCSR(key *ecdsa.PrivateKey, san string, extraExts ...pkix.Extension) ([]byte, error) {
 	template := x509.CertificateRequest{
@@ -893,7 +893,7 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 
 // servedCAStale reports whether the bundle written at caOutPath is missing a
 // certificate CDS currently serves at /ca. The fetch rides the same
-// RA-TLS-verified client the issuance flow uses, so the refresh trusts CDS for
+// ARmTLS-verified client the issuance flow uses, so the refresh trusts CDS for
 // exactly the reason the initial fetch did. A stale bundle means every client
 // following the documented recovery recipe — re-fetch the mesh CA from the
 // discovery endpoint — pins a CA nothing signs with anymore.

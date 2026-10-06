@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // attestedCert builds a self-signed cert carrying a (fake) SNP attestation
@@ -25,8 +25,8 @@ func attestedCert(t *testing.T, sandboxID string) *x509.Certificate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-	der, err := ratls.CreateAttestedCert(key, att, nil)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	der, err := armtls.CreateAttestedCert(key, att, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,12 +44,12 @@ func attestedCert(t *testing.T, sandboxID string) *x509.Certificate {
 // and sandbox-ID extensions — the shape CDS produces, minus the CA signature.
 func reissueWithSandboxID(t *testing.T, key *ecdsa.PrivateKey, sandboxID string) []byte {
 	t.Helper()
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-	attExt, err := ratls.MarshalExtension(att)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	attExt, err := armtls.MarshalExtension(att)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sandboxExt, err := ratls.MarshalSandboxIDExtension(sandboxID)
+	sandboxExt, err := armtls.MarshalSandboxIDExtension(sandboxID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestEvidenceFromCertReadsSandboxID(t *testing.T) {
 	}
 
 	// A claims-free cert keeps the plain key anchor.
-	want, err := ratls.ReportDataForKey(ev.leaf.PublicKey, nil)
+	want, err := armtls.ReportDataForKey(ev.leaf.PublicKey, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func caSignedLeaf(t *testing.T, sandboxID string) (*x509.Certificate, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ext, err := ratls.MarshalSandboxIDExtension(sandboxID)
+	ext, err := armtls.MarshalSandboxIDExtension(sandboxID)
 	if err != nil {
 		t.Fatal(err)
 	}

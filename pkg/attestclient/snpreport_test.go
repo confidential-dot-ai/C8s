@@ -8,11 +8,11 @@ import (
 	"os"
 	"testing"
 
+	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	agratls "github.com/confidential-dot-ai/attestation-go/ratls"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // hclEnvelope builds an AKS HCL envelope wrapping the given hardware report:
@@ -30,8 +30,8 @@ func hclEnvelope(report []byte, trailing int) []byte {
 	return env
 }
 
-func TestRATLSEvidence_VTPMPreservesEnvelope(t *testing.T) {
-	fakeHCLReport := hclEnvelope(make([]byte, ratls.SNPReportSize), 64)
+func TestARMTLSEvidence_VTPMPreservesEnvelope(t *testing.T) {
+	fakeHCLReport := hclEnvelope(make([]byte, armtls.SNPReportSize), 64)
 	evidence := map[string]any{
 		"version":    1,
 		"hcl_report": base64.RawURLEncoding.EncodeToString(fakeHCLReport),
@@ -44,9 +44,9 @@ func TestRATLSEvidence_VTPMPreservesEnvelope(t *testing.T) {
 	evidenceJSON, _ := json.Marshal(evidence)
 
 	resp := remote.AttestResponse{Platform: teetypes.PlatformAzSNP, Evidence: evidenceJSON}
-	payload, err := attestclient.RATLSEvidence(resp)
+	payload, err := attestclient.ARMTLSEvidence(resp)
 	if err != nil {
-		t.Fatalf("RATLSEvidence failed: %v", err)
+		t.Fatalf("ARMTLSEvidence failed: %v", err)
 	}
 
 	var embedded teetypes.AttestationEvidence
@@ -76,15 +76,15 @@ func TestExtractSNPReportRealAKSEnvelope(t *testing.T) {
 		"hcl_report": base64.RawURLEncoding.EncodeToString(envelope),
 	})
 
-	report, err := agratls.ExtractSNPReport(teetypes.AttestationEvidence{
+	report, err := agarmtls.ExtractSNPReport(teetypes.AttestationEvidence{
 		Platform: teetypes.PlatformAzSNP,
 		Evidence: evidenceJSON,
 	})
 	if err != nil {
 		t.Fatalf("ExtractSNPReport on real AKS envelope: %v", err)
 	}
-	if len(report) != ratls.SNPReportSize {
-		t.Fatalf("report length = %d, want %d", len(report), ratls.SNPReportSize)
+	if len(report) != armtls.SNPReportSize {
+		t.Fatalf("report length = %d, want %d", len(report), armtls.SNPReportSize)
 	}
 	// First 4 bytes of an AMD SEV-SNP report are the version field (uint32 LE).
 	// Currently shipping versions are 2 and 3. Anything else means the slice

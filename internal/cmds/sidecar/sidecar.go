@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -57,7 +57,7 @@ func (c Config) Endpoint() string {
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --measurements and --rtmrs")
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS")
-	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's RA-TLS certificate")
+	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's ARmTLS certificate")
 	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
@@ -76,7 +76,7 @@ func (c *Config) Validate() error {
 	}
 	c.CDSURL = strings.TrimRight(c.CDSURL, "/")
 	if !strings.HasPrefix(c.CDSURL, "https://") {
-		return fmt.Errorf("--cds-url must be https (RA-TLS)")
+		return fmt.Errorf("--cds-url must be https (ARmTLS)")
 	}
 	if c.AttestationApiURL == "" {
 		return fmt.Errorf("--attestation-api-url is required to verify CDS")
@@ -94,15 +94,15 @@ func (c *Config) Validate() error {
 }
 
 // ParsePins decodes --measurements and --rtmrs, warning when measurements are unpinned.
-func (c *Config) ParsePins() (ratls.Pins, error) {
+func (c *Config) ParsePins() (armtls.Pins, error) {
 	policy, err := (cmdsutil.ImagePolicySource{File: c.MeasurementsConfig, JSON: c.MeasurementsConfigJSON}).Load(
 		cmdsutil.MeasurementPins{Measurements: c.Measurements, Registers: c.RTMRs})
 	if err != nil {
-		return ratls.Pins{}, err
+		return armtls.Pins{}, err
 	}
 	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images),
 		"--measurements empty: the CDS this sidecar hands its sandbox token to is not pinned to a launch measurement. UNSAFE outside development.")
-	return ratls.Pins(policy), nil
+	return armtls.Pins(policy), nil
 }
 
 // Terminal marks a non-nil error no later attempt can clear, so Retry stops on

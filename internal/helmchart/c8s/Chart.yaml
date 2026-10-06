@@ -13,7 +13,7 @@ keywords:
   - confidential
   - tee
   - attestation
-  - ratls
+  - armtls
 maintainers:
   - name: confidential-dot-ai
 home: https://github.com/confidential-dot-ai

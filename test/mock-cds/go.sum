@@ -1,7 +1,7 @@
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
-github.com/confidential-dot-ai/attestation-go v0.7.2 h1:T+dEc8nMSBP/2rXtvoKHRqf/haGzcBs6T2KAlPgI1fg=
-github.com/confidential-dot-ai/attestation-go v0.7.2/go.mod h1:Gq3OlB5c1PxtRnfkG/CORHus9V2g1wUphcV43E2JDEA=
+github.com/confidential-dot-ai/attestation-go v0.8.0 h1:TWGdpIF9ALCwf/ZXgA0H8dd2VHulu/Z+sR1MViUy0ks=
+github.com/confidential-dot-ai/attestation-go v0.8.0/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
 github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=
@@ -10,8 +10,8 @@ github.com/google/go-configfs-tsm v0.3.3 h1:8mrlZLYrFFxyc8PFpT1piBUFDEYBVsBjAkFC
 github.com/google/go-configfs-tsm v0.3.3/go.mod h1:in2lmJDGaYEiPOJY4vlq4lGXjkR/GcxN1k7o5oR2qn0=
 github.com/google/go-sev-guest v0.15.0 h1:Xzfut5mbhcVb7TyPiyc5PolLUzdai7VH3QpyvXwcW9Y=
 github.com/google/go-sev-guest v0.15.0/go.mod h1:SK9vW+uyfuzYdVN0m8BShL3OQCtXZe/JPF7ZkpD3760=
-github.com/google/go-tdx-guest v0.3.2-0.20250814004405-ffb0869e6f4d h1:Ff8goEP/ue2/rZT5qyoRicuySCYDbAXEZS8Cf1fgsUo=
-github.com/google/go-tdx-guest v0.3.2-0.20250814004405-ffb0869e6f4d/go.mod h1:uHy3VaNXNXhl0fiPxKqTxieeouqQmW6A0EfLcaeCYBk=
+github.com/google/go-tdx-guest v0.3.2-0.20261003001058-b0a2dd8100a0 h1:2bR/T9glnN56sBQk4lJjPQnJEMxyeo6PkBhnmyrAr2U=
+github.com/google/go-tdx-guest v0.3.2-0.20261003001058-b0a2dd8100a0/go.mod h1:uHy3VaNXNXhl0fiPxKqTxieeouqQmW6A0EfLcaeCYBk=
 github.com/google/logger v1.1.2 h1:e+W0nsqc42cydCWvpuVHHg4L/ZBR+S9zwZoBHkuQ8QI=
 github.com/google/logger v1.1.2/go.mod h1:yhXfkxV3qOWUUWXbUfYTbGZZUN/SF43DkCjnc/FOzaU=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=

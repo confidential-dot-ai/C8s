@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 const (
@@ -71,7 +71,7 @@ func serveTokens(t *testing.T, resolver SandboxResolver, signer *SandboxTokenSig
 }
 
 // serveDigestsOnUnix runs the digests endpoint over a unix socket so the tests
-// can exercise the handler without standing up RA-TLS. In production the
+// can exercise the handler without standing up ARmTLS. In production the
 // listener is a mutually-attested TLS listener (see ServeDigests).
 func serveDigestsOnUnix(t *testing.T, resolver SandboxResolver) string {
 	t.Helper()
@@ -432,7 +432,7 @@ func TestValidateInventoryHost(t *testing.T) {
 	}
 }
 
-// A sandbox token is mintable by anything holding an attested RA-TLS key, so the
+// A sandbox token is mintable by anything holding an attested ARmTLS key, so the
 // address it carries is attacker-chosen. These are the request-forgery targets
 // that must never be dialable: the cloud metadata service, CDS's own loopback,
 // and names that let DNS pick the destination after the check.
@@ -704,14 +704,14 @@ func TestListenUnixNoChgrpWhenGIDNonPositive(t *testing.T) {
 }
 
 // Both ends of the callback need an attestation-api URL to verify their peer
-// against; without one ratls fails closed per connection, so it is rejected at
+// against; without one armtls fails closed per connection, so it is rejected at
 // construction instead of at the first issuance.
 func TestDigestsCallbackRequiresAttestationApi(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "", ratls.Pins{}, 0); err == nil {
+	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
 		t.Fatal("server config built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(context.Background(), "sev-snp", attest, "", ratls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(context.Background(), "sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
 		t.Fatal("client built with no attestation-api URL")
 	}
 }
@@ -720,7 +720,7 @@ func TestDigestsCallbackRequiresAttestationApi(t *testing.T) {
 // yields a working, unpinned-but-attested peer on both ends.
 func TestDigestsCallbackAcceptsEmptyMeasurements(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", ratls.Pins{}, 0); err != nil {
+	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.Pins{}, 0); err != nil {
 		t.Fatalf("server config rejected empty measurements: %v", err)
 	}
 }

@@ -232,33 +232,33 @@ func TestForcedVolumePodsWarning(t *testing.T) {
 }
 
 // TestHostSweepScriptMeshNetfilterNames pins the netfilter names the sweep
-// script removes to the mesh's fixed contract (internal/cmds/ratlsmesh:
+// script removes to the mesh's fixed contract (internal/cmds/armtlsmesh:
 // jumpRules, managedChains, managedIPSetNames + the -TMP swap variants). The
 // two cleanup paths must not drift: a name added or renamed on the mesh side
 // must be added here too.
 func TestHostSweepScriptMeshNetfilterNames(t *testing.T) {
 	names := []string{
 		// Base-chain jumps (as "parent -j chain" in -D form).
-		"-D OUTPUT -j RATLS-MESH",
-		"-D PREROUTING -j RATLS-MESH-PREROUTING",
-		"-D FORWARD -j RATLS-MESH-CW",
-		"-D FORWARD -j RATLS-MESH-CW-EGRESS",
+		"-D OUTPUT -j ARMTLS-MESH",
+		"-D PREROUTING -j ARMTLS-MESH-PREROUTING",
+		"-D FORWARD -j ARMTLS-MESH-CW",
+		"-D FORWARD -j ARMTLS-MESH-CW-EGRESS",
 		// Chains (as "table:chain" sweep specs).
-		"nat:RATLS-MESH",
-		"nat:RATLS-MESH-PREROUTING",
-		"filter:RATLS-MESH-CW",
-		"filter:RATLS-MESH-CW-EGRESS",
+		"nat:ARMTLS-MESH",
+		"nat:ARMTLS-MESH-PREROUTING",
+		"filter:ARMTLS-MESH-CW",
+		"filter:ARMTLS-MESH-CW-EGRESS",
 		// ipsets.
-		"RATLS-MESH-PODS",
-		"RATLS-MESH-PODS6",
-		"RATLS-MESH-LOCAL-PODS",
-		"RATLS-MESH-LOCAL-PODS6",
-		"RATLS-MESH-CW-PODS",
-		"RATLS-MESH-CW-PODS6",
+		"ARMTLS-MESH-PODS",
+		"ARMTLS-MESH-PODS6",
+		"ARMTLS-MESH-LOCAL-PODS",
+		"ARMTLS-MESH-LOCAL-PODS6",
+		"ARMTLS-MESH-CW-PODS",
+		"ARMTLS-MESH-CW-PODS6",
 	}
 	for _, name := range names {
-		// Delimit the match so a suffixed sibling (RATLS-MESH-PODS6) cannot
-		// satisfy a missing shorter name (RATLS-MESH-PODS).
+		// Delimit the match so a suffixed sibling (ARMTLS-MESH-PODS6) cannot
+		// satisfy a missing shorter name (ARMTLS-MESH-PODS).
 		if !strings.Contains(hostSweepScript, name+" ") && !strings.Contains(hostSweepScript, name+"\n") {
 			t.Errorf("host-sweep.sh does not sweep %q (mesh netfilter contract)", name)
 		}

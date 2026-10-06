@@ -2,7 +2,7 @@
 
 How C8s decides which container images may run, which commands they may run
 with, and — for future key-management integration — which secret paths they may
-read and write. This document complements [`ratls.md`](ratls.md) (how the allowlist is bound
+read and write. This document complements [`armtls.md`](armtls.md) (how the allowlist is bound
 into attestation).
 
 > **Trust model.** The host, hypervisor, and Kubernetes control plane are
@@ -23,7 +23,7 @@ The entry name is operator-chosen; the entry `label` and per-container `image`
 are informational. Policy is always resolved by container digest.
 
 An image that may run **however it is invoked** — the standalone and injected
-C8s components (cds, get-cert, the operator, ratls-mesh, the router), whose
+C8s components (cds, get-cert, the operator, armtls-mesh, the router), whose
 argv is per-pod — is an entry whose container `command` and `args` are both
 `any`. Nothing distinguishes such an entry from any other: it is matched,
 stamped and diffed like the rest, and the same digest may also appear
@@ -75,7 +75,7 @@ or, worse, allow-nothing-changed) allowlist.
 An entry name must match `[A-Za-z0-9][A-Za-z0-9._-]*` — it is used verbatim as a
 URL path segment — and be at most **63 bytes**, the Kubernetes label-value
 length, so the same string can also be a `confidential.ai/cw` selector value and
-a matched-workload leaf stamp (`docs/ratls.md`).
+a matched-workload leaf stamp (`docs/armtls.md`).
 
 The grammar is enforced everywhere. The 63-byte bound is enforced only where
 entries are **written**: `PUT /allowlist`, `PUT /allowlist/workloads/{name}`,
@@ -426,7 +426,7 @@ Two independent points enforce, at different strengths:
 
 2. **CDS at cert issuance**, in `resolveSandboxWorkload`. Before signing a leaf
    for a pod, CDS asks that pod's own inventory which images its sandbox is
-   running (`docs/ratls.md`, "Sandbox identity"). Every reported digest must be
+   running (`docs/armtls.md`, "Sandbox identity"). Every reported digest must be
    allowlisted as some entry's container, checked against one atomic allowlist
    snapshot. Membership only: issuance lands mid-lifecycle, where the running
    set is a strict subset of the declared one, so requiring a whole entry would
@@ -435,9 +435,9 @@ Two independent points enforce, at different strengths:
    Additionally — and without changing the membership contract — when the
    high-water `(digest, argv)` inventory uniquely matches one workload entry,
    the leaf is stamped with that entry's name and the snapshot's version and
-   canonical digest (OID `…1.5`, `docs/ratls.md` "Matched workload"), which is
+   canonical digest (OID `…1.5`, `docs/armtls.md` "Matched workload"), which is
    what `c8s verify --workload/--allowlist` and
-   `ratls.VerifyPolicy.WorkloadName` enforce against the mesh-CA chain.
+   `armtls.VerifyPolicy.WorkloadName` enforce against the mesh-CA chain.
 
 ### What each layer can and cannot promise
 
@@ -475,13 +475,13 @@ the candidate set ([`secrets.md`](secrets.md#the-injected-drop-set)).
 
 ## Distribution and trust
 
-CDS serves the allowlist over an RA-TLS channel that consumers pin to CDS's
+CDS serves the allowlist over an ARmTLS channel that consumers pin to CDS's
 launch measurement. The document body is not itself signed; its integrity in
 transit is the attested channel. Provenance of the *write policy* is checkable:
 `c8s cds verify --operator-keys` cross-checks the key set CDS serves at
 `/operator-keys` — fetched over the attested serving cert — against the
 operator's own bundle. The serving certificate itself commits neither the key
-set nor the seed (see [`ratls.md`](ratls.md)). The canonical serialization
+set nor the seed (see [`armtls.md`](armtls.md)). The canonical serialization
 (`allowlist.Canonical`) is deterministic — fixed field order, sorted map keys,
 sorted container and path lists — so any holder of an equivalent document
 reproduces the same bytes.
@@ -548,9 +548,9 @@ plugin's first successful policy pull and kubelet retry.
 ## CLI
 
 `c8s allowlist` reads and mutates the allowlist. Reads are unauthenticated (the
-RA-TLS channel provides integrity); writes are signed with the operator key you
+ARmTLS channel provides integrity); writes are signed with the operator key you
 supply via `--operator-key` (or `C8S_OPERATOR_KEY`). Persistent flags: `--url`,
-`--measurements`/`--measurements-file` (RA-TLS pins), `--timeout`,
+`--measurements`/`--measurements-file` (ARmTLS pins), `--timeout`,
 `--operator-key`, `-o text|json`, `--insecure`.
 
 ```

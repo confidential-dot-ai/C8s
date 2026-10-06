@@ -25,9 +25,9 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -239,7 +239,7 @@ func Run(args []string) error {
 	return nil
 }
 
-// allowlistPullHTTPClient builds the RA-TLS client for the CDS pull. The pull
+// allowlistPullHTTPClient builds the ARmTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
 func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
@@ -248,27 +248,27 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 		return nil, err
 	}
 	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
-		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any RA-TLS-attested CDS measurement")
+		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any ARmTLS-attested CDS measurement")
 	}
-	client, err := ratls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
+	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, fmt.Errorf("CDS RA-TLS client: %w", err)
+		return nil, fmt.Errorf("CDS ARmTLS client: %w", err)
 	}
 	client.Timeout = cfg.Timeout
 	return client, nil
 }
 
 // cdsPins is shared by outbound pulls and the CDS-only inventory endpoint.
-func (cfg pullConfig) cdsPins() (ratls.Pins, error) {
+func (cfg pullConfig) cdsPins() (armtls.Pins, error) {
 	if err := cfg.validatePolicyInputs(); err != nil {
-		return ratls.Pins{}, err
+		return armtls.Pins{}, err
 	}
 	policy, err := (cmdsutil.ImagePolicySource{File: cfg.CDSMeasurementsConfig}).Load(
 		cmdsutil.MeasurementPins{Measurements: cfg.CDSMeasurements, Registers: cfg.CDSRTMRs, Prefix: "cds-"})
 	if err != nil {
-		return ratls.Pins{}, fmt.Errorf("allowlist.pull: %w", err)
+		return armtls.Pins{}, fmt.Errorf("allowlist.pull: %w", err)
 	}
-	return ratls.Pins(policy), nil
+	return armtls.Pins(policy), nil
 }
 
 type pullArgs struct {
@@ -494,25 +494,25 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 }
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
-// mutually-attested RA-TLS (docs/ratls.md, "Sandbox identity").
+// mutually-attested ARmTLS (docs/armtls.md, "Sandbox identity").
 func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, signer *workloadclaims.SandboxTokenSigner) error {
 	pins, err := cfg.Allowlist.Pull.cdsPins()
 	if err != nil {
 		return err
 	}
 	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
-		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY RA-TLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
+		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY ARmTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
-		attestclient.MakeSNPRATLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
+		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
 		attestationApiURL, pins)
 }
 
-// startAdmissionInventory serves the node-CVM token socket (docs/ratls.md).
+// startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
 func startAdmissionInventory(ctx context.Context, logger *slog.Logger, inventory *admissionInventory, socketPath string, signer *workloadclaims.SandboxTokenSigner) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {

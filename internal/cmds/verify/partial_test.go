@@ -17,7 +17,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // discoveryDocWithPublicTLS is discoveryDocWith plus the public_tls block
@@ -265,7 +265,7 @@ func genoaFileEvidence(t *testing.T) *evidence {
 // not observe one) exits 4, and the same evidence with the attestation-bound
 // front door observed — or no front-door property at all — still exits 0.
 func TestVerifyEvidenceFrontDoorExitCodes(t *testing.T) {
-	plan := &verifyPlan{policy: &ratls.VerifyPolicy{}}
+	plan := &verifyPlan{policy: &armtls.VerifyPolicy{}}
 
 	t.Run("unbound front door exits partial", func(t *testing.T) {
 		ev := genoaFileEvidence(t)

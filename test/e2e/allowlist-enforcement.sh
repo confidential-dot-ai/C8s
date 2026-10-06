@@ -5,14 +5,14 @@
 #
 # Needs kubectl pointed at a cluster with C8s installed, `c8s` and `crane` on
 # PATH, and:
-#   C8S_ALLOWLIST_URL  RA-TLS router or direct CDS base URL
+#   C8S_ALLOWLIST_URL  ARmTLS router or direct CDS base URL
 #   C8S_MEASUREMENTS_CONFIG complete endpoint image/operator policy (preferred)
 #   C8S_MEASUREMENTS   legacy launch-only pin, when no policy file is supplied
 #   C8S_OPERATOR_KEY   path to the operator EC key PEM pinned on CDS
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
 
-: "${C8S_ALLOWLIST_URL:?names the RA-TLS CDS or router endpoint}"
+: "${C8S_ALLOWLIST_URL:?names the ARmTLS CDS or router endpoint}"
 cds_measurement_args
 : "${C8S_OPERATOR_KEY:?path to the operator EC key PEM}"
 

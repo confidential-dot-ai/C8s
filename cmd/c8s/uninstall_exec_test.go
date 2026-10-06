@@ -217,7 +217,7 @@ func TestUninstallSweepWaitFailure(t *testing.T) {
 	s := newUninstallStubs(t, values, `"get pods -n c8s-system -l "*) exit 1 ;;
 `, false)
 	err := runC8s(t, "uninstall")
-	if err == nil || !strings.Contains(err.Error(), "waiting for ratls-mesh pods") {
+	if err == nil || !strings.Contains(err.Error(), "waiting for armtls-mesh pods") {
 		t.Fatalf("want the drain-wait failure, got %v", err)
 	}
 	mustNotContainPrefix(t, s.f.calls(t), "kubectl apply")
@@ -366,7 +366,7 @@ func TestWaitPodsGone(t *testing.T) {
 	t.Run("polls at the 5s interval until pods are gone", func(t *testing.T) {
 		f := newFakeBin(t)
 		state := filepath.Join(f.dir, "first-poll-done")
-		f.tool(t, "kubectl", `if [ ! -f '`+state+`' ]; then : > '`+state+`'; echo pod/ratls-mesh-x; fi`)
+		f.tool(t, "kubectl", `if [ ! -f '`+state+`' ]; then : > '`+state+`'; echo pod/armtls-mesh-x; fi`)
 		start := time.Now()
 		if err := waitPodsGone(context.Background(), "ns", "a=b"); err != nil {
 			t.Fatalf("unexpected error: %v", err)

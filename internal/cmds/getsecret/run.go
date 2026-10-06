@@ -26,7 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -109,7 +109,7 @@ func run(cfg config) error {
 // fetchAll gets every secret in one pass. All-or-nothing: a partial set is not
 // written, so a consumer never sees some of its secrets and waits forever for
 // the rest.
-func fetchAll(ctx context.Context, cfg config, pins ratls.Pins) (map[string][]byte, error) {
+func fetchAll(ctx context.Context, cfg config, pins armtls.Pins) (map[string][]byte, error) {
 	client, pub, err := sidecar.NewClient(cfg.Config, pins)
 	if err != nil {
 		return nil, err

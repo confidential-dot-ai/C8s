@@ -184,7 +184,7 @@ func TestMissingComponents(t *testing.T) {
 func TestMissingComponentsMatchesRealChartImages(t *testing.T) {
 	chartImages := map[string]string{
 		"a": "ghcr.io/confidential-dot-ai/cds@sha256:1",
-		"b": "ghcr.io/confidential-dot-ai/ratls-mesh@sha256:2",
+		"b": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:2",
 		"c": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:3",
 		"d": "ghcr.io/confidential-dot-ai/attestation-api@sha256:4",
 		"e": "nginxinc/nginx-unprivileged@sha256:5",
@@ -466,7 +466,7 @@ The default chart publishes /allowlist through router. Point --url at that
 front door only when it uses CDS-issued public TLS (discovery reports
 public_tls.mode=cds), and use the router launch digest with --measurements. A
 WebPKI front door cannot yet bind its public certificate to the attestation
-evidence, so this CLI refuses it; use a direct CDS RA-TLS URL instead (for
+evidence, so this CLI refuses it; use a direct CDS ARmTLS URL instead (for
 example through a port-forward) and pin the CDS launch digest. To generate an
 operator key and pin its public half, see the c8s README ("Managing the image
 allowlist").`

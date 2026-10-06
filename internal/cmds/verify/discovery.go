@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -157,7 +157,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 
 // evidenceFromDiscovery parses a discovery document into verifiable evidence.
 // REPORTDATA = SHA-384(cert pubkey ‖ challenge), matching get-cert's issuance
-// binding (reportDataForCSR → ratls.ReportDataForKey). The parsed certificate
+// binding (reportDataForCSR → armtls.ReportDataForKey). The parsed certificate
 // gets the same body authentication as every other cert-sourced path, and is
 // retained as the evidence leaf so the --mesh-ca / --sandbox-id / --workload
 // pins work against discovery targets too. A CDS-issued (CA-vouched) cert in
@@ -168,7 +168,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 // observed is the leaf the target connection's TLS handshake presented (nil
 // when no handshake was made). Byte-identical to the attested cert, the
 // completed handshake proves the peer holds the attestation-bound key — the
-// same possession backstop as the RA-TLS path — and the verdict may stand on
+// same possession backstop as the ARmTLS path — and the verdict may stand on
 // the front door speaking the attested key (applyFrontDoorPolicy).
 //
 // An unknown public_tls.mode fails closed here — a securityError, so auto
@@ -186,7 +186,7 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		return nil, &securityError{err: fmt.Errorf(
 			"unknown public_tls.mode %q in discovery document (this build knows cds, webpki, and acme) — failing closed on a document it cannot classify", d.PublicTLS.Mode)}
 	}
-	cert, rd, err := ratls.AttestedCertFromDiscovery(&d)
+	cert, rd, err := armtls.AttestedCertFromDiscovery(&d)
 	if err != nil {
 		return nil, err
 	}
@@ -220,8 +220,8 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 		}
 		return nil, err
 	}
-	sandboxID, sandboxErr := ratls.SandboxIDFromCert(cert)
-	workload, workloadErr := ratls.MatchedWorkloadFromCert(cert)
+	sandboxID, sandboxErr := armtls.SandboxIDFromCert(cert)
+	workload, workloadErr := armtls.MatchedWorkloadFromCert(cert)
 	return &evidence{
 		platform:            platformOrDefault(d.Attestation.Platform),
 		rawEvidence:         d.Attestation.Evidence,

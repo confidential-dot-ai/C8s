@@ -33,18 +33,18 @@ const nodeImageNamespace = "c8s-system"
 // nodeImageRenderConfig contains build inputs only. The role, endpoint and
 // attested measurement policy are supplied by authenticated boot staging.
 type nodeImageRenderConfig struct {
-	platform                 string
-	kubeVersion              string
-	imageDigest              string
-	imageRepository          string
-	cdsImageDigest           string
-	cdsImageRepository       string
-	ratlsMeshImageDigest     string
-	ratlsMeshImageRepository string
-	routerImageDigest        string
-	routerImageRepository    string
-	chartDir                 string
-	outputDir                string
+	platform                  string
+	kubeVersion               string
+	imageDigest               string
+	imageRepository           string
+	cdsImageDigest            string
+	cdsImageRepository        string
+	armtlsMeshImageDigest     string
+	armtlsMeshImageRepository string
+	routerImageDigest         string
+	routerImageRepository     string
+	chartDir                  string
+	outputDir                 string
 }
 
 func init() {
@@ -70,8 +70,8 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.imageRepository, "image-repository", "", "operator/get-cert container repository; empty uses the chart default")
 	f.StringVar(&cfg.cdsImageDigest, "cds-image-digest", "", "digest of the CDS container image (sha256:..., required)")
 	f.StringVar(&cfg.cdsImageRepository, "cds-image-repository", "", "CDS container repository; empty uses the chart default")
-	f.StringVar(&cfg.ratlsMeshImageDigest, "ratls-mesh-image-digest", "", "digest of the RA-TLS mesh container image (sha256:..., required)")
-	f.StringVar(&cfg.ratlsMeshImageRepository, "ratls-mesh-image-repository", "", "RA-TLS mesh container repository; empty uses the chart default")
+	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the ARmTLS mesh container image (sha256:..., required)")
+	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "ARmTLS mesh container repository; empty uses the chart default")
 	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
 	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
@@ -124,7 +124,7 @@ func (cfg nodeImageRenderConfig) images() []nodeImageInput {
 	return []nodeImageInput{
 		{flag: "image", valuePath: "image", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
 		{flag: "cds-image", valuePath: "cds.image", repository: cfg.cdsImageRepository, digest: cfg.cdsImageDigest, required: true},
-		{flag: "ratls-mesh-image", valuePath: "ratlsMesh.image", repository: cfg.ratlsMeshImageRepository, digest: cfg.ratlsMeshImageDigest, required: true},
+		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
 		{flag: "router-image", valuePath: "router.nginx.image", repository: cfg.routerImageRepository, digest: cfg.routerImageDigest},
 	}
 }
@@ -226,10 +226,10 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
 	required := map[string]bool{
-		"Deployment/c8s-operator":  false,
-		"Deployment/c8s-cds":       false,
-		"Deployment/c8s-router":    false,
-		"DaemonSet/c8s-ratls-mesh": false,
+		"Deployment/c8s-operator":   false,
+		"Deployment/c8s-cds":        false,
+		"Deployment/c8s-router":     false,
+		"DaemonSet/c8s-armtls-mesh": false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
 		"ConfigMap/c8s-router-nginx":                                     false,
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,

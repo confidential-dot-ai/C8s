@@ -22,8 +22,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -275,7 +275,7 @@ func TestAttestLBWrongSizeNonce(t *testing.T) {
 // same marshal helper CDS issuance uses.
 func matchedWorkloadExtension(t *testing.T, name string) pkix.Extension {
 	t.Helper()
-	ext, err := ratls.MarshalMatchedWorkloadExtension(&ratls.MatchedWorkload{
+	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
 		Name:             name,
 		AllowlistVersion: "7",
 		AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
@@ -296,7 +296,7 @@ func writeStampedMeshIdentity(t *testing.T, name string) testMeshIdentity {
 // pkixExtensionWithGarbage returns a matched-workload extension whose value
 // is not valid DER, to exercise the fail-closed readyz path.
 func pkixExtensionWithGarbage() pkix.Extension {
-	return pkix.Extension{Id: ratls.OIDMatchedWorkload, Value: []byte{0x30, 0x01}}
+	return pkix.Extension{Id: armtls.OIDMatchedWorkload, Value: []byte{0x30, 0x01}}
 }
 
 func getReadyz(t *testing.T, base string) (int, string) {

@@ -89,7 +89,7 @@ additionally runs golangci-lint, a CRD/chart consistency check
   attestation flows or trust boundaries.
 - **Keep PRs small and focused.** One logical change per PR.
 - **Use conventional commit style** for commits and PR titles:
-  `feat(ratls-mesh): ...`, `fix(chart): ...`, `docs: ...`, `test(e2e): ...`.
+  `feat(armtls-mesh): ...`, `fix(chart): ...`, `docs: ...`, `test(e2e): ...`.
 - **CI must be green** before requesting review.
 - **Update docs in the same PR.** Behavior changes update the affected concept
   docs under [docs/](docs/).

@@ -1,5 +1,5 @@
-// Behaviorally evaluates the rendered deny-ratls-mesh-uid and
-// deny-ratls-mesh-uid-ephemeral ValidatingAdmissionPolicies with cel-go over
+// Behaviorally evaluates the rendered deny-armtls-mesh-uid and
+// deny-armtls-mesh-uid-ephemeral ValidatingAdmissionPolicies with cel-go over
 // the same expressions the apiserver compiles, so UID-0 / reserved-proxy-UID
 // admission is tested, not just rendered.
 //
@@ -39,7 +39,7 @@ func renderedUIDPolicies(t *testing.T) map[string][]admissionregv1.Validation {
 		policies[p.Name] = p.Spec.Validations
 		return false
 	})
-	for _, name := range []string{"deny-ratls-mesh-uid", "deny-ratls-mesh-uid-ephemeral"} {
+	for _, name := range []string{"deny-armtls-mesh-uid", "deny-armtls-mesh-uid-ephemeral"} {
 		if _, ok := policies[name]; !ok {
 			t.Fatalf("%s policy not rendered", name)
 		}
@@ -137,9 +137,9 @@ func container(name, image string, runAsUser *int64) map[string]any {
 	return c
 }
 
-func TestDenyRATLSMeshUidPodPolicyBehaviors(t *testing.T) {
+func TestDenyARMTLSMeshUidPodPolicyBehaviors(t *testing.T) {
 	policies := renderedUIDPolicies(t)
-	validations := policies["deny-ratls-mesh-uid"]
+	validations := policies["deny-armtls-mesh-uid"]
 
 	u1000 := int64(1000)
 	u0 := int64(0)
@@ -179,9 +179,9 @@ func TestDenyRATLSMeshUidPodPolicyBehaviors(t *testing.T) {
 	})
 }
 
-func TestDenyRATLSMeshUidEphemeralPolicyBehaviors(t *testing.T) {
+func TestDenyARMTLSMeshUidEphemeralPolicyBehaviors(t *testing.T) {
 	policies := renderedUIDPolicies(t)
-	validations := policies["deny-ratls-mesh-uid-ephemeral"]
+	validations := policies["deny-armtls-mesh-uid-ephemeral"]
 
 	u1000 := int64(1000)
 	u0 := int64(0)

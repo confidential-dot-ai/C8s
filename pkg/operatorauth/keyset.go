@@ -18,7 +18,7 @@ const KeySetDigestSize = sha256.Size
 const keySetDomain = "c8s-operator-key-set-v1\x00"
 
 // KeySetDigest returns the canonical digest of an operator public-key set
-// (docs/ratls.md): SHA-256 over keySetDomain followed by the sorted,
+// (docs/armtls.md): SHA-256 over keySetDomain followed by the sorted,
 // deduplicated SHA-256 fingerprints of each key's PKIX/SPKI DER. Independent of
 // PEM formatting, key order, and duplicates, so any faithful copy of the bundle
 // digests identically. The empty set is a defined, attestable value ("no keys

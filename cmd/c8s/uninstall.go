@@ -89,7 +89,7 @@ var uninstallCmd = &cobra.Command{
 NRI and mesh artifacts off every node.
 
 'helm uninstall' already unwinds most of the install: the release resources
-(operator, CDS, attestation-api, ratls-mesh, router, webhook
+(operator, CDS, attestation-api, armtls-mesh, router, webhook
 configuration), the NRI image-policy host plugin (pre-delete hook), and
 the mesh traffic interception (preStop hook).
 
@@ -111,8 +111,8 @@ install's containerd-prep uses — and removes, idempotently:
     skipped entirely on c8s node images, where the whole stack is baked into
     the measured image (detected via nri-node-ip.service) and is the image's
     to keep, not the release's to delete
-  - the ratls-mesh netfilter state: the RATLS-MESH chains and their
-    base-chain jumps in iptables and ip6tables, and the RATLS-MESH-* ipsets
+  - the armtls-mesh netfilter state: the ARMTLS-MESH chains and their
+    base-chain jumps in iptables and ip6tables, and the ARMTLS-MESH-* ipsets
     (the mesh's own preStop deliberately keeps the fail-closed guard, so this
     survives every healthy uninstall too)
   - on RKE2: the c8s-managed containerd template (skipped on c8s node images,
@@ -611,9 +611,9 @@ func runHostSweep(ctx context.Context, namespace, release string, cfg hostUninst
 	// The mesh re-asserts its base-chain iptables jumps on a
 	// watchdog, so sweeping while a mesh pod still runs leaks the rules the
 	// sweep just deleted (helm --wait=false leaves pods terminating).
-	meshSelector := fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/name=ratls-mesh", release)
+	meshSelector := fmt.Sprintf("app.kubernetes.io/instance=%s,app.kubernetes.io/name=armtls-mesh", release)
 	if err := waitPodsGone(ctx, namespace, meshSelector); err != nil {
-		return fmt.Errorf("waiting for ratls-mesh pods to terminate: %w", err)
+		return fmt.Errorf("waiting for armtls-mesh pods to terminate: %w", err)
 	}
 
 	// The sweep pods are privileged; re-assert the namespace's privileged
@@ -789,7 +789,7 @@ func init() {
 	uninstallCmd.Flags().StringVar(&uninstallNamespace, "namespace", "c8s-system", "namespace the release was installed into")
 	uninstallCmd.Flags().StringVar(&uninstallRelease, "release", "c8s", "Helm release name")
 	uninstallCmd.Flags().BoolVar(&uninstallWait, "wait", true, "wait for the release deletion to complete (helm --wait); the host sweep additionally waits for the host pods to be gone either way")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, ratls-mesh netfilter state, RKE2 prep template) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, RKE2 prep template) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
 	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults and the distro detected from the cluster when the release values are unavailable")
 	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (the pre-delete hook cannot close a mapping a live pod holds, and fails naming it)")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteCRDs, "delete-crds", false, "also delete the ConfidentialWorkload CRD — this deletes EVERY ConfidentialWorkload object in the cluster with it")

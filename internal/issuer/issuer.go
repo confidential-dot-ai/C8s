@@ -36,7 +36,7 @@ const MaxLeafTTL = 24 * time.Hour
 // (the high-water inventory makes a foreign admission permanent, but an
 // already-issued leaf stays usable until replacement or expiry), so the named
 // bound is deliberately shorter than MaxLeafTTL — it is the documented
-// stale-identity bound (docs/ratls.md, "Matched workload").
+// stale-identity bound (docs/armtls.md, "Matched workload").
 const MaxNamedLeafTTL = 6 * time.Hour
 
 // CapTTL clamps a requested TTL. Zero or negative falls back to

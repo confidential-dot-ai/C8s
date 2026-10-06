@@ -24,8 +24,8 @@ func TestNormalizeArgvAlias(t *testing.T) {
 		},
 		{
 			name: "prefixed alias basename inserts",
-			argv: []string{"/opt/bin/c8s-ratls-mesh"},
-			want: []string{"/opt/bin/c8s-ratls-mesh", "ratls-mesh"},
+			argv: []string{"/opt/bin/c8s-armtls-mesh"},
+			want: []string{"/opt/bin/c8s-armtls-mesh", "armtls-mesh"},
 		},
 		{
 			name: "bare alias with no args inserts",

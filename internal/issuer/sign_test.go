@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 func mustCSR(t *testing.T, cn string, dnsNames []string, ips []net.IP, extraExtensions []pkix.Extension) (*x509.CertificateRequest, *ecdsa.PrivateKey) {
@@ -124,14 +124,14 @@ func TestCASignCSR_AlwaysEmbedsAttestationDigest(t *testing.T) {
 	}
 }
 
-func TestCASignCSR_CopiesRATLSExtension(t *testing.T) {
+func TestCASignCSR_CopiesARMTLSExtension(t *testing.T) {
 	ca, err := issuer.NewCA("test ca", time.Hour)
 	if err != nil {
 		t.Fatalf("new ca: %v", err)
 	}
-	ratlsValue := []byte{0x30, 0x03, 0x02, 0x01, 0x42}
+	armtlsValue := []byte{0x30, 0x03, 0x02, 0x01, 0x42}
 	csr, _ := mustCSR(t, "node", nil, nil, []pkix.Extension{
-		{Id: ratls.OIDRATLSAttestation, Value: ratlsValue},
+		{Id: armtls.OIDARMTLSAttestation, Value: armtlsValue},
 	})
 
 	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour})
@@ -140,14 +140,14 @@ func TestCASignCSR_CopiesRATLSExtension(t *testing.T) {
 	}
 	leaf := mustParseCert(t, certPEM)
 	for _, ext := range leaf.Extensions {
-		if ext.Id.Equal(ratls.OIDRATLSAttestation) {
-			if string(ext.Value) != string(ratlsValue) {
-				t.Errorf("ratls ext value mismatch: got %x, want %x", ext.Value, ratlsValue)
+		if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
+			if string(ext.Value) != string(armtlsValue) {
+				t.Errorf("armtls ext value mismatch: got %x, want %x", ext.Value, armtlsValue)
 			}
 			return
 		}
 	}
-	t.Fatalf("RA-TLS extension not propagated to leaf")
+	t.Fatalf("ARmTLS extension not propagated to leaf")
 }
 
 func TestCASignCSR_StampsSandboxID(t *testing.T) {
@@ -162,7 +162,7 @@ func TestCASignCSR_StampsSandboxID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
-	got, err := ratls.SandboxIDFromCert(mustParseCert(t, certPEM))
+	got, err := armtls.SandboxIDFromCert(mustParseCert(t, certPEM))
 	if err != nil {
 		t.Fatalf("SandboxIDFromCert: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestCASignCSR_StampsSandboxID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
-	if got, err := ratls.SandboxIDFromCert(mustParseCert(t, certPEM)); err != nil || got != "" {
+	if got, err := armtls.SandboxIDFromCert(mustParseCert(t, certPEM)); err != nil || got != "" {
 		t.Fatalf("sandbox without param = %q, %v; want empty", got, err)
 	}
 
@@ -191,7 +191,7 @@ func TestCASignCSR_StampsMatchedWorkload(t *testing.T) {
 		t.Fatalf("new ca: %v", err)
 	}
 	csr, _ := mustCSR(t, "node", nil, nil, nil)
-	matched := &ratls.MatchedWorkload{
+	matched := &armtls.MatchedWorkload{
 		Name:             "api",
 		AllowlistVersion: "7",
 		AllowlistDigest:  bytes.Repeat([]byte{0x11}, 32),
@@ -201,7 +201,7 @@ func TestCASignCSR_StampsMatchedWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
-	got, err := ratls.MatchedWorkloadFromCert(mustParseCert(t, certPEM))
+	got, err := armtls.MatchedWorkloadFromCert(mustParseCert(t, certPEM))
 	if err != nil {
 		t.Fatalf("MatchedWorkloadFromCert: %v", err)
 	}
@@ -214,12 +214,12 @@ func TestCASignCSR_StampsMatchedWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
-	if got, err := ratls.MatchedWorkloadFromCert(mustParseCert(t, certPEM)); err != nil || got != nil {
+	if got, err := armtls.MatchedWorkloadFromCert(mustParseCert(t, certPEM)); err != nil || got != nil {
 		t.Fatalf("matched workload without param = %+v, %v; want nil", got, err)
 	}
 
 	// An invalid value fails the signing, not silently drops.
-	bad := &ratls.MatchedWorkload{Name: "api", AllowlistVersion: "0", AllowlistDigest: matched.AllowlistDigest}
+	bad := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "0", AllowlistDigest: matched.AllowlistDigest}
 	if _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: time.Hour, MatchedWorkload: bad}); err == nil {
 		t.Fatal("invalid matched workload signed")
 	}

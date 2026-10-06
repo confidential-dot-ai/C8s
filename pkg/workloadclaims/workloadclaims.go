@@ -2,13 +2,13 @@
 // that admitted a pod's containers (nri-image-policy on node-CVM) is the arbiter of both what runs in a pod
 // sandbox and which sandbox a process belongs to.
 //
-// It serves two disjoint surfaces (docs/ratls.md, "Sandbox identity"):
+// It serves two disjoint surfaces (docs/armtls.md, "Sandbox identity"):
 //
 //   - a node-local token route, where get-cert redeems its identity for a
 //     signed sandbox token naming its own sandbox — nothing the caller sends
 //     names the pod. On node-CVM that is a Unix socket, whose kernel peer
 //     credentials bind the caller;
-//   - a network endpoint over mutually-attested RA-TLS, where CDS asks which
+//   - a network endpoint over mutually-attested ARmTLS, where CDS asks which
 //     image digests a named sandbox is currently running.
 //
 // Keeping them apart bounds each: the socket cannot enumerate other sandboxes,
@@ -167,7 +167,7 @@ type SandboxTokenRequest struct {
 	// Nonce is the single-use CDS challenge get-cert obtained for this
 	// issuance. The inventory binds it into the signed token so CDS confirms
 	// freshness against the same challenge it consumes for the evidence — no
-	// clock (docs/ratls.md, "Sandbox identity").
+	// clock (docs/armtls.md, "Sandbox identity").
 	Nonce []byte `json:"nonce"`
 }
 
@@ -297,7 +297,7 @@ func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, 
 
 // ServeDigests runs the CDS-facing digests endpoint on l until ctx is done. It
 // serves GET SandboxDigestsPrefix+<sandboxID> only, and answers for ANY
-// sandbox — so l MUST be a mutually-attested RA-TLS listener that admits only
+// sandbox — so l MUST be a mutually-attested ARmTLS listener that admits only
 // CDS (BuildDigestsTLSConfig). Over a plain listener this would disclose the
 // node's running images to anyone who can reach the port.
 func ServeDigests(ctx context.Context, l net.Listener, resolver SandboxResolver, identity []byte) error {

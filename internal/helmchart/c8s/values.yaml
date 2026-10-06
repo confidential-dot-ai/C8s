@@ -35,8 +35,8 @@ c8sComponents:
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
     pinnedDigest: sha256:fb0d98a3f248f6d0f0a8feb8d497fba58d40d775b2db3e9e33d25d3fb283815f
-  - valuePath: ratlsMesh.image
-    enabledPath: ratlsMesh.enabled
+  - valuePath: armtlsMesh.image
+    enabledPath: armtlsMesh.enabled
     cdsExempt: false
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
@@ -226,7 +226,7 @@ cds:
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
   # (OID …1.5). A named leaf can outlive its match by at most its remaining
   # lifetime, so this is the documented stale-identity bound; it never applies
-  # to membership-only (unnamed) leaves. See docs/ratls.md, "Matched workload".
+  # to membership-only (unnamed) leaves. See docs/armtls.md, "Matched workload".
   # It may only shorten the 6h built-in ceiling — CDS refuses to start on a
   # larger value, or on 0, which is not a disable switch here.
   namedCertTTL: 6h
@@ -253,7 +253,7 @@ cds:
   ## always-present in-cluster Service DNS pattern (c8s.cdsDnsSanPattern:
   ## <name>.<namespace>.svc). A SAN passes if it matches any allowed pattern.
   ##
-  ## The mesh's own CSRs (router.<ns>.svc, ratls-mesh.<ns>.svc)
+  ## The mesh's own CSRs (router.<ns>.svc, armtls-mesh.<ns>.svc)
   ## always validate against the built-in Service pattern, so leave this empty
   ## for purely in-cluster deployments. When router fronts a routed domain, make
   ## that hostname the first router.san entry and add it here so CDS signs it onto
@@ -264,7 +264,7 @@ cds:
   cnPattern: ""
   ## The single flat allowlist of SHA-384 hex launch digests, used two ways:
   ##   1. CDS admits these to call /attest.
-  ##   2. The ratls-mesh daemonset and nri-image-policy plugin pin CDS's RA-TLS
+  ##   2. The armtls-mesh daemonset and nri-image-policy plugin pin CDS's ARmTLS
   ##      serving cert against it when they dial CDS.
   ## Empty = no pinning (UNSAFE outside dev).
   measurements: []
@@ -273,7 +273,7 @@ cds:
   ## pins the guest kernel and RTMR[2] the command line carrying the dm-verity
   ## root hash. Used the same two ways as `measurements`: CDS requires them of
   ## TDX callers on /attest, and every component dialing CDS
-  ## pins CDS's RA-TLS cert against them. Ignored for SNP evidence. Empty = no
+  ## pins CDS's ARmTLS cert against them. Ignored for SNP evidence. Empty = no
   ## RTMR pinning (on TDX the measurement pin then confers no guest-code
   ## identity, UNSAFE).
   rtmrs: []
@@ -294,11 +294,11 @@ cds:
   rateLimiterMaxEntries: 10000
   rateLimiterEvictInterval: 1m
   rateLimiterIdleTimeout: 5m
-  ## RA-TLS settings for the cds serving cert. Without this, clients talk to
+  ## ARmTLS settings for the cds serving cert. Without this, clients talk to
   ## cds over plaintext HTTP and an on-path attacker can forge responses.
   ## Empty platform disables TLS — UNSAFE outside tests.
-  ratlsPlatform: snp
-  ratlsCertTTL: 24h
+  armtlsPlatform: snp
+  armtlsCertTTL: 24h
   ca:
     ## The mesh CA key is generated inside cds memory and is not rendered into
     ## a Kubernetes Secret or persistent volume.
@@ -394,11 +394,11 @@ attestationApi:
       cpu: 500m
       memory: 256Mi
 
-## RA-TLS service mesh: transparent L4 proxy with hardware-attested mTLS.
+## ARmTLS service mesh: transparent L4 proxy with hardware-attested mTLS.
 ##
 ## --- CRITICAL OPERATIONAL REQUIREMENT ---
-## The ratls-mesh DaemonSet hardcodes hostNetwork: true and
-## dnsPolicy: ClusterFirstWithHostNet (see templates/ratls-mesh-daemonset.yaml).
+## The armtls-mesh DaemonSet hardcodes hostNetwork: true and
+## dnsPolicy: ClusterFirstWithHostNet (see templates/armtls-mesh-daemonset.yaml).
 ## Both are non-toggleable: iptables-sync must run in the host network namespace
 ## to intercept pre-DNAT pod traffic at the node level, and the paired
 ## dnsPolicy keeps in-cluster service DNS working from that netns. Removing
@@ -406,12 +406,12 @@ attestationApi:
 ## is no supported configuration without them. Confirm your cluster CNI and
 ## any node-level NetworkPolicy/firewall posture is compatible before
 ## deploying.
-ratlsMesh:
+armtlsMesh:
   ## Host-side mesh routing.
   enabled: true
 
   image:
-    repository: ghcr.io/confidential-dot-ai/ratls-mesh
+    repository: ghcr.io/confidential-dot-ai/armtls-mesh
     # -- Image tag. Required: the chart does not pin a default; the consumer
     #    (HelmRelease values or cluster overlay) must set tag or digest.
     tag: ""
@@ -420,7 +420,7 @@ ratlsMesh:
 
   imagePullSecrets: []
 
-  # -- RA-TLS TEE type embedded in and verified on mesh certs: sev-snp or tdx.
+  # -- ARmTLS TEE type embedded in and verified on mesh certs: sev-snp or tdx.
   #    This is the wire-level platform identifier, not the attestation-api
   #    detection vocab (az-snp and bare-metal snp both verify as sev-snp here);
   #    attestation-api still auto-detects how to gather the evidence.
@@ -438,7 +438,7 @@ ratlsMesh:
     ## DaemonSet is hostNetwork). The mesh proxy's start is gated on it.
     iptablesReady: 15022
 
-  # UID for the ratls-mesh process (iptables excludes this UID)
+  # UID for the armtls-mesh process (iptables excludes this UID)
   uid: 1337
 
   # UIDs excluded from iptables redirect (comma-separated)
@@ -469,7 +469,7 @@ ratlsMesh:
   rotationTimeout: "30s"
 
   # CDS integration (used when certMode=cds). The launch-measurement allowlist
-  # for CDS's RA-TLS peer cert comes from the parent's cds.measurements, not
+  # for CDS's ARmTLS peer cert comes from the parent's cds.measurements, not
   # a per-component mirror.
   cds:
     caPollInterval: "5m"
@@ -490,7 +490,7 @@ ratlsMesh:
   # for the main proxy to drain first:
   #   preStopSleepSeconds ≤ terminationGracePeriod - drainTimeout
   # Durations use the Go single-unit form (Ns / Nm / Nh) and are parsed via
-  # the ratls-mesh.durationSeconds helper for chart-bound arithmetic.
+  # the armtls-mesh.durationSeconds helper for chart-bound arithmetic.
   terminationGracePeriod: "45s"
   drainTimeout: "30s"
 
@@ -667,7 +667,7 @@ nriImagePolicy:
   # CDS image to pin here.
   cds:
     ## Host-process NRI pulls through the chart-managed CDS NodePort and
-    ## verifies CDS RA-TLS instead of trusting cluster DNS or ClusterIP routing.
+    ## verifies CDS ARmTLS instead of trusting cluster DNS or ClusterIP routing.
     ## Empty derives https://127.0.0.1:<cds.service.nodePort>; set a full URL
     ## only to point the plugin somewhere else entirely.
     url: ""
@@ -708,7 +708,7 @@ nriImagePolicy:
     cacheDir: /var/lib/nri-image-policy
     runtimeDir: /var/run/nri-image-policy
 
-  ## The CDS-facing sandbox-digests endpoint (docs/ratls.md, "Sandbox
+  ## The CDS-facing sandbox-digests endpoint (docs/armtls.md, "Sandbox
   ## identity"). Its port is a compiled constant, not a value: it is privileged
   ## so that binding it requires the node's network namespace, which is what
   ## distinguishes this inventory from a workload sharing the node measurement.
@@ -763,7 +763,7 @@ nriImagePolicy:
     # deriveComponents: a demo convenience (off by default, like
     # `c8s install --resolve-digests`, which turns it on). When true, the C8s
     # component images this chart installs (operator, cds, attestation-api,
-    # ratls-mesh) are seeded and admitted whenever their image.digest is set,
+    # armtls-mesh) are seeded and admitted whenever their image.digest is set,
     # so a digest-pinned install self-allows the C8s images without an entry
     # for each. It never covers the non-c8s system images, so production
     # installs pin the full set in `workloads` instead. nri-image-policy is
@@ -961,7 +961,7 @@ router:
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the
-  # chart-managed CDS Service's RA-TLS evidence; nginx forwards the original
+  # chart-managed CDS Service's ARmTLS evidence; nginx forwards the original
   # method, URI, body, and Authorization header unchanged. Reads remain
   # unauthenticated at CDS.
   # Writes still require the short-lived, body-bound operator token minted by
@@ -972,7 +972,7 @@ router:
   # public route entirely.
   allowlist:
     enabled: true
-    # -- Loopback port for the RA-TLS-verifying allowlist proxy. This is not a
+    # -- Loopback port for the ARmTLS-verifying allowlist proxy. This is not a
     # pod or Service port and is reachable only inside the router pod.
     proxyPort: 8801
     # -- nginx write limiting, per public client and in aggregate across all

@@ -75,7 +75,7 @@ func TestWarmUpCertGivesUpWhenTheBudgetIsSpent(t *testing.T) {
 }
 
 // A live peer that answers and refuses must fail closed immediately, not after
-// the budget: this is the invariant TestRun_RATLSWarmupFailureFailsClosed
+// the budget: this is the invariant TestRun_ARMTLSWarmupFailureFailsClosed
 // encodes, and the reason the retry cannot be unconditional.
 func TestWarmUpCertDoesNotRetryARefusingPeer(t *testing.T) {
 	w := &fakeWarmer{failures: 1 << 30, err: errors.New("API error (500): no evidence for you")}
@@ -100,7 +100,7 @@ func TestWarmUpCertDoesNotRetryARefusingPeer(t *testing.T) {
 func TestPeerNotUpYetMatchesARealMissingSocketError(t *testing.T) {
 	missing := "unix://" + t.TempDir() + "/attestation-api.sock"
 
-	_, err := attestclient.MakeSNPRATLSAttestFunc(attestclient.NewClient(""), missing)(
+	_, err := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), missing)(
 		context.Background(), hexReportData())
 	if err == nil {
 		t.Fatal("want an error for a socket that does not exist")
@@ -110,7 +110,7 @@ func TestPeerNotUpYetMatchesARealMissingSocketError(t *testing.T) {
 	}
 }
 
-// MakeSNPRATLSAttestFunc hex-decodes customData and slices 48 bytes off it.
+// MakeSNPARMTLSAttestFunc hex-decodes customData and slices 48 bytes off it.
 func hexReportData() string {
 	const b = "ab"
 	out := ""

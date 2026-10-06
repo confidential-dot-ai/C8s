@@ -329,7 +329,7 @@ func TestGatherFromDiscoveryProbesFrontDoor(t *testing.T) {
 // Evidence gathered off the discovery path observes no front door, so it
 // presents none: every non-discovery constructor records frontDoorNone, and
 // the verdict then says nothing about a front door — no attested-door note,
-// no scope caveat, no demotion for an unobserved one. The RA-TLS dial is
+// no scope caveat, no demotion for an unobserved one. The ARmTLS dial is
 // what auto mode falls back to when the discovery fetch fails, so this is
 // the state that reaches the verdict on that path.
 func TestNonDiscoveryEvidencePresentsNoFrontDoor(t *testing.T) {
@@ -342,9 +342,9 @@ func TestNonDiscoveryEvidencePresentsNoFrontDoor(t *testing.T) {
 		get         func(t *testing.T) (*evidence, error)
 		wantVerdict string
 	}{
-		{"RA-TLS serving cert: auto mode's fallback", func(t *testing.T) (*evidence, error) {
+		{"ARmTLS serving cert: auto mode's fallback", func(t *testing.T) (*evidence, error) {
 			srv := attestedTLSServer(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-			return gatherFromRATLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
+			return gatherFromARMTLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
 		}, "verified"},
 		{"attest-pq endpoint", func(*testing.T) (*evidence, error) {
 			return evidenceFromEndpointJSON(endpointJSON, nonce, sess.ek, "attestation endpoint")
@@ -466,7 +466,7 @@ func TestSingleConnClientNeverRedials(t *testing.T) {
 
 // A discovery document's CA-vouched serving cert (the chart's shape: issued
 // by the CDS mesh CA) is authenticated by the live handshake when it presents
-// byte-identically that cert — the same possession backstop as the RA-TLS
+// byte-identically that cert — the same possession backstop as the ARmTLS
 // path — so a live door needs no --mesh-ca. A door serving a different cert
 // gets no such backstop and fails closed.
 func TestDiscoveryHandshakeAuthenticatesCAVouchedBody(t *testing.T) {

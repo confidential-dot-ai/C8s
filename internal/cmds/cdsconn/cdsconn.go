@@ -6,7 +6,7 @@
 // same pinned operator keys and reach CDS the same way. The attestation
 // decisions — that plaintext http needs --insecure, that a router front door is
 // trusted through its discovery document, that a direct URL is verified by
-// RA-TLS — belong in one place, since each is a way to talk to an unattested
+// ARmTLS — belong in one place, since each is a way to talk to an unattested
 // endpoint by mistake.
 package cdsconn
 
@@ -56,7 +56,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "", "pins the endpoint; excludes --measurements and --measurements-file")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
 	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
-	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping RA-TLS attestation of CDS")
+	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping ARmTLS attestation of CDS")
 }
 
 // Validate checks the flags every subcommand needs.
@@ -67,7 +67,7 @@ func (o *Options) Validate() error {
 	return nil
 }
 
-// HTTPClient builds a client for CDS. An https URL is verified via RA-TLS (CDS
+// HTTPClient builds a client for CDS. An https URL is verified via ARmTLS (CDS
 // proves its TEE attestation). Plaintext http is refused unless Insecure is
 // set, so a typo'd or downgraded URL never silently writes to an
 // unauthenticated endpoint.
@@ -83,7 +83,7 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 			return nil, fmt.Errorf("--image-policy-file requires https; plaintext cannot enforce its endpoint identity")
 		}
 		if !o.Insecure {
-			return nil, fmt.Errorf("refusing plaintext http:// for CDS (no attestation): use https:// (RA-TLS), or pass --insecure for a dev/test endpoint")
+			return nil, fmt.Errorf("refusing plaintext http:// for CDS (no attestation): use https:// (ARmTLS), or pass --insecure for a dev/test endpoint")
 		}
 		fmt.Fprintln(os.Stderr, "warning: --url is http:// with --insecure; CDS attestation is NOT verified (dev/test only)")
 		return &http.Client{Timeout: o.Timeout}, nil
@@ -107,8 +107,8 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 }
 
 // httpsClient builds the attestation-verifying client. A router front door
-// serves a CDS-issued cert with no RA-TLS extension; its trust path is the
-// discovery document, so probe for that first and fall back to direct RA-TLS
+// serves a CDS-issued cert with no ARmTLS extension; its trust path is the
+// discovery document, so probe for that first and fall back to direct ARmTLS
 // serving-cert verification (a port-forwarded CDS) when the target serves none
 // — the same routing `c8s verify` uses in auto mode. A discovery document that
 // fails verification is a hard error, never a fallback.
@@ -122,7 +122,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested connection")
 		return hc, nil
 	case errors.Is(err, routerdiscovery.ErrNoDiscovery):
-		return localverify.NewRATLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout), nil
+		return localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout), nil
 	default:
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func (o *Options) pinVerifier(pins refvalues.ReferenceValues) PinVerifier {
 }
 
 // loadMeasurements combines Measurements and MeasurementsFile into the raw
-// digest byte form RA-TLS verification expects.
+// digest byte form ARmTLS verification expects.
 func (o *Options) loadMeasurements() ([][]byte, error) {
 	return cmdsutil.LoadMeasurements(o.Measurements, o.MeasurementsFile)
 }
@@ -181,7 +181,7 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 }
 
 // requirePinnedEndpoint refuses to mint an operator token for an endpoint whose
-// build is not pinned. RA-TLS proves the peer is *a* TEE, not that it is the CDS
+// build is not pinned. ARmTLS proves the peer is *a* TEE, not that it is the CDS
 // this operator meant; with no --measurements, `c8s secrets put` hands a secret,
 // and `c8s allowlist` a policy change, to whatever attested thing answered the
 // URL. Reads stay a warning (HTTPClient): they carry no credential and no

@@ -127,7 +127,7 @@ type plugin struct {
 	// (policy.exempt_namespaces empty) or not yet captured. See exempt.go.
 	exempt atomic.Pointer[exemptSnapshot]
 
-	// inventory serves the sandbox-identity flow (docs/ratls.md). nil ⇔ the flow
+	// inventory serves the sandbox-identity flow (docs/armtls.md). nil ⇔ the flow
 	// is disabled (no workload_claims.socket_dir) — configuration, not a
 	// fault: Configure then leaves the inventory-feeding events unsubscribed,
 	// and the nil-guarded hooks/seeding no-op rather than fail a container

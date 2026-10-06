@@ -415,14 +415,14 @@ jobs:
           done
           [ "$ready" = 1 ] || { echo "::error::credential release did not start; signed launch or measured service startup failed"; exit 1; }
 
-      - name: get an attested, operator-key-bound kubeconfig (RA-TLS)
+      - name: get an attested, operator-key-bound kubeconfig (ARmTLS)
         run: |
           set -euo pipefail
           # The immutable published manifest was checked before launch. The
           # credential gate verifies SNP hardware evidence, launch digest and
           # HOSTDATA=SHA256(our exact operator public PEM); no TOFU fallback.
           # cred-release opens :8443 a little before its release handler can
-          # serve (first RA-TLS quote, client CA); that window answers a POST
+          # serve (first ARmTLS quote, client CA); that window answers a POST
           # with EOF. Retry a bounded number of times and print each failure.
           ok=""
           for attempt in 1 2 3 4 5 6; do

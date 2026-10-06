@@ -9,8 +9,8 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // SignCSRParams is the input to (*CA).SignCSR. The caller enforces all policy
@@ -21,17 +21,17 @@ type SignCSRParams struct {
 	Evidence []byte        // raw attestation evidence; SHA-256 embedded as audit extension
 
 	// SandboxID, when set, is stamped as the pod-sandbox-ID extension
-	// (ratls.OIDSandboxID). The caller MUST have verified the inventory-signed
-	// sandbox token it came from — SignCSR does not re-verify (docs/ratls.md,
+	// (armtls.OIDSandboxID). The caller MUST have verified the inventory-signed
+	// sandbox token it came from — SignCSR does not re-verify (docs/armtls.md,
 	// "Sandbox identity").
 	SandboxID string
 
 	// MatchedWorkload, when set, is stamped as the matched-workload extension
-	// (ratls.OIDMatchedWorkload). The caller MUST have resolved it from one
+	// (armtls.OIDMatchedWorkload). The caller MUST have resolved it from one
 	// atomic allowlist snapshot uniquely matching the sandbox's attested
-	// inventory — SignCSR does not re-match (docs/ratls.md, "Matched
+	// inventory — SignCSR does not re-match (docs/armtls.md, "Matched
 	// workload").
-	MatchedWorkload *ratls.MatchedWorkload
+	MatchedWorkload *armtls.MatchedWorkload
 }
 
 // SignCSR signs csr against this CA, returning the leaf certificate PEM and
@@ -63,21 +63,21 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, serial *big.Int, err erro
 	if err := certutil.AppendAttestationDigest(template, digest[:]); err != nil {
 		return nil, nil, err
 	}
-	// The client's CSR-supplied RA-TLS extension is copied verbatim: only the
+	// The client's CSR-supplied ARmTLS extension is copied verbatim: only the
 	// client can produce evidence bound to its bare key (no nonce), which is
-	// what downstream ratls-mode verifiers re-verify. The extension is opaque
+	// what downstream armtls-mode verifiers re-verify. The extension is opaque
 	// here — verifiers check it against the leaf's key via the attestation-api,
 	// so a forged or stale extension fails closed at the consumer.
-	copyRATLSExtension(template, p.CSR)
+	copyARMTLSExtension(template, p.CSR)
 	if p.SandboxID != "" {
-		sandboxExt, err := ratls.MarshalSandboxIDExtension(p.SandboxID)
+		sandboxExt, err := armtls.MarshalSandboxIDExtension(p.SandboxID)
 		if err != nil {
 			return nil, nil, err
 		}
 		template.ExtraExtensions = append(template.ExtraExtensions, sandboxExt)
 	}
 	if p.MatchedWorkload != nil {
-		workloadExt, err := ratls.MarshalMatchedWorkloadExtension(p.MatchedWorkload)
+		workloadExt, err := armtls.MarshalMatchedWorkloadExtension(p.MatchedWorkload)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -92,9 +92,9 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, serial *big.Int, err erro
 	return certutil.EncodeCertPEM(certDER), template.SerialNumber, nil
 }
 
-func copyRATLSExtension(template *x509.Certificate, csr *x509.CertificateRequest) {
+func copyARMTLSExtension(template *x509.Certificate, csr *x509.CertificateRequest) {
 	for _, ext := range csr.Extensions {
-		if ext.Id.Equal(ratls.OIDRATLSAttestation) {
+		if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
 			template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{
 				Id:    ext.Id,
 				Value: ext.Value,

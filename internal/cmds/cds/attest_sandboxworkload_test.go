@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -261,7 +261,7 @@ func TestAttest_SandboxWorkload_NoTokenSkipsGate(t *testing.T) {
 
 // Dev mode: an empty measurement allowlist must not disable sandbox identity.
 // CDS still verifies the token and still gates on the inventory's answer — it
-// just accepts any RA-TLS-attested inventory rather than a pinned one, matching
+// just accepts any ARmTLS-attested inventory rather than a pinned one, matching
 // what an empty allowlist already means for /attest itself. Losing the whole
 // flow here would break issuance for every workload on an unpinned cluster.
 func TestAttest_SandboxWorkload_UnpinnedMeasurementsStillIssue(t *testing.T) {
@@ -278,7 +278,7 @@ func TestAttest_SandboxWorkload_UnpinnedMeasurementsStillIssue(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 	leaf := leafFromAttestResponse(t, w)
-	id, err := ratls.SandboxIDFromCert(leaf)
+	id, err := armtls.SandboxIDFromCert(leaf)
 	if err != nil {
 		t.Fatal(err)
 	}

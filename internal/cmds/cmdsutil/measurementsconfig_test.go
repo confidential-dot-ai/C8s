@@ -213,10 +213,10 @@ func TestLoadImagePolicyValuesPlatform(t *testing.T) {
 			values, err := LoadImagePolicyValues(ImagePolicyValuesConfig{
 				Source:       ImagePolicySource{File: identityPolicyFile},
 				Platform:     tc.platform,
-				PlatformFlag: "--ratls-platform",
+				PlatformFlag: "--armtls-platform",
 			})
 			if tc.wantErr {
-				if err == nil || !strings.Contains(err.Error(), "--ratls-platform") || !values.Empty() {
+				if err == nil || !strings.Contains(err.Error(), "--armtls-platform") || !values.Empty() {
 					t.Fatalf("wrong-platform policy was accepted: %+v, %v", values, err)
 				}
 				return

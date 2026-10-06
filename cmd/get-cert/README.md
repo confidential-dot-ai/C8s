@@ -44,7 +44,7 @@ get-cert \
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--cds-url` | | *(required)* | URL of the running cds service |
-| `--cds-measurements` | | *(empty)* | Comma-separated SHA-384 hex launch measurements for CDS RA-TLS verification; empty accepts any attested CDS |
+| `--cds-measurements` | | *(empty)* | Comma-separated SHA-384 hex launch measurements for CDS ARmTLS verification; empty accepts any attested CDS |
 | `--attestation-api-url` | | *(required)* | URL of the local attestation-api |
 | `--san` | | *(required)* | Subject Alternative Name — IP address or hostname |
 | `--out` | `-o` | *(stdout)* | Path to write the signed certificate chain PEM |

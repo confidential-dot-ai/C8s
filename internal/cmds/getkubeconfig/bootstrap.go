@@ -11,7 +11,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// attestCredentialRelease requests a fresh report over the verified RA-TLS
+// attestCredentialRelease requests a fresh report over the verified ARmTLS
 // channel. Only an operator holding the measured launch key can ask the
 // credential service to call the guest's loopback attester.
 func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL string, keyPEM []byte, exp platformVerifier) error {

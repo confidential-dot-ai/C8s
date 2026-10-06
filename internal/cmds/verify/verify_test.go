@@ -30,9 +30,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -111,7 +111,7 @@ func TestEvidenceFromDiscovery(t *testing.T) {
 		if ev.fresh {
 			t.Error("discovery is bound to the issuance challenge, not a fresh nonce")
 		}
-		want, err := ratls.ReportDataForKey(pub, challenge)
+		want, err := armtls.ReportDataForKey(pub, challenge)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -889,7 +889,7 @@ func TestVerifyRealAzSnpEvidence_UnpaddedAnchor(t *testing.T) {
 	if ev.platform != "az-snp" {
 		t.Fatalf("platform = %q, want az-snp", ev.platform)
 	}
-	res, err := verifyInProcess(context.Background(), ev, &ratls.VerifyPolicy{}, nil, nil)
+	res, err := verifyInProcess(context.Background(), ev, &armtls.VerifyPolicy{}, nil, nil)
 	if err != nil {
 		t.Fatalf("az-snp evidence with its bound nonce must verify: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestVerifyRealAzSnpEvidence_UnpaddedAnchor(t *testing.T) {
 
 	// A different anchor fails closed, at the nonce gate specifically.
 	ev.erd = []byte("not-the-nonce")
-	if _, err := verifyInProcess(context.Background(), ev, &ratls.VerifyPolicy{}, nil, nil); err == nil || !strings.Contains(err.Error(), "nonce") {
+	if _, err := verifyInProcess(context.Background(), ev, &armtls.VerifyPolicy{}, nil, nil); err == nil || !strings.Contains(err.Error(), "nonce") {
 		t.Fatalf("wrong nonce must fail closed at the nonce check, got: %v", err)
 	}
 }
@@ -923,7 +923,7 @@ func TestNewOutcomeFromRealGenoaEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := verifyInProcess(context.Background(), ev, &ratls.VerifyPolicy{}, nil, nil)
+	res, err := verifyInProcess(context.Background(), ev, &armtls.VerifyPolicy{}, nil, nil)
 	if err != nil {
 		t.Fatalf("the real fixture must verify: %v", err)
 	}
@@ -934,7 +934,7 @@ func TestNewOutcomeFromRealGenoaEvidence(t *testing.T) {
 	if _, ok := pol["debug_allowed"].(bool); !ok {
 		t.Fatalf("real claims lack a bool policy.debug_allowed — reportFlags would read a renamed key as false; policy = %v", pol)
 	}
-	oc := newOutcome(config{}, ev, res, nil, &verifyPlan{policy: &ratls.VerifyPolicy{}})
+	oc := newOutcome(config{}, ev, res, nil, &verifyPlan{policy: &armtls.VerifyPolicy{}})
 	if !oc.Verified || oc.Debug || !oc.SMT {
 		t.Errorf("outcome = verified:%v debug:%v smt:%v, want verified:true debug:false smt:true", oc.Verified, oc.Debug, oc.SMT)
 	}
@@ -996,9 +996,9 @@ func TestRenderOutcome(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &verifyPlan{policy: &ratls.VerifyPolicy{Policy: remote.Policy{Measurements: m}}}
+		return &verifyPlan{policy: &armtls.VerifyPolicy{Policy: remote.Policy{Measurements: m}}}
 	}
-	emptyPlan := func() *verifyPlan { return &verifyPlan{policy: &ratls.VerifyPolicy{}} }
+	emptyPlan := func() *verifyPlan { return &verifyPlan{policy: &armtls.VerifyPolicy{}} }
 
 	t.Run("verified + pinned -> no UNSAFE warning", func(t *testing.T) {
 		var out bytes.Buffer
@@ -1106,7 +1106,7 @@ func TestRenderOutcome(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		oc := newOutcome(config{}, ev, result, nil, &verifyPlan{policy: &ratls.VerifyPolicy{Policy: remote.Policy{Measurements: other}}})
+		oc := newOutcome(config{}, ev, result, nil, &verifyPlan{policy: &armtls.VerifyPolicy{Policy: remote.Policy{Measurements: other}}})
 		if oc.Verified || !strings.Contains(oc.Error, "not in --measurements allowlist") {
 			t.Errorf("expected allowlist rejection, got %+v", oc)
 		}
@@ -1196,7 +1196,7 @@ func TestRunDiscoveryVerify_EndToEnd(t *testing.T) {
 // TestResolveMode locks in kind→mode routing. The regression it guards: an
 // explicit --kind must drive the evidence mode when --mode is left at its
 // (auto) default, so `c8s cds verify --kind lb` resolves to discovery rather
-// than dialing for the embedded RA-TLS extension the LB front door never
+// than dialing for the embedded ARmTLS extension the LB front door never
 // serves. An explicit non-auto --mode always wins over kind.
 func TestResolveMode(t *testing.T) {
 	cases := []struct {
@@ -1207,11 +1207,11 @@ func TestResolveMode(t *testing.T) {
 	}{
 		{"lb kind, auto mode", "lb", "auto", "discovery"},
 		{"lb kind, empty mode", "lb", "", "discovery"},
-		{"cds kind, auto mode", "cds", "auto", "ratls-cert"},
-		{"workload kind, auto mode", "workload", "auto", "ratls-cert"},
+		{"cds kind, auto mode", "cds", "auto", "armtls-cert"},
+		{"workload kind, auto mode", "workload", "auto", "armtls-cert"},
 		{"auto kind, auto mode", "auto", "auto", "auto"},
 		{"empty kind, empty mode", "", "", "auto"},
-		{"explicit mode overrides lb kind", "lb", "ratls-cert", "ratls-cert"},
+		{"explicit mode overrides lb kind", "lb", "armtls-cert", "armtls-cert"},
 		{"explicit mode overrides cds kind", "cds", "attest-pq", "attest-pq"},
 	}
 	for _, tc := range cases {
@@ -1249,15 +1249,15 @@ func TestNewCmdDefaults(t *testing.T) {
 	})
 
 	t.Run("preset", func(t *testing.T) {
-		cmd := NewCmd(Defaults{Use: "verify", Short: "Verify the CDS", Kind: "cds", Mode: "ratls-cert"})
+		cmd := NewCmd(Defaults{Use: "verify", Short: "Verify the CDS", Kind: "cds", Mode: "armtls-cert"})
 		if cmd.Use != "verify" || cmd.Short != "Verify the CDS" {
 			t.Errorf("Use/Short = %q/%q, presets not applied", cmd.Use, cmd.Short)
 		}
 		if got := cmd.Flags().Lookup("kind").DefValue; got != "cds" {
 			t.Errorf("--kind default = %q, want cds", got)
 		}
-		if got := cmd.Flags().Lookup("mode").DefValue; got != "ratls-cert" {
-			t.Errorf("--mode default = %q, want ratls-cert", got)
+		if got := cmd.Flags().Lookup("mode").DefValue; got != "armtls-cert" {
+			t.Errorf("--mode default = %q, want armtls-cert", got)
 		}
 	})
 }
@@ -1286,11 +1286,11 @@ func TestDefaultPort(t *testing.T) {
 func TestNewOutcomePlatform(t *testing.T) {
 	ev := &evidence{platform: "snp", source: "t", bindingNote: "b"}
 	reported := &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformType("az-snp")}
-	if oc := newOutcome(config{}, ev, reported, nil, &verifyPlan{policy: &ratls.VerifyPolicy{}}); oc.Platform != "az-snp" {
+	if oc := newOutcome(config{}, ev, reported, nil, &verifyPlan{policy: &armtls.VerifyPolicy{}}); oc.Platform != "az-snp" {
 		t.Errorf("Platform = %q, want the verifier-reported az-snp", oc.Platform)
 	}
 	unreported := &teetypes.VerificationResult{SignatureValid: true}
-	if oc := newOutcome(config{}, ev, unreported, nil, &verifyPlan{policy: &ratls.VerifyPolicy{}}); oc.Platform != "snp" {
+	if oc := newOutcome(config{}, ev, unreported, nil, &verifyPlan{policy: &armtls.VerifyPolicy{}}); oc.Platform != "snp" {
 		t.Errorf("Platform = %q, want the fallback snp", oc.Platform)
 	}
 }
@@ -1299,7 +1299,7 @@ func TestNewOutcomePlatform(t *testing.T) {
 // --measurements pin closed: an unparseable digest can never count as allowed.
 func TestNewOutcomeMalformedLaunchDigestFailsPin(t *testing.T) {
 	ev := &evidence{platform: "snp", source: "t", bindingNote: "b"}
-	plan := &verifyPlan{policy: &ratls.VerifyPolicy{Policy: remote.Policy{Measurements: [][]byte{bytes.Repeat([]byte{0xAB}, 48)}}}}
+	plan := &verifyPlan{policy: &armtls.VerifyPolicy{Policy: remote.Policy{Measurements: [][]byte{bytes.Repeat([]byte{0xAB}, 48)}}}}
 	for _, digest := range []string{"", "zz"} {
 		result := &teetypes.VerificationResult{
 			SignatureValid: true,
@@ -1449,7 +1449,7 @@ func TestRenderTextSections(t *testing.T) {
 				},
 			},
 		}
-		oc := newOutcome(config{}, ev, result, nil, &verifyPlan{policy: &ratls.VerifyPolicy{}})
+		oc := newOutcome(config{}, ev, result, nil, &verifyPlan{policy: &armtls.VerifyPolicy{}})
 		if !oc.Verified || !oc.Debug || !oc.SMT {
 			t.Fatalf("newOutcome = %+v, want verified with debug=true smt=true", oc)
 		}
@@ -1479,7 +1479,7 @@ func TestGatherEvidence_AutoPrefersDiscovery(t *testing.T) {
 	}))
 	defer lb.Close()
 
-	ev, err := gatherEvidence(context.Background(), config{url: lb.URL, kind: "auto"}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil)
+	ev, err := gatherEvidence(context.Background(), config{url: lb.URL, kind: "auto"}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 	if err != nil {
 		t.Fatalf("auto mode should reach the discovery doc, got: %v", err)
 	}
@@ -1489,18 +1489,18 @@ func TestGatherEvidence_AutoPrefersDiscovery(t *testing.T) {
 }
 
 // TestGatherEvidence_AutoFallsBackToServingCert proves auto mode falls through
-// to the RA-TLS serving cert when discovery is absent (a non-LB TLS endpoint):
+// to the ARmTLS serving cert when discovery is absent (a non-LB TLS endpoint):
 // the surfaced error is the cert-path verdict, not the discovery 404.
 func TestGatherEvidence_AutoFallsBackToServingCert(t *testing.T) {
 	// 404s every path (no /v1/discovery) and presents httptest's plain serving
-	// cert, which carries no RA-TLS extension.
+	// cert, which carries no ARmTLS extension.
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
 	defer srv.Close()
 
-	_, err := gatherEvidence(context.Background(), config{url: srv.URL, kind: "auto"}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil)
-	if !errors.Is(err, ratls.ErrNoAttestation) {
+	_, err := gatherEvidence(context.Background(), config{url: srv.URL, kind: "auto"}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
+	if !errors.Is(err, armtls.ErrNoAttestation) {
 		t.Fatalf("want fall-through to the serving-cert path (ErrNoAttestation), got: %v", err)
 	}
 }
@@ -1593,13 +1593,13 @@ func TestBuildPolicy_FileInputs(t *testing.T) {
 func TestGatherEvidence_ModesAndErrors(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("ratls-cert mode", func(t *testing.T) {
+	t.Run("armtls-cert mode", func(t *testing.T) {
 		srv := attestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-		ev, err := gatherEvidence(ctx, config{url: srv.URL, mode: "ratls-cert", timeout: 5 * time.Second}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil)
+		ev, err := gatherEvidence(ctx, config{url: srv.URL, mode: "armtls-cert", timeout: 5 * time.Second}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 		if err != nil {
-			t.Fatalf("ratls-cert mode: %v", err)
+			t.Fatalf("armtls-cert mode: %v", err)
 		}
-		if !strings.Contains(ev.source, "RA-TLS serving certificate") {
+		if !strings.Contains(ev.source, "ARmTLS serving certificate") {
 			t.Errorf("source = %q, want the cert path", ev.source)
 		}
 	})
@@ -1612,7 +1612,7 @@ func TestGatherEvidence_ModesAndErrors(t *testing.T) {
 		// what routes this.
 		srv := httptest.NewTLSServer(attestPQHandler(t, id, report))
 		defer srv.Close()
-		ev, err := gatherEvidence(ctx, config{url: srv.URL, mode: "attest-pq", timeout: 5 * time.Second}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil)
+		ev, err := gatherEvidence(ctx, config{url: srv.URL, mode: "attest-pq", timeout: 5 * time.Second}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 		if err != nil {
 			t.Fatalf("attest-pq mode: %v", err)
 		}
@@ -1622,13 +1622,13 @@ func TestGatherEvidence_ModesAndErrors(t *testing.T) {
 	})
 
 	t.Run("no target at all is an error", func(t *testing.T) {
-		if _, err := gatherEvidence(ctx, config{}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil); err == nil || !strings.Contains(err.Error(), "no target") {
+		if _, err := gatherEvidence(ctx, config{}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil); err == nil || !strings.Contains(err.Error(), "no target") {
 			t.Fatalf("err = %v, want the no-target refusal", err)
 		}
 	})
 
 	t.Run("unparseable target is an error", func(t *testing.T) {
-		if _, err := gatherEvidence(ctx, config{url: "https://\x7f"}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil); err == nil {
+		if _, err := gatherEvidence(ctx, config{url: "https://\x7f"}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil); err == nil {
 			t.Fatal("control-character target should fail to normalize")
 		}
 	})
@@ -1636,7 +1636,7 @@ func TestGatherEvidence_ModesAndErrors(t *testing.T) {
 	t.Run("attest-pq mode surfaces a dial failure as a connect error", func(t *testing.T) {
 		// Port 1 refuses fast: an unreachable endpoint is exit-3 territory, not
 		// a verification verdict.
-		_, err := gatherEvidence(ctx, config{url: "https://127.0.0.1:1", mode: "attest-pq", timeout: 2 * time.Second}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil)
+		_, err := gatherEvidence(ctx, config{url: "https://127.0.0.1:1", mode: "attest-pq", timeout: 2 * time.Second}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 		if err == nil || !isConnectError(err) {
 			t.Fatalf("err = %v, want a connectError", err)
 		}
@@ -1651,7 +1651,7 @@ func TestGatherEvidence_ModesAndErrors(t *testing.T) {
 			w.Write([]byte("not json"))
 		}))
 		defer srv.Close()
-		_, err := gatherEvidence(ctx, config{url: srv.URL, kind: "auto", timeout: 5 * time.Second}, &verifyPlan{policy: &ratls.VerifyPolicy{}}, nil)
+		_, err := gatherEvidence(ctx, config{url: srv.URL, kind: "auto", timeout: 5 * time.Second}, &verifyPlan{policy: &armtls.VerifyPolicy{}}, nil)
 		if err == nil || isSecurityError(err) {
 			t.Fatalf("parse failure should fall through to the cert path, got %v", err)
 		}

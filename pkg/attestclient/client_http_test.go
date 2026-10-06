@@ -393,7 +393,7 @@ func TestReportDataForCSRBadPEM(t *testing.T) {
 	}
 }
 
-func TestMakeSNPRATLSAttestFuncSuccess(t *testing.T) {
+func TestMakeSNPARMTLSAttestFuncSuccess(t *testing.T) {
 	// attestation-api returns bare-metal SNP evidence; the AttestFunc should
 	// extract the raw SNP report.
 	report := make([]byte, 1184)
@@ -408,7 +408,7 @@ func TestMakeSNPRATLSAttestFuncSuccess(t *testing.T) {
 	defer api.Close()
 
 	c := NewClientWithHTTP("http://cds.invalid", api.Client())
-	fn := MakeSNPRATLSAttestFunc(c, api.URL)
+	fn := MakeSNPARMTLSAttestFunc(c, api.URL)
 
 	// customData must be hex-encoded and at least sha512.Size384 (48) bytes.
 	customData := strings.Repeat("ab", 48)
@@ -421,18 +421,18 @@ func TestMakeSNPRATLSAttestFuncSuccess(t *testing.T) {
 	}
 }
 
-func TestMakeSNPRATLSAttestFuncBadHex(t *testing.T) {
+func TestMakeSNPARMTLSAttestFuncBadHex(t *testing.T) {
 	c := NewClient("http://cds.invalid")
-	fn := MakeSNPRATLSAttestFunc(c, "http://api.invalid")
+	fn := MakeSNPARMTLSAttestFunc(c, "http://api.invalid")
 	_, err := fn(context.Background(), "not-hex")
 	if err == nil || !strings.Contains(err.Error(), "decode report data hex") {
 		t.Fatalf("error = %v, want decode hex error", err)
 	}
 }
 
-func TestMakeSNPRATLSAttestFuncAPIError(t *testing.T) {
+func TestMakeSNPARMTLSAttestFuncAPIError(t *testing.T) {
 	c := NewClient("http://cds.invalid")
-	fn := MakeSNPRATLSAttestFunc(c, unreachableURL)
+	fn := MakeSNPARMTLSAttestFunc(c, unreachableURL)
 	customData := strings.Repeat("cd", 48)
 	_, err := fn(context.Background(), customData)
 	if err == nil || !strings.Contains(err.Error(), "attestation-api") {

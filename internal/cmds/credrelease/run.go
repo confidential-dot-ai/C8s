@@ -13,8 +13,8 @@ import (
 	"golang.org/x/net/netutil"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // maxConcurrentConns caps accepted sockets. cred-release is the external
@@ -47,7 +47,7 @@ type Config struct {
 	// ListenAddr is the HTTPS bind address (e.g. ":8443").
 	ListenAddr string
 	// AttestationAPIURL is the local attestation-api base URL (the same
-	// loopback service the rest of the stack uses). It provides the RA-TLS
+	// loopback service the rest of the stack uses). It provides the ARmTLS
 	// serving quote, fresh bootstrap evidence, and the verified self-report
 	// that anchors the operator key to the launch binding.
 	AttestationAPIURL string
@@ -86,21 +86,21 @@ func (cfg Config) roles() Roles {
 }
 
 // Run loads the measured operator key and cluster CA, then serves the
-// RA-TLS-protected bootstrap and credential endpoints. It blocks until ctx is done.
+// ARmTLS-protected bootstrap and credential endpoints. It blocks until ctx is done.
 //
 // Startup order matters for the trust story:
 //  1. LoadMeasuredOperatorKey — read the opkeydata pubkey and CONFIRM it
 //     matches the launch binding (TDX RTMR[3] / SNP HOSTDATA). Fails closed
 //     if the key was substituted after boot.
 //  2. loadClusterCA — the cluster client-CA that signs the operator's cert.
-//  3. serve over an RA-TLS config so the caller can attest this is the real
+//  3. serve over an ARmTLS config so the caller can attest this is the real
 //     guest before trusting the returned cert.
 func Run(ctx context.Context, cfg Config) error {
-	// RA-TLS is mandatory here: this endpoint hands out operator creds,
+	// ARmTLS is mandatory here: this endpoint hands out operator creds,
 	// so serving without an attested cert (empty platform => plain HTTP in the
-	// ratls package) would let a host MITM impersonate the guest. Reject it.
+	// armtls package) would let a host MITM impersonate the guest. Reject it.
 	if strings.TrimSpace(cfg.Platform) == "" {
-		return fmt.Errorf("--platform is required (RA-TLS is mandatory for credential release)")
+		return fmt.Errorf("--platform is required (ARmTLS is mandatory for credential release)")
 	}
 	// Fail on a bad value here, before the RTMR and cluster-CA reads below.
 	family, err := teetypes.ParseFamily(cfg.Platform)
@@ -126,20 +126,20 @@ func Run(ctx context.Context, cfg Config) error {
 	attestationClient := attestclient.NewClient("")
 	handler.attester = localEvidenceGenerator{client: attestationClient, apiURL: cfg.AttestationAPIURL}
 
-	// RA-TLS serving config: the presented cert embeds a fresh TDX quote
-	// bound to its own public key, so the operator's RA-TLS client verifies
+	// ARmTLS serving config: the presented cert embeds a fresh TDX quote
+	// bound to its own public key, so the operator's ARmTLS client verifies
 	// it's talking to a genuine, correctly-measured guest before sending the
 	// CSR or trusting the returned cert. AttestFunc fetches the quote from the
 	// local attestation-api (platform-generic despite the SNP name — it reads
 	// resp.Platform, so it yields a TDX quote here); same pattern as cds.
-	attestFunc := attestclient.MakeSNPRATLSAttestFunc(attestationClient, cfg.AttestationAPIURL)
-	tlsCfg, certMgr, err := ratls.NewServerTLSConfig(&ratls.ServerConfig{
+	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestationClient, cfg.AttestationAPIURL)
+	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
 		Platform:   cfg.Platform,
 		AttestFunc: attestFunc,
 		Logger:     slog.Default(),
 	})
 	if err != nil {
-		return fmt.Errorf("build RA-TLS config: %w", err)
+		return fmt.Errorf("build ARmTLS config: %w", err)
 	}
 	// Provision the serving cert (and its quote) before accepting traffic, so
 	// the first request doesn't race a cold cert manager.
@@ -147,13 +147,13 @@ func Run(ctx context.Context, cfg Config) error {
 	err = certMgr.WarmUp(warmCtx)
 	cancelWarm()
 	if err != nil {
-		return fmt.Errorf("warm up RA-TLS serving cert: %w", err)
+		return fmt.Errorf("warm up ARmTLS serving cert: %w", err)
 	}
 
 	srv := newServer(cfg.ListenAddr, handler, tlsCfg)
 
 	// Bind explicitly so the accepted sockets can be capped: every connection
-	// costs an RA-TLS handshake before the operator token is ever checked.
+	// costs an ARmTLS handshake before the operator token is ever checked.
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
@@ -161,7 +161,7 @@ func Run(ctx context.Context, cfg Config) error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		// certs come from tlsCfg (RA-TLS), so no cert/key files.
+		// certs come from tlsCfg (ARmTLS), so no cert/key files.
 		errCh <- srv.ServeTLS(netutil.LimitListener(ln, maxConcurrentConns), "", "")
 	}()
 

@@ -20,7 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestValidateRequiresURL(t *testing.T) {
@@ -53,10 +53,10 @@ func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
 }
 
 // A target that serves no discovery document is a direct CDS URL, which is
-// verified by RA-TLS on its serving certificate rather than through a front
+// verified by ARmTLS on its serving certificate rather than through a front
 // door. Nothing is dialled until a request is made, so the fallback yields a
 // client rather than an error.
-func TestHTTPClientFallsBackToRATLS(t *testing.T) {
+func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	o := Options{
 		URL:     "https://" + closedAddr(t),
 		Timeout: time.Second,
@@ -102,8 +102,8 @@ func TestHTTPClientRejectsBadURL(t *testing.T) {
 
 func TestLoadMeasurementsFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "measurements.txt")
-	m1 := strings.Repeat("42", ratls.SNPMeasurementSize)
-	m2 := strings.Repeat("ab", ratls.SNPMeasurementSize)
+	m1 := strings.Repeat("42", armtls.SNPMeasurementSize)
+	m2 := strings.Repeat("ab", armtls.SNPMeasurementSize)
 	// blank lines and surrounding whitespace must be tolerated
 	if err := os.WriteFile(path, []byte(m1+"\n\n  "+m2+"  \n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
@@ -121,12 +121,12 @@ func TestLoadMeasurementsFromFile(t *testing.T) {
 
 func TestLoadMeasurementsCombinesFlagAndFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "measurements.txt")
-	if err := os.WriteFile(path, []byte(strings.Repeat("ab", ratls.SNPMeasurementSize)+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Repeat("ab", armtls.SNPMeasurementSize)+"\n"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
 	o := Options{
-		Measurements:     []string{strings.Repeat("42", ratls.SNPMeasurementSize)},
+		Measurements:     []string{strings.Repeat("42", armtls.SNPMeasurementSize)},
 		MeasurementsFile: path,
 	}
 	got, err := o.loadMeasurements()
@@ -232,7 +232,7 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 	}
 }
 
-// An https CDS with no --measurements is attested but not identified: RA-TLS
+// An https CDS with no --measurements is attested but not identified: ARmTLS
 // proves the peer is a TEE, not that it is the CDS this operator meant. Reads
 // only warn, but a signed token hands `c8s secrets put`'s secret and
 // `c8s allowlist`'s policy change to whatever answered, so minting one is
