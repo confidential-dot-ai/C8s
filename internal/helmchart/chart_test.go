@@ -5913,7 +5913,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	if got := seedLabel(seed, rmD); got != "ghcr.io/confidential-dot-ai/ratls-mesh@"+rmD {
 		t.Errorf("bare-metal-mode seed missing ratls-mesh entry; got %q\nseed: %v", got, seed.Workloads)
 	}
-	const nginxD = "sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348"
+	const nginxD = "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
 	if _, ok := seedEntry(seed, nginxD); !ok {
 		t.Errorf("bare-metal-mode seed missing router nginx self-entry\nseed: %v", seed.Workloads)
 	}
