@@ -163,7 +163,7 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.DurationVar(&c.drainTimeout, "drain-timeout", 30*time.Second, "graceful shutdown drain timeout")
 	fs.DurationVar(&c.keepAlive, "keepalive", 30*time.Second, "TCP keepalive interval (0 to disable)")
 	fs.DurationVar(&c.idleTimeout, "idle-timeout", 0, "close connections idle longer than this (0=disabled)")
-	fs.IntVar(&c.maxConns, "max-conns", 0, "max concurrent connections (0=unlimited)")
+	fs.IntVar(&c.maxConns, "max-conns", 0, "max concurrent connections per listener, inbound and outbound each (0=unlimited)")
 	fs.IntVar(&c.maxConnsPerSource, "max-conns-per-source", 0, "max concurrent connections per source IP (0=unlimited)")
 	fs.IntVar(&c.healthPort, "health-port", 15021, "health/metrics HTTP port")
 	fs.StringVar(&c.measurements, "measurements", "", "comma-separated hex SHA-384 launch measurements (empty = accept any TEE)")
@@ -347,9 +347,10 @@ func (e hostMesh) configure(r *meshRuntime) *Proxy {
 	}
 	r.health = newHealthServer(r.metrics, r.serverCertMgr, r.clientCertMgr, c.acceptErrThreshold, c.healthReadTimeout, c.healthWriteTimeout)
 	r.healthPort, r.healthListener = c.healthPort, c.listeners.health
-	var connSem chan struct{}
+	var outboundSem, inboundSem chan struct{}
 	if c.maxConns > 0 {
-		connSem = make(chan struct{}, c.maxConns)
+		outboundSem = make(chan struct{}, c.maxConns)
+		inboundSem = make(chan struct{}, c.maxConns)
 	}
 
 	return &Proxy{
@@ -369,7 +370,8 @@ func (e hostMesh) configure(r *meshRuntime) *Proxy {
 		idleTimeout:       c.idleTimeout,
 		maxDestHeaderSize: c.maxDestHeaderSize,
 		pipeBufferSize:    c.pipeBufferSize,
-		connSem:           connSem,
+		outboundSem:       outboundSem,
+		inboundSem:        inboundSem,
 		maxConnsPerSrc:    c.maxConnsPerSource,
 	}
 }

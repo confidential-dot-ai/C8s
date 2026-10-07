@@ -107,7 +107,7 @@ func newMetrics() *metrics {
 	})
 	m.connLimitRejected = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_connection_limit_rejected_total",
-		Help: "Connections rejected by global limit.",
+		Help: "Connections rejected by the per-listener limit.",
 	})
 	m.connLimitPerSourceRejected = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_connection_limit_per_source_rejected_total",

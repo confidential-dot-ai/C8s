@@ -63,7 +63,10 @@ type Proxy struct {
 	pipeBufferSize    int
 	bufPool           *sync.Pool
 
-	connSem        chan struct{} // nil = unlimited
+	// Each listener has its own slot budget so connections that have not yet
+	// authenticated on inbound cannot starve local pods' outbound traffic.
+	outboundSem    chan struct{} // nil = unlimited
+	inboundSem     chan struct{} // nil = unlimited
 	maxConnsPerSrc int           // 0 = unlimited
 	srcConnsMu     sync.Mutex
 	srcConns       map[string]*atomic.Int64
@@ -158,13 +161,13 @@ func (p *Proxy) Run(ctx context.Context) error {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		if err := p.serve(ctx, p.outboundAddr, p.outboundLn, nil, p.handleOutbound, outReady, &p.metrics.acceptConsecutiveOutbound); err != nil {
+		if err := p.serve(ctx, p.outboundAddr, p.outboundLn, nil, p.outboundSem, p.handleOutbound, outReady, &p.metrics.acceptConsecutiveOutbound); err != nil {
 			errCh <- fmt.Errorf("outbound: %w", err)
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if err := p.serve(ctx, p.inboundAddr, p.inboundLn, p.serverTLS, p.handleInbound, inReady, &p.metrics.acceptConsecutiveInbound); err != nil {
+		if err := p.serve(ctx, p.inboundAddr, p.inboundLn, p.inboundTLS(), p.inboundSem, p.handleInbound, inReady, &p.metrics.acceptConsecutiveInbound); err != nil {
 			errCh <- fmt.Errorf("inbound: %w", err)
 		}
 	}()
@@ -209,9 +212,10 @@ func (p *Proxy) Run(ctx context.Context) error {
 
 // serve is the generic listen/accept loop. ln, when non-nil, is served
 // instead of binding addr. If tlsCfg is non-nil the listener is wrapped with
-// TLS. The ready channel is closed once the listener is acquired.
+// TLS. sem, when non-nil, caps the listener's concurrent connections. The
+// ready channel is closed once the listener is acquired.
 // consecutiveErrors is an atomic counter exposed as a metric for readiness gating.
-func (p *Proxy) serve(ctx context.Context, addr string, ln net.Listener, tlsCfg *tls.Config, handler func(context.Context, net.Conn), ready chan<- struct{}, consecutiveErrors *atomic.Int64) error {
+func (p *Proxy) serve(ctx context.Context, addr string, ln net.Listener, tlsCfg *tls.Config, sem chan struct{}, handler func(context.Context, net.Conn), ready chan<- struct{}, consecutiveErrors *atomic.Int64) error {
 	if ln == nil {
 		var err error
 		ln, err = (&net.ListenConfig{
@@ -254,10 +258,10 @@ func (p *Proxy) serve(ctx context.Context, addr string, ln net.Listener, tlsCfg 
 		}
 		consecutiveErrors.Store(0)
 
-		// Global connection limit: reject if at capacity.
-		if p.connSem != nil {
+		// Listener connection limit: reject if at capacity.
+		if sem != nil {
 			select {
-			case p.connSem <- struct{}{}:
+			case sem <- struct{}{}:
 			default:
 				p.metrics.connLimitRejected.Inc()
 				p.logger.Warn("connection limit reached", "addr", addr)
@@ -280,8 +284,8 @@ func (p *Proxy) serve(ctx context.Context, addr string, ln net.Listener, tlsCfg 
 			if !ok {
 				p.metrics.connLimitPerSourceRejected.Inc()
 				p.logger.Warn("per-source connection limit reached", "src", srcKey, "addr", addr)
-				if p.connSem != nil {
-					<-p.connSem
+				if sem != nil {
+					<-sem
 				}
 				conn.Close()
 				continue
@@ -295,8 +299,8 @@ func (p *Proxy) serve(ctx context.Context, addr string, ln net.Listener, tlsCfg 
 				if srcCnt != nil {
 					p.releaseSrc(srcKey, srcCnt)
 				}
-				if p.connSem != nil {
-					<-p.connSem
+				if sem != nil {
+					<-sem
 				}
 				p.activeConns.Done()
 			}()
@@ -432,6 +436,40 @@ func (p *Proxy) dialAndPipeARMTLS(ctx context.Context, downstream net.Conn, remo
 	return
 }
 
+// inboundHandshakeTimeout bounds the wait for an inbound peer's ClientHello.
+// It is shorter than the header timeout because a mesh peer sends it right
+// after connecting; only an idle or stalled peer needs longer.
+const inboundHandshakeTimeout = 2 * time.Second
+
+// inboundTLS returns serverTLS with the read deadline renewed to the header
+// timeout once the ClientHello is in and the local certificate is ready. The
+// peer's next flight follows its attestation check of our certificate, and a
+// synchronous provisioning must not eat into the time the peer has for it.
+func (p *Proxy) inboundTLS() *tls.Config {
+	if p.serverTLS == nil {
+		return nil
+	}
+	cfg := p.serverTLS.Clone()
+	timeout := durOrDefault(p.destHeaderTimeout, 5*time.Second)
+	// A failed SetReadDeadline means the conn is gone; the handshake reports it.
+	renew := func(c net.Conn) { _ = c.SetReadDeadline(time.Now().Add(timeout)) }
+	switch {
+	case cfg.GetCertificate != nil:
+		get := cfg.GetCertificate
+		cfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			cert, err := get(hello)
+			renew(hello.Conn)
+			return cert, err
+		}
+	case cfg.GetConfigForClient == nil:
+		cfg.GetConfigForClient = func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			renew(hello.Conn)
+			return nil, nil
+		}
+	}
+	return cfg
+}
+
 func (p *Proxy) handleInbound(ctx context.Context, downstream net.Conn) {
 	defer downstream.Close()
 	p.metrics.activeConnections.WithLabelValues("inbound").Inc()
@@ -455,8 +493,32 @@ func (p *Proxy) handleInbound(ctx context.Context, downstream net.Conn) {
 		entry.logTo(log, p.accessLog)
 	}()
 
+	headerTimeout := durOrDefault(p.destHeaderTimeout, 5*time.Second)
+
+	// Handshake explicitly rather than lazily inside the header read, so a
+	// peer that never sends a ClientHello gives its slot back after
+	// inboundHandshakeTimeout; inboundTLS renews the deadline past that point.
+	// The bound is a read deadline, not a context timeout: GetCertificate
+	// inherits the handshake context, and a deadline there would cancel a
+	// synchronous certificate provisioning in flight.
+	if tc, ok := downstream.(*tls.Conn); ok {
+		if err := tc.SetReadDeadline(start.Add(min(inboundHandshakeTimeout, headerTimeout))); err != nil {
+			log.Warn("failed to set read deadline", "error", err)
+			entry.result = "header_error"
+			entry.err = err.Error()
+			return
+		}
+		if err := tc.HandshakeContext(ctx); err != nil {
+			p.metrics.destHeaderErrors.WithLabelValues("read").Inc()
+			log.Warn("inbound TLS handshake failed", "error", err)
+			entry.result = "tls_error"
+			entry.err = err.Error()
+			return
+		}
+	}
+
 	// Bounded read with deadline to prevent slow-loris and OOM.
-	if err := downstream.SetReadDeadline(time.Now().Add(durOrDefault(p.destHeaderTimeout, 5*time.Second))); err != nil {
+	if err := downstream.SetReadDeadline(time.Now().Add(headerTimeout)); err != nil {
 		log.Warn("failed to set read deadline", "error", err)
 		entry.result = "header_error"
 		entry.err = err.Error()
