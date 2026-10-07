@@ -293,6 +293,9 @@ workload_claims:
   # Components read node-ip as their attestation-api host, so the plugin
   # writes it from the host's view; this pod's environment is not pinned.
   publish_node_ip: true
+  # An injected credential client dials CDS at this node's own address and this
+  # port, and its pod ruleset admits exactly that endpoint.
+  cds_node_port: {{ required "cds.service.nodePort is required with nriImagePolicy.enabled=true: an injected credential client dials CDS at its own node's address and that port" $root.Values.cds.service.nodePort }}
 allowlist:
   pull:
     url: {{ include "c8s.nriCDSURL" $root | quote }}

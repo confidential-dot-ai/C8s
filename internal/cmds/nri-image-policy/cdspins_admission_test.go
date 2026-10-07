@@ -11,13 +11,15 @@ import (
 
 func TestNodePolicyMountAdmission(t *testing.T) {
 	const pins = "/run/node-cds-policy.json"
+	const address = "/run/node-cds-address"
 	for _, tc := range []struct {
-		name     string
-		source   string
-		consumer string
-		options  []string
-		injected bool
-		allowed  bool
+		name        string
+		destination string
+		source      string
+		consumer    string
+		options     []string
+		injected    bool
+		allowed     bool
 	}{
 		{
 			name:     "node pins without inventory sockets",
@@ -54,6 +56,31 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 			consumer: workloadclaims.CertContainerName,
 			options:  []string{"rbind", "ro"},
 		},
+		{
+			name:        "node address without inventory sockets",
+			destination: workloadclaims.CDSAddressPath,
+			source:      address,
+			consumer:    workloadclaims.CertContainerName,
+			options:     []string{"rbind", "ro"},
+			injected:    true,
+			allowed:     true,
+		},
+		{
+			name:        "foreign address",
+			destination: workloadclaims.CDSAddressPath,
+			source:      "/other-node/address",
+			consumer:    workloadclaims.CertContainerName,
+			options:     []string{"rbind", "ro"},
+			injected:    true,
+		},
+		{
+			name:        "writable address",
+			destination: workloadclaims.CDSAddressPath,
+			source:      address,
+			consumer:    workloadclaims.CertContainerName,
+			options:     []string{"rbind", "rw"},
+			injected:    true,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
@@ -76,6 +103,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 			}, al)
 			p.SetReady()
 			p.cdsPins = pins
+			p.cdsAddress = address
 			p.inventory = newAdmissionInventory(t.TempDir())
 			pod := makePod("default", "pod")
 			pod.Uid = "pod-uid"
@@ -90,9 +118,13 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 				Type:        "bind",
 				Options:     []string{"rbind", "ro"},
 			}
+			destination := tc.destination
+			if destination == "" {
+				destination = workloadclaims.CDSPinsPath
+			}
 			policy := &api.Mount{
 				Source:      tc.source,
-				Destination: workloadclaims.CDSPinsPath,
+				Destination: destination,
 				Type:        "bind",
 				Options:     tc.options,
 			}
@@ -118,7 +150,7 @@ func TestNodePolicyMountAdmission(t *testing.T) {
 				t.Fatalf("inventory=%+v, error=%v", containers, err)
 			}
 			mount := containers[0].Mounts[1]
-			if mount.Destination != workloadclaims.CDSPinsPath || mount.Class != allowlist.MountPlatform || !mount.ReadOnly {
+			if mount.Destination != destination || mount.Class != allowlist.MountPlatform || !mount.ReadOnly {
 				t.Fatalf("node policy inventory evidence=%+v", mount)
 			}
 		})

@@ -174,7 +174,7 @@ func TestMeshConfigRejectsInvalidRulesetInputs(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := meshConfigForLoad(t)
 			tc.change(cfg.Mesh)
-			if _, err := parseConfig(meshConfigDocument(t, cfg)); err == nil {
+			if _, err := loadMeshConfigDocument(t, cfg); err == nil {
 				t.Fatal("invalid ruleset policy loaded")
 			}
 		})

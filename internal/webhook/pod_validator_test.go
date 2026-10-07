@@ -214,10 +214,6 @@ func TestValidatorRejectsReservedResources(t *testing.T) {
 		}, "shareProcessNamespace"},
 		{"host pid", func(pod *corev1.Pod) { pod.Spec.HostPID = true }, "hostPID"},
 		{"host ipc", func(pod *corev1.Pod) { pod.Spec.HostIPC = true }, "hostIPC"},
-		{"nginx reload", func(pod *corev1.Pod) {
-			pod.Annotations[AnnotationWorkload] = "api"
-			pod.Annotations[AnnotationReloadNginx] = "true"
-		}, AnnotationReloadNginx},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -135,7 +135,6 @@ func policyWatchConfig(t *testing.T) config {
 	cfg := unreachableRenewalConfig(t)
 	cfg.UnnamedRenewInterval = 0
 	cfg.CAWatchInterval = 10 * time.Millisecond
-	cfg.ReloadNginx = false
 	return cfg
 }
 

@@ -139,7 +139,7 @@ entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`, each pinned to
 its invocation with `args: any`, its env matched as above over the variables
 the webhook's `getCertEnv` sets (`present`, since they differ per pod; none
 for `probe-file`), and one container per combination of the optional
-discovery and reload-watch mounts. No shape names the inventory socket mount:
+discovery mount. No shape names the inventory socket mount:
 the NRI plugin adds it and observes it as a platform mount, which exact rules
 never match. The webhook turns service links off in every pod it injects into.
 The destinations match the webhook's fixed ones (`internal/webhook`).

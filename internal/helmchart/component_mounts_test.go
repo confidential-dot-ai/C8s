@@ -310,8 +310,8 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	}
 }
 
-// A baked router reads its nginx configuration from the image, so the seed
-// refuses a ConfigMap swapped in over that directory.
+// A baked router reads its nginx configuration and its entrypoint from the
+// image, so the seed refuses a ConfigMap swapped in over that directory.
 func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)
@@ -326,8 +326,8 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	nginx := spec.Containers[i]
 	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
 	argv := runtimeArgv(nginx, pin.entrypoint)
-	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/nginx.conf") {
-		t.Errorf("baked nginx argv = %q, want -c /usr/lib/c8s/router-nginx/nginx.conf", argv)
+	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/reload.sh") {
+		t.Errorf("baked nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/reload.sh", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {

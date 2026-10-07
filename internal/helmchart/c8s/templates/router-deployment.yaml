@@ -15,15 +15,13 @@ nodeSelector:
 {{- end }}
 
 {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 0 }}
-shareProcessNamespace: true
 initContainers:
   {{- include "router.getCertContainers" . | nindent 2 }}
   {{- if $acmeSidecar }}
   # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
   # leaf for the sanList domains, answers HTTP-01 on loopback behind the
-  # :80 server, renews at 2/3 lifetime, and SIGHUPs nginx on install —
-  # which needs the shared PID namespace and the nginx uid, same as
-  # c8s-cert.
+  # :80 server and renews at 2/3 lifetime. nginx's own entrypoint
+  # reloads on the install (router-configmap.yaml).
   - name: acme
     image: {{ include "c8s.image" . }}
     imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
@@ -66,18 +64,13 @@ containers:
   - name: nginx
     image: {{ include "c8s-common.image" .Values.router.nginx.image }}
     imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
-    {{- /* The image's entrypoint and CMD spelled out, with the config file
-           named: the allowlist pins this argv exactly, so nothing a pod adds
-           (-g load_module, another -c) runs under the nginx entry. */}}
-    command: [{{ first .Values.router.nginx.entrypoint | quote }}]
+    {{- /* nginx runs as the child of reload.sh, which reloads it when a file
+           an nginx directive loads changes (router-configmap.yaml). The
+           allowlist pins this argv exactly, so nothing a pod adds (-g
+           load_module, another -c) runs under the nginx entry. */}}
+    command: ["/bin/sh"]
     args:
-      {{- range rest .Values.router.nginx.entrypoint }}
-      - {{ . | quote }}
-      {{- end }}
-      - -c
-      - {{ include "router.configDir" . }}/nginx.conf
-      - -g
-      - daemon off;
+      - {{ include "router.configDir" . }}/reload.sh
     ports:
       - name: https
         containerPort: {{ .Values.router.nginx.httpsPort }}

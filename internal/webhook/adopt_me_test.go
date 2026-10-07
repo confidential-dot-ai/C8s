@@ -30,7 +30,6 @@ func TestAdoptMeInjection(t *testing.T) {
 	// What install stamps, and what the harness adds once it has.
 	pod.Annotations = map[string]string{
 		AnnotationWorkload:          "web",
-		AnnotationReloadNginx:       "true",
 		AnnotationGetCertRunAsUser:  "101",
 		AnnotationGetCertRunAsGroup: "101",
 	}

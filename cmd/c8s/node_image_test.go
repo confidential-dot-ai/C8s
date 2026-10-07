@@ -419,6 +419,9 @@ data:
     # a document-looking line remains nginx content
     ---
     events {}
+  reload.sh: |
+    #!/bin/sh
+    exec nginx -g 'daemon off;'
   tls-cds.conf: ssl_certificate /tls/cert.pem;
   tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;
 ---

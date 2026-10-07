@@ -5,7 +5,7 @@ Source: [templates/_certificates.tpl](../../templates/_certificates.tpl).
 
 `c8s.getCertContainers` renders the `c8s-cert` native sidecar and the
 `c8s-cert-wait` init container for chart-owned components. The sidecar obtains
-and renews a CDS-issued mesh certificate over armTLS. Nginx reloads by SIGHUP in the shared PID namespace.
+and renews a CDS-issued mesh certificate over armTLS.
 A valid stored generation remains available across sidecar restarts until its
 replacement is published. Every certificate request generates a fresh key.
 
@@ -26,7 +26,6 @@ The helper takes a dict with these fields:
 | `volume`, `mountPath` | Writable certificate volume and its mount directory |
 | `renewInterval` | Go duration, such as `6h` or `30m` |
 | `runAsUser`, `runAsGroup`, `runAsNonRoot` | Consumer-compatible security context |
-| `reloadNginx` | Enable nginx SIGHUP on renewal; defaults to `false` |
 | `extraArgs` | Optional list of additional get-cert arguments |
 | `extraMounts` | Optional rendered volumeMount YAML |
 

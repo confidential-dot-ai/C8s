@@ -691,9 +691,9 @@ C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal 
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
 # The first leaf predates the app container, so it names no workload;
-# get-cert renews until CDS names it, then SIGHUPs nginx. It runs as nginx's
-# uid (101) to signal it. Only a stamped template may carry these.
-kubectl -n adopted patch deploy web --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"confidential.ai/c8s-reload-nginx":"true","confidential.ai/c8s-get-cert-run-as-user":"101","confidential.ai/c8s-get-cert-run-as-group":"101"}}}}}' \
+# get-cert renews until CDS names it. It runs as nginx's uid (101), which is
+# what keeps the leaf readable. Only a stamped template may carry these.
+kubectl -n adopted patch deploy web --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"confidential.ai/c8s-get-cert-run-as-user":"101","confidential.ai/c8s-get-cert-run-as-group":"101"}}}}}' \
     || fail "could not annotate the adopted template"
 kubectl -n adopted rollout status deploy/web --timeout=300s || fail "adopted workload never rolled out"
 pass "install adopted a running workload (template stamped, rollout injected)"
@@ -763,11 +763,16 @@ WEB_ENTRY="nginx-unprivileged-$(printf '%s' "${WORKLOAD_IMAGE#*@sha256:}" | cut 
 # served_leaf_named <name>: the adopted nginx serves a leaf whose
 # matched-workload extension (1.3.6.1.4.1.66378.1.5) carries <name>, within
 # two minutes. The unnamed first leaf would make every route to it 502.
+#
+# Nothing on the platform signals a tenant's nginx any more, so the harness
+# reloads it on each attempt: the renewed leaf is already published, and the
+# running configuration is what serves it.
 served_leaf_named() {
     local pf rc=1
     kubectl -n adopted port-forward deploy/web "$ADOPTED_LOCAL_PORT:8443" >/dev/null 2>&1 &
     pf=$!
     for _ in $(seq 1 60); do
+        kubectl -n adopted exec deploy/web -c app -- nginx -c /tmp/nginx.conf -s reload >/dev/null 2>&1 || true
         if openssl s_client -connect "127.0.0.1:$ADOPTED_LOCAL_PORT" </dev/null 2>/dev/null \
             | openssl x509 -noout -text 2>/dev/null | tr -d ' \n' | grep -q "1.3.6.1.4.1.66378.1.5:.*$1"; then
             rc=0

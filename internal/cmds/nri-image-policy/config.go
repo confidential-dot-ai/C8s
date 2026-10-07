@@ -67,6 +67,11 @@ type workloadClaimsConfig struct {
 	// node's own view (see publishNodeIP). The chart sets it; the node image
 	// leaves it unset because nri-node-ip.service writes the file there.
 	PublishNodeIP bool `yaml:"publish_node_ip"`
+
+	// CDSNodePort is the port an injected credential client reaches CDS on, at
+	// this node's own address. A measured mesh policy binds that endpoint
+	// itself, so only an install sets this (cdsaddress.go).
+	CDSNodePort uint16 `yaml:"cds_node_port"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -224,7 +229,8 @@ const NodeIPFile = "node-ip"
 // policy the node's runtime wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
-// loadConfig loads configuration from a YAML file.
+// loadConfig loads configuration from a YAML file, and completes the one
+// binding a launched node makes itself (cdsaddress.go).
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -234,6 +240,9 @@ func loadConfig(path string) (*config, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := bindCredentialRole(cfg); err != nil {
+		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
+	}
 	if err := cfg.validateMeshRoleBindings(); err != nil {
 		return nil, fmt.Errorf("validate mesh role bindings: %w", err)
 	}
@@ -241,7 +250,7 @@ func loadConfig(path string) (*config, error) {
 }
 
 // parseConfig validates static configuration for the plugin and set-cds-pins.
-// loadConfig validates runtime role bindings.
+// loadConfig completes runtime role bindings before validating them.
 func parseConfig(data []byte) (*config, error) {
 	cfg := &config{
 		Allowlist: allowlistConfig{
@@ -313,6 +322,13 @@ func (c *config) NormalizedPlatform() string {
 		return c.Platform
 	}
 	return family.String()
+}
+
+// injectsCredentialClients reports whether a pod of this node carries the
+// webhook's credential clients: the inventory directory is what the plugin
+// mounts into them, and without it no pod of this node is injected.
+func (c *config) injectsCredentialClients() bool {
+	return c.WorkloadClaims.SocketDir != ""
 }
 
 // PullEnabled reports whether the plugin should poll a remote CDS.
