@@ -21,7 +21,7 @@ MOCK_MEASUREMENT="00000000000000000000000000000000000000000000000000000000000000
 # floor; the test-client image stays out of it so the admission test can
 # drive a deny-then-allow transition through the signed CDS API.
 CURL_IMAGE=curlimages/curl:8.10.1
-WORKLOAD_IMAGE=nginxinc/nginx-unprivileged@sha256:c2c3905bda3dc8de80023e19bed0a45745279d26e5586cdee64370c8f9b12348
+WORKLOAD_IMAGE=nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0
 
 # Keep live client Pods and the admission regression tests on the same renderer.
 pod_fixture() {
