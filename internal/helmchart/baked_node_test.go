@@ -304,7 +304,9 @@ func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
 	if !ok {
 		t.Fatal("router certificate sidecar missing")
 	}
-	assertContainerHasArg(t, "c8s-cert", cert.Args, "--workload-claims")
+	if slices.Contains(cert.Args, "--no-workload-claims") {
+		t.Fatalf("baked router certificate sidecar opts out of workload claims\nargs: %v", cert.Args)
+	}
 	foundMount := false
 	for _, mount := range cert.VolumeMounts {
 		if mount.Name == "workload-claims" && mount.MountPath == "/run/c8s/workload-claims" && mount.ReadOnly {

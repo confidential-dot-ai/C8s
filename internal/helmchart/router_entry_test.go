@@ -350,7 +350,7 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 			// get-cert holds out for the seeded entry whenever claims are wired, gate or not.
 			cert, _ := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
 			wantCert := ""
-			if slices.Contains(cert.Args, "--workload-claims") {
+			if !slices.Contains(cert.Args, "--no-workload-claims") {
 				wantCert = routerEntryName(t, renderedSeed(t, out))
 			}
 			if got := expectedWorkloadArg(cert); got != wantCert {
