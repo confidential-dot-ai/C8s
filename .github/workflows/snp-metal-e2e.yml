@@ -18,11 +18,6 @@ on:
         required: false
         type: boolean
         default: false
-      lane_ref:
-        description: 'for a caller in another repo: the c8s ref this lane is called at, for its scripts and actions'
-        required: false
-        type: string
-        default: ''
       suite_artifact:
         description: 'optional extra suite: an artifact of the calling run, see .github/actions/extra-suite'
         required: false
@@ -71,13 +66,12 @@ jobs:
     # an extra suite gets 20 more.
     timeout-minutes: ${{ inputs.suite_run != '' && 65 || 45 }}
     steps:
-      # This repo even when another one calls the lane, so .github/scripts and
-      # .github/actions match the lane; lane_ref names the commit to take them
-      # from (empty: the run's own, when called here).
+      # This repository even when another one calls the lane, so .github/scripts
+      # and .github/actions are the lane's: the run's own commit here, the
+      # default branch for a caller elsewhere.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: confidential-dot-ai/c8s
-          ref: ${{ inputs.lane_ref }}
           persist-credentials: false
 
       - name: tools (kubectl, go, crane)
