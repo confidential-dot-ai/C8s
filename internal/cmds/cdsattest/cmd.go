@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -42,6 +44,11 @@ type config struct {
 	upstreamCertFile   string
 	upstreamKeyFile    string
 	upstreamServerName string
+
+	// Launch-driven inputs (node image): each file overrides its flag.
+	frontDoorModeFile   string
+	upstreamFile        string
+	acmeServingCertFile string
 }
 
 // NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
@@ -79,11 +86,51 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.upstreamCertFile, "upstream-cert", "", "client cert presented to an https upstream (the CDS-issued LB cert)")
 	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")
 	f.StringVar(&cfg.upstreamServerName, "upstream-server-name", "", "SNI/verification name for an https upstream")
+	f.StringVar(&cfg.frontDoorModeFile, "front-door-mode-file", "", "file holding the front-door mode, read at start instead of --front-door-mode")
+	f.StringVar(&cfg.upstreamFile, "upstream-file", "", "file holding a mesh-wrapped http upstream host:port, read at start instead of --upstream; an empty file uses the echo backend")
+	f.StringVar(&cfg.acmeServingCertFile, "acme-serving-cert-file", "", "serving-leaf PEM nginx presents in acme front-door mode; used instead of --serving-cert-file when --front-door-mode-file reads acme")
 	return cmd
+}
+
+// loadFiles applies the launch-driven file inputs over their flags.
+func loadFiles(cfg *config) error {
+	if cfg.frontDoorModeFile != "" {
+		if cfg.frontDoorMode != "" {
+			return fmt.Errorf("--front-door-mode and --front-door-mode-file are mutually exclusive")
+		}
+		data, err := os.ReadFile(cfg.frontDoorModeFile)
+		if err != nil {
+			return fmt.Errorf("--front-door-mode-file: %w", err)
+		}
+		cfg.frontDoorMode = types.FrontDoorMode(strings.TrimSpace(string(data)))
+		if cfg.frontDoorMode == types.FrontDoorModeACME && cfg.acmeServingCertFile != "" {
+			cfg.servingCertFile = cfg.acmeServingCertFile
+		}
+	}
+	if cfg.upstreamFile != "" {
+		if cfg.upstream != "" {
+			return fmt.Errorf("--upstream and --upstream-file are mutually exclusive")
+		}
+		data, err := os.ReadFile(cfg.upstreamFile)
+		if err != nil {
+			return fmt.Errorf("--upstream-file: %w", err)
+		}
+		if address := strings.TrimSpace(string(data)); address != "" {
+			// Plain http is safe only for a mesh-wrapped Service.
+			if err := launchconfig.ValidateRouterUpstream(address); err != nil {
+				return fmt.Errorf("--upstream-file: %w", err)
+			}
+			cfg.upstream = "http://" + address
+		}
+	}
+	return nil
 }
 
 func run(cfg config) error {
 	logger := newLogger(cfg.logLevel)
+	if err := loadFiles(&cfg); err != nil {
+		return err
+	}
 
 	// No default: serving attest-lb is a trust decision about where the
 	// serving key lives, so the deployer must state it.

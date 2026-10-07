@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -40,6 +41,12 @@ type config struct {
 	certDir       string
 	reloadNginx   bool
 	logLevel      string
+
+	// Launch-driven inputs (node image): each file overrides its flag.
+	domainsFile      string
+	emailFile        string
+	directoryURLFile string
+	standbyCertDir   string
 }
 
 // NewCmd returns the acme subcommand.
@@ -49,7 +56,10 @@ func NewCmd() *cobra.Command {
 		Use:   "acme",
 		Short: "Run the router in-guest ACME sidecar (acme front-door mode)",
 		Long: `acme runs beside nginx in the router pod and keeps one multi-SAN WebPKI
-certificate for --domains under --cert-dir: cert.pem (full chain) and key.pem.
+certificate under --cert-dir: cert.pem (full chain) and key.pem. It includes
+configured domains whose public HTTP challenge paths reach this router.
+Unavailable domains do not block issuance for reachable domains. They are
+added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
 /.well-known/acme-challenge/ to the loopback challenge listener. The
 certificate is renewed at 2/3 of its lifetime, and nginx is reloaded via
@@ -61,7 +71,13 @@ first issuance needs.
 The cert-dir also holds the ACME account key. On a Memory-medium emptyDir the
 state is lost with the pod and re-issued on recreation; point
 --acme-directory-url at a staging directory when testing to stay clear of the
-CA's duplicate-certificate limits.`,
+CA's duplicate-certificate limits.
+
+On a node image the inputs come from the signed launch file:
+--domains-file, --acme-email-file and --acme-directory-url-file. When the
+domains file is empty, no ACME account is used: nginx serves the mesh leaf
+from --standby-cert-dir instead, and the sidecar only reports ready once that
+leaf exists.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -78,10 +94,78 @@ CA's duplicate-certificate limits.`,
 	f.StringVar(&cfg.certDir, "cert-dir", "/etc/c8s-acme-tls", "directory for cert.pem, key.pem, and the ACME account key")
 	f.BoolVar(&cfg.reloadNginx, "reload-nginx", true, "SIGHUP nginx after a certificate install")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
-
-	_ = cmd.MarkFlagRequired("domains")
+	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
+	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
+	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
+	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the cert.pem and key.pem nginx serves instead")
 
 	return cmd
+}
+
+// loadFiles applies the file-based inputs over their flags. It reports
+// standby: the domains file names no domain, so the sidecar does no ACME and
+// only waits beside the certificate in --standby-cert-dir.
+func loadFiles(cfg *config) (standby bool, err error) {
+	if err := overrideFromFile(cfg.emailFile, &cfg.email); err != nil {
+		return false, fmt.Errorf("--acme-email-file: %w", err)
+	}
+	if err := overrideFromFile(cfg.directoryURLFile, &cfg.directoryURL); err != nil {
+		return false, fmt.Errorf("--acme-directory-url-file: %w", err)
+	}
+	if cfg.domainsFile == "" {
+		return false, nil
+	}
+	if len(cfg.domains) > 0 {
+		return false, fmt.Errorf("--domains and --domains-file are mutually exclusive")
+	}
+	data, err := os.ReadFile(cfg.domainsFile)
+	if err != nil {
+		return false, fmt.Errorf("--domains-file: %w", err)
+	}
+	cfg.domains = strings.Fields(string(data))
+	if len(cfg.domains) > 0 {
+		return false, nil
+	}
+	if cfg.standbyCertDir == "" {
+		return false, fmt.Errorf("--domains-file %s is empty and no --standby-cert-dir is set", cfg.domainsFile)
+	}
+	return true, nil
+}
+
+// runStandby is the sidecar with no ACME domain. nginx serves the certificate
+// in --standby-cert-dir (the mesh leaf), so this process only answers the
+// readiness probe that gates nginx's start, then waits for shutdown.
+func runStandby(ctx context.Context, cfg config, logger *slog.Logger) error {
+	if cfg.readyPort < 0 || cfg.readyPort > 65535 {
+		return fmt.Errorf("--ready-port must be between 0 and 65535, got %d", cfg.readyPort)
+	}
+	if cfg.readyPort != 0 {
+		addr := net.JoinHostPort("", strconv.Itoa(cfg.readyPort))
+		ready := readyHandler(filepath.Join(cfg.standbyCertDir, certFile), filepath.Join(cfg.standbyCertDir, keyFile))
+		if _, err := cmdsutil.ServeInBackground(ctx, addr, ready, logger); err != nil {
+			return fmt.Errorf("--ready-port: %w", err)
+		}
+	}
+	logger.Info("no ACME domain: standing by while nginx serves the mesh leaf", "cert_dir", cfg.standbyCertDir)
+	<-ctx.Done()
+	logger.Info("shutting down")
+	return nil
+}
+
+// overrideFromFile replaces target with the file's trimmed contents. An unnamed
+// or empty file leaves the flag value in place.
+func overrideFromFile(path string, target *string) error {
+	if path == "" {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if v := strings.TrimSpace(string(data)); v != "" {
+		*target = v
+	}
+	return nil
 }
 
 func validateConfig(cfg *config) error {
@@ -135,14 +219,19 @@ func validateDomain(domain string) error {
 	return nil
 }
 
-func run(cfg config) error {
+func run(cfg config) error { return runWith(cfg, nil) }
+
+// runWith is run with an explicit hostname probe transport; nil uses public
+// DNS and port 80, which is what production needs and tests cannot.
+func runWith(cfg config, probe *http.Client) error {
 	logger, err := newLogger(cfg.logLevel)
 	if err != nil {
 		return err
 	}
 	slog.SetDefault(logger)
 
-	if err := validateConfig(&cfg); err != nil {
+	standby, err := loadFiles(&cfg)
+	if err != nil {
 		return err
 	}
 	if err := os.MkdirAll(cfg.certDir, 0o700); err != nil {
@@ -152,15 +241,26 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, func() {
+	reload := func() {
 		if !cfg.reloadNginx {
 			return
 		}
 		if err := cmdsutil.ReloadNginx(procRoot, logger); err != nil {
 			logger.Error("nginx reload failed", "error", err)
 		}
-	})
+	}
+	if standby {
+		return runStandby(ctx, cfg, logger)
+	}
+	if err := validateConfig(&cfg); err != nil {
+		return err
+	}
+	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, reload)
 	mgr.httpPort = cfg.httpPort
+	if probe == nil {
+		probe = publicProbeClient()
+	}
+	mgr.probe = probe
 
 	challengeAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.challengePort))
 	if _, err := cmdsutil.ServeInBackground(ctx, challengeAddr, mgr.handler(), logger); err != nil {

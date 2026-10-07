@@ -942,7 +942,7 @@ func (p *plugin) socketDirAdjustment(pod *api.PodSandbox, ctr *api.Container) *a
 	if pod.GetAnnotations()[workloadclaims.AnnotationInjected] != "true" {
 		return nil
 	}
-	if !workloadclaims.IsSidecarContainer(ctr.GetName()) {
+	if !workloadclaims.IsSocketConsumer(ctr.GetName()) {
 		return nil
 	}
 	adjust := &api.ContainerAdjustment{}

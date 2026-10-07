@@ -199,6 +199,9 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			var names []string
 			for _, entry := range entries {
 				names = append(names, entry.Name())
+				if entry.IsDir() {
+					continue // router/, covered by TestPrepareWritesRouterInputs
+				}
 				info, err := entry.Info()
 				if err != nil || info.Mode().Perm() != 0644 {
 					t.Fatalf("public file permissions: %v, %v", info, err)
@@ -210,7 +213,7 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 			}
 			want := []string{"cds.json", "peers.json"}
 			if role == launchconfig.Server {
-				want = []string{"allowlist-seed.json", "cds.json", "operator-pubkey", "peers.json", "tls-san"}
+				want = []string{"allowlist-seed.json", "cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
 				for name, expected := range map[string]string{"operator-pubkey": doc.Server.OperatorPublicKey, "tls-san": doc.TLSSAN + "\n"} {
 					data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
 					if err != nil || string(data) != expected {
@@ -247,7 +250,7 @@ func TestPrepareAgentRemovesServerOutputs(t *testing.T) {
 	if err := Prepare(root, document(t, launchconfig.Agent)); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"operator-pubkey", "allowlist-seed.json", "tls-san"} {
+	for _, name := range serverOutputNames {
 		if _, err := os.Stat(filepath.Join(root, PublicDir, name)); !os.IsNotExist(err) {
 			t.Fatalf("agent retained server output %s: %v", name, err)
 		}
@@ -292,5 +295,74 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 		if len(base.Workloads) != 1 {
 			t.Fatalf("duplicate bootstrap entry: %v", base.Workloads)
 		}
+	}
+}
+
+func TestPrepareWritesRouterInputs(t *testing.T) {
+	const upstream = "c8s-gateway.confidential-inference.svc.cluster.local:9443"
+	tests := []struct {
+		name   string
+		router *launchconfig.Router
+		want   map[string]string
+	}{
+		{"unset", nil, map[string]string{
+			"upstream.conf":      "set $c8s_upstream \"\";\n",
+			"tls.conf":           "include /etc/nginx/c8s/tls-cds.conf;\n",
+			"upstream":           "",
+			"hostnames":          "",
+			"acme-email":         "",
+			"acme-directory-url": "",
+			"front-door-mode":    "cds\n",
+		}},
+		{"upstream only", &launchconfig.Router{Upstream: upstream}, map[string]string{
+			"upstream.conf":   "set $c8s_upstream \"" + upstream + "\";\n",
+			"tls.conf":        "include /etc/nginx/c8s/tls-cds.conf;\n",
+			"upstream":        upstream + "\n",
+			"hostnames":       "",
+			"front-door-mode": "cds\n",
+		}},
+		{"public", &launchconfig.Router{
+			Upstream:         upstream,
+			Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
+			ACMEEmail:        "ops@confidential.ai",
+			ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
+		}, map[string]string{
+			"hostnames":          "candidate.api.confidential.ai\napi.confidential.ai\n",
+			"acme-email":         "ops@confidential.ai\n",
+			"acme-directory-url": "https://acme-staging-v02.api.letsencrypt.org/directory\n",
+			"front-door-mode":    "acme\n",
+			"tls.conf":           "include /etc/nginx/c8s/tls-acme.conf;\n",
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := prepareRoot(t)
+			doc := document(t, launchconfig.Server)
+			doc.Router = tc.router
+			if err := Prepare(root, doc); err != nil {
+				t.Fatal(err)
+			}
+			for name, want := range tc.want {
+				path := filepath.Join(root, PublicDir, "router", name)
+				data, err := os.ReadFile(path)
+				if err != nil || string(data) != want {
+					t.Fatalf("%s = %q, %v; want %q", name, data, err, want)
+				}
+				if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0644 {
+					t.Fatalf("%s permissions: %v, %v", name, info, err)
+				}
+			}
+		})
+	}
+
+	// An unvalidated document still cannot publish nginx syntax.
+	root := prepareRoot(t)
+	doc := document(t, launchconfig.Server)
+	doc.Router = &launchconfig.Router{Upstream: upstream + `"; return 200 "x`}
+	if err := Prepare(root, doc); err == nil {
+		t.Fatal("injected upstream was published")
+	}
+	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "upstream.conf")); !os.IsNotExist(err) {
+		t.Fatalf("rejected document published router input: %v", err)
 	}
 }
