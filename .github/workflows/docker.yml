@@ -21,14 +21,16 @@ on:
   # :<short-sha> on its first probe instead of walking ancestry. This exact shape
   # already runs green end to end: run 30024702633 (45cd7a0) took 18s, and its
   # cascade produced a successful SEV-SNP e2e (30024734575).
+  #
+  # The protected beta branch runs the same chain and publishes prereleases.
   push:
-    branches: [main]
+    branches: [main, beta]
   # PRs stay path-gated: a PR run builds and scans but publishes nothing (see the
   # push/dispatch gates on the login and build-push steps), so a docs-only PR has
   # nothing to gain from it. The list is inlined because the YAML anchor it used
   # to alias (&docker-paths) lived on the push trigger above.
   pull_request:
-    branches: [main]
+    branches: [main, beta]
     paths:
       - "**.go"
       - "go.mod"
@@ -151,7 +153,9 @@ jobs:
       - name: Build Docker matrix
         id: docker-matrix
         env:
-          SHARED: ${{ steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' }}
+          # A beta push rebuilds every component: retag-unchanged copies :main,
+          # which does not describe a beta commit.
+          SHARED: ${{ github.ref == 'refs/heads/beta' || steps.filter.outputs['shared-core'] == 'true' || steps.filter.outputs['shared-cmdsutil'] == 'true' || steps.filter.outputs['shared-root'] == 'true' }}
           C8S: ${{ steps.filter.outputs.c8s }}
           CDS: ${{ steps.filter.outputs.cds }}
           GET_CERT: ${{ steps.filter.outputs['get-cert'] }}
@@ -361,7 +365,7 @@ jobs:
     if: |
       always()
       && github.event_name == 'push'
-      && github.ref == 'refs/heads/main'
+      && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta')
       && needs.changes.result == 'success'
       && (needs.go-modules.result == 'success' || needs.go-modules.result == 'skipped')
       && (needs.images.result == 'success' || needs.images.result == 'skipped')

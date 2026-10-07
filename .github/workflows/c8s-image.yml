@@ -98,7 +98,8 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository &&
        (github.event.workflow_run.event == 'push' ||
         github.event.workflow_run.event == 'workflow_dispatch') &&
-       github.event.workflow_run.head_branch == 'main')
+       (github.event.workflow_run.head_branch == 'main' ||
+        github.event.workflow_run.head_branch == 'beta'))
     runs-on: the-machine
     timeout-minutes: 45
     steps:
@@ -167,7 +168,8 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository &&
        (github.event.workflow_run.event == 'push' ||
         github.event.workflow_run.event == 'workflow_dispatch') &&
-       github.event.workflow_run.head_branch == 'main')
+       (github.event.workflow_run.head_branch == 'main' ||
+        github.event.workflow_run.head_branch == 'beta'))
     # 16-core hosted larger runner;
     # scales to 100 concurrent jobs, 600G disk.
     runs-on: the-machine
@@ -614,19 +616,27 @@ jobs:
         working-directory: confidential-os-builder
         env:
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          # A stable release always publishes both exact formats from this
+          # A release always publishes both exact formats from this
           # build. A matching rootfs alone cannot prove that a prior CDI/ORAS
           # pair was completed from the same inputs.
           if [ -n "$RELEASE_TAG" ]; then
-            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]; then
-              echo "::error::invalid stable release tag: $RELEASE_TAG"
+            if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]; then
+              echo "::error::invalid release tag: $RELEASE_TAG"
               exit 1
             fi
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            echo "stable release $RELEASE_TAG requires exact node artifacts"
+            echo "release $RELEASE_TAG requires exact node artifacts"
+            exit 0
+          fi
+          # A beta build never compares against or moves the floating tags,
+          # which track main. It always publishes its commit-suffixed tags.
+          if [ "$HEAD_BRANCH" = beta ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "beta build publishes commit-suffixed tags only"
             exit 0
           fi
 
@@ -654,6 +664,7 @@ jobs:
         working-directory: confidential-os-builder
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
           ROOTFS_UNCHANGED: ${{ steps.changed.outputs.skip }}
         run: |
@@ -661,10 +672,10 @@ jobs:
           SHORT_SHA="${C8S_REF_INPUT:-${HEAD_SHA::7}}"
           # A c8s_ref rebuild repoints only that release's suffixed tags; the
           # floating tags keep tracking main builds, and only move when the
-          # rootfs changed.
+          # rootfs changed. A beta build never moves them.
           CDI_TAGS="${VARIANT}-cdi,${VARIANT}-cdi-${SHORT_SHA}"
           ORAS_TAGS="${VARIANT},${VARIANT}-${SHORT_SHA}"
-          if [ -n "$C8S_REF_INPUT" ] || [ "$ROOTFS_UNCHANGED" = true ]; then
+          if [ -n "$C8S_REF_INPUT" ] || [ "$ROOTFS_UNCHANGED" = true ] || [ "$HEAD_BRANCH" = beta ]; then
             CDI_TAGS="${VARIANT}-cdi-${SHORT_SHA}"
             ORAS_TAGS="${VARIANT}-${SHORT_SHA}"
           fi
@@ -683,7 +694,8 @@ jobs:
           matrix.platform == 'tdx' && github.event_name == 'workflow_run' &&
           github.event.workflow_run.event == 'push' &&
           github.event.workflow_run.head_repository.full_name == github.repository &&
-          github.event.workflow_run.head_branch == 'main'
+          (github.event.workflow_run.head_branch == 'main' ||
+           github.event.workflow_run.head_branch == 'beta')
         env:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
@@ -727,7 +739,8 @@ jobs:
           matrix.platform == 'tdx' && github.event_name == 'workflow_run' &&
           github.event.workflow_run.event == 'push' &&
           github.event.workflow_run.head_repository.full_name == github.repository &&
-          github.event.workflow_run.head_branch == 'main'
+          (github.event.workflow_run.head_branch == 'main' ||
+           github.event.workflow_run.head_branch == 'beta')
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: node-image-acceptance-rke2-tdx-${{ github.run_attempt }}
