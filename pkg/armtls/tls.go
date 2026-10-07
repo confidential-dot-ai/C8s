@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -723,6 +724,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 			return state.getOrProvision(hello.Context())
 		},
 	}
+	refuseResumption(tlsCfg)
 
 	// mTLS: require and verify client certificates.
 	var sharedCA *sharedCACerts
@@ -746,7 +748,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 			sharedCA = newSharedCACerts(cfg.CACert) // empty slice is fine — falls through to embedded-evidence verification
 			tlsCfg.VerifyPeerCertificate = dualVerifyPeerCallback(cfg.ClientPolicy, sharedCA)
 		} else {
-			tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy)
+			tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
 		}
 	}
 
@@ -793,6 +795,7 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, // Custom peer verification.
 	}
+	refuseResumption(tlsCfg)
 
 	// Peer verification: dual-mode if CACert is set (or DynamicCACert for runtime population).
 	var clientSharedCA *sharedCACerts
@@ -800,7 +803,7 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 		clientSharedCA = newSharedCACerts(cfg.CACert) // empty slice is fine — falls through to embedded-evidence verification
 		tlsCfg.VerifyPeerCertificate = dualVerifyPeerCallback(cfg.Policy, clientSharedCA)
 	} else {
-		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.Policy)
+		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.Policy, x509.ExtKeyUsageServerAuth)
 	}
 
 	var mgr *CertManager
@@ -835,9 +838,11 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 	return tlsCfg, mgr, nil
 }
 
-// verifyPeerCallback returns a VerifyPeerCertificate function that checks
-// the peer's armTLS attestation against the given policy.
-func verifyPeerCallback(policy *VerifyPolicy) func([][]byte, [][]*x509.Certificate) error {
+// verifyPeerCallback returns a VerifyPeerCertificate function that checks the
+// peer's armTLS attestation against the given policy. peerPurpose is the TLS
+// purpose the peer's role requires: clientAuth for a client, serverAuth for a
+// server.
+func verifyPeerCallback(policy *VerifyPolicy, peerPurpose x509.ExtKeyUsage) func([][]byte, [][]*x509.Certificate) error {
 	// Extract nonce from policy for use in verification.
 	var nonce []byte
 	if policy != nil {
@@ -845,17 +850,17 @@ func verifyPeerCallback(policy *VerifyPolicy) func([][]byte, [][]*x509.Certifica
 	}
 
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return fmt.Errorf("armtls: no peer certificate")
-		}
-
-		cert, err := x509.ParseCertificate(rawCerts[0])
+		cert, err := parsePeerLeaf(rawCerts)
 		if err != nil {
-			return fmt.Errorf("armtls: parse peer cert: %w", err)
+			return err
 		}
-
-		_, err = VerifyCert(cert, policy, nonce)
-		if err != nil {
+		// The key-type half of this check runs inside VerifyCert; the purpose
+		// half runs first so a peer in the wrong role costs no
+		// attestation-api round-trip.
+		if err := checkPeerPurpose(cert, peerPurpose); err != nil {
+			return err
+		}
+		if _, err := VerifyCert(cert, policy, nonce); err != nil {
 			return fmt.Errorf("armtls: peer attestation failed: %w", err)
 		}
 		return nil
@@ -958,4 +963,177 @@ func dualVerifyPeerCallback(policy *VerifyPolicy, shared *sharedCACerts) func([]
 		}
 		return nil
 	}
+}
+
+// MeshALPN is the application protocol a mesh endpoint negotiates in both
+// roles. A peer that offers no other protocol fails the handshake before any
+// application byte moves (docs/armtls.md, "The mesh endpoint profile").
+const MeshALPN = "c8s-mesh/1"
+
+// MeshConfig configures a mesh endpoint: it presents its pod's CDS-issued leaf
+// and authenticates peers on the chain path alone.
+type MeshConfig struct {
+	// CertProvider provisions the pod's CDS-issued credentials.
+	CertProvider CertProvider
+
+	// MeshCAs are the mesh CAs a peer's leaf must chain to. At least one is
+	// required; [CertManager.UpdateCACerts] replaces the set.
+	MeshCAs []*x509.Certificate
+
+	// Logger, when set, receives structured log messages for certificate
+	// provisioning, rotation, and errors.
+	Logger Logger
+}
+
+// NewMeshServerTLSConfig creates the mesh endpoint's server configuration: it
+// requires a client certificate and authenticates it as a mesh client.
+func NewMeshServerTLSConfig(cfg *MeshConfig) (*tls.Config, *CertManager, error) {
+	tlsCfg, mgr, err := newMeshTLSConfig(cfg, x509.ExtKeyUsageClientAuth)
+	if err != nil {
+		return nil, nil, err
+	}
+	tlsCfg.ClientAuth = tls.RequireAnyClientCert
+	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return mgr.state.getOrProvision(hello.Context())
+	}
+	return tlsCfg, mgr, nil
+}
+
+// NewMeshClientTLSConfig creates the mesh endpoint's client configuration: it
+// presents the pod's leaf and authenticates the peer as a mesh server.
+func NewMeshClientTLSConfig(cfg *MeshConfig) (*tls.Config, *CertManager, error) {
+	tlsCfg, mgr, err := newMeshTLSConfig(cfg, x509.ExtKeyUsageServerAuth)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The peer's identity is its leaf, never the hostname it answers on, so
+	// crypto/tls verification is replaced by the chain callback below.
+	tlsCfg.InsecureSkipVerify = true
+	tlsCfg.GetClientCertificate = func(info *tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		return mgr.state.getOrProvision(info.Context())
+	}
+	return tlsCfg, mgr, nil
+}
+
+func newMeshTLSConfig(cfg *MeshConfig, peerPurpose x509.ExtKeyUsage) (*tls.Config, *CertManager, error) {
+	if cfg == nil || cfg.CertProvider == nil {
+		return nil, nil, fmt.Errorf("armtls: a mesh endpoint requires a CertProvider")
+	}
+	if len(cfg.MeshCAs) == 0 {
+		return nil, nil, fmt.Errorf("armtls: a mesh endpoint requires at least one mesh CA")
+	}
+	cas := newSharedCACerts(cfg.MeshCAs)
+	tlsCfg := &tls.Config{
+		MinVersion:            tls.VersionTLS13,
+		NextProtos:            []string{MeshALPN},
+		VerifyPeerCertificate: chainVerifyPeerCallback(cas, peerPurpose),
+		VerifyConnection:      requireMeshALPN,
+	}
+	refuseResumption(tlsCfg)
+	state := &certState{provider: cfg.CertProvider, logger: cfg.Logger}
+	return tlsCfg, &CertManager{state: state, sharedCA: cas}, nil
+}
+
+// chainVerifyPeerCallback returns a VerifyPeerCertificate function that
+// authenticates a mesh peer by its CDS-issued chain and the workload instance
+// it names. A leaf that does not chain is rejected, never retried against its
+// embedded evidence, so a self-signed peer and a peer from another mesh CA
+// both fail; an emptied CA set rejects every peer.
+func chainVerifyPeerCallback(cas *sharedCACerts, peerPurpose x509.ExtKeyUsage) func([][]byte, [][]*x509.Certificate) error {
+	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
+		leaf, intermediates, err := parsePeerChain(rawCerts)
+		if err != nil {
+			return err
+		}
+		if err := checkPeerKeyType(leaf); err != nil {
+			return err
+		}
+		if err := checkPeerPurpose(leaf, peerPurpose); err != nil {
+			return err
+		}
+		// Chain validity at the current time: what vouches for a mesh leaf is
+		// the CA signature, so there is no evidence window to align a
+		// not-before allowance with. The purpose is checked above, on the leaf
+		// both paths share.
+		if _, err := leaf.Verify(x509.VerifyOptions{
+			Roots:         cas.getPool(),
+			Intermediates: intermediates,
+			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+			CurrentTime:   time.Now(),
+		}); err != nil {
+			return fmt.Errorf("armtls: mesh peer chain to a trusted mesh CA: %w", err)
+		}
+		sandboxID, err := SandboxIDFromCert(leaf)
+		if err != nil {
+			return fmt.Errorf("armtls: mesh peer sandbox ID: %w", err)
+		}
+		if sandboxID == "" {
+			return fmt.Errorf("armtls: mesh peer leaf carries no sandbox-ID extension")
+		}
+		return nil
+	}
+}
+
+// requireMeshALPN refuses a connection that negotiated anything but the mesh
+// protocol. crypto/tls completes a handshake with no protocol at all when the
+// peer offers no ALPN extension, so the negotiated value is checked here.
+func requireMeshALPN(cs tls.ConnectionState) error {
+	if cs.NegotiatedProtocol != MeshALPN {
+		return fmt.Errorf("armtls: peer negotiated protocol %q, want %q", cs.NegotiatedProtocol, MeshALPN)
+	}
+	return nil
+}
+
+// refuseResumption switches TLS session resumption off in both roles — see
+// docs/armtls.md, "No session resumption".
+func refuseResumption(cfg *tls.Config) {
+	cfg.SessionTicketsDisabled = true
+}
+
+// parsePeerLeaf parses the certificate the peer presents for itself.
+func parsePeerLeaf(rawCerts [][]byte) (*x509.Certificate, error) {
+	if len(rawCerts) == 0 {
+		return nil, fmt.Errorf("armtls: no peer certificate")
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return nil, fmt.Errorf("armtls: parse peer cert: %w", err)
+	}
+	return leaf, nil
+}
+
+// parsePeerChain splits the peer's presented certificates into its leaf and
+// the intermediates it offered. An unparsable intermediate is a failure, not a
+// dropped element.
+func parsePeerChain(rawCerts [][]byte) (*x509.Certificate, *x509.CertPool, error) {
+	leaf, err := parsePeerLeaf(rawCerts)
+	if err != nil {
+		return nil, nil, err
+	}
+	intermediates := x509.NewCertPool()
+	for _, raw := range rawCerts[1:] {
+		intermediate, err := x509.ParseCertificate(raw)
+		if err != nil {
+			return nil, nil, fmt.Errorf("armtls: parse peer intermediate: %w", err)
+		}
+		intermediates.AddCert(intermediate)
+	}
+	return leaf, intermediates, nil
+}
+
+// checkPeerPurpose refuses a certificate that does not carry the TLS purpose
+// its holder's role requires.
+func checkPeerPurpose(cert *x509.Certificate, peerPurpose x509.ExtKeyUsage) error {
+	if permitsPurpose(cert, peerPurpose) {
+		return nil
+	}
+	purpose := "serverAuth"
+	if peerPurpose == x509.ExtKeyUsageClientAuth {
+		purpose = "clientAuth"
+	}
+	return fmt.Errorf("armtls: peer certificate does not permit %s", purpose)
+}
+
+func permitsPurpose(cert *x509.Certificate, peerPurpose x509.ExtKeyUsage) bool {
+	return slices.Contains(cert.ExtKeyUsage, peerPurpose)
 }

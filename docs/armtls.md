@@ -279,6 +279,36 @@ re-verifies the leaf's copied nonce-free `.1.1` evidence per connection,
 measurement allowlist included. **No profile sets it today**, so the gap is
 open in practice.
 
+### The mesh endpoint profile
+
+A mesh endpoint presents its pod's CDS-issued leaf and authenticates peers on
+the **chain path alone** (`NewMeshServerTLSConfig`, `NewMeshClientTLSConfig`,
+`tls.go`). A peer is accepted when, and only when:
+
+1. its leaf chains to one of the mesh CAs the endpoint holds, at the current
+   time and with no not-before allowance,
+2. the leaf permits the purpose the peer's role needs — `serverAuth` for a
+   server, `clientAuth` for a client,
+3. its key is ECDSA P-256 or P-384, and
+4. the leaf carries exactly one well-formed sandbox-ID extension.
+
+A failed chain is never retried against the leaf's embedded evidence, so a
+self-signed peer and a peer from another mesh CA both fail. The CA set is
+replaceable at runtime (`CertManager.UpdateCACerts`) and is never unioned with
+historical sets.
+
+Both roles require the ALPN protocol `c8s-mesh/1` and refuse a connection that
+negotiates anything else, so no application byte moves on a peer that does not
+speak the mesh protocol.
+
+### No session resumption
+
+Every armTLS configuration sets `SessionTicketsDisabled` and holds no client
+session cache. `crypto/tls` re-runs no peer verification on a resumed
+handshake and gives a client no revalidation hook, so a resumed connection
+would outlive the checks that admitted it — the current CA trust and sandbox
+ID on the chain path, the current pins on the evidence path.
+
 ## What armTLS guarantees — and what it does not
 
 Direct evidence verification against a pinned policy establishes the claims

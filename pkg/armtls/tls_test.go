@@ -1456,7 +1456,7 @@ func TestVerifyPeerCallback(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, SNPMeasurementSize)
 	stub := mockapi.New(t)
 	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
-	cb := verifyPeerCallback(&VerifyPolicy{AttestationApiURL: stub.URL(), Policy: remote.Policy{Measurements: [][]byte{measurement}}})
+	cb := verifyPeerCallback(&VerifyPolicy{AttestationApiURL: stub.URL(), Policy: remote.Policy{Measurements: [][]byte{measurement}}}, x509.ExtKeyUsageServerAuth)
 
 	_, _, attested := testAttestedCert(t, nil)
 	plain := generateSimpleCert(t)
