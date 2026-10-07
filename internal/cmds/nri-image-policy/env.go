@@ -21,13 +21,37 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
 	ctr, env := adjustedLaunchContainer(req)
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, adjustedMounts(req, ctr))
+	mounts := adjustedMounts(req, ctr)
+	// The gate runs ahead of the admission check and independently of
+	// policy.mode: a protected pod's container runs only once it is verified.
+	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
+		return err
+	}
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, mounts)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		return fmt.Errorf("%s", reason)
 	}
 	// No inventory record here: later validators can still reject creation, and
 	// CDI transformations under an any policy have not happened yet.
 	return nil
+}
+
+// gateMesh applies the mesh startup gate at the one hook whose error always
+// rejects a creation: a create notification can time out and a closed plugin
+// lets the create proceed, while a validator's refusal is the answer.
+func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) error {
+	pod := req.GetPod()
+	if !p.mesh.hosts(pod) {
+		return nil
+	}
+	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
+	adjusted := req.GetAdjust().GetLinux()
+	return p.mesh.admit(pod, ctr, gatedContainer{
+		role:       p.roleOf(launch),
+		digest:     launch.Digest,
+		namespaces: adjusted.GetNamespaces(),
+		netDevices: adjusted.GetNetDevices(),
+	})
 }
 
 // adjustedLaunchContainer applies the env/argv part of cumulative NRI edits.

@@ -141,9 +141,10 @@ func (b *admissionInventory) callerForPeer(peer workloadclaims.Peer) (ctrRec, er
 	return ctrRec{}, fmt.Errorf("caller cgroup names no tracked container")
 }
 
-// SandboxForPeer resolves the calling process to the pod sandbox it runs in,
-// bound by kernel credentials.
-func (b *admissionInventory) SandboxForPeer(peer workloadclaims.Peer) (string, error) {
+// sandboxForPeer resolves the calling process to the pod sandbox it runs in,
+// bound by kernel credentials. The enforcer's own verification of that
+// sandbox's protection is the plugin's answer (plugin.SandboxForPeer).
+func (b *admissionInventory) sandboxForPeer(peer workloadclaims.Peer) (string, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 

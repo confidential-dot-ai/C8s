@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -29,6 +30,8 @@ type config struct {
 	Policy         policyConfig         `yaml:"policy"`
 	Logging        loggingConfig        `yaml:"logging"`
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
+	// Mesh is the trusted mesh policy (roles.go); absent, no member pods.
+	Mesh *meshPolicy `yaml:"mesh"`
 }
 
 // pluginConfig contains plugin runtime settings.
@@ -373,7 +376,28 @@ func (c *config) Validate() error {
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
 	}
+	if err := c.validateMesh(); err != nil {
+		return err
+	}
 	return validateLabelRules(c.Policy.LabelRules)
+}
+
+// validateMesh refuses a mesh policy this node cannot enforce: a role is
+// granted from the node's own measured base, and a member pod needs trusted
+// enforcement from node startup (MM2).
+func (c *config) validateMesh() error {
+	if c.Mesh == nil {
+		return nil
+	}
+	switch {
+	case !meshSupported:
+		return errors.New("mesh is only implemented on linux: the pod ruleset is nftables in a network namespace")
+	case !c.Allowlist.NodeTCB:
+		return errors.New("mesh requires allowlist.node_tcb: a platform role is granted from the node's own measured policy")
+	case c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting:
+		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
+	}
+	return c.Mesh.validate()
 }
 
 // validateLabelRules checks label rules for errors.

@@ -36,15 +36,20 @@ const testHost = "10.0.0.7"
 // fakeResolver is a SandboxResolver test double that records the peer PID the
 // inventory resolved.
 type fakeResolver struct {
-	pid        int
-	sandboxID  string
-	sandboxErr error
-	digests    map[string][]string // sandboxID -> digests
+	pid         int
+	sandboxID   string
+	sandboxErr  error
+	unprotected bool
+	digests     map[string][]string // sandboxID -> digests
 }
 
-func (r *fakeResolver) SandboxForPeer(peer Peer) (string, error) {
+func (r *fakeResolver) SandboxForPeer(peer Peer) (CallerSandbox, error) {
 	r.pid = peer.PID()
-	return r.sandboxID, r.sandboxErr
+	caller := CallerSandbox{SandboxID: r.sandboxID}
+	if r.unprotected {
+		caller.Refusal = errors.New("the enforcer verifies no protection for this sandbox")
+	}
+	return caller, r.sandboxErr
 }
 
 func (r *fakeResolver) DigestsForSandbox(sandboxID string) ([]string, []SandboxContainer, bool, error) {
@@ -171,6 +176,23 @@ func TestSandboxTokenRoute(t *testing.T) {
 	// A missing challenge fails closed rather than skipping the freshness check.
 	if _, err := token.Verify(signer.PublicKey(), &requester.PublicKey, nil); err == nil {
 		t.Fatal("token verified with no challenge")
+	}
+}
+
+// The enforcer's verification gates every assertion: a caller whose pod is not
+// a verified protected mesh member is refused, whatever nonce or consumer the
+// request is for.
+func TestTokenRouteRefusesAnUnverifiedCaller(t *testing.T) {
+	resolver := &fakeResolver{sandboxID: "sandbox-1", unprotected: true}
+	sock := serveTokens(t, resolver, testSigner(t))
+	requester := testRequesterKey(t)
+
+	_, err := FetchSandboxToken(context.Background(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce)
+	if err == nil {
+		t.Fatal("an unverified caller was signed an assertion")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("error = %v, want a 403 refusal", err)
 	}
 }
 
