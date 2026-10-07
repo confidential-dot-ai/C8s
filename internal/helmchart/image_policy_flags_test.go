@@ -13,7 +13,6 @@ func TestChartImagePolicyUsesCanonicalFlags(t *testing.T) {
 	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("first", chartDigestA, `[null,"`+chartDigestB+`"]`)))
 	out, err := helmTemplate(t,
 		"--set-file", "cds.measurementsConfig="+policy,
-		"--set-file", "armtlsMesh.measurementsConfig="+policy,
 		"--set-string", "cds.measurements[0]="+chartDigestA,
 		"--set-string", "cds.rtmrs[0]=1="+chartDigestB,
 	)
@@ -22,7 +21,7 @@ func TestChartImagePolicyUsesCanonicalFlags(t *testing.T) {
 	}
 	// The operator is absent on purpose: the injected clients read the node's
 	// policy from the enforcer's mount, so it passes no policy flag.
-	want := map[string]bool{"c8s-cds": false, "c8s-router": false, "c8s-armtls-mesh": false}
+	want := map[string]bool{"c8s-cds": false, "c8s-router": false}
 	for _, workload := range renderedPodSpecs(t, out) {
 		containers := append(workload.spec.Containers, workload.spec.InitContainers...)
 		for _, container := range containers {

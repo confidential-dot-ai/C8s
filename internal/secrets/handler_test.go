@@ -51,6 +51,12 @@ const (
 	// is needed. Its digest is its own: a digest two entries share matches both
 	// the moment either widens its argv, and MatchWorkload answers ambiguous.
 	testBulkImg = "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+	// testMeshImg is the mesh endpoint image, whose entrypoint is its own.
+	testMeshImg = "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+	// roleCredentials and roleMesh are the roles a node's measured base binds
+	// to the injected containers (internal/cmds/nri-image-policy).
+	roleCredentials = "credentials"
+	roleMesh        = "mesh"
 )
 
 // --- fakes ---
@@ -228,7 +234,7 @@ func newHarness(t *testing.T) *harness {
 		containers: []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
 			{Digest: testAppImg2, Argv: []string{"/metrics"}},
-			{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+			{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}, Role: roleCredentials},
 		},
 	}
 	challenges := &fakeChallenges{used: map[string]bool{}}
@@ -277,7 +283,7 @@ func (hn *harness) declareBulkEntry(t *testing.T) *x509.Certificate {
 	}
 	hn.inv.bySandbox[testBulkSandbox] = []workloadclaims.SandboxContainer{
 		{Digest: testBulkImg, Argv: []string{"/bulk"}},
-		{Digest: testInjected, Argv: []string{"get-secret"}},
+		{Digest: testInjected, Argv: []string{"get-secret"}, Role: roleCredentials},
 	}
 	leaf, _ := leafFor(t, testBulkSandbox)
 	return leaf
@@ -576,15 +582,31 @@ func TestForeignAnyArgvContainerRefused(t *testing.T) {
 	}
 }
 
-// The injected image is an argv-unconstrained entry, so it is dropped only
-// when running an injected entrypoint. A pod that adds it running a shell
-// must not have that container ignored.
-func TestInjectedImageWithForeignArgvIsNotDropped(t *testing.T) {
+// A container is dropped on the role the reporting node binds to it, so a pod
+// that adds the injected image under a command line of its own — which the node
+// grants no role — must not have that container ignored.
+func TestInjectedImageWithoutARoleIsNotDropped(t *testing.T) {
 	hn := newHarness(t)
 	hn.inv.containers = append(hn.inv.containers,
 		workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
 	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
 		t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
+	}
+}
+
+// The pod's mesh endpoint runs the mesh image's own entrypoint, which is no
+// credential client's. It holds the mesh role, so release reads the same
+// workload as a pod without it.
+func TestMeshEndpointIsDropped(t *testing.T) {
+	hn := newHarness(t)
+	hn.seed(t, "/api/db", []byte("stored-secret"))
+	hn.inv.containers = append(hn.inv.containers, workloadclaims.SandboxContainer{
+		Digest: testMeshImg,
+		Argv:   []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"},
+		Role:   roleMesh,
+	})
+	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusOK {
+		t.Fatalf("pod running its mesh endpoint = %d, want 200: %s", w.Code, w.Body)
 	}
 }
 
@@ -663,7 +685,7 @@ func TestReleaseRefusedUntilEveryMainIsRunning(t *testing.T) {
 	hn.seed(t, "/api/db", stored)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}, Role: roleCredentials},
 	}
 	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
 	if w.Code != http.StatusForbidden {
@@ -743,14 +765,14 @@ func TestMethodNotAllowed(t *testing.T) {
 }
 
 // A pod created before a C8s image bump still runs the previous injected image.
-// Both digests are configured for the length of an upgrade, so such a pod is
-// not refused its secret until it happens to be recreated.
+// The node that admitted it reports the role it holds, so such a pod is not
+// refused its secret until it happens to be recreated.
 func TestInjectedImageFromPreviousReleaseIsDropped(t *testing.T) {
 	hn := newHarness(t)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
 		{Digest: testAppImg2, Argv: []string{"/metrics"}},
-		{Digest: testInjectedOld, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjectedOld, Argv: []string{"get-cert", "--san=x"}, Role: roleCredentials},
 	}
 	if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != http.StatusCreated {
 		t.Fatalf("pod running the previous injected image = %d, want 201", w.Code)

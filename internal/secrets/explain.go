@@ -21,7 +21,8 @@ import (
 const ExplainRoute = "/secrets-explain/{sandboxID}"
 
 // ReportedContainer is one container the inventory named, and whether the
-// release path drops it as a platform-injected one.
+// release path drops it as one the node's measured base binds a platform role
+// to.
 type ReportedContainer struct {
 	Env      *pkgallowlist.EnvObservation `json:"env,omitempty"`
 	Mounts   []pkgallowlist.ObservedMount `json:"mounts"`
@@ -157,15 +158,21 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 	}
 
 	for _, c := range reported {
-		injected := isInjected(al, c)
-		entry := ReportedContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts, Injected: injected}
+		platform := c.Role != ""
+		entry := ReportedContainer{
+			Digest:   c.Digest,
+			Argv:     c.Argv,
+			Env:      c.Env,
+			Mounts:   c.Mounts,
+			Injected: platform,
+		}
 		resp.Reported = append(resp.Reported, entry)
-		if injected {
+		if platform {
 			continue
 		}
 		resp.Candidates = append(resp.Candidates, entry)
 	}
-	candidates := WorkloadContainers(al, reported)
+	candidates := WorkloadContainers(reported)
 	if len(candidates) == 0 {
 		resp.Refusal = "every container the sandbox reports is a platform-injected one, so there is nothing to match"
 		return resp

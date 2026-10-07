@@ -52,6 +52,7 @@ func fullWiringOptions(t *testing.T) Options {
 	stubDirectClient(t, fc, nil)
 	return Options{
 		GetCertImage:       "ghcr.io/c8s/c8s:latest",
+		MeshImage:          "ghcr.io/c8s/armtls-mesh:latest",
 		WebhookConfigName:  "c8s-mutating",
 		WebhookServiceName: "c8s-webhook",
 		LeaderElectionNS:   "c8s-system",

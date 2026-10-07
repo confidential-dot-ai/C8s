@@ -50,8 +50,6 @@ type manager struct {
 	dir          string // --cert-dir
 	domains      []string
 	log          *slog.Logger
-	// onInstall fires after a certificate lands on disk (nginx reload).
-	onInstall func()
 	// httpPort is nginx's :80 server on pod loopback, probed before any CA
 	// contact so a validation is never sent at a listener that is still
 	// starting. 0 (tests without a front door) skips the probe; the CLI
@@ -71,14 +69,13 @@ type manager struct {
 	tokens map[string]string // challenge token -> key authorization
 }
 
-func newManager(directoryURL, email, certDir string, domains []string, log *slog.Logger, onInstall func()) *manager {
+func newManager(directoryURL, email, certDir string, domains []string, log *slog.Logger) *manager {
 	return &manager{
 		directoryURL: directoryURL,
 		email:        email,
 		dir:          certDir,
 		domains:      domains,
 		log:          log,
-		onInstall:    onInstall,
 		recheck:      recheckInterval,
 		retry:        retryInterval,
 		tokens:       make(map[string]string),
@@ -233,9 +230,6 @@ func (m *manager) ensure(ctx context.Context) {
 		return
 	}
 	m.log.Info("certificate issued", "domains", domains)
-	if m.onInstall != nil {
-		m.onInstall()
-	}
 }
 
 // acmeClient lazily initializes the ACME account: key from disk or freshly

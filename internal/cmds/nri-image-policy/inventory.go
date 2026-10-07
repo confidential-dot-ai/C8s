@@ -45,15 +45,17 @@ func newAdmissionInventory(procRoot string) *admissionInventory {
 	}
 }
 
-// record notes an admitted container, injected sidecars included: /digests is
-// an inventory of what was admitted in the sandbox, and the injected images are
-// admitted under any argv, so CDS drops them from workload matching itself.
-// argv is the effective OCI process.args the container runs.
+// record notes an admitted container outside every platform role. argv is the
+// effective OCI process.args the container runs.
 func (b *admissionInventory) record(containerID, sandboxID, name, digest string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {
-	b.recordObserved(containerID, sandboxID, name, digest, argv, env, mounts)
+	b.recordObserved(containerID, sandboxID, name, digest, "", argv, env, mounts)
 }
 
-func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest string, argv []string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
+// recordObserved notes an admitted container, the platform's own containers
+// included: /digests is an inventory of what was admitted in the sandbox, and
+// role names the one each platform container holds, so CDS drops them from
+// workload matching without reading their command line.
+func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest, role string, argv []string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) {
 	if containerID == "" || sandboxID == "" {
 		return
 	}
@@ -62,7 +64,7 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: digest, argv: argv}
 
 	rec := b.admitted[sandboxID]
-	rec.Record(containerID, digest, argv, env, mounts...)
+	rec.Record(containerID, digest, role, argv, env, mounts...)
 	b.admitted[sandboxID] = rec
 
 	// A container implies its sandbox, so a record arriving before (or without)
@@ -183,10 +185,11 @@ func (b *admissionInventory) sandboxForPeer(peer workloadclaims.Peer) (string, e
 	return caller.sandboxID, nil
 }
 
-// DigestsForSandbox reports every container ever admitted in the sandbox,
-// injected containers included: CDS drops the injected ones itself. Digests is
-// the sorted, deduplicated digest set (issuance); containers carries the
-// per-container (digest, argv) detail, sorted for a stable answer.
+// DigestsForSandbox reports every container ever admitted in the sandbox, the
+// platform's own containers included, each carrying the role this node's
+// measured base binds to it. Digests is the sorted, deduplicated digest set
+// (issuance); containers carries the per-container (digest, argv, role) detail,
+// sorted for a stable answer.
 //
 // An unresolved digest fails the whole answer rather than commit a subset as if
 // it were the whole inventory.

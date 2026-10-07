@@ -284,25 +284,6 @@ func (w Workload) containers() []Container {
 	return slices.Concat(w.InitContainers, w.Containers)
 }
 
-// AdmitsAnyArgv reports whether some entry admits the digest under an
-// unconstrained argv policy. The injected-container drop set (internal/secrets)
-// keys on it: C8s's own images run with per-pod arguments, so they are only
-// ever admitted this way.
-func (a *Allowlist) AdmitsAnyArgv(digest string) bool {
-	d, err := types.ParseDigest(digest)
-	if err != nil {
-		return false
-	}
-	for _, w := range a.Workloads {
-		for _, c := range w.containers() {
-			if c.Digest == d && c.AnyArgv() {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // DigestEntry is the entry that admits an image under any command line: one
 // container at digest, labelled with the image reference. The chart seeds one
 // per bootstrap digest and `c8s allowlist add` writes one.

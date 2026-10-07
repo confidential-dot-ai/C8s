@@ -115,6 +115,7 @@ func TestSetupManagerFullWiring(t *testing.T) {
 	opts := Options{
 		DisableStatusMirror: true,
 		GetCertImage:        "ghcr.io/c8s/c8s:latest",
+		MeshImage:           "ghcr.io/c8s/armtls-mesh:latest",
 		WebhookConfigName:   "c8s-mutating",
 		WebhookServiceName:  "c8s-webhook",
 		LeaderElectionNS:    "c8s-system",
@@ -256,18 +257,26 @@ func TestWebhookCertRotatorRetriesOnFailure(t *testing.T) {
 	}
 }
 
-// A mesh image with no image for the credential containers would inject an
-// endpoint with nothing to publish the credentials it reads, so the operator
-// refuses to start instead of injecting half a mesh.
-func TestSetupManagerRefusesMeshImageWithoutGetCertImage(t *testing.T) {
-	mgr := newTestManager(t)
-	opts := Options{
-		DisableStatusMirror: true,
-		MeshImage:           "ghcr.io/c8s/armtls-mesh:latest",
-		LeaderElectionNS:    "c8s-system",
-	}
-	err := setupManager(context.Background(), mgr, nil, opts, logr.Discard())
-	if err == nil || !strings.Contains(err.Error(), "--mesh-image needs --get-cert-image") {
-		t.Fatalf("err = %v, want the missing get-cert image refused", err)
+// The mesh endpoint and the credential containers are one injected shape, so
+// an operator holding only one of their images injects half a mesh: it refuses
+// to start instead.
+func TestSetupManagerRefusesOneImageWithoutTheOther(t *testing.T) {
+	for _, opts := range []Options{
+		{
+			DisableStatusMirror: true,
+			MeshImage:           "ghcr.io/c8s/armtls-mesh:latest",
+			LeaderElectionNS:    "c8s-system",
+		},
+		{
+			DisableStatusMirror: true,
+			GetCertImage:        "ghcr.io/c8s/c8s:latest",
+			LeaderElectionNS:    "c8s-system",
+		},
+	} {
+		mgr := newTestManager(t)
+		err := setupManager(context.Background(), mgr, nil, opts, logr.Discard())
+		if err == nil || !strings.Contains(err.Error(), "one injected shape") {
+			t.Fatalf("err = %v, want the half-configured shape refused", err)
+		}
 	}
 }

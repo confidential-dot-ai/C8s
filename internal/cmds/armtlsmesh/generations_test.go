@@ -63,6 +63,9 @@ type leafSpec struct {
 	notAfter       time.Time
 	purposes       []x509.ExtKeyUsage
 	omitInstanceID bool
+	// armtlsExt is an armTLS attestation extension the leaf also carries, as
+	// CDS copies the requester's onto it.
+	armtlsExt *pkix.Extension
 }
 
 // issue returns the published set of a generation issued by this CA.
@@ -100,6 +103,9 @@ func (ca meshCA) issue(t *testing.T, spec leafSpec) publishedSet {
 		}
 		tmpl.ExtraExtensions = []pkix.Extension{ext}
 	}
+	if spec.armtlsExt != nil {
+		tmpl.ExtraExtensions = append(tmpl.ExtraExtensions, *spec.armtlsExt)
+	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca.cert, key.Public(), ca.key)
 	if err != nil {
 		t.Fatal(err)
@@ -115,7 +121,14 @@ func (ca meshCA) issue(t *testing.T, spec leafSpec) publishedSet {
 // from this CA: what a real mesh endpoint on the other side presents.
 func (ca meshCA) meshConfigs(t *testing.T) (server, client *tls.Config) {
 	t.Helper()
-	g, err := adoptPublishedSet(ca.issue(t, leafSpec{}), time.Now(), discardLogger())
+	return ca.meshConfigsFor(t, leafSpec{})
+}
+
+// meshConfigsFor is those configurations for a peer holding the leaf spec
+// names, so a test can present a leaf of its own shape.
+func (ca meshCA) meshConfigsFor(t *testing.T, spec leafSpec) (server, client *tls.Config) {
+	t.Helper()
+	g, err := adoptPublishedSet(ca.issue(t, spec), time.Now(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

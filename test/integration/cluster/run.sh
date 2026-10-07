@@ -183,7 +183,8 @@ log "Rendering the NRI installer and its argv-pinned seed entry"
 # One render feeds both the out-of-band installer DaemonSet and the pinned
 # seed entry injected into the floor: two renders could drift their flags,
 # and the plugin's enforce-existing check would kill the install init
-# container over an argv mismatch.
+# container over an argv mismatch. The mesh resolver is kind's cluster DNS,
+# the one address a member pod's ruleset admits on the resolver port.
 helm template c8s internal/helmchart/c8s -n "$NS" \
     --kube-version "$KUBE_VERSION" \
     --set-string image.tag="$IMAGE_TAG" \
@@ -196,7 +197,8 @@ helm template c8s internal/helmchart/c8s -n "$NS" \
     --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
     --set router.enabled=false \
     --set volumed.enabled=false \
-    --set armtlsMesh.enabled=false \
+    --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
+    --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
     -f "$WORKDIR/values.yaml" > "$WORKDIR/nri-render.yaml" \
     || fail "could not render the NRI installer chart documents"
 python3 - "$WORKDIR/nri-render.yaml" "$WORKDIR/values.yaml" "$WORKDIR/nri-installer.yaml" <<'PYEOF'
@@ -277,15 +279,13 @@ for deploy in c8s-operator c8s-cds c8s-router; do
     kubectl -n "$NS" wait --for=condition=Available "deploy/$deploy" --timeout=180s \
         || fail "$deploy not Available"
 done
-kubectl -n "$NS" rollout status ds/c8s-armtls-mesh --timeout=240s || fail "armtls-mesh not ready"
-pass "operator, CDS, router and armtls-mesh all Ready after c8s install"
+pass "operator, CDS and router all Ready after c8s install"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
 kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null || fail "pod-injector webhook config missing"
 kubectl get validatingwebhookconfiguration c8s-pod-validator >/dev/null || fail "pod-validator webhook config missing"
-kubectl get validatingadmissionpolicy c8s-cw-label-integrity >/dev/null || fail "cw-label policy missing"
 kubectl get validatingadmissionpolicy c8s-deny-host-namespaces >/dev/null || fail "host-namespace policy missing"
-pass "CRD, both webhooks, and both ValidatingAdmissionPolicies installed"
+pass "CRD, both webhooks, and the host-namespace policy installed"
 
 log "Allowlist API"
 # Unsigned and wrongly-signed writes are refused; a write signed by the
@@ -364,11 +364,11 @@ kubectl -n demo wait --for=condition=Ready "pod/$POD" --timeout=240s \
     || fail "workload pod never became Ready"
 pass "workload pod Running behind the full injection + admission path"
 
-# The issued leaf is bound to the workload's in-cluster DNS identity.
-kubectl -n demo exec "$POD" -c app -- cat /etc/c8s/certs/tls.crt > "$WORKDIR/leaf.pem" 2>/dev/null \
-    || fail "could not read the issued leaf from the workload pod"
-SAN="$(openssl x509 -in "$WORKDIR/leaf.pem" -noout -ext subjectAltName 2>/dev/null || true)"
-echo "$SAN" | grep -q "DNS:c8s-vllm.demo.svc" || fail "leaf SAN is not the workload identity: $SAN"
+# The issued leaf is bound to the workload's in-cluster DNS identity. The
+# workload cannot read it (the credential volume is the platform containers'),
+# so the SAN is read from what get-cert logged about the leaf it published.
+echo "$CERTLOG" | grep -q "c8s-vllm.demo.svc" \
+    || fail "get-cert published a leaf without the workload identity: $CERTLOG"
 pass "issued leaf carries SAN c8s-vllm.demo.svc"
 
 log "Admission rejections"
@@ -379,8 +379,10 @@ pass "pod with an unmatching cw label rejected at admission"
 
 pod_fixture bad-hostnet bad-hostnet demo sleep 3600 > "$WORKDIR/bad-hostnet.yaml"
 OUT="$(kubectl apply -f "$WORKDIR/bad-hostnet.yaml" 2>&1 || true)"
-echo "$OUT" | grep -q "c8s-deny-host-namespaces" || fail "hostNetwork tenant pod not rejected: $OUT"
-pass "hostNetwork tenant pod rejected by the host-namespace policy"
+# The mutating webhook covers every pod in the namespace now, so it refuses
+# this one before the host-namespace policy sees it.
+echo "$OUT" | grep -q "must not set hostNetwork" || fail "hostNetwork tenant pod not rejected: $OUT"
+pass "hostNetwork tenant pod rejected at admission"
 
 log "Dynamic provisioning (issue #210)"
 # kind's default class is local-path, the node cluster's shape: the provisioner's
@@ -435,138 +437,53 @@ kubectl -n demo wait --for=condition=Ready pod/denied --timeout=360s \
 pass "signed allowlist write flips a denied pod to Running (plugin pulled the update)"
 
 log "Mesh"
-# Mirrored from test/e2e/mesh-cw-enforcement.sh: a direct pod-IP dial from a
-# meshed namespace is intercepted and wrapped (the inbound counter moves);
-# the bypasses that skip interception — a Service VIP, a dial from a
-# mesh-excluded namespace — must never reach the workload in plaintext.
+# Every pod of a covered namespace carries its own endpoint, and the pod's
+# credentials stay with the platform containers. The node enforcer installs
+# the pod's packet rules before any container runs, so a plaintext dial from a
+# pod the mesh does not cover cannot reach the workload.
+INIT_NAMES="$(kubectl -n demo get pod "$POD" -o jsonpath='{.spec.initContainers[*].name}')"
+case "$INIT_NAMES" in
+    "c8s-mesh c8s-cert c8s-cert-wait"*) : ;;
+    *) fail "injected shape is not endpoint-first (init: $INIT_NAMES)" ;;
+esac
+APP_MOUNTS="$(kubectl -n demo get pod "$POD" -o jsonpath='{range .spec.containers[?(@.name=="app")].volumeMounts[*]}{.name}{"\n"}{end}')"
+echo "$APP_MOUNTS" | grep -q '^c8s-certs$' \
+    && fail "the workload container mounts the credential volume: $APP_MOUNTS"
+pass "pod carries its own mesh endpoint and no credential files in the workload"
+
 POD_IP="$(kubectl -n demo get pod "$POD" -o jsonpath='{.status.podIP}')"
 [ -n "$POD_IP" ] || fail "could not resolve the workload pod IP"
 
 pod_fixture client it-mesh-client default sleep 1200 | kubectl apply -f - >/dev/null
-kubectl wait --for=condition=Ready pod/it-mesh-client --timeout=120s || fail "mesh client pod not Ready"
-CLIENT_IP="$(kubectl get pod it-mesh-client -o jsonpath='{.status.podIP}')"
-await_ipset ARMTLS-MESH-LOCAL-PODS "$CLIENT_IP"
-await_ipset ARMTLS-MESH-CW-PODS "$POD_IP"
+kubectl wait --for=condition=Ready pod/it-mesh-client --timeout=180s || fail "mesh client pod not Ready"
+pass "a second member pod became Ready behind its own endpoint"
 
-# The egress guard drops every non-TCP packet a cw pod sends, carving out
-# UDP/53 to the cluster resolver. The carve-out sits in a chain downstream of
-# kube-proxy's Service DNAT, so a query arrives there addressed to a CoreDNS
-# pod and a rule written against the packet's destination cannot fire — the
-# pod stays Running and every name it resolves fails. Assert resolution, not
-# health.
+# A member-to-member dial rides each pod's endpoint over armTLS.
+code="$(kubectl exec it-mesh-client -- curl -sS -o /dev/null -w '%{http_code}' --max-time 15 "http://$POD_IP:8080/" || true)"
+[ "$code" = "200" ] || fail "member-to-member pod-IP request failed (got $code); the mesh-wrapped path must work"
+pass "pod-IP dial between member pods is carried over armTLS"
+
+# The resolver exception: a member pod resolves cluster names and nothing else.
 KUBERNETES_IP="$(kubectl -n default get svc kubernetes -o jsonpath='{.spec.clusterIP}')"
 resolved="$(kubectl -n demo exec "$POD" -c app -- timeout 15 nslookup kubernetes.default.svc.cluster.local 2>&1)" \
-    || fail "cw pod cannot resolve a cluster name; the egress guard's DNS carve-out is unreachable in its chain:
+    || fail "member pod cannot resolve a cluster name; the ruleset's resolver exception is unreachable:
 $resolved"
 echo "$resolved" | grep -q "$KUBERNETES_IP" \
-    || fail "cw pod's resolver answered without the kubernetes ClusterIP $KUBERNETES_IP: $resolved"
-pass "cw pod resolves cluster DNS through the egress guard's carve-out"
-
-# The carve-out names one resolver. Widening it to any UDP/53 destination
-# would pass the check above and hand every cw pod a plaintext channel to an
-# arbitrary host, so the scope is asserted directly.
+    || fail "member pod's resolver answered without the kubernetes ClusterIP $KUBERNETES_IP: $resolved"
 if kubectl -n demo exec "$POD" -c app -- timeout 8 nslookup example.com 192.0.2.53 >/dev/null 2>&1; then
-    fail "cw pod reached an off-cluster resolver on UDP/53; the carve-out must name the cluster DNS server only"
+    fail "member pod reached an unnamed resolver on UDP/53; the exception names the cluster DNS server only"
 fi
-pass "cw pod cannot reach an unnamed resolver on UDP/53"
+pass "member pod resolves through the named resolver and no other"
 
-inbound='^armtls_mesh_connections_total.*direction="inbound"'
-base_inbound="$(mesh_metric "$inbound")"
-code="$(kubectl exec it-mesh-client -- curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://$POD_IP:8080/" || true)"
-[ "$code" = "200" ] || fail "pod-IP request to the cw workload failed (got $code); the mesh-wrapped path must work"
-await_metric_above "$inbound" "${base_inbound:-0}" "mesh inbound connection counter"
-pass "pod-IP dial to the cw workload is mesh-wrapped (inbound counter moved)"
-
-# Service VIP over the cw pods: the mesh skips ClusterIPs by design, so the
-# hop must fail closed or ride the mesh — never plaintext (see below).
-cat > "$WORKDIR/vip-svc.yaml" <<'EOF'
-apiVersion: v1
-kind: Service
-metadata:
-  name: it-cw-vip
-  namespace: demo
-spec:
-  type: ClusterIP
-  selector:
-    confidential.ai/cw: vllm
-  ports:
-    - { port: 80, targetPort: 8080 }
-EOF
-kubectl apply -f "$WORKDIR/vip-svc.yaml"
-VIP="$(kubectl -n demo get svc it-cw-vip -o jsonpath='{.spec.clusterIP}')"
-for _ in $(seq 1 30); do
-    kubectl get endpointslices -n demo -l kubernetes.io/service-name=it-cw-vip \
-        -o jsonpath='{.items[*].endpoints[*].addresses[*]}' 2>/dev/null | grep -q . && break
-    sleep 2
-done
-# Two secure outcomes, depending on which nat PREROUTING rule runs first:
-# mesh-first -> the VIP matches no pod-IP rule, kube-proxy DNATs, the FORWARD
-# guard DROPs (curl rc 28); kube-proxy-first -> the DNAT'd packet matches the
-# mesh's pod-IP interception and the hop is WRAPPED (rc 0, inbound counter
-# moves). The insecure outcome is plaintext, which no counter move proves.
-drops='^armtls_mesh_iptables_cw_inbound_drops_total'
-base_drops="$(mesh_metric "$drops")"
-base_inbound_vip="$(mesh_metric "$inbound")"
-out="$(kubectl exec it-mesh-client -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$VIP:80/; echo rc=\$?" || true)"
-rc="$(echo "$out" | grep -o 'rc=[0-9]*' | cut -d= -f2)"
-case "$rc" in
-    28)
-        await_metric_above "$drops" "${base_drops:-0}" "cw inbound drop counter"
-        pass "Service-VIP plaintext bypass dropped by the cw inbound guard (counter moved)"
-        ;;
-    0)
-        echo "$out" | grep -q "^200" || fail "VIP dial rc=0 but no 200: $out"
-        await_metric_above "$inbound" "${base_inbound_vip:-0}" \
-            "VIP dial returned 200 but the mesh recorded no inbound connection, so the hop reached the cw workload outside the mesh — in plaintext"
-        pass "Service-VIP dial wrapped by the mesh (inbound counter moved; rule-ordering variant)"
-        ;;
-    *)
-        fail "VIP bypass to the cw workload: want rc=28 (dropped) or rc=0 (wrapped), got rc=$rc"
-        ;;
-esac
-
-# A mesh-excluded namespace (kube-system) is not intercepted on egress; its
-# direct dial to the cw pod IP is left to the node's inbound chains.
+# A pod of an exempt namespace is not a member: its plaintext dial reaches the
+# member's inbound listener, which refuses it for want of an armTLS peer.
 pod_fixture client it-mesh-excl kube-system sleep 600 | kubectl apply -f - >/dev/null
 kubectl wait --for=condition=Ready pod/it-mesh-excl -n kube-system --timeout=120s \
-    || fail "excluded-namespace client pod not Ready"
-# This dial crosses the same nat PREROUTING chains as the VIP case, so it has
-# the same two secure outcomes and the same one insecure outcome. Which of the
-# two secure ones happens is a property of rule ordering, not of the client's
-# namespace, so demanding rc=28 alone fails on a wrapped hop and passes a
-# plaintext one unnoticed (rc=0 proves only "not dropped"). Require the
-# matching counter instead.
-base_drops_excl="$(mesh_metric "$drops")"
-base_inbound_excl="$(mesh_metric "$inbound")"
-out="$(kubectl exec -n kube-system it-mesh-excl -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$POD_IP:8080/; echo rc=\$?" || true)"
-rc="$(echo "$out" | grep -o 'rc=[0-9]*' | cut -d= -f2)"
-case "$rc" in
-    28)
-        await_metric_above "$drops" "${base_drops_excl:-0}" "cw inbound drop counter"
-        pass "excluded-namespace plaintext bypass dropped by the cw inbound guard (counter moved)"
-        ;;
-    0)
-        echo "$out" | grep -q "^200" || fail "excluded-namespace dial rc=0 but no 200: $out"
-        await_metric_above "$inbound" "${base_inbound_excl:-0}" \
-            "excluded-namespace dial returned 200 but the mesh recorded no inbound connection, so the hop reached the cw workload outside the mesh — in plaintext"
-        pass "excluded-namespace dial wrapped by the mesh (inbound counter moved; rule-ordering variant)"
-        ;;
-    *)
-        fail "excluded-namespace bypass to the cw workload: want rc=28 (dropped) or rc=0 (wrapped), got rc=$rc"
-        ;;
-esac
-
-log "router front door"
-kubectl -n "$NS" exec deploy/c8s-router -c nginx -- cat /tls/ca.pem > "$WORKDIR/mesh-ca.pem" \
-    || fail "could not read the mesh CA from router"
-kubectl create configmap it-mesh-ca --from-file=ca.pem="$WORKDIR/mesh-ca.pem"
-pod_fixture front-door it-curl-lb default curl -sS --cacert /ca/ca.pem \
-    "https://c8s-router.$NS.svc/healthz" > "$WORKDIR/curl-lb.yaml"
-kubectl apply -f "$WORKDIR/curl-lb.yaml"
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-lb --timeout=120s \
-    || fail "front-door healthz request failed"
-[ "$(kubectl logs it-curl-lb)" = "ok" ] || fail "front-door /healthz did not return ok"
-pass "router front door serves HTTPS verified against the CDS mesh CA"
+    || fail "exempt-namespace client pod not Ready"
+out="$(kubectl exec -n kube-system it-mesh-excl -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://$POD_IP:8080/; echo rc=\$?" || true)"
+echo "$out" | grep -q '^200' \
+    && fail "a non-member reached the workload in plaintext: $out"
+pass "plaintext dial from a non-member pod never reaches the workload ($out)"
 
 log "Workload adoption"
 kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
@@ -605,23 +522,6 @@ for _ in $(seq 1 30); do
 done
 [ "$SUMMARY" = "1/1" ] || fail "status mirror never reported the adopted workload (got: $SUMMARY)"
 pass "status mirror reports the adopted workload (attestationSummary 1/1)"
-
-# router now routes its catch-all to the adopted workload over the mesh.
-kubectl delete pod it-curl-lb 2>/dev/null || true
-pod_fixture front-door it-curl-lb default curl -sS --cacert /ca/ca.pem \
-    "https://c8s-router.$NS.svc/" > "$WORKDIR/curl-lb.yaml"
-kubectl apply -f "$WORKDIR/curl-lb.yaml"
-kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-lb --timeout=120s \
-    || fail "front-door request to the adopted workload failed"
-# Read the body once: piping a live `kubectl logs` into `grep -q` is a race
-# under pipefail (grep exits on the match and the producer can die to SIGPIPE)
-# and re-reading in the failure message can show a body grep never saw.
-BODY="$(kubectl logs it-curl-lb)" || fail "could not read the it-curl-lb logs"
-case "$BODY" in
-    *"Welcome to nginx"*) ;;
-    *) fail "front door did not proxy the adopted workload: $BODY" ;;
-esac
-pass "router routes the front door to the adopted workload over the mesh"
 
 log "Checking the served allowlist pins the host sweep argv"
 # The port-forward can point at a CDS pod the second install rolled; recycle

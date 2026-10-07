@@ -165,7 +165,7 @@ func TestProbeTargetsRefuseWhatCannotBeForwarded(t *testing.T) {
 func TestPodEndpointRefusesAnUnforwardableProbeFromTheEnvironment(t *testing.T) {
 	volume := testVolume(t)
 	t.Setenv(workloadclaims.MeshProbesEnv, workloadclaims.MeshProbePath(workloadclaims.MeshInboundPort, "/healthz"))
-	cmd := newPodEndpointCommand()
+	cmd := newArmtlsMeshCommand()
 	cmd.SetArgs([]string{
 		"--cert-path", volume.dir + "/" + volume.chainName,
 		"--key-path", volume.dir + "/" + volume.keyName,

@@ -129,7 +129,7 @@ func TestImagePolicyFlagsCanonicalSources(t *testing.T) {
 		t.Run(flag, func(t *testing.T) {
 			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 			var source ImagePolicySource
-			BindImagePolicyFlags(fs, &source.File, &source.JSON, "", "test identity policy")
+			BindImagePolicyFlags(fs, &source.File, &source.JSON, "test identity policy")
 			value := identityPolicyFile
 			if strings.HasSuffix(flag, "json") {
 				value = string(doc)
@@ -158,7 +158,7 @@ func TestImagePolicyFlagsRejectMixedSources(t *testing.T) {
 			t.Run(first+"+"+second, func(t *testing.T) {
 				fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 				var source ImagePolicySource
-				BindImagePolicyFlags(fs, &source.File, &source.JSON, "", "test")
+				BindImagePolicyFlags(fs, &source.File, &source.JSON, "test")
 				err := fs.Parse([]string{"--" + first, "first", "--" + second, "second"})
 				if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
 					t.Fatalf("ambiguous policy flags accepted: %v", err)
@@ -167,41 +167,38 @@ func TestImagePolicyFlagsRejectMixedSources(t *testing.T) {
 		}
 		fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
 		var source ImagePolicySource
-		BindImagePolicyFlags(fs, &source.File, &source.JSON, "", "test")
+		BindImagePolicyFlags(fs, &source.File, &source.JSON, "test")
 		if err := fs.Parse([]string{"--" + first, ""}); err == nil {
 			t.Fatalf("explicit empty %s silently disabled pinning", first)
 		}
 	}
 }
 
-func TestImagePolicyFileFlagsKeepIndependentCDSSelection(t *testing.T) {
+func TestImagePolicyFileFlagExposesNoInlineJSON(t *testing.T) {
 	fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
-	var peers, cds string
-	BindImagePolicyFlags(fs, &peers, nil, "", "mesh peers")
-	BindImagePolicyFlags(fs, &cds, nil, "cds-", "CDS")
-	if fs.Lookup("image-policy-json") != nil || fs.Lookup("measurements-config-json") != nil {
+	var peers string
+	BindImagePolicyFlags(fs, &peers, nil, "mesh peers")
+	if fs.Lookup("image-policy-json") != nil {
 		t.Fatal("file-only command unexpectedly exposed inline JSON")
 	}
-	if err := fs.Parse([]string{"--image-policy-file", "peers.json", "--cds-image-policy-file", "cds.json"}); err != nil {
+	if err := fs.Parse([]string{"--image-policy-file", "peers.json"}); err != nil {
 		t.Fatal(err)
 	}
-	if peers != "peers.json" || cds != "cds.json" {
-		t.Fatal("separate CDS policy replaced the peer policy")
+	if peers != "peers.json" {
+		t.Fatalf("--image-policy-file = %q, want %q", peers, "peers.json")
 	}
 }
 
 func TestImagePolicyFlagsRejectRemovedAliases(t *testing.T) {
-	for _, prefix := range []string{"", "cds-"} {
-		for _, name := range []string{"measurements-config", "measurements-config-json"} {
-			t.Run(prefix+name, func(t *testing.T) {
-				fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
-				var source ImagePolicySource
-				BindImagePolicyFlags(fs, &source.File, &source.JSON, prefix, "test")
-				if err := fs.Parse([]string{"--" + prefix + name, "policy.json"}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
-					t.Fatalf("removed alias accepted: %v", err)
-				}
-			})
-		}
+	for _, name := range []string{"measurements-config", "measurements-config-json"} {
+		t.Run(name, func(t *testing.T) {
+			fs := pflag.NewFlagSet("test", pflag.ContinueOnError)
+			var source ImagePolicySource
+			BindImagePolicyFlags(fs, &source.File, &source.JSON, "test")
+			if err := fs.Parse([]string{"--" + name, "policy.json"}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+				t.Fatalf("removed alias accepted: %v", err)
+			}
+		})
 	}
 }
 

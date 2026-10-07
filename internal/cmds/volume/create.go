@@ -246,7 +246,7 @@ func printResult(w io.Writer, cfg createConfig, path string, size uint64, v Veri
 
 	fmt.Fprintf(w, "\nAllowlist mount policy for every container in the entry:\n")
 	fmt.Fprintf(w, "  \"mounts\": {\"policy\": \"any\"}\n")
-	fmt.Fprintf(w, "\nThe webhook mounts this volume and the cert volume into every container, and the\nentry's mount policy has to admit them. docs/volumes.md — \"The mount policy\" —\nhas the exact form.\n")
+	fmt.Fprintf(w, "\nThe webhook mounts this volume into every container, and the entry's mount\npolicy has to admit it. docs/volumes.md — \"The mount policy\" — has the exact\nform.\n")
 }
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }

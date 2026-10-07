@@ -8,9 +8,10 @@ node:
 ## both enumerate from, so adding a component is one edit here.
 ##   - valuePath:   dotted path to the component's image object (repository/
 ##                  tag/digest live there).
-##   - enabledPath: dotted path to its deploy toggle ("" = always deployed); a
-##                  disabled component is neither derived into the NRI allowlist
-##                  nor coverage-checked.
+##   - enabledPath: dotted path to its deploy toggle; absent means the
+##                  component is always deployed. A disabled component is
+##                  neither derived into the NRI allowlist nor
+##                  coverage-checked.
 ##   - cdsExempt:   cds is always seeded via its self-entry (independent of
 ##                  deriveComponents), so the fail-closed coverage guard skips it.
 ##   - pinnedDigest: the digest `c8s install` pins for this component instead of
@@ -23,10 +24,8 @@ node:
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
   - valuePath: image
-    enabledPath: ""
     cdsExempt: false
   - valuePath: cds.image
-    enabledPath: ""
     cdsExempt: true
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
@@ -35,8 +34,9 @@ c8sComponents:
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
     pinnedDigest: sha256:fb0d98a3f248f6d0f0a8feb8d497fba58d40d775b2db3e9e33d25d3fb283815f
+    ## The injected mesh endpoint: every covered pod runs it, so the node
+    ## must admit it whatever else is deployed.
   - valuePath: armtlsMesh.image
-    enabledPath: armtlsMesh.enabled
     cdsExempt: false
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
@@ -138,12 +138,6 @@ webhook:
     port: 443
   failurePolicy: Fail
   extraExcluded: []
-  ## ValidatingAdmissionPolicy guarding the confidential.ai/cw pod label
-  ## (workload Service membership): at CREATE it must match the opt-in
-  ## annotation, and both keys are immutable on UPDATE. Enforced in the API
-  ## server, so it holds even when the injection webhook is down.
-  cwLabelPolicy:
-    enabled: true
   certVolume:
     fsGroup: 65532
   getCert:
@@ -394,22 +388,10 @@ attestationApi:
       cpu: 500m
       memory: 256Mi
 
-## armTLS service mesh: transparent L4 proxy with hardware-attested mTLS.
-##
-## --- CRITICAL OPERATIONAL REQUIREMENT ---
-## The armtls-mesh DaemonSet hardcodes hostNetwork: true and
-## dnsPolicy: ClusterFirstWithHostNet (see templates/armtls-mesh-daemonset.yaml).
-## Both are non-toggleable: iptables-sync must run in the host network namespace
-## to intercept pre-DNAT pod traffic at the node level, and the paired
-## dnsPolicy keeps in-cluster service DNS working from that netns. Removing
-## either breaks the routing model — there is no values knob because there
-## is no supported configuration without them. Confirm your cluster CNI and
-## any node-level NetworkPolicy/firewall posture is compatible before
-## deploying.
+## The per-pod mesh endpoint the admission webhook injects into every pod it
+## covers. Its ports, identity and packet rules are the node's measured policy,
+## not chart values (node-guest-image/c8s/image-policy.yaml.in).
 armtlsMesh:
-  ## Host-side mesh routing.
-  enabled: true
-
   image:
     repository: ghcr.io/confidential-dot-ai/armtls-mesh
     # -- Image tag. Required: the chart does not pin a default; the consumer
@@ -418,190 +400,6 @@ armtlsMesh:
     digest: ""
     pullPolicy: IfNotPresent
 
-  imagePullSecrets: []
-
-  # -- armTLS TEE type embedded in and verified on mesh certs: sev-snp or tdx.
-  #    This is the wire-level platform identifier, not the attestation-api
-  #    detection vocab (az-snp and bare-metal snp both verify as sev-snp here);
-  #    attestation-api still auto-detects how to gather the evidence.
-  platform: sev-snp
-
-  # Host path for iptables lock (k3s: /run/k3s/agent/xtables.lock)
-  xtablesLockPath: /run/xtables.lock
-
-  # Mesh ports
-  ports:
-    outbound: 15001
-    inbound: 15006
-    health: 15021
-    ## iptables-sync's readiness endpoint, bound to node loopback only (the
-    ## DaemonSet is hostNetwork). The mesh proxy's start is gated on it.
-    iptablesReady: 15022
-
-  # UID for the armtls-mesh process (iptables excludes this UID)
-  uid: 1337
-
-  # UIDs excluded from iptables redirect (comma-separated)
-  excludeUids: "0"
-
-  # Always-on fail-closed inbound guard for confidential workloads: drop
-  # FORWARD-path traffic to pods labeled confidential.ai/cw (Service-VIP DNAT,
-  # excluded-namespace dials, cross-node direct-to-pod-IP), which the mesh
-  # cannot intercept. passthrough is the reply allowlist: proto:source-port
-  # entries RETURNed before the drop for dataplanes whose conntrack does not
-  # mark a reply ESTABLISHED (e.g. GKE Dataplane V2 / Cilium breaks the DNS
-  # reply, so without udp/tcp:53 get-cert can never resolve). Entries are
-  # bounded to the stock ephemeral destination-port window (32768-60999), and
-  # TCP entries additionally to the handshake reply and segments with SYN
-  # clear, so no TCP entry can open a connection to a cw pod's service ports.
-  # A UDP entry admits any datagram from that source port into the window.
-  # Empty list = strict drop-all.
-  cwInboundEnforcement:
-    passthrough:
-      - protocol: udp
-        sourcePort: 53
-      - protocol: tcp
-        sourcePort: 53
-
-  # Certificate settings
-  certMode: cds  # self-signed | cds
-  certTtl: "4h"
-  rotationTimeout: "30s"
-
-  # CDS integration (used when certMode=cds). The launch-measurement allowlist
-  # for CDS's armTLS peer cert comes from the parent's cds.measurements, not
-  # a per-component mirror.
-  cds:
-    caPollInterval: "5m"
-
-  # Expected launch digests for measurement pinning (empty = accept any)
-  measurements: []
-
-  # TDX RTMR pins for mesh peers, each "<index>=<sha384-hex>" (see cds.rtmrs).
-  # Ignored for SNP peers; empty = no RTMR pinning.
-  rtmrs: []
-
-  # Measurements config for mesh peers and the CDS the proxy dials: the JSON
-  # document's content, not a path (see cds.measurementsConfig).
-  measurementsConfig: ""
-
-  # Pod shutdown budget. The iptables-cleanup preStop hook fires last in the
-  # native-sidecar reverse-init order, so its sleep upper bound must leave room
-  # for the main proxy to drain first:
-  #   preStopSleepSeconds ≤ terminationGracePeriod - drainTimeout
-  # Durations use the Go single-unit form (Ns / Nm / Nh) and are parsed via
-  # the armtls-mesh.durationSeconds helper for chart-bound arithmetic.
-  terminationGracePeriod: "45s"
-  drainTimeout: "30s"
-
-  # Connection limits
-  maxConns: 10000
-  maxConnsPerSource: 0
-  idleTimeout: ""
-
-  # Logging
-  logLevel: info
-
-  # Node placement
-  nodeSelector: {}
-
-  # Resources
-  resources:
-    requests:
-      cpu: 100m
-      memory: 64Mi
-    limits:
-      cpu: 500m
-      memory: 128Mi
-
-  # Iptables sync sidecar resources
-  iptablesSync:
-    # Local source namespaces excluded from transparent mesh interception.
-    # The release namespace is intentionally NOT excluded: router's egress
-    # to workload pod IPs must be intercepted to get attested mTLS, and
-    # control-plane traffic dials Service VIPs the mesh never intercepts.
-    # With cwInboundEnforcement, excluded sources are blocked from reaching
-    # confidential-workload pods entirely, not left plaintext.
-    excludeSourceNamespaces:
-      - kube-system
-    resyncPeriod: 30s
-    watchdogPeriod: 2s
-    ipsetMaxElem: 262144
-    resources:
-      requests:
-        cpu: 5m
-        memory: 32Mi
-      limits:
-        cpu: 100m
-        memory: 128Mi
-
-  iptablesCleanup:
-    # --keep-guard keeps the fail-closed filter guard while removing
-    # interception; the sleep lets kube-endpoints drop this node first.
-    preStopSleepSeconds: 5
-    resources:
-      requests:
-        cpu: 1m
-        memory: 8Mi
-      limits:
-        cpu: 10m
-        memory: 16Mi
-
-  # Probe timings
-  probes:
-    startup:
-      periodSeconds: 2
-      failureThreshold: 60
-    readiness:
-      periodSeconds: 10
-      timeoutSeconds: 3
-      failureThreshold: 3
-    liveness:
-      initialDelaySeconds: 30
-      periodSeconds: 30
-      timeoutSeconds: 3
-      failureThreshold: 3
-
-  # --- Policies ---
-
-  # TCP-only egress policy. On by default: the NP allows all TCP (intercepted
-  # by the mesh) and DNS/53 to kube-system, and default-denies everything
-  # else. The mesh's iptables egress guard is the primary non-TCP enforcement
-  # (drop); this NetworkPolicy is the defence-in-depth layer. namespaces is a
-  # per-namespace opt-in list; when empty the policy renders into the release
-  # namespace only, and the guard covers every managed namespace regardless.
-  # It imposes isolation; egressCompanionPolicy below relaxes a user's own
-  # isolation for the mesh port. The two are independent.
-  tcpEgressPolicy:
-    enabled: true
-    namespaces: []
-
-  # Mesh egress companions: the operator keeps a companion NetworkPolicy
-  # beside every policy of yours that isolates egress in an intercepted
-  # namespace, allowing the selected pods TCP to ports.outbound, which is
-  # where the mesh sends every pod-to-pod connection. Additive only; see
-  # docs/operator.md, "Workload namespaces with default-deny egress".
-  egressCompanionPolicy:
-    enabled: true
-
-  # ValidatingAdmissionPolicy to prevent pods from running as mesh UID
-  uidAdmissionPolicy:
-    enabled: true
-
-  # PrometheusRule for threat model alerting
-  prometheusRules:
-    enabled: false
-
-  # Priority class for pod scheduling
-  priorityClassName: system-node-critical
-
-  networkPolicy:
-    enabled: false
-    monitoringNamespace: monitoring
-
-## rke2 system workloads the seed admits argv-pinned rather than by digest
-## alone. Only meaningful on cvmMode=bare-metal, where the node image bakes RKE2 and
-## its local-path provisioner; other lanes do not run these pods.
 rke2:
   # local-path-provisioner helper pods: the node image's baked manifest runs
   # busybox as `/bin/sh /script/{setup,teardown}` with per-PVC flags. The seed
@@ -614,6 +412,17 @@ rke2:
       digest: "sha256:fd8d9aa63ba2f0982b5304e1ee8d3b90a210bc1ffb5314d980eb6962f1a9715d"
 
 nriImagePolicy:
+  ## The mesh policy of an installed (unmeasured) node: the pods of this
+  ## release's namespace and kube-system host no member pods, and the pod
+  ## ruleset admits this resolver on the DNS port.
+  mesh:
+    ## Required with a mesh policy: the resolver a member pod may reach.
+    resolver: ""
+    ## Required with a mesh policy: this cluster's pod and Service CIDRs. The
+    ## router's egress exception excludes them, so its dial to a member is
+    ## captured into the mesh rather than leaving the pod in the clear.
+    clusterRanges: []
+
   ## Host-side NRI image admission: the installer DaemonSet. Its enabled state is
   ## bound to the cvmMode shape, not free: it MUST be true on gke/aks, where host NRI is the only allowlist gate
   ## (require_host_image_policy). On cvmMode=bare-metal it runs in its baked form
@@ -781,7 +590,9 @@ nriImagePolicy:
     # (label, initContainers, containers, digest, image, command, args, mounts,
     # env, secrets). A chart-derived component entry is named
     # "<image basename>-<first 12 hex of digest>"; an entry of the same name
-    # here replaces it. Default empty.
+    # here replaces it. An entry whose image names an injected component's
+    # repository (image, armtlsMesh.image) also lands as that component's role
+    # entries in every plugin's base allowlist. Default empty.
     workloads: {}
     #   coredns:
     #     containers:

@@ -159,6 +159,7 @@ func TestPrintResultNamesSerialAnnotationGrantAndMountPolicy(t *testing.T) {
 		"kubernetes.io/hostname: node-1",
 		`"read": ["/tenant-a/volumes/weights"]`,
 		`"mounts": {"policy": "any"}`,
+		"mounts this volume into every container",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("output missing %q:\n%s", want, got)
@@ -167,6 +168,11 @@ func TestPrintResultNamesSerialAnnotationGrantAndMountPolicy(t *testing.T) {
 	// A subtree grant would hand over every volume beneath the base.
 	if strings.Contains(got, "/**") {
 		t.Errorf("output offers a subtree grant:\n%s", got)
+	}
+	// The credential volume reaches the injected containers alone, so an entry
+	// admitting it would describe a mount its containers never hold.
+	if strings.Contains(got, "cert volume") {
+		t.Errorf("output asks the entry to admit the credential volume:\n%s", got)
 	}
 }
 

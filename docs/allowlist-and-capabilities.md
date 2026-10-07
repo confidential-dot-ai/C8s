@@ -32,7 +32,7 @@ semantics](#a-digest-may-run-many-ways).
 
 ### Platform roles (`role`)
 
-A container of the NRI plugin's measured base allowlist may carry `role` —
+A container of the NRI plugin's base allowlist may carry `role` —
 `mesh`, `get-cert`, `get-secret`, `get-volume`, `router` or `acme` — which the
 enforcer grants to a container whose verified identity matches that
 declaration. The field is YAML-only, so no served document can claim a role.

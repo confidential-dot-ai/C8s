@@ -128,9 +128,9 @@ func TestExplainNamesTheForeignContainer(t *testing.T) {
 	}
 }
 
-// An any-argv image running a shell is not an injected container, so it must land
-// in candidates rather than being silently dropped.
-func TestExplainDoesNotDropAnAnyArgvImageRunningAShell(t *testing.T) {
+// A container the reporting node binds no role to is a workload container, so
+// it must land in candidates rather than being silently dropped.
+func TestExplainDoesNotDropAContainerWithoutARole(t *testing.T) {
 	eh := newExplainHarness(t)
 	eh.inv.containers = append(eh.inv.containers,
 		workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"sh", "-c", "cat /run/c8s/secrets/DB"}})
@@ -169,7 +169,7 @@ func TestExplainNamesUnpinnedGrant(t *testing.T) {
 func TestExplainNamesAMissingMain(t *testing.T) {
 	eh := newExplainHarness(t)
 	eh.inv.containers = []workloadclaims.SandboxContainer{
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}, Role: roleCredentials},
 		{Digest: testOther, Argv: []string{"sh"}},
 	}
 
@@ -223,7 +223,7 @@ func TestExplainReportsEarlyRefusals(t *testing.T) {
 	t.Run("only injected containers", func(t *testing.T) {
 		eh := newExplainHarness(t)
 		eh.inv.containers = []workloadclaims.SandboxContainer{
-			{Digest: testInjected, Argv: []string{"get-cert"}},
+			{Digest: testInjected, Argv: []string{"get-cert"}, Role: roleCredentials},
 		}
 		_, resp := eh.serve(testSandbox)
 		if !strings.Contains(resp.Refusal, "platform-injected") {
@@ -317,7 +317,7 @@ func TestExplainAgreesWithTheMatcher(t *testing.T) {
 		{"match", []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
 			{Digest: testAppImg2, Argv: []string{"/metrics"}},
-			{Digest: testInjected, Argv: []string{"get-cert"}},
+			{Digest: testInjected, Argv: []string{"get-cert"}, Role: roleCredentials},
 		}},
 		{"foreign image", []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
@@ -334,7 +334,7 @@ func TestExplainAgreesWithTheMatcher(t *testing.T) {
 
 			al, _ := eh.h.Policy.Allowlist()
 			reported, _ := eh.inv.FetchSandbox(context.Background(), "", testSandbox)
-			candidates := WorkloadContainers(al, reported.Containers)
+			candidates := WorkloadContainers(reported.Containers)
 			name, _, err := al.MatchWorkload(candidates)
 			if err != nil {
 				name = ""

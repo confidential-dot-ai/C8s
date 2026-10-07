@@ -226,10 +226,9 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	manifests.Write(namespace)
 	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
 	required := map[string]bool{
-		"Deployment/c8s-operator":   false,
-		"Deployment/c8s-cds":        false,
-		"Deployment/c8s-router":     false,
-		"DaemonSet/c8s-armtls-mesh": false,
+		"Deployment/c8s-operator": false,
+		"Deployment/c8s-cds":      false,
+		"Deployment/c8s-router":   false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
 		"ConfigMap/c8s-router-nginx":                                     false,
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,
@@ -351,16 +350,58 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		return fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
 	}
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
-		ref, err := reference.ParseDockerRef(c.Image)
-		if err != nil {
-			return fmt.Errorf("node-image workload %s container %q image: %w", key, c.Name, err)
+		if err := recordPinnedImage(c.Image, key, c.Name, images); err != nil {
+			return err
 		}
-		pinned, ok := ref.(reference.Canonical)
-		if !ok || !nodeImageDigestPattern.MatchString(pinned.Digest().String()) {
-			return fmt.Errorf("node-image workload %s container %q image must be pinned by sha256 digest", key, c.Name)
+		if err := collectInjectedImages(c, key, images); err != nil {
+			return err
 		}
-		images[ref.String()] = pinned.Digest().String()
 	}
+	return nil
+}
+
+// collectInjectedImages records what a workload injects rather than runs: the
+// operator names the mesh endpoint's image, which every pod on this node will
+// run, so the rootfs must preload it too. A container naming no mesh image
+// injects nothing; one that names it must name an image, or the first tenant
+// pod would pull at runtime.
+func collectInjectedImages(c corev1.Container, key string, images map[string]string) error {
+	image, named := meshImageArg(append(c.Command, c.Args...))
+	if !named {
+		return nil
+	}
+	if image == "" {
+		return fmt.Errorf("node-image workload %s container %q names %s without an image", key, c.Name, meshImageFlag)
+	}
+	return recordPinnedImage(image, key, c.Name+" "+meshImageFlag, images)
+}
+
+// meshImageArg is the image the mesh-image flag names in one argument vector,
+// and whether the vector names it at all. The operator's arguments are
+// chart-rendered, so --mesh-image=<image> is the form that reaches here.
+func meshImageArg(args []string) (string, bool) {
+	for _, arg := range args {
+		if image, named := strings.CutPrefix(arg, meshImageFlag+"="); named {
+			return image, true
+		}
+	}
+	return "", false
+}
+
+// meshImageFlag is the operator argument naming the image every covered pod
+// runs (internal/webhook).
+const meshImageFlag = "--mesh-image"
+
+func recordPinnedImage(image, key, name string, images map[string]string) error {
+	ref, err := reference.ParseDockerRef(image)
+	if err != nil {
+		return fmt.Errorf("node-image workload %s container %q image: %w", key, name, err)
+	}
+	pinned, ok := ref.(reference.Canonical)
+	if !ok || !nodeImageDigestPattern.MatchString(pinned.Digest().String()) {
+		return fmt.Errorf("node-image workload %s container %q image must be pinned by sha256 digest", key, name)
+	}
+	images[ref.String()] = pinned.Digest().String()
 	return nil
 }
 

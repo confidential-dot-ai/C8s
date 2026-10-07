@@ -102,7 +102,6 @@ spec:
             - --http-port={{ include "router.acmeHTTPPort" . }}
             - --cert-dir={{ include "router.acmeCertDir" . }}
             - --ready-port={{ include "router.acmeReadyPort" . }}
-            - --reload-nginx=false
           # nginx's config names the acme cert files, so nginx must not start
           # before the bootstrap placeholder exists; regular containers wait
           # for a native sidecar's startup probe. HTTP, not exec: a locked

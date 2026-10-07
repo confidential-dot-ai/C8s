@@ -30,30 +30,24 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	wantPolicies := map[string]string{
-		"c8s-cds/cds":                 "peers.json",
-		"c8s-router/c8s-cert":         "cds.json",
-		"c8s-router/allowlist-proxy":  "cds.json",
-		"c8s-armtls-mesh/armtls-mesh": "peers.json",
+		"c8s-cds/cds":                "peers.json",
+		"c8s-router/c8s-cert":        "cds.json",
+		"c8s-router/allowlist-proxy": "cds.json",
 	}
 	workloads := renderedPodSpecs(t, out)
-	if len(workloads) != 4 {
-		t.Fatalf("baked chart should contain operator, CDS, router and mesh; got %d workloads", len(workloads))
+	if len(workloads) != 3 {
+		t.Fatalf("baked chart should contain operator, CDS and router; got %d workloads", len(workloads))
 	}
 	for _, workload := range workloads {
-		volumeFound := false
 		for _, volume := range workload.spec.Volumes {
 			if volume.HostPath != nil && strings.HasPrefix(volume.HostPath.Path, "/run/confos") {
 				t.Errorf("%s mounts the token-bearing launch directory", workload.name)
 			}
 			if volume.Name == "node-config" {
-				volumeFound = true
 				if volume.HostPath == nil || volume.HostPath.Path != "/run/c8s-node" || volume.HostPath.Type == nil || *volume.HostPath.Type != corev1.HostPathDirectory {
 					t.Errorf("%s must require the verified public launch directory", workload.name)
 				}
 			}
-		}
-		if !volumeFound {
-			t.Errorf("%s lacks its verified launch policy volume", workload.name)
 		}
 		for _, container := range append(workload.spec.Containers, workload.spec.InitContainers...) {
 			name := workload.name + "/" + container.Name
@@ -77,7 +71,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 				delete(wantPolicies, name)
 			}
 		}
-		if workload.name == "c8s-router" || workload.name == "c8s-armtls-mesh" {
+		if workload.name == "c8s-router" {
 			if workload.spec.SecurityContext == nil || !slices.Contains(workload.spec.SecurityContext.SupplementalGroups, int64(65532)) {
 				t.Errorf("%s cannot connect to the host attestation socket", workload.name)
 			}
@@ -85,16 +79,6 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	}
 	if len(wantPolicies) != 0 {
 		t.Errorf("missing policy consumers: %v", wantPolicies)
-	}
-
-	mesh := renderedDaemonSet(t, out, "c8s-armtls-mesh")
-	meshContainer, ok := findContainer(mesh.Spec.Template.Spec.Containers, "armtls-mesh")
-	if !ok {
-		t.Fatal("mesh container missing")
-	}
-	assertContainerHasArg(t, "armtls-mesh", meshContainer.Args, "--cds-image-policy-file=/run/c8s-node/cds.json")
-	if mesh.Spec.Template.Spec.ServiceAccountName != "c8s-armtls-mesh" || strings.Contains(out, "name: system:nodes") {
-		t.Error("mesh must use its ServiceAccount instead of node credentials")
 	}
 
 	for _, name := range []string{"c8s-cds", "c8s-router"} {

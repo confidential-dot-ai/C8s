@@ -62,9 +62,9 @@ func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {
 		AttestationApiURL:     "http://as:8400",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})
-	cert := pod.Spec.InitContainers[0]
-	if cert.Name != "c8s-cert" {
-		t.Fatalf("c8s-cert not first: %q", cert.Name)
+	cert := containerNamed(pod, reservedCertContainerName)
+	if cert == nil {
+		t.Fatalf("no c8s-cert container: %v", containerNames(pod.Spec.InitContainers))
 	}
 	for _, arg := range cert.Args {
 		if strings.HasPrefix(arg, "--workload-init-container") {

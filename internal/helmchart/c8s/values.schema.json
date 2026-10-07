@@ -141,6 +141,14 @@
       "additionalProperties": false,
       "properties": {
         "baked": {},
+        "mesh": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "clusterRanges": {},
+            "resolver": {}
+          }
+        },
         "bootstrapAllowlist": {
           "type": [
             "object",

@@ -904,7 +904,8 @@ var installCmd = &cobra.Command{
   - the mutating admission webhook configuration
   - the attestation-api DaemonSet (per-node /attest + /verify)
   - the CDS trust root (attestation, mesh CA, leaf signing)
-  - the armtls-mesh, nri-image-policy, and router components
+  - the pod-validating webhook configuration
+  - the nri-image-policy and router components
 
 The host distro (k8s vs rke2) is detected from the cluster's kubelet versions;
 override nriImagePolicy.distro via -f for a layout detection
@@ -1131,8 +1132,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		}
 
 		// The install always ships pods that exceed the restricted pod-security
-		// profile: nri-image-policy runs privileged unconditionally, armtls-mesh's
-		// iptables init containers run as root with NET_ADMIN/NET_RAW, and
+		// profile: nri-image-policy runs privileged unconditionally and
 		// attestation-api needs SYS_RAWIO (node/gke) or privileged (aks).
 		// No supported shape fits restricted, so
 		// the namespace is always labelled privileged (a CIS-hardened cluster, e.g.
@@ -1163,8 +1163,8 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 //
 // The cluster's launch measurement M is a property of the deployed node image
 // (its manifest.json), known before the cluster runs. --measurements <M> pins it
-// into the internal mesh (cds.measurements + armtlsMesh.measurements) on the
-// install itself; external clients pin the same M when they verify. When
+// into the internal mesh (cds.measurements) on the install itself; external
+// clients pin the same M when they verify. When
 // --measurements was omitted, the mesh accepts any attested peer (UNSAFE), so
 // the hint says how to fix it.
 func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
@@ -1363,8 +1363,8 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 //	bare-metal → generalized node-as-CVM: our own nodes (bare-metal TDX/SNP,
 //	       self-managed) are themselves confidential VMs. Pods run as ordinary
 //	       processes attested via the node's own quote. Cloud-agnostic. The node
-//	       image bakes attestation-api and nri-image-policy, so both are disabled
-//	       here (armtlsMesh is not baked, stays on).
+//	       image bakes attestation-api and nri-image-policy, so both are
+//	       disabled here.
 //	gke  → GKE specifically: Google's managed confidential VMs.
 //
 // GKE is the reason a plain managed→vTPM mapping is wrong: GKE confidential VMs
@@ -1427,21 +1427,17 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		"--set", "attestationApi.teeDevices.tdxGuest="+tdxGuest,
 		"--set", "attestationApi.teeDevices.tpm="+tpm,
 	)
-	// Propagate the CPU TEE to every component that names its armTLS platform.
-	// These default to SNP in the chart; on a TDX cluster CDS (which self-warms
-	// its serving cert via the attestation-api and is non-privileged, so it
-	// cannot probe /dev/tdx_guest to auto-detect) and the armtls-mesh must be
-	// told `tdx` explicitly, or CDS parses the attestation-api's TDX quote as an
-	// SNP report and crash-loops ("evidence contains neither attestation_report
-	// nor hcl_report"). This holds for the Azure-vTPM TDX shape (aks + tdx,
-	// i.e. az-tdx) too: the vTPM HCL report carries a TD quote, so CDS and the
-	// mesh must expect the TDX family. cds.armtlsPlatform uses `snp`/`tdx`;
-	// armtlsMesh.platform uses `sev-snp`/`tdx` (both normalize az-tdx -> tdx).
+	// Propagate the CPU TEE to CDS, which names its armTLS platform. It
+	// defaults to SNP in the chart; on a TDX cluster CDS (which self-warms its
+	// serving cert via the attestation-api and is non-privileged, so it cannot
+	// probe /dev/tdx_guest to auto-detect) must be told `tdx` explicitly, or it
+	// parses the attestation-api's TDX quote as an SNP report and crash-loops
+	// ("evidence contains neither attestation_report nor hcl_report"). This
+	// holds for the Azure-vTPM TDX shape (aks + tdx, i.e. az-tdx) too: the vTPM
+	// HCL report carries a TD quote. cds.armtlsPlatform uses `snp`/`tdx` (both
+	// normalize az-tdx -> tdx).
 	if hardwarePlatform == "tdx" {
-		helmArgs = append(helmArgs,
-			"--set-string", "cds.armtlsPlatform=tdx",
-			"--set-string", "armtlsMesh.platform=tdx",
-		)
+		helmArgs = append(helmArgs, "--set-string", "cds.armtlsPlatform=tdx")
 	}
 	// The router attestation sidecar is on by default (chart default); --attest=false
 	// omits it. When on, it passes this platform straight to the attestation-api
@@ -1473,11 +1469,10 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 	}
 	// node: the node image bakes host attestation-api and nri-image-policy;
 	// re-rendering them duplicates the baked pair and the baked fail-closed NRI
-	// floor denies the chart copies' own images. armtlsMesh stays: it is not
-	// baked. The NRI installer does stay on, in its
-	// baked form — the pins below are the one thing an image built before this
-	// release cannot carry, and the installer is the only path that reaches the
-	// baked plugin's config.
+	// floor denies the chart copies' own images. The NRI installer does stay
+	// on, in its baked form — the pins below are the one thing an image built
+	// before this release cannot carry, and the installer is the only path that
+	// reaches the baked plugin's config.
 	if bakedAttestationAndNRIPlugin {
 		helmArgs = append(helmArgs,
 			"--set", "attestationApi.enabled=false",
@@ -1485,11 +1480,10 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		)
 	}
 	// --measurements pins the expected launch measurement(s) of this cluster's
-	// CVM into both internal trust boundaries in one install: the mesh (and NRI)
-	// dial CDS pinned to it (cds.measurements), and mesh peers pin each other
-	// (armtlsMesh.measurements). The operator supplies M — it is a property of the
-	// deployed node image (its manifest.json), known before the cluster runs — so
-	// the mesh is pinned from first boot rather than accept-any-then-tighten.
+	// CVM: every client that dials CDS holds it to that measurement
+	// (cds.measurements). The operator supplies M — it is a property of the
+	// deployed node image (its manifest.json), known before the cluster runs —
+	// so CDS is pinned from first boot rather than accept-any-then-tighten.
 	// Empty = no pinning (UNSAFE, the chart default).
 	//
 	// Parse here, on the shared builder path, so the pinned list is validated
@@ -1502,14 +1496,12 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		return nil, err
 	}
 	helmArgs = append(helmArgs, pinArgs...)
-	// cds.measurements / armtlsMesh.measurements pin the launch measurement of the
-	// components that speak to CDS. In bare-metal/gke/aks the node IS the CVM, so that
-	// is the node image's M.
+	// cds.measurements pins the launch measurement CDS presents to the
+	// components that dial it. In bare-metal/gke/aks the node IS the CVM, so
+	// that is the node image's M.
 	for i, m := range digests {
-		hexM := hex.EncodeToString(m)
 		helmArgs = append(helmArgs,
-			"--set-string", fmt.Sprintf("cds.measurements[%d]=%s", i, hexM),
-			"--set-string", fmt.Sprintf("armtlsMesh.measurements[%d]=%s", i, hexM),
+			"--set-string", fmt.Sprintf("cds.measurements[%d]=%s", i, hex.EncodeToString(m)),
 		)
 	}
 	// --rtmrs completes the TDX pin: the launch measurement (MRTD) covers TDVF
@@ -1517,10 +1509,7 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 	// command line carrying the dm-verity root hash. Emitted normalized and in
 	// index order so the fanned values match what was validated.
 	for i, pin := range refvalues.FormatRegisterPins(rtmrs) {
-		helmArgs = append(helmArgs,
-			"--set-string", fmt.Sprintf("cds.rtmrs[%d]=%s", i, pin),
-			"--set-string", fmt.Sprintf("armtlsMesh.rtmrs[%d]=%s", i, pin),
-		)
+		helmArgs = append(helmArgs, "--set-string", fmt.Sprintf("cds.rtmrs[%d]=%s", i, pin))
 	}
 	for i, c := range installInventoryCIDRs {
 		helmArgs = append(helmArgs,
@@ -2207,9 +2196,9 @@ func init() {
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "deploy the router attestation sidecar serving /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; pass --attest=false to omit it")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
-	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Pins the internal mesh (cds.measurements + armtlsMesh.measurements); empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
-	cmdsutil.BindImagePolicyFlags(installCmd.Flags(), &installMeasurementsConfig, nil, "", "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
-	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs + armtlsMesh.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
+	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM CDS runs in (repeatable/comma-separated). Pins cds.measurements, which every client that dials CDS holds it to; empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
+	cmdsutil.BindImagePolicyFlags(installCmd.Flags(), &installMeasurementsConfig, nil, "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
+	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
 	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes; sets cds.operatorKeys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")

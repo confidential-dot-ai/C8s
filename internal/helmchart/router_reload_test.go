@@ -52,8 +52,8 @@ func TestChartRouterReloadsWithoutASharedProcessNamespace(t *testing.T) {
 	// shared namespace.
 	for _, c := range append(spec.Containers, spec.InitContainers...) {
 		for _, arg := range c.Args {
-			if strings.HasPrefix(arg, "--reload-nginx") && arg != "--reload-nginx=false" {
-				t.Errorf("%s carries %q; one owner reloads nginx", c.Name, arg)
+			if strings.HasPrefix(arg, "--reload-nginx") {
+				t.Errorf("%s carries %q; the entrypoint is the only reloader", c.Name, arg)
 			}
 		}
 	}

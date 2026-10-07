@@ -36,6 +36,11 @@ common_set=(
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
+  # A mesh policy needs the resolver a member pod may reach, and the router's
+  # egress exception needs this cluster's pod and Service ranges. kind's
+  # cluster DNS and the kubeadm defaults are the representative values.
+  --set-string nriImagePolicy.mesh.resolver=10.96.0.10
+  --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}'
 )
 
 echo "::group::helm lint"

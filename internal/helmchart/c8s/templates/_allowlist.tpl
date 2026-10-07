@@ -67,8 +67,9 @@
 {{- end -}}
 
 {{/* The plugin boot base, as allowlist workloads: every digest the base
-     admits under any command line, keyed by its DigestEntryName. The boot
-     config excludes argv-pinned images, which are admitted by the served seed. */ -}}
+     admits under any command line, keyed by its DigestEntryName, plus the
+     role entries of the injected platform components. The boot config excludes
+     argv-pinned images, which are admitted by the served seed. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
@@ -79,7 +80,58 @@
 {{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
 {{- end -}}
 {{- end -}}
+{{- range $name, $entry := (include "c8s.roleWorkloads" . | fromJson) -}}
+{{- $_ := set $workloads $name $entry -}}
+{{- end -}}
 {{ $workloads | toJson }}
+{{- end -}}
+
+{{/* The platform-role entries of the rendered base, mirroring the measured
+     base (node-guest-image/c8s/image-policy.yaml.in). The enforcer grants a
+     role from the base alone, so an injected container on a reserved uid is
+     refused on a node whose base names no role for it.
+
+     INVARIANT: each command is the image's entrypoint (cmd/c8s/Dockerfile,
+     cmd/armtls-mesh/Dockerfile) plus the component's own subcommand where the
+     image carries more than one, so no other subcommand of these images holds
+     a role. The arguments after it are the injector's, per pod. A role rides
+     on a digest the base already admits for that component's repository,
+     whether it came from a component value or from a bootstrapAllowlist
+     entry. */ -}}
+{{- define "c8s.roleWorkloads" -}}
+{{- $root := . -}}
+{{- $mesh := list -}}
+{{- $credentials := list -}}
+{{- range $digest, $image := (merge (include "c8s.anyArgvDigests" $root | fromJson) (include "c8s.imageAllowlist" $root | fromJson)) -}}
+{{- $repository := include "c8s.imageRepository" $image -}}
+{{- if eq $repository $root.Values.armtlsMesh.image.repository -}}
+{{- $mesh = append $mesh (dict "digest" $digest "image" $image) -}}
+{{- else if eq $repository $root.Values.image.repository -}}
+{{- $credentials = append $credentials (dict "digest" $digest "image" $image) -}}
+{{- end -}}
+{{- end -}}
+{{- $entries := dict -}}
+{{- range $role := list
+  (dict "name" "c8s-mesh-endpoint" "role" "mesh" "argv" (list "/app/c8s" "armtls-mesh") "images" $mesh "label" $root.Values.armtlsMesh.image.repository)
+  (dict "name" "c8s-get-cert" "role" "credentials" "argv" (list "/c8s" "get-cert") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-cert-wait" "role" "credentials" "argv" (list "/c8s" "probe-file") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-get-secret" "role" "credentials" "argv" (list "/c8s" "get-secret") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-get-volume" "role" "credentials" "argv" (list "/c8s" "get-volume") "images" $credentials "label" $root.Values.image.repository) -}}
+{{- $containers := list -}}
+{{- range $image := $role.images -}}
+{{- $containers = append $containers (dict "digest" $image.digest "image" $image.image "role" $role.role "command" (dict "policy" "exact" "argv" $role.argv) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
+{{- end -}}
+{{- if $containers -}}
+{{- $_ := set $entries $role.name (dict "label" $role.label "initContainers" list "containers" $containers) -}}
+{{- end -}}
+{{- end -}}
+{{ $entries | toJson }}
+{{- end -}}
+
+{{/* The repository of an image reference, without its tag or digest. */ -}}
+{{- define "c8s.imageRepository" -}}
+{{- $path := . | splitList "@" | first | splitList "/" -}}
+{{- append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}

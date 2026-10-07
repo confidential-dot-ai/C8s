@@ -104,16 +104,33 @@ func TestAttest_MatchedWorkload_StampsUniqueMatch(t *testing.T) {
 	}
 }
 
-// The platform's injected sidecar (any-argv entry + injected entrypoint) is
-// dropped before matching — the same drop set secrets release uses — so a pod
-// running its workload plus the cert sidecar still matches its entry.
-func TestAttest_MatchedWorkload_DropsInjectedContainers(t *testing.T) {
+// The platform's own containers are dropped before matching on the role the
+// reporting node binds to them — the same drop set secrets release uses — so a
+// pod running its workload, its mesh endpoint and the cert sidecar is stamped
+// with its own entry rather than one of theirs.
+func TestAttest_MatchedWorkload_DropsPlatformContainers(t *testing.T) {
 	store := completeAPIStore(t)
+	store.workloads["c8s-mesh-endpoint"] = pkgallowlist.Workload{
+		Containers: []pkgallowlist.Container{{
+			Digest:  wlDigest(t, wlDigestB),
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/app/c8s", "armtls-mesh"}},
+			Args:    anyPolicy,
+		}},
+	}
 	containers := []workloadclaims.SandboxContainer{
 		{Digest: wlDigestA, Mounts: []pkgallowlist.ObservedMount{}},
-		{Digest: wlDigestC, Argv: []string{"get-cert", "--renew-interval=6h"}},
+		{
+			Digest: wlDigestC,
+			Argv:   []string{"get-cert", "--renew-interval=6h"},
+			Role:   "credentials",
+		},
+		{
+			Digest: wlDigestB,
+			Argv:   []string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"},
+			Role:   "mesh",
+		},
 	}
-	matched := issueWithInventory(t, store, []string{wlDigestA, wlDigestC}, containers, nil)
+	matched := issueWithInventory(t, store, []string{wlDigestA, wlDigestB, wlDigestC}, containers, nil)
 	if matched == nil || matched.Name != "api" {
 		t.Fatalf("matched = %+v, want api", matched)
 	}
@@ -159,10 +176,14 @@ func TestAttest_MatchedWorkload_UnnamedCases(t *testing.T) {
 			digests:    []string{wlDigestA},
 			containers: containersView(wlDigestA),
 		},
-		"only injected containers": {
-			store:      completeAPIStore(t),
-			digests:    []string{wlDigestC},
-			containers: []workloadclaims.SandboxContainer{{Digest: wlDigestC, Argv: []string{"get-cert"}}},
+		"only platform containers": {
+			store:   completeAPIStore(t),
+			digests: []string{wlDigestC},
+			containers: []workloadclaims.SandboxContainer{{
+				Digest: wlDigestC,
+				Argv:   []string{"get-cert"},
+				Role:   "credentials",
+			}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -18,9 +18,11 @@ type History struct {
 }
 
 // Record adds an admission; only a resolved record for the same ID clears an
-// unresolved container. History owns its copy of argv.
+// unresolved container. History owns its copy of argv. role is the platform
+// role the node's measured base binds to the launch, empty for a container
+// outside every role.
 // Nil mounts means unavailable evidence; a non-nil empty slice means no mounts.
-func (h *History) Record(id, digest string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {
+func (h *History) Record(id, digest, role string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {
 	if h.byKey == nil {
 		h.byKey = map[string]workloadclaims.SandboxContainer{}
 		h.unresolved = map[string]struct{}{}
@@ -30,7 +32,13 @@ func (h *History) Record(id, digest string, argv []string, env *allowlist.EnvObs
 		return
 	}
 	delete(h.unresolved, id)
-	c := workloadclaims.SandboxContainer{Digest: digest, Argv: slices.Clone(argv), Env: env.Clone(), Mounts: slices.Clone(mounts)}
+	c := workloadclaims.SandboxContainer{
+		Digest: digest,
+		Role:   role,
+		Argv:   slices.Clone(argv),
+		Env:    env.Clone(),
+		Mounts: slices.Clone(mounts),
+	}
 	slices.SortFunc(c.Mounts, compareObservedMounts)
 	h.byKey[c.Key()] = c
 }

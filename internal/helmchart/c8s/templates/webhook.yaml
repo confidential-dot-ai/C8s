@@ -29,8 +29,8 @@ webhooks:
     failurePolicy: {{ .Values.webhook.failurePolicy }}
     timeoutSeconds: 5
     reinvocationPolicy: IfNeeded
-    # get-cert injection is opt-in (confidential.ai/cw), so an un-annotated pod
-    # is a no-op regardless of namespace. The reinject sweep excludes the same set.
+    # Every pod of a namespace this selector admits is injected, so the
+    # excluded set is the whole opt-out. The reinject sweep excludes the same set.
     namespaceSelector:
       matchExpressions:
         {{- include "c8s.webhookExcludedNamespaces" . | nindent 8 }}

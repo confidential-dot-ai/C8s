@@ -7,9 +7,8 @@ which port answers. router stays reachable from off-cluster, cds from every
 node, the operator from the API server. A policy with no `ingress:` key at all
 (volumed) is the one that refuses everything.
 
-Ingress only. NetworkPolicies union, and armtls-mesh's tcp-only-egress selects
-every pod in the namespace and allows all TCP, so an egress rule added here
-would be allowed by that one anyway.
+Ingress only: egress from a C8s component is bounded by the pod rules the node
+enforcer installs, not by a NetworkPolicy.
 
 Escape hatch: policies are additive, so an operator who needs another port open
 applies their own NetworkPolicy selecting the same pods — nothing here has to be

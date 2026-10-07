@@ -15,9 +15,9 @@ CDS-issued certificates, what the whole construction does and does not
 guarantee, how it operates on confidential nodes, and which certificate is
 used where.
 
-Companion docs: [`cmd/armtls-mesh/DESIGN.md`](../cmd/armtls-mesh/DESIGN.md) (mesh
-dataplane), [install-flows.md](install-flows.md) (which components deploy in
-which mode).
+Companion docs: [`cmd/armtls-mesh/README.md`](../cmd/armtls-mesh/README.md) (the
+pod mesh endpoint), [install-flows.md](install-flows.md) (which components
+deploy in which mode).
 The implementation is [`pkg/armtls`](../pkg/armtls/), with the CDS client flow in
 [`pkg/attestclient`](../pkg/attestclient/) and
 [`pkg/armtls/cdsclient`](../pkg/armtls/cdsclient/).
@@ -119,7 +119,7 @@ attestation-go/armtls, which owns the wire format:
   Azure evidence wrapped in a Hyper-V HCL header is normalized back to the raw
   report where needed.
 
-Certificates live 24h by default. armtls-mesh runs a timer for each server and
+Certificates live 24h by default. A mesh client runs a timer for each server and
 client certificate, checking once per minute for renewal at 50% of TTL even
 while idle. Checks honor exponential jittered retry backoff (5s initial
 interval, 1 minute maximum base interval), including while expired and
@@ -267,7 +267,7 @@ Peers configured with a CA bundle accept **either** proof
    plain TLS.
 2. **Embedded-evidence verification** (fallback): the full evidence verification above.
 
-This is what makes the bootstrap order-free: armtls-mesh boots self-signed with
+This is what makes the bootstrap order-free: a mesh peer boots self-signed with
 no CDS dependency, a background goroutine obtains a CDS-issued certificate
 (exponential backoff) and hot-swaps it via `CertManager.SwapProvider` — old
 cert serves until the new one is ready — and mixed fleets interoperate
@@ -340,7 +340,7 @@ What it does **not** guarantee:
 
 - **Nothing, with an empty measurement allowlist.** Any genuine TEE — including
   an attacker's own CVM on the pod network — is accepted. Both CDS and
-  armtls-mesh ship with empty pins, warn loudly, and export
+  the mesh clients ship with empty pins, warn loudly, and export
   `armtls_mesh_measurement_pinning=0` for alerting. Pinning is the operator's
   explicit production step.
 - **A trustworthy verdict from an untrusted verifier.** The attestation-api's
@@ -772,9 +772,9 @@ The node is the TEE boundary: its components share its attested identity.
 ```text
 NODE-AS-CVM — one TEE, one identity, per node
 ╔═ node CVM (SEV-SNP/TDX guest; measured IGVM+UKI+dm-verity boot) ══════╗
-║  workload pods (runc) ─┐ get-cert sidecars                            ║
-║  armtls-mesh DaemonSet ─┼─ shares the NODE's TEE identity              ║
-║  CDS (one pod)        ─┘                                              ║
+║  workload pods (runc) ─┐ injected endpoint + get-cert sidecars         ║
+║  CDS (one pod)        ─┼─ share the NODE's TEE identity                ║
+║  nri-image-policy     ─┘ (the enforcer, a node process)               ║
 ║  attestation-api DaemonSet ── evidence from the node's TEE device     ║
 ║    (/dev/sev-guest, TDX TSM configfs, or vTPM on AKS)                 ║
 ╚═══════════════════════════════════════════════════════════════════════╝
@@ -797,21 +797,22 @@ confidentiality.)
   and always produces evidence for the *caller's own node* — nothing
   routable can request evidence, and `/verify` verdicts never cross a node
   boundary.
-- **armTLS endpoints:** armtls-mesh runs as a host-network DaemonSet
-  (outbound :15001, inbound :15006). iptables/ipset interception DNATs
-  pod-to-pod TCP through it; the node-to-node leg is attested mTLS; the final
-  host-to-local-pod dial is plaintext *inside the node's encrypted memory*
-  (see [`cmd/armtls-mesh/DESIGN.md`](../cmd/armtls-mesh/DESIGN.md)).
+- **armTLS endpoints:** every covered pod runs its own injected endpoint
+  (outbound :15001, inbound :15006, probes :15021). The node enforcer installs
+  the pod's packet rules before any of its containers runs, so the pod's
+  application TCP leaves it only through that endpoint over armTLS; the
+  delivery hop inside the pod is plaintext *inside the node's encrypted
+  memory* (see [`cmd/armtls-mesh/README.md`](../cmd/armtls-mesh/README.md)).
 - **Identity granularity:** one launch digest covers the node — kubelet, CNI,
   every pod. All pods share the node's TEE identity; a workload leaf's SAN
   names the workload, but the attestation behind it is the node's quote. Pods
   are only kernel-isolated from each other.
-- **Certificates:** get-cert sidecars fetch mesh-CA leaves from CDS through
-  the node's attestation flow; armtls-mesh runs self-signed or `--cert-mode
-  cds`.
+- **Certificates:** each pod's get-cert sidecar fetches a mesh-CA leaf from
+  CDS through the node's attestation flow, and publishes it to that pod's own
+  endpoint.
 
-- **DNS.** The egress guards carve out UDP/53 to any destination, on the
-  node. A resolver sits outside the guest's trust
+- **DNS.** The pod ruleset admits UDP/53 to the resolver trusted policy
+  names, and nothing else. A resolver sits outside the guest's trust
   boundary whatever its address, so its answers are untrusted input: they
   select which endpoint a workload dials, and the armTLS handshake at that
   endpoint is what authenticates the peer. A host that swaps, forges or
@@ -853,8 +854,8 @@ Related authentication surfaces:
    — handshake wiring, rotation, dual verification, delegated verification.
 3. [`pkg/attestclient/client.go`](../pkg/attestclient/client.go) — the CDS
    challenge–attest–certify flow.
-4. [`cmd/armtls-mesh/DESIGN.md`](../cmd/armtls-mesh/DESIGN.md) — the dataplane
-   that puts it on every connection.
+4. [`internal/podmesh/ruleset`](../internal/podmesh/ruleset/) — the pod rules
+   that put it on every connection.
 5. [`pkg/workloadclaims`](../pkg/workloadclaims/) — the inventory's two
    surfaces, the sandbox token, and the digests callback.
 6. [getcert-workload-binding.md](getcert-workload-binding.md) — how a pod's

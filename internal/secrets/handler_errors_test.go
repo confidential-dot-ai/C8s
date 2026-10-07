@@ -143,7 +143,7 @@ func TestInventoryFetchFailureRefuses(t *testing.T) {
 func TestOnlyInjectedContainersRefuses(t *testing.T) {
 	hn := newHarness(t)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}, Role: roleCredentials},
 	}
 	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
 		t.Fatalf("injected-only sandbox = %d, want 403", w.Code)
@@ -163,8 +163,8 @@ func TestContainerWithoutDigestRefuses(t *testing.T) {
 	}
 }
 
-// A container with no argv at all cannot be an injected one, so it stays in the
-// candidate set and makes the pod foreign.
+// A container the node binds no role to stays in the candidate set and makes
+// the pod foreign, here with no argv at all to read.
 func TestArgvLessContainerIsNotDropped(t *testing.T) {
 	hn := newHarness(t)
 	hn.inv.containers = append(hn.inv.containers,

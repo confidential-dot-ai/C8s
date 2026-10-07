@@ -52,3 +52,15 @@ app.kubernetes.io/managed-by: Helm
     - {{ . }}
     {{- end }}
 {{- end }}
+
+{{/* The reserved identities and ports of the platform roles. These mirror
+     pkg/workloadclaims (MeshUID, CredentialsUID, RouterUID, AcmeUID,
+     Mesh*Port), which the injector builds the containers from and the enforcer
+     matches on; a chart test pins them to those constants. */}}
+{{- define "c8s.meshUID" -}}1337{{- end -}}
+{{- define "c8s.credentialsUID" -}}1338{{- end -}}
+{{- define "c8s.routerUID" -}}1339{{- end -}}
+{{- define "c8s.acmeUID" -}}1340{{- end -}}
+{{- define "c8s.meshOutboundPort" -}}15001{{- end -}}
+{{- define "c8s.meshInboundPort" -}}15006{{- end -}}
+{{- define "c8s.meshHealthPort" -}}15021{{- end -}}
