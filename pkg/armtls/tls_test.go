@@ -14,6 +14,7 @@ import (
 	"io"
 	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1560,5 +1561,111 @@ func TestNewVerifyingHTTPClient(t *testing.T) {
 	}
 	if tr.TLSClientConfig.VerifyPeerCertificate == nil {
 		t.Error("VerifyPeerCertificate is nil: peer attestation would not be checked")
+	}
+}
+
+// clientLeafFor is a client certificate signed by the given CA, with the key
+// that goes with it so a handshake can use it.
+func clientLeafFor(t *testing.T, caKey *ecdsa.PrivateKey, caCert *x509.Certificate) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(600),
+		Subject:      pkix.Name{CommonName: "peer"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}
+
+// renewedCACert is another self-signed certificate under the same CA key, as a
+// CA that renews its certificate publishes.
+func renewedCACert(t *testing.T, caKey *ecdsa.PrivateKey, caCert *x509.Certificate) *x509.Certificate {
+	t.Helper()
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(101),
+		Subject:               caCert.Subject,
+		NotBefore:             time.Now(),
+		NotAfter:              time.Now().Add(48 * time.Hour),
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return renewed
+}
+
+// The ClientCAs pool is read per handshake, so a renewed CA certificate
+// published through UpdateCACerts both keeps live leaves working and replaces
+// what the next connection is verified against.
+func TestServerClientCAsFollowUpdateCACerts(t *testing.T) {
+	caKey, caCert := generateCACert(t)
+	cfg := testServerConfig()
+	cfg.ClientCAs = []*x509.Certificate{caCert}
+	cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	tlsCfg, mgr, err := NewServerTLSConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.TLS = tlsCfg
+	srv.StartTLS()
+	defer srv.Close()
+
+	connect := func(leaf tls.Certificate) error {
+		client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+			MinVersion:         tls.VersionTLS13,
+			InsecureSkipVerify: true, // the server's own identity is not what this test is about
+			Certificates:       []tls.Certificate{leaf},
+		}}}
+		defer client.CloseIdleConnections()
+		resp, err := client.Get(srv.URL)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		return nil
+	}
+
+	live := clientLeafFor(t, caKey, caCert)
+	if err := connect(live); err != nil {
+		t.Fatalf("leaf signed by the configured CA rejected: %v", err)
+	}
+
+	otherKey, otherCA := generateCACert(t)
+	foreign := clientLeafFor(t, otherKey, otherCA)
+	if err := connect(foreign); err == nil {
+		t.Fatal("leaf signed by an untrusted CA accepted")
+	}
+
+	mgr.UpdateCACerts([]*x509.Certificate{renewedCACert(t, caKey, caCert)})
+	if err := connect(live); err != nil {
+		t.Fatalf("leaf issued before renewal rejected against the renewed certificate: %v", err)
+	}
+
+	mgr.UpdateCACerts([]*x509.Certificate{otherCA})
+	if err := connect(live); err == nil {
+		t.Fatal("leaf still accepted after its CA left the pool")
+	}
+	if err := connect(foreign); err != nil {
+		t.Fatalf("leaf signed by the published CA rejected: %v", err)
 	}
 }

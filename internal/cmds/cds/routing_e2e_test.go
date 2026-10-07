@@ -36,7 +36,7 @@ type e2eCDS struct {
 	client *http.Client // verifies the CDS like the router does
 }
 
-func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.CA, key, published *ecdsa.PublicKey) *e2eCDS {
+func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.MeshCA, key, published *ecdsa.PublicKey) *e2eCDS {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(published)
 	if err != nil {
@@ -46,10 +46,11 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.CA, 
 		Routes: routeHandler{
 			Store:     inMemoryStore(t),
 			Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize,
-			MeshCA:    mesh.Cert,
+			MeshCA:    mesh.Current().CA.Cert,
 		},
 		OperatorKeysPEM:  pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}),
 		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -174,16 +175,14 @@ func TestRoutesEndToEnd(t *testing.T) {
 	measurement := bytes.Repeat([]byte{0x42}, 48)
 	stub := mockapi.New(t)
 	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
-	mesh, err := issuer.NewCA("mesh ca", time.Hour)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mesh := testMeshCA(t)
+	meshCA := mesh.Current().CA
 	signer, key := operatorSigner(t)
 
 	web := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, "web saw "+r.RequestURI)
 	}))
-	web.TLS = &tls.Config{Certificates: []tls.Certificate{e2eNamedLeaf(t, mesh, "web")}, ClientAuth: tls.RequireAnyClientCert}
+	web.TLS = &tls.Config{Certificates: []tls.Certificate{e2eNamedLeaf(t, meshCA, "web")}, ClientAuth: tls.RequireAnyClientCert}
 	web.StartTLS()
 	t.Cleanup(web.Close)
 	manifest := func(revision int) []byte {
@@ -203,7 +202,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 	t.Run("routes by the stored manifest", func(t *testing.T) {
 		cds := startE2ECDS(t, stub, measurement, mesh, key, key)
 		cds.put(t, signer, manifest(1))
-		router := newE2ERouter(t, stub, cds.url, measurement, mesh)
+		router := newE2ERouter(t, stub, cds.url, measurement, meshCA)
 		if err := router.poller.Poll(t.Context()); err != nil {
 			t.Fatalf("Poll() = %v, want nil", err)
 		}
@@ -218,7 +217,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 	t.Run("A1 wrong CDS pin", func(t *testing.T) {
 		cds := startE2ECDS(t, stub, measurement, mesh, key, key)
 		cds.put(t, signer, manifest(1))
-		router := newE2ERouter(t, stub, cds.url, bytes.Repeat([]byte{0x43}, 48), mesh)
+		router := newE2ERouter(t, stub, cds.url, bytes.Repeat([]byte{0x43}, 48), meshCA)
 		// The TLS stack flattens the verification error to text.
 		if err := router.poller.Poll(t.Context()); err == nil || !strings.Contains(err.Error(), remote.ErrMeasurementNotAllowed.Error()) {
 			t.Fatalf("Poll() under a wrong CDS pin = %v, want %q", err, remote.ErrMeasurementNotAllowed)
@@ -231,7 +230,7 @@ func TestRoutesEndToEnd(t *testing.T) {
 		_, other := operatorSigner(t)
 		cds := startE2ECDS(t, stub, measurement, mesh, key, other)
 		cds.put(t, signer, manifest(1))
-		router := newE2ERouter(t, stub, cds.url, measurement, mesh)
+		router := newE2ERouter(t, stub, cds.url, measurement, meshCA)
 		if err := router.poller.Poll(t.Context()); err == nil {
 			t.Fatal("Poll() under a substituted operator key set = nil, want an error")
 		}
