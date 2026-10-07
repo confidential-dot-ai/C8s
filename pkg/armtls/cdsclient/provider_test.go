@@ -548,11 +548,39 @@ func TestRefreshCABundleDoesNotTrustPublicKeyCloneChain(t *testing.T) {
 	}
 }
 
-func TestRefreshCABundleRejectsTrustedSignerPublicKeyClone(t *testing.T) {
-	trustedKey, trustedCert := testCA(t)
-	cloneCert := testCAForPublicKey(t, trustedKey, trustedCert, trustedCert.PublicKey, trustedCert.Subject)
+// renewedCAForTrusted self-signs another certificate under a trusted CA's own
+// key, outliving the one it replaces, as a CDS CA renewal does.
+func renewedCAForTrusted(t *testing.T, key *ecdsa.PrivateKey, trusted *x509.Certificate, notAfter time.Time) *x509.Certificate {
+	t.Helper()
+	serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	tmpl := &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               trusted.Subject,
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return renewed
+}
 
-	issuer := caBundleServer(t, cloneCert, trustedCert)
+// A CDS keeps one CA key for its process lifetime and renews the certificate
+// under it, so a published certificate with a trusted CA's subject and key,
+// self-signed under that key and outliving it, is the same trust anchor.
+func TestRefreshCABundleAcceptsSameKeyRenewedCA(t *testing.T) {
+	trustedKey, trustedCert := testCA(t)
+	renewedCert := renewedCAForTrusted(t, trustedKey, trustedCert, trustedCert.NotAfter.Add(24*time.Hour))
+
+	issuer := caBundleServer(t, renewedCert)
 	defer issuer.Close()
 
 	client := NewClient(&Config{
@@ -569,13 +597,42 @@ func TestRefreshCABundleRejectsTrustedSignerPublicKeyClone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(certs) != 1 || !sameCertificate(certs[0], trustedCert) {
-		t.Fatalf("RefreshCABundle returned %d cert(s), want only exact trusted CA", len(certs))
+	if len(certs) != 1 || !sameCertificate(certs[0], renewedCert) {
+		t.Fatalf("RefreshCABundle returned %d cert(s), want the renewed CA", len(certs))
+	}
+
+	trusted := client.TrustedCABundle()
+	if len(trusted) != 1 || !sameCertificate(trusted[0], renewedCert) {
+		t.Fatalf("trusted CA bundle did not follow the renewed CA, count=%d", len(trusted))
+	}
+}
+
+// A same-key certificate that does not outlive the trusted one is a replay of
+// an earlier certificate, not a renewal, and must not replace the anchor.
+func TestRefreshCABundleRejectsSameKeyCertificateWithoutLongerValidity(t *testing.T) {
+	trustedKey, trustedCert := testCA(t)
+	earlier := renewedCAForTrusted(t, trustedKey, trustedCert, trustedCert.NotAfter.Add(-24*time.Hour))
+
+	issuer := caBundleServer(t, earlier)
+	defer issuer.Close()
+
+	client := NewClient(&Config{
+		CDSURL:            "http://unused",
+		AttestationApiURL: "http://unused",
+		CDSCAURL:          issuer.URL,
+		NodeIP:            "10.0.0.1",
+		TEEType:           armtls.TEETypeSEVSNP,
+		HTTPClient:        plainHTTPClient(),
+	})
+	seedTrustedCABundle(t, client, trustedCert)
+
+	if _, err := client.refreshCABundle(context.Background()); err == nil {
+		t.Fatal("RefreshCABundle accepted a same-key certificate that expires earlier than the trusted one")
 	}
 
 	trusted := client.TrustedCABundle()
 	if len(trusted) != 1 || !sameCertificate(trusted[0], trustedCert) {
-		t.Fatalf("trusted CA bundle accepted same-key replacement CA, count=%d", len(trusted))
+		t.Fatalf("trusted CA bundle changed, count=%d", len(trusted))
 	}
 }
 

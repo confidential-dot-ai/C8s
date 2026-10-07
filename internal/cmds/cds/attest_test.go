@@ -69,16 +69,15 @@ func generateCSRWith(t *testing.T, subject pkix.Name, dnsNames []string, ips []n
 
 func newTestAttestHandler(t *testing.T, stubURL string, allowedMeasurements map[string]bool) AttestHandler {
 	t.Helper()
-	ca, err := issuer.NewCA("test ca", 2*issuer.MaxLeafTTL)
+	mesh, err := issuer.NewMeshCA("test ca", 2*issuer.MaxLeafTTL)
 	if err != nil {
-		t.Fatalf("new ca: %v", err)
+		t.Fatalf("new mesh ca: %v", err)
 	}
 	store := attestation.NewChallengeStore(30 * time.Second)
 	return AttestHandler{
 		Challenges:        &store,
 		AttestationClient: remote.NewClient(stubURL),
-		CA:                ca,
-		CAChainPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
+		MeshCA:            mesh,
 		CertTTL:           time.Hour,
 		Measurements:      allowedMeasurements,
 	}
@@ -140,7 +139,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	}
 	leaf := chain[0]
 	ca := chain[1]
-	if !bytes.Equal(ca.Raw, h.CA.Cert.Raw) {
+	if !bytes.Equal(ca.Raw, h.MeshCA.Current().CA.Cert.Raw) {
 		t.Fatalf("CA bundle cert does not match handler CA")
 	}
 	if err := leaf.CheckSignatureFrom(ca); err != nil {
@@ -764,44 +763,6 @@ func TestClassifyVerifyErrorDoesNotEchoUpstreamBody(t *testing.T) {
 	}
 }
 
-// caChainPEM has three branches: prefer CAChainPEM, fall back to CA.Cert, or
-// return nil.
-func TestAttestHandler_caChainPEM(t *testing.T) {
-	ca, err := issuer.NewCA("test ca", time.Hour)
-	if err != nil {
-		t.Fatalf("new ca: %v", err)
-	}
-
-	t.Run("prefers explicit CAChainPEM", func(t *testing.T) {
-		h := AttestHandler{CAChainPEM: []byte("explicit"), CA: ca}
-		if got := string(h.caChainPEM()); got != "explicit" {
-			t.Fatalf("got %q, want explicit", got)
-		}
-	})
-
-	t.Run("derives from CA cert when chain empty", func(t *testing.T) {
-		h := AttestHandler{CA: ca}
-		want := certutil.EncodeCertPEM(ca.Cert.Raw)
-		if !bytes.Equal(h.caChainPEM(), want) {
-			t.Fatal("derived chain does not match CA cert PEM")
-		}
-	})
-
-	t.Run("nil when no chain and no CA", func(t *testing.T) {
-		h := AttestHandler{}
-		if got := h.caChainPEM(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-
-	t.Run("nil when CA has nil cert", func(t *testing.T) {
-		h := AttestHandler{CA: &issuer.CA{}}
-		if got := h.caChainPEM(); got != nil {
-			t.Fatalf("expected nil, got %v", got)
-		}
-	})
-}
-
 func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 	stub := newStubAttestationApi(t, "x")
 	h := newTestAttestHandler(t, stub.URL(), nil)
@@ -881,22 +842,26 @@ func TestAttest_RejectsNonECDSACSR(t *testing.T) {
 	}
 }
 
-// An unloaded CA makes in-process signing fail after all validation passed.
-// Also exercises the RequestTimeout>0 wrapping.
-func TestAttest_SignFailureReturns500(t *testing.T) {
-	stub := newStubAttestationApi(t, "x")
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.CA = &issuer.CA{} // no cert/key loaded: SignCSR fails
-	h.RequestTimeout = time.Second
+// RequestTimeout bounds the attestation round trip: an attestation-api that
+// does not answer inside it fails the request closed.
+func TestAttest_RequestTimeoutRefusesASlowAttestationApi(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(500 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer slow.Close()
+
+	h := newTestAttestHandler(t, slow.URL, nil)
+	h.RequestTimeout = 20 * time.Millisecond
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
 	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status: got %d, want 500; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status: got %d, want 502; body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), types.ErrorCodeSignFailed) {
-		t.Errorf("body should mention %s; got %s", types.ErrorCodeSignFailed, w.Body.String())
+	if !strings.Contains(w.Body.String(), types.ErrorCodeAttestationApiUnreachable) {
+		t.Errorf("body should mention %s; got %s", types.ErrorCodeAttestationApiUnreachable, w.Body.String())
 	}
 }
 

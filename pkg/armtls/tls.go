@@ -663,9 +663,10 @@ func (m *CertManager) SwapProvider(ctx context.Context, provider CertProvider) e
 	return m.state.SwapProvider(ctx, provider)
 }
 
-// UpdateCACerts dynamically updates the CA certificates used for dual-mode
-// peer verification. This is used by the CA bundle refresh goroutine when
-// polling the CDS /ca endpoint in CDS-backed modes.
+// UpdateCACerts dynamically updates the CA certificates a peer is verified
+// against: the dual-mode trust anchors of a mesh endpoint polling the CDS /ca
+// endpoint, and the ClientCAs pool of a listener whose CA renewed its
+// certificate.
 func (m *CertManager) UpdateCACerts(certs []*x509.Certificate) {
 	if m.sharedCA != nil {
 		m.sharedCA.update(certs)
@@ -731,15 +732,13 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		if cfg.ClientPolicy != nil {
 			return nil, nil, fmt.Errorf("armtls: ClientCAs and ClientPolicy are mutually exclusive (ClientPolicy admits a self-signed armTLS peer, which ClientCAs exists to refuse)")
 		}
-		pool := x509.NewCertPool()
-		for _, c := range cfg.ClientCAs {
-			pool.AddCert(c)
-		}
-		tlsCfg.ClientCAs = pool
+		sharedCA = newSharedCACerts(cfg.ClientCAs)
+		tlsCfg.ClientCAs = sharedCA.getPool()
 		tlsCfg.ClientAuth = cfg.ClientAuth
 		if tlsCfg.ClientAuth == tls.NoClientCert {
 			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
 		}
+		tlsCfg.GetConfigForClient = clientCAsPerHandshake(tlsCfg, sharedCA)
 	case cfg.ClientPolicy != nil:
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
 		if len(cfg.CACert) > 0 || cfg.DynamicCACert {
@@ -752,6 +751,17 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 
 	mgr := &CertManager{state: state, sharedCA: sharedCA}
 	return tlsCfg, mgr, nil
+}
+
+// clientCAsPerHandshake reads the client CA pool once per connection, so a
+// pool replaced through [CertManager.UpdateCACerts] — the CA that renewed its
+// certificate — verifies the next client certificate presented.
+func clientCAsPerHandshake(base *tls.Config, shared *sharedCACerts) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	return func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		current := base.Clone()
+		current.ClientCAs = shared.getPool()
+		return current, nil
+	}
 }
 
 // NewClientTLSConfig creates a tls.Config for an armTLS client. Peer verification
