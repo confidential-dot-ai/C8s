@@ -7717,3 +7717,69 @@ func TestChartSweepMountAdmission(t *testing.T) {
 		})
 	}
 }
+
+// The pod validator is rendered fail-closed over both pod resources and both
+// write operations, so a pod cannot reach the API server without its injected
+// shape while the webhook is down. The operator is told the
+// configuration name so it patches the serving CA onto it.
+func TestChartRendersPodValidatorFailClosed(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+
+	var cfg admissionregv1.ValidatingWebhookConfiguration
+	if !findDoc(t, out, "ValidatingWebhookConfiguration", "c8s-pod-validator", &cfg) {
+		t.Fatalf("chart missing ValidatingWebhookConfiguration c8s-pod-validator\n%s", out)
+	}
+	if len(cfg.Webhooks) != 1 {
+		t.Fatalf("webhooks = %d, want one", len(cfg.Webhooks))
+	}
+	wh := cfg.Webhooks[0]
+	if wh.FailurePolicy == nil || *wh.FailurePolicy != admissionregv1.Fail {
+		t.Errorf("failurePolicy = %v, want Fail", wh.FailurePolicy)
+	}
+	if wh.ClientConfig.Service == nil || wh.ClientConfig.Service.Path == nil || *wh.ClientConfig.Service.Path != "/validate-pods" {
+		t.Errorf("clientConfig path = %+v, want /validate-pods", wh.ClientConfig.Service)
+	}
+	if len(wh.Rules) != 1 {
+		t.Fatalf("rules = %d, want one", len(wh.Rules))
+	}
+	rule := wh.Rules[0]
+	for _, want := range []admissionregv1.OperationType{admissionregv1.Create, admissionregv1.Update} {
+		if !slices.Contains(rule.Operations, want) {
+			t.Errorf("rule operations = %v, want %v included", rule.Operations, want)
+		}
+	}
+	for _, want := range []string{"pods", "pods/ephemeralcontainers"} {
+		if !slices.Contains(rule.Resources, want) {
+			t.Errorf("rule resources = %v, want %v included", rule.Resources, want)
+		}
+	}
+
+	// The operator is told the injector's name and derives this one, so the
+	// two must stay named beside each other.
+	args := renderedOperatorArgs(t, out)
+	if !slices.Contains(args, "--webhook-config-name=c8s-pod-injector") {
+		t.Errorf("operator args missing --webhook-config-name=c8s-pod-injector\n%v", args)
+	}
+	// The node DaemonSet stays this lane's mesh, so no endpoint is injected.
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--mesh-image=") {
+			t.Errorf("operator is configured to inject a pod mesh endpoint: %q", arg)
+		}
+	}
+
+	// The operator's own namespace and the system namespaces are out of the
+	// validator's scope, so the operator can always boot to patch the caBundle
+	// this fail-closed webhook needs.
+	excluded := selectorExpressionValues(wh.NamespaceSelector, "kubernetes.io/metadata.name", metav1.LabelSelectorOpNotIn)
+	for _, want := range []string{"c8s-system", "kube-system", "kube-public", "kube-node-lease"} {
+		if !slices.Contains(excluded, want) {
+			t.Errorf("validator namespaceSelector missing excluded namespace %q: %v", want, excluded)
+		}
+	}
+	if wh.MatchPolicy == nil || *wh.MatchPolicy != admissionregv1.Equivalent {
+		t.Errorf("matchPolicy = %v, want Equivalent", wh.MatchPolicy)
+	}
+}
