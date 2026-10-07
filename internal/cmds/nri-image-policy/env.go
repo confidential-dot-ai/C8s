@@ -21,7 +21,10 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
 	ctr, env := adjustedLaunchContainer(req)
-	mounts := adjustedMounts(req, ctr, p.cfg.WorkloadClaims.SocketDir)
+	mounts := adjustedMounts(req, ctr, nodeMounts{
+		socketDir: p.cfg.WorkloadClaims.SocketDir,
+		cdsPins:   p.cdsPins,
+	})
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
 	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
@@ -102,7 +105,7 @@ func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.
 }
 
 // adjustedMounts observes cumulative edits; deferred CDI leaves evidence unavailable.
-func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, socketDir string) []allowlist.ObservedMount {
+func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, own nodeMounts) []allowlist.ObservedMount {
 	if len(req.GetAdjust().GetCDIDevices()) > 0 {
 		return nil
 	}
@@ -118,5 +121,5 @@ func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Contai
 			ctr.Mounts = append(ctr.Mounts, proto.Clone(edit).(*api.Mount))
 		}
 	}
-	return newMountObserver(nil, socketDir).Observe(req.GetPod(), ctr)
+	return newMountObserver(nil, own).Observe(req.GetPod(), ctr)
 }

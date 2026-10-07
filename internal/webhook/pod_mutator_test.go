@@ -1289,48 +1289,30 @@ func TestCertWaitContainerTimeout(t *testing.T) {
 	}
 }
 
-// Get-cert spells the pin flag --cds-measurements and takes it comma-joined,
-// where the secret and volume fetchers take a repeatable --measurements.
-func TestCertContainerCarriesCDSMeasurements(t *testing.T) {
-	for _, tc := range []struct {
-		name         string
-		measurements []string
-		want         string
-	}{
-		{"multiple pins", []string{"aa", "bb"}, "--cds-measurements=aa,bb"},
-		{"node shape pins CDS", []string{"aa"}, "--cds-measurements=aa"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := podWithApp()
-			cfg := secretsConfig()
-			cfg.CDSMeasurements = tc.measurements
-			mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
-
-			args := containerNamed(pod, reservedCertContainerName).Args
-			if !hasArg(args, tc.want) {
-				t.Fatalf("c8s-cert args %v missing %q", args, tc.want)
-			}
-		})
-	}
-}
-
-// An unset pin emits no flag at all: get-cert reads "" as "accept any attested
-// CDS", which an empty --cds-measurements= would also mean but by a longer road.
-func TestCertContainerOmitsEmptyCDSMeasurements(t *testing.T) {
+// No injected client takes a pin as an argument: it reads the node's CDS
+// policy from the path the enforcer mounts, which neither the pod nor the
+// control plane can choose.
+func TestInjectedClientsCarryNoCDSPins(t *testing.T) {
+	cfg := secretsConfig()
+	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
 	pod := podWithApp()
-	mutatePod(pod, &injection{WorkloadID: "api"}, secretsConfig())
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
+		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
+	}, cfg)
 
-	for _, arg := range containerNamed(pod, reservedCertContainerName).Args {
-		if strings.HasPrefix(arg, "--cds-measurements") {
-			t.Fatalf("c8s-cert carries %q with no measurements configured", arg)
+	for _, name := range []string{reservedCertContainerName, reservedSecretContainerName, reservedVolumeContainerName} {
+		for _, arg := range containerNamed(pod, name).Args {
+			for _, pin := range []string{"--cds-measurements", "--cds-rtmrs", "--measurements", "--rtmrs", "--image-policy"} {
+				if strings.HasPrefix(arg, pin) {
+					t.Errorf("%s carries %q; pins come from the node policy mount", name, arg)
+				}
+			}
 		}
 	}
 }
 
-// The chart points the operator at the attestation proxy's Unix socket inside
-// the inventory's host directory; an injected sidecar sees that directory at
-// workloadclaims.SidecarSocketDir, so the endpoint must be rebased onto the
-// mount — and only there (every other shape passes through untouched).
 func TestSidecarAttestationApiURLRebase(t *testing.T) {
 	const hostDir = "/run/nri-image-policy"
 	for _, tc := range []struct {
@@ -1341,16 +1323,37 @@ func TestSidecarAttestationApiURLRebase(t *testing.T) {
 	}{
 		{"socket rebased onto the sidecar mount", hostDir,
 			"unix://" + hostDir + "/attestation-api.sock",
-			"unix://" + workloadclaims.SidecarSocketDir + "/attestation-api.sock"},
-		{"no inventory mount leaves the URL alone", "",
-			"unix://" + hostDir + "/attestation-api.sock",
-			"unix://" + hostDir + "/attestation-api.sock"},
-		{"http endpoint passes through", hostDir,
+			"unix://" + workloadclaims.AttestationAPISocket},
+		{"http endpoint is preserved", hostDir,
 			"http://attestation-api.c8s-system.svc:8400",
 			"http://attestation-api.c8s-system.svc:8400"},
-		{"socket outside the inventory dir passes through", hostDir,
+		{"host-IP endpoint is preserved", hostDir,
+			"http://$(HOST_IP):8400",
+			"http://$(HOST_IP):8400"},
+		{"socket outside the inventory dir is preserved", hostDir,
 			"unix:///elsewhere/attest.sock",
 			"unix:///elsewhere/attest.sock"},
+		{"matching socket keeps its suffix", hostDir,
+			"unix://" + hostDir + "/custom.sock",
+			"unix://" + workloadclaims.SidecarSocketDir + "/custom.sock"},
+		{"similar directory is preserved", hostDir,
+			"unix://" + hostDir + "-other/attest.sock",
+			"unix://" + hostDir + "-other/attest.sock"},
+		{"parent traversal is preserved", hostDir,
+			"unix://" + hostDir + "/../other.sock",
+			"unix://" + hostDir + "/../other.sock"},
+		{"dot segment is preserved", hostDir,
+			"unix://" + hostDir + "/./attestation-api.sock",
+			"unix://" + hostDir + "/./attestation-api.sock"},
+		{"repeated separator is preserved", hostDir,
+			"unix://" + hostDir + "//attestation-api.sock",
+			"unix://" + hostDir + "//attestation-api.sock"},
+		{"trailing host directory slash is accepted", hostDir + "/",
+			"unix://" + hostDir + "/attestation-api.sock",
+			"unix://" + workloadclaims.AttestationAPISocket},
+		{"no inventory mount leaves the URL alone", "",
+			"http://attestation-api.c8s-system.svc:8400",
+			"http://attestation-api.c8s-system.svc:8400"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := secretsConfig()
@@ -1374,6 +1377,26 @@ func TestCertContainerGetsRebasedAttestationURL(t *testing.T) {
 	want := "--attestation-api-url=unix://" + workloadclaims.SidecarSocketDir + "/attestation-api.sock"
 	if args := containerNamed(pod, reservedCertContainerName).Args; !hasArg(args, want) {
 		t.Fatalf("c8s-cert args %v missing %q", args, want)
+	}
+}
+
+func TestFetchersPreserveAnHTTPEndpoint(t *testing.T) {
+	cfg := secretsConfig()
+	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
+	cfg.AttestationApiURL = "http://$(HOST_IP):8400"
+	pod := podWithApp()
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
+		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
+	}, cfg)
+
+	want := "--attestation-api-url=http://$(HOST_IP):8400"
+	for _, name := range []string{reservedCertContainerName, reservedSecretContainerName, reservedVolumeContainerName} {
+		args := containerNamed(pod, name).Args
+		if !hasArg(args, want) {
+			t.Errorf("%s args %v missing %q", name, args, want)
+		}
 	}
 }
 
@@ -1523,41 +1546,6 @@ func TestMutatePodStaysRestrictedAdmissible(t *testing.T) {
 
 	if agg := evaluateRestricted(t, pod); !agg.Allowed {
 		t.Fatalf("mutated cw pod violates PodSecurity restricted: %s: %s", agg.ForbiddenReason(), agg.ForbiddenDetail())
-	}
-}
-
-// The RTMR pins ride the same routes as the measurements: comma-joined
-// --cds-rtmrs on get-cert, repeatable --rtmrs on the secret and volume
-// fetchers, and no flag at all when unset.
-func TestFetchersCarryCDSRTMRPins(t *testing.T) {
-	rtmrs := []string{"1=" + strings.Repeat("ab", 48), "2=" + strings.Repeat("cd", 48)}
-	pod := podWithApp()
-	cfg := secretsConfig()
-	cfg.CDSRTMRs = rtmrs
-	mutatePod(pod, &injection{
-		WorkloadID: "api",
-		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
-		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
-	}, cfg)
-
-	if args := containerNamed(pod, reservedCertContainerName).Args; !hasArg(args, "--cds-rtmrs="+rtmrs[0]+","+rtmrs[1]) {
-		t.Fatalf("c8s-cert args %v missing --cds-rtmrs", args)
-	}
-	for _, name := range []string{reservedSecretContainerName, reservedVolumeContainerName} {
-		args := containerNamed(pod, name).Args
-		for _, r := range rtmrs {
-			if !hasArg(args, "--rtmrs="+r) {
-				t.Fatalf("%s args %v missing --rtmrs=%s", name, args, r)
-			}
-		}
-	}
-
-	unpinned := podWithApp()
-	mutatePod(unpinned, &injection{WorkloadID: "api"}, secretsConfig())
-	for _, arg := range containerNamed(unpinned, reservedCertContainerName).Args {
-		if strings.HasPrefix(arg, "--cds-rtmrs") {
-			t.Fatalf("c8s-cert carries %q with no RTMR pins configured", arg)
-		}
 	}
 }
 

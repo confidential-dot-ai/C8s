@@ -169,6 +169,9 @@ workloads = {
 }
 with open(sys.argv[2], "w") as f:
     yaml.safe_dump({
+        "operator": {"extraArgs": [
+            "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
+        ]},
         "nriImagePolicy": {
             # The kind node bakes no plugin or boot config, so the chart's
             # installer stays off: its baked form would find no config to

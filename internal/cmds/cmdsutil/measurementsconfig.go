@@ -1,7 +1,9 @@
 package cmdsutil
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -101,10 +103,7 @@ func LoadImagePolicyValues(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValu
 		return values, err
 	}
 	if cfg.Platform != "" {
-		flag := cfg.PlatformFlag
-		if flag == "" {
-			flag = "--platform"
-		}
+		flag := cfg.platformFlag()
 		family, err := teetypes.ParseFamily(cfg.Platform)
 		if err != nil {
 			return refvalues.ReferenceValues{}, fmt.Errorf("%s: %w", flag, err)
@@ -114,6 +113,128 @@ func LoadImagePolicyValues(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValu
 		}
 	}
 	return values, nil
+}
+
+// LoadImagePolicySet is one reference set from whichever form the caller
+// configured: a complete policy document, or independent launch digests on the
+// configured platform's family, each carrying the register pins. An empty set
+// pins nothing; refvalues refuses a register pin the family does not carry
+// when the set is rendered or enforced.
+func LoadImagePolicySet(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValues, error) {
+	if cfg.Source.IsSet() {
+		return LoadImagePolicyValues(cfg)
+	}
+	digests, err := LoadMeasurements(cfg.Pins.Measurements, cfg.Pins.MeasurementsFile)
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("--%smeasurements: %w", cfg.Pins.Prefix, err)
+	}
+	registers, err := refvalues.ParseRegisterPins(cfg.Pins.Registers)
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("--%srtmrs: %w", cfg.Pins.Prefix, err)
+	}
+	if len(digests) == 0 {
+		if len(registers) > 0 {
+			return refvalues.ReferenceValues{}, fmt.Errorf("--%srtmrs pins %d register(s) with no --%smeasurements digest to pin them to", cfg.Pins.Prefix, len(registers), cfg.Pins.Prefix)
+		}
+		return refvalues.ReferenceValues{}, nil
+	}
+	family, err := teetypes.ParseFamily(cfg.Platform)
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("%s: %w", cfg.platformFlag(), err)
+	}
+	set := refvalues.FromFlags(digests, registers)
+	set.Family = family
+	return set, nil
+}
+
+// platformFlag names the caller's platform input in an error.
+func (cfg ImagePolicyValuesConfig) platformFlag() string {
+	if cfg.PlatformFlag == "" {
+		return "--platform"
+	}
+	return cfg.PlatformFlag
+}
+
+// ResolveCDSPins returns the pins a client holds its CDS to, and the source it
+// read them from so the client can log which one decided.
+//
+// THE RULE: while the enforcer's policy mount is at nodePolicy, it is the only
+// source, and a supplied pin is refused rather than merged or silently
+// ignored. An absent mount leaves the caller's own inputs: a chart-rendered
+// platform client and the CLI have no enforcer to read. Any other error
+// reading that path fails: a policy the client cannot read is not a policy it
+// may ignore.
+func ResolveCDSPins(nodePolicy string, source ImagePolicySource, pins MeasurementPins) (remote.Policy, string, error) {
+	switch _, err := os.Stat(nodePolicy); {
+	case errors.Is(err, fs.ErrNotExist):
+		policy, err := source.Load(pins)
+		return policy, "arguments", err
+	case err != nil:
+		return remote.Policy{}, "", fmt.Errorf("node CDS policy %s: %w", nodePolicy, err)
+	}
+	if supplied := suppliedPolicyFlags(source, pins); len(supplied) > 0 {
+		return remote.Policy{}, "", fmt.Errorf("this node pins CDS in %s; remove %s",
+			nodePolicy, strings.Join(supplied, " and "))
+	}
+	values, err := refvalues.Load(nodePolicy)
+	if err != nil {
+		return remote.Policy{}, "", fmt.Errorf("node CDS policy: %w", err)
+	}
+	return values.Policy(), nodePolicy, nil
+}
+
+// RequireNodeVerifier holds a credential client to the node's own
+// attestation-api while the enforcer mounts its CDS policy at nodePolicy and
+// presents that attestation-api at socket. The verifier is what decides
+// whether the CDS a client dials satisfies those pins, so a client answering
+// to a named verifier is not pinned at all.
+//
+// Both paths are the node's own mounts, and the rule is ResolveCDSPins': while
+// they are there they are the only source, and a supplied verifier is refused.
+// Where the node hands out no policy, or runs no attestation-api a pod can
+// reach, the caller's own argument stands.
+func RequireNodeVerifier(nodePolicy, socket, supplied string) error {
+	pinned, err := nodeProvides(nodePolicy)
+	if err != nil {
+		return err
+	}
+	served, err := nodeProvides(socket)
+	if err != nil {
+		return err
+	}
+	if !pinned || !served {
+		return nil
+	}
+	if endpoint := "unix://" + socket; supplied != endpoint {
+		return fmt.Errorf("this node pins CDS in %s and serves its attestation-api at %s, so --attestation-api-url must be %s; got %q",
+			nodePolicy, socket, endpoint, supplied)
+	}
+	return nil
+}
+
+// nodeProvides reports whether the node mounts path. An error other than an
+// absent path fails the caller: a mount it cannot read still binds it.
+func nodeProvides(path string) (bool, error) {
+	switch _, err := os.Stat(path); {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("node mount %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// suppliedPolicyFlags names the pin inputs the caller set, for an error that
+// says which argument to drop.
+func suppliedPolicyFlags(source ImagePolicySource, pins MeasurementPins) []string {
+	var flags []string
+	if source.File != "" {
+		flags = append(flags, "--image-policy-file")
+	}
+	if source.JSON != "" {
+		flags = append(flags, "--image-policy-json")
+	}
+	return append(flags, pins.flags()...)
 }
 
 // Load returns complete image identities or independent digest/register pins.
