@@ -34,6 +34,8 @@ on:
       - ".github/scripts/node-guest-image-invariants.sh"
       - ".github/scripts/tests/test-node-guest-image-invariants.sh"
       - ".github/scripts/tdx-image-acceptance.sh"
+      - ".github/scripts/snp-node-image.sh"
+      - ".github/scripts/tests/test-snp-node-image.sh"
       - ".github/scripts/tests/test-tdx-image-acceptance.sh"
       - ".github/workflows/c8s-image.yml"
       - ".github/workflows/c8s-image-publish.yml"
@@ -275,13 +277,18 @@ jobs:
       - name: Check exact-image acceptance evidence and lifecycle
         run: bash .github/scripts/tests/test-tdx-image-acceptance.sh
 
+      - name: Check the SNP node image resolution and staging manifests
+        run: bash .github/scripts/tests/test-snp-node-image.sh
+
       - name: Check AppArmor scripts
         run: |
           shellcheck -x -P SCRIPTDIR node-guest-image/check-apparmor-config.sh \
             node-guest-image/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh \
             node-guest-image/tests/apparmor-{config,enforce,kernel,runtime}-test.sh \
             .github/scripts/tdx-image-acceptance.sh \
-            .github/scripts/tests/test-tdx-image-acceptance.sh
+            .github/scripts/tests/test-tdx-image-acceptance.sh \
+            .github/scripts/snp-node-image.sh \
+            .github/scripts/tests/test-snp-node-image.sh
           shellcheck -x -P SCRIPTDIR test/e2e/lib{,-test}.sh
 
       - name: Exercise the real AppArmor kernel and parser
