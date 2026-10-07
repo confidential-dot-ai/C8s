@@ -49,7 +49,10 @@ func NewCmd() *cobra.Command {
 		Use:   "acme",
 		Short: "Run the router in-guest ACME sidecar (acme front-door mode)",
 		Long: `acme runs beside nginx in the router pod and keeps one multi-SAN WebPKI
-certificate for --domains under --cert-dir: cert.pem (full chain) and key.pem.
+certificate under --cert-dir: cert.pem (full chain) and key.pem. It includes
+configured domains whose public HTTP challenge paths reach this router.
+Unavailable domains do not block issuance for reachable domains. They are
+added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
 /.well-known/acme-challenge/ to the loopback challenge listener. The
 certificate is renewed at 2/3 of its lifetime, and nginx is reloaded via
@@ -135,7 +138,11 @@ func validateDomain(domain string) error {
 	return nil
 }
 
-func run(cfg config) error {
+func run(cfg config) error { return runWith(cfg, nil) }
+
+// runWith is run with an explicit hostname probe transport; nil uses public
+// DNS and port 80, which is what production needs and tests cannot.
+func runWith(cfg config, probe *http.Client) error {
 	logger, err := newLogger(cfg.logLevel)
 	if err != nil {
 		return err
@@ -161,6 +168,8 @@ func run(cfg config) error {
 		}
 	})
 	mgr.httpPort = cfg.httpPort
+	mgr.probePublic = true
+	mgr.publicProbeClient = probe
 
 	challengeAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.challengePort))
 	if _, err := cmdsutil.ServeInBackground(ctx, challengeAddr, mgr.handler(), logger); err != nil {
