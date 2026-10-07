@@ -102,7 +102,7 @@ func TestAttest_SandboxWorkload_AllowsFloorOnlySandbox(t *testing.T) {
 	h.AllowlistStore = anyArgvStore(wlDigestA, wlDigestB)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestA, wlDigestB}}, key: signer.PublicKey()}
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusOK {
@@ -119,7 +119,7 @@ func TestAttest_SandboxWorkload_RejectsUnallowlistedImage(t *testing.T) {
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestA, wlDigestB}}, key: signer.PublicKey()}
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusForbidden {
@@ -135,7 +135,7 @@ func TestAttest_SandboxWorkload_UnreachableInventoryFailsClosed(t *testing.T) {
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{}, key: signer.PublicKey()} // knows no sandbox
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusForbidden {
@@ -152,7 +152,7 @@ func TestAttest_SandboxWorkload_EmptySandboxFailsClosed(t *testing.T) {
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {}}, key: signer.PublicKey()}
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusForbidden {
@@ -175,7 +175,7 @@ func TestAttest_SandboxWorkload_RejectsWhenGateUnwired(t *testing.T) {
 			h, signer := newSandboxTestEnv(t, stub.URL())
 			tc.wire(&h)
 
-			csrPEM, _ := generateCSR(t)
+			csrPEM := sandboxCSR(t)
 			challenge := issueChallenge(t, h)
 			w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 			if w.Code != http.StatusForbidden {
@@ -214,7 +214,7 @@ func TestAttest_SandboxWorkload_PartialLifecycleStatesIssue(t *testing.T) {
 			h.AllowlistStore = store
 			h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: tc.running}, key: signer.PublicKey()}
 
-			csrPEM, _ := generateCSR(t)
+			csrPEM := sandboxCSR(t)
 			challenge := issueChallenge(t, h)
 			w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 			if w.Code != http.StatusOK {
@@ -236,7 +236,7 @@ func TestAttest_SandboxWorkload_MembershipStillBitesMidLifecycle(t *testing.T) {
 	h.AllowlistStore = store
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestC, wlDigestA, wlDigestB}}, key: signer.PublicKey()}
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusForbidden {
@@ -252,6 +252,7 @@ func TestAttest_SandboxWorkload_NoTokenSkipsGate(t *testing.T) {
 	h.AllowlistStore = anyArgvStore() // admits nothing
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{}}
 
+	// No token, so the CSR names the leaf itself.
 	csrPEM, _ := generateCSR(t)
 	w := postAttestSandbox(t, h, issueChallenge(t, h), csrPEM, nil)
 	if w.Code != http.StatusOK {
@@ -271,7 +272,7 @@ func TestAttest_SandboxWorkload_UnpinnedMeasurementsStillIssue(t *testing.T) {
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestA}}, key: signer.PublicKey()}
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusOK {
@@ -296,7 +297,7 @@ func TestAttest_SandboxWorkload_UnpinnedStillEnforcesAllowlist(t *testing.T) {
 	h.AllowlistStore = anyArgvStore(wlDigestA)
 	h.SandboxDigests = fakeDigests{digests: map[string][]string{testSandboxID: {wlDigestA, wlDigestB}}, key: signer.PublicKey()}
 
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusForbidden {

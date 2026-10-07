@@ -61,7 +61,7 @@ func leafFromInventory(t *testing.T, store policyStore, digests []string, contai
 	if tune != nil {
 		tune(&h)
 	}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
 	if w.Code != http.StatusOK {
