@@ -180,7 +180,7 @@ func Run(args []string) error {
 
 	if plugin.inventory != nil {
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, cfg, plugin.inventory, socketPath); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, plugin, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 	}
@@ -807,7 +807,7 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, signer *workloadclaims.SandboxTokenSigner) error {
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
 	pins, err := cfg.Allowlist.Pull.cdsPins()
 	if err != nil {
 		return err
@@ -822,7 +822,7 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
+	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
 		attestationApiURL, pins, journal)
@@ -832,7 +832,7 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 // Without pull config there is no CDS in the picture at all, so tokens are
 // disabled and get-cert issues without a sandbox ID. Otherwise the signer
 // initializes in the background and the socket answers 503 until it does.
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, socketPath string) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, socketPath string) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -845,13 +845,13 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *conf
 	}
 	if !cfg.PullEnabled() {
 		logger.Warn("admission inventory has no CDS pull config; sandbox tokens disabled")
-		go func() { serve(workloadclaims.ServeTokens(ctx, l, inventory, nil)) }()
+		go func() { serve(workloadclaims.ServeTokens(ctx, l, resolver, nil)) }()
 		return nil
 	}
 	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
-	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, inventory, &signer)) }()
+	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, resolver, &signer)) }()
 	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
-		return startSandboxDigests(ctx, logger, cfg, inventory, s)
+		return startSandboxDigests(ctx, logger, cfg, resolver, s)
 	})
 	return nil
 }
