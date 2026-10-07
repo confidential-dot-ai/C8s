@@ -921,7 +921,6 @@ get-cert \
   --key-path=/etc/c8s/certs/tls.key \
   --ca-path=/etc/c8s/certs/ca.crt \
   --renew-interval=<webhook.getCert.renewInterval> \
-  --reload-nginx=<from annotation> \
   --continue-on-initial-error
 ```
 
@@ -947,17 +946,15 @@ The `c8s-cert-wait` init container (`/c8s probe-file --wait /etc/c8s/certs/tls.c
 gates the application containers on the initial cert being written: it blocks
 until the cert exists, then exits, and normal init-completion ordering holds the
 workload until then — fail-closed. Renewals publish a new generation;
-application-level TLS reload remains the workload's responsibility unless the
-pod opts into one of the C8s reload annotations.
+application-level TLS reload is the workload's responsibility.
 
 Platform-owned workloads can specialize the same webhook behavior with typed
 C8s annotations for the cert volume, cert/key filenames, renewal interval,
-nginx reload, Secret watch paths, discovery output, and get-cert UID/GID.
-(router, living in the webhook-excluded release namespace, renders equivalent
-get-cert containers directly from the chart's templates instead.) The
-webhook rejects incomplete reload-watch or discovery annotation sets during pod
-admission instead of admitting a pod that cannot serve its configured
-certificate/discovery path.
+discovery output, and get-cert UID/GID. (router, living in the
+webhook-excluded release namespace, renders equivalent get-cert containers
+directly from the chart's templates instead.) The webhook rejects an
+incomplete discovery annotation set during pod admission instead of admitting
+a pod that cannot serve its configured discovery path.
 
 ## router public TLS modes
 
@@ -977,10 +974,10 @@ front door:
   in a Memory-medium emptyDir — TEE-held under a confidential runtime (which
   this mode requires), lost with the pod and re-issued on recreation (point
   the sidecar at an ACME staging directory in tests to stay clear of the CA's
-  duplicate-certificate limits). Renewal fires at 2/3 lifetime; each install
-  SIGHUPs nginx. On start the sidecar writes a self-signed placeholder so
-  nginx, whose config names the cert files, can start before the first
-  issuance.
+  duplicate-certificate limits). Renewal fires at 2/3 lifetime; nginx's own
+  entrypoint re-reads the files it serves and reloads on each install. On
+  start the sidecar writes a self-signed placeholder so nginx, whose config
+  names the cert files, can start before the first issuance.
 
 The mode is a trust statement, not plumbing: the attestation sidecar commits
 it into the attest-pq and attest-lb report_data transcripts and echoes it as

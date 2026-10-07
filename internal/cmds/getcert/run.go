@@ -61,10 +61,7 @@ type config struct {
 	RenewJitterPercent     int
 	InitialRetryTimeout    time.Duration
 	InitialRetryInterval   time.Duration
-	ReloadNginx            bool
 	ContinueOnInitialError bool
-	ReloadWatchPaths       []string
-	ReloadWatchInterval    time.Duration
 	CAWatchInterval        time.Duration
 	DiscoveryOutPath       string
 	DiscoveryCDSCertURL    string
@@ -89,16 +86,11 @@ type inventory struct {
 	requireMount func() error
 }
 
-// procRoot is the procfs mount used to find nginx; tests substitute a fake tree.
-var procRoot = "/proc"
-
 var (
 	errInvalidDiscoveryPublicTLSMode             = errors.New("invalid discovery public TLS mode")
 	errInvalidCAWatchInterval                    = errors.New("invalid CA watch interval")
-	errInvalidReloadWatchInterval                = errors.New("invalid reload watch interval")
 	errInvalidUnnamedRenewInterval               = errors.New("invalid unnamed renew interval")
 	errInvalidRenewJitterPercent                 = errors.New("invalid renew jitter percent")
-	errReloadWatchRequiresRenewInterval          = errors.New("reload watch requires renew interval")
 	errContinueOnInitialErrorRequiresRenewalLoop = errors.New("continue on initial error requires renewal loop")
 )
 
@@ -149,10 +141,7 @@ consumers that read that volume.`,
 	flags.IntVar(&cfg.RenewJitterPercent, "renew-jitter-percent", defaultRenewJitterPercent, "Shorten each renewal delay by a random fraction of itself, up to this percent, so certificates issued together do not refresh in lockstep (0 = no jitter)")
 	flags.DurationVar(&cfg.InitialRetryTimeout, "initial-retry-timeout", 2*time.Minute, "Retry the first certificate request in-process for up to this long before failing, so a transient CDS/mesh outage during a roll does not crash the init container into kubelet backoff (0 = try once)")
 	flags.DurationVar(&cfg.InitialRetryInterval, "initial-retry-interval", 2*time.Second, "Delay between in-process retries of the first certificate request")
-	flags.BoolVar(&cfg.ReloadNginx, "reload-nginx", true, "SIGHUP nginx after certificate renewal or watched file changes")
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
-	flags.StringArrayVar(&cfg.ReloadWatchPaths, "reload-watch", nil, "File path to poll for changes and reload nginx when it changes (repeatable)")
-	flags.DurationVar(&cfg.ReloadWatchInterval, "reload-watch-interval", time.Minute, "Poll interval for --reload-watch paths")
 	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", 0, "Poll CDS's /ca at this interval and renew immediately when the published CA set no longer contains the CA CDS currently holds. A CDS restart regenerates the mesh CA in-memory, so without this the pod serves the dead CA until the next scheduled renewal (0 = disabled; requires --renew-interval)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
@@ -384,21 +373,6 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, cred
 	renewTimer := time.NewTimer(next)
 	defer renewTimer.Stop()
 
-	var watchC <-chan time.Time
-	var watchTicker *time.Ticker
-	var watchState map[string]fileSnapshot
-	if cfg.ReloadNginx && len(cfg.ReloadWatchPaths) > 0 {
-		var err error
-		watchState, err = snapshotReloadWatchPaths(cfg.ReloadWatchPaths)
-		if err != nil {
-			return err
-		}
-		watchTicker = time.NewTicker(cfg.ReloadWatchInterval)
-		defer watchTicker.Stop()
-		watchC = watchTicker.C
-		slog.Info("watching files for nginx reload", "paths", cfg.ReloadWatchPaths, "interval", cfg.ReloadWatchInterval)
-	}
-
 	var caWatchC <-chan time.Time
 	if cfg.CAWatchInterval > 0 {
 		caTicker := time.NewTicker(cfg.CAWatchInterval)
@@ -460,26 +434,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, cred
 			} else {
 				unnamedRuns++
 			}
-			if cfg.ReloadNginx {
-				if err := cmdsutil.ReloadNginx(procRoot, slog.Default()); err != nil {
-					slog.Warn("certificate renewed but nginx reload failed", "error", err)
-				}
-			}
 			renewTimer.Reset(renewalInterval(cfg, creds.current, unnamedRuns))
-		case <-watchC:
-			changed, nextState, err := reloadWatchChanged(watchState, cfg.ReloadWatchPaths)
-			if err != nil {
-				slog.Warn("reload watch check failed", "error", err)
-				continue
-			}
-			watchState = nextState
-			if !changed {
-				continue
-			}
-			slog.Info("watched file changed, reloading nginx")
-			if err := cmdsutil.ReloadNginx(procRoot, slog.Default()); err != nil {
-				slog.Warn("watched file changed but nginx reload failed", "error", err)
-			}
 		}
 	}
 }
@@ -742,14 +697,6 @@ func validateConfig(cfg config) error {
 		case "cds", "webpki", "acme":
 		default:
 			return fmt.Errorf("%w: --discovery-public-tls-mode must be 'cds', 'webpki', or 'acme', got %q", errInvalidDiscoveryPublicTLSMode, cfg.DiscoveryPublicTLSMode)
-		}
-	}
-	if len(cfg.ReloadWatchPaths) > 0 {
-		if cfg.ReloadWatchInterval <= 0 {
-			return fmt.Errorf("%w: --reload-watch-interval must be greater than 0 when --reload-watch is set", errInvalidReloadWatchInterval)
-		}
-		if cfg.RenewInterval <= 0 {
-			return fmt.Errorf("%w: --renew-interval must be greater than 0 when --reload-watch is set", errReloadWatchRequiresRenewInterval)
 		}
 	}
 	if cfg.CAWatchInterval < 0 {
@@ -1036,46 +983,4 @@ func discoveryPublicTLSMode(mode string) string {
 		return "cds"
 	}
 	return mode
-}
-
-type fileSnapshot struct {
-	size    int64
-	modTime time.Time
-	sha256  [sha256.Size]byte
-}
-
-func snapshotReloadWatchPaths(paths []string) (map[string]fileSnapshot, error) {
-	snapshots := make(map[string]fileSnapshot, len(paths))
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, fmt.Errorf("stat reload watch path %s: %w", path, err)
-		}
-		if info.IsDir() {
-			return nil, fmt.Errorf("reload watch path %s is a directory", path)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("read reload watch path %s: %w", path, err)
-		}
-		snapshots[path] = fileSnapshot{
-			size:    info.Size(),
-			modTime: info.ModTime(),
-			sha256:  sha256.Sum256(data),
-		}
-	}
-	return snapshots, nil
-}
-
-func reloadWatchChanged(previous map[string]fileSnapshot, paths []string) (bool, map[string]fileSnapshot, error) {
-	next, err := snapshotReloadWatchPaths(paths)
-	if err != nil {
-		return false, nil, err
-	}
-	for _, path := range paths {
-		if previous[path] != next[path] {
-			return true, next, nil
-		}
-	}
-	return false, next, nil
 }

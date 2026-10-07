@@ -187,7 +187,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		"--cert-path=/tls/cert.pem",
 		"--key-path=/tls/key.pem",
 		"--renew-interval=1h",
-		"--reload-nginx=true",
 		"--continue-on-initial-error",
 		// The CA watch keeps the served mesh CA tracking the live CDS CA: a
 		// CDS restart regenerates the mesh CA in-memory, and without the watch
@@ -2303,16 +2302,16 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
-		"--reload-watch=/edge-tls/public.crt",
-		"--reload-watch=/edge-tls/public.key",
 	)
 	// A WebPKI-secret front door is attest-pq-only: its host-visible serving
 	// key cannot support attest-lb's transport binding.
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	assertContainerArgs(t, attest, "--front-door-mode=webpki")
+	// nginx reloads itself from its own entrypoint, so the pod shares no
+	// process namespace (router_reload_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
-	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got == nil || !*got {
-		t.Fatalf("router shareProcessNamespace = %v, want true", got)
+	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got != nil && *got {
+		t.Fatalf("router shareProcessNamespace = %v, want it unset", *got)
 	}
 }
 

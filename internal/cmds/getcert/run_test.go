@@ -136,37 +136,6 @@ func TestValidateConfigRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 	}
 }
 
-func TestValidateConfigRejectsInvalidReloadWatchInterval(t *testing.T) {
-	err := validateConfig(config{
-		CDSURL:            "http://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "confidential-gke.confidential.ai",
-		ReloadWatchPaths:  []string{"/public-tls/tls.crt"},
-	})
-	if err == nil {
-		t.Fatal("validateConfig succeeded, want reload watch interval error")
-	}
-	if !errors.Is(err, errInvalidReloadWatchInterval) {
-		t.Fatalf("error = %v, want reload watch interval error", err)
-	}
-}
-
-func TestValidateConfigRejectsReloadWatchWithoutRenewInterval(t *testing.T) {
-	err := validateConfig(config{
-		CDSURL:              "http://cds:8443",
-		AttestationApiURL:   "http://attestation-api:8400",
-		SAN:                 "confidential-gke.confidential.ai",
-		ReloadWatchPaths:    []string{"/public-tls/tls.crt"},
-		ReloadWatchInterval: time.Minute,
-	})
-	if err == nil {
-		t.Fatal("validateConfig succeeded, want reload watch renew interval error")
-	}
-	if !errors.Is(err, errReloadWatchRequiresRenewInterval) {
-		t.Fatalf("error = %v, want renew interval error", err)
-	}
-}
-
 func TestValidateConfigRejectsContinueOnInitialErrorWithoutRenewInterval(t *testing.T) {
 	err := validateConfig(config{
 		CDSURL:                 "http://cds:8443",
@@ -215,37 +184,6 @@ func TestWriteFileAtomicReplacesFileAndCleansTemp(t *testing.T) {
 		if strings.Contains(entry.Name(), ".cert.pem.tmp-") {
 			t.Fatalf("temporary file was not cleaned up: %s", entry.Name())
 		}
-	}
-}
-
-func TestReloadWatchChangedDetectsFileReplacement(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "tls.crt")
-	if err := os.WriteFile(path, []byte("old"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	previous, err := snapshotReloadWatchPaths([]string{path})
-	if err != nil {
-		t.Fatalf("snapshotReloadWatchPaths: %v", err)
-	}
-
-	if err := fileutil.WriteAtomic(path, []byte("new certificate"), 0644); err != nil {
-		t.Fatalf("fileutil.WriteAtomic: %v", err)
-	}
-	changed, next, err := reloadWatchChanged(previous, []string{path})
-	if err != nil {
-		t.Fatalf("reloadWatchChanged: %v", err)
-	}
-	if !changed {
-		t.Fatal("reloadWatchChanged = false, want true")
-	}
-
-	changed, _, err = reloadWatchChanged(next, []string{path})
-	if err != nil {
-		t.Fatalf("reloadWatchChanged second check: %v", err)
-	}
-	if changed {
-		t.Fatal("reloadWatchChanged detected change without file mutation")
 	}
 }
 
@@ -341,17 +279,6 @@ func TestValidateConfigAccepts(t *testing.T) {
 				CDSURL:            "https://cds:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 				SAN:               "10.0.0.1",
-			},
-		},
-		{
-			name: "reload watch with renew",
-			cfg: config{
-				CDSURL:              "http://cds:8443",
-				AttestationApiURL:   "http://attestation-api:8400",
-				SAN:                 "host.example.com",
-				ReloadWatchPaths:    []string{"/tls.crt"},
-				ReloadWatchInterval: time.Minute,
-				RenewInterval:       time.Hour,
 			},
 		},
 		{
@@ -656,28 +583,6 @@ func TestAttestationExtensionBindsBareKey(t *testing.T) {
 	}
 	if att.Family != armtls.TEETypeSEVSNP {
 		t.Fatalf("TEEType = %v, want SEV-SNP", att.Family)
-	}
-}
-
-func TestSnapshotReloadWatchPathsErrors(t *testing.T) {
-	dir := t.TempDir()
-
-	t.Run("missing file", func(t *testing.T) {
-		if _, err := snapshotReloadWatchPaths([]string{filepath.Join(dir, "nope")}); err == nil {
-			t.Fatal("snapshotReloadWatchPaths succeeded, want error for missing file")
-		}
-	})
-
-	t.Run("directory not allowed", func(t *testing.T) {
-		if _, err := snapshotReloadWatchPaths([]string{dir}); err == nil {
-			t.Fatal("snapshotReloadWatchPaths succeeded, want error for directory")
-		}
-	})
-}
-
-func TestReloadWatchChangedPropagatesError(t *testing.T) {
-	if _, _, err := reloadWatchChanged(nil, []string{filepath.Join(t.TempDir(), "nope")}); err == nil {
-		t.Fatal("reloadWatchChanged succeeded, want error for missing file")
 	}
 }
 

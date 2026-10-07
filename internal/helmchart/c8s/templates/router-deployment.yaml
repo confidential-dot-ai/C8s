@@ -78,15 +78,13 @@ spec:
       {{- end }}
 
       {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 6 }}
-      shareProcessNamespace: true
       initContainers:
         {{- include "router.getCertContainers" . | nindent 8 }}
         {{- if eq $publicTLSMode "acme" }}
         # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
         # leaf for the sanList domains, answers HTTP-01 on loopback behind the
-        # :80 server, renews at 2/3 lifetime, and SIGHUPs nginx on install —
-        # which needs the shared PID namespace and the nginx uid, same as
-        # c8s-cert.
+        # :80 server and renews at 2/3 lifetime. nginx's own entrypoint
+        # reloads on the install (router-configmap.yaml).
         - name: acme
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
@@ -104,6 +102,7 @@ spec:
             - --http-port={{ include "router.acmeHTTPPort" . }}
             - --cert-dir={{ include "router.acmeCertDir" . }}
             - --ready-port={{ include "router.acmeReadyPort" . }}
+            - --reload-nginx=false
           # nginx's config names the acme cert files, so nginx must not start
           # before the bootstrap placeholder exists; regular containers wait
           # for a native sidecar's startup probe. HTTP, not exec: a locked
@@ -133,6 +132,11 @@ spec:
         - name: nginx
           image: {{ include "c8s-common.image" .Values.router.nginx.image }}
           imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
+          # nginx runs as the entrypoint's child, which reloads it when the
+          # certificates change. The alternative was a shared process
+          # namespace, which would have put the credential containers' /proc
+          # inside nginx (router-configmap.yaml).
+          command: ["/bin/sh", "/etc/nginx/reload.sh"]
           ports:
             - name: https
               containerPort: {{ .Values.router.nginx.httpsPort }}
@@ -197,6 +201,10 @@ spec:
             - name: nginx-config
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
+              readOnly: true
+            - name: nginx-config
+              mountPath: /etc/nginx/reload.sh
+              subPath: reload.sh
               readOnly: true
             - name: nginx-cache
               mountPath: /var/cache/nginx

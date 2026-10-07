@@ -31,11 +31,9 @@ func TestNewCmdFlagDefaultsAndRequired(t *testing.T) {
 		{"san-file", ""},
 		{"no-san", "false"},
 		{"discovery-public-tls-mode", "cds"},
-		{"reload-watch-interval", "1m0s"},
 		{"ca-watch-interval", "0s"},
 		{"initial-retry-timeout", "2m0s"},
 		{"initial-retry-interval", "2s"},
-		{"reload-nginx", "true"},
 		{"workload-claims-timeout", "5s"},
 	}
 	for _, tt := range tests {

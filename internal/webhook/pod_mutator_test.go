@@ -59,7 +59,6 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		"--key-path=/etc/c8s/certs/tls.key",
 		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=2h0m0s",
-		"--reload-nginx=false",
 		"--continue-on-initial-error",
 	} {
 		if !hasArg(cert.Args, want) {
@@ -223,10 +222,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 			AnnotationCertFile:               "cert.pem",
 			AnnotationKeyFile:                "key.pem",
 			AnnotationRenewInterval:          "1h",
-			AnnotationReloadNginx:            "true",
-			AnnotationReloadWatchVolume:      "public-tls",
-			AnnotationReloadWatchMountPath:   "/edge-tls",
-			AnnotationReloadWatchPaths:       "/edge-tls/public.crt,/edge-tls/public.key",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryMountPath:     "/discovery",
 			AnnotationDiscoveryOut:           "/discovery/discovery.json",
@@ -262,8 +257,10 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		CertDir:           "/etc/c8s/certs",
 	})
 
-	if pod.Spec.ShareProcessNamespace == nil || !*pod.Spec.ShareProcessNamespace {
-		t.Fatalf("shareProcessNamespace = %v, want true", pod.Spec.ShareProcessNamespace)
+	// Nothing in an injected pod signals nginx any more, so the injector
+	// leaves the process namespace alone.
+	if pod.Spec.ShareProcessNamespace != nil {
+		t.Fatalf("shareProcessNamespace = %v, want it unset", *pod.Spec.ShareProcessNamespace)
 	}
 	if len(pod.Spec.Volumes) != 3 {
 		t.Fatalf("volumes = %#v, want existing router volumes only", pod.Spec.Volumes)
@@ -277,9 +274,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		"--key-path=/tls/key.pem",
 		"--ca-path=/tls/ca.crt",
 		"--renew-interval=1h0m0s",
-		"--reload-nginx=true",
-		"--reload-watch=/edge-tls/public.crt",
-		"--reload-watch=/edge-tls/public.key",
 		"--discovery-out=/discovery/discovery.json",
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
@@ -295,9 +289,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	}
 	if !hasMount(cert.VolumeMounts, "tls-certs", "/tls", false) {
 		t.Fatalf("c8s-cert mounts %v missing writable tls-certs", cert.VolumeMounts)
-	}
-	if !hasMount(cert.VolumeMounts, "public-tls", "/edge-tls", true) {
-		t.Fatalf("c8s-cert mounts %v missing read-only public-tls", cert.VolumeMounts)
 	}
 	if !hasMount(cert.VolumeMounts, "discovery", "/discovery", false) {
 		t.Fatalf("c8s-cert mounts %v missing writable discovery", cert.VolumeMounts)
@@ -380,18 +371,6 @@ func TestParseAnnotationsRejectsInjectionDetailsWithoutWorkloadAnnotation(t *tes
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{
 			AnnotationCertVolume: "tls-certs",
-		},
-	}, "")
-	if !errors.Is(err, errInvalidInjectionAnnotation) {
-		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
-	}
-}
-
-func TestParseAnnotationsRejectsReloadWatchWithoutMount(t *testing.T) {
-	_, err := parseAnnotations(&corev1.Pod{
-		Annotations: map[string]string{
-			AnnotationWorkload:         "api",
-			AnnotationReloadWatchPaths: "/public-tls/tls.crt",
 		},
 	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
@@ -873,42 +852,6 @@ func TestHandleInjectsDespitePresetInjectedMarker(t *testing.T) {
 	}
 }
 
-func TestParseAnnotationsWatchPathsImplyNginxReload(t *testing.T) {
-	tests := []struct {
-		name        string
-		annotations map[string]string
-		wantNginx   bool
-	}{
-		{
-			name: "watch paths turn the reload on",
-			annotations: map[string]string{
-				AnnotationWorkload:             "api",
-				AnnotationReloadWatchPaths:     "/etc/nginx/certs/upstream.crt",
-				AnnotationReloadWatchVolume:    "upstream-certs",
-				AnnotationReloadWatchMountPath: "/etc/nginx/certs",
-			},
-			wantNginx: true,
-		},
-		{
-			name:        "plain opt-in leaves the reload off",
-			annotations: map[string]string{AnnotationWorkload: "api"},
-			wantNginx:   false,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := &corev1.Pod{Annotations: tc.annotations}
-			inj, err := parseAnnotations(pod, "")
-			if err != nil {
-				t.Fatalf("parseAnnotations: %v", err)
-			}
-			if inj.Reload.Nginx != tc.wantNginx {
-				t.Fatalf("Reload.Nginx = %v, want %v", inj.Reload.Nginx, tc.wantNginx)
-			}
-		})
-	}
-}
-
 // runtimeClassPatch returns the value of the /spec/runtimeClassName patch op,
 // or "" when the response carries none.
 func runtimeClassPatch(t *testing.T, resp admission.Response) string {
@@ -1264,7 +1207,7 @@ func evaluateRestricted(t *testing.T, pod *corev1.Pod) psapolicy.AggregateCheckR
 
 // The acceptance bar for hardened clusters: a restricted-compliant cw pod must
 // STAY restricted-admissible after the full node-CVM mutation (cert, wait,
-// secret and volume fetchers, nginx reload). The socket directory reaches the
+// secret and volume fetchers). The socket directory reaches the
 // sidecars by NRI mount, so nothing the webhook adds may name a hostPath.
 // Default injection shape only: a pod overriding c8s-get-cert-run-as-* to root
 // fails restricted by its own choice.
@@ -1306,7 +1249,6 @@ func TestMutatePodStaysRestrictedAdmissible(t *testing.T) {
 	cfg.AttestationApiURL = "unix:///var/run/nri-image-policy/attestation-api.sock"
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
-		Reload:     reloadSpec{Nginx: true},
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
 		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
 	}, cfg)
