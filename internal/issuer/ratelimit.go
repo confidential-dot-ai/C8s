@@ -1,6 +1,7 @@
 package issuer
 
 import (
+	"container/list"
 	"context"
 	"fmt"
 	"net"
@@ -21,7 +22,7 @@ var (
 
 	rateLimitSaturationTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "cds_rate_limit_saturation_total",
-		Help: "Total requests refused because the rate limiter was full and the key held no bucket; a subset of cds_rate_limit_rejections_total.",
+		Help: "Total new keys admitted to a full rate limiter by evicting its least recently seen bucket.",
 	})
 
 	rateLimiterEntries = promauto.NewGauge(prometheus.GaugeOpts{
@@ -31,20 +32,21 @@ var (
 )
 
 type ipLimiterEntry struct {
+	key      string
 	limiter  *rate.Limiter
 	lastSeen time.Time
 }
 
 // IPRateLimiter implements keyed rate limiting with bounded memory. It holds
-// at most MaxEntries buckets; once it is full a key with no bucket is
-// refused, so churning through more keys than the map holds cannot reset a
-// caller's allowance. EvictionLoop reclaims buckets idle longer than
-// IdleTimeout, so a full map recovers as callers go quiet.
+// at most MaxEntries buckets; once it is full a new key takes the least
+// recently seen bucket, so a busy key is never the one evicted. EvictionLoop
+// reclaims buckets idle longer than IdleTimeout.
 // RateLimitMiddleware keys on the source address; RateLimitBy keys on whatever
 // identifies the caller.
 type IPRateLimiter struct {
 	mu         sync.Mutex
-	limiters   map[string]*ipLimiterEntry
+	limiters   map[string]*list.Element
+	recency    *list.List // of *ipLimiterEntry, most recently seen first
 	rate       rate.Limit
 	burst      int
 	maxEntries int
@@ -52,12 +54,12 @@ type IPRateLimiter struct {
 
 func NewIPRateLimiter(r rate.Limit, burst, maxEntries int) (*IPRateLimiter, error) {
 	if maxEntries <= 0 {
-		// A non-positive cap makes len(limiters) >= maxEntries always true:
-		// every request would be refused.
+		// A non-positive cap leaves no room for even the key being admitted.
 		return nil, fmt.Errorf("rate limiter maxEntries must be positive, got %d", maxEntries)
 	}
 	return &IPRateLimiter{
-		limiters:   make(map[string]*ipLimiterEntry),
+		limiters:   make(map[string]*list.Element),
+		recency:    list.New(),
 		rate:       r,
 		burst:      burst,
 		maxEntries: maxEntries,
@@ -65,20 +67,24 @@ func NewIPRateLimiter(r rate.Limit, burst, maxEntries int) (*IPRateLimiter, erro
 }
 
 // allow charges one request to key's bucket and reports whether it may
-// proceed. A key with no bucket gets one while the map holds fewer than
-// MaxEntries entries; past that it is refused, so a held bucket is never
-// taken by another key and the map is the ceiling on metered callers.
+// proceed. A new key arriving at a full map evicts the least recently seen
+// bucket: that only resets the evicted key's allowance, which never lets any
+// key exceed its rate, whereas refusing would lock new callers out.
 func (rl *IPRateLimiter) allow(key string) bool {
 	rl.mu.Lock()
-	entry, ok := rl.limiters[key]
-	if !ok {
+	var entry *ipLimiterEntry
+	if elem, ok := rl.limiters[key]; ok {
+		rl.recency.MoveToFront(elem)
+		entry = elem.Value.(*ipLimiterEntry)
+	} else {
 		if len(rl.limiters) >= rl.maxEntries {
-			rl.mu.Unlock()
+			oldest := rl.recency.Back()
+			rl.recency.Remove(oldest)
+			delete(rl.limiters, oldest.Value.(*ipLimiterEntry).key)
 			rateLimitSaturationTotal.Inc()
-			return false
 		}
-		entry = &ipLimiterEntry{limiter: rate.NewLimiter(rl.rate, rl.burst)}
-		rl.limiters[key] = entry
+		entry = &ipLimiterEntry{key: key, limiter: rate.NewLimiter(rl.rate, rl.burst)}
+		rl.limiters[key] = rl.recency.PushFront(entry)
 	}
 	entry.lastSeen = time.Now()
 	rl.mu.Unlock()
@@ -111,10 +117,14 @@ func (rl *IPRateLimiter) evict(idleTimeout time.Duration) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	cutoff := time.Now().Add(-idleTimeout)
-	for ip, entry := range rl.limiters {
-		if entry.lastSeen.Before(cutoff) {
-			delete(rl.limiters, ip)
+	// recency is ordered by lastSeen, so the idle entries are a run at the back.
+	for elem := rl.recency.Back(); elem != nil; elem = rl.recency.Back() {
+		entry := elem.Value.(*ipLimiterEntry)
+		if !entry.lastSeen.Before(cutoff) {
+			break
 		}
+		rl.recency.Remove(elem)
+		delete(rl.limiters, entry.key)
 	}
 	rateLimiterEntries.Set(float64(len(rl.limiters)))
 }

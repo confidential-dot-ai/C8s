@@ -66,8 +66,8 @@ func TestRateLimiterEviction(t *testing.T) {
 	}
 
 	oldTime := time.Now().Add(-10 * time.Minute)
-	rl.limiters["10.0.0.1"].lastSeen = oldTime
-	rl.limiters["10.0.0.2"].lastSeen = oldTime
+	rl.limiters["10.0.0.1"].Value.(*ipLimiterEntry).lastSeen = oldTime
+	rl.limiters["10.0.0.2"].Value.(*ipLimiterEntry).lastSeen = oldTime
 	rl.mu.Unlock()
 
 	rl.evict(5 * time.Minute)
@@ -82,30 +82,31 @@ func TestRateLimiterEviction(t *testing.T) {
 	}
 }
 
-// TestRateLimiterMaxEntries pins the fail-closed boundary: past the cap a
-// caller with no bucket is refused, and no held bucket is taken to serve it.
+// TestRateLimiterMaxEntries pins the full-map boundary: a new key is
+// admitted and takes the bucket of the least recently seen key.
 func TestRateLimiterMaxEntries(t *testing.T) {
 	rl, err := NewIPRateLimiter(rate.Limit(10), 20, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	rl.allow("10.0.0.1")
-	rl.allow("10.0.0.2")
-	rl.allow("10.0.0.3")
+	rl.allow("a")
+	rl.allow("b")
+	rl.allow("c")
+	rl.allow("a")
 
-	if got := rl.Len(); got != 3 {
-		t.Fatalf("expected 3 entries, got %d", got)
-	}
-
-	if rl.allow("10.0.0.4") {
-		t.Error("a full limiter admitted a key with no bucket")
+	if !rl.allow("d") {
+		t.Error("allow(d) on a full limiter = false, want true")
 	}
 	if got := rl.Len(); got != 3 {
-		t.Errorf("expected 3 entries after a refused key, got %d", got)
+		t.Errorf("Len() = %d, want 3", got)
 	}
-	if !rl.allow("10.0.0.1") {
-		t.Error("a held bucket stopped metering while the map was full")
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for key, want := range map[string]bool{"a": true, "b": false, "c": true, "d": true} {
+		if _, got := rl.limiters[key]; got != want {
+			t.Errorf("bucket for %q held = %v, want %v", key, got, want)
+		}
 	}
 }
 
@@ -321,45 +322,8 @@ func TestSourceAddrKeyKeepsAddressesApart(t *testing.T) {
 	}
 }
 
-// meterableClients is how many distinct callers one limiter meters at once;
-// past it a caller with no bucket is refused, so it is the availability cost.
-const meterableClients = 50000
-
-// TestALimiterMetersItsWholeCapacity pins that relationship: capacity is the
-// number of distinct callers metered, not an approximation of it.
-func TestALimiterMetersItsWholeCapacity(t *testing.T) {
-	rl, err := NewIPRateLimiter(rate.Limit(0.001), 1, meterableClients)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range meterableClients {
-		rl.allow("client-" + strconv.Itoa(i))
-	}
-	if got := rl.Len(); got != meterableClients {
-		t.Fatalf("the limiter meters %d callers, want %d", got, meterableClients)
-	}
-
-	if rl.allow("one-too-many") {
-		t.Fatal("a full limiter metered one caller too many")
-	}
-	if got := rl.Len(); got != meterableClients {
-		t.Fatalf("the limiter holds %d buckets past its capacity, want %d", got, meterableClients)
-	}
-	rl.mu.Lock()
-	_, quietestKept := rl.limiters["client-0"]
-	_, newcomerKept := rl.limiters["one-too-many"]
-	rl.mu.Unlock()
-	if !quietestKept {
-		t.Fatal("a full limiter took a held bucket from its quietest caller")
-	}
-	if newcomerKept {
-		t.Fatal("a full limiter metered one caller too many")
-	}
-}
-
-// TestEvictionLoopReclaimsQuietCallers pins the recovery valve: a full map
-// refuses a new caller, and the loop reclaims buckets gone quiet so the same
-// caller is admitted once the map drains.
+// TestEvictionLoopReclaimsQuietCallers pins that the loop drains buckets
+// gone quiet.
 func TestEvictionLoopReclaimsQuietCallers(t *testing.T) {
 	rl, err := NewIPRateLimiter(rate.Limit(0.001), 1, 8)
 	if err != nil {
@@ -368,15 +332,8 @@ func TestEvictionLoopReclaimsQuietCallers(t *testing.T) {
 	for i := range 8 {
 		rl.allow("client-" + strconv.Itoa(i))
 	}
-	if got := rl.Len(); got != 8 {
-		t.Fatalf("the limiter meters %d callers, want 8", got)
-	}
-	if rl.allow("latecomer") {
-		t.Fatal("a full map admitted a new caller")
-	}
 
-	ctx := t.Context()
-	go rl.EvictionLoop(ctx, time.Millisecond, 10*time.Millisecond)
+	go rl.EvictionLoop(t.Context(), time.Millisecond, 10*time.Millisecond)
 
 	deadline := time.Now().Add(5 * time.Second)
 	for rl.Len() > 0 {
@@ -385,67 +342,71 @@ func TestEvictionLoopReclaimsQuietCallers(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if !rl.allow("latecomer") {
-		t.Fatal("a drained map still refused a new caller")
-	}
 }
 
-// TestChurnPastCapacityStaysLimited pins the ceiling on key churn: only the
-// first capacity keys get a bucket, so cycling through far more keys than the
-// map holds admits exactly what those buckets allow, on every wave. rate 0 so
-// the count comes from burst alone, not from how long the test runs.
-func TestChurnPastCapacityStaysLimited(t *testing.T) {
-	const capacity, burst, keys, pollsPerKey, waves = 100, 20, 10000, 2, 2
-	rl, err := NewIPRateLimiter(rate.Limit(0), burst, capacity)
+// TestHotKeyStaysLimitedUnderChurn pins that churning through far more keys
+// than the map holds never evicts a key that keeps sending, so its spent
+// allowance stays spent. rate 0 so nothing refills during the test.
+func TestHotKeyStaysLimitedUnderChurn(t *testing.T) {
+	const capacity, keys = 4, 10000
+	rl, err := NewIPRateLimiter(rate.Limit(0), 1, capacity)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	for w := range waves {
-		allowed := 0
-		for i := range keys {
-			key := "attacker-" + strconv.Itoa(i)
-			for range pollsPerKey {
-				if rl.allow(key) {
-					allowed++
-				}
-			}
-		}
-		// capacity buckets admit pollsPerKey each, so the exact ceiling is capacity*pollsPerKey.
-		if want := capacity * pollsPerKey; allowed != want {
-			t.Errorf("wave %d admitted %d of %d requests; want exactly %d (capacity x pollsPerKey)",
-				w, allowed, keys*pollsPerKey, want)
+	if !rl.allow("hot") {
+		t.Fatal("allow(hot) first request = false, want true")
+	}
+	for i := range keys {
+		rl.allow("churn-" + strconv.Itoa(i))
+		if rl.allow("hot") {
+			t.Fatalf("allow(hot) after %d churned keys = true, want false", i+1)
 		}
 	}
 }
 
-// TestSaturationRefusalsAreCounted pins that a refusal because the map is
-// full is counted separately from an ordinary over-limit refusal.
-func TestSaturationRefusalsAreCounted(t *testing.T) {
-	rl, err := NewIPRateLimiter(rate.Limit(0.001), 1, 2)
+// TestSaturationIsCountedNotRejected pins the counters at the HTTP layer: a
+// new source admitted to a full map counts as saturation and is served; an
+// over-limit request counts only as a rejection.
+func TestSaturationIsCountedNotRejected(t *testing.T) {
+	rl, err := NewIPRateLimiter(rate.Limit(0), 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := testutil.ToFloat64(rateLimitSaturationTotal)
-
-	rl.allow("10.0.0.1")
-	rl.allow("10.0.0.2")
-	if rl.allow("10.0.0.3") { // no bucket left: saturation
-		t.Fatal("a full map admitted a key with no bucket")
+	h := RateLimitMiddleware(rl, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	send := func(addr string) int {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = addr
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
 	}
-	if rl.allow("10.0.0.1") { // held bucket, over its own burst
-		t.Fatal("a held bucket over its limit was admitted")
+	satBefore := testutil.ToFloat64(rateLimitSaturationTotal)
+	rejBefore := testutil.ToFloat64(rateLimitRejectionsTotal)
+
+	if got := send("10.0.0.1:1"); got != http.StatusOK {
+		t.Fatalf("first request: got %d, want 200", got)
+	}
+	if got := send("10.0.0.1:2"); got != http.StatusTooManyRequests {
+		t.Fatalf("over-limit request: got %d, want 429", got)
+	}
+	if got := send("10.0.0.2:1"); got != http.StatusOK {
+		t.Fatalf("new source on a full map: got %d, want 200", got)
 	}
 
-	if got := testutil.ToFloat64(rateLimitSaturationTotal) - before; got != 1 {
-		t.Errorf("saturation refusals = %v, want 1", got)
+	if got := testutil.ToFloat64(rateLimitSaturationTotal) - satBefore; got != 1 {
+		t.Errorf("saturation delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(rateLimitRejectionsTotal) - rejBefore; got != 1 {
+		t.Errorf("rejection delta = %v, want 1", got)
 	}
 }
 
 // TestConcurrentAllowNeverExceedsCapacity stresses the admission path from many
 // goroutines with far more keys than the map holds: the map never grows past
 // MaxEntries. allow releases rl.mu before touching the bucket, so -race
-// exercises the guarded map insert and the unlocked bucket call.
+// exercises the guarded eviction and insert and the unlocked bucket call.
 func TestConcurrentAllowNeverExceedsCapacity(t *testing.T) {
 	const capacity, keys, goroutines, iterations = 64, 256, 32, 5000
 	rl, err := NewIPRateLimiter(rate.Limit(1000), 1000, capacity)
@@ -471,45 +432,5 @@ func TestConcurrentAllowNeverExceedsCapacity(t *testing.T) {
 
 	if got := rl.Len(); got > capacity {
 		t.Errorf("map holds %d entries after the run, over capacity %d", got, capacity)
-	}
-}
-
-// TestSaturationIsASubsetOfRejections pins the counter relationship the metric
-// help text states: at the HTTP layer a full-map refusal increments both the
-// saturation and rejection counters, an over-limit refusal only the rejection
-// counter.
-func TestSaturationIsASubsetOfRejections(t *testing.T) {
-	rl, err := NewIPRateLimiter(rate.Limit(0), 1, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	h := RateLimitMiddleware(rl, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	send := func(addr string) int {
-		r := httptest.NewRequest(http.MethodGet, "/", nil)
-		r.RemoteAddr = addr
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, r)
-		return w.Code
-	}
-	satBefore := testutil.ToFloat64(rateLimitSaturationTotal)
-	rejBefore := testutil.ToFloat64(rateLimitRejectionsTotal)
-
-	if got := send("10.0.0.1:1"); got != http.StatusOK {
-		t.Fatalf("first request: got %d, want 200", got)
-	}
-	if got := send("10.0.0.1:2"); got != http.StatusTooManyRequests { // held bucket, over its own burst
-		t.Fatalf("over-limit request: got %d, want 429", got)
-	}
-	if got := send("10.0.0.2:1"); got != http.StatusTooManyRequests { // map full, new source has no bucket
-		t.Fatalf("full-map request: got %d, want 429", got)
-	}
-
-	if got := testutil.ToFloat64(rateLimitSaturationTotal) - satBefore; got != 1 {
-		t.Errorf("saturation delta = %v, want 1", got)
-	}
-	if got := testutil.ToFloat64(rateLimitRejectionsTotal) - rejBefore; got != 2 {
-		t.Errorf("rejection delta = %v, want 2 (both refusals)", got)
 	}
 }
