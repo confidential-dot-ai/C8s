@@ -65,7 +65,9 @@ container in the pod mounts that volume **read-only**; only the fetcher may
 write it. The volume and the container name are reserved — a pod declaring
 either is rejected, since a `hostPath` there would write a released secret to
 host-visible storage, and an ephemeral container mounting it would read one out
-of a running pod.
+of a running pod. For the same reason, an ephemeral container on an injected pod
+may not set a target container: it would share that container's process
+namespace and could read its files.
 
 ### The file appears after your container starts
 

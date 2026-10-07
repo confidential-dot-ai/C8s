@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/utils/ptr"
 )
 
 func secretsConfig() Config {
@@ -245,6 +246,8 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 		certVolume string
 		mount      string
 		ctrName    string
+		target     string
+		injected   bool
 		wantOK     bool
 	}{
 		{name: "mounts secrets", mount: secretsVolumeName},
@@ -256,9 +259,19 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 		// The pod renamed its cert volume, so the default name is no longer
 		// the one holding its key.
 		{name: "default name after a rename", certVolume: "my-certs", mount: defaultCertVolumeName, wantOK: true},
+		// Every container of an injected pod mounts c8s material, and a target
+		// shares its process namespace.
+		{name: "targets the cert sidecar", injected: true, target: reservedCertContainerName},
+		{name: "targets the fetcher", injected: true, target: reservedSecretContainerName},
+		{name: "targets the workload", injected: true, target: "app"},
+		{name: "injected pod, no target", injected: true, wantOK: true},
+		{name: "targets a container of a pod that was not injected", target: "app", wantOK: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
+			if tc.injected {
+				mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+			}
 			if tc.certVolume != "" {
 				pod.Annotations = map[string]string{AnnotationCertVolume: tc.certVolume}
 			}
@@ -266,8 +279,19 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			if name == "" {
 				name = "debugger"
 			}
+			uid := int64(65532)
 			ec := corev1.EphemeralContainer{
-				Name: name,
+				EphemeralContainerCommon: corev1.EphemeralContainerCommon{
+					Name: name,
+					SecurityContext: &corev1.SecurityContext{
+						RunAsUser:                &uid,
+						RunAsGroup:               &uid,
+						RunAsNonRoot:             ptr.To(true),
+						AllowPrivilegeEscalation: ptr.To(false),
+						Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+					},
+				},
+				TargetContainerName: tc.target,
 			}
 			if tc.mount != "" {
 				ec.VolumeMounts = []corev1.VolumeMount{{Name: tc.mount, MountPath: "/x"}}
