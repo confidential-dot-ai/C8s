@@ -49,7 +49,7 @@ type Authorizer = operatorauth.Authorizer
 
 // List returns the current allowlist and its version (the ETag counter).
 func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) {
-	al, etag, notModified, err := c.fetch(ctx, "")
+	al, etag, notModified, err := c.fetch(ctx, "", nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -64,10 +64,24 @@ func (c Client) List(ctx context.Context) (*allowlist.Allowlist, string, error) 
 // (allowlist nil, etag ""); on 200 the parsed allowlist and new ETag are
 // returned. Used by enforcers polling for changes.
 func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allowlist, string, bool, error) {
-	return c.fetch(ctx, ifNoneMatch)
+	return c.fetch(ctx, ifNoneMatch, nil)
 }
 
-func (c Client) fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allowlist, string, bool, error) {
+// CanonicalBytes returns the validated bytes served by CDS without rewriting
+// them. Workload certificates stamp their hash, so exports must preserve them.
+func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
+	var body []byte
+	_, etag, notModified, err := c.fetch(ctx, "", &body)
+	if err != nil {
+		return nil, "", err
+	}
+	if notModified {
+		return nil, "", fmt.Errorf("unexpected 304 without If-None-Match")
+	}
+	return body, VersionFromETag(etag), nil
+}
+
+func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (*allowlist.Allowlist, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist", nil)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("create request: %w", err)
@@ -101,6 +115,9 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allow
 	al, err := allowlist.ParseServedJSON(body)
 	if err != nil {
 		return nil, "", false, err
+	}
+	if raw != nil {
+		*raw = body
 	}
 	return al, resp.Header.Get("ETag"), false, nil
 }
