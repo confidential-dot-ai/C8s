@@ -182,7 +182,7 @@ fi
 # The wrapper execs the real runtime by absolute path; it is rke2's own runc,
 # extracted at first start under the bin symlink. Both sides pin it.
 real_runc=$(sed -n 's/^REAL_RUNC="\(.*\)"$/\1/p' "$ngi/c8s/mkosi.sync")
-if ! grep -qF "realRunc = \"$real_runc\"" internal/cmds/c8srunc/c8srunc.go; then
+if ! grep -qE "^[[:space:]]*realRunc[[:space:]]*= \"$real_runc\"$" internal/cmds/c8srunc/c8srunc.go; then
   echo "::error::the wrapper's compiled real-runtime path and mkosi.sync's REAL_RUNC ($real_runc) have drifted"
   exit 1
 fi

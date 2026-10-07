@@ -195,9 +195,10 @@ const defaultPullTimeout = 30 * time.Second
 // only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
-// defaultConfigPath is the plugin config containerd's plugin_config_path
-// resolves for this plugin, and the file set-cds-pins patches.
-const defaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
+// DefaultConfigPath is the plugin config containerd's plugin_config_path
+// resolves for this plugin, the file set-cds-pins patches, and the measured
+// policy the node's runtime wrapper reads (internal/cmds/c8srunc).
+const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
 // loadConfig loads configuration from a YAML file.
 func loadConfig(path string) (*config, error) {
