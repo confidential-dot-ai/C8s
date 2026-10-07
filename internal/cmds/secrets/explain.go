@@ -9,7 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func newExplainCmd(o *options) *cobra.Command {
@@ -35,7 +35,7 @@ The sandbox ID is on the pod's certificate; 'c8s verify' prints it.`,
 			if err := o.Validate(); err != nil {
 				return err
 			}
-			if err := ratls.ValidateSandboxID(sandboxID); err != nil {
+			if err := armtls.ValidateSandboxID(sandboxID); err != nil {
 				return fmt.Errorf("--sandbox: %w", err)
 			}
 			signer, err := o.Signer()

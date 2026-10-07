@@ -1,0 +1,398 @@
+{{- if .Values.armtlsMesh.enabled }}
+{{- $attestationApiURL := include "c8s.attestationApiURL" . -}}
+{{/*
+  cds mode points a single --cds-url at the unified CDS, which serves both
+  /attest and /ca.
+*/}}
+{{- $cdsURL := include "c8s.cdsURL" . -}}
+{{- $certMode := .Values.armtlsMesh.certMode -}}
+{{- /*
+The release namespace is deliberately NOT excluded: router's egress to
+workload pod IPs (via the operator-managed headless Services) must be
+interceptable so that hop gets attested mTLS. Control-plane traffic inside the
+release namespace dials Service VIPs, which are never in the pod-destination
+ipset, so it is unaffected either way.
+*/}}
+{{- $excludeSourceNamespaces := .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces | uniq | join "," -}}
+{{- /*
+The iptables-cleanup sidecar cleans up on SIGTERM and then lingers for
+preStopSleepSeconds; it stops last in the native-sidecar reverse-init order,
+so its budget is what terminationGracePeriod leaves after the main proxy
+drain. A higher value gets SIGKILL'd mid-cleanup, leaking iptables chains and
+ipsets across pod restarts. Fail at template time so the misconfig is caught
+before the rollout starts.
+*/ -}}
+{{- $tgp := include "armtls-mesh.durationSeconds" .Values.armtlsMesh.terminationGracePeriod | int -}}
+{{- $drain := include "armtls-mesh.durationSeconds" .Values.armtlsMesh.drainTimeout | int -}}
+{{- $preStopSleep := int .Values.armtlsMesh.iptablesCleanup.preStopSleepSeconds -}}
+{{- $preStopUpperBound := sub $tgp $drain -}}
+{{- if le $tgp $drain }}
+{{- fail (printf "terminationGracePeriod (%s) must exceed drainTimeout (%s) to leave a preStop budget" .Values.armtlsMesh.terminationGracePeriod .Values.armtlsMesh.drainTimeout) }}
+{{- end }}
+{{- if lt $preStopSleep 0 }}
+{{- fail (printf "iptablesCleanup.preStopSleepSeconds must be ≥ 0, got %d" $preStopSleep) }}
+{{- end }}
+{{- if gt $preStopSleep $preStopUpperBound }}
+{{- fail (printf "iptablesCleanup.preStopSleepSeconds must be ≤ %d (terminationGracePeriod=%s minus drainTimeout=%s; higher values get SIGKILL'd mid-cleanup), got %d" $preStopUpperBound .Values.armtlsMesh.terminationGracePeriod .Values.armtlsMesh.drainTimeout $preStopSleep) }}
+{{- end }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "armtls-mesh.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "armtls-mesh.labels" . | nindent 4 }}
+    app.kubernetes.io/component: service-mesh
+spec:
+  selector:
+    matchLabels:
+      {{- include "armtls-mesh.selectorLabels" . | nindent 6 }}
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "armtls-mesh.selectorLabels" . | nindent 8 }}
+      annotations:
+        {{- if .Values.armtlsMesh.measurementsConfig }}
+        # A ConfigMap edit alone does not change the pod template, so without
+        # this a tightened pin would not roll the DaemonSet.
+        checksum/measurements-config: {{ .Values.armtlsMesh.measurementsConfig | sha256sum }}
+        {{- end }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.armtlsMesh.ports.health | quote }}
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- with .Values.armtlsMesh.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      # iptables-sync must run in the host network namespace to intercept
+      # node-level pod traffic rather than only the mesh pod's own traffic.
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      serviceAccountName: {{ include "armtls-mesh.fullname" . }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: {{ $tgp }}
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        {{- if include "c8s.attestationApiSocketPresent" . }}
+        # workloadclaims.InventorySocketGID: the attest-proxy's socket is
+        # group-owned by it; the mesh runs as uid 1337 and needs the group to
+        # connect.
+        supplementalGroups: [65532]
+        {{- end }}
+      {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.armtlsMesh.imagePullSecrets) | nindent 6 }}
+      tolerations:
+        - operator: "Exists"
+          effect: "NoExecute"
+        - operator: "Exists"
+          effect: "NoSchedule"
+      volumes:
+        {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
+        {{- if .Values.armtlsMesh.measurementsConfig }}
+        - name: measurements-config
+          configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
+        {{- end }}
+        - name: xtables-lock
+          hostPath:
+            path: {{ .Values.armtlsMesh.xtablesLockPath }}
+            type: FileOrCreate
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        {{- include "c8s.attestationApiSocketVolume" . | nindent 8 }}
+      initContainers:
+        # Native sidecar (K8s 1.29+): cleanup runs last on shutdown because
+        # sidecars stop in reverse initContainer order.
+        - name: iptables-cleanup
+          restartPolicy: Always
+          image: {{ include "armtls-mesh.image" . }}
+          imagePullPolicy: {{ .Values.armtlsMesh.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                # NET_ADMIN for iptables/ipset; NET_RAW for the xt_set match's
+                # socket to the ip_set subsystem (the nf_tables-compat path
+                # needs it, else `iptables -m set` fails with "Can't open socket
+                # to ipset" even though NET_ADMIN alone can run ipset commands).
+                - NET_ADMIN
+                - NET_RAW
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+          # SIGTERM handling, not a preStop exec hook: a locked node image
+          # denies every runc exec, and a lifecycle exec hook is one of the
+          # paths that denial closes (c8s internal/cmds/c8srunc). Native
+          # sidecars stop in reverse init order, so this container's SIGTERM
+          # still arrives after the proxy has drained — the ordering the hook
+          # relied on.
+          #
+          # --keep-guard keeps the guard live: unmeshed inbound and non-TCP
+          # egress are still dropped; TCP to non-pod destinations was never
+          # meshed. --settle-delay is the old post-cleanup sleep.
+          command:
+            - /app/c8s
+            - armtls-mesh
+            - iptables-cleanup
+            - --keep-guard
+            - --on-shutdown
+            - --settle-delay={{ .Values.armtlsMesh.iptablesCleanup.preStopSleepSeconds }}s
+          resources:
+            {{- toYaml .Values.armtlsMesh.iptablesCleanup.resources | nindent 12 }}
+        - name: iptables-sync
+          restartPolicy: Always
+          image: {{ include "armtls-mesh.image" . }}
+          imagePullPolicy: {{ .Values.armtlsMesh.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: false
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              add:
+                # NET_ADMIN for iptables/ipset; NET_RAW for the xt_set match's
+                # socket to the ip_set subsystem (the nf_tables-compat path
+                # needs it, else `iptables -m set` fails with "Can't open socket
+                # to ipset" even though NET_ADMIN alone can run ipset commands).
+                - NET_ADMIN
+                - NET_RAW
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: xtables-lock
+              mountPath: /run/xtables.lock
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - /app/c8s
+            - armtls-mesh
+            - iptables-sync
+            - --outbound-port
+            - {{ .Values.armtlsMesh.ports.outbound | quote }}
+            - --uid
+            - {{ include "c8s.int" .Values.armtlsMesh.uid | quote }}
+            - --exclude-uids
+            - {{ .Values.armtlsMesh.excludeUids | quote }}
+            - --exclude-source-namespaces
+            - {{ $excludeSourceNamespaces | quote }}
+            - --node-ip
+            - $(NODE_IP)
+            - --resync-period
+            - {{ .Values.armtlsMesh.iptablesSync.resyncPeriod | quote }}
+            - --watchdog-period
+            - {{ .Values.armtlsMesh.iptablesSync.watchdogPeriod | quote }}
+            - --ipset-maxelem
+            - {{ .Values.armtlsMesh.iptablesSync.ipsetMaxElem | quote }}
+            {{- $pt := .Values.armtlsMesh.cwInboundEnforcement.passthrough }}
+            {{- /* Accept a real list (incl. []) only; the string "[]" is helm's --set [] quirk and means empty. Fail loud on any other non-list so a --set-string typo does not silently render strict drop-all and reproduce the DNS-resolution outage. */}}
+            {{- if not (kindIs "slice" $pt) }}{{ if ne (toString $pt) "[]" }}{{ fail (printf "armtlsMesh.cwInboundEnforcement.passthrough must be a list of {protocol, sourcePort} (use [] for none); do not set it via --set-string. Got %s: %v" (kindOf $pt) $pt) }}{{ end }}{{ $pt = list }}{{ end }}
+            {{- $entries := list }}
+            {{- range $pt }}
+            {{-   $port := int (default 0 .sourcePort) }}
+            {{-   if or (not (has .protocol (list "udp" "tcp"))) (lt $port 1) (gt $port 65535) }}{{ fail (printf "armtlsMesh.cwInboundEnforcement.passthrough entry must be {protocol: udp|tcp, sourcePort: 1-65535}; got %v" .) }}{{ end }}
+            {{-   $entries = append $entries (printf "%s:%d" .protocol $port) }}
+            {{- end }}
+            - --cw-inbound-passthrough={{ join "," $entries }}
+            - --ready-file
+            - /tmp/armtls-iptables-ready
+            - --ready-addr
+            - 127.0.0.1:{{ .Values.armtlsMesh.ports.iptablesReady }}
+            - --iptables-metrics-file
+            - /tmp/armtls-iptables-metrics.json
+            - --log-level
+            - {{ .Values.armtlsMesh.logLevel | quote }}
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+          # The mesh proxy must not start before interception exists, and a
+          # native sidecar's startup probe is what holds it. HTTP, not exec:
+          # a locked node image denies every runc exec. hostNetwork, so the
+          # endpoint and the probe meet on the node's loopback.
+          startupProbe:
+            httpGet:
+              host: 127.0.0.1
+              path: /readyz
+              port: {{ .Values.armtlsMesh.ports.iptablesReady }}
+            periodSeconds: 1
+            failureThreshold: 60
+          resources:
+            {{- toYaml .Values.armtlsMesh.iptablesSync.resources | nindent 12 }}
+      containers:
+        - name: armtls-mesh
+          image: {{ include "armtls-mesh.image" . }}
+          imagePullPolicy: {{ .Values.armtlsMesh.image.pullPolicy }}
+          workingDir: /tmp
+          securityContext:
+            runAsUser: {{ include "c8s.int" .Values.armtlsMesh.uid }}
+            runAsGroup: {{ include "c8s.int" .Values.armtlsMesh.uid }}
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
+            {{- include "c8s.nodeConfigMount" . | nindent 12 }}
+            {{- if .Values.armtlsMesh.measurementsConfig }}
+            - name: measurements-config
+              mountPath: /etc/c8s-measurements
+              readOnly: true
+            {{- end }}
+          args:
+            - --platform
+            - {{ .Values.armtlsMesh.platform | quote }}
+            - --attestation-api-url
+            - {{ $attestationApiURL | quote }}
+            - --outbound-port
+            - {{ .Values.armtlsMesh.ports.outbound | quote }}
+            - --inbound-port
+            - {{ .Values.armtlsMesh.ports.inbound | quote }}
+            - --health-port
+            - {{ .Values.armtlsMesh.ports.health | quote }}
+            - --drain-timeout
+            - {{ .Values.armtlsMesh.drainTimeout | quote }}
+            - --iptables-metrics-file
+            - /tmp/armtls-iptables-metrics.json
+            - --log-level
+            - {{ .Values.armtlsMesh.logLevel | quote }}
+            {{- if ne .Values.armtlsMesh.certTtl "4h" }}
+            - --cert-ttl
+            - {{ .Values.armtlsMesh.certTtl | quote }}
+            {{- end }}
+            {{- if ne .Values.armtlsMesh.rotationTimeout "30s" }}
+            - --rotation-timeout
+            - {{ .Values.armtlsMesh.rotationTimeout | quote }}
+            {{- end }}
+            {{- if .Values.node.baked }}
+            - --image-policy-file=/run/c8s-node/peers.json
+            {{- else if .Values.armtlsMesh.measurementsConfig }}
+            - --image-policy-file
+            - /etc/c8s-measurements/armtls-mesh.json
+            {{- else }}
+            {{- if .Values.armtlsMesh.measurements }}
+            - --measurements
+            - {{ .Values.armtlsMesh.measurements | join "," | quote }}
+            {{- end }}
+            {{- with .Values.armtlsMesh.rtmrs }}
+            - --rtmrs
+            - {{ join "," . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- if gt (int .Values.armtlsMesh.maxConns) 0 }}
+            - --max-conns
+            - {{ .Values.armtlsMesh.maxConns | quote }}
+            {{- end }}
+            {{- if gt (int .Values.armtlsMesh.maxConnsPerSource) 0 }}
+            - --max-conns-per-source
+            - {{ .Values.armtlsMesh.maxConnsPerSource | quote }}
+            {{- end }}
+            {{- if .Values.armtlsMesh.idleTimeout }}
+            - --idle-timeout
+            - {{ .Values.armtlsMesh.idleTimeout | quote }}
+            {{- end }}
+            {{- if ne (int .Values.armtlsMesh.sessionCacheSize) 64 }}
+            - --session-cache-size
+            - {{ .Values.armtlsMesh.sessionCacheSize | quote }}
+            {{- end }}
+            {{- if ne $certMode "self-signed" }}
+            - --cert-mode
+            - {{ $certMode | quote }}
+            - --cds-url
+            - {{ $cdsURL | quote }}
+            - --cert-dns-san
+            - {{ printf "armtls-mesh.%s.svc" .Release.Namespace | quote }}
+            - --ca-poll-interval
+            - {{ .Values.armtlsMesh.cds.caPollInterval | quote }}
+            {{- if .Values.node.baked }}
+            - --cds-image-policy-file=/run/c8s-node/cds.json
+            {{- else if not .Values.armtlsMesh.measurementsConfig }}
+            {{- with .Values.cds.measurements }}
+            - --cds-measurements
+            - {{ join "," . | quote }}
+            {{- end }}
+            {{- with .Values.cds.rtmrs }}
+            - --cds-rtmrs
+            - {{ join "," . | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          env:
+            - name: NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            {{- /* cvmMode=bare-metal: HOST_IP expands $(HOST_IP) in
+                   --attestation-api-url. hostNetwork, so the node IP is this
+                   pod's own — the node-baked host attestation-api. */}}
+            {{- with (include "c8s.attestationApiHostIPEnv" .) }}
+            {{- . | nindent 12 }}
+            {{- end }}
+          ports:
+            - name: outbound
+              containerPort: {{ .Values.armtlsMesh.ports.outbound }}
+              protocol: TCP
+            - name: inbound
+              containerPort: {{ .Values.armtlsMesh.ports.inbound }}
+              hostPort: {{ .Values.armtlsMesh.ports.inbound }}
+              protocol: TCP
+            - name: health
+              containerPort: {{ .Values.armtlsMesh.ports.health }}
+              protocol: TCP
+          resources:
+            requests:
+              {{- toYaml .Values.armtlsMesh.resources.requests | nindent 14 }}
+            limits:
+              {{- toYaml .Values.armtlsMesh.resources.limits | nindent 14 }}
+          startupProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.armtlsMesh.ports.health }}
+            periodSeconds: {{ .Values.armtlsMesh.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.armtlsMesh.probes.startup.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: {{ .Values.armtlsMesh.ports.health }}
+            periodSeconds: {{ .Values.armtlsMesh.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.armtlsMesh.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.armtlsMesh.probes.readiness.failureThreshold }}
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: {{ .Values.armtlsMesh.ports.health }}
+            initialDelaySeconds: {{ .Values.armtlsMesh.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.armtlsMesh.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.armtlsMesh.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.armtlsMesh.probes.liveness.failureThreshold }}
+      {{- with .Values.armtlsMesh.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/os
+                    operator: In
+                    values:
+                      - linux
+{{- end }}

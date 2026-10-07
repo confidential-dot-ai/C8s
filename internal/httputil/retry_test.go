@@ -48,7 +48,7 @@ func TestRetryConnectionRefusedBounds(t *testing.T) {
 	})
 	t.Run("collateral dial failure is final", func(t *testing.T) {
 		calls := 0
-		want := &url.Error{Op: "Post", URL: "https://node:8443/attest", Err: fmt.Errorf("ratls: verify evidence: %w", refused.Err)}
+		want := &url.Error{Op: "Post", URL: "https://node:8443/attest", Err: fmt.Errorf("armtls: verify evidence: %w", refused.Err)}
 		err := RetryConnectionRefused(context.Background(), time.Second, time.Minute, func(context.Context) error {
 			calls++
 			return want

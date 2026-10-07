@@ -96,8 +96,8 @@
         "rateLimiterEvictInterval": {},
         "rateLimiterIdleTimeout": {},
         "rateLimiterMaxEntries": {},
-        "ratlsCertTTL": {},
-        "ratlsPlatform": {},
+        "armtlsCertTTL": {},
+        "armtlsPlatform": {},
         "readinessInterval": {},
         "requestTimeout": {},
         "resources": {},
@@ -571,7 +571,7 @@
     "hostNamespacePolicy": {},
     "webhook": {},
     "attestationApi": {},
-    "ratlsMesh": {},
+    "armtlsMesh": {},
     "podSecurityContext": {},
     "teeProxy": {
       "$comment": "Removed component, listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."

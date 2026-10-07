@@ -13,7 +13,7 @@ import (
 
 func TestValidateCSR(t *testing.T) {
 	dnsAny := regexp.MustCompile(`[a-z]+\.mesh\.svc`)
-	cnRatlsMesh := regexp.MustCompile(`ratls-mesh-[0-9.]+`)
+	cnArmtlsMesh := regexp.MustCompile(`armtls-mesh-[0-9.]+`)
 
 	tests := []struct {
 		name    string
@@ -86,18 +86,18 @@ func TestValidateCSR(t *testing.T) {
 		{
 			name:    "CN not matching allowed pattern rejected",
 			csr:     &x509.CertificateRequest{Subject: pkix.Name{CommonName: "evil"}},
-			policy:  issuer.CSRPolicy{AllowedCNPattern: cnRatlsMesh},
+			policy:  issuer.CSRPolicy{AllowedCNPattern: cnArmtlsMesh},
 			wantErr: "CN \"evil\" does not match",
 		},
 		{
 			name:   "CN matching allowed pattern accepted",
-			csr:    &x509.CertificateRequest{Subject: pkix.Name{CommonName: "ratls-mesh-10.0.0.1"}},
-			policy: issuer.CSRPolicy{AllowedCNPattern: cnRatlsMesh},
+			csr:    &x509.CertificateRequest{Subject: pkix.Name{CommonName: "armtls-mesh-10.0.0.1"}},
+			policy: issuer.CSRPolicy{AllowedCNPattern: cnArmtlsMesh},
 		},
 		{
 			name:    "CN substring match rejected",
-			csr:     &x509.CertificateRequest{Subject: pkix.Name{CommonName: "evil-ratls-mesh-10.0.0.1"}},
-			policy:  issuer.CSRPolicy{AllowedCNPattern: cnRatlsMesh},
+			csr:     &x509.CertificateRequest{Subject: pkix.Name{CommonName: "evil-armtls-mesh-10.0.0.1"}},
+			policy:  issuer.CSRPolicy{AllowedCNPattern: cnArmtlsMesh},
 			wantErr: "does not match allowed pattern",
 		},
 		{

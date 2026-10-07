@@ -82,7 +82,7 @@ spec:
             - --get-cert-run-as-group={{ include "c8s.int" .Values.webhook.getCert.runAsGroup }}
             - --get-cert-run-as-non-root={{ .Values.webhook.getCert.runAsNonRoot }}
 
-            {{- /* Workload-digest claims (docs/ratls.md): get-cert
+            {{- /* Workload-digest claims (docs/armtls.md): get-cert
                    redeems a sandbox token from the node's inventory over a
                    compiled endpoint: the nri-image-policy socket that plugin
                    NRI-mounts into c8s-cert on node-CVM. */}}

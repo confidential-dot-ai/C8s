@@ -74,7 +74,7 @@
 {{- end -}}
 {{- end -}}
 {{- if and $nri.enabled (not (hasPrefix "https://" $nriCDSURL)) -}}
-{{- fail (printf "nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got %q): the host plugin must fetch the allowlist over RA-TLS" $nriCDSURL) -}}
+{{- fail (printf "nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got %q): the host plugin must fetch the allowlist over armTLS" $nriCDSURL) -}}
 {{- end -}}
 {{- /*
   The derived form is a node-local NodePort address, so there has to be one.
@@ -88,11 +88,11 @@
 {{- /*
   The mirror of require_host_image_policy for evidence: off bare-metal mode,
   the host attestation-api DaemonSet is the only evidence source for
-  get-cert, ratls-mesh, and CDS. Disabling it there renders a cluster whose
+  get-cert, armtls-mesh, and CDS. Disabling it there renders a cluster whose
   attestation consumers all point at a socket nothing serves.
 */ -}}
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
-{{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/ratls-mesh/CDS (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
+{{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/armtls-mesh/CDS (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
 {{- end -}}
 {{- /*
   Catch-all upstream check. No upstream is a legal state: router installs and
@@ -103,7 +103,7 @@
      http, the node mesh intercepts the pod-IP hop and wraps it in attested mTLS.
      The shape match below is ADVISORY — it can't prove the Service is headless
      (a ClusterIP Service of the same name would be a VIP the mesh skips), so the
-     real boundary is ratlsMesh.cwInboundEnforcement, which drops VIP/FORWARD-path
+     real boundary is armtlsMesh.cwInboundEnforcement, which drops VIP/FORWARD-path
      hops to cw pods at runtime. This guard only catches accidental plaintext.
      An https protocol on this shape can only fail at runtime, so reject it.
    - a manual address that terminates and verifies TLS itself (app-TLS): must

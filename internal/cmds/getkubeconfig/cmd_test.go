@@ -116,7 +116,7 @@ func TestNewCmdValidation(t *testing.T) {
 }
 
 // TestNewCmdEndToEnd runs the whole command against the fake node: flags,
-// attest gate, RA-TLS release, kubeconfig on disk. The role reaches the
+// attest gate, armTLS release, kubeconfig on disk. The role reaches the
 // release body, so the server (not the client) picks the Subject.
 func TestNewCmdEndToEnd(t *testing.T) {
 	for _, tt := range []struct {

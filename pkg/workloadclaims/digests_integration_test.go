@@ -22,7 +22,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // The callback is otherwise only ever driven through a fake at the CDS
@@ -31,7 +31,7 @@ import (
 // DigestsPort rather than anything the caller supplied. This drives a real
 // ServeDigests over a real TLS listener with a real DigestsClient transport.
 //
-// TLS here is a plain self-signed pair, not RA-TLS: attestation needs an
+// TLS here is a plain self-signed pair, not armTLS: attestation needs an
 // attestation-api, and what is under test is the protocol above the handshake.
 // routableLocalIP is an address the client's own validation accepts — loopback
 // is rejected by design, so the test binds where production would: a routable
@@ -213,7 +213,7 @@ func TestStartDigestsEndpointServesDespiteWarmUpFailure(t *testing.T) {
 	}
 	err = StartDigestsEndpoint(ctx, slog.New(slog.NewTextHandler(io.Discard, nil)),
 		&fakeResolver{sandboxID: "sandbox-1"}, signer.PublicKeyDER(),
-		"sev-snp", attest, "http://127.0.0.1:1", ratls.Pins{})
+		"sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{})
 	if err != nil {
 		t.Fatalf("StartDigestsEndpoint returned an error for a warm-up failure; it must degrade, not fail: %v", err)
 	}
@@ -279,15 +279,15 @@ func TestNewDigestsClientConstruction(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", errTestAttest }
 	ctx := context.Background()
 
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "", ratls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
 		t.Fatal("built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(ctx, "bogus-platform", attest, "http://127.0.0.1:1", ratls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, "bogus-platform", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
 		t.Fatal("built with an unsupported TEE platform")
 	}
 	// A warm-up that cannot succeed is a construction failure here, unlike the
 	// server side: CDS has no work to do until it can present a client cert.
-	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "http://127.0.0.1:1", ratls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(ctx, "sev-snp", attest, "http://127.0.0.1:1", armtls.Pins{}, 0); err == nil {
 		t.Fatal("built despite an attestation failure during warm-up")
 	}
 }

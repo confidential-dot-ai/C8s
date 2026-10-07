@@ -39,7 +39,7 @@ func TestRenderValuesEmitsComputedBundle(t *testing.T) {
 	// the unstamped-build fallback tag.
 	for _, prefix := range [][]string{
 		{"image", "tag"}, {"cds", "image", "tag"}, {"attestationApi", "image", "tag"},
-		{"ratlsMesh", "image", "tag"}, {"nriImagePolicy", "image", "tag"},
+		{"armtlsMesh", "image", "tag"}, {"nriImagePolicy", "image", "tag"},
 	} {
 		if got := treeAt(t, tree, prefix...); got != "main" {
 			t.Errorf("%s = %#v, want main", strings.Join(prefix, "."), got)

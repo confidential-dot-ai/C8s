@@ -1,4 +1,4 @@
-// Package certutil provides common helper functions shared across the ratls
+// Package certutil provides common helper functions shared across the armtls
 // project: serial number generation, fingerprinting, PEM encoding, and more.
 package certutil
 

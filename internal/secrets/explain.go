@@ -10,7 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -107,7 +107,7 @@ func (h ExplainHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sandboxID := chi.URLParam(r, "sandboxID")
-	if err := ratls.ValidateSandboxID(sandboxID); err != nil {
+	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
 		http.Error(w, "invalid sandbox ID", http.StatusBadRequest)
 		return
 	}

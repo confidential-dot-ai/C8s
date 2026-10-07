@@ -56,6 +56,10 @@ set_paths .github/actions/setup-mkosi/action.yml
 expect_result true
 
 reset_case
+set_paths .github/scripts/build-gate-images.sh
+expect_result true
+
+reset_case
 jq '.builds["node-image"].confos_ref = "1111111111111111111111111111111111111111"' \
   "$base_manifest" >"$current_manifest"
 set_paths .github/build-pins.json

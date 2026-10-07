@@ -15,8 +15,8 @@ import (
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // testHeldAllowlist is a minimal one-entry policy document; its Canonical()
@@ -53,7 +53,7 @@ func testHeldAllowlist(t *testing.T) ([]byte, []byte) {
 // caSignedWorkloadLeaf mints a leaf carrying the matched-workload stamp and
 // signed by a fresh CA, returning the leaf and CA bundle path — the shape CDS
 // produces.
-func caSignedWorkloadLeaf(t *testing.T, matched *ratls.MatchedWorkload) (*x509.Certificate, string) {
+func caSignedWorkloadLeaf(t *testing.T, matched *armtls.MatchedWorkload) (*x509.Certificate, string) {
 	t.Helper()
 	caKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -83,7 +83,7 @@ func caSignedWorkloadLeaf(t *testing.T, matched *ratls.MatchedWorkload) (*x509.C
 	}
 	var exts []pkix.Extension
 	if matched != nil {
-		ext, err := ratls.MarshalMatchedWorkloadExtension(matched)
+		ext, err := armtls.MarshalMatchedWorkloadExtension(matched)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,7 +138,7 @@ func TestBuildPolicyWorkloadFlagsRequireMeshCA(t *testing.T) {
 
 func TestApplyWorkloadPolicyReportsProvenance(t *testing.T) {
 	_, digest := testHeldAllowlist(t)
-	matched := &ratls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: digest}
+	matched := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: digest}
 	leaf, _ := caSignedWorkloadLeaf(t, matched)
 	ev := &evidence{leaf: leaf, workload: matched}
 
@@ -176,7 +176,7 @@ func TestApplyWorkloadPolicyUnparseableFailsClosed(t *testing.T) {
 // stamp, digest mismatch, unresolved name.
 func TestApplyWorkloadPolicyPins(t *testing.T) {
 	canonical, digest := testHeldAllowlist(t)
-	matched := &ratls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: digest}
+	matched := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: digest}
 	leaf, caPath := caSignedWorkloadLeaf(t, matched)
 	unstamped, _ := caSignedWorkloadLeaf(t, nil)
 
@@ -237,7 +237,7 @@ func TestApplyWorkloadPolicyPins(t *testing.T) {
 		}
 	})
 	t.Run("stamped name unresolved in held document", func(t *testing.T) {
-		ghost := &ratls.MatchedWorkload{Name: "ghost", AllowlistVersion: "4", AllowlistDigest: digest}
+		ghost := &armtls.MatchedWorkload{Name: "ghost", AllowlistVersion: "4", AllowlistDigest: digest}
 		ghostLeaf, ghostCA := caSignedWorkloadLeaf(t, ghost)
 		oc := run(config{allowlistFile: allowlistPath, meshCA: ghostCA}, &evidence{leaf: ghostLeaf, workload: ghost})
 		if oc.Verified || !strings.Contains(oc.Error, "workload_unresolved") {
@@ -266,7 +266,7 @@ func TestApplyWorkloadPolicyPins(t *testing.T) {
 // be against the bytes that were parsed.
 func TestHeldAllowlistIsReadOnce(t *testing.T) {
 	canonical, digest := testHeldAllowlist(t)
-	matched := &ratls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: digest}
+	matched := &armtls.MatchedWorkload{Name: "api", AllowlistVersion: "4", AllowlistDigest: digest}
 	leaf, caPath := caSignedWorkloadLeaf(t, matched)
 
 	path := filepath.Join(t.TempDir(), "allowlist.json")

@@ -43,7 +43,7 @@ func installPins() (digests [][]byte, registers map[int][]byte, helmArgs []strin
 	// command just validated.
 	helmArgs = []string{
 		"--set-file", "cds.measurementsConfig=" + path,
-		"--set-file", "ratlsMesh.measurementsConfig=" + path,
+		"--set-file", "armtlsMesh.measurementsConfig=" + path,
 	}
 	return set.Digests(), common, helmArgs, nil
 }

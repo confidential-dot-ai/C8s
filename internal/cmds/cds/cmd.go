@@ -32,7 +32,7 @@ func NewCmd() *cobra.Command {
 		Use:   "cds",
 		Short: "Run the Certificate Distribution Service (CDS)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := validateRATLSPlatformFlag(cfg.ratlsPlatform); err != nil {
+			if err := validateARMTLSPlatformFlag(cfg.armtlsPlatform); err != nil {
 				return err
 			}
 			return run(cfg)
@@ -73,7 +73,7 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests and the mesh CA do not survive a restart")
 	flags.StringVar(&cfg.kubeconfig, "kubeconfig", "", "kubeconfig for live node inventory when CDS runs as a host service; empty uses in-cluster credentials")
-	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/ratls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
+	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
 	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing digests are added, existing entries are left untouched (empty disables seeding)")
 	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (POST/PUT/DELETE) require an operator token signed by one of them (empty = writes disabled, reads still served)")
 
@@ -88,10 +88,10 @@ func NewCmd() *cobra.Command {
 	flags.IntVar(&cfg.secretsMaxValueBytes, "secrets-max-value-bytes", 4096, "max bytes in one secret value")
 	flags.IntVar(&cfg.sandboxLedgerMax, "sandbox-ledger-max-entries", 10000, "max sandbox-to-inventory bindings held in memory")
 
-	flags.StringVar(&cfg.ratlsPlatform, "ratls-platform", "", "TEE platform for the RA-TLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
-	flags.DurationVar(&cfg.ratlsCertTTL, "ratls-cert-ttl", 24*time.Hour, "")
+	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
+	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
 
-	_ = cmd.MarkFlagRequired("ratls-platform")
+	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
 	_ = cmd.MarkFlagRequired("allowlist-db")
 
@@ -99,9 +99,9 @@ func NewCmd() *cobra.Command {
 	// same implementation. Running CDS (the server) stays `c8s cds`.
 	//
 	// Mode is intentionally left at auto: resolveMode derives it from --kind
-	// (cds → ratls-cert, lb → discovery), so `c8s cds verify --kind lb` targets
-	// the LB's discovery doc. Presetting Mode: "ratls-cert" here would shadow
-	// that and make --kind lb dial for the embedded RA-TLS extension the LB
+	// (cds → armtls-cert, lb → discovery), so `c8s cds verify --kind lb` targets
+	// the LB's discovery doc. Presetting Mode: "armtls-cert" here would shadow
+	// that and make --kind lb dial for the embedded armTLS extension the LB
 	// front door never serves.
 	cmd.AddCommand(verify.NewCmd(verify.Defaults{
 		Use:         "verify [target]",
@@ -148,8 +148,8 @@ type config struct {
 	inventoryCIDRs      []string
 	kubeconfig          string
 	operatorKeys        string
-	ratlsPlatform       string
-	ratlsCertTTL        time.Duration
+	armtlsPlatform      string
+	armtlsCertTTL       time.Duration
 
 	rateLimit                float64
 	rateBurst                int
@@ -163,15 +163,15 @@ type config struct {
 	sandboxLedgerMax           int
 }
 
-// validateRATLSPlatformFlag rejects the CLI paths to a TLS-less CDS: the
+// validateARMTLSPlatformFlag rejects the CLI paths to a TLS-less CDS: the
 // empty-platform plain-HTTP mode stays reachable only for tests constructing
 // Config directly.
-func validateRATLSPlatformFlag(v string) error {
+func validateARMTLSPlatformFlag(v string) error {
 	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("--ratls-platform must not be empty (RA-TLS is mandatory; tests construct Config directly)")
+		return fmt.Errorf("--armtls-platform must not be empty (armTLS is mandatory; tests construct Config directly)")
 	}
 	if _, err := teetypes.ParseFamily(v); err != nil {
-		return fmt.Errorf("--ratls-platform: %w", err)
+		return fmt.Errorf("--armtls-platform: %w", err)
 	}
 	return nil
 }

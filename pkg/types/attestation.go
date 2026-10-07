@@ -20,10 +20,10 @@ type AttestRequestBody struct {
 	// SandboxToken is the inventory-signed sandbox identity of the requesting
 	// pod (workloadclaims.SignedSandboxToken as JSON): its CRI sandbox ID and
 	// the inventory's callback address, bound to the requester's CSR key and
-	// this request's challenge, signed by the inventory's RA-TLS key.
+	// this request's challenge, signed by the inventory's armTLS key.
 	// CDS verifies the token, asks that inventory which images
 	// the sandbox is running, and stamps the sandbox ID into the leaf
-	// (ratls.OIDSandboxID) — docs/ratls.md, "Sandbox identity". Kept opaque
+	// (armtls.OIDSandboxID) — docs/armtls.md, "Sandbox identity". Kept opaque
 	// here (types must not import workloadclaims).
 	SandboxToken json.RawMessage `json:"sandbox_token,omitempty"`
 }

@@ -115,7 +115,7 @@ c8s get-kubeconfig --node "$SERVER_IP" \
   --out demo/kubeconfig --release-wait 5m
 ```
 
-Bootstrap uses the RA-TLS credential service on port 8443 for both the
+Bootstrap uses the armTLS credential service on port 8443 for both the
 operator-authenticated nonce attestation and credential release. The raw
 attester stays on loopback. The client verifies the full image and launch-key
 binding in both the serving certificate and the fresh report before requesting
@@ -140,7 +140,7 @@ application services:
 | Local attestation API and Unix-socket proxy | systemd services | Every node |
 | NRI image admission | Required containerd plugin | Every node, before pods |
 | RKE2 | systemd service | Authenticated server or agent role |
-| RA-TLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
+| armTLS mesh and iptables reconciliation | DaemonSet with native sidecars | Every node |
 | CDS | Singleton Deployment | Server |
 | Router, certificate renewal and attestation helpers | Singleton Deployment | Server |
 | Operator, webhook and admission integration | Kubernetes resources | Cluster-wide |
@@ -212,9 +212,10 @@ reapplying the initial workload seed. Launch settings do not enable volume
 support, arbitrary service arguments or front-door routes.
 
 Published `C8S_REF` images must include the renderer and the SAN-file flags
-used by the manifests. The reproducibility gate's `C8S_BINARY` overrides the
-host binary and embedded chart; container images still resolve from
-`C8S_REF`. A source-only binary override does not replace those containers.
+used by the manifests. The reproducibility gate builds the host binary and
+core containers from the same checkout. `C8S_BINARY` supplies the binary;
+`C8S_IMAGES_DIR` supplies the same unpublished OCI layouts to both build legs,
+tagged with `C8S_REF`.
 
 The staged SNP metal CI lane requires compatible image metadata with
 `launchConfigVersion=c8s-launch/v1`:
@@ -337,7 +338,7 @@ both credential bindings, and proves, through server-side dry-runs as a syntheti
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
 first-boot reconciliation window. The same gate waits until the live
-FelixConfigurations make Canal append its iptables hooks behind ratls-mesh's
+FelixConfigurations make Canal append its iptables hooks behind armtls-mesh's
 cw guard, which Felix only learns after the chart installs its CRDs.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
@@ -556,8 +557,8 @@ confos, attestation-rs, and mkosi pins. They validate and export the selected
 domain through `.github/scripts/pin-manifest.sh`; automated pin-watch PRs
 therefore change the manifest rather than workflow files.
 
-`mkosi.sync` resolves C8s container digests from the registry tag `C8S_REF`
-at build time. The rendered manifests, component seed and measured OCI
+Published builds resolve C8s container digests from the registry tag
+`C8S_REF` at build time. The rendered manifests, component seed and measured OCI
 archives record those pins. The NRI system floor comes from the pinned RKE2
 bundles. A rebuild after a mutable `C8S_REF` tag moves will not match.
 

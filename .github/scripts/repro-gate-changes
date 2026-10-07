@@ -32,6 +32,7 @@ main() {
     case "$path" in
       .github/scripts/pin-manifest.sh | \
         .github/scripts/repro-gate-changes | \
+        .github/scripts/build-gate-images.sh | \
         .github/actions/setup-mkosi/action.yml | \
         .github/workflows/image-repro-gate.yml)
         image=true

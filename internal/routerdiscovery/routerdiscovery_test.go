@@ -24,11 +24,11 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// plainServingCert generates a self-signed ECDSA serving cert with NO RA-TLS
+// plainServingCert generates a self-signed ECDSA serving cert with NO armTLS
 // extension — the shape a router front door presents.
 func plainServingCert(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
@@ -79,7 +79,7 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 }
 
 // fakeLB serves the discovery document plus a proxied /allowlist body over TLS
-// with servingCert (no RA-TLS extension), like a router front door.
+// with servingCert (no armTLS extension), like a router front door.
 func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +113,7 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 }
 
 // TestNewVerifiedHTTPClient_EndToEnd is the regression test for the router
-// allowlist bug: a front door whose serving cert has no RA-TLS extension must
+// allowlist bug: a front door whose serving cert has no armTLS extension must
 // be verified via its discovery document (evidence bound to
 // SHA-384(cert pubkey ‖ challenge)) and subsequent requests must succeed
 // against the pinned serving cert.
@@ -123,8 +123,8 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 	doc := discoveryDoc(t, leaf, challenge, "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
 
-	measurement := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
-	erd, err := ratls.ReportDataForKey(leaf.PublicKey, challenge)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	erd, err := armtls.ReportDataForKey(leaf.PublicKey, challenge)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 
 // TestNewVerifiedHTTPClient_NoDiscovery proves a target without a discovery
 // document (a direct CDS endpoint) signals ErrNoDiscovery so the caller falls
-// back to RA-TLS serving-cert verification.
+// back to armTLS serving-cert verification.
 func TestNewVerifiedHTTPClient_NoDiscovery(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	defer srv.Close()
@@ -195,13 +195,13 @@ func TestNewVerifiedHTTPClient_FailsClosed(t *testing.T) {
 		{"verifier rejects", func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
 			return nil, errSignature
 		}, errSignature},
-		{"measurement not allowed", approvingVerify(bytes.Repeat([]byte{0x01}, ratls.SNPMeasurementSize)),
+		{"measurement not allowed", approvingVerify(bytes.Repeat([]byte{0x01}, armtls.SNPMeasurementSize)),
 			localverify.ErrMeasurementNotAllowed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := NewVerifiedHTTPClient(context.Background(), lb.URL,
-				[][]byte{bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)}, tc.verify)
+				[][]byte{bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)}, tc.verify)
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("want %v, got: %v", tc.wantErr, err)
 			}
@@ -237,7 +237,7 @@ func TestNewVerifiedHTTPClient_BindsDocCertToConnection(t *testing.T) {
 // document), rejecting webpki, acme, and unknown modes with clear errors
 // instead of returning a client whose handshakes can never match.
 func TestNewVerifiedHTTPClient_PublicTLSModes(t *testing.T) {
-	measurement := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	cases := []struct {
 		mode    string
 		wantErr string // empty = success
@@ -283,7 +283,7 @@ func TestNewVerifiedHTTPClient_FailsClosedOnReconnect(t *testing.T) {
 	servingCert, leaf := plainServingCert(t)
 	doc := discoveryDoc(t, leaf, []byte("challenge"), "cds", string(teetypes.PlatformAzSNP), `{"hcl_report":"fake"}`)
 	lb := fakeLB(t, servingCert, doc)
-	measurement := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 
 	hc, err := NewVerifiedHTTPClient(context.Background(), lb.URL, [][]byte{measurement}, approvingVerify(measurement))
 	if err != nil {
@@ -305,7 +305,7 @@ func TestNewVerifiedHTTPClient_FailsClosedOnReconnect(t *testing.T) {
 }
 
 // TestNewSingleConnClientConfig pins the connection-bound client's shape: the
-// timeout knobs mirror ratls.NewVerifyingHTTPClient and the transport is
+// timeout knobs mirror armtls.NewVerifyingHTTPClient and the transport is
 // limited to the single attested connection.
 func TestNewSingleConnClientConfig(t *testing.T) {
 	hc := newSingleConnClient(nil)

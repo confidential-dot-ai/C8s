@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // bareSnpEvidence strips cert_chain from the real Zen4c/Genoa fixture, yielding
-// the {attestation_report}-only evidence a bare RA-TLS serving cert produces —
+// the {attestation_report}-only evidence a bare armTLS serving cert produces —
 // the shape that forces the AMD KDS fetch.
 func bareSnpEvidence(t *testing.T) *evidence {
 	t.Helper()
@@ -47,7 +47,7 @@ func TestVerifyInProcess_KDSFetchBoundedByContext(t *testing.T) {
 	cancel()
 
 	start := time.Now()
-	_, err := verifyInProcess(ctx, bareSnpEvidence(t), &ratls.VerifyPolicy{}, nil, nil)
+	_, err := verifyInProcess(ctx, bareSnpEvidence(t), &armtls.VerifyPolicy{}, nil, nil)
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("expired ctx took %v, want prompt return", elapsed)
 	}
@@ -66,7 +66,7 @@ func TestVerifyEvidence_TimeoutBoundsCollateralFetch(t *testing.T) {
 	cfg := config{timeout: 50 * time.Millisecond, output: "text"}
 	var out, errOut bytes.Buffer
 	start := time.Now()
-	code := verifyEvidence(context.Background(), cfg, &verifyPlan{policy: &ratls.VerifyPolicy{}}, bareSnpEvidence(t), nil, operatorKeysReport{}, measurementsReport{}, &out, &errOut)
+	code := verifyEvidence(context.Background(), cfg, &verifyPlan{policy: &armtls.VerifyPolicy{}}, bareSnpEvidence(t), nil, operatorKeysReport{}, measurementsReport{}, &out, &errOut)
 	if elapsed := time.Since(start); elapsed > 10*time.Second {
 		t.Fatalf("verifyEvidence took %v, want the 50ms timeout enforced", elapsed)
 	}

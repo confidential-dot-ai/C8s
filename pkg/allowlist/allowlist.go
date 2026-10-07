@@ -340,7 +340,7 @@ func (a *Allowlist) Canonical() ([]byte, error) {
 }
 
 // CanonicalDigest returns SHA-256 over Canonical() — the policy digest clients
-// pin and the matched-workload stamp carries (docs/ratls.md).
+// pin and the matched-workload stamp carries (docs/armtls.md).
 func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 	canonical, err := a.Canonical()
 	if err != nil {
@@ -373,7 +373,7 @@ func (a *Allowlist) normalize(strict bool) error {
 			}
 			// Dropping is fail-closed: the entry's digests stop being admitted
 			// by this consumer. It could never have been named on a leaf either
-			// (ratls.MatchedWorkload.Validate applies the same bound), so
+			// (armtls.MatchedWorkload.Validate applies the same bound), so
 			// nothing that depended on it is lost.
 			slog.Warn("allowlist: dropping a served workload entry whose name exceeds the label-value bound",
 				"name", name, "bytes", len(name), "max", MaxWorkloadNameLen)
@@ -605,7 +605,7 @@ func policyKey(c Container) string {
 
 // MaxWorkloadNameLen bounds an entry name to the Kubernetes label-value length,
 // so the confidential.ai/cw selector, an allowlist entry name, and the
-// matched-workload leaf stamp (pkg/ratls) can all represent it. It is enforced
+// matched-workload leaf stamp (pkg/armtls) can all represent it. It is enforced
 // where entries are written, not where a served document is read — see
 // normalize.
 const MaxWorkloadNameLen = 63

@@ -14,7 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -143,7 +143,7 @@ func TestAttest_SandboxToken_StampedOnLeaf(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d, body=%s", w.Code, w.Body.String())
 	}
-	got, err := ratls.SandboxIDFromCert(leafFromAttestResponse(t, w))
+	got, err := armtls.SandboxIDFromCert(leafFromAttestResponse(t, w))
 	if err != nil {
 		t.Fatalf("SandboxIDFromCert: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestAttest_SandboxToken_AbsentWhenNotRequested(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status %d, body=%s", w.Code, w.Body.String())
 	}
-	if got, err := ratls.SandboxIDFromCert(leafFromAttestResponse(t, w)); err != nil || got != "" {
+	if got, err := armtls.SandboxIDFromCert(leafFromAttestResponse(t, w)); err != nil || got != "" {
 		t.Fatalf("leaf sandbox = %q, %v; want empty", got, err)
 	}
 }

@@ -793,7 +793,7 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	// derives it into the seed the node's plugin admits it from.
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/c8s-operator:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/cds:main")
-	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/ratls-mesh:main")
+	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/armtls-mesh:main")
 	mustContainLine(t, calls, "crane digest ghcr.io/confidential-dot-ai/nri-image-policy:main")
 	mustNotContainPrefix(t, calls, "crane digest ghcr.io/confidential-dot-ai/attestation-api")
 	// volumed stays off without --volumes.

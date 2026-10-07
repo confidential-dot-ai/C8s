@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -34,7 +34,7 @@ func (p leafProvider) Provision(context.Context) (*tls.Certificate, time.Duratio
 
 // NewClient builds the mTLS client to CDS and returns the leaf's public key,
 // which the sandbox token is bound to.
-func NewClient(cfg Config, pins ratls.Pins) (*http.Client, crypto.PublicKey, error) {
+func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
 	provider := leafProvider{certPath: cfg.CertPath, keyPath: cfg.KeyPath}
 	leaf, _, err := provider.Provision(context.Background())
 	if err != nil {
@@ -44,7 +44,7 @@ func NewClient(cfg Config, pins ratls.Pins) (*http.Client, crypto.PublicKey, err
 	if err != nil {
 		return nil, nil, fmt.Errorf("parse leaf: %w", err)
 	}
-	tlsCfg, _, err := ratls.NewClientTLSConfig(&ratls.ClientConfig{
+	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
 		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
 		CertProvider: provider,
 	})

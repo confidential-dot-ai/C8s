@@ -56,8 +56,8 @@ func newKubeClientsetFromFile(kubeconfig string) (kubernetes.Interface, error) {
 // watchNodeInventoryHosts keeps the dial bound current with the node list: a
 // node added after CDS starts becomes dialable without a restart, and a
 // removed node stops being dialable. The API server only hints at addresses —
-// what answers must still pass mutually-attested RA-TLS on a privileged port
-// (docs/ratls.md). Without in-cluster config (local dev) the bound stays
+// what answers must still pass mutually-attested armTLS on a privileged port
+// (docs/armtls.md). Without in-cluster config (local dev) the bound stays
 // empty and every sandbox token is refused, matching the previous posture.
 func watchNodeInventoryHosts(ctx context.Context, kubeconfig string) (workloadclaims.InventoryHosts, error) {
 	hosts := &workloadclaims.NodeHosts{}

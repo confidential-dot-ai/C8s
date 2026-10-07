@@ -536,7 +536,7 @@ func TestLabelOperator(t *testing.T) {
 	}
 }
 
-// The sandbox-digests endpoint types its RA-TLS identity with this platform and
+// The sandbox-digests endpoint types its armTLS identity with this platform and
 // CDS refuses a peer whose type disagrees with the evidence envelope the
 // attestation-api returns. Hardcoding it to snp denied every sandbox token on a
 // TDX node, and the resulting error names the evidence platform rather than this

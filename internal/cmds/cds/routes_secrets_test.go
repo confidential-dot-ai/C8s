@@ -21,7 +21,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func secretsRouter(t *testing.T, enabled bool) http.Handler {
@@ -201,7 +201,7 @@ func leafWithSandbox(t *testing.T, sandboxID string) *x509.Certificate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ext, err := ratls.MarshalSandboxIDExtension(sandboxID)
+	ext, err := armtls.MarshalSandboxIDExtension(sandboxID)
 	if err != nil {
 		t.Fatal(err)
 	}

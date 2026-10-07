@@ -2,7 +2,7 @@
 // is the calling process in". The inventory signs (sandbox ID, requester-key
 // digest, CDS challenge nonce, its own node's IP) with an in-process key, so the
 // binding is to one requester and fresh for exactly the issuance whose challenge
-// it carries (docs/ratls.md, "Sandbox identity"). Freshness rides the same
+// it carries (docs/armtls.md, "Sandbox identity"). Freshness rides the same
 // single-use CDS challenge as the evidence — no clock.
 //
 // The signature is only worth as much as CDS's confidence that the key is the

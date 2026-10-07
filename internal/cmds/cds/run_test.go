@@ -161,7 +161,7 @@ func newHealthyAttestationApi(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// validRunConfig returns a config that passes run()'s validation with RA-TLS
+// validRunConfig returns a config that passes run()'s validation with armTLS
 // disabled, an in-tempdir allowlist DB, and hermetic endpoints.
 func validRunConfig(t *testing.T, attestationURL string) config {
 	t.Helper()
@@ -190,7 +190,7 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 		rateLimiterMax:             1000,
 		rateLimiterEvictInterval:   time.Minute,
 		rateLimiterIdleTimeout:     5 * time.Minute,
-		ratlsPlatform:              "",
+		armtlsPlatform:             "",
 	}
 }
 
@@ -276,8 +276,8 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "seed allowlist",
 		},
 		{
-			name:    "unsupported ratls platform",
-			mutate:  func(_ *testing.T, cfg *config) { cfg.ratlsPlatform = "bogus-platform" },
+			name:    "unsupported armtls platform",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.armtlsPlatform = "bogus-platform" },
 			wantSub: "unsupported TEE platform",
 		},
 	} {
@@ -507,16 +507,16 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	}
 }
 
-// TestRun_RATLSWarmupFailureFailsClosed: with RA-TLS enabled, a failed serving
+// TestRun_ARMTLSWarmupFailureFailsClosed: with armTLS enabled, a failed serving
 // cert warm-up must abort startup instead of serving.
-func TestRun_RATLSWarmupFailureFailsClosed(t *testing.T) {
+func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "no evidence for you", http.StatusInternalServerError)
 	}))
 	t.Cleanup(api.Close)
 	cfg := validRunConfig(t, api.URL)
 	cfg.port = freePort(t)
-	cfg.ratlsPlatform = "sev-snp"
+	cfg.armtlsPlatform = "sev-snp"
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(cfg) }()
@@ -528,7 +528,7 @@ func TestRun_RATLSWarmupFailureFailsClosed(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 		<-errCh
-		t.Fatal("run() kept serving after RA-TLS warm-up failure")
+		t.Fatal("run() kept serving after armTLS warm-up failure")
 	}
 }
 

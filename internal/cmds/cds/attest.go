@@ -23,8 +23,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -72,7 +72,7 @@ type AttestHandler struct {
 	SANValidation bool
 
 	// AllowlistStore, when set, gates a sandbox's running images: every image
-	// the inventory reports must be allowlisted (docs/ratls.md), all checked
+	// the inventory reports must be allowlisted (docs/armtls.md), all checked
 	// against ONE atomic policy snapshot which also decides the
 	// matched-workload stamp. nil rejects any request carrying a sandbox
 	// token, since it could not be checked.
@@ -90,7 +90,7 @@ type AttestHandler struct {
 	NamedCertTTL time.Duration
 
 	// SandboxDigests resolves a sandbox's inventory: its signing key and what
-	// the sandbox is running, over mutually-attested RA-TLS to a privileged
+	// the sandbox is running, over mutually-attested armTLS to a privileged
 	// port. nil rejects any request carrying a sandbox token, for the same
 	// reason as a nil AllowlistStore.
 	SandboxDigests sandboxDigestSource
@@ -116,7 +116,7 @@ type sandboxBinder interface {
 
 // sandboxDigestSource is the inventory callback, satisfied by
 // *workloadclaims.DigestsClient. An interface so tests can drive issuance
-// without standing up an RA-TLS inventory. FetchSandbox returns the whole
+// without standing up an armTLS inventory. FetchSandbox returns the whole
 // answer — the deduplicated digests view and the per-container (digest, argv)
 // view — so one fetch backs both the membership gate and workload matching.
 type sandboxDigestSource interface {
@@ -160,7 +160,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return
 	}
-	// Sandbox token (docs/ratls.md, "Sandbox identity"): an inventory-signed
+	// Sandbox token (docs/armtls.md, "Sandbox identity"): an inventory-signed
 	// binding of the pod's sandbox ID — and of the inventory to ask about it —
 	// to the requester's CSR key and this request's challenge. Verified before
 	// the expensive evidence round-trip; the resulting ID is stamped on the
@@ -176,7 +176,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	expectedReportData, err := ratls.ReportDataForKey(csrPubKey, challengeBytes)
+	expectedReportData, err := armtls.ReportDataForKey(csrPubKey, challengeBytes)
 	if err != nil {
 		attestation.WriteError(w, http.StatusBadRequest, types.ErrorCodeInvalidCSR, err.Error())
 		return
@@ -265,16 +265,16 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// or workload check cannot claim a sandbox ID it never got a cert for.
 	h.recordSandboxBinding(sandbox)
 
-	// The leaf's OID .1.1 RA-TLS extension is copied from the client's CSR
+	// The leaf's OID .1.1 armTLS extension is copied from the client's CSR
 	// (see issuer.SignCSR): the client embeds evidence bound to
 	// SHA-384(pubkey) with no nonce, which is the only form downstream
-	// ratls-mode verifiers (secret-inventory --peer-verify=ratls) can re-verify.
+	// armtls-mode verifiers (secret-inventory --peer-verify=armtls) can re-verify.
 	// The challenge-bound evidence verified above proves freshness at
 	// issuance but is NOT embeddable — its REPORTDATA includes the consumed
 	// challenge, so re-verification against the bare key would always fail.
 	// A named leaf gets the shorter named-leaf TTL: it can outlive its match
 	// by at most its remaining lifetime, and that bound is a documented part
-	// of the stamp's contract (docs/ratls.md, "Matched workload").
+	// of the stamp's contract (docs/armtls.md, "Matched workload").
 	//
 	// issuer.MaxNamedLeafTTL is a ceiling, not a default: NamedCertTTL can only
 	// shorten it. A configuration that raised it would silently extend how long
@@ -351,7 +351,7 @@ func serialHex(serial *big.Int) string {
 }
 
 // verifySandboxToken verifies an inventory-signed sandbox token and returns its
-// sandbox ID. The chain (docs/ratls.md, "Sandbox identity"): the envelope's
+// sandbox ID. The chain (docs/armtls.md, "Sandbox identity"): the envelope's
 // signing key is fetched from the inventory's own endpoint on a node address
 // the operator configured; that key must sign the token; the token's nonce must
 // be this request's challenge (freshness, single-use); and its key digest must
@@ -400,7 +400,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 	if err != nil {
 		return workloadclaims.VerifiedSandbox{}, err
 	}
-	if err := ratls.ValidateSandboxID(sandbox.SandboxID); err != nil {
+	if err := armtls.ValidateSandboxID(sandbox.SandboxID); err != nil {
 		return workloadclaims.VerifiedSandbox{}, err
 	}
 	return sandbox, nil
@@ -408,7 +408,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 
 // resolveSandboxWorkload asks the sandbox's own inventory what it is running
 // (exactly once), loads one atomic policy snapshot, and makes both attest-time
-// workload decisions from those two values (docs/ratls.md, "Sandbox identity"
+// workload decisions from those two values (docs/armtls.md, "Sandbox identity"
 // and "Matched workload"):
 //
 //  1. The membership gate: every image the inventory reports must be
@@ -436,7 +436,7 @@ func (h AttestHandler) verifySandboxToken(ctx context.Context, raw json.RawMessa
 // or allowlist store, a malformed digests view, or a non-allowlisted image is
 // fail-closed — CDS cannot establish what the pod runs, or has established
 // that it should not run, and it never stamps from stale cached state.
-func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (*ratls.MatchedWorkload, error) {
+func (h AttestHandler) resolveSandboxWorkload(ctx context.Context, sandbox workloadclaims.VerifiedSandbox) (*armtls.MatchedWorkload, error) {
 	if sandbox.SandboxID == "" {
 		return nil, nil
 	}
@@ -491,8 +491,8 @@ func (h AttestHandler) policySnapshot() (*PolicySnapshot, error) {
 // issuance: every failure returns nil (unnamed) with a bounded log line —
 // the diagnostics name the sandbox and attested inventory, never the full
 // inventory response.
-func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapshot, resp workloadclaims.SandboxDigestsResponse, membership map[string]struct{}, sandbox workloadclaims.VerifiedSandbox) *ratls.MatchedWorkload {
-	unnamed := func(level slog.Level, why string, args ...any) *ratls.MatchedWorkload {
+func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapshot, resp workloadclaims.SandboxDigestsResponse, membership map[string]struct{}, sandbox workloadclaims.VerifiedSandbox) *armtls.MatchedWorkload {
+	unnamed := func(level slog.Level, why string, args ...any) *armtls.MatchedWorkload {
 		args = append(args, "sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost)
 		slog.Log(ctx, level, "issuing unnamed: "+why, args...)
 		return nil
@@ -533,7 +533,7 @@ func (h AttestHandler) matchWorkload(ctx context.Context, snapshot *PolicySnapsh
 		// states, not faults.
 		return unnamed(slog.LevelInfo, "no unique workload match", "error", err)
 	}
-	matched := &ratls.MatchedWorkload{
+	matched := &armtls.MatchedWorkload{
 		Name:             name,
 		AllowlistVersion: snapshot.Version,
 		AllowlistDigest:  snapshot.Digest,

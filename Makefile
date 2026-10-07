@@ -1,4 +1,4 @@
-.PHONY: build install build-c8s build-c8s-node build-get-cert build-ratls-mesh \
+.PHONY: build install build-c8s build-c8s-node build-get-cert build-armtls-mesh \
        build-nri-image-policy \
        test test-integration test-integration-cluster test-node-guest-image-role test-node-guest-image-gpu-label test-node-guest-image-gpu-cc test-node-guest-image-scratch test-node-guest-image-psa-ready test-node-guest-image-role-systemd test-node-guest-image-cloud-init test-e2e-cw-label-policy test-e2e-mesh-cw-enforcement test-e2e-allowlist-enforcement test-e2e-components-ready test-e2e-cw-workload mutation-check mutation-full vet fmt lint clean \
        manifests generate check-crd-chart install-controller-gen require-controller-gen
@@ -37,7 +37,7 @@ build-c8s:
 		-o $(BUILD_DIR)/c8s ./cmd/c8s
 	@echo "Built $(BUILD_DIR)/c8s"
 
-# Slim variant for node-side images (nri-image-policy, ratls-mesh, get-cert):
+# Slim variant for node-side images (nri-image-policy, armtls-mesh, get-cert):
 # omits 'operator' and 'install' subcommands so the
 # binary doesn't pull controller-runtime or the embedded helm chart.
 build-c8s-node:
@@ -57,14 +57,14 @@ build-get-cert:
 		-o $(BUILD_DIR)/get-cert ./cmd/get-cert
 	@echo "Built $(BUILD_DIR)/get-cert"
 
-# --- RA-TLS Mesh ---
+# --- armTLS Mesh ---
 
-build-ratls-mesh:
+build-armtls-mesh:
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 		go build -ldflags="-s -w -X $(MODULE)/internal/version.Version=$(VERSION)" \
-		-o $(BUILD_DIR)/ratls-mesh ./cmd/ratls-mesh
-	@echo "Built $(BUILD_DIR)/ratls-mesh"
+		-o $(BUILD_DIR)/armtls-mesh ./cmd/armtls-mesh
+	@echo "Built $(BUILD_DIR)/armtls-mesh"
 
 # --- NRI Image Policy ---
 
@@ -163,8 +163,8 @@ test-e2e-cw-label-policy:
 # Live-cluster check that the workload path is mesh-wrapped and plaintext
 # bypasses to cw pods fail closed. Needs kubectl pointed at a cluster with
 # the C8s chart installed and a Running confidential workload. Not CI-wired:
-# snp-metal's guest kernel lacks ratls-mesh's netfilter matches (the lane
-# installs ratlsMesh.enabled=false).
+# snp-metal's guest kernel lacks armtls-mesh's netfilter matches (the lane
+# installs armtlsMesh.enabled=false).
 test-e2e-mesh-cw-enforcement:
 	./test/e2e/mesh-cw-enforcement.sh
 

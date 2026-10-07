@@ -24,7 +24,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // testMeasurement is a syntactically valid SHA-384 launch measurement. Its
@@ -72,10 +72,10 @@ func writePEM(t *testing.T, name string, ders ...[]byte) string {
 	return path
 }
 
-// ratlsServingCert mints the self-signed RA-TLS serving cert a direct CDS
+// armtlsServingCert mints the self-signed armTLS serving cert a direct CDS
 // presents, so the CLI reaches the write over the same attested path it uses in
 // production rather than over plaintext.
-func ratlsServingCert(t *testing.T) tls.Certificate {
+func armtlsServingCert(t *testing.T) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -88,8 +88,8 @@ func ratlsServingCert(t *testing.T) tls.Certificate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: embedded}
-	ext, err := ratls.MarshalExtension(att)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: embedded}
+	ext, err := armtls.MarshalExtension(att)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func ratlsServingCert(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
 }
 
-// newAttestedCDS serves the secrets API over RA-TLS, answering GET /ca with
+// newAttestedCDS serves the secrets API over armTLS, answering GET /ca with
 // caDER. Returns the fake and its https URL.
 func newAttestedCDS(t *testing.T, caDER []byte) (*fakeCDS, string) {
 	t.Helper()
@@ -136,7 +136,7 @@ func newAttestedCDSServingCA(t *testing.T, status int, body []byte) (*fakeCDS, s
 	})
 	mux.HandleFunc("/", f.serve)
 	srv := httptest.NewUnstartedServer(mux)
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{ratlsServingCert(t)}}
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{armtlsServingCert(t)}}
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return f, srv.URL

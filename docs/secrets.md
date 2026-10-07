@@ -10,7 +10,7 @@ and changeable without a restart. An entry without one releases nothing, so
 writing a grant is what turns release on.
 
 Serving the endpoint at all needs what sandbox identity already requires —
-`--ratls-platform`, `--measurements`, and node addresses to bound the inventory
+`--armtls-platform`, `--measurements`, and node addresses to bound the inventory
 callback (`--sandbox-inventory-cidr`, or the live node list it derives when that
 is unset). Miss any and CDS logs a warning naming the one it is missing, and
 does not serve `/secrets`.
@@ -283,8 +283,8 @@ it: a literal segment beats the wildcard in routing, so mounting it below
 ## What CDS checks
 
 1. The client certificate chains to the mesh CA — verified by crypto/tls, not
-   by the handler. The RA-TLS path is not accepted here: it would admit a
-   self-signed peer whose sandbox-ID extension is whatever it chose.
+   by the handler. Embedded-evidence verification of a self-signed certificate
+   is insufficient here: its sandbox-ID extension is peer-chosen.
 2. The sandbox ID comes from that verified leaf.
 3. The sandbox token verifies against the inventory **bound to that sandbox**,
    carries this request's challenge, and names the same sandbox as the leaf.

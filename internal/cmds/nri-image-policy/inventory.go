@@ -11,7 +11,7 @@ import (
 
 // admissionInventory implements workloadclaims.SandboxResolver for node-CVM:
 // which sandbox a calling process belongs to, and which image digests a named
-// sandbox is running (docs/ratls.md, "Sandbox identity"). It is fed from the
+// sandbox is running (docs/armtls.md, "Sandbox identity"). It is fed from the
 // same CreateContainer / Synchronize events that drive enforcement — and
 // pod-sandbox events for the sandbox set. Caller identity comes from the kernel
 // (SO_PEERCRED → cgroup → container), never from the request.

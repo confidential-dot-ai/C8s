@@ -157,7 +157,7 @@ spec:
             - --readiness-interval={{ .Values.cds.readinessInterval }}
             - --san-validation={{ .Values.cds.sanValidation }}
             {{- /* Always allow in-cluster Service SANs so the mesh's own
-                   get-cert/ratls-mesh CSRs validate; operators append public
+                   get-cert/armtls-mesh CSRs validate; operators append public
                    hostnames via cds.dnsSanPatterns without restating this. */}}
             - --dns-san-pattern={{ include "c8s.cdsDnsSanPattern" . }}
             {{- range .Values.cds.dnsSanPatterns }}
@@ -189,8 +189,8 @@ spec:
             - --rate-limiter-max-entries={{ .Values.cds.rateLimiterMaxEntries }}
             - --rate-limiter-evict-interval={{ .Values.cds.rateLimiterEvictInterval }}
             - --rate-limiter-idle-timeout={{ .Values.cds.rateLimiterIdleTimeout }}
-            - --ratls-platform={{ .Values.cds.ratlsPlatform }}
-            - --ratls-cert-ttl={{ .Values.cds.ratlsCertTTL }}
+            - --armtls-platform={{ .Values.cds.armtlsPlatform }}
+            - --armtls-cert-ttl={{ .Values.cds.armtlsCertTTL }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
           # IP so this pod-netns pod reaches the node-baked host attestation-api.

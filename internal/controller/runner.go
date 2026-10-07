@@ -44,7 +44,7 @@ type Options struct {
 
 	// GetCertImage is the c8s multi-mode binary image the admission webhook
 	// injects for get-cert bootstrap and renewal. Empty disables pod injection.
-	// Pod-to-pod mTLS is the node-level ratls-mesh DaemonSet's job, so no mesh
+	// Pod-to-pod mTLS is the node-level armtls-mesh DaemonSet's job, so no mesh
 	// sidecar is injected.
 	GetCertImage string
 
@@ -86,7 +86,7 @@ type Options struct {
 
 	// WorkloadClaimsHostDir, when set (node-CVM), is the nri-image-policy inventory
 	// socket directory: that plugin NRI-mounts it into c8s-cert and the webhook
-	// injects the get-cert workload-digest claim (docs/ratls.md). See webhook.Config.
+	// injects the get-cert workload-digest claim (docs/armtls.md). See webhook.Config.
 	WorkloadClaimsHostDir string
 }
 

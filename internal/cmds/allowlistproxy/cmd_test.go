@@ -152,7 +152,7 @@ func TestParseCDSURL(t *testing.T) {
 		wantErr string
 	}{
 		{raw: "https://c8s-cds.c8s-system.svc:8443"},
-		{raw: "http://c8s-cds:8443", wantErr: `--cds-url must use https (RA-TLS), got scheme "http"`},
+		{raw: "http://c8s-cds:8443", wantErr: `--cds-url must use https (armTLS), got scheme "http"`},
 		{raw: "https://c8s-cds:8443/base", wantErr: "--cds-url must be an origin without credentials, path, query, or fragment"},
 		{raw: "https://user@c8s-cds:8443", wantErr: "--cds-url must be an origin without credentials, path, query, or fragment"},
 		{raw: "not a URL", wantErr: `invalid --cds-url "not a URL"`},

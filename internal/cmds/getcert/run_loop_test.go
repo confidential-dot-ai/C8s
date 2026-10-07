@@ -182,7 +182,7 @@ func presentAsNginxMaster(t *testing.T, root string) {
 
 func TestCDSHTTPClientWarnsOnlyWithoutMeasurements(t *testing.T) {
 	base := config{CDSURL: "https://cds:8443", AttestationApiURL: "http://attestation-api:8400"}
-	const warnMsg = "--cds-measurements not set; get-cert accepts any RA-TLS-attested CDS measurement"
+	const warnMsg = "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement"
 
 	t.Run("unpinned warns", func(t *testing.T) {
 		c := captureDefaultLogger(t)

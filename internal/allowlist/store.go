@@ -149,7 +149,7 @@ func (s *Store) loadWorkloadsTx() (map[string]pkgallowlist.Workload, error) {
 
 // Contains reports whether digest is indexed as a workload container. It is
 // the coarse per-digest gate the /attest handler applies to every claimed
-// container image (docs/ratls.md).
+// container image (docs/armtls.md).
 func (s *Store) Contains(digest types.Digest) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

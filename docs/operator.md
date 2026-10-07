@@ -20,8 +20,8 @@ The operator tree is built around these pieces:
 - `internal/webhook` injects get-cert containers into opted-in pods so each
   workload can fetch and renew a leaf certificate through CDS.
 
-The operator does not inject the RA-TLS mesh sidecar. Pod-to-pod mTLS remains
-the responsibility of node-level `ratls-mesh`, deployed as a DaemonSet by
+The operator does not inject the armTLS mesh sidecar. Pod-to-pod mTLS remains
+the responsibility of node-level `armtls-mesh`, deployed as a DaemonSet by
 the chart or as systemd services by the measured node image. The chart-managed
 mesh excludes `kube-system` and its own release namespace as local traffic
 sources, so C8s control-plane agents (and, on kind/kubeadm-style clusters where
@@ -30,7 +30,7 @@ get captured by the pod-to-pod mesh path. The exclusion is one-sided: it
 removes those pods as PREROUTING sources but keeps their IPs in the destination
 ipset, so a workload that connects to a `kube-system` or release-namespace pod
 by pod IP — bypassing the Service VIP — will still be DNATed into the mesh and
-fail mTLS against a peer with no ratls sidecar. In-cluster Service-VIP traffic
+fail mTLS against a peer with no armtls sidecar. In-cluster Service-VIP traffic
 to those namespaces is unaffected because kube-proxy DNATs the VIP before the
 mesh chain matches.
 
@@ -38,12 +38,12 @@ Confidential-workload pods (label `confidential.ai/cw`) get a stricter
 inbound posture from the always-on cw guard: the mesh drops FORWARD-path
 traffic to their pod IPs, so Service-VIP dials and excluded-namespace sources
 are blocked instead of reaching the workload in plaintext.
-`ratlsMesh.cwInboundEnforcement.passthrough` (default `udp:53,tcp:53`) is the
+`armtlsMesh.cwInboundEnforcement.passthrough` (default `udp:53,tcp:53`) is the
 reply allowlist that keeps DNS working; an empty list is strict drop-all. It
 admits replies only on the stock ephemeral window (32768-60999), which costs a
 cw pod its DNS if the pod moves `net.ipv4.ip_local_port_range` *and* the
 dataplane breaks the reply's conntrack tuple — see the
-`RATLSMeshCWInboundDrops` alert description for the triage path.
+`ARMTLSMeshCWInboundDrops` alert description for the triage path.
 Only mesh-delivered traffic and node-local host processes
 (kubelet probes) reach cw pods.
 
@@ -85,7 +85,7 @@ The supported chart shape is chart-managed and CVM-only. The chart does not
 support a non-CVM install shape or a bring-your-own CDS endpoint shape.
 
 `c8s install` (including `--cvm-mode=bare-metal`) is for chart-managed clusters.
-The [measured node image](../node-guest-image/README.md) runs CDS, the RA-TLS
+The [measured node image](../node-guest-image/README.md) runs CDS, the armTLS
 mesh, router and operator as Kubernetes workloads rendered from this chart
 at **image build time**. Their pinned container images are baked into the
 image too. RKE2 applies the manifests at boot; no guest Helm installation is
@@ -233,10 +233,10 @@ policy from private staging and reaches CDS through the signed server
 address and NodePort. Join tokens and private keys never enter the public
 policy directory.
 
-Join tokens remain secret RKE2 enrollment credentials. The RA-TLS mesh protects
+Join tokens remain secret RKE2 enrollment credentials. The armTLS mesh protects
 selected pod traffic; it does not wrap the RKE2 supervisor on port `9345` or the
 Kubernetes API on port `6443`. A token holder with network access can attempt
-RKE2 enrollment without a C8s RA-TLS identity, including from a non-confidential
+RKE2 enrollment without a C8s armTLS identity, including from a non-confidential
 pod. The server token carries server-enrollment authority; the separate agent
 token only permits agent enrollment. Neither token supplies the launch signing
 key or satisfies the image-and-role-key attestation policy. See
@@ -271,7 +271,7 @@ authenticate that CA. See [RKE2 token formats](https://docs.rke2.io/security/tok
 
   On a cluster whose node network is separate from the pod network, pass
   `--node-cidr <range>` instead: CDS then uses the static range and the chart
-  grants no node access. (docs/ratls.md, "Sandbox identity".)
+  grants no node access. (docs/armtls.md, "Sandbox identity".)
 
 - `image.tag` or `image.digest`, `attestationApi.image.tag` or
   `attestationApi.image.digest`, and `cds.image.tag` or
@@ -334,14 +334,14 @@ trusted platform namespaces.
 ## Uninstall
 
 `c8s uninstall` reverses `c8s install`. It runs `helm uninstall` to remove the
-release (operator, CDS, attestation-api, ratls-mesh, router, the
+release (operator, CDS, attestation-api, armtls-mesh, router, the
 webhook configuration and admission policies). The
 `MutatingWebhookConfiguration` is release-tracked, so it is deleted with the
 release — a `failurePolicy: Fail` webhook cannot outlive the operator Service
 and block pod creation cluster-wide.
 
 It then **sweeps the host-side artifacts** that chart hooks cannot guarantee
-were removed: chart-installed NRI policy, ratls-mesh netfilter state, and the
+were removed: chart-installed NRI policy, armtls-mesh netfilter state, and the
 managed RKE2 containerd-prep template. Baked node-image components are preserved.
 The host paths are read from the release's computed values *before* deletion,
 so install-time `-f` overrides are honored. `--host-sweep=false` skips this cleanup.
@@ -352,8 +352,8 @@ The sweep removes:
   block), binary, config, and state directories. It skips these on the C8s
   node image, detected via the baked-only `nri-node-ip.service`: that stack is
   the image's to keep, not the release's to delete;
-- the `RATLS-MESH` chains and base-chain jumps in `iptables` and `ip6tables`,
-  and the `RATLS-MESH-*` ipsets. The mesh's own preStop deliberately keeps the
+- the `ARMTLS-MESH` chains and base-chain jumps in `iptables` and `ip6tables`,
+  and the `ARMTLS-MESH-*` ipsets. The mesh's own preStop deliberately keeps the
   fail-closed guard, so this state survives healthy uninstall. A stale
   `OUTPUT` redirect blackholes host-originated pod traffic for non-root users;
 - on RKE2, the sentinel-marked containerd template written by containerd-prep
@@ -427,8 +427,8 @@ render when the value doesn't look like PEM.
 
 CDS runs as a single replica with the in-memory mesh CA key, and **any
 restart is a full re-bootstrap event**: the replacement pod generates a
-fresh CA whose public key is not signed by anything ratls-mesh already
-trusts. `pkg/ratls/cdsclient`'s continuity check then refuses the new CA on
+fresh CA whose public key is not signed by anything armtls-mesh already
+trusts. `pkg/armtls/cdsclient`'s continuity check then refuses the new CA on
 the next `/ca` poll, CDS keeps signing leaves with the new key, no workload
 trusts them, and the mesh degrades as old leaves expire. Recovery is to
 restart every workload so its get-cert init container re-runs the CDS
@@ -438,7 +438,7 @@ The router discovery endpoints (`/.well-known/mesh-ca.pem`,
 `/.well-known/cds-cert.pem`, `/v1/discovery`) track the new CA without a
 router restart: the c8s-cert sidecar polls CDS's `/ca` every
 `router.certProvisioning.caWatchInterval` (default 1m) over the same
-RA-TLS-verified channel it obtains certificates on, and re-issues its leaf —
+armTLS-verified channel it obtains certificates on, and re-issues its leaf —
 rewriting the served CA bundle and discovery document — as soon as CDS holds
 a CA the served bundle is missing. External clients that pinned the old CA
 must still re-fetch it from the discovery endpoint.
@@ -530,7 +530,7 @@ caching. Certificate verification still runs for every report; revocation data
 is never served from this disk cache. Cache failures do not block a successful fetch.
 
 ```bash
-# CDS's RA-TLS endpoint answers unattested clients:
+# CDS's armTLS endpoint answers unattested clients:
 kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443 &
 
 c8s cds verify https://localhost:8443 --measurements <sha384-launch-digest>
@@ -634,7 +634,7 @@ belongs to is not proven). JSON renders these as
 
 Caveats the output surfaces:
 
-- **Freshness.** Verifying an RA-TLS serving cert binds REPORTDATA to the
+- **Freshness.** Verifying an armTLS serving cert binds REPORTDATA to the
   certificate key, not a per-request nonce, so it proves "this key was born in a
   TEE with this measurement" but not "freshly now" (`fresh: false`).
 
@@ -666,7 +666,7 @@ independent digest or register inputs such as `--measurements`,
 `--measurements-file`, or `--rtmrs` (including the `--cds-` variants where
 provided). These independent inputs remain available for policies expressed as
 a digest list and a shared register set. Mesh peers and CDS can use separate
-files; `--cds-image-policy-file` selects the CDS-only policy for `ratls-mesh`.
+files; `--cds-image-policy-file` selects the CDS-only policy for `armtls-mesh`.
 
 `c8s install` and `c8s render-values` accept image policies only when every
 image has identical RTMR pins and no `approver_key`. The Helm NRI installer
@@ -685,7 +685,7 @@ directly.
 `c8s get-kubeconfig` obtains an operator kubeconfig (or, with `--role
 log-reader`, a logs-only one) from a measured node CVM.
 Before any credential flows it enforces the node's **full measured identity**,
-both on the RA-TLS connection and on a fresh nonce-bound attestation report:
+both on the armTLS connection and on a fresh nonce-bound attestation report:
 
 - **platform** — the `--image-manifest` shape selects it (a TDX tuple or SNP
   `snp_variants`); a node of any other platform is refused up front;
@@ -965,7 +965,7 @@ is attest-pq-only.
 The chart publishes CDS's complete `/allowlist` API through router by default.
 It renders exact `/allowlist` and `/allowlist/` prefix locations backed by the
 release's chart-managed CDS Service, so lookalike paths such as `/allowlisted`
-are not exposed. The router-to-CDS hop verifies CDS's RA-TLS attestation using
+are not exposed. The router-to-CDS hop verifies CDS's armTLS attestation using
 `cds.measurements`; `c8s install --measurements` populates that pin in node-CVM
 mode. An empty pin still verifies that the peer is a TEE but accepts any launch
 measurement, which is unsafe outside development.
@@ -1009,7 +1009,7 @@ router or CDS.
 Use the router URL with `c8s allowlist --url` and pin router's launch digest
 with `--measurements` only when `router.publicTLS.mode` is `cds`. In the other
 modes the public certificate is not yet bound to the discovery attestation and
-the CLI refuses that front door. Use a direct CDS RA-TLS URL (or a CDS
+the CLI refuses that front door. Use a direct CDS armTLS URL (or a CDS
 port-forward) and pin the CDS launch digest instead.
 
 Set `router.allowlist.enabled=false` to remove this route. For compatibility,
@@ -1133,12 +1133,12 @@ it:
 | Policy | Selects | Accepts |
 |---|---|---|
 | `c8s-attestation-api` | attestation-api | nothing (it binds pod loopback) |
-| `c8s-cds-ingress` | cds | `cds.port` (RA-TLS; also the NodePort route) |
+| `c8s-cds-ingress` | cds | `cds.port` (armTLS; also the NodePort route) |
 | `c8s-operator-ingress` | operator | 9443 webhook, 8081 probes, 8080 metrics |
 | `c8s-volumed-ingress` | volumed | nothing (it serves a node-local Unix socket) |
 | `c8s-router-ingress` | router | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
 
-They are ingress-only. `ratls-mesh-tcp-only-egress` already selects every pod in
+They are ingress-only. `armtls-mesh-tcp-only-egress` already selects every pod in
 the namespace and allows all TCP, and NetworkPolicies union, so an egress rule
 on one component would be allowed by that policy regardless.
 
@@ -1208,7 +1208,7 @@ helm template c8s internal/helmchart/c8s \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
-  --set ratlsMesh.image.tag=main \
+  --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.enabled=false >/dev/null && echo OK
 ```
 
@@ -1224,7 +1224,7 @@ helm template c8s internal/helmchart/c8s \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
-  --set ratlsMesh.image.tag=main \
+  --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.image.tag=main \
   --set nriImagePolicy.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
   --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 >/dev/null && echo OK

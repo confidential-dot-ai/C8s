@@ -8,7 +8,7 @@ build/
 /get-cert
 /node-container-allowlist
 /nri-image-policy
-/ratls-mesh
+/armtls-mesh
 
 # Go workspace sum
 go.work.sum

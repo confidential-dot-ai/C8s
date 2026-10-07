@@ -47,15 +47,9 @@ jobs:
             [[ "$image" =~ ^(true|false)$ ]]
           fi
           echo "image=$image" >> "$GITHUB_OUTPUT"
-          # Core container images come from the PR's base commit on main:
-          # every main push publishes :<short-sha> (docker.yml), while PR
-          # runs only load images locally, so the PR's own SHA is never in
-          # GHCR. The gate therefore tests the PR's host binary and chart
-          # against the containers main currently ships.
-          ref="${BASE_SHA:-$GITHUB_SHA}"
-          ref="${ref::7}"
+          ref=$(git rev-parse HEAD)
           echo "c8s_ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "node-image relevant: $image (c8s binary from this checkout, operator at \`$ref\`)" >> "$GITHUB_STEP_SUMMARY"
+          echo "node-image relevant: $image (host binary and core containers from \`$ref\`)" >> "$GITHUB_STEP_SUMMARY"
 
       # PR code must never run with the production module-signing key. This
       # keypair is shared by both legs, used only in unpublished gate images,
@@ -83,8 +77,31 @@ jobs:
           # Full reruns replace it; failed-job reruns reuse the prior artifact.
           overwrite: true
 
-  build-a:
+  core-images:
     needs: changes
+    if: needs.changes.outputs.image == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - uses: ./.github/actions/setup-go-c8s
+      - run: make build-c8s
+      - uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+      - uses: oras-project/setup-oras@005458ad77f1c8facd38a094e4af2e69e5607ff4 # v2.0.2
+      - name: Build unpublished core images
+        run: bash .github/scripts/build-gate-images.sh gate-core-images.tar
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gate-core-images-${{ github.run_id }}
+          path: gate-core-images.tar
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  build-a:
+    needs: [changes, core-images]
     if: needs.changes.outputs.image == 'true'
     permissions:
       contents: read
@@ -95,9 +112,10 @@ jobs:
       leg: a
       c8s_ref: ${{ needs.changes.outputs.c8s_ref }}
       gate_signing_artifact: module-signing-${{ github.run_id }}
+      gate_images_artifact: gate-core-images-${{ github.run_id }}
 
   build-b:
-    needs: changes
+    needs: [changes, core-images]
     if: needs.changes.outputs.image == 'true'
     permissions:
       contents: read
@@ -108,6 +126,7 @@ jobs:
       leg: b
       c8s_ref: ${{ needs.changes.outputs.c8s_ref }}
       gate_signing_artifact: module-signing-${{ github.run_id }}
+      gate_images_artifact: gate-core-images-${{ github.run_id }}
 
   compare:
     # The required check: green fast when the node-image domain is not relevant (and on

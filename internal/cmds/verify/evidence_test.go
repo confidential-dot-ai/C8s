@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -40,15 +40,15 @@ func discoveryDocWith(t *testing.T, certPEM string, challenge []byte, evidence s
 }
 
 // attestedTLSServer starts an httptest TLS server whose serving certificate is
-// a (fake-report) RA-TLS attested cert, so cert-mode gathering succeeds.
+// a (fake-report) armTLS attested cert, so cert-mode gathering succeeds.
 func attestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-	der, err := ratls.CreateAttestedCert(key, att, nil)
+	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+	der, err := armtls.CreateAttestedCert(key, att, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,13 +59,13 @@ func attestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	return srv
 }
 
-func TestGatherFromRATLSCert(t *testing.T) {
+func TestGatherFromARMTLSCert(t *testing.T) {
 	t.Run("attested serving cert", func(t *testing.T) {
 		srv := attestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		addr := strings.TrimPrefix(srv.URL, "https://")
-		ev, err := gatherFromRATLSCert(context.Background(), addr, "", 5*time.Second, leafTrust{})
+		ev, err := gatherFromARMTLSCert(context.Background(), addr, "", 5*time.Second, leafTrust{})
 		if err != nil {
-			t.Fatalf("gatherFromRATLSCert: %v", err)
+			t.Fatalf("gatherFromARMTLSCert: %v", err)
 		}
 		if ev.platform != "snp" || ev.fresh {
 			t.Errorf("platform=%q fresh=%t, want snp / not fresh", ev.platform, ev.fresh)
@@ -78,10 +78,10 @@ func TestGatherFromRATLSCert(t *testing.T) {
 		}
 	})
 
-	t.Run("plain cert without RA-TLS extension", func(t *testing.T) {
+	t.Run("plain cert without armTLS extension", func(t *testing.T) {
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		defer srv.Close()
-		_, err := gatherFromRATLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
+		_, err := gatherFromARMTLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
 		if err == nil || isConnectError(err) {
 			t.Fatalf("non-attested cert must fail as a non-connect error, got %v", err)
 		}
@@ -91,7 +91,7 @@ func TestGatherFromRATLSCert(t *testing.T) {
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		addr := strings.TrimPrefix(srv.URL, "https://")
 		srv.Close()
-		_, err := gatherFromRATLSCert(context.Background(), addr, "", time.Second, leafTrust{})
+		_, err := gatherFromARMTLSCert(context.Background(), addr, "", time.Second, leafTrust{})
 		if err == nil || !isConnectError(err) {
 			t.Fatalf("expected connectError on refused dial, got %v", err)
 		}

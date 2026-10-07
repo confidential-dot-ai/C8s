@@ -4,7 +4,7 @@ How `c8s install` assembles the platform on confidential nodes. This overview
 connects the deeper docs:
 
 - [`operator.md`](operator.md) — the operator, webhook, and controllers.
-- [`ratls.md`](ratls.md) — certificate and attestation flows.
+- [`armtls.md`](armtls.md) — certificate and attestation flows.
 - [`allowlist-and-capabilities.md`](allowlist-and-capabilities.md) — image admission.
 
 The source of truth for the mode→helm-args mapping is `cmd/c8s/install.go`
@@ -59,7 +59,7 @@ Because it lives in the chart, this runs for both `c8s install` and GitOps
 | MWC `pod-injector` | Cluster resource, tracked by the release |
 | CDS (verify + mesh CA + leaf signing) | Ordinary pod inside the node CVM |
 | attestation API | Baked service in `bare-metal` mode; chart DaemonSet in `gke`/`aks` |
-| ratls-mesh | Node DaemonSet |
+| armtls-mesh | Node DaemonSet |
 | nri-image-policy | Node process launched by containerd; baked binary in `bare-metal` mode |
 | get-cert injection (`confidential.ai/cw` pods) | Webhook at admission time |
 | router | Ordinary pod inside the node CVM |
@@ -77,7 +77,7 @@ any other pod on it can reach.
 ```
  HOST (trusted in this mode)
  ┌─────────┐ ┌────────┐ ┌────────────┐ ┌───────────────────┐
- │operator │ │  CDS   │ │ratls-mesh  │ │attestation-service│
+ │operator │ │  CDS   │ │armtls-mesh  │ │attestation-service│
  │+webhook │ │ (runc) │ │nri-img-pol │ │   (host DaemonSet) │
  └─────────┘ └────────┘ └────────────┘ └───────────────────┘
 ```
@@ -168,7 +168,7 @@ trusted platform namespaces.
 
 CDS carries no `cw` annotation: a get-cert sidecar would dial CDS, and CDS
 dialing itself from its own init container is a bootstrap deadlock. It
-self-provisions its serving cert via RA-TLS.
+self-provisions its serving cert via armTLS.
 
 ---
 

@@ -147,7 +147,7 @@ ok "reports guard match" grep -q 'live guards match' "$WORK/stdout"
 ok "renders every reference copy server-side" [ "$(grep -c '^replace --dry-run=server -f ' "$WORK/log")" = "$guard_count" ]
 ok "fetches the live objects of every guard" [ "$(grep -c '^get -f ' "$WORK/log")" = "$guard_count" ]
 ok "waits on nothing but the guards and Felix's chain mode" not grep -Ev '^get (-f|felixconfigurations\.crd\.projectcalico\.org) ' <(grep '^get ' "$WORK/log")
-ok "reports Felix append mode" grep -q 'Felix appends behind ratls-mesh' "$WORK/stdout"
+ok "reports Felix append mode" grep -q 'Felix appends behind armtls-mesh' "$WORK/stdout"
 ok "cleans the probe binding" grep -q '^delete clusterrolebinding confos-psa-readiness-probe ' "$WORK/log"
 ok "cleans the probe role" grep -q '^delete clusterrole confos-psa-readiness-probe ' "$WORK/log"
 

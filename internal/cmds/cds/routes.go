@@ -55,7 +55,7 @@ func newRouter(deps dependencies) http.Handler {
 	r.Method(http.MethodPost, "/authenticate", deps.challengeProtected(attestation.HandleAuthenticate(deps.AttestHandler.Challenges)))
 	r.Method(http.MethodPost, "/attest", deps.protected(http.HandlerFunc(deps.AttestHandler.HandleAttest)))
 
-	// GET is unauthenticated (RA-TLS integrity only); every mutation goes
+	// GET is unauthenticated (armTLS integrity only); every mutation goes
 	// through allowlistWrite (operator-JWT auth in the handler + rate limit +
 	// 1 MiB body cap).
 	r.Get("/allowlist", deps.AllowlistHandler.HandleList)

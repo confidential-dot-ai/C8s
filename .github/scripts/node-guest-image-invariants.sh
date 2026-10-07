@@ -79,7 +79,7 @@ if [ -z "$rke2_pod_cidr" ] || [ "$rke2_pod_cidr" = "10.42.0.0/16" ]; then
   exit 1
 fi
 
-# ratls-mesh's cw inbound guard needs iptables-mode kube-proxy (Service DNAT
+# armtls-mesh's cw inbound guard needs iptables-mode kube-proxy (Service DNAT
 # before FORWARD) and its jumps at the head of FORWARD, ahead of Felix's.
 # Localhost NodePorts stay off: they set route_localnet=1, exposing
 # loopback listeners such as the attestation-api.
@@ -97,7 +97,7 @@ felix_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/canal-f
 if ! grep -qx 'kind: FelixConfiguration' "$felix_config" \
    || ! grep -qx '  name: default' "$felix_config" \
    || ! grep -qx '  chainInsertMode: Append' "$felix_config"; then
-  echo "::error::$felix_config must set Felix chainInsertMode: Append so ratls-mesh's jumps keep the chain head"
+  echo "::error::$felix_config must set Felix chainInsertMode: Append so armtls-mesh's jumps keep the chain head"
   exit 1
 fi
 
@@ -413,7 +413,7 @@ grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/syste
 for token in '"$C8S_TARGET" node-image render' '--image-digest "$OPERATOR_DIGEST"' \
              '--kube-version "${RKE2_VERSION%%+*}"' \
              'c8s-integration.yaml' '/usr/lib/c8s/allowlist-seed.json' \
-             '--cds-image-digest "$CDS_DIGEST"' '--ratls-mesh-image-digest "$MESH_DIGEST"' \
+             '--cds-image-digest "$CDS_DIGEST"' '--armtls-mesh-image-digest "$MESH_DIGEST"' \
              'c8s/airgap-images.sh' '"$out/images.txt"'; do
   if ! grep -qF -- "$token" "$sync"; then
     echo "::error::$sync must stage the measured node integration (missing: $token)"
@@ -486,7 +486,7 @@ for service in attest-proxy nri-node-ip cred-release volumed; do
     exit 1
   fi
 done
-for service in cds ratls-mesh ratls-mesh-iptables c8s-get-cert cds-attest allowlist-proxy c8s-nginx; do
+for service in cds armtls-mesh armtls-mesh-iptables c8s-get-cert cds-attest allowlist-proxy c8s-nginx; do
   if [ -e "$units/$service.service" ] || grep -qxF "enable $service.service" "$preset"; then
     echo "::error::$service must run from measured Kubernetes manifests, not a duplicate host unit"
     exit 1

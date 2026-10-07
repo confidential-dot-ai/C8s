@@ -17,7 +17,7 @@ import (
 
 	"github.com/google/go-sev-guest/verify/trust"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // envelopeFixture loads a real captured {platform, evidence} fixture (vendored
@@ -200,8 +200,8 @@ func TestCertEnvelope(t *testing.T) {
 	}
 
 	t.Run("attested cert yields envelope and key-bound anchor", func(t *testing.T) {
-		att := &ratls.Attestation{Family: ratls.TEETypeSEVSNP, Report: make([]byte, ratls.SNPReportSize)}
-		der, err := ratls.CreateAttestedCert(key, att, nil)
+		att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: make([]byte, armtls.SNPReportSize)}
+		der, err := armtls.CreateAttestedCert(key, att, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -219,7 +219,7 @@ func TestCertEnvelope(t *testing.T) {
 		if !bytes.Contains(evidence, []byte("attestation_report")) {
 			t.Errorf("evidence object missing the report: %s", evidence)
 		}
-		rd, err := ratls.ReportDataForKey(cert.PublicKey, nil)
+		rd, err := armtls.ReportDataForKey(cert.PublicKey, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -244,8 +244,8 @@ func TestCertEnvelope(t *testing.T) {
 	})
 
 	t.Run("raw TDX cert is rejected", func(t *testing.T) {
-		att := &ratls.Attestation{Family: ratls.TEETypeTDX, Report: []byte{1}}
-		der, err := ratls.CreateAttestedCert(key, att, nil)
+		att := &armtls.Attestation{Family: armtls.TEETypeTDX, Report: []byte{1}}
+		der, err := armtls.CreateAttestedCert(key, att, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

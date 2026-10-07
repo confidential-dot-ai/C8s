@@ -87,7 +87,7 @@ func TestNewSecretsStoreCarriesEachBound(t *testing.T) {
 // secretsReadyConfig can serve /secrets: sandbox identity is fully configured.
 func secretsReadyConfig() config {
 	return config{
-		ratlsPlatform:              "sev-snp",
+		armtlsPlatform:             "sev-snp",
 		measurements:               []string{strings.Repeat("ab", 48)},
 		inventoryCIDRs:             []string{"10.0.0.0/24"},
 		secretsMaxPaths:            16,
@@ -124,7 +124,7 @@ func TestSecretsDisabledWhenItCannotAnswer(t *testing.T) {
 		client *workloadclaims.DigestsClient
 		want   string
 	}{
-		{"no platform", func(*config) {}, nil, "--ratls-platform"},
+		{"no platform", func(*config) {}, nil, "--armtls-platform"},
 		{"no measurements", func(c *config) { c.measurements = nil }, &workloadclaims.DigestsClient{}, "--measurements"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

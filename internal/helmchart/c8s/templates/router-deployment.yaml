@@ -320,7 +320,7 @@ spec:
         {{- if $renderAllowlistProxy }}
         # nginx terminates the public, router-attested connection and forwards
         # /allowlist over pod loopback. This sidecar establishes the second
-        # trust hop: it verifies CDS's RA-TLS evidence before proxying.
+        # trust hop: it verifies CDS's armTLS evidence before proxying.
         - name: allowlist-proxy
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}

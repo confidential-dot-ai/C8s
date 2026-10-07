@@ -1,6 +1,6 @@
 // Package allowlistproxy implements the loopback proxy used by router to
 // publish CDS's allowlist API. The public TLS connection terminates at nginx;
-// this process establishes the second trust hop by verifying CDS's RA-TLS
+// this process establishes the second trust hop by verifying CDS's armTLS
 // serving certificate before forwarding the original request.
 package allowlistproxy
 
@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 const (
@@ -47,7 +47,7 @@ func NewCmd() *cobra.Command {
 	var cfg config
 	cmd := &cobra.Command{
 		Use:          "allowlist-proxy",
-		Short:        "Proxy router allowlist requests to an RA-TLS-verified CDS",
+		Short:        "Proxy router allowlist requests to an armTLS-verified CDS",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
@@ -57,7 +57,7 @@ func NewCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/RA-TLS)")
+	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
 	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated; ignored when CDS presents SNP evidence (empty pins no registers)")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
@@ -135,11 +135,11 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 		return nil, err
 	}
 	if len(policy.Measurements) == 0 && len(policy.Images) == 0 {
-		logger.Warn("no CDS measurements pinned; accepting any RA-TLS-attested CDS (unsafe outside development)")
+		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS (unsafe outside development)")
 	}
-	httpClient, err := ratls.NewVerifyingHTTPClient(ratls.Pins(policy), cfg.attestationAPIURL)
+	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL)
 	if err != nil {
-		return nil, fmt.Errorf("CDS RA-TLS client: %w", err)
+		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
 	proxy := newReverseProxy(target, httpClient.Transport, cfg.requestTimeout, logger)
 	return newRouter(proxy), nil
@@ -151,7 +151,7 @@ func parseCDSURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("invalid --cds-url %q", raw)
 	}
 	if target.Scheme != "https" {
-		return nil, fmt.Errorf("--cds-url must use https (RA-TLS), got scheme %q", target.Scheme)
+		return nil, fmt.Errorf("--cds-url must use https (armTLS), got scheme %q", target.Scheme)
 	}
 	if target.User != nil || (target.Path != "" && target.Path != "/") || target.RawQuery != "" || target.Fragment != "" {
 		return nil, fmt.Errorf("--cds-url must be an origin without credentials, path, query, or fragment")

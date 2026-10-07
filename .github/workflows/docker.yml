@@ -142,8 +142,8 @@ jobs:
               - '{cmd/cds/**,internal/cmds/cds/**}'
             get-cert:
               - '{cmd/get-cert/**,internal/cmds/getcert/**}'
-            ratls-mesh:
-              - '{cmd/ratls-mesh/**,internal/cmds/ratlsmesh/**}'
+            armtls-mesh:
+              - '{cmd/armtls-mesh/**,internal/cmds/armtlsmesh/**}'
             nri-image-policy:
               - '{cmd/nri-image-policy/**,internal/cmds/nri-image-policy/**}'
             volumed:
@@ -155,7 +155,7 @@ jobs:
           C8S: ${{ steps.filter.outputs.c8s }}
           CDS: ${{ steps.filter.outputs.cds }}
           GET_CERT: ${{ steps.filter.outputs['get-cert'] }}
-          RATLS_MESH: ${{ steps.filter.outputs['ratls-mesh'] }}
+          ARMTLS_MESH: ${{ steps.filter.outputs['armtls-mesh'] }}
           NRI_IMAGE_POLICY: ${{ steps.filter.outputs['nri-image-policy'] }}
           VOLUMED: ${{ steps.filter.outputs.volumed }}
         run: .github/scripts/docker-build-matrix.sh
@@ -250,7 +250,7 @@ jobs:
   # For each component image NOT in this run's build matrix, copy the
   # `:main` tag's manifest under `:<short-sha>`. Without this job, a push that
   # only touched one component (say cmd/c8s/**) leaves cds, get-cert,
-  # ratls-mesh, nri-image-policy with no `:<short-sha>` tag at all.
+  # armtls-mesh, nri-image-policy with no `:<short-sha>` tag at all.
   #
   # Source = `:main` always: the manifest just (or previously) published
   # for an unchanged component. `oras tag` only mutates the registry's tag

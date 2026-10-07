@@ -30,10 +30,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/readiness"
 	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -59,8 +59,8 @@ func run(cfg config) error {
 	pinned, err := cmdsutil.LoadImagePolicyValues(cmdsutil.ImagePolicyValuesConfig{
 		Source:       cmdsutil.ImagePolicySource{File: cfg.measurementsConfig},
 		Pins:         cmdsutil.MeasurementPins{Measurements: cfg.measurements, Registers: cfg.rtmrs},
-		Platform:     cfg.ratlsPlatform,
-		PlatformFlag: "--ratls-platform",
+		Platform:     cfg.armtlsPlatform,
+		PlatformFlag: "--armtls-platform",
 	})
 	if err != nil {
 		return err
@@ -75,8 +75,8 @@ func run(cfg config) error {
 		return err
 	}
 	// Empty stays empty: it selects the plain-HTTP path below.
-	if family, err := teetypes.ParseFamily(cfg.ratlsPlatform); err == nil {
-		cfg.ratlsPlatform = family.String()
+	if family, err := teetypes.ParseFamily(cfg.armtlsPlatform); err == nil {
+		cfg.armtlsPlatform = family.String()
 	}
 
 	challengeLimiter, err := issuer.NewIPRateLimiter(rate.Limit(cfg.rateLimit), cfg.rateBurst, cfg.rateLimiterMax)
@@ -153,7 +153,7 @@ func run(cfg config) error {
 	if served.Empty() {
 		served = refvalues.FromFlags(measurementBytes(measurements), rtmrPins)
 	}
-	served.Family = servedFamily(cfg.ratlsPlatform)
+	served.Family = servedFamily(cfg.armtlsPlatform)
 	measurementsDoc, err := refvalues.Render(served)
 	if err != nil {
 		return fmt.Errorf("render /measurements document: %w", err)
@@ -190,12 +190,12 @@ func run(cfg config) error {
 	}
 
 	// The sandbox-digests callback: at issuance CDS asks the inventory that
-	// admitted a pod what the pod is running (docs/ratls.md, "Sandbox
+	// admitted a pod what the pod is running (docs/armtls.md, "Sandbox
 	// identity"). Pins the same measurement allowlist as /attest, so the
-	// inventory answering is held to the standard its RA-TLS certificate already met.
+	// inventory answering is held to the standard its armTLS certificate already met.
 	//
-	// Needs an RA-TLS identity of its own, since inventories require a client
-	// certificate; without --ratls-platform there is none, and a request
+	// Needs an armTLS identity of its own, since inventories require a client
+	// certificate; without --armtls-platform there is none, and a request
 	// carrying a sandbox token is refused rather than issued unchecked. An
 	// empty --measurements does NOT disable the callback: it tracks the same
 	// posture /attest already takes above, so a dev cluster still issues
@@ -207,11 +207,11 @@ func run(cfg config) error {
 	}
 
 	var sandboxDigests *workloadclaims.DigestsClient
-	if cfg.ratlsPlatform == "" {
-		slog.Warn("no --ratls-platform: CDS cannot call inventories back for sandbox digests, so requests carrying a sandbox token will be refused")
+	if cfg.armtlsPlatform == "" {
+		slog.Warn("no --armtls-platform: CDS cannot call inventories back for sandbox digests, so requests carrying a sandbox token will be refused")
 	} else {
 		if len(measurements) == 0 {
-			slog.Warn("--measurements empty: CDS accepts ANY RA-TLS-attested inventory as the source of a sandbox's container digests, so the issuance-time allowlist gate rests on an unpinned peer. UNSAFE outside development.")
+			slog.Warn("--measurements empty: CDS accepts ANY armTLS-attested inventory as the source of a sandbox's container digests, so the issuance-time allowlist gate rests on an unpinned peer. UNSAFE outside development.")
 		}
 		measurementBytes, mErr := measurementDigests(measurements)
 		if mErr != nil {
@@ -219,10 +219,10 @@ func run(cfg config) error {
 		}
 		sandboxDigests, err = workloadclaims.NewDigestsClient(
 			ctx,
-			cfg.ratlsPlatform,
-			attestclient.MakeSNPRATLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL),
+			cfg.armtlsPlatform,
+			attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL),
 			cfg.attestationApiURL,
-			ratls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images},
+			armtls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images},
 			cfg.requestTimeout,
 		)
 		if err != nil {
@@ -323,24 +323,24 @@ func run(cfg config) error {
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
 
-	if cfg.ratlsPlatform != "" {
-		attestFunc := attestclient.MakeSNPRATLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
-		serverCfg := &ratls.ServerConfig{
-			Platform:   cfg.ratlsPlatform,
+	if cfg.armtlsPlatform != "" {
+		attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
+		serverCfg := &armtls.ServerConfig{
+			Platform:   cfg.armtlsPlatform,
 			AttestFunc: attestFunc,
-			CertTTL:    cfg.ratlsCertTTL,
+			CertTTL:    cfg.armtlsCertTTL,
 			Logger:     slog.Default(),
 		}
 		// /secrets reads a CDS-stamped field out of the caller's leaf, so the
 		// chain has to be verified by crypto/tls against the mesh CA: the
-		// RA-TLS path would admit a self-signed peer whose sandbox-ID extension
+		// armTLS path would admit a self-signed peer whose sandbox-ID extension
 		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
 		// reachable by a caller with no certificate.
 		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
 		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
-		tlsCfg, certMgr, err := ratls.NewServerTLSConfig(serverCfg)
+		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
 		if err != nil {
-			return fmt.Errorf("ratls server config: %w", err)
+			return fmt.Errorf("armtls server config: %w", err)
 		}
 		srv.TLSConfig = tlsCfg
 
@@ -348,19 +348,19 @@ func run(cfg config) error {
 		err = certMgr.WarmUp(warmupCtx)
 		cancel()
 		if err != nil {
-			return fmt.Errorf("warm up ratls serving cert: %w", err)
+			return fmt.Errorf("warm up armtls serving cert: %w", err)
 		}
 
 		go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
-		slog.Info("cds listening (RA-TLS)", "addr", addr, "platform", cfg.ratlsPlatform)
+		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
 		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 			return err
 		}
 		return nil
 	}
 
-	slog.Warn("RA-TLS disabled (--ratls-platform empty); serving plain HTTP. UNSAFE outside tests.")
+	slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
 	slog.Info("cds listening", "addr", addr)
@@ -385,7 +385,7 @@ func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {
 }
 
 // serverLogFilter routes net/http server error lines to slog. The kubelet's
-// tcpSocket probes (the only probe shape a mutual RA-TLS port supports) open
+// tcpSocket probes (the only probe shape a mutual armTLS port supports) open
 // the port and drop it every few seconds, which net/http reports as a TLS
 // handshake EOF or reset — demote exactly those to debug so real handshake
 // faults keep a visible log level.
@@ -453,7 +453,7 @@ func validateSecretsConfig(cfg config) error {
 func secretsEnabled(cfg config, sandboxDigests *workloadclaims.DigestsClient, inventoryHosts workloadclaims.InventoryHosts) (bool, string) {
 	switch {
 	case sandboxDigests == nil:
-		return false, "no --ratls-platform, so CDS has no attested channel to an inventory"
+		return false, "no --armtls-platform, so CDS has no attested channel to an inventory"
 	case inventoryHosts == nil || inventoryHosts.Empty():
 		return false, "the inventory callback has no node addresses to bound it"
 	case len(cfg.measurements) == 0:
@@ -545,7 +545,7 @@ func loadOperatorKeys(path string) ([]*ecdsa.PublicKey, []byte, error) {
 }
 
 // measurementDigests renders the /attest measurement allowlist as the raw
-// digests ratls.VerifyPolicy pins, so the sandbox-digests callback accepts
+// digests armtls.VerifyPolicy pins, so the sandbox-digests callback accepts
 // exactly the platforms /attest does.
 func measurementDigests(allowed map[string]bool) ([][]byte, error) {
 	out := make([][]byte, 0, len(allowed))

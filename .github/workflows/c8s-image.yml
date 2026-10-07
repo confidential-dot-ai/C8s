@@ -47,6 +47,11 @@ on:
         required: false
         type: string
         default: ""
+      gate_images_artifact:
+        description: "Artifact containing unpublished core OCI images for both gate legs."
+        required: false
+        type: string
+        default: ""
     secrets:
       MODULE_SIG_KEY_PEM:
         description: "Production module-signing key; omitted by repro-gate callers."
@@ -180,6 +185,12 @@ jobs:
           echo "::error::gate_signing_artifact requires gate=true"
           exit 1
 
+      - name: Require local core images exactly for gate builds
+        if: (inputs.gate == true) != (inputs.gate_images_artifact != '')
+        run: |
+          echo "::error::gate builds require gate_images_artifact; published builds must omit it"
+          exit 1
+
       # Layout: ./c8s ./attestation-rs ./confidential-os-builder (sibling repos).
       - name: Checkout c8s
         # head_sha, not the default (workflow_run's ref is main).
@@ -219,6 +230,19 @@ jobs:
           chmod 0600 gate-signing/module-signing.key
           install -m 0644 gate-signing/module-signing.crt \
             c8s/node-guest-image/module-signing.crt
+
+      - name: Download gate core images
+        if: inputs.gate == true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ inputs.gate_images_artifact }}
+          path: gate-core-images
+
+      - name: Unpack gate core images
+        if: inputs.gate == true
+        run: |
+          mkdir -p gate-core-images/layouts
+          tar -xf gate-core-images/gate-core-images.tar -C gate-core-images/layouts
 
       # The gate bakes the c8s binary built from the gated checkout, so a PR
       # that changes the baked binary or its `node-image render` command is
@@ -499,6 +523,7 @@ jobs:
           HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
           C8S_REF_INPUT: ${{ inputs.c8s_ref }}
           C8S_BINARY: ${{ inputs.gate == true && format('{0}/c8s/build/c8s', github.workspace) || '' }}
+          C8S_IMAGES_DIR: ${{ inputs.gate == true && format('{0}/gate-core-images/layouts', github.workspace) || '' }}
           # Private half of the module signing certificate (org secret) — the
           # fetch script signs the NVIDIA modules with it and fails closed
           # without it. Signatures are deterministic (sign-file uses no

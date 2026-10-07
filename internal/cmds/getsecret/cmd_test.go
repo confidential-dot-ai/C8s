@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // The webhook renders these flags, so a malformed --secret has to fail at parse
@@ -70,7 +70,7 @@ func TestFetchAllWithoutLeaf(t *testing.T) {
 	cfg := validConfig(t)
 	cfg.CertPath = filepath.Join(t.TempDir(), "absent.crt")
 	cfg.KeyPath = filepath.Join(t.TempDir(), "absent.key")
-	if _, err := fetchAll(context.Background(), cfg, ratls.Pins{}); err == nil {
+	if _, err := fetchAll(context.Background(), cfg, armtls.Pins{}); err == nil {
 		t.Fatal("a missing leaf was accepted")
 	}
 }

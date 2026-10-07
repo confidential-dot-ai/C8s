@@ -8,7 +8,7 @@ platform: "@PLATFORM@"
 plugin:
   health_addr: "unix:///var/run/nri-image-policy/health.sock"
 
-# The node-CVM admission inventory (c8s docs/ratls.md, "Sandbox identity").
+# The node-CVM admission inventory (c8s docs/armtls.md, "Sandbox identity").
 # get-cert dials this socket for its pod's digests before CDS will issue a
 # certificate. Authenticated launch staging preserves this baked inventory
 # configuration; without it the socket is never created and every adopted workload
@@ -222,7 +222,7 @@ policy:
   # (see docs/allowlist-and-capabilities.md, "Host privilege").
   #
   # AUDIT, not enforce, and this is the one thing to flip: C8s's own node-level
-  # components (volumed, ratls-mesh, the attestation-api proxy, router, the
+  # components (volumed, armtls-mesh, the attestation-api proxy, router, the
   # nri-image-policy installer) legitimately use hostPath and hostNetwork, and
   # they reach this plugin through the CDS-served document rather than through
   # the base above, so enforcing today would deny them. Resolve their digests

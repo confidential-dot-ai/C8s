@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // The Genoa fixture's HOST_DATA is 32 zero bytes.
@@ -283,11 +283,11 @@ func TestApplyInitDataNote(t *testing.T) {
 	}
 	ev := &evidence{platform: "snp", source: "test"}
 
-	pinned := finalOutcome(config{}, ev, result, &verifyPlan{policy: &ratls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	pinned := finalOutcome(config{}, ev, result, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if !strings.Contains(pinned.InitDataNote, "matches --init-data") {
 		t.Errorf("pinned note = %q", pinned.InitDataNote)
 	}
-	unpinned := finalOutcome(config{}, ev, result, &verifyPlan{policy: &ratls.VerifyPolicy{}})
+	unpinned := finalOutcome(config{}, ev, result, &verifyPlan{policy: &armtls.VerifyPolicy{}})
 	if !strings.Contains(unpinned.InitDataNote, "not pinned") {
 		t.Errorf("unpinned note = %q", unpinned.InitDataNote)
 	}
@@ -295,7 +295,7 @@ func TestApplyInitDataNote(t *testing.T) {
 	// A hard failure past newOutcome (here a pre-set oc.Error) carries no note,
 	// even with a matching pin — the leak the gate closes.
 	failed := Outcome{Platform: "snp", Error: "a later policy failed"}
-	applyInitDataNote(&failed, result, &verifyPlan{policy: &ratls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	applyInitDataNote(&failed, result, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if failed.InitData != "" || failed.InitDataNote != "" {
 		t.Errorf("a failed verdict must carry no init-data fields, got %q / %q", failed.InitData, failed.InitDataNote)
 	}
@@ -306,7 +306,7 @@ func TestApplyInitDataNote(t *testing.T) {
 		Claims:         teetypes.Claims{LaunchDigest: "ab" + strings.Repeat("00", 47), InitData: make([]byte, 32)},
 	}
 	azEv := &evidence{platform: "az-snp", source: "test"}
-	azPinned := finalOutcome(config{}, azEv, azResult, &verifyPlan{policy: &ratls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	azPinned := finalOutcome(config{}, azEv, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if azPinned.InitData != "" {
 		t.Errorf("az verdict must not render the inner HOST_DATA as init-data, got %q", azPinned.InitData)
 	}
@@ -322,12 +322,12 @@ func TestApplyInitDataNote(t *testing.T) {
 
 	// The az note leaks identically on a failed verdict without the gate.
 	azFailed := Outcome{Platform: "az-snp", Error: "a later policy failed"}
-	applyInitDataNote(&azFailed, azResult, &verifyPlan{policy: &ratls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
+	applyInitDataNote(&azFailed, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}, initDataHash: make([]byte, 32)})
 	if azFailed.InitDataNote != "" {
 		t.Errorf("a failed az verdict must carry no init-data note, got %q", azFailed.InitDataNote)
 	}
 
-	azUnpinned := finalOutcome(config{}, azEv, azResult, &verifyPlan{policy: &ratls.VerifyPolicy{}})
+	azUnpinned := finalOutcome(config{}, azEv, azResult, &verifyPlan{policy: &armtls.VerifyPolicy{}})
 	if azUnpinned.InitData != "" || azUnpinned.InitDataNote != "" {
 		t.Errorf("an unpinned az verdict renders no init-data line, got %q / %q", azUnpinned.InitData, azUnpinned.InitDataNote)
 	}

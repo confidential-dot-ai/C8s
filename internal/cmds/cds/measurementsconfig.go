@@ -9,8 +9,8 @@ import (
 
 // servedFamily names the platform the served document declares. The flat flags
 // carry no platform of their own, so it comes from the one CDS attests on.
-func servedFamily(ratlsPlatform string) teetypes.Family {
-	if fam, err := teetypes.ParseFamily(ratlsPlatform); err == nil {
+func servedFamily(armtlsPlatform string) teetypes.Family {
+	if fam, err := teetypes.ParseFamily(armtlsPlatform); err == nil {
 		return fam
 	}
 	return teetypes.FamilySNP

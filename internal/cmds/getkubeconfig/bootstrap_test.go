@@ -54,11 +54,11 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 		return result, nil
 	}
 	if platform == teetypes.PlatformSNP {
-		restore := verifySNPRATLS
-		verifySNPRATLS = func(_ context.Context, _ string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+		restore := verifySNPARMTLS
+		verifySNPARMTLS = func(_ context.Context, _ string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
 			return verify(evidence, params.VerifyParams)
 		}
-		t.Cleanup(func() { verifySNPRATLS = restore })
+		t.Cleanup(func() { verifySNPARMTLS = restore })
 	} else {
 		restore := verifyEnvelope
 		verifyEnvelope = func(envelope []byte, params teetypes.VerifyParams) (*teetypes.VerificationResult, error) {

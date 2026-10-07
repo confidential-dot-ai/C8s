@@ -19,7 +19,7 @@ func TestUploadDeploymentMode(t *testing.T) {
 		{name: "gke requires pod", flags: []string{"--cvm-mode=gke"}, wantErr: "[attestation-api]"},
 		{name: "aks requires pod", flags: []string{"--cvm-mode=aks"}, wantErr: "[attestation-api]"},
 		{name: "bare metal still requires cds", flags: []string{"--cvm-mode=bare-metal"}, missing: "cds", wantErr: "[cds]"},
-		{name: "bare metal still requires mesh", flags: []string{"--cvm-mode=bare-metal"}, missing: "ratls-mesh", wantErr: "[ratls-mesh]"},
+		{name: "bare metal still requires mesh", flags: []string{"--cvm-mode=bare-metal"}, missing: "armtls-mesh", wantErr: "[armtls-mesh]"},
 		{name: "bare metal still requires nri installer", flags: []string{"--cvm-mode=bare-metal"}, missing: "nri-image-policy", wantErr: "[nri-image-policy]"},
 		{name: "bare metal still requires router", flags: []string{"--cvm-mode=bare-metal"}, missing: "nginx", wantErr: "[nginx]"},
 		{name: "require can include host service", flags: []string{"--cvm-mode=bare-metal", "--require=attestation-api"}, wantErr: "[attestation-api]"},

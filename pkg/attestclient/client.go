@@ -16,7 +16,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -45,9 +45,9 @@ type Client struct {
 // Certificate is the PEM chain issued by CDS. Challenge, Platform, and
 // Evidence are the attestation material that authorized issuance.
 //
-// Authenticity of Certificate on the network path is provided by the RA-TLS
-// handshake the caller performed against CDS (see pkg/ratls.NewClientTLSConfig);
-// callers MUST construct this client over an RA-TLS-verified transport.
+// Authenticity of Certificate on the network path is provided by the armTLS
+// handshake the caller performed against CDS (see pkg/armtls.NewClientTLSConfig);
+// callers MUST construct this client over an armTLS-verified transport.
 type CertificateResult struct {
 	Certificate string
 	Challenge   string
@@ -138,10 +138,10 @@ func (c Client) ObtainCertificateWithEvidenceContext(ctx context.Context, attest
 // same nonce binds the evidence REPORTDATA and the sandbox token, so CDS checks
 // both against one single-use value. sandboxToken, when non-empty, is the
 // token JSON (workloadclaims.SignedSandboxToken) forwarded opaquely for CDS to
-// verify and stamp as the leaf's pod-sandbox-ID extension (ratls.OIDSandboxID).
+// verify and stamp as the leaf's pod-sandbox-ID extension (armtls.OIDSandboxID).
 //
 // The requester never reports its own container images: CDS resolves those
-// from the inventory named by the token (docs/ratls.md, "Sandbox identity").
+// from the inventory named by the token (docs/armtls.md, "Sandbox identity").
 func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attestationApiURL, csrPEM, challenge string, sandboxToken json.RawMessage) (CertificateResult, error) {
 	ctx = contextOrBackground(ctx)
 
@@ -232,7 +232,7 @@ func (c Client) AttestContext(ctx context.Context, req attestRequest) (string, e
 }
 
 // MeshCA fetches the mesh CA bundle CDS currently serves at /ca.
-// Authenticity comes from the RA-TLS transport the client was constructed
+// Authenticity comes from the armTLS transport the client was constructed
 // over, the same channel that authenticates the CA trailing an issued chain.
 func (c Client) MeshCA(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/ca", nil)
@@ -305,7 +305,7 @@ func reportDataForCSR(csrPEM string, challenge []byte) ([]byte, error) {
 	if err := csr.CheckSignature(); err != nil {
 		return nil, fmt.Errorf("CSR signature invalid: %w", err)
 	}
-	reportData, err := ratls.ReportDataForKey(csr.PublicKey, challenge)
+	reportData, err := armtls.ReportDataForKey(csr.PublicKey, challenge)
 	if err != nil {
 		return nil, err
 	}

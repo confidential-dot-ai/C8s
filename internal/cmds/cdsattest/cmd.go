@@ -74,7 +74,7 @@ func NewCmd() *cobra.Command {
 	f.DurationVar(&cfg.sessionTTL, "session-ttl", 5*time.Minute, "established-session idle TTL")
 	f.DurationVar(&cfg.sessionMaxAge, "session-max-age", defaultSessionMaxAge, "absolute session lifetime: a session's keys retire this long after establishment, however busy it is")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", 5*time.Second, "HTTP read-header timeout")
-	f.StringVar(&cfg.upstream, "upstream", "", "backend base URL to forward decrypted traffic to (http:// rides the raTLS mesh; https:// does mTLS). Empty uses an echo backend (demo).")
+	f.StringVar(&cfg.upstream, "upstream", "", "backend base URL to forward decrypted traffic to (http:// rides the armTLS mesh; https:// does mTLS). Empty uses an echo backend (demo).")
 	f.StringVar(&cfg.upstreamCAFile, "upstream-ca", "", "PEM CA bundle to verify an https upstream (the mesh CA)")
 	f.StringVar(&cfg.upstreamCertFile, "upstream-cert", "", "client cert presented to an https upstream (the CDS-issued LB cert)")
 	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")

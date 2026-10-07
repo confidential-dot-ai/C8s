@@ -28,7 +28,7 @@ func NewCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "cred-release",
 		Short: "Release a kube operator credential to the attested holder of the launch-bound key",
-		Long: "cred-release serves an RA-TLS endpoint that issues a short-lived\n" +
+		Long: "cred-release serves an armTLS endpoint that issues a short-lived\n" +
 			"kube client certificate to a caller who proves possession of the\n" +
 			"operator key whose public half was bound into the launch identity\n" +
 			"(TDX: RTMR[3]; SNP: HOSTDATA) at launch.\n" +
@@ -50,8 +50,8 @@ func NewCmd() *cobra.Command {
 		},
 	}
 	f := cmd.Flags()
-	f.StringVar(&cfg.ListenAddr, "listen", ":8443", "HTTPS (RA-TLS) bind address")
-	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", "http://127.0.0.1:8400", "local attestation-api base URL (RA-TLS serving quote; on SNP also the HOSTDATA self-verify)")
+	f.StringVar(&cfg.ListenAddr, "listen", ":8443", "HTTPS (armTLS) bind address")
+	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", "http://127.0.0.1:8400", "local attestation-api base URL (armTLS serving quote; on SNP also the HOSTDATA self-verify)")
 	f.StringVar(&cfg.Platform, "platform", "", "TEE platform: tdx or snp (required)")
 	f.StringVar(&cfg.ClientCACert, "client-ca-cert", defaultClientCACert, "cluster client-CA cert that signs kube client certs (kubeadm: /etc/kubernetes/pki/ca.crt)")
 	f.StringVar(&cfg.ClientCAKey, "client-ca-key", defaultClientCAKey, "cluster client-CA key (kubeadm: /etc/kubernetes/pki/ca.key)")

@@ -162,12 +162,12 @@ if [ "$baked_node" = "0" ]; then
   esac
 fi
 
-# RATLS-MESH netfilter state. The mesh's preStop removes only the traffic
+# ARMTLS-MESH netfilter state. The mesh's preStop removes only the traffic
 #    interception (--keep-guard keeps the fail-closed filter chains and their
 #    ipsets by design), and a mesh pod that never ran preStop leaves
 #    everything — including the OUTPUT redirect that sends host-originated
 #    pod traffic to a dead proxy port. Names are the mesh's fixed contract
-#    (internal/cmds/ratlsmesh/iptables.go; pinned by a Go test). Both address
+#    (internal/cmds/armtlsmesh/iptables.go; pinned by a Go test). Both address
 #    families; jumps before chains, chains before ipsets (a referenced object
 #    cannot be deleted). Prefers the nft frontend the mesh always wrote.
 # shellcheck disable=SC2016
@@ -182,17 +182,17 @@ for b in ip6tables-nft ip6tables; do
   if command -v "$b" >/dev/null 2>&1; then ipt6="$b"; break; fi
 done
 if [ -z "$ipt4" ] && [ -z "$ipt6" ]; then
-  echo "ERROR: no iptables/ip6tables on this host — cannot sweep RATLS-MESH netfilter state" >&2
+  echo "ERROR: no iptables/ip6tables on this host — cannot sweep ARMTLS-MESH netfilter state" >&2
   exit 1
 fi
 
 clean_family() {
   B="$1"
-  while "$B" -t nat -D OUTPUT -j RATLS-MESH 2>/dev/null; do :; done
-  while "$B" -t nat -D PREROUTING -j RATLS-MESH-PREROUTING 2>/dev/null; do :; done
-  while "$B" -t filter -D FORWARD -j RATLS-MESH-CW 2>/dev/null; do :; done
-  while "$B" -t filter -D FORWARD -j RATLS-MESH-CW-EGRESS 2>/dev/null; do :; done
-  for spec in nat:RATLS-MESH nat:RATLS-MESH-PREROUTING filter:RATLS-MESH-CW filter:RATLS-MESH-CW-EGRESS
+  while "$B" -t nat -D OUTPUT -j ARMTLS-MESH 2>/dev/null; do :; done
+  while "$B" -t nat -D PREROUTING -j ARMTLS-MESH-PREROUTING 2>/dev/null; do :; done
+  while "$B" -t filter -D FORWARD -j ARMTLS-MESH-CW 2>/dev/null; do :; done
+  while "$B" -t filter -D FORWARD -j ARMTLS-MESH-CW-EGRESS 2>/dev/null; do :; done
+  for spec in nat:ARMTLS-MESH nat:ARMTLS-MESH-PREROUTING filter:ARMTLS-MESH-CW filter:ARMTLS-MESH-CW-EGRESS
   do
     t=${spec%%:*}
     c=${spec#*:}
@@ -209,20 +209,20 @@ clean_family() {
 [ -z "$ipt6" ] || clean_family "$ipt6"
 
 if command -v ipset >/dev/null 2>&1; then
-  for s in RATLS-MESH-PODS RATLS-MESH-PODS6 RATLS-MESH-LOCAL-PODS RATLS-MESH-LOCAL-PODS6 RATLS-MESH-CW-PODS RATLS-MESH-CW-PODS6
+  for s in ARMTLS-MESH-PODS ARMTLS-MESH-PODS6 ARMTLS-MESH-LOCAL-PODS ARMTLS-MESH-LOCAL-PODS6 ARMTLS-MESH-CW-PODS ARMTLS-MESH-CW-PODS6
   do
     for n in "$s" "$s-TMP"; do
       ipset destroy "$n" 2>/dev/null && echo "ipset removed: $n" || true
     done
   done
 else
-  echo "warning: no ipset on this host — any RATLS-MESH-* ipsets are left in place" >&2
+  echo "warning: no ipset on this host — any ARMTLS-MESH-* ipsets are left in place" >&2
 fi
 exit 0
 '
 
 if ! nsenter -t 1 -m -u -i -n -p -- sh -c "$mesh_cleanup_script"; then
-  echo "ERROR: RATLS-MESH netfilter sweep failed — stale chains redirect host-originated pod traffic to a dead port" >&2
+  echo "ERROR: ARMTLS-MESH netfilter sweep failed — stale chains redirect host-originated pod traffic to a dead port" >&2
   sweep_failed=1
 fi
 

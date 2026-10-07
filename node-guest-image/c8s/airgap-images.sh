@@ -3,10 +3,15 @@
 # original manifest/index bytes makes the pod image pin and NRI digest agree.
 set -euo pipefail
 
-[[ $# == 3 ]] || { echo "usage: airgap-images.sh IMAGES_FILE CACHE_DIR OUTPUT_DIR" >&2; exit 2; }
+[[ $# -ge 3 && $# -le 5 ]] || { echo "usage: airgap-images.sh IMAGES_FILE CACHE_DIR OUTPUT_DIR [LOCAL_IMAGES_DIR [C8S_REGISTRY]]" >&2; exit 2; }
 images_file=$1
 cache_dir=$2
 output_dir=$3
+local_images_dir=${4:-}
+c8s_registry=${5:-ghcr.io/confidential-dot-ai}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=node-guest-image/c8s/image-source.sh
+source "$SCRIPT_DIR/image-source.sh"
 mkdir -p "$cache_dir" "$output_dir"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -20,7 +25,8 @@ while IFS= read -r ref || [[ -n "$ref" ]]; do
     layout="$cache_dir/oci-${digest#sha256:}"
     # Copy the complete index, including every referenced manifest. Selecting
     # a platform here would replace the original index with a child digest.
-    oras cp --to-oci-layout "$ref" "$layout:measured"
+    select_image_source "$ref" "$local_images_dir" "$c8s_registry"
+    oras cp "${IMAGE_COPY_ARGS[@]}" --to-oci-layout "$IMAGE_SOURCE_REF" "$layout:measured"
     jq -e --arg digest "$digest" \
         '[.manifests[] | select(.digest == $digest and .annotations["org.opencontainers.image.ref.name"] == "measured")] | length == 1' \
         "$layout/index.json" >/dev/null

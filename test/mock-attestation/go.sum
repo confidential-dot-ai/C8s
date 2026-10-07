@@ -1,5 +1,5 @@
-github.com/confidential-dot-ai/attestation-go v0.7.2 h1:T+dEc8nMSBP/2rXtvoKHRqf/haGzcBs6T2KAlPgI1fg=
-github.com/confidential-dot-ai/attestation-go v0.7.2/go.mod h1:Gq3OlB5c1PxtRnfkG/CORHus9V2g1wUphcV43E2JDEA=
+github.com/confidential-dot-ai/attestation-go v0.8.0 h1:TWGdpIF9ALCwf/ZXgA0H8dd2VHulu/Z+sR1MViUy0ks=
+github.com/confidential-dot-ai/attestation-go v0.8.0/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
 github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/google/go-cmp v0.7.0 h1:wk8382ETsv4JYUZwIsn6YpYiWiBsYLSJiTsyBybVuN8=

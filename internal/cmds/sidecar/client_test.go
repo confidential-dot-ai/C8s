@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // writeLeaf stages a certificate and key where the cert sidecar would leave
@@ -74,7 +74,7 @@ func TestNewClientReturnsLeafKey(t *testing.T) {
 	cfg := testConfig("https://cds.example")
 	cfg.CertPath, cfg.KeyPath = certPath, keyPath
 
-	client, pub, err := NewClient(cfg, ratls.Pins{})
+	client, pub, err := NewClient(cfg, armtls.Pins{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestNewClientWithoutLeaf(t *testing.T) {
 				write(t, cfg.CertPath, []byte("not a pem"))
 				write(t, cfg.KeyPath, []byte("not a pem"))
 			}
-			if _, _, err := NewClient(cfg, ratls.Pins{}); err == nil {
+			if _, _, err := NewClient(cfg, armtls.Pins{}); err == nil {
 				t.Fatal("a missing leaf was accepted")
 			}
 		})

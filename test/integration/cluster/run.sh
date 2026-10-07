@@ -7,7 +7,7 @@
 # CLI, CRDs, the admission webhook and ValidatingAdmissionPolicies live in a
 # real API server, the NRI image-admission plugin registered against a real
 # containerd, workload-certificate issuance with sandbox-identity claims, the
-# operator-signed allowlist loop into admission decisions, the RA-TLS mesh
+# operator-signed allowlist loop into admission decisions, the armTLS mesh
 # wrapping traffic, workload adoption, and uninstall.
 #
 # The TEE is replaced at exactly one point: evidence generation. A
@@ -66,7 +66,7 @@ GOOS=linux GOARCH="$DOCKER_ARCH" make build-c8s >/dev/null
 docker build -q -f cmd/c8s/Dockerfile               -t "ghcr.io/confidential-dot-ai/c8s-operator:$IMAGE_TAG"     . >/dev/null
 docker build -q -f cmd/cds/Dockerfile               -t "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG"              . >/dev/null
 docker build -q -f cmd/nri-image-policy/Dockerfile  -t "ghcr.io/confidential-dot-ai/nri-image-policy:$IMAGE_TAG" . >/dev/null
-docker build -q -f cmd/ratls-mesh/Dockerfile        -t "ghcr.io/confidential-dot-ai/ratls-mesh:$IMAGE_TAG"       . >/dev/null
+docker build -q -f cmd/armtls-mesh/Dockerfile        -t "ghcr.io/confidential-dot-ai/armtls-mesh:$IMAGE_TAG"       . >/dev/null
 docker build -q -f test/mock-attestation/Dockerfile -t "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" . >/dev/null
 
 log "Building the c8s binary"
@@ -87,7 +87,7 @@ NODE_IP="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="I
 
 log "Loading images into the cluster"
 # One at a time: the podman provider crosses images loaded in a single call.
-for img in c8s-operator cds nri-image-policy ratls-mesh mock-attestation; do
+for img in c8s-operator cds nri-image-policy armtls-mesh mock-attestation; do
     kind load docker-image "ghcr.io/confidential-dot-ai/$img:$IMAGE_TAG" --name "$CLUSTER" >/dev/null
 done
 
@@ -196,7 +196,7 @@ helm template c8s internal/helmchart/c8s -n "$NS" \
     --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
     --set router.enabled=false \
     --set volumed.enabled=false \
-    --set ratlsMesh.enabled=false \
+    --set armtlsMesh.enabled=false \
     -f "$WORKDIR/values.yaml" > "$WORKDIR/nri-render.yaml" \
     || fail "could not render the NRI installer chart documents"
 python3 - "$WORKDIR/nri-render.yaml" "$WORKDIR/values.yaml" "$WORKDIR/nri-installer.yaml" <<'PYEOF'
@@ -277,8 +277,8 @@ for deploy in c8s-operator c8s-cds c8s-router; do
     kubectl -n "$NS" wait --for=condition=Available "deploy/$deploy" --timeout=180s \
         || fail "$deploy not Available"
 done
-kubectl -n "$NS" rollout status ds/c8s-ratls-mesh --timeout=240s || fail "ratls-mesh not ready"
-pass "operator, CDS, router and ratls-mesh all Ready after c8s install"
+kubectl -n "$NS" rollout status ds/c8s-armtls-mesh --timeout=240s || fail "armtls-mesh not ready"
+pass "operator, CDS, router and armtls-mesh all Ready after c8s install"
 
 kubectl get crd confidentialworkloads.confidential.ai >/dev/null || fail "ConfidentialWorkload CRD missing"
 kubectl get mutatingwebhookconfiguration c8s-pod-injector >/dev/null || fail "pod-injector webhook config missing"
@@ -443,8 +443,8 @@ POD_IP="$(kubectl -n demo get pod "$POD" -o jsonpath='{.status.podIP}')"
 pod_fixture client it-mesh-client default sleep 1200 | kubectl apply -f - >/dev/null
 kubectl wait --for=condition=Ready pod/it-mesh-client --timeout=120s || fail "mesh client pod not Ready"
 CLIENT_IP="$(kubectl get pod it-mesh-client -o jsonpath='{.status.podIP}')"
-await_ipset RATLS-MESH-LOCAL-PODS "$CLIENT_IP"
-await_ipset RATLS-MESH-CW-PODS "$POD_IP"
+await_ipset ARMTLS-MESH-LOCAL-PODS "$CLIENT_IP"
+await_ipset ARMTLS-MESH-CW-PODS "$POD_IP"
 
 # The egress guard drops every non-TCP packet a cw pod sends, carving out
 # UDP/53 to the cluster resolver. The carve-out sits in a chain downstream of
@@ -468,7 +468,7 @@ if kubectl -n demo exec "$POD" -c app -- timeout 8 nslookup example.com 192.0.2.
 fi
 pass "cw pod cannot reach an unnamed resolver on UDP/53"
 
-inbound='^ratls_mesh_connections_total.*direction="inbound"'
+inbound='^armtls_mesh_connections_total.*direction="inbound"'
 base_inbound="$(mesh_metric "$inbound")"
 code="$(kubectl exec it-mesh-client -- curl -sS -o /dev/null -w '%{http_code}' --max-time 10 "http://$POD_IP:8080/" || true)"
 [ "$code" = "200" ] || fail "pod-IP request to the cw workload failed (got $code); the mesh-wrapped path must work"
@@ -502,7 +502,7 @@ done
 # guard DROPs (curl rc 28); kube-proxy-first -> the DNAT'd packet matches the
 # mesh's pod-IP interception and the hop is WRAPPED (rc 0, inbound counter
 # moves). The insecure outcome is plaintext, which no counter move proves.
-drops='^ratls_mesh_iptables_cw_inbound_drops_total'
+drops='^armtls_mesh_iptables_cw_inbound_drops_total'
 base_drops="$(mesh_metric "$drops")"
 base_inbound_vip="$(mesh_metric "$inbound")"
 out="$(kubectl exec it-mesh-client -- sh -c "curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://$VIP:80/; echo rc=\$?" || true)"

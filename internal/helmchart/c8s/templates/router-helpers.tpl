@@ -183,7 +183,7 @@ as /allowlisted never reach the loopback proxy. proxy_pass includes $request_uri
 explicitly: operator authorization signs the HTTP method, exact path, and body,
 so nginx must not normalize or replace the path before CDS verifies the token.
 
-The loopback proxy verifies CDS's RA-TLS evidence. Stock nginx cannot verify
+The loopback proxy verifies CDS's armTLS evidence. Stock nginx cannot verify
 the attestation extension itself, so it must never dial CDS directly here.
 
 Args: root, exact (bool), path, proxyPort, writeBurst, writeTotalBurst,

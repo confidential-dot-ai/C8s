@@ -17,10 +17,10 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		"--set", "nriImagePolicy.enabled=false",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "image.digest=sha256:"+strings.Repeat("1", 64),
-		"--set", "ratlsMesh.image.digest=sha256:"+strings.Repeat("2", 64),
+		"--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64),
 		"--set", "image.pullPolicy=Never",
 		"--set", "cds.image.pullPolicy=Never",
-		"--set", "ratlsMesh.image.pullPolicy=Never",
+		"--set", "armtlsMesh.image.pullPolicy=Never",
 		"--set", "router.nginx.image.pullPolicy=Never",
 		"--set", "router.attest.enabled=true",
 	)
@@ -28,11 +28,11 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	wantPolicies := map[string]string{
-		"c8s-cds/cds":                "peers.json",
-		"c8s-operator/operator":      "cds.json",
-		"c8s-router/c8s-cert":        "cds.json",
-		"c8s-router/allowlist-proxy": "cds.json",
-		"c8s-ratls-mesh/ratls-mesh":  "peers.json",
+		"c8s-cds/cds":                 "peers.json",
+		"c8s-operator/operator":       "cds.json",
+		"c8s-router/c8s-cert":         "cds.json",
+		"c8s-router/allowlist-proxy":  "cds.json",
+		"c8s-armtls-mesh/armtls-mesh": "peers.json",
 	}
 	workloads := renderedPodSpecs(t, out)
 	if len(workloads) != 4 {
@@ -76,7 +76,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 				delete(wantPolicies, name)
 			}
 		}
-		if workload.name == "c8s-router" || workload.name == "c8s-ratls-mesh" {
+		if workload.name == "c8s-router" || workload.name == "c8s-armtls-mesh" {
 			if workload.spec.SecurityContext == nil || !slices.Contains(workload.spec.SecurityContext.SupplementalGroups, int64(65532)) {
 				t.Errorf("%s cannot connect to the host attestation socket", workload.name)
 			}
@@ -86,13 +86,13 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		t.Errorf("missing policy consumers: %v", wantPolicies)
 	}
 
-	mesh := renderedDaemonSet(t, out, "c8s-ratls-mesh")
-	meshContainer, ok := findContainer(mesh.Spec.Template.Spec.Containers, "ratls-mesh")
+	mesh := renderedDaemonSet(t, out, "c8s-armtls-mesh")
+	meshContainer, ok := findContainer(mesh.Spec.Template.Spec.Containers, "armtls-mesh")
 	if !ok {
 		t.Fatal("mesh container missing")
 	}
-	assertContainerHasArg(t, "ratls-mesh", meshContainer.Args, "--cds-image-policy-file=/run/c8s-node/cds.json")
-	if mesh.Spec.Template.Spec.ServiceAccountName != "c8s-ratls-mesh" || strings.Contains(out, "name: system:nodes") {
+	assertContainerHasArg(t, "armtls-mesh", meshContainer.Args, "--cds-image-policy-file=/run/c8s-node/cds.json")
+	if mesh.Spec.Template.Spec.ServiceAccountName != "c8s-armtls-mesh" || strings.Contains(out, "name: system:nodes") {
 		t.Error("mesh must use its ServiceAccount instead of node credentials")
 	}
 

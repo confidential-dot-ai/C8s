@@ -1,9 +1,9 @@
 // Package routerdiscovery consumes the router front-door discovery contract
 // (types.DiscoveryDocument, served at /v1/discovery, written by get-cert).
-// The front door's serving cert carries no RA-TLS extension; its trust path is
+// The front door's serving cert carries no armTLS extension; its trust path is
 // the discovery document instead: attestation evidence captured at issuance,
 // with REPORTDATA binding the serving-cert key + issuance challenge
-// (ratls.ReportDataForKey).
+// (armtls.ReportDataForKey).
 //
 // Serving certs are per replica (each router pod provisions its own leaf into
 // a pod-local emptyDir), so evidence fetched on one connection says nothing
@@ -39,8 +39,8 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -52,8 +52,8 @@ const maxDocumentBytes = 1 << 20
 
 // ErrNoDiscovery reports that the target serves no discovery document
 // (unreachable, or a non-200 on the discovery path). Callers use it to fall
-// back to direct RA-TLS serving-cert verification
-// (localverify.NewRATLSHTTPClient). A document that is present but malformed
+// back to direct armTLS serving-cert verification
+// (localverify.NewARMTLSHTTPClient). A document that is present but malformed
 // or failing verification is NOT this error — those fail closed.
 var ErrNoDiscovery = errors.New("routerdiscovery: target serves no discovery document")
 
@@ -70,7 +70,7 @@ var ErrNoDiscovery = errors.New("routerdiscovery: target serves no discovery doc
 // verify is localverify.Verify in production, a stub in tests.
 //
 // Returns [ErrNoDiscovery] when base serves no discovery document, so callers
-// can fall back to direct RA-TLS verification for a non-fronted endpoint.
+// can fall back to direct armTLS verification for a non-fronted endpoint.
 //
 // The issuance challenge is fixed, not a per-request nonce, so freshness is
 // not proven — the same trade-off as `c8s verify` discovery mode.
@@ -176,7 +176,7 @@ func fetchDocument(ctx context.Context, client *http.Client, base *url.URL) ([]b
 // verifyDocument parses a discovery document, verifies its attestation
 // evidence, and returns the attested serving certificate. REPORTDATA =
 // SHA-384(cert pubkey ‖ challenge), matching get-cert's issuance binding
-// (reportDataForCSR → ratls.ReportDataForKey), passed as the unpadded 48-byte
+// (reportDataForCSR → armtls.ReportDataForKey), passed as the unpadded 48-byte
 // anchor.
 func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyFunc, measurements [][]byte) (*x509.Certificate, error) {
 	var d types.DiscoveryDocument
@@ -198,7 +198,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 		return nil, fmt.Errorf("unknown public_tls.mode %q in discovery document", d.PublicTLS.Mode)
 	}
 
-	cert, erd, err := ratls.AttestedCertFromDiscovery(&d)
+	cert, erd, err := armtls.AttestedCertFromDiscovery(&d)
 	if err != nil {
 		return nil, err
 	}
@@ -241,7 +241,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 // the attestation verified one handshake, and a new handshake could reach a
 // different router replica whose leaf that evidence does not cover. A lost
 // connection — server keepalive close, idle eviction, cert rotation — fails
-// closed with a re-run hint. Timeout knobs mirror ratls.NewVerifyingHTTPClient.
+// closed with a re-run hint. Timeout knobs mirror armtls.NewVerifyingHTTPClient.
 // dialFrontDoor + this guard are a sibling of the verify CLI's dialFrontDoor +
 // singleConnClient (internal/cmds/verify/discovery.go) — port fixes both ways.
 func newSingleConnClient(conn *tls.Conn) *http.Client {

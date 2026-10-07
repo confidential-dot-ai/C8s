@@ -28,9 +28,9 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 )
 
 // Exit codes. These are a stable contract for CI: a wrong measurement (2) is
@@ -92,7 +92,7 @@ type Defaults struct {
 	Short string
 	// Kind preselects the component (cds|lb|workload|auto).
 	Kind string
-	// Mode preselects the evidence mode (auto|ratls-cert|discovery|attest-pq).
+	// Mode preselects the evidence mode (auto|armtls-cert|discovery|attest-pq).
 	Mode string
 	// DefaultPort is the port assumed when the target omits one (0 = by kind).
 	DefaultPort int
@@ -164,9 +164,9 @@ outbound HTTPS to kdsintf.amd.com (no container runtime required).
 
 Evidence sources:
   https://host:port      GET the discovery endpoint (/v1/discovery — cert +
-                         evidence with the VCEK inline), or, in --mode ratls-cert,
-                         dial the RA-TLS serving cert (bare report; the VCEK is
-                         fetched from AMD KDS). Default mode: cds → ratls-cert,
+                         evidence with the VCEK inline), or, in --mode armtls-cert,
+                         dial the armTLS serving cert (bare report; the VCEK is
+                         fetched from AMD KDS). Default mode: cds → armtls-cert,
                          lb → discovery, auto → discovery then serving cert.
   --from-file FILE       verify a saved PEM cert or attestation-response JSON.
 
@@ -194,7 +194,7 @@ responder chose).`,
 	f := cmd.Flags()
 	f.StringVar(&cfg.url, "url", "", "target URL or host:port (alternative to the positional argument)")
 	f.StringVar(&cfg.kind, "kind", orDefault(d.Kind, "auto"), "component being verified: cds, lb, workload, or auto")
-	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, ratls-cert, discovery, or attest-pq")
+	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, armtls-cert, discovery, or attest-pq")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", defaultDiscoveryPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
@@ -208,8 +208,8 @@ responder chose).`,
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys; verification fails unless the key set the attested target serves at /operator-keys matches it (kind=cds targets)")
-	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
-	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
+	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
+	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
@@ -240,9 +240,9 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 	// No mode alias: the retired "attestation-endpoint" name (and anything
 	// else unknown) is a usage error, not a silent fall-through to auto.
 	switch cfg.mode {
-	case "", "auto", "ratls-cert", "discovery", "attest-pq":
+	case "", "auto", "armtls-cert", "discovery", "attest-pq":
 	default:
-		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, ratls-cert, discovery, attest-pq)\n", cfg.mode)
+		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, armtls-cert, discovery, attest-pq)\n", cfg.mode)
 		return exitUsage
 	}
 
@@ -264,7 +264,7 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 
 	// Verify in-process with attestation-go — the Go port of the engine the
 	// cluster runs. It auto-detects the platform and AMD product (incl. Siena)
-	// and fetches the VCEK from AMD KDS itself, so a bare RA-TLS report, a
+	// and fetches the VCEK from AMD KDS itself, so a bare armTLS report, a
 	// discovery doc, and an endpoint response all verify through one path.
 	var overrideERD []byte
 	if cfg.expectedRDHex != "" {
@@ -349,7 +349,7 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorK
 // verifyEvidence verifies already-gathered evidence (from any source/mode)
 // in-process with attestation-go (the Go port of the attestation-rs engine the
 // cluster runs), which auto-detects the product and fetches the VCEK from KDS
-// when it is not shipped inline — so a bare RA-TLS report and a discovery doc
+// when it is not shipped inline — so a bare armTLS report and a discovery doc
 // both work — then renders the verdict. The verification attempt (including the
 // KDS fetch) is bounded by --timeout; an unobtainable-collateral failure is
 // exit 3, not a verification verdict.
@@ -486,7 +486,7 @@ func applyInitDataNote(oc *Outcome, result *teetypes.VerificationResult, plan *v
 // mean an MRTD from one build and RTMR[1]/[2] from another, defeating the
 // whole point of loading the tuple atomically.
 type verifyPlan struct {
-	policy *ratls.VerifyPolicy
+	policy *armtls.VerifyPolicy
 	pins   rtmrPins
 	// meshCA is the parsed --mesh-ca bundle, nil when the flag is unset.
 	meshCA *x509.CertPool
@@ -576,7 +576,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	}
 
 	if cfg.sandboxID != "" {
-		if err := ratls.ValidateSandboxID(cfg.sandboxID); err != nil {
+		if err := armtls.ValidateSandboxID(cfg.sandboxID); err != nil {
 			return nil, fmt.Errorf("--sandbox-id: %w", err)
 		}
 		if cfg.meshCA == "" {
@@ -612,7 +612,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		// RTMRs is still set: it is what enforces the pin if this policy is
 		// ever verified through the delegated attestation-api path. It is not
 		// what enforces it today — see rtmrPins.manual.
-		policy: &ratls.VerifyPolicy{Policy: remote.Policy{
+		policy: &armtls.VerifyPolicy{Policy: remote.Policy{
 			Images:       refValues.Images,
 			Measurements: measurements,
 			Registers:    pins.manual,
@@ -657,7 +657,7 @@ type rtmrPins struct {
 	image runtimemeasure.ImageIdentity
 	rtmr3 []byte
 	// manual holds --rtmr <index>=<hex>. It is enforced here, next to the
-	// other two, rather than left to ratls.VerifyPolicy.Policy.RTMRs: that field is
+	// other two, rather than left to armtls.VerifyPolicy.Policy.RTMRs: that field is
 	// read only by attestation-go/remote, on the delegated attestation-api
 	// path, and `c8s verify` always verifies in process (verifyInProcess ->
 	// localverify.Verify, whose Params carries no registers). Setting the
@@ -907,8 +907,8 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 	}
 
 	switch resolveMode(cfg) {
-	case "ratls-cert":
-		return gatherFromRATLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
+	case "armtls-cert":
+		return gatherFromARMTLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
 	case "discovery":
 		return gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
 	case "attest-pq":
@@ -917,7 +917,7 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		// serving cert. Don't fall back on a security error — surface it.
 		ev, err := gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
 		if err != nil && !isSecurityError(err) {
-			return gatherFromRATLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
+			return gatherFromARMTLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
 		}
 		return ev, err
 	}
@@ -932,9 +932,9 @@ func resolveMode(cfg config) string {
 	case "lb":
 		return "discovery"
 	case "cds", "workload":
-		return "ratls-cert"
+		return "armtls-cert"
 	default: // auto (or unknown kind): let gatherEvidence try the LB discovery
-		// doc, then the RA-TLS serving cert, so a bare target with no --kind is
+		// doc, then the armTLS serving cert, so a bare target with no --kind is
 		// detected either way. Returning a concrete mode here would defeat that.
 		return "auto"
 	}
@@ -1037,7 +1037,7 @@ type Outcome struct {
 	// CertBody says what authenticates the leaf certificate's body fields
 	// (subject/serial/validity): the leaf's own attested key when
 	// self-signed, a verified issuing chain, possession of the attested key
-	// proven by a live TLS handshake (the RA-TLS dial, or the discovery
+	// proven by a live TLS handshake (the armTLS dial, or the discovery
 	// gather's front-door probe), or — on attest-pq — the identity
 	// transcript the hardware evidence binds (whose chain anchor is
 	// responder-chosen; see ChainAnchor). A leaf with none of these is not
@@ -1075,7 +1075,7 @@ type Outcome struct {
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
 // --operator-keys. It only ever demotes Verified — nothing here can rescue a
-// failed hardware verification (docs/ratls.md).
+// failed hardware verification (docs/armtls.md).
 func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
 	fail := func(format string, args ...any) {
 		oc.Verified = false
@@ -1128,7 +1128,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 		// One implementation of the pin, shared with the mesh's CA path — and
 		// reached only after the chain check above, which is what authenticates
 		// the ID.
-		if err := ratls.CheckSandboxPin(ev.leaf, cfg.sandboxID); err != nil {
+		if err := armtls.CheckSandboxPin(ev.leaf, cfg.sandboxID); err != nil {
 			fail("%v", err)
 		} else if oc.SandboxIDNote != "" {
 			oc.SandboxIDNote += ", and the ID matches --sandbox-id"

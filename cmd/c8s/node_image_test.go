@@ -46,7 +46,7 @@ func TestNodeImageRender(t *testing.T) {
 				"render", "--hardware-platform", platform, "--kube-version", "v1.34.5",
 				"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 				"--cds-image-digest", nodeImageTestCDSDigest, "--cds-image-repository", "registry.example.com/cds",
-				"--ratls-mesh-image-digest", nodeImageTestMeshDigest, "--ratls-mesh-image-repository", "registry.example.com/ratls-mesh",
+				"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
 				"--output-dir", out,
 			}
 			if platform == "sev-snp" {
@@ -64,14 +64,14 @@ func TestNodeImageRender(t *testing.T) {
 			docs := nodeImageDocuments(t, raw)
 			for _, key := range []string{
 				"Namespace/c8s-system", "CustomResourceDefinition/confidentialworkloads.confidential.ai",
-				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-ratls-mesh",
+				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh",
 				"ConfigMap/c8s-router-nginx", "ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingAdmissionPolicy/c8s-cw-label-integrity", "ValidatingAdmissionPolicyBinding/c8s-cw-label-integrity",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
-				"ValidatingAdmissionPolicy/deny-ratls-mesh-uid", "ValidatingAdmissionPolicyBinding/deny-ratls-mesh-uid",
-				"ValidatingAdmissionPolicy/deny-ratls-mesh-uid-ephemeral", "ValidatingAdmissionPolicyBinding/deny-ratls-mesh-uid-ephemeral",
-				"NetworkPolicy/ratls-mesh-tcp-only-egress", "NetworkPolicy/c8s-operator-ingress",
+				"ValidatingAdmissionPolicy/deny-armtls-mesh-uid", "ValidatingAdmissionPolicyBinding/deny-armtls-mesh-uid",
+				"ValidatingAdmissionPolicy/deny-armtls-mesh-uid-ephemeral", "ValidatingAdmissionPolicyBinding/deny-armtls-mesh-uid-ephemeral",
+				"NetworkPolicy/armtls-mesh-tcp-only-egress", "NetworkPolicy/c8s-operator-ingress",
 			} {
 				if docs[key] == nil {
 					t.Errorf("missing %s", key)
@@ -132,7 +132,7 @@ func TestNodeImageRender(t *testing.T) {
 			for _, image := range []string{
 				"registry.example.com/c8s-operator@" + testDigest,
 				"registry.example.com/cds@" + nodeImageTestCDSDigest,
-				"registry.example.com/ratls-mesh@" + nodeImageTestMeshDigest,
+				"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
 			} {
 				if !slices.Contains(images, image) {
 					t.Errorf("inventory missing overridden image %s", image)
@@ -141,7 +141,7 @@ func TestNodeImageRender(t *testing.T) {
 			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
-			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-ratls-mesh"} {
+			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
 					t.Fatal(err)
@@ -257,10 +257,10 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		{"invalid Kubernetes version", func(c *nodeImageRenderConfig) { c.kubeVersion = "latest" }},
 		{"missing digest", func(c *nodeImageRenderConfig) { c.imageDigest = "" }},
 		{"missing CDS digest", func(c *nodeImageRenderConfig) { c.cdsImageDigest = "" }},
-		{"missing mesh digest", func(c *nodeImageRenderConfig) { c.ratlsMeshImageDigest = "" }},
+		{"missing mesh digest", func(c *nodeImageRenderConfig) { c.armtlsMeshImageDigest = "" }},
 		{"invalid router digest", func(c *nodeImageRenderConfig) { c.routerImageDigest = "latest" }},
 		{"tagged CDS repository", func(c *nodeImageRenderConfig) { c.cdsImageRepository = "example.com/cds:main" }},
-		{"invalid mesh repository", func(c *nodeImageRenderConfig) { c.ratlsMeshImageRepository = "invalid repo" }},
+		{"invalid mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "invalid repo" }},
 		{"digested router repository", func(c *nodeImageRenderConfig) { c.routerImageRepository = "example.com/nginx@" + testDigest }},
 		{"tag as digest", func(c *nodeImageRenderConfig) { c.imageDigest = "main" }},
 		{"tagged repository", func(c *nodeImageRenderConfig) { c.imageRepository += ":main" }},
@@ -269,7 +269,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeBin(t)
 			f.tool(t, "helm", "exit 99")
-			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, cdsImageDigest: nodeImageTestCDSDigest, ratlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
+			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, cdsImageDigest: nodeImageTestCDSDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
 			tc.change(&cfg)
 			if err := renderNodeImage(context.Background(), cfg); err == nil {
 				t.Fatal("accepted invalid build inputs")
@@ -282,7 +282,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 }
 
 func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
-	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: ratls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
+	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: armtls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
 		if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
 			t.Errorf("accepted incomplete or unexpected render %q", input)
 		}
@@ -331,7 +331,7 @@ spec:
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: c8s-ratls-mesh
+  name: c8s-armtls-mesh
 spec:
   template:
     spec:

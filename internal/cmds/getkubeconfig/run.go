@@ -60,7 +60,7 @@ type Config struct {
 // Run executes the client flow: attest + RTMR[3] gate, then CSR -> cred-release
 // -> kubeconfig.
 func Run(ctx context.Context, cfg Config) error {
-	// Signed requests must always pass through the RA-TLS verifier. An HTTP
+	// Signed requests must always pass through the armTLS verifier. An HTTP
 	// URL would bypass TLS entirely, even with VerifyConnection installed.
 	releaseURL, err := url.Parse(cfg.ReleaseBaseURL)
 	if err != nil || releaseURL.Scheme != "https" || releaseURL.Host == "" || releaseURL.User != nil || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
@@ -87,7 +87,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// 1. Verify the channel and a fresh nonce-bound report before releasing
 	// credentials. The certificate quote binds the TLS key, but may predate
 	// later workload extends; it cannot replace the fresh report.
-	httpClient := newRATLSClient(cfg, exp)
+	httpClient := newARMTLSClient(cfg, exp)
 	defer httpClient.CloseIdleConnections()
 	if cfg.AttestURL != "" {
 		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
@@ -113,8 +113,8 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// 3. Exchange the CSR for a signed cert over cred-release. The :8443 dial
-	//    is RA-TLS-verified in-process by the operator's own verifier
-	//    (newRATLSClient): the serving cert's embedded quote must bind to the
+	//    is armTLS-verified in-process by the operator's own verifier
+	//    (newARMTLSClient): the serving cert's embedded quote must bind to the
 	//    cert key AND satisfy the same full measured-identity policy as the
 	//    attest gate, so the host can't MITM the channel.
 	var resp *credrelease.ReleaseResponse

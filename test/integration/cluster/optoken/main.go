@@ -1,6 +1,6 @@
 // optoken mints the operator Authorization header for a CDS write, using the
 // production signer (pkg/operatorauth). The cluster harness needs it because
-// the `c8s allowlist` CLI verifies CDS's RA-TLS evidence in-process, which
+// the `c8s allowlist` CLI verifies CDS's armTLS evidence in-process, which
 // the mock attestation-api's synthetic evidence cannot pass; CDS's own
 // server-side token verification is unaffected and fully exercised.
 package main

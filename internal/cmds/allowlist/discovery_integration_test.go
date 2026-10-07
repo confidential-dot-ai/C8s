@@ -27,12 +27,12 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // routerServer stands in for the router front door: a TLS server whose serving
-// cert carries NO RA-TLS extension, serving its discovery document plus the
+// cert carries NO armTLS extension, serving its discovery document plus the
 // CDS allowlist read handler it proxies.
 func routerServer(t *testing.T, measurementChallenge []byte) *httptest.Server {
 	t.Helper()
@@ -124,12 +124,12 @@ func runCmdWith(verify localverify.VerifyFunc, args ...string) (string, string, 
 }
 
 // TestListThroughRouter is the regression test for `c8s allowlist list` against
-// a router front door: the serving cert has no RA-TLS extension (OID
+// a router front door: the serving cert has no armTLS extension (OID
 // 1.3.6.1.4.1.66378.1.1), so the CLI must verify the LB's discovery document
 // instead of failing the handshake, then read the allowlist over the pinned
 // cert.
 func TestListThroughRouter(t *testing.T) {
-	measurement := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
 	lb := routerServer(t, []byte("issuance-challenge"))
 
 	out, errOut, err := runCmdWith(approvingVerify(measurement), "list",
@@ -147,8 +147,8 @@ func TestListThroughRouter(t *testing.T) {
 // TestListThroughRouterFailsClosed proves a front door whose discovery evidence
 // does not verify is rejected outright — no fallback, no allowlist read.
 func TestListThroughRouterFailsClosed(t *testing.T) {
-	pinned := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
-	reported := bytes.Repeat([]byte{0x01}, ratls.SNPMeasurementSize)
+	pinned := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	reported := bytes.Repeat([]byte{0x01}, armtls.SNPMeasurementSize)
 	lb := routerServer(t, []byte("issuance-challenge"))
 
 	_, _, err := runCmdWith(approvingVerify(reported), "list",
@@ -163,21 +163,21 @@ func TestListThroughRouterFailsClosed(t *testing.T) {
 	}
 }
 
-// ratlsCDSServer stands in for a port-forwarded CDS: a TLS server whose
-// serving cert DOES carry the RA-TLS extension (an embedded az-snp envelope),
+// armtlsCDSServer stands in for a port-forwarded CDS: a TLS server whose
+// serving cert DOES carry the armTLS extension (an embedded az-snp envelope),
 // serving the allowlist read handler and no discovery document.
-func ratlsCDSServer(t *testing.T) *httptest.Server {
+func armtlsCDSServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	key, _, err := ratls.GenerateKeyPair()
+	key, _, err := armtls.GenerateKeyPair()
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &ratls.Attestation{
-		Family: ratls.TEETypeSEVSNP,
+	att := &armtls.Attestation{
+		Family: armtls.TEETypeSEVSNP,
 		Report: []byte(`{"platform":"az-snp","evidence":{"hcl_report":"fake"}}`),
 	}
-	der, err := ratls.CreateAttestedCert(key, att, nil)
+	der, err := armtls.CreateAttestedCert(key, att, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,13 +192,13 @@ func ratlsCDSServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// TestListDirectRATLS drives the non-fronted path end to end: no discovery
-// document (ErrNoDiscovery fallback), so the CLI verifies the RA-TLS serving
+// TestListDirectARMTLS drives the non-fronted path end to end: no discovery
+// document (ErrNoDiscovery fallback), so the CLI verifies the armTLS serving
 // cert in-process — the verifier must receive the embedded envelope and the
 // cert-key anchor — then reads the allowlist over the verified handshake.
-func TestListDirectRATLS(t *testing.T) {
-	measurement := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
-	cds := ratlsCDSServer(t)
+func TestListDirectARMTLS(t *testing.T) {
+	measurement := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	cds := armtlsCDSServer(t)
 
 	var sawVerify bool
 	verify := func(ctx context.Context, platform string, evidence json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
@@ -217,7 +217,7 @@ func TestListDirectRATLS(t *testing.T) {
 		"--measurements", hex.EncodeToString(measurement),
 	)
 	if err != nil {
-		t.Fatalf("list against a direct RA-TLS CDS failed: %v (stderr: %s)", err, errOut)
+		t.Fatalf("list against a direct armTLS CDS failed: %v (stderr: %s)", err, errOut)
 	}
 	if !sawVerify {
 		t.Fatal("evidence verifier was not called")
@@ -227,12 +227,12 @@ func TestListDirectRATLS(t *testing.T) {
 	}
 }
 
-// TestListDirectRATLSFailsClosed proves a serving cert whose evidence the
+// TestListDirectARMTLSFailsClosed proves a serving cert whose evidence the
 // verifier rejects never serves a read: the handshake itself fails.
-func TestListDirectRATLSFailsClosed(t *testing.T) {
-	pinned := bytes.Repeat([]byte{0x42}, ratls.SNPMeasurementSize)
-	reported := bytes.Repeat([]byte{0x01}, ratls.SNPMeasurementSize)
-	cds := ratlsCDSServer(t)
+func TestListDirectARMTLSFailsClosed(t *testing.T) {
+	pinned := bytes.Repeat([]byte{0x42}, armtls.SNPMeasurementSize)
+	reported := bytes.Repeat([]byte{0x01}, armtls.SNPMeasurementSize)
+	cds := armtlsCDSServer(t)
 
 	_, _, err := runCmdWith(approvingVerify(reported), "list",
 		"--url", cds.URL,
