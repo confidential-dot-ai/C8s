@@ -27,6 +27,8 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -108,6 +110,9 @@ const (
 // derive the same target from the pod spec alone.
 const MeshProbePrefix = "/probe/"
 
+// MeshProbeTimeout bounds each forwarded probe and its health-port response.
+const MeshProbeTimeout = 5 * time.Second
+
 // MeshProbesEnv is where the injector names a member pod's rewritten probes to
 // its endpoint: MeshProbePath values separated by commas. Not an argument and
 // not a mount, both of which a node's measured policy pins alike for every
@@ -137,6 +142,14 @@ func MeshProbePath(port int32, path string) string {
 	return fmt.Sprintf("%s%d%s", MeshProbePrefix, port, path)
 }
 
+var renderableProbePath = regexp.MustCompile(`^(/[A-Za-z0-9\-._~]*)+$`)
+
+// ForwardableMeshProbePath accepts clean, absolute paths of unreserved characters.
+func ForwardableMeshProbePath(probePath string) bool {
+	cleaned := path.Clean(probePath)
+	return (cleaned == probePath || cleaned != "/" && cleaned+"/" == probePath) && renderableProbePath.MatchString(probePath)
+}
+
 // ParseMeshProbePath recovers the port and the path MeshProbePath rendered.
 func ParseMeshProbePath(rendered string) (int32, string, error) {
 	target, ok := strings.CutPrefix(rendered, MeshProbePrefix)
@@ -154,12 +167,24 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	if port < 1 || port > 65535 {
 		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
 	}
-	return int32(port), "/" + path, nil
+	if port == int(MeshOutboundPort) || port == int(MeshInboundPort) || port == int(MeshHealthPort) {
+		return 0, "", fmt.Errorf("probe path %q names mesh port %d", rendered, port)
+	}
+	appPath := "/" + path
+	if !ForwardableMeshProbePath(appPath) || rendered != MeshProbePath(int32(port), appPath) {
+		return 0, "", fmt.Errorf("probe path %q is not a canonical forwarded probe", rendered)
+	}
+	return int32(port), appPath, nil
 }
 
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.
 const CertWaitContainerName = "c8s-cert-wait"
+
+// MeshContainerName is the webhook-injected per-pod mesh endpoint. It reads the
+// credentials c8s-cert publishes and dials no inventory socket, so it is not a
+// SidecarContainer.
+const MeshContainerName = "c8s-mesh"
 
 // IsSidecarContainer reports whether name is one of the injected sidecars that
 // receive the inventory socket-directory mount.
@@ -184,7 +209,7 @@ func IsSocketConsumer(name string) bool {
 // injects. Names are host-written, so it holds only over authored input;
 // runtime matching goes by digest and entrypoint (internal/secrets.WorkloadContainers).
 func IsInjectedContainerName(name string) bool {
-	return IsSidecarContainer(name) || name == CertWaitContainerName
+	return IsSidecarContainer(name) || name == CertWaitContainerName || name == MeshContainerName
 }
 
 // InventoryEndpoint is get-cert's compiled inventory endpoint on node-CVM: the

@@ -186,7 +186,7 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 				pod.Annotations[AnnotationReloadWatchVolume] = "public-tls"
 				pod.Annotations[AnnotationReloadWatchPaths] = reloadWatchMountPath + "/tls.crt"
 			}
-			inj, err := parseAnnotations(pod)
+			inj, err := parseAnnotations(pod, "default")
 			if err != nil {
 				t.Fatalf("parseAnnotations: %v", err)
 			}
@@ -234,7 +234,7 @@ func TestChartSeedRefusesHostSocketMount(t *testing.T) {
 	imageEnv := chartImageEnv(t)
 	pod := podWithApp()
 	pod.Annotations = map[string]string{AnnotationWorkload: "api"}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "default")
 	if err != nil {
 		t.Fatalf("parseAnnotations: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
 				pod.Annotations[AnnotationReloadWatchVolume] = "watched"
 				pod.Annotations[AnnotationReloadWatchPaths] = reloadWatchMountPath + "/tls.crt"
 			}
-			inj, err := parseAnnotations(pod)
+			inj, err := parseAnnotations(pod, "default")
 			if err != nil {
 				t.Fatalf("parseAnnotations: %v", err)
 			}

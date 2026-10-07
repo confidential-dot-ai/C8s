@@ -46,6 +46,16 @@ func webhookConfigWithBundle(bundle []byte) *admissionv1.MutatingWebhookConfigur
 	return cfg
 }
 
+// validatingConfigWithBundle is webhookConfigWithBundle for the pod
+// validator's configuration, which the pruner keeps in step.
+func validatingConfigWithBundle(bundle []byte) *admissionv1.ValidatingWebhookConfiguration {
+	cfg := validatingWebhookConfig("c8s-mutating")
+	for i := range cfg.Webhooks {
+		cfg.Webhooks[i].ClientConfig.CABundle = bundle
+	}
+	return cfg
+}
+
 func caBundles(t *testing.T, c client.Client) [][]byte {
 	t.Helper()
 	var got admissionv1.MutatingWebhookConfiguration
@@ -86,7 +96,7 @@ func TestBootstrapWebhookPKIKeepsPreviousCA(t *testing.T) {
 	stubPodName(t, "pod-new")
 	old := testWebhookCAPEM(t, "pod-old")
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(webhookConfigWithBundle(old)).Build()
+		WithObjects(webhookConfigWithBundle(old), validatingConfigWithBundle(old)).Build()
 	stubDirectClient(t, fc, nil)
 
 	opts := Options{
@@ -113,7 +123,10 @@ func TestBootstrapWebhookPKIKeepsPreviousCA(t *testing.T) {
 func TestWebhookCABundlePrunerWaitsThenPrunes(t *testing.T) {
 	cur, old := testWebhookCAPEM(t, "pod-new"), testWebhookCAPEM(t, "pod-old")
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(webhookConfigWithBundle(append(append([]byte{}, cur...), old...))).Build()
+		WithObjects(
+			webhookConfigWithBundle(append(append([]byte{}, cur...), old...)),
+			validatingConfigWithBundle(append(append([]byte{}, cur...), old...)),
+		).Build()
 
 	var calls atomic.Int32
 	started := func(*http.Request) error {
@@ -127,7 +140,7 @@ func TestWebhookCABundlePrunerWaitsThenPrunes(t *testing.T) {
 	}
 
 	rec := newLogRecorder()
-	runPrunerToCompletion(t, webhookCABundlePruner(started, fc, "c8s-mutating", cur, time.Millisecond, rec.logger()))
+	runPrunerToCompletion(t, webhookCABundlePruner(started, fc, "c8s-mutating", validatorConfigName("c8s-mutating"), cur, time.Millisecond, rec.logger()))
 
 	for _, bundle := range caBundles(t, fc) {
 		if !bytes.Equal(bundle, cur) {
@@ -144,10 +157,13 @@ func TestWebhookCABundlePrunerWaitsThenPrunes(t *testing.T) {
 func TestWebhookCABundlePrunerRestoresOwnCA(t *testing.T) {
 	cur := testWebhookCAPEM(t, "pod-new")
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(webhookConfigWithBundle(testWebhookCAPEM(t, "helm-set"))).Build()
+		WithObjects(
+			webhookConfigWithBundle(testWebhookCAPEM(t, "helm-set")),
+			validatingConfigWithBundle(testWebhookCAPEM(t, "helm-set")),
+		).Build()
 
 	runPrunerToCompletion(t, webhookCABundlePruner(func(*http.Request) error { return nil },
-		fc, "c8s-mutating", cur, time.Millisecond, newLogRecorder().logger()))
+		fc, "c8s-mutating", validatorConfigName("c8s-mutating"), cur, time.Millisecond, newLogRecorder().logger()))
 
 	for _, bundle := range caBundles(t, fc) {
 		if !bytes.Equal(bundle, cur) {
@@ -182,7 +198,7 @@ func TestWebhookCABundlePrunerRetriesUntilCancelled(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		done <- webhookCABundlePruner(func(*http.Request) error { return nil },
-			fc, "c8s-mutating", cur, time.Millisecond, rec.logger())(ctx)
+			fc, "c8s-mutating", validatorConfigName("c8s-mutating"), cur, time.Millisecond, rec.logger())(ctx)
 	}()
 	for range 2 {
 		if e := waitLogEntry(t, rec); e.err == nil {

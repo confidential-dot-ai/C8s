@@ -791,30 +791,6 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	}
 }
 
-// TestInjectedMountRulesCertDir: the cert dir annotation becomes a clean
-// mount destination, and a relative one is refused.
-func TestInjectedMountRulesCertDir(t *testing.T) {
-	for _, tc := range []struct {
-		dir, want, wantErr string
-	}{
-		{dir: "/etc/certs/./x/", want: "/etc/certs/x"},
-		{dir: "certs", wantErr: webhook.AnnotationCertDir},
-	} {
-		tmpl := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
-		tmpl.Annotations = map[string]string{webhook.AnnotationCertDir: tc.dir}
-		got, err := injectedMountRules(tmpl, tmpl.Spec.Containers[0])
-		if tc.wantErr != "" {
-			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Errorf("injectedMountRules(cert dir %q) = %v, %v, want an error naming %s", tc.dir, got, err, tc.wantErr)
-			}
-			continue
-		}
-		if err != nil || !slices.Equal(got, []string{tc.want}) {
-			t.Errorf("injectedMountRules(cert dir %q) = %v, %v, want [%s]", tc.dir, got, err, tc.want)
-		}
-	}
-}
-
 // TestAdoptMeFixtureGetsAnEntry: the kind harness's adopted workload is one
 // install can write an entry for, so the fixture does not depend on the
 // any-mounts floor to be admitted and named.

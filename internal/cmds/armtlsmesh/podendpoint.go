@@ -32,7 +32,6 @@ const (
 	podDialTimeout    = 10 * time.Second
 	podDrainTimeout   = 30 * time.Second
 	podKeepAlive      = 30 * time.Second
-	probeTimeout      = 5 * time.Second
 	podMaxConnections = 1024
 )
 
@@ -141,9 +140,6 @@ func probeTargetsFor(rendered []string, own podAddresses) (probeTargets, error) 
 		port, appPath, err := workloadclaims.ParseMeshProbePath(path)
 		if err != nil {
 			return nil, err
-		}
-		if isMeshPort(int(port)) {
-			return nil, fmt.Errorf("probe path %q names mesh port %d", path, port)
 		}
 		for _, addr := range own {
 			target := "http://" + netip.AddrPortFrom(addr, uint16(port)).String() + appPath
@@ -499,9 +495,9 @@ func (e *podEndpoint) probeServer() *http.Server {
 	mux.HandleFunc("GET "+workloadclaims.MeshProbePrefix, e.forwardProbe)
 	return &http.Server{
 		Handler:      mux,
-		ReadTimeout:  probeTimeout,
-		WriteTimeout: probeTimeout,
-		IdleTimeout:  probeTimeout,
+		ReadTimeout:  workloadclaims.MeshProbeTimeout,
+		WriteTimeout: workloadclaims.MeshProbeTimeout,
+		IdleTimeout:  workloadclaims.MeshProbeTimeout,
 	}
 }
 
@@ -510,7 +506,7 @@ func (e *podEndpoint) probeServer() *http.Server {
 // application cannot send the probe off the pod; and one bounded hop.
 func newProbeClient() *http.Client {
 	return &http.Client{
-		Timeout:   probeTimeout,
+		Timeout:   workloadclaims.MeshProbeTimeout,
 		Transport: &http.Transport{},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
@@ -528,7 +524,7 @@ func (e *podEndpoint) forwardProbe(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), probeTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), workloadclaims.MeshProbeTimeout)
 	defer cancel()
 	deadline, _ := ctx.Deadline()
 	for i, target := range targets {

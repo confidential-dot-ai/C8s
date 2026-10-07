@@ -1001,7 +1001,11 @@ func TestMeshProbePathRoundTrip(t *testing.T) {
 }
 
 func TestParseMeshProbePathRefusesUnrenderablePaths(t *testing.T) {
-	for _, rendered := range []string{"", "/readyz", MeshProbePrefix, MeshProbePrefix + "8080", MeshProbePrefix + "http/healthz", MeshProbePrefix + "0/healthz", MeshProbePrefix + "70000/healthz"} {
+	for _, rendered := range []string{
+		"", "/readyz", MeshProbePrefix, MeshProbePrefix + "8080", MeshProbePrefix + "http/healthz", MeshProbePrefix + "0/healthz", MeshProbePrefix + "70000/healthz",
+		"/probe/08080/healthz", "/probe/+8080/healthz", "/probe/8080/a,b", "/probe/8080/a//b", "/probe/8080//", "/probe/8080/a/../b", "/probe/8080/a%2Fb", "/probe/8080/a?b", "/probe/8080/a b",
+		MeshProbePath(MeshOutboundPort, "/"), MeshProbePath(MeshInboundPort, "/"), MeshProbePath(MeshHealthPort, "/"),
+	} {
 		if _, _, err := ParseMeshProbePath(rendered); err == nil {
 			t.Errorf("ParseMeshProbePath(%q) = nil error, want a refusal", rendered)
 		}
