@@ -168,3 +168,67 @@ cannot roll either compatibility alias backward.
   image build/retag leg.
 - Never move, delete, or reuse a published stable tag. Fix a bad release with a
   new Conventional Commit and let automation create the next version.
+
+## Beta releases
+
+The protected `beta` branch gives a fast signed prerelease. It uses the same
+pipeline as `main`. A push to `beta` makes these items:
+
+- The Git tag `vX.Y.Z-beta.N`. `vX.Y.Z` is the stable version that the same
+  commits would get on `main`. `N` starts at 1 and increases with each beta
+  release of that base.
+- Component images and a Helm chart with the exact tags `vX.Y.Z-beta.N` and
+  `X.Y.Z-beta.N`, plus the short commit tag. A beta never moves `latest`,
+  `X.Y`, a stable `X.Y.Z` tag, or the `main` tag.
+- Node images with the exact aliases `rke2-{tdx,snp}[-cdi]-vX.Y.Z-beta.N`. A
+  beta never moves the floating node-image tags.
+- A GitHub release that is marked as a prerelease, never Latest. It holds
+  `release-statement.json` and its Sigstore bundle.
+
+Every push to `beta` rebuilds every component image. The unchanged-component
+retag copies `:main`, and `:main` does not describe a beta commit.
+
+Beta tags do not match the git-cliff `tag_pattern`. Thus they never change the
+stable baseline on `main`.
+
+### Verify a beta tag
+
+A beta has its own signer identity. A verifier that pins the `main` identity
+does not accept a beta.
+
+```sh
+tag=vX.Y.Z-beta.N
+gh release download "$tag" --repo confidential-dot-ai/C8s \
+  --pattern release-statement.json --pattern release-statement.sigstore.json
+cosign verify-blob \
+  --bundle release-statement.sigstore.json \
+  --certificate-identity https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  release-statement.json
+```
+
+Then check the statement fields against the tag, as for a stable release.
+
+### Keep beta current
+
+Rules forbid force-push on `beta`. To bring `main` into `beta`, open a PR from
+`main` (or from a branch made from `main`) into `beta` and merge it with a
+merge commit. For this reason the `beta` ruleset must not require linear
+history.
+
+### One-time setup for beta
+
+A repository admin does these steps before the first beta release:
+
+1. Create the `beta` branch from a `main` commit that contains this workflow.
+2. Add a ruleset for `beta` that copies the `main` rules: a pull request,
+   signed commits, the required status checks (including the image repro
+   gate), no force-push, and no deletion. Do not require linear history. Do
+   not give a bypass. The team sets the number of required approvals. With
+   0 approvals, a beta signature means that CI checked the commit on the
+   protected branch, not that a second person reviewed it.
+3. In the `release` environment, add `beta` to **Selected branches and tags**
+   next to `main`.
+
+A beta signature only proves that the `beta` workflow made the statement. It
+has value only while the rules in step 2 protect `beta`.

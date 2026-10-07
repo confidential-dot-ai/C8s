@@ -27,13 +27,16 @@ jobs:
     # with cluster access. Enforce the trust boundary here, not just in the
     # current caller, before allocating that runner.
     # A hosted preflight proves Git ancestry without executing build-source code.
+    # The source must belong to the protected branch it was pushed to: main,
+    # or beta for a prerelease.
     if: >-
       inputs.image_acceptance_artifact_prefix != '' &&
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'success' &&
        github.event.workflow_run.head_repository.full_name == github.repository &&
        github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'main')
+       (github.event.workflow_run.head_branch == 'main' ||
+        github.event.workflow_run.head_branch == 'beta'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -43,22 +46,24 @@ jobs:
       sha: ${{ steps.source.outputs.sha }}
       artifact: ${{ steps.artifact.outputs.name }}
     steps:
-      - name: Fetch trusted main history
+      - name: Fetch trusted branch history
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-          ref: refs/heads/main
+          ref: refs/heads/${{ github.event.workflow_run.head_branch }}
           fetch-depth: 0
 
       - name: Verify source provenance
         id: source
         env:
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+          case "$SOURCE_BRANCH" in main|beta) ;; *) exit 1 ;; esac
           [ "${#SOURCE_SHA}" -eq 40 ]
           case "$SOURCE_SHA" in *[!0-9a-f]*) exit 1 ;; esac
-          git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main
+          git merge-base --is-ancestor "$SOURCE_SHA" "refs/remotes/origin/$SOURCE_BRANCH"
           printf 'sha=%s\n' "$SOURCE_SHA" >> "$GITHUB_OUTPUT"
 
       - name: Find the evidence of the newest build attempt
@@ -88,7 +93,8 @@ jobs:
           github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.event == 'push' &&
           github.event.workflow_run.head_repository.full_name == github.repository &&
-          github.event.workflow_run.head_branch == 'main'
+          (github.event.workflow_run.head_branch == 'main' ||
+           github.event.workflow_run.head_branch == 'beta')
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
