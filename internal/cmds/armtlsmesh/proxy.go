@@ -509,7 +509,7 @@ func (p *Proxy) handleInbound(ctx context.Context, downstream net.Conn) {
 			return
 		}
 		if err := tc.HandshakeContext(ctx); err != nil {
-			p.metrics.destHeaderErrors.WithLabelValues("read").Inc()
+			p.metrics.destHeaderErrors.WithLabelValues("handshake").Inc()
 			log.Warn("inbound TLS handshake failed", "error", err)
 			entry.result = "tls_error"
 			entry.err = err.Error()

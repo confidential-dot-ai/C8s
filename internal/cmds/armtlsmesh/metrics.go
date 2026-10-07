@@ -119,7 +119,7 @@ func newMetrics() *metrics {
 	})
 	m.destHeaderErrors = factory.NewCounterVec(prometheus.CounterOpts{
 		Name: "armtls_mesh_dest_header_errors_total",
-		Help: "Destination header read/write failures.",
+		Help: "Inbound TLS handshake and destination header read/write failures.",
 	}, []string{"side"})
 	m.inboundDestRejected = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_inbound_dest_rejected_total",
@@ -291,7 +291,7 @@ func (m *metrics) populateVecZeros() {
 			m.bytesTotal.WithLabelValues(dir, side)
 		}
 	}
-	for _, side := range []string{"read", "write"} {
+	for _, side := range []string{"handshake", "read", "write"} {
 		m.destHeaderErrors.WithLabelValues(side)
 	}
 	for _, reason := range []string{outboundRejectHostAddr, outboundRejectUnknownPod} {

@@ -566,6 +566,12 @@ func TestProxyRunSilentInboundPeersDoNotStarveOutbound(t *testing.T) {
 	}
 	assertEventually(t, 5*time.Second, func() bool { return len(f.p.inboundSem) == 0 },
 		"inbound slots not released after the handshake timeout")
+	if v := testutil.ToFloat64(m.destHeaderErrors.WithLabelValues("handshake")); v != 2 {
+		t.Errorf("destHeaderErrors{handshake} = %v, want 2", v)
+	}
+	if v := testutil.ToFloat64(m.destHeaderErrors.WithLabelValues("read")); v != 0 {
+		t.Errorf("destHeaderErrors{read} = %v, want 0", v)
+	}
 
 	release()
 	fmt.Fprint(out, "ping")
