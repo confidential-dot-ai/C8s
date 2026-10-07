@@ -77,6 +77,49 @@ RKE2's base template is vendored at
 records the RKE2 version it came from, and the invariants gate compares that to
 `mkosi.sync`'s `RKE2_VERSION`: a pin bump must re-vendor.
 
+## The privilege floor
+
+The same wrapper is where a member pod's containers get their privileges
+bounded, because NRI shows the plugin no capabilities, `no_new_privs`,
+privileged flag or user-namespace mappings
+(`docs/allowlist-and-capabilities.md`). On `create` and `run` it reads the
+bundle's `config.json` and refuses the create when a container of a pod the
+measured `mesh` policy covers holds more than the floor. `restore` is refused
+in every mode: what it starts is in a checkpoint, which no bundle describes.
+
+The floor, and why each item is in it:
+
+- **Capabilities** — the runtime's default set less `NET_RAW`, `SETUID` and
+  `SETGID`, in every one of the five sets. `NET_RAW` opens a socket that
+  reaches the wire past the pod ruleset; `SETUID` and `SETGID` let a process
+  call `setuid` into a reserved role's socket identity, which is what the
+  ruleset grants traffic by, and `no_new_privs` does not bound that.
+- **`no_new_privs`** — otherwise a setuid binary or a file capability inside
+  the image raises what the floor just bounded.
+- **The privileged marks** — a device cgroup rule allowing every device, no
+  masked or read-only `/proc` paths, a writable `sysfs` or `cgroupfs`.
+- **Namespaces** — no id mapping or user namespace, because the ruleset
+  matches the socket UID in the initial user namespace; a PID namespace of the
+  container's own, so neither the node's nor the pod's shared one.
+- **Identity** — no root user outside a role, and no id reserved for another
+  role, as a group or a supplementary group.
+- **Terminal and standard input** — a terminal is refused, and so is a create
+  whose own `fd 0` is a pipe: the shim wires runc's standard input to the
+  container's stdin pipe only for a container the control plane asked to keep
+  stdin open, and leaves it at the null device otherwise. Together they leave
+  an attach session no way in (MP4).
+
+A role's container holds at most the capabilities trusted policy binds to it —
+the mesh endpoint none, since the enforcer installs its ruleset. The role is
+read from the reserved id in the bundle, which the enforcer admits only for
+the container whose verified identity holds that role.
+
+The namespaces `mesh.exempt_namespaces` lists host no member pods and keep
+their privileges, as does the pod's own sandbox container — the one whose own
+container id is the sandbox's, which no other bundle can claim. A measured
+policy that cannot be read denies the create; one with no `mesh` policy
+applies no floor. The floor is independent of the exec mode above.
+
 ## Writing a component that runs on such a node
 
 A C8s-owned exec probe or lifecycle exec hook cannot pass on a locked node, so
