@@ -115,6 +115,7 @@ type config struct {
 	rtmrs              []string
 	operatorKeys       string
 	measurementsConfig string
+	servedPolicyFile   string
 	sandboxID          string
 	workload           string
 	allowlistFile      string
@@ -206,8 +207,9 @@ responder chose).`,
 	f.StringVar(&cfg.expectedRTMR3Hex, "expected-rtmr3", "", "DEPRECATED, prefer --rtmr 3=<sha384-hex>: identical pin under identical rules, one flag for every register. Retained so existing invocations keep working")
 	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the operator PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by `openssl ec -pubout`) — derives and pins RTMR[3] as the bare operator-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. The bare seed is the value a node with no per-workload RTMR[3] extends reports, which today is every node. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy; excludes --measurements, --measurements-file and --image-manifest")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy against it, unless --served-policy-file names the set for that check; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys; verification fails unless the key set the attested target serves at /operator-keys matches it (kind=cds targets)")
+	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
@@ -295,7 +297,7 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		fmt.Fprintf(errOut, "error: could not obtain evidence: %v\n", err)
 		return exitNoEvidence
 	}
-	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev), gatherMeasurements(ctx, cfg, ev), out, errOut)
+	return verifyEvidence(ctx, cfg, plan, ev, held, gatherOperatorKeys(ctx, cfg, ev), gatherMeasurements(ctx, cfg, plan, ev), out, errOut)
 }
 
 // targetDescription names the evidence source for a verdict produced before
@@ -383,6 +385,7 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 	applyWorkloadPolicy(oc, cfg, ev, held)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
+	applyCDSIdentityWarning(oc, cfg, plan.refValues)
 }
 
 // demoteToPartial turns a passing verdict into a partial one, naming the
@@ -493,8 +496,20 @@ type verifyPlan struct {
 	// initDataHash is the parsed --init-data pin, nil when the flag is unset.
 	initDataHash []byte
 	// refValues is the parsed --image-policy-file, empty when unset. It
-	// both pins the target and is compared against what the target serves.
+	// pins the target's own identity.
 	refValues refvalues.ReferenceValues
+	// served is the /measurements equality check's input, nil when neither
+	// --served-policy-file nor --image-policy-file asked for the check. It
+	// never feeds the target's own identity pin (refValues above).
+	served *servedSet
+}
+
+// servedSet pairs the policy the target must serve and enforce at
+// /measurements with the flag it came from, so failure messages name the
+// file that disagrees.
+type servedSet struct {
+	flag string
+	want refvalues.ReferenceValues
 }
 
 // buildPolicy parses the measurement allowlist, resolves the register pins and
@@ -541,6 +556,24 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	measurements, err := cmdsutil.LoadMeasurements(cfg.measurements, cfg.measurementsFile)
 	if err != nil {
 		return nil, err
+	}
+
+	// --served-policy-file supplies the served-set equality check's expected
+	// set; without it the check falls back to --image-policy-file.
+	var served *servedSet
+	if cfg.servedPolicyFile != "" {
+		values, err := refvalues.Load(cfg.servedPolicyFile)
+		if err != nil {
+			return nil, fmt.Errorf("--served-policy-file: %w", err)
+		}
+		if cfg.measurementsConfig != "" {
+			if err := validateTargetInServedPolicy(refValues, values); err != nil {
+				return nil, err
+			}
+		}
+		served = &servedSet{flag: "--served-policy-file", want: values}
+	} else if cfg.measurementsConfig != "" {
+		served = &servedSet{flag: "--image-policy-file", want: refValues}
 	}
 
 	// --image-manifest carries MRTD in the same tuple as RTMR[1]/[2]. It is
@@ -622,6 +655,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		meshCA:       caPool,
 		initDataHash: initDataHash,
 		refValues:    refValues,
+		served:       served,
 	}, nil
 }
 
@@ -1135,7 +1169,7 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 		}
 	}
 
-	checkMeasurementsConfig(cfg, plan, servedMeasurements, fail)
+	checkServedPolicy(plan, servedMeasurements, fail)
 
 	// The served key list is authenticated by being fetched over the attested
 	// serving cert. A failed fetch fails closed when the operator asked for the
@@ -1172,14 +1206,14 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 	}
 }
 
-// checkMeasurementsConfig compares the set the target reports enforcing against
+// checkServedPolicy compares the set the target reports enforcing against
 // the operator's own file. A swapped config leaves the launch measurement
 // untouched, so this is what makes the substitution visible.
-func checkMeasurementsConfig(cfg config, plan *verifyPlan, served measurementsReport, fail func(string, ...any)) {
-	if cfg.measurementsConfig == "" {
+func checkServedPolicy(plan *verifyPlan, report measurementsReport, fail func(string, ...any)) {
+	if plan.served == nil {
 		return
 	}
-	checkServedMeasurements(plan.refValues, served, fail)
+	checkServedMeasurements(plan.served.flag, plan.served.want, report, fail)
 }
 
 // applyWorkloadPolicy surfaces the leaf's matched-workload stamp and enforces
