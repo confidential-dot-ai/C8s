@@ -20,8 +20,8 @@ var (
 		Help: "Total requests rejected by rate limiter.",
 	})
 
-	rateLimitSaturationTotal = promauto.NewCounter(prometheus.CounterOpts{
-		Name: "cds_rate_limit_saturation_total",
+	rateLimitCapacityEvictionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "cds_rate_limit_capacity_evictions_total",
 		Help: "Total new keys admitted to a full rate limiter by evicting its least recently seen bucket.",
 	})
 
@@ -81,7 +81,7 @@ func (rl *IPRateLimiter) allow(key string) bool {
 			oldest := rl.recency.Back()
 			rl.recency.Remove(oldest)
 			delete(rl.limiters, oldest.Value.(*ipLimiterEntry).key)
-			rateLimitSaturationTotal.Inc()
+			rateLimitCapacityEvictionsTotal.Inc()
 		}
 		entry = &ipLimiterEntry{key: key, limiter: rate.NewLimiter(rl.rate, rl.burst)}
 		rl.limiters[key] = rl.recency.PushFront(entry)

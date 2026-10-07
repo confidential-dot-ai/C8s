@@ -364,10 +364,10 @@ func TestHotKeyStaysLimitedUnderChurn(t *testing.T) {
 	}
 }
 
-// TestSaturationIsCountedNotRejected pins the counters at the HTTP layer: a
-// new source admitted to a full map counts as saturation and is served; an
+// TestCapacityEvictionIsCountedNotRejected pins the counters at the HTTP layer: a
+// new source admitted to a full map counts as a capacity eviction and is served; an
 // over-limit request counts only as a rejection.
-func TestSaturationIsCountedNotRejected(t *testing.T) {
+func TestCapacityEvictionIsCountedNotRejected(t *testing.T) {
 	rl, err := NewIPRateLimiter(rate.Limit(0), 1, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -382,7 +382,7 @@ func TestSaturationIsCountedNotRejected(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w.Code
 	}
-	satBefore := testutil.ToFloat64(rateLimitSaturationTotal)
+	evictBefore := testutil.ToFloat64(rateLimitCapacityEvictionsTotal)
 	rejBefore := testutil.ToFloat64(rateLimitRejectionsTotal)
 
 	if got := send("10.0.0.1:1"); got != http.StatusOK {
@@ -395,8 +395,8 @@ func TestSaturationIsCountedNotRejected(t *testing.T) {
 		t.Fatalf("new source on a full map: got %d, want 200", got)
 	}
 
-	if got := testutil.ToFloat64(rateLimitSaturationTotal) - satBefore; got != 1 {
-		t.Errorf("saturation delta = %v, want 1", got)
+	if got := testutil.ToFloat64(rateLimitCapacityEvictionsTotal) - evictBefore; got != 1 {
+		t.Errorf("capacity eviction delta = %v, want 1", got)
 	}
 	if got := testutil.ToFloat64(rateLimitRejectionsTotal) - rejBefore; got != 1 {
 		t.Errorf("rejection delta = %v, want 1", got)
