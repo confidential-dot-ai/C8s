@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -87,9 +88,15 @@ type HTTPBackendOptions struct {
 // NewHTTPBackend builds an HTTP(S) forwarding backend for base (a full URL).
 func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) {
 	base = strings.TrimRight(base, "/")
+	// Bound the dial and handshake so a dead upstream pod fails fast with
+	// 502 instead of hanging until nginx gives up. No ResponseHeaderTimeout:
+	// a non-streaming LLM response sends its headers only when generation
+	// ends.
 	transport := &http.Transport{
-		MaxIdleConns:    100,
-		IdleConnTimeout: 90 * time.Second,
+		DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+		MaxIdleConns:        100,
+		IdleConnTimeout:     90 * time.Second,
 	}
 	if strings.HasPrefix(base, "https://") {
 		tlsCfg := &tls.Config{ServerName: opts.ServerName, MinVersion: tls.VersionTLS12}
