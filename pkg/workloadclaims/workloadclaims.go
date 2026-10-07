@@ -67,6 +67,21 @@ const (
 	SidecarSocketDir = "/run/c8s/workload-claims"
 )
 
+// CDSPinsPath is where an injected credential client reads the CDS attestation
+// policy it holds the CDS to. Compiled for the same reason as the socket path:
+// the node bind-mounts its own policy there, so neither the pod nor the control
+// plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
+// enforcer's alone — a chart-rendered client reads the node config it mounts
+// itself, and keeps its own policy flag.
+const CDSPinsPath = "/run/c8s/cds-pins.json"
+
+// AttestationAPISocket is the node's own attestation-api as an injected
+// credential client sees it: the socket in the directory the NRI plugin
+// mounts. Compiled for the same reason as the paths above — the verifier
+// decides whether the CDS a client dials satisfies CDSPinsPath, so a client
+// the node pins reaches no other one (see cmdsutil.RequireNodeVerifier).
+const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
+
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under
 // it.
@@ -88,10 +103,10 @@ const (
 // enforcer matches the pod's packet rules on MeshUID. MeshHealthPort carries
 // the probes and no application traffic.
 const (
-	MeshUID          int64 = 1337
-	MeshOutboundPort int32 = 15001
-	MeshInboundPort  int32 = 15006
-	MeshHealthPort   int32 = 15021
+	MeshUID          uint32 = 1337
+	MeshOutboundPort int32  = 15001
+	MeshInboundPort  int32  = 15006
+	MeshHealthPort   int32  = 15021
 )
 
 // MeshProbePrefix is where the endpoint answers an application probe the
@@ -148,6 +163,12 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 	}
 	return int32(port), "/" + path, nil
 }
+
+// CredentialsUID is the reserved identity of the injected credential clients.
+// The injector runs them as it, the node binds it to the CDS address, and the
+// enforcer refuses it in any other container, so a pod cannot reach the CDS
+// with a socket of its own.
+const CredentialsUID uint32 = 1338
 
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.

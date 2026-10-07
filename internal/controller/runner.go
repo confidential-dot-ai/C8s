@@ -59,17 +59,6 @@ type Options struct {
 	// AttestationApiURL points at the attestation-api.
 	AttestationApiURL string
 
-	// CDSMeasurements are the launch measurements the injected secret fetcher
-	// requires CDS to present. Empty pins none.
-	CDSMeasurements []string
-
-	// CDSRTMRs are the TDX RTMR pins (<index>=<sha384-hex>) the injected
-	// sidecars additionally hold CDS to. Ignored for SNP evidence.
-	CDSRTMRs []string
-
-	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
-	CDSMeasurementsConfigJSON string
-
 	// WebhookConfigName is the MutatingWebhookConfiguration to patch. The pod
 	// validator's configuration is named beside it (validatorConfigName).
 	WebhookConfigName string
@@ -261,19 +250,16 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 			return fmt.Errorf("bootstrap webhook PKI: %w", err)
 		}
 		if err := webhook.Register(mgr, webhook.Config{
-			GetCertImage:              opts.GetCertImage,
-			MeshImage:                 opts.MeshImage,
-			CDSURL:                    opts.CDSURL,
-			AttestationApiURL:         opts.AttestationApiURL,
-			CDSMeasurements:           opts.CDSMeasurements,
-			CDSRTMRs:                  opts.CDSRTMRs,
-			CDSMeasurementsConfigJSON: opts.CDSMeasurementsConfigJSON,
-			CertFSGroup:               new(opts.CertFSGroup),
-			CertRenewInterval:         opts.CertRenewInterval,
-			GetCertRunAsUser:          new(opts.GetCertRunAsUser),
-			GetCertRunAsGroup:         new(opts.GetCertRunAsGroup),
-			GetCertRunAsNonRoot:       new(opts.GetCertRunAsNonRoot),
-			WorkloadClaimsHostDir:     opts.WorkloadClaimsHostDir,
+			GetCertImage:          opts.GetCertImage,
+			MeshImage:             opts.MeshImage,
+			CDSURL:                opts.CDSURL,
+			AttestationApiURL:     opts.AttestationApiURL,
+			CertFSGroup:           new(opts.CertFSGroup),
+			CertRenewInterval:     opts.CertRenewInterval,
+			GetCertRunAsUser:      new(opts.GetCertRunAsUser),
+			GetCertRunAsGroup:     new(opts.GetCertRunAsGroup),
+			GetCertRunAsNonRoot:   new(opts.GetCertRunAsNonRoot),
+			WorkloadClaimsHostDir: opts.WorkloadClaimsHostDir,
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)
 		}

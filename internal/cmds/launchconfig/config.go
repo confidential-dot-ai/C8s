@@ -13,9 +13,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -441,8 +443,24 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 	return refvalues.Parse(data)
 }
 
+// cdsPort is the image's fixed CDS node port.
+const cdsPort = 30808
+
 // CDSURL is derived from the signed server address and the image's fixed port.
-func (d *Document) CDSURL() string { return "https://" + d.Server.Address + ":30808" }
+func (d *Document) CDSURL() string {
+	return "https://" + net.JoinHostPort(d.Server.Address, strconv.Itoa(cdsPort))
+}
+
+// CDSAddrPort is that same endpoint as an address and port, which is what a
+// pod ruleset names as a destination. A signed address that is not one fails
+// here rather than in the node's packet rules.
+func (d *Document) CDSAddrPort() (netip.AddrPort, error) {
+	addr, err := netip.ParseAddr(d.Server.Address)
+	if err != nil {
+		return netip.AddrPort{}, fmt.Errorf("staged server address %q: %w", d.Server.Address, err)
+	}
+	return netip.AddrPortFrom(addr, cdsPort), nil
+}
 
 // LoadStaged reads a root-owned boot artifact produced by Stage. It is not an
 // authentication API for host input; only the fixed staged path is trusted.

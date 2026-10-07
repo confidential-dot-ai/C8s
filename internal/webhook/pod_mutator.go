@@ -183,21 +183,6 @@ type Config struct {
 	// AttestationApiURL points at the node-local attestation-api.
 	AttestationApiURL string
 
-	// CDSMeasurements are the launch measurements the secret fetcher requires
-	// CDS to present. Empty pins none, which leaves an impostor CDS able to
-	// answer with a value of its choosing.
-	CDSMeasurements []string
-
-	// CDSRTMRs are the TDX RTMR pins (<index>=<sha384-hex>) the injected
-	// sidecars additionally hold CDS to. On TDX the launch measurement covers
-	// TDVF firmware alone, so without these CDSMeasurements says nothing
-	// about CDS's kernel or rootfs. Ignored for SNP evidence; empty pins no
-	// registers.
-	CDSRTMRs []string
-
-	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
-	CDSMeasurementsConfigJSON string
-
 	// CertFSGroup is applied to the pod when it does not already specify
 	// fsGroup. A negative value disables fsGroup mutation.
 	CertFSGroup *int64
@@ -1074,8 +1059,8 @@ func meshSecurityContext() *corev1.SecurityContext {
 		AllowPrivilegeEscalation: new(false),
 		ReadOnlyRootFilesystem:   new(true),
 		RunAsNonRoot:             new(true),
-		RunAsUser:                new(workloadclaims.MeshUID),
-		RunAsGroup:               new(workloadclaims.MeshUID),
+		RunAsUser:                new(int64(workloadclaims.MeshUID)),
+		RunAsGroup:               new(int64(workloadclaims.MeshUID)),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}
@@ -1129,7 +1114,6 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		args = append(args, "--reload-watch="+path)
 	}
 	args = append(args, discoveryArgs(inj.Discovery)...)
-	args = append(args, cdsPinArgs(cfg, true)...)
 	if inj.Verbose {
 		args = append(args, "--verbose")
 	}
@@ -1246,13 +1230,11 @@ func getCertEnv(inj *injection) []corev1.EnvVar {
 			Name:      "C8S_POD_UID",
 			ValueFrom: fieldRef("metadata.uid"),
 		},
-		// cvmMode=bare-metal: the chart passes the operator a verbatim
-		// --attestation-api-url=http://$(HOST_IP):8400, which reaches this arg
-		// (certContainer) through sidecarAttestationApiURL — its pass-through of
-		// non-unix URLs is what keeps $(HOST_IP) unexpanded. The kubelet expands
-		// $(HOST_IP) against THIS tenant pod's node, so the sidecar reaches the
-		// node-baked host attestation-api on whichever node it lands. Unused
-		// (harmless) in modes whose URL has no $(HOST_IP).
+		// An operator endpoint of http://$(HOST_IP):8400 reaches this arg
+		// unexpanded (sidecarAttestationApiURL), and the kubelet expands it
+		// against THIS tenant pod's node, so the sidecar reaches the host
+		// attestation-api on whichever node it lands. Unused (harmless) where
+		// the URL has no $(HOST_IP).
 		{
 			Name:      "HOST_IP",
 			ValueFrom: fieldRef("status.hostIP"),
@@ -1523,7 +1505,6 @@ func volumeContainer(inj *injection, cfg Config) corev1.Container {
 	for _, spec := range inj.Volumes.Specs {
 		args = append(args, "--volume="+spec)
 	}
-	args = append(args, cdsPinArgs(cfg, false)...)
 
 	always := corev1.ContainerRestartPolicyAlways
 	return corev1.Container{
@@ -1559,7 +1540,6 @@ func secretContainer(inj *injection, cfg Config) corev1.Container {
 	for _, spec := range inj.Secrets.Specs {
 		args = append(args, "--secret="+spec)
 	}
-	args = append(args, cdsPinArgs(cfg, false)...)
 
 	always := corev1.ContainerRestartPolicyAlways
 	return corev1.Container{
@@ -1587,16 +1567,18 @@ func certsVolume(name string) corev1.Volume {
 	}
 }
 
-// sidecarAttestationApiURL rebases a unix:// attestation-api endpoint under
-// the inventory's host directory onto the sidecar's NRI-injected mount of that
-// directory (workloadclaims.SidecarSocketDir); every other shape passes
-// through verbatim.
+// sidecarAttestationApiURL is the verifier the injected credential clients
+// hold CDS to. A node serving the inventory socket directory serves its own
+// attestation-api in it, which an injected sidecar reaches at
+// workloadclaims.AttestationAPISocket; that in-TEE socket is the only verifier
+// a client reading the node's CDS pins may answer to
+// (cmdsutil.RequireNodeVerifier). Without an inventory the operator's own
+// endpoint stands.
 func (cfg Config) sidecarAttestationApiURL() string {
-	hostPrefix := "unix://" + cfg.WorkloadClaimsHostDir + "/"
-	if cfg.WorkloadClaimsHostDir == "" || !strings.HasPrefix(cfg.AttestationApiURL, hostPrefix) {
+	if cfg.WorkloadClaimsHostDir == "" {
 		return cfg.AttestationApiURL
 	}
-	return "unix://" + workloadclaims.SidecarSocketDir + "/" + strings.TrimPrefix(cfg.AttestationApiURL, hostPrefix)
+	return "unix://" + workloadclaims.AttestationAPISocket
 }
 
 func ensureVolume(pod *corev1.Pod, v corev1.Volume) {
@@ -1739,30 +1721,4 @@ func containerMount(c *corev1.Container, name string) *corev1.VolumeMount {
 		}
 	}
 	return nil
-}
-
-// cdsPinArgs propagates the complete CDS identity without weakening operator
-// pins into a digest-only policy. Independent digest/register inputs use
-// their corresponding flags.
-func cdsPinArgs(cfg Config, certificate bool) []string {
-	if cfg.CDSMeasurementsConfigJSON != "" {
-		return []string{"--image-policy-json=" + cfg.CDSMeasurementsConfigJSON}
-	}
-	var args []string
-	if certificate {
-		if joined := strings.Join(cfg.CDSMeasurements, ","); joined != "" {
-			args = append(args, "--cds-measurements="+joined)
-		}
-		if joined := strings.Join(cfg.CDSRTMRs, ","); joined != "" {
-			args = append(args, "--cds-rtmrs="+joined)
-		}
-		return args
-	}
-	for _, m := range cfg.CDSMeasurements {
-		args = append(args, "--measurements="+m)
-	}
-	for _, r := range cfg.CDSRTMRs {
-		args = append(args, "--rtmrs="+r)
-	}
-	return args
 }

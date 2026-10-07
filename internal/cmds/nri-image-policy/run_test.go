@@ -464,7 +464,7 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           timeout,
-	})
+	}, "sev-snp")
 	if err != nil {
 		t.Fatalf("allowlistPullHTTPClient: %v", err)
 	}
@@ -486,7 +486,7 @@ func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
 		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}); err != nil {
+	}, "sev-snp"); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(buf.String(), warning) {
@@ -497,7 +497,7 @@ func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
 	if _, err := allowlistPullHTTPClient(pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}); err != nil {
+	}, "sev-snp"); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(buf.String(), warning) {
@@ -742,7 +742,7 @@ func TestAllowlistPullHTTPClient_InvalidMeasurements(t *testing.T) {
 		CDSMeasurements:   []string{"not-hex"},
 		AttestationApiURL: "http://localhost:30840",
 		Timeout:           time.Second,
-	})
+	}, "sev-snp")
 	if err == nil {
 		t.Fatal("expected error for invalid CDS measurements")
 	}

@@ -185,6 +185,27 @@ allowlist:
             args: {policy: any}
             mounts: {policy: any}
       # END rke2 system images
+      # The platform roles the enforcer grants inside a member pod. A role
+      # comes from this measured base alone: the JSON ingest drops the field,
+      # so a document CDS serves can never claim one (pkg/allowlist).
+      c8s-mesh-endpoint:
+        label: "@MESH_REPO@@@MESH_DIGEST@"
+        containers:
+          - digest: "@MESH_DIGEST@"
+            image: "@MESH_REPO@@@MESH_DIGEST@"
+            role: "mesh"
+            command: {policy: any}
+            args: {policy: any}
+            mounts: {policy: any}
+      c8s-credential-clients:
+        label: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: any}
+            args: {policy: any}
+            mounts: {policy: any}
   pull:
     # Authenticated launch staging replaces this endpoint with the server's
     # CDS URL. The pull loop retries while the baked CDS service starts;
@@ -195,6 +216,34 @@ allowlist:
     timeout: "30s"
     attestation_api_url: "http://127.0.0.1:8400"
     cds_measurements_config: "/run/confos/launch/cds.json"
+
+# The measured mesh policy: what a member pod's packet ruleset is built from,
+# and the identity each platform role runs as. A node whose config carries no
+# mesh policy hosts no member pods (internal/cmds/nri-image-policy/roles.go).
+mesh:
+  # These namespaces keep the node's own rules: kube-system and the C8s system
+  # namespace run the node's trusted components, which need host privileges a
+  # member pod may not hold (volumed needs SYS_ADMIN).
+  exempt_namespaces:
+    - kube-system
+    - c8s-system
+  # INVARIANT: equal to cluster-dns in etc/rancher/rke2/config.yaml. A
+  # config.yaml.d drop-in that moves the cluster DNS breaks name resolution in
+  # member pods closed, never open.
+  resolver: "10.53.0.10"
+  # INVARIANT: equal to the ports the injected endpoint binds
+  # (pkg/workloadclaims.Mesh*Port).
+  capture:
+    outbound: 15001
+    inbound: 15006
+    health: 15021
+  # The mesh endpoint holds no capabilities: the enforcer installs the pod
+  # ruleset, so the endpoint only proxies. Boot preparation adds the
+  # credential role, whose destination is the staged CDS address
+  # (internal/cmds/nodeservices).
+  roles:
+    - name: mesh
+      uid: 1337
 
 containerd:
   socket: "/run/k3s/containerd/containerd.sock"

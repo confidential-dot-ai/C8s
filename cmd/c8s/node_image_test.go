@@ -499,7 +499,16 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	floor = bytes.ReplaceAll(floor, []byte("@PLATFORM@"), []byte("tdx"))
+	// The placeholders mkosi.sync substitutes at image build.
+	for placeholder, value := range map[string]string{
+		"@PLATFORM@":        "tdx",
+		"@MESH_REPO@":       "ghcr.io/confidential-dot-ai/armtls-mesh",
+		"@MESH_DIGEST@":     "sha256:" + strings.Repeat("1b", 32),
+		"@OPERATOR_REPO@":   "ghcr.io/confidential-dot-ai/c8s-operator",
+		"@OPERATOR_DIGEST@": "sha256:" + strings.Repeat("2c", 32),
+	} {
+		floor = bytes.ReplaceAll(floor, []byte(placeholder), []byte(value))
+	}
 	pins, err := refvalues.Load(filepath.Join("..", "..", "internal", "testdata", "node-identities.json"))
 	if err != nil {
 		t.Fatal(err)

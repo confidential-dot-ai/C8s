@@ -214,11 +214,16 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 }
 
 func cdsPins(cfg config) (armtls.Pins, error) {
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
+	policy, source, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+		cmdsutil.ImagePolicySource{
+			File: cfg.MeasurementsConfig,
+			JSON: cfg.MeasurementsConfigJSON,
+		},
 		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
 	if err != nil {
 		return armtls.Pins{}, err
 	}
+	slog.Info("CDS pins resolved", "source", source)
 	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement")
 	return armtls.Pins(policy), nil
 }
@@ -738,6 +743,9 @@ func validateConfig(cfg config) error {
 		return err
 	}
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.AttestationApiURL); err != nil {
+		return err
+	}
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, cfg.AttestationApiURL); err != nil {
 		return err
 	}
 	if cfg.SAN != "" {
