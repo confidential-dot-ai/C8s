@@ -6720,36 +6720,23 @@ func TestAttestationApiSeccomp(t *testing.T) {
 	}
 }
 
-// The injected secret fetcher verifies CDS before handing it a sandbox token
-// and taking a value back, so cds.measurements has to reach the operator that
-// renders the fetcher's args. Each hop is unit-tested; this asserts the chart
-// end of the chain, which nothing else covers.
-func TestChartOperatorCarriesCDSMeasurementsForSecretFetcher(t *testing.T) {
+// The injected credential clients read the node's CDS policy from the mount
+// the enforcer gives them, so the operator renders no pins into their args: a
+// pin the control plane could pass is a pin the control plane could choose
+// (armTLS W2). This asserts the chart end of that removal.
+func TestChartOperatorPassesNoCDSPins(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set-string", "cds.measurements[0]=aa11",
-		"--set-string", "cds.measurements[1]=bb22",
+		"--set-string", "cds.rtmrs[0]=1="+strings.Repeat("11", 48),
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	for _, want := range []string{"--cds-measurements=aa11", "--cds-measurements=bb22"} {
-		if !strings.Contains(args, want) {
-			t.Errorf("operator args missing %q; the fetcher would pin no measurement and accept any CDS: %s", want, args)
+	for _, unwanted := range []string{"--cds-measurements", "--cds-rtmrs", "--image-policy-file", "--image-policy-json"} {
+		if strings.Contains(args, unwanted) {
+			t.Errorf("operator carries %s; the injected clients read the node policy instead: %s", unwanted, args)
 		}
-	}
-}
-
-// With no measurements configured the flag is absent rather than empty, so the
-// fetcher falls back to its own unpinned warning instead of parsing "".
-func TestChartOperatorOmitsCDSMeasurementsWhenUnset(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	if strings.Contains(args, "--cds-measurements") {
-		t.Errorf("operator carries --cds-measurements with none configured: %s", args)
 	}
 }
 
@@ -7561,10 +7548,6 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 	if i := slices.Index(meshArgs, "--rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != rtmr1 {
 		t.Fatalf("armtls-mesh missing --rtmrs %q\nargs: %v", rtmr1, meshArgs)
 	}
-
-	operatorArgs := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-rtmrs="+rtmr1)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-rtmrs="+rtmr2)
 
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
 	if want := []string{rtmr1, rtmr2}; !slices.Equal(workerCfg.Allowlist.Pull.CDSRTMRs, want) {

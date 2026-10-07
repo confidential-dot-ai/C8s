@@ -260,3 +260,91 @@ func TestLoadImagePolicyValuesKeepsPerImageRTMRs(t *testing.T) {
 		t.Fatalf("per-image register tuples were lost: %+v", values.Images)
 	}
 }
+
+// An injected client holds its CDS to the node's policy, not to anything its
+// pod or the control plane passes: while the mount is there the arguments are
+// refused, so a weaker pin cannot replace a measured one silently.
+func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
+	document, err := os.ReadFile(identityPolicyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	if err := os.WriteFile(path, document, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policy, source, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{})
+	if err != nil {
+		t.Fatalf("ResolveCDSPins: %v", err)
+	}
+	if len(policy.Images) == 0 {
+		t.Fatal("node policy loaded no images")
+	}
+	if source != path {
+		t.Fatalf("source = %q, want the node policy path", source)
+	}
+
+	// One exact message, so the client is told which argument to drop.
+	_, _, err = ResolveCDSPins(path, ImagePolicySource{File: "/tmp/other.json"}, MeasurementPins{})
+	want := "this node pins CDS in " + path + "; remove --image-policy-file"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		source ImagePolicySource
+		pins   MeasurementPins
+		want   string
+	}{
+		{"inline policy", ImagePolicySource{JSON: "{}"}, MeasurementPins{}, "--image-policy-json"},
+		{"launch digests", ImagePolicySource{}, MeasurementPins{Measurements: []string{strings.Repeat("ab", 48)}, Prefix: "cds-"}, "--cds-measurements"},
+		{"register pins", ImagePolicySource{}, MeasurementPins{Registers: []string{"1=" + strings.Repeat("cd", 48)}}, "--rtmrs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ResolveCDSPins(path, tc.source, tc.pins); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// Without the mount the caller's own inputs apply: a chart-rendered platform
+// client and the CLI have no enforcer to read.
+func TestResolveCDSPinsFallsBackToArguments(t *testing.T) {
+	digest := strings.Repeat("ab", 48)
+	path := filepath.Join(t.TempDir(), "absent.json")
+
+	policy, source, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{Measurements: []string{digest}, Prefix: "cds-"})
+	if err != nil {
+		t.Fatalf("ResolveCDSPins: %v", err)
+	}
+	if len(policy.Measurements) != 1 {
+		t.Fatalf("policy measurements = %v, want the supplied digest", policy.Measurements)
+	}
+	if source != "arguments" {
+		t.Fatalf("source = %q, want the arguments", source)
+	}
+}
+
+// A path that exists but cannot be read is not an absent policy: falling back
+// to the arguments there would let a broken mount unpin a pod.
+func TestResolveCDSPinsFailsOnAnUnreadablePolicy(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sealed")
+	if err := os.Mkdir(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through a 0000 directory")
+	}
+
+	_, _, err := ResolveCDSPins(filepath.Join(dir, "cds-pins.json"), ImagePolicySource{}, MeasurementPins{})
+	if err == nil {
+		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
+	}
+	if !strings.Contains(err.Error(), "node CDS policy") {
+		t.Fatalf("error = %v, want it to name the node policy", err)
+	}
+}

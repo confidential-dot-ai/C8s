@@ -173,21 +173,6 @@ type Config struct {
 	// AttestationApiURL points at the node-local attestation-api.
 	AttestationApiURL string
 
-	// CDSMeasurements are the launch measurements the secret fetcher requires
-	// CDS to present. Empty pins none, which leaves an impostor CDS able to
-	// answer with a value of its choosing.
-	CDSMeasurements []string
-
-	// CDSRTMRs are the TDX RTMR pins (<index>=<sha384-hex>) the injected
-	// sidecars additionally hold CDS to. On TDX the launch measurement covers
-	// TDVF firmware alone, so without these CDSMeasurements says nothing
-	// about CDS's kernel or rootfs. Ignored for SNP evidence; empty pins no
-	// registers.
-	CDSRTMRs []string
-
-	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
-	CDSMeasurementsConfigJSON string
-
 	// CertDir is the mount path for the shared cert volume.
 	CertDir string
 
@@ -1105,7 +1090,6 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		args = append(args, "--reload-watch="+path)
 	}
 	args = append(args, discoveryArgs(inj.Discovery)...)
-	args = append(args, cdsPinArgs(cfg, true)...)
 	if inj.Verbose {
 		args = append(args, "--verbose")
 	}
@@ -1522,7 +1506,6 @@ func volumeContainer(inj *injection, cfg Config) corev1.Container {
 	for _, spec := range inj.Volumes.Specs {
 		args = append(args, "--volume="+spec)
 	}
-	args = append(args, cdsPinArgs(cfg, false)...)
 
 	always := corev1.ContainerRestartPolicyAlways
 	return corev1.Container{
@@ -1558,7 +1541,6 @@ func secretContainer(inj *injection, cfg Config) corev1.Container {
 	for _, spec := range inj.Secrets.Specs {
 		args = append(args, "--secret="+spec)
 	}
-	args = append(args, cdsPinArgs(cfg, false)...)
 
 	always := corev1.ContainerRestartPolicyAlways
 	return corev1.Container{
@@ -1738,30 +1720,4 @@ func containerMount(c *corev1.Container, name string) *corev1.VolumeMount {
 		}
 	}
 	return nil
-}
-
-// cdsPinArgs propagates the complete CDS identity without weakening operator
-// pins into a digest-only policy. Independent digest/register inputs use
-// their corresponding flags.
-func cdsPinArgs(cfg Config, certificate bool) []string {
-	if cfg.CDSMeasurementsConfigJSON != "" {
-		return []string{"--image-policy-json=" + cfg.CDSMeasurementsConfigJSON}
-	}
-	var args []string
-	if certificate {
-		if joined := strings.Join(cfg.CDSMeasurements, ","); joined != "" {
-			args = append(args, "--cds-measurements="+joined)
-		}
-		if joined := strings.Join(cfg.CDSRTMRs, ","); joined != "" {
-			args = append(args, "--cds-rtmrs="+joined)
-		}
-		return args
-	}
-	for _, m := range cfg.CDSMeasurements {
-		args = append(args, "--measurements="+m)
-	}
-	for _, r := range cfg.CDSRTMRs {
-		args = append(args, "--rtmrs="+r)
-	}
-	return args
 }

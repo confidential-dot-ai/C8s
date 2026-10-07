@@ -111,7 +111,7 @@ func Run(args []string) error {
 	var wlClient allowlistclient.Client
 	if cfg.PullEnabled() {
 		logger.Info("initializing allowlist client", "url", cfg.Allowlist.Pull.URL)
-		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull)
+		httpClient, err := allowlistPullHTTPClient(cfg.Allowlist.Pull, cfg.NormalizedPlatform())
 		if err != nil {
 			return fmt.Errorf("create allowlist client: %w", err)
 		}
@@ -122,6 +122,12 @@ func Run(args []string) error {
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
 	}
+	// Before the plugin serves a single container creation: a pod admitted
+	// without this mount would read no pins at all.
+	if err := plugin.prepareCDSPins(); err != nil {
+		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
+	}
+	logger.Info("CDS pins for injected clients", "path", plugin.cdsPins)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -242,8 +248,8 @@ func Run(args []string) error {
 // allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
-func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
-	pins, err := cfg.cdsPins()
+func allowlistPullHTTPClient(cfg pullConfig, platform string) (*http.Client, error) {
+	pins, err := cfg.cdsPins(platform)
 	if err != nil {
 		return nil, err
 	}
@@ -259,8 +265,8 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 }
 
 // cdsPins is shared by outbound pulls and the CDS-only inventory endpoint.
-func (cfg pullConfig) cdsPins() (armtls.Pins, error) {
-	if err := cfg.validatePolicyInputs(); err != nil {
+func (cfg pullConfig) cdsPins(platform string) (armtls.Pins, error) {
+	if err := cfg.validatePolicyInputs(platform); err != nil {
 		return armtls.Pins{}, err
 	}
 	policy, err := (cmdsutil.ImagePolicySource{File: cfg.CDSMeasurementsConfig}).Load(
@@ -496,7 +502,7 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
 func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
-	pins, err := cfg.Allowlist.Pull.cdsPins()
+	pins, err := cfg.Allowlist.Pull.cdsPins(cfg.NormalizedPlatform())
 	if err != nil {
 		return err
 	}

@@ -7,8 +7,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/controller"
 )
 
@@ -25,34 +23,27 @@ every pod outside an exempt namespace is injected; without it the node-level
 armtls-mesh DaemonSet is the mesh and only pods annotated confidential.ai/cw
 are injected.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		policyJSON, err := operatorMeasurementsPolicy(cdsMeasurementsConfig, cdsMeasurements, cdsRTMRs)
-		if err != nil {
-			return err
-		}
 		return controller.Run(cmd.Context(), controller.Options{
-			MetricsAddr:               metricsAddr,
-			HealthAddr:                healthAddr,
-			LeaderElection:            leaderElection,
-			LeaderElectionID:          "c8s-operator.confidential.ai",
-			LeaderElectionNS:          leaderElectionNS,
-			DisableStatusMirror:       !statusMirrorEnabled,
-			GetCertImage:              getCertImage,
-			MeshImage:                 meshImage,
-			CDSURL:                    cdsURL,
-			AttestationApiURL:         attestationApiURL,
-			CDSMeasurements:           cdsMeasurements,
-			CDSRTMRs:                  cdsRTMRs,
-			CDSMeasurementsConfigJSON: policyJSON,
-			ExcludeNamespaces:         excludeNamespaces,
-			WebhookConfigName:         webhookConfigName,
-			WebhookServiceName:        webhookServiceName,
-			WebhookServiceNamespace:   webhookServiceNamespace,
-			CertFSGroup:               certFSGroup,
-			CertRenewInterval:         certRenewInterval,
-			GetCertRunAsUser:          getCertRunAsUser,
-			GetCertRunAsGroup:         getCertRunAsGroup,
-			GetCertRunAsNonRoot:       getCertRunAsNonRoot,
-			WorkloadClaimsHostDir:     workloadClaimsHostDir,
+			MetricsAddr:             metricsAddr,
+			HealthAddr:              healthAddr,
+			LeaderElection:          leaderElection,
+			LeaderElectionID:        "c8s-operator.confidential.ai",
+			LeaderElectionNS:        leaderElectionNS,
+			DisableStatusMirror:     !statusMirrorEnabled,
+			GetCertImage:            getCertImage,
+			MeshImage:               meshImage,
+			CDSURL:                  cdsURL,
+			AttestationApiURL:       attestationApiURL,
+			ExcludeNamespaces:       excludeNamespaces,
+			WebhookConfigName:       webhookConfigName,
+			WebhookServiceName:      webhookServiceName,
+			WebhookServiceNamespace: webhookServiceNamespace,
+			CertFSGroup:             certFSGroup,
+			CertRenewInterval:       certRenewInterval,
+			GetCertRunAsUser:        getCertRunAsUser,
+			GetCertRunAsGroup:       getCertRunAsGroup,
+			GetCertRunAsNonRoot:     getCertRunAsNonRoot,
+			WorkloadClaimsHostDir:   workloadClaimsHostDir,
 		})
 	},
 }
@@ -67,9 +58,6 @@ var (
 	meshImage               string
 	cdsURL                  string
 	attestationApiURL       string
-	cdsMeasurements         []string
-	cdsMeasurementsConfig   string
-	cdsRTMRs                []string
 	webhookConfigName       string
 	webhookServiceName      string
 	webhookServiceNamespace string
@@ -93,9 +81,6 @@ func init() {
 	operatorCmd.Flags().StringVar(&meshImage, "mesh-image", "", "armtls-mesh image the webhook injects as the pod mesh endpoint (empty = the node DaemonSet is the mesh and injection stays opt-in)")
 	operatorCmd.Flags().StringVar(&cdsURL, "cds-url", "", "CDS Service URL the injected get-cert containers POST to")
 	operatorCmd.Flags().StringVar(&attestationApiURL, "attestation-api-url", "", "attestation-api endpoint (empty = no verification)")
-	operatorCmd.Flags().StringSliceVar(&cdsMeasurements, "cds-measurements", nil, "SHA-384 hex launch measurement(s) the injected secret fetcher requires CDS to present (repeatable; empty pins none)")
-	cmdsutil.BindImagePolicyFlags(operatorCmd.Flags(), &cdsMeasurementsConfig, nil, "", "propagates the complete CDS identity policy to injected sidecars; excludes --cds-measurements and --cds-rtmrs")
-	operatorCmd.Flags().StringSliceVar(&cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> the injected sidecars additionally hold CDS to (repeatable; ignored for SNP evidence, empty pins no registers)")
 	operatorCmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespaces", nil, "extra namespaces the startup reinject sweep skips (mirrors webhook.extraExcluded)")
 	operatorCmd.Flags().StringVar(&webhookConfigName, "webhook-config-name", "", "MutatingWebhookConfiguration to patch caBundle; the pod validator's configuration is named beside it (empty = skip)")
 	operatorCmd.Flags().StringVar(&webhookServiceName, "webhook-service-name", "", "webhook Service name (defaults to c8s)")
@@ -107,22 +92,4 @@ func init() {
 	operatorCmd.Flags().BoolVar(&getCertRunAsNonRoot, "get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
 	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM); when set, NRI mounts it into c8s-cert so get-cert redeems a sandbox token there (docs/armtls.md)")
 	rootCmd.AddCommand(operatorCmd)
-}
-
-// operatorMeasurementsPolicy preserves each image's runtime and operator-key
-// bindings instead of flattening independently authorized server identities.
-func operatorMeasurementsPolicy(path string, digests, rtmrs []string) (string, error) {
-	if path == "" {
-		return "", nil
-	}
-	pins, err := (cmdsutil.ImagePolicySource{File: path}).LoadValues(
-		cmdsutil.MeasurementPins{Measurements: digests, Registers: rtmrs, Prefix: "cds-"})
-	if err != nil {
-		return "", err
-	}
-	encoded, err := refvalues.Format(pins)
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
 }

@@ -227,8 +227,10 @@ then vouches for the issued identity.
 Properties worth noting:
 
 - **The transport for steps 1 and 4 is itself armTLS.** CDS self-provisions an
-  armTLS serving certificate bound to its own launch measurement; clients pin
-  it with `--cds-measurements`. The challenge–response plus the armTLS channel
+  armTLS serving certificate bound to its own launch measurement. An injected
+  client reads the pins from the node policy the enforcer bind-mounts at
+  `/run/c8s/cds-pins.json` and refuses pins passed to it; every other client
+  pins with `--cds-measurements`. The challenge–response plus the armTLS channel
   close the bootstrap window against a pod-network impostor — *iff*
   measurements are pinned.
 - **The mesh CA private key exists only in CDS process memory** (P-384, CN
@@ -820,7 +822,7 @@ confidentiality.)
 | Certificate | Private key lives | Signed by | Presented where | Verified by | Purpose |
 |---|---|---|---|---|---|
 | Self-signed armTLS cert (mesh bootstrap / `--cert-mode self-signed`) | armtls-mesh process memory (in the TEE) | itself — trust is the embedded attestation | mesh inbound :15006 and outbound dials (mTLS both ways) | peer's armTLS verification: local attestation-api `/verify` + measurement allowlist | pod-to-pod transport before (or without) CDS |
-| CDS armTLS serving cert | CDS process memory | itself — attestation bound to CDS's own measurement | CDS API (:8443) | clients pin `--cds-measurements` (get-cert, armtls-mesh, allowlist CLI, nri-image-policy) | protect the issuance/allowlist API from pod-network impostors |
+| CDS armTLS serving cert | CDS process memory | itself — attestation bound to CDS's own measurement | CDS API (:8443) | injected clients read the node policy the enforcer mounts; armtls-mesh, allowlist CLI and nri-image-policy pin `--cds-measurements` | protect the issuance/allowlist API from pod-network impostors |
 | Mesh CA (P-384, CN `c8s Mesh CA`, 1y) | CDS process memory only — never a Secret, never disk | self-signed root | never served as a leaf; public bundle via `GET /ca` and issuance responses | continuity check: new bundle must be signed by an already-trusted CA | root of trust for the CA-chain fast path |
 | CDS-issued workload leaf (≤ 24h) | pod volume published by get-cert as one generation (`/etc/c8s/certs`, keys 0640 with fsGroup) — inside the node TEE | mesh CA, after challenge–attest–certify | workload's own listeners; router upstream mTLS | chain to the mesh CA bundle | nameable workload identity (SAN = workload id / `c8s-<id>` Service), plus the sandbox-ID extension when the requester presented a sandbox token |
 | CDS-issued mesh leaf (`--cert-mode cds`) | armtls-mesh process memory | mesh CA; the leaf preserves the CSR's armTLS extension (CN `armtls-mesh-<nodeIP>`) | mesh ports, replacing the self-signed cert after `SwapProvider` | dual verification: CA chain fast path, embedded-evidence fallback | post-bootstrap mesh identity without per-handshake attestation cost |

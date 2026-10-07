@@ -66,6 +66,14 @@ const (
 	SidecarSocketDir = "/run/c8s/workload-claims"
 )
 
+// CDSPinsPath is where an injected credential client reads the CDS attestation
+// policy it holds the CDS to. Compiled for the same reason as the socket path:
+// the node bind-mounts its own policy there, so neither the pod nor the control
+// plane can name another source (see cmdsutil.ResolveCDSPins). The path is the
+// enforcer's alone — a chart-rendered client reads the node config it mounts
+// itself, and keeps its own policy flag.
+const CDSPinsPath = "/run/c8s/cds-pins.json"
+
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under
 // it.

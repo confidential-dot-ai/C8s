@@ -1,7 +1,9 @@
 package cmdsutil
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"strings"
 
@@ -114,6 +116,49 @@ func LoadImagePolicyValues(cfg ImagePolicyValuesConfig) (refvalues.ReferenceValu
 		}
 	}
 	return values, nil
+}
+
+// ResolveCDSPins returns the pins a client holds its CDS to, and the source it
+// read them from so the client can log which one decided.
+//
+// THE RULE: while the enforcer's policy mount is at nodePolicy, it is the only
+// source, and a supplied pin is refused rather than merged or silently
+// ignored (armTLS W2) — the control plane must not be able to choose which CDS
+// a pod trusts. An absent mount leaves the caller's own inputs: a
+// chart-rendered platform client and the CLI have no enforcer to read, and a
+// pod without the enforcer's mounts gets no identity assertion either, so it
+// can obtain nothing to misuse. Any other error reading that path fails: a
+// policy the client cannot read is not a policy it may ignore.
+func ResolveCDSPins(nodePolicy string, source ImagePolicySource, pins MeasurementPins) (remote.Policy, string, error) {
+	switch _, err := os.Stat(nodePolicy); {
+	case errors.Is(err, fs.ErrNotExist):
+		policy, err := source.Load(pins)
+		return policy, "arguments", err
+	case err != nil:
+		return remote.Policy{}, "", fmt.Errorf("node CDS policy %s: %w", nodePolicy, err)
+	}
+	if supplied := suppliedPolicyFlags(source, pins); len(supplied) > 0 {
+		return remote.Policy{}, "", fmt.Errorf("this node pins CDS in %s; remove %s",
+			nodePolicy, strings.Join(supplied, " and "))
+	}
+	values, err := refvalues.Load(nodePolicy)
+	if err != nil {
+		return remote.Policy{}, "", fmt.Errorf("node CDS policy: %w", err)
+	}
+	return values.Policy(), nodePolicy, nil
+}
+
+// suppliedPolicyFlags names the pin inputs the caller set, for an error that
+// says which argument to drop.
+func suppliedPolicyFlags(source ImagePolicySource, pins MeasurementPins) []string {
+	var flags []string
+	if source.File != "" {
+		flags = append(flags, "--image-policy-file")
+	}
+	if source.JSON != "" {
+		flags = append(flags, "--image-policy-json")
+	}
+	return append(flags, pins.flags()...)
 }
 
 // Load returns complete image identities or independent digest/register pins.
