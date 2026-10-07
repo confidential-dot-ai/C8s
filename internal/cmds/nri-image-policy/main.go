@@ -161,7 +161,7 @@ func Run(args []string) error {
 			return err
 		}
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, plugin.inventory, socketPath, signer); err != nil {
+		if err := startAdmissionInventory(ctx, logger, plugin, socketPath, signer); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
 		}
 		// Fail-soft, like the allowlist pull below: containerd requires this
@@ -169,7 +169,7 @@ func Run(args []string) error {
 		// node-wide. A missing digests endpoint only degrades issuance — CDS
 		// refuses tokens it cannot check — which is the cheaper failure.
 		if signer != nil {
-			if err := startSandboxDigests(ctx, logger, cfg, plugin.inventory, signer); err != nil {
+			if err := startSandboxDigests(ctx, logger, cfg, plugin, signer); err != nil {
 				logger.Error("sandbox-digests endpoint disabled; CDS will refuse requests carrying a sandbox token", "error", err)
 			}
 		}
@@ -495,7 +495,7 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
 // mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
-func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, signer *workloadclaims.SandboxTokenSigner) error {
+func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, resolver workloadclaims.SandboxResolver, signer *workloadclaims.SandboxTokenSigner) error {
 	pins, err := cfg.Allowlist.Pull.cdsPins()
 	if err != nil {
 		return err
@@ -506,14 +506,14 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
-	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
+	return workloadclaims.StartDigestsEndpoint(ctx, logger, resolver, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
 		attestationApiURL, pins)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, inventory *admissionInventory, socketPath string, signer *workloadclaims.SandboxTokenSigner) error {
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, resolver workloadclaims.SandboxResolver, socketPath string, signer *workloadclaims.SandboxTokenSigner) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
@@ -522,7 +522,7 @@ func startAdmissionInventory(ctx context.Context, logger *slog.Logger, inventory
 	// this deployment issues no tokens at all, not that one is still coming.
 	go func() {
 		logger.Info("starting admission inventory", "socket", socketPath, "sandbox_tokens", signer != nil)
-		if err := workloadclaims.ServeTokens(ctx, l, inventory, signer); err != nil {
+		if err := workloadclaims.ServeTokens(ctx, l, resolver, signer); err != nil {
 			logger.Error("admission inventory error", "error", err)
 		}
 	}()

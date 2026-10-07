@@ -20,8 +20,10 @@ import (
 // here needs to disambiguate.
 type stubResolver struct{}
 
-func (stubResolver) SandboxForPeer(workloadclaims.Peer) (string, error) {
-	return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", nil
+func (stubResolver) SandboxForPeer(workloadclaims.Peer) (workloadclaims.CallerSandbox, error) {
+	return workloadclaims.CallerSandbox{
+		SandboxID: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	}, nil
 }
 
 func (stubResolver) DigestsForSandbox(string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
