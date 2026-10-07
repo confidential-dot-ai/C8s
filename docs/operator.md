@@ -913,21 +913,26 @@ get-cert \
   --cds-url=https://<release>-cds.<namespace>.svc:8443 \
   --attestation-api-url=<release-attestation-api-url> \
   --san=<derived from confidential.ai/cw, e.g. c8s-api.default.svc> \
-  --out=/etc/c8s/certs/tls.crt \
-  --key-out=/etc/c8s/certs/tls.key \
-  --ca-out=/etc/c8s/certs/ca.crt \
+  --cert-path=/etc/c8s/certs/tls.crt \
+  --key-path=/etc/c8s/certs/tls.key \
+  --ca-path=/etc/c8s/certs/ca.crt \
   --renew-interval=<webhook.getCert.renewInterval> \
   --reload-nginx=<from annotation> \
   --continue-on-initial-error
 ```
 
-`--key-out` is idempotent: on a kubelet restart of the sidecar it reuses the
-key that's already on disk, so the previously-issued cert chain stays valid.
+The three paths are the stable names of one credential generation: get-cert
+writes the leaf, key and CA under `generations/` in that directory and
+flips the `current` symlink onto them, so a reader following `tls.crt`,
+`tls.key` and `ca.crt` resolves one complete set, or nothing while none is
+published. On a kubelet restart of the sidecar the published generation is
+revalidated and its key reused, so the previously-issued chain stays valid.
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on
 the mesh). File names are overridable per pod with `confidential.ai/c8s-cert-file`,
-`confidential.ai/c8s-key-file`, and `confidential.ai/c8s-ca-file`.
+`confidential.ai/c8s-key-file`, and `confidential.ai/c8s-ca-file`; all three
+must stay in the cert directory.
 
 `tls.key` is written `0640` owned by the get-cert user (UID/GID 65532, the pod's
 `fsGroup`). An image whose entrypoint starts as root and then drops to a
@@ -937,7 +942,7 @@ key into a directory the service user owns before dropping privileges.
 The `c8s-cert-wait` init container (`/c8s probe-file --wait /etc/c8s/certs/tls.crt`)
 gates the application containers on the initial cert being written: it blocks
 until the cert exists, then exits, and normal init-completion ordering holds the
-workload until then — fail-closed. Renewals rewrite the file on disk;
+workload until then — fail-closed. Renewals publish a new generation;
 application-level TLS reload remains the workload's responsibility unless the
 pod opts into one of the C8s reload annotations.
 

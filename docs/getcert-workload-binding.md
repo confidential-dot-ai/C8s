@@ -132,7 +132,7 @@ unix socket, and there are two separate threats:
    the issuance's existing freshness rather than a wall clock of its own
    (`internal/cmds/getcert/run.go`, `obtainCert`).
 
-2. **get-cert asks, anonymously.** `--workload-claims` opens the inventory at a
+2. **get-cert asks, anonymously.** get-cert opens the inventory at a
    compiled unix socket address and `POST`s `/sandbox`
    carrying only its CSR public key and that challenge. The request carries
    **no** PID, pod name, or container ID. (See "Corner 1".)
@@ -657,8 +657,8 @@ config validation at startup.
 
 **Upgrade ordering.** Because get-cert fails closed on an inventory error, roll
 `nri-image-policy` (which creates the socket and serves both surfaces) **before
-or with** the operator/webhook that injects `--workload-claims`. If the
-webhook starts injecting the flag while an old plugin (no inventory socket, no
+or with** the operator/webhook that injects the get-cert sidecar. If the
+webhook starts injecting it while an old plugin (no inventory socket, no
 NRI-injected socket-directory mount) is still running, every newly admitted
 `cw` pod fails cert issuance until the plugin is current: get-cert exits while
 the socket directory is absent, so the sidecar crashloops and its next

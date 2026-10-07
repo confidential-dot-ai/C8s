@@ -108,7 +108,7 @@ func init() {
 	// The default must match armtls-mesh's --exclude-source-namespaces
 	// default; the chart passes both from one value.
 	operatorCmd.Flags().StringSliceVar(&meshExcludeSourceNamespaces, "mesh-exclude-source-namespaces", []string{"kube-system"}, "namespaces the node mesh does not intercept (mirrors armtls-mesh --exclude-source-namespaces); they get no companion policies")
-	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM); when set, NRI mounts it into c8s-cert and the webhook injects --workload-claims so get-cert redeems a sandbox token (docs/armtls.md)")
+	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM); when set, NRI mounts it into c8s-cert so get-cert redeems a sandbox token there (docs/armtls.md)")
 	rootCmd.AddCommand(operatorCmd)
 }
 

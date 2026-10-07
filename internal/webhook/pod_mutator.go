@@ -197,8 +197,8 @@ type Config struct {
 	// the nri-image-policy inventory socket. That plugin bind-mounts the
 	// directory at workloadclaims.SidecarSocketDir into the injected sidecars
 	// (an NRI mount, never a pod-spec hostPath — PodSecurity baseline and
-	// restricted forbid hostPath); the webhook injects --workload-claims so
-	// get-cert redeems a sandbox token over that socket (docs/armtls.md).
+	// restricted forbid hostPath), where get-cert redeems a sandbox token over
+	// its compiled socket path (docs/armtls.md).
 	WorkloadClaimsHostDir string
 }
 
@@ -844,28 +844,24 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	pod.Labels[LabelWorkload] = inj.WorkloadID
 }
 
-// certContainer is the workload's mesh-cert sidecar. It bootstraps the leaf
-// cert from CDS on startup and keeps it fresh on a --renew-interval, SIGHUP-ing
-// nginx after each renewal when --reload-nginx is on.
+// certContainer is the workload's mesh-cert sidecar. It publishes the pod's
+// credential generation on startup and keeps it fresh on a --renew-interval,
+// SIGHUP-ing nginx after each renewal when --reload-nginx is on.
 //
 // Native sidecar (restartPolicy: Always) so it stays resident.
-//
-// --key-out is idempotent (load if a key already exists at the path, else
-// generate-and-write); a fresh key on every restart would invalidate every
-// cert CDS has previously issued for it.
 func certContainer(inj *injection, cfg Config) corev1.Container {
 	args := []string{
 		"get-cert",
 		"--cds-url=" + cfg.CDSURL,
 		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
-		"--san=" + inj.SAN,
-		"--out=" + certPath(inj.Cert.Dir, inj.Cert.CertFile),
-		"--key-out=" + certPath(inj.Cert.Dir, inj.Cert.KeyFile),
+		sanArg(inj.SAN),
+		"--cert-path=" + certPath(inj.Cert.Dir, inj.Cert.CertFile),
+		"--key-path=" + certPath(inj.Cert.Dir, inj.Cert.KeyFile),
 		// The mesh CA alone (0644), next to the leaf+CA bundle in tls.crt: an
 		// app that pins the CA as its own file (mysqld --ssl-ca, any client
 		// doing VERIFY_CA against the mesh) reads it directly instead of
 		// splitting the bundle in an entrypoint.
-		"--ca-out=" + certPath(inj.Cert.Dir, inj.Cert.CAFile),
+		"--ca-path=" + certPath(inj.Cert.Dir, inj.Cert.CAFile),
 		"--renew-interval=" + inj.Cert.RenewInterval.String(),
 		"--reload-nginx=" + strconv.FormatBool(inj.Reload.Nginx),
 		"--continue-on-initial-error",
@@ -875,11 +871,6 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 	}
 	args = append(args, discoveryArgs(inj.Discovery)...)
 	args = append(args, cdsPinArgs(cfg, true)...)
-	// get-cert redeems a sandbox token from the node's inventory over the
-	// mounted socket.
-	if cfg.WorkloadClaimsHostDir != "" {
-		args = append(args, "--workload-claims")
-	}
 	if inj.Verbose {
 		args = append(args, "--verbose")
 	}
@@ -898,6 +889,15 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		// init container (certWaitContainer), not a startupProbe here: a
 		// native sidecar is "started" the moment its process launches.
 	}
+}
+
+// sanArg asks for no SAN explicitly when none was selected, so an empty value
+// can never pass for a choice.
+func sanArg(san string) string {
+	if san == "" {
+		return "--no-san"
+	}
+	return "--san=" + san
 }
 
 // certWaitTimeout bounds how long c8s-cert-wait blocks before failing (and

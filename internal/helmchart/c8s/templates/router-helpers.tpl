@@ -578,21 +578,19 @@ list.
 {{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
-{{- if .Values.router.attest.expectedWorkload -}}
-
-{{- /* The readiness gate (cds-attest /readyz) demands a matched-workload
-       stamp on the mesh leaf, which only exists when get-cert redeems a
-       sandbox token from the inventory — so wire the claims flow whenever
-       the gate is enabled (the deployment fails the render if the gate is
-       set without the sidecar it gates). Node-CVM mounts the inventory
-       socket directory at get-cert's compiled path
-       (workloadclaims.SidecarSocketDir). The deployment adds the hostPath
-       volume and the socket's supplemental group
-       (workloadclaims.InventorySocketGID) on the same condition. */ -}}
-{{- $extraArgs = append $extraArgs "--workload-claims" -}}
 {{- if eq (include "router.mountInventorySocket" .) "true" -}}
+{{- /* get-cert redeems a sandbox token from the node inventory over its
+       compiled socket path (workloadclaims.SidecarSocketDir), so node-CVM
+       mounts the inventory socket directory there. The deployment adds the
+       hostPath volume and the socket's supplemental group
+       (workloadclaims.InventorySocketGID) on the same condition. */ -}}
 {{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
-{{- end -}}
+{{- else -}}
+{{- /* INVARIANT: the flag goes with the absent mount. The router is a chart
+       component, not an injected workload: on a cluster whose nodes run no
+       admission inventory there is nothing to redeem a sandbox token at, and
+       its leaf carries no workload instance. */ -}}
+{{- $extraArgs = append $extraArgs "--no-workload-claims" -}}
 {{- end -}}
 {{- if eq (include "router.publicTLSMode" .) "webpki" -}}
 {{- $mounts = append $mounts (printf "- name: public-tls\n  mountPath: %s\n  readOnly: true" .Values.router.publicTLS.mountPath) -}}

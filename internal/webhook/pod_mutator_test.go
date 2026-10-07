@@ -55,9 +55,9 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 	for _, want := range []string{
 		"--cds-url=http://cds.c8s-system.svc:8443",
 		"--san=api",
-		"--out=/etc/c8s/certs/tls.crt",
-		"--key-out=/etc/c8s/certs/tls.key",
-		"--ca-out=/etc/c8s/certs/ca.crt",
+		"--cert-path=/etc/c8s/certs/tls.crt",
+		"--key-path=/etc/c8s/certs/tls.key",
+		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=2h0m0s",
 		"--reload-nginx=false",
 		"--continue-on-initial-error",
@@ -273,9 +273,9 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	}
 	cert := pod.Spec.InitContainers[0]
 	for _, want := range []string{
-		"--out=/tls/cert.pem",
-		"--key-out=/tls/key.pem",
-		"--ca-out=/tls/ca.crt",
+		"--cert-path=/tls/cert.pem",
+		"--key-path=/tls/key.pem",
+		"--ca-path=/tls/ca.crt",
 		"--renew-interval=1h0m0s",
 		"--reload-nginx=true",
 		"--reload-watch=/edge-tls/public.crt",
@@ -1389,6 +1389,28 @@ func TestInjectedContainersMatchThePublishedNameSet(t *testing.T) {
 		if workloadclaims.IsInjectedContainerName(c.Name) == authored[c.Name] {
 			t.Errorf("container %q: authored %v but IsInjectedContainerName %v; derive would drop the wrong set",
 				c.Name, authored[c.Name], workloadclaims.IsInjectedContainerName(c.Name))
+		}
+	}
+}
+
+// A pod the webhook selected no SAN for asks for none explicitly.
+func TestCertContainerSANArg(t *testing.T) {
+	pod := podWithApp()
+	mutatePod(pod, &injection{WorkloadID: "api"}, secretsConfig())
+	args := containerNamed(pod, reservedCertContainerName).Args
+	if !hasArg(args, "--san=api") {
+		t.Fatalf("c8s-cert args %v missing the selected SAN", args)
+	}
+
+	sanless := podWithApp()
+	mutatePod(sanless, &injection{WorkloadID: ""}, secretsConfig())
+	args = containerNamed(sanless, reservedCertContainerName).Args
+	if !hasArg(args, "--no-san") {
+		t.Fatalf("c8s-cert args %v must ask for no SAN explicitly", args)
+	}
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--san") {
+			t.Fatalf("c8s-cert carries %q beside --no-san", arg)
 		}
 	}
 }
