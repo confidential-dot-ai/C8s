@@ -434,7 +434,9 @@ jobs:
                     model: EPYC-Genoa
                     cores: $SMP
                   devices:
-                    autoattachVSOCK: true
+                    # No vsock: the TDX guest fetches quotes over it, the SNP
+                    # guest attests through /dev/sev-guest, and the SNP
+                    # launcher's KubeVirt has no VSOCK feature gate.
                     disks:
                       - name: rootdisk
                         # dm-verity rootfs: never written. readonly takes a
