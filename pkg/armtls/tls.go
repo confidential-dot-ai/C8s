@@ -590,7 +590,8 @@ func (s *certState) SwapProvider(ctx context.Context, provider CertProvider) err
 // Use WarmUp to eagerly provision the certificate at startup and CertReady
 // to gate readiness probes.
 type CertManager struct {
-	state *certState
+	state     *certState
+	clientCAs *atomic.Pointer[x509.CertPool]
 }
 
 // WarmUp eagerly provisions the certificate. Call this at startup (after
@@ -628,6 +629,15 @@ func (m *CertManager) SetOnRotationFail(fn func()) {
 // runtime upgrades (e.g., self-signed to CDS-issued).
 func (m *CertManager) SwapProvider(ctx context.Context, provider CertProvider) error {
 	return m.state.SwapProvider(ctx, provider)
+}
+
+// UpdateClientCA replaces the root a ClientCA listener verifies client
+// certificates against, from the next handshake on. It does nothing for a
+// listener without ClientCA.
+func (m *CertManager) UpdateClientCA(ca *x509.Certificate) {
+	if m.clientCAs != nil {
+		m.clientCAs.Store(certPoolOf(ca))
+	}
 }
 
 // NewServerTLSConfig creates a tls.Config for an armTLS server. The private
@@ -686,24 +696,43 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 
 	// mTLS: require and verify client certificates. A listener authenticates
 	// its peers one way.
+	var clientCAs *atomic.Pointer[x509.CertPool]
 	if cfg.ClientCA != nil && cfg.ClientPolicy != nil {
 		return nil, nil, fmt.Errorf("armtls: ClientCA and ClientPolicy are mutually exclusive (ClientPolicy admits a self-issued armTLS peer, which ClientCA exists to refuse)")
 	}
 	switch {
 	case cfg.ClientCA != nil:
-		pool := x509.NewCertPool()
-		pool.AddCert(cfg.ClientCA)
-		tlsCfg.ClientCAs = pool
+		clientCAs = new(atomic.Pointer[x509.CertPool])
+		clientCAs.Store(certPoolOf(cfg.ClientCA))
+		tlsCfg.ClientCAs = clientCAs.Load()
 		tlsCfg.ClientAuth = cfg.ClientAuth
 		if tlsCfg.ClientAuth == tls.NoClientCert {
 			tlsCfg.ClientAuth = tls.VerifyClientCertIfGiven
 		}
+		tlsCfg.GetConfigForClient = clientCAsPerHandshake(tlsCfg, clientCAs)
 	case cfg.ClientPolicy != nil:
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
 		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
 	}
 
-	return tlsCfg, &CertManager{state: state}, nil
+	return tlsCfg, &CertManager{state: state, clientCAs: clientCAs}, nil
+}
+
+// clientCAsPerHandshake reads the client CA pool once per connection, so a
+// root replaced through [CertManager.UpdateClientCA] verifies the next client
+// certificate presented.
+func clientCAsPerHandshake(base *tls.Config, pool *atomic.Pointer[x509.CertPool]) func(*tls.ClientHelloInfo) (*tls.Config, error) {
+	return func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		current := base.Clone()
+		current.ClientCAs = pool.Load()
+		return current, nil
+	}
+}
+
+func certPoolOf(ca *x509.Certificate) *x509.CertPool {
+	pool := x509.NewCertPool()
+	pool.AddCert(ca)
+	return pool
 }
 
 // NewClientTLSConfig creates a tls.Config for an armTLS client. Peer
