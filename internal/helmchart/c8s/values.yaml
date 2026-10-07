@@ -221,6 +221,10 @@ cds:
     maxUnavailable: 0
   logLevel: info
   allowlistDB: /data/allowlist.db
+  # -- Delay between publishing an allowlist change and enforcing it. Routers
+  # fence their attest-pq sessions on the same lease; 0s applies writes at once
+  # and disables pinned-allowlist verification.
+  allowlistActivationLease: 0s
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp

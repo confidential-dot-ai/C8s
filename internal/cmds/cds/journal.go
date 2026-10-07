@@ -1,14 +1,17 @@
 package cds
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"regexp"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -106,4 +109,22 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v)
+}
+
+// activationLoop enforces a pending allowlist update once its lease has run.
+func activationLoop(ctx context.Context, store *allowlist.Store) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if ok, err := store.Activate(now); err != nil {
+				slog.Error("allowlist activation failed", "error", err)
+			} else if ok {
+				slog.Info("allowlist update activated")
+			}
+		}
+	}
 }
