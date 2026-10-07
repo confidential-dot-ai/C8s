@@ -51,7 +51,7 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := httptest.NewServer(newRouter(dependencies{
+	srv := httptest.NewServer(newIssuanceRouter(dependencies{
 		AttestHandler: AttestHandler{CertTTL: time.Hour},
 		AllowlistHandler: allowlist.Handler{
 			Store:           &store,

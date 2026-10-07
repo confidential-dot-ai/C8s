@@ -915,7 +915,7 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 			return "", err
 		}
 	}
-	url, err := w.be.call("cds_pod_url")
+	url, err := w.be.call("cds_pod_secrets_url")
 	if err != nil {
 		return "", err
 	}

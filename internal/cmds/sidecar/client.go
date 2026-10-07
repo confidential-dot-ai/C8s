@@ -71,7 +71,7 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 // at endpoint and bound to the challenge and this pod's leaf key, then the
 // request itself. Both are single-use, so every call takes its own.
 func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicKey, endpoint, method, path string) ([]byte, int, error) {
-	challenge, err := FetchChallenge(ctx, client, cfg.CDSURL, cfg.RequestTimeout)
+	challenge, err := FetchChallenge(ctx, client, cfg.SecretsURL, cfg.RequestTimeout)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -82,7 +82,7 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 
 	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 	defer cancel()
-	req, err := NewStoreRequest(reqCtx, cfg.CDSURL, method, path, challenge, tokenJSON)
+	req, err := NewStoreRequest(reqCtx, cfg.SecretsURL, method, path, challenge, tokenJSON)
 	if err != nil {
 		return nil, 0, err
 	}

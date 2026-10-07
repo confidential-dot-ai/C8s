@@ -114,6 +114,8 @@
 #                                    prints the status (000 when nothing
 #                                    answered), then the body
 #   cds_pod_url                      the CDS address a pod's requester dials
+#   cds_pod_secrets_url              the CDS address a pod's requester dials for
+#                                    the secret routes
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
 #   evidence <ns> <pod> <report-data-hex> [launch-digest-hex]
@@ -207,7 +209,8 @@
 #                                    the router's allowlist relay cannot reach
 #                                    the CDS, and undo it; each returns once
 #                                    the Service's endpoints say so
-# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
+# node_name, image_ref, image_digest, pull_interval, cds_pod_url,
+# cds_pod_secrets_url, cert_paths,
 # node_address, mesh_port, mesh_uids, mesh_platform, excluded_namespace,
 # host_namespace_ns, attestation_endpoint and pod_exec answer the same for a
 # whole run;
@@ -382,6 +385,10 @@ injected_image() { operator_arg get-cert-image; }
 
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }
+
+# The secret routes answer on a listener of their own, so the requester dials
+# a different address for them than for issuance.
+cds_pod_secrets_url() { operator_arg cds-secrets-url; }
 
 # Every plugin pulls from https://127.0.0.1:<node port of the CDS Service>
 # (the chart's nriImagePolicy.allowlist.pull.url default and the node image's

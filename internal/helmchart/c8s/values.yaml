@@ -211,6 +211,9 @@ cds:
     digest: ""
     pullPolicy: IfNotPresent
   port: 8443
+  ## The secret routes answer on their own port: they require the pod's mesh
+  ## leaf as a client certificate, and the issuance port must not ask for one.
+  secretsPort: 8444
   ## An upgrade that changes CDS's own image, command line or mounts fails
   ## until the running enforcers admit the new CDS. The failure names the new
   ## seed entry: publish it with `c8s allowlist apply`, wait for every node to

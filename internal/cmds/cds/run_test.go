@@ -180,6 +180,7 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 	return config{
 		host:                       "127.0.0.1",
 		port:                       0,
+		secretsPort:                freePort(t),
 		logLevel:                   "error",
 		attestationApiURL:          attestationURL,
 		caCommonName:               "test ca",
@@ -903,12 +904,11 @@ func TestPastHalfLife(t *testing.T) {
 	}
 }
 
-// A certificate that is presented is verified against the mesh CA: one the
-// CA did not issue fails the handshake, so a handler never sees it. Together
-// with the certless reads above this pins ClientAuth to
-// VerifyClientCertIfGiven; RequestClientCert would admit this peer and
-// RequireAndVerifyClientCert would refuse the certless one.
-func TestRun_ARMTLSRefusesClientCertOutsideMeshCA(t *testing.T) {
+// The issuance listener authorizes no caller by certificate, so a client that
+// offers one outside the mesh CA reads the published documents anyway: the
+// handshake never asks for it. The mesh-leaf requirement is the secrets
+// listener's (docs/secrets.md).
+func TestRun_ARMTLSIgnoresClientCertOutsideMeshCA(t *testing.T) {
 	cfg := armTLSRunConfig(t)
 	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
 	startRunServerOn(t, cfg, base, armTLSClient(nil))
@@ -932,10 +932,13 @@ func TestRun_ARMTLSRefusesClientCertOutsideMeshCA(t *testing.T) {
 	stranger := armTLSClient(&tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key})
 
 	resp, err := stranger.Get(base + "/ca")
-	if err == nil {
-		body, _ := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		t.Fatalf("GET /ca with a client certificate outside the mesh CA = %d (%s), want a refused handshake", resp.StatusCode, body)
+	if err != nil {
+		t.Fatalf("GET /ca with a client certificate outside the mesh CA: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /ca with a client certificate outside the mesh CA = %d (%s), want 200", resp.StatusCode, body)
 	}
 }
 

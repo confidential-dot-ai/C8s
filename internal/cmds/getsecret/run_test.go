@@ -70,7 +70,7 @@ func TestParseSecretSpec(t *testing.T) {
 func validConfig(t *testing.T) config {
 	t.Helper()
 	return config{
-		CDSURL:            "https://cds.example",
+		SecretsURL:        "https://cds.example",
 		AttestationApiURL: "http://127.0.0.1:8080",
 		Attempts:          3,
 		RetryInterval:     time.Second,
@@ -91,8 +91,8 @@ func TestValidate(t *testing.T) {
 		mutate func(*config)
 		want   string
 	}{
-		{"no cds url", func(c *config) { c.CDSURL = "" }, "--cds-url"},
-		{"plaintext cds url", func(c *config) { c.CDSURL = "http://cds.example" }, "https"},
+		{"no cds url", func(c *config) { c.SecretsURL = "" }, "--cds-secrets-url"},
+		{"plaintext cds url", func(c *config) { c.SecretsURL = "http://cds.example" }, "https"},
 		{"no attestation api", func(c *config) { c.AttestationApiURL = "" }, "--attestation-api-url"},
 		{"no secrets", func(c *config) { c.Secrets = nil }, "--secret"},
 		{"zero attempts", func(c *config) { c.Attempts = 0 }, "--attempts"},
@@ -121,16 +121,16 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// A trailing slash on --cds-url must not produce a double slash in the request
+// A trailing slash on --cds-secrets-url must not produce a double slash in the request
 // path, which the server would reject as non-canonical.
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.CDSURL = "https://cds.example/"
+	cfg.SecretsURL = "https://cds.example/"
 	if err := validate(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.CDSURL != "https://cds.example" {
-		t.Fatalf("CDSURL = %q, want the trailing slash trimmed", cfg.CDSURL)
+	if cfg.SecretsURL != "https://cds.example" {
+		t.Fatalf("SecretsURL = %q, want the trailing slash trimmed", cfg.SecretsURL)
 	}
 }
 

@@ -56,7 +56,7 @@ func newStubRouter(t *testing.T) http.Handler {
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
 	}
-	return newRouter(deps)
+	return newIssuanceRouter(deps)
 }
 
 func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
@@ -81,7 +81,7 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
 	}
-	r := newRouter(deps)
+	r := newIssuanceRouter(deps)
 
 	do := func() int {
 		req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(`{}`)))
@@ -117,7 +117,7 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
 	}
-	r := newRouter(deps)
+	r := newIssuanceRouter(deps)
 
 	do := func() int {
 		req := httptest.NewRequest(http.MethodPut, "/allowlist", bytes.NewReader([]byte(`{"schema":"c8s.allowlist/v1","workloads":{}}`)))
@@ -168,7 +168,7 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 		ChallengeLimiter: challengeRL,
 		MaxRequestSize:   65536,
 	}
-	r := newRouter(deps)
+	r := newIssuanceRouter(deps)
 
 	post := func(path, addr string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader([]byte(`{}`)))
@@ -281,7 +281,7 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   16,
 	}
-	r := newRouter(deps)
+	r := newIssuanceRouter(deps)
 
 	body := make([]byte, 1024)
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body))
@@ -393,6 +393,8 @@ func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 		readinessInterval:          time.Second,
 		minCAValidity:              time.Hour,
 		caCertValidity:             365 * 24 * time.Hour,
+		port:                       8443,
+		secretsPort:                8444,
 	}
 	if err := validateConfig(valid); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
@@ -413,6 +415,26 @@ func TestValidateConfigRejectsUnsafeValues(t *testing.T) {
 		{name: "negative max request size", edit: func(c *config) { c.maxRequestSize = -1 }},
 		{name: "zero readiness interval", edit: func(c *config) { c.readinessInterval = 0 }},
 		{name: "negative readiness interval", edit: func(c *config) { c.readinessInterval = -time.Second }},
+		{
+			name: "negative port",
+			edit: func(c *config) { c.port = -1 },
+		},
+		{
+			name: "port above the range",
+			edit: func(c *config) { c.port = 65536 },
+		},
+		{
+			name: "negative secrets port",
+			edit: func(c *config) { c.secretsPort = -1 },
+		},
+		{
+			name: "secrets port above the range",
+			edit: func(c *config) { c.secretsPort = 65536 },
+		},
+		{
+			name: "secrets port equal to the issuance port",
+			edit: func(c *config) { c.secretsPort = c.port },
+		},
 		{
 			name: "zero min ca validity",
 			edit: func(c *config) { c.minCAValidity = 0 },
@@ -524,13 +546,13 @@ func TestParseReferenceDigests(t *testing.T) {
 	}
 }
 
-func TestNewRouter_PanicsOnNilMeshCA(t *testing.T) {
+func TestNewIssuanceRouter_PanicsOnNilMeshCA(t *testing.T) {
 	defer func() {
 		if got := recover(); got != "cds: dependencies.MeshCA must be set" {
 			t.Fatalf("panic = %v, want nil MeshCA dependency panic", got)
 		}
 	}()
-	newRouter(dependencies{
+	newIssuanceRouter(dependencies{
 		RateLimiter:      newTestRateLimiter(t),
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   1,
@@ -543,7 +565,11 @@ func TestNewRouter_PanicsOnZeroMaxRequestSize(t *testing.T) {
 			t.Fatal("expected panic for zero MaxRequestSize")
 		}
 	}()
-	newRouter(dependencies{RateLimiter: newTestRateLimiter(t), ChallengeLimiter: newTestRateLimiter(t), MaxRequestSize: 0})
+	newIssuanceRouter(dependencies{
+		RateLimiter:      newTestRateLimiter(t),
+		ChallengeLimiter: newTestRateLimiter(t),
+		MaxRequestSize:   0,
+	})
 }
 
 func TestNewRouter_PanicsOnNilRateLimiter(t *testing.T) {
@@ -552,7 +578,10 @@ func TestNewRouter_PanicsOnNilRateLimiter(t *testing.T) {
 			t.Fatal("expected panic for nil RateLimiter")
 		}
 	}()
-	newRouter(dependencies{RateLimiter: nil, MaxRequestSize: 1})
+	newIssuanceRouter(dependencies{
+		RateLimiter:    nil,
+		MaxRequestSize: 1,
+	})
 }
 
 // The challenge route meters in a map of its own, so a wiring that forgets it
@@ -563,7 +592,11 @@ func TestNewRouter_PanicsOnNilChallengeLimiter(t *testing.T) {
 			t.Fatal("expected panic for nil ChallengeLimiter")
 		}
 	}()
-	newRouter(dependencies{RateLimiter: newTestRateLimiter(t), ChallengeLimiter: nil, MaxRequestSize: 1})
+	newIssuanceRouter(dependencies{
+		RateLimiter:      newTestRateLimiter(t),
+		ChallengeLimiter: nil,
+		MaxRequestSize:   1,
+	})
 }
 
 // Sharing one limiter between the two routes is the regression the challenge
@@ -576,7 +609,11 @@ func TestNewRouter_PanicsOnASharedChallengeLimiter(t *testing.T) {
 		}
 	}()
 	shared := newTestRateLimiter(t)
-	newRouter(dependencies{RateLimiter: shared, ChallengeLimiter: shared, MaxRequestSize: 1})
+	newIssuanceRouter(dependencies{
+		RateLimiter:      shared,
+		ChallengeLimiter: shared,
+		MaxRequestSize:   1,
+	})
 }
 
 // /measurements must report what this CDS enforces, and must report an empty

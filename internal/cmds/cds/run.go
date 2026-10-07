@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -351,23 +352,32 @@ func run(cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
-	router := newRouter(deps)
-
 	go checker.Run(ctx)
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
-	srv := newHTTPServer(addr, router, cfg)
+	servers := []*http.Server{newHTTPServer(addr, newIssuanceRouter(deps), cfg)}
+	if secretsHandler != nil {
+		secretsAddr := fmt.Sprintf("%s:%d", cfg.host, cfg.secretsPort)
+		servers = append(servers, newHTTPServer(secretsAddr, newSecretsRouter(deps), cfg))
+		slog.Info("serving the secret routes on their own listener", "addr", secretsAddr)
+	}
 
-	serve := srv.ListenAndServe
+	serve := func(srv *http.Server) error {
+		return srv.ListenAndServe()
+	}
 	var meshPeers *armtls.CertManager
 	if cfg.armtlsPlatform != "" {
-		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
+		secretsTLS, certMgr, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Current().CA.Cert))
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
 		}
-		srv.TLSConfig = tlsCfg
+		issuanceTLS := certMgr.CertlessServerTLSConfig()
+		servers[0].TLSConfig = issuanceTLS
+		if secretsHandler != nil {
+			servers[1].TLSConfig = secretsTLS
+		}
 		meshPeers = certMgr
-		serve = func() error {
+		serve = func(srv *http.Server) error {
 			return srv.ListenAndServeTLS("", "")
 		}
 
@@ -382,11 +392,24 @@ func run(cfg config) error {
 		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	}
 
-	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 	go renewMeshCAWhenDue(ctx, mesh, caRenewalCheckInterval, meshPeers)
 
 	slog.Info("cds listening", "addr", addr)
-	if err := serve(); err != http.ErrServerClosed {
+	return serveAll(ctx, serve, servers...)
+}
+
+// serveAll runs every server until the first failure, which shuts the others
+// down rather than leaving a half-served CDS behind. A server closed by
+// shutdown has not failed, so a clean stop returns nil.
+func serveAll(ctx context.Context, serve func(*http.Server) error, servers ...*http.Server) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, srv := range servers {
+		go cmdsutil.ShutdownOnDone(groupCtx, srv, 5*time.Second)
+		group.Go(func() error {
+			return serve(srv)
+		})
+	}
+	if err := group.Wait(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
 	return cmdsutil.NodeIPChanged(ctx, nil)
@@ -440,7 +463,7 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 		CertTTL:              cfg.armtlsCertTTL,
 		Logger:               slog.Default(),
 		ClientCAs:            []*x509.Certificate{meshCA},
-		ClientAuth:           tls.VerifyClientCertIfGiven,
+		ClientAuth:           tls.RequireAndVerifyClientCert,
 		MeasuredPoliciesFile: cfg.measuredPolicies,
 	}
 }
@@ -552,6 +575,17 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.followSeed && cfg.allowlistSeed == "" {
 		return fmt.Errorf("--follow-seed needs --allowlist-seed")
+	}
+	if cfg.port < 0 || cfg.port > 65535 {
+		return fmt.Errorf("--port must be a port number (0 lets the kernel choose one)")
+	}
+	if cfg.secretsPort < 0 || cfg.secretsPort > 65535 {
+		return fmt.Errorf("--secrets-port must be a port number (0 lets the kernel choose one)")
+	}
+	// Zero is each listener's own kernel-chosen port, so only a named port can
+	// collide.
+	if cfg.port == cfg.secretsPort && cfg.port != 0 {
+		return fmt.Errorf("--secrets-port must differ from --port (%d): the secret routes require a client certificate the issuance routes must not be asked for", cfg.port)
 	}
 	if cfg.minCAValidity <= 0 {
 		return fmt.Errorf("--min-ca-validity must be positive (it is the window CA renewal has to succeed in before /readyz fails)")

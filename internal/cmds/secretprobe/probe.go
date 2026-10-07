@@ -40,7 +40,7 @@ type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKe
 // warning: the steps read the probe's output and stderr as one stream.
 func newProbe(o options) (*probe, error) {
 	cfg := sidecar.Config{
-		CDSURL:                 o.cdsURL,
+		SecretsURL:             o.cdsURL,
 		AttestationApiURL:      o.attestationURL,
 		Measurements:           o.measurements,
 		RTMRs:                  o.rtmrs,

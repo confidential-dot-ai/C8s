@@ -68,7 +68,7 @@ func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 	rogue, _ := operatorSigner(t)
 	authorize := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize
 	return &routeFixture{
-		router: newRouter(dependencies{
+		router: newIssuanceRouter(dependencies{
 			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: meshCert},
 			ReadyFn:          func() bool { return true },
 			MeshCA:           mesh,

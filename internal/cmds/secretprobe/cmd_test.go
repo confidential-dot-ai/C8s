@@ -175,7 +175,7 @@ func TestRequestHeadersMatchDo(t *testing.T) {
 	cds := newFakeCDS(http.StatusOK, `{"value":"`+base64.StdEncoding.EncodeToString([]byte("v"))+`"}`)
 	h := newHarness(t, cds)
 
-	cfg := sidecar.Config{CDSURL: h.cdsURL, RequestTimeout: 5 * time.Second, InventoryTimeout: 5 * time.Second}
+	cfg := sidecar.Config{SecretsURL: h.cdsURL, RequestTimeout: 5 * time.Second, InventoryTimeout: 5 * time.Second}
 	if _, _, err := sidecar.Do(context.Background(), cfg, http.DefaultClient, h.leafPub, "unix://"+h.socket, http.MethodGet, "/api/db"); err != nil {
 		t.Fatal(err)
 	}

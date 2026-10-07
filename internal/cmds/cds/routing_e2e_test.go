@@ -42,7 +42,7 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.Mesh
 	if err != nil {
 		t.Fatal(err)
 	}
-	router := newRouter(dependencies{
+	router := newIssuanceRouter(dependencies{
 		Routes: routeHandler{
 			Store:     inMemoryStore(t),
 			Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize,

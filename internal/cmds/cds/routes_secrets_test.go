@@ -24,7 +24,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
-func secretsRouter(t *testing.T, enabled bool) http.Handler {
+// testDependencies is a CDS wiring whose handlers are bare: what is under test
+// here is which router owns which route.
+func testDependencies(t *testing.T, secretsOn bool) dependencies {
 	t.Helper()
 	limiter, err := issuer.NewIPRateLimiter(rate.Limit(1000), 1000, 100)
 	if err != nil {
@@ -32,24 +34,34 @@ func secretsRouter(t *testing.T, enabled bool) http.Handler {
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
-	mesh := testMeshCA(t)
 	deps := dependencies{
 		AttestHandler:    AttestHandler{Challenges: &cs},
 		ReadyFn:          func() bool { return true },
-		MeshCA:           mesh,
+		MeshCA:           testMeshCA(t),
 		RateLimiter:      limiter,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
 	}
-	if enabled {
-		// A bare handler: routing is what is under test, so every request that
-		// reaches it is refused for want of a client certificate.
+	if secretsOn {
 		deps.SecretsHandler = &secrets.Handler{}
 		deps.SecretsChallenges = &secretsCS
 		deps.SecretsOperator = &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64)}
 		deps.SecretsExplain = &secrets.ExplainHandler{}
 	}
-	return newRouter(deps)
+	return deps
+}
+
+// testIssuanceRouter builds the router whose listener requests no client
+// certificate.
+func testIssuanceRouter(t *testing.T, secretsOn bool) http.Handler {
+	t.Helper()
+	return newIssuanceRouter(testDependencies(t, secretsOn))
+}
+
+// testSecretsRouter builds the router whose listener requires a mesh leaf.
+func testSecretsRouter(t *testing.T) http.Handler {
+	t.Helper()
+	return newSecretsRouter(testDependencies(t, true))
 }
 
 func get(t *testing.T, h http.Handler, method, path string) int {
@@ -62,7 +74,7 @@ func get(t *testing.T, h http.Handler, method, path string) int {
 // The challenge route is "/secrets" exactly and the secret route is everything
 // below it, so neither shadows the other and no store path is unreachable.
 func TestRouter_SecretsChallengeDoesNotShadowSecretPaths(t *testing.T) {
-	r := secretsRouter(t, true)
+	r := testSecretsRouter(t)
 
 	if code := get(t, r, http.MethodPost, "/secrets"); code != http.StatusOK {
 		t.Fatalf("POST /secrets = %d, want 200 (a challenge)", code)
@@ -76,9 +88,9 @@ func TestRouter_SecretsChallengeDoesNotShadowSecretPaths(t *testing.T) {
 	}
 }
 
-// With --secrets off, nothing under /secrets is served at all.
+// With --secrets off, the issuance router serves nothing under /secrets.
 func TestRouter_SecretsUnroutedWhenDisabled(t *testing.T) {
-	r := secretsRouter(t, false)
+	issuance := testIssuanceRouter(t, false)
 	for _, tc := range []struct {
 		method, path string
 	}{
@@ -88,10 +100,21 @@ func TestRouter_SecretsUnroutedWhenDisabled(t *testing.T) {
 		{http.MethodPut, "/secrets/api/db"},
 		{http.MethodGet, "/secrets-explain/" + strings.Repeat("a", 64)},
 	} {
-		if code := get(t, r, tc.method, tc.path); code != http.StatusNotFound {
+		if code := get(t, issuance, tc.method, tc.path); code != http.StatusNotFound {
 			t.Fatalf("%s %s = %d with secrets disabled, want 404", tc.method, tc.path, code)
 		}
 	}
+}
+
+// With --secrets off there is no secrets listener: a router built without the
+// handler its routes authenticate against would answer them unguarded.
+func TestNewSecretsRouterRefusesAWiringWithoutTheHandler(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("a secrets router was built without a secrets handler")
+		}
+	}()
+	newSecretsRouter(testDependencies(t, false))
 }
 
 // The issuance and secrets challenge pools are distinct, so a nonce minted for
@@ -116,7 +139,8 @@ func TestRouter_SecretsChallengePoolIsSeparate(t *testing.T) {
 		SecretsOperator:   &secrets.OperatorHandler{Store: secrets.NewMemoryStore(8, 7, 64)},
 		SecretsExplain:    &secrets.ExplainHandler{},
 	}
-	_ = newRouter(deps)
+	_ = newIssuanceRouter(deps)
+	_ = newSecretsRouter(deps)
 
 	issued := cs.Create()
 	if secretsCS.Consume(issued[:]) {
@@ -132,7 +156,7 @@ func TestRouter_SecretsChallengePoolIsSeparate(t *testing.T) {
 // pinned operator key rather than by a mesh leaf and sandbox token. With no
 // authorizer wired, it refuses.
 func TestRouter_SecretsPutIsOperatorAuthorized(t *testing.T) {
-	r := secretsRouter(t, true)
+	r := testIssuanceRouter(t, true)
 	if code := get(t, r, http.MethodPut, "/secrets/api/db"); code != http.StatusUnauthorized {
 		t.Fatalf("PUT /secrets/api/db = %d, want 401", code)
 	}
@@ -165,7 +189,7 @@ func TestRouter_SecretsPutUsesTheAllowlistWriteCap(t *testing.T) {
 			Authorize:    func(_ *http.Request, body []byte) error { seen = len(body); return nil },
 		},
 	}
-	r := newRouter(deps)
+	r := newIssuanceRouter(deps)
 
 	value := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 512))
 	body := `{"value":"` + value + `"}`
@@ -184,10 +208,11 @@ func TestRouter_SecretsPutUsesTheAllowlistWriteCap(t *testing.T) {
 // /secrets/explain/... every secret stored under /explain/ would have become
 // unreachable — a store path silently shadowed by a route.
 func TestRouter_ExplainDoesNotShadowSecretPaths(t *testing.T) {
-	r := secretsRouter(t, true)
+	issuance := testIssuanceRouter(t, true)
+	r := testSecretsRouter(t)
 
 	sandbox := strings.Repeat("a", 64)
-	if code := get(t, r, http.MethodGet, "/secrets-explain/"+sandbox); code != http.StatusUnauthorized {
+	if code := get(t, issuance, http.MethodGet, "/secrets-explain/"+sandbox); code != http.StatusUnauthorized {
 		t.Fatalf("GET /secrets-explain = %d, want 401 (operator-authorized)", code)
 	}
 	// A secret literally under /explain still reaches the release handler,
@@ -240,7 +265,7 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
 	mesh := testMeshCA(t)
-	r := newRouter(dependencies{
+	r := newSecretsRouter(dependencies{
 		AttestHandler:     AttestHandler{Challenges: &cs},
 		ReadyFn:           func() bool { return true },
 		MeshCA:            mesh,
@@ -280,5 +305,54 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	// The co-tenant on the same address still gets through.
 	if code := send(victim); code == http.StatusTooManyRequests {
 		t.Fatal("one pod exhausted a co-tenant's bucket: the limiter is keyed on the address")
+	}
+}
+
+// The workload secret routes live only on the listener that requires a mesh
+// leaf: the issuance router has no route for the challenge and refuses the
+// workload's methods on the paths its operator route owns.
+func TestIssuanceRouterDoesNotServeTheWorkloadSecretRoutes(t *testing.T) {
+	issuance := testIssuanceRouter(t, true)
+	secretRoutes := testSecretsRouter(t)
+
+	for _, tc := range []struct {
+		method, path   string
+		wantOnIssuance int
+		wantOnSecrets  int
+	}{
+		{http.MethodPost, "/secrets", http.StatusNotFound, http.StatusOK},
+		{http.MethodGet, "/secrets/api/db", http.StatusMethodNotAllowed, http.StatusBadRequest},
+		{http.MethodPost, "/secrets/api/db", http.StatusMethodNotAllowed, http.StatusBadRequest},
+	} {
+		if code := get(t, issuance, tc.method, tc.path); code != tc.wantOnIssuance {
+			t.Errorf("%s %s on the issuance router = %d, want %d", tc.method, tc.path, code, tc.wantOnIssuance)
+		}
+		// The listener that owns the route reaches its handler: a challenge is
+		// minted, and a request with no verified client certificate is refused
+		// by the handler rather than by the router.
+		if code := get(t, secretRoutes, tc.method, tc.path); code != tc.wantOnSecrets {
+			t.Errorf("%s %s on the secrets router = %d, want %d", tc.method, tc.path, code, tc.wantOnSecrets)
+		}
+	}
+}
+
+// The operator's routes and every issuance route stay off the mutual-TLS
+// listener: it serves the workload's three routes and nothing else.
+func TestSecretsRouterServesOnlyTheWorkloadRoutes(t *testing.T) {
+	secretRoutes := testSecretsRouter(t)
+
+	for _, tc := range []struct {
+		method, path string
+		want         int
+	}{
+		{http.MethodPut, "/secrets/api/db", http.StatusMethodNotAllowed},
+		{http.MethodGet, "/secrets-explain/" + strings.Repeat("a", 64), http.StatusNotFound},
+		{http.MethodPost, "/attest", http.StatusNotFound},
+		{http.MethodGet, "/ca", http.StatusNotFound},
+		{http.MethodGet, "/readyz", http.StatusNotFound},
+	} {
+		if code := get(t, secretRoutes, tc.method, tc.path); code != tc.want {
+			t.Errorf("%s %s on the secrets router = %d, want %d", tc.method, tc.path, code, tc.want)
+		}
 	}
 }

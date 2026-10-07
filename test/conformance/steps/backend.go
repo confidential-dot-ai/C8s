@@ -26,7 +26,8 @@ type backend struct {
 // constant names the functions whose answer the contract fixes for a run.
 var constant = map[string]bool{
 	"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true, "cds_pod_url": true,
-	"cert_paths": true, "node_address": true, "mesh_ready": true, "mesh_port": true, "mesh_uids": true,
+	"cds_pod_secrets_url": true,
+	"cert_paths":          true, "node_address": true, "mesh_ready": true, "mesh_port": true, "mesh_uids": true,
 	"mesh_platform": true, "excluded_namespace": true, "host_namespace_ns": true, "attestation_endpoint": true, "dialer_bin": true,
 	"pod_exec": true, "node_writes": true,
 }

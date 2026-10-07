@@ -39,6 +39,7 @@ containers:
     command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "cds.image") }}
     args:
       - --port={{ .Values.cds.port }}
+      - --secrets-port={{ .Values.cds.secretsPort }}
       - --log-level={{ .Values.cds.logLevel }}
       # Per-mode resolution: see c8s.attestationApiURL.
       - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
@@ -118,6 +119,8 @@ containers:
     ports:
       - name: https
         containerPort: {{ .Values.cds.port }}
+      - name: secrets
+        containerPort: {{ .Values.cds.secretsPort }}
 
     readinessProbe:
       httpGet:
@@ -329,3 +332,6 @@ spec:
       {{- if and (eq .Values.cds.service.type "NodePort") .Values.cds.service.nodePort }}
       nodePort: {{ .Values.cds.service.nodePort }}
       {{- end }}
+    - name: secrets
+      port: {{ .Values.cds.secretsPort }}
+      targetPort: secrets

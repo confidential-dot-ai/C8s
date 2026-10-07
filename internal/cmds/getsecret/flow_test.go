@@ -86,7 +86,7 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func flowConfig(t *testing.T, url string) config {
 	t.Helper()
 	cfg := validConfig(t)
-	cfg.CDSURL = url
+	cfg.SecretsURL = url
 	return cfg
 }
 
