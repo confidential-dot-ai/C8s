@@ -28,8 +28,7 @@ func newTestManager(t *testing.T, ca *testCA, domains []string, onInstall func()
 	t.Cleanup(challengeSrv.Close)
 	// The front-door probe hits the challenge listener directly.
 	mgr.httpPort = serverPort(t, challengeSrv.URL)
-	mgr.probePublic = true
-	mgr.publicProbeClient = testPublicProbeClient(t, challengeSrv.URL)
+	mgr.probe = testPublicProbeClient(t, challengeSrv.URL)
 	mgr.directoryURL = newFakeACME(t, ca, challengeSrv.URL).directoryURL()
 	return mgr
 }
@@ -550,7 +549,7 @@ func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
 		mgr.handler().ServeHTTP(w, r)
 	}))
 	defer front.Close()
-	mgr.publicProbeClient = testPublicProbeClient(t, front.URL)
+	mgr.probe = testPublicProbeClient(t, front.URL)
 	ctx := context.Background()
 	mgr.ensure(ctx)
 	leaf, err := mgr.diskLeaf()
@@ -609,7 +608,7 @@ func TestPublicProbeRejectsOtherResponses(t *testing.T) {
 				}
 			}))
 			defer front.Close()
-			mgr.publicProbeClient = testPublicProbeClient(t, front.URL)
+			mgr.probe = testPublicProbeClient(t, front.URL)
 			mgr.directoryURL = "http://127.0.0.1:1/must-not-contact"
 			mgr.ensure(context.Background())
 			after, err := os.ReadFile(mgr.certPath())

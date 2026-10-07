@@ -168,8 +168,10 @@ func runWith(cfg config, probe *http.Client) error {
 		}
 	})
 	mgr.httpPort = cfg.httpPort
-	mgr.probePublic = true
-	mgr.publicProbeClient = probe
+	if probe == nil {
+		probe = publicProbeClient()
+	}
+	mgr.probe = probe
 
 	challengeAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.challengePort))
 	if _, err := cmdsutil.ServeInBackground(ctx, challengeAddr, mgr.handler(), logger); err != nil {

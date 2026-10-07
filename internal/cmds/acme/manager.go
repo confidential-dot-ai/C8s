@@ -56,10 +56,10 @@ type manager struct {
 	// starting. 0 (tests without a front door) skips the probe; the CLI
 	// validates the flag into 1-65535.
 	httpPort int
-	// probePublic issues only for domains whose public challenge path reaches
-	// this router; publicProbeClient overrides the transport for tests.
-	probePublic       bool
-	publicProbeClient *http.Client
+	// probe dials each configured domain's public challenge path, so issuance
+	// covers only the domains that reach this router. nil (tests without a
+	// front door) treats every domain as reachable.
+	probe *http.Client
 
 	// recheck/retry pace run; tests tighten them.
 	recheck time.Duration
@@ -454,46 +454,60 @@ func (m *manager) needsIssueFor(domains []string) bool {
 // other names. This probe is only a readiness check. The CA still performs
 // normal HTTP-01 ownership validation before it issues any certificate.
 func (m *manager) reachableDomains(ctx context.Context) []string {
-	if !m.probePublic {
+	if m.probe == nil {
 		return slices.Clone(m.domains)
-	}
-	client := m.publicProbeClient
-	if client == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		transport.Proxy = nil
-		defer transport.CloseIdleConnections()
-		client = &http.Client{Transport: transport, Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	}
 	var reachable []string
 	for _, name := range m.domains {
 		if ctx.Err() != nil {
 			break
 		}
-		var raw [32]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			break
-		}
-		token := base64.RawURLEncoding.EncodeToString(raw[:])
-		proof := "c8s-public-probe." + token
-		m.mu.Lock()
-		m.tokens[token] = proof
-		m.mu.Unlock()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+name+challengePrefix+token, nil)
-		matches := false
-		if err == nil {
-			resp, requestErr := client.Do(req)
-			if requestErr == nil {
-				body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256))
-				resp.Body.Close()
-				matches = readErr == nil && resp.StatusCode == http.StatusOK && string(body) == proof
-			}
-		}
-		m.mu.Lock()
-		delete(m.tokens, token)
-		m.mu.Unlock()
-		if matches {
+		if m.probeDomain(ctx, name) {
 			reachable = append(reachable, name)
 		}
 	}
 	return reachable
+}
+
+// probeDomain reports whether a request to name's public challenge path comes
+// back to this manager: it serves a one-off token and checks the answer.
+func (m *manager) probeDomain(ctx context.Context, name string) bool {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return false
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw[:])
+	proof := "c8s-public-probe." + token
+	m.mu.Lock()
+	m.tokens[token] = proof
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.tokens, token)
+		m.mu.Unlock()
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+name+challengePrefix+token, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.probe.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	return err == nil && resp.StatusCode == http.StatusOK && string(body) == proof
+}
+
+// publicProbeClient dials public names directly, with no proxy and no
+// redirects, so a probe answer proves the path reaches this router.
+func publicProbeClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DisableKeepAlives = true
+	return &http.Client{
+		Transport:     transport,
+		Timeout:       5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }
