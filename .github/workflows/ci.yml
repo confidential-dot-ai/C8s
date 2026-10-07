@@ -122,9 +122,10 @@ jobs:
           fi
 
       # The cw-guard rule assertions resolve through iptables-translate;
-      # C8S_REQUIRE_IPTABLES_TRANSLATE fails the job if it is missing.
-      - name: Install iptables
-        run: sudo apt-get update && sudo apt-get install -y iptables
+      # C8S_REQUIRE_IPTABLES_TRANSLATE fails the job if it is missing. The pod
+      # ruleset golden is checked with nft.
+      - name: Install iptables and nftables
+        run: sudo apt-get update && sudo apt-get install -y iptables nftables
 
       - name: Test
         env:
@@ -135,6 +136,9 @@ jobs:
         # via the testlog's stat of the LookPath'd path: an apt bump changes
         # its mtime and invalidates the cached pass.
         run: make test C8S_TEST_COUNT=
+
+      - name: Test the pod ruleset in a network namespace
+        run: make test-podmesh-netns
 
       # The advisory mutation job only exercises the 0-mutant path on
       # script-only diffs; this guards the summary paths it skips.

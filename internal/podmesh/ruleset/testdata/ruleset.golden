@@ -1,0 +1,47 @@
+table inet c8s-podmesh {
+	chain capture-inbound {
+		type nat hook prerouting priority dstnat; policy accept;
+		iifname "lo" return # loopback
+		meta l4proto tcp th dport 15021 return # health-port
+		meta l4proto tcp redirect to :15006 # redirect-to-inbound-listener
+	}
+	chain capture-outbound {
+		type nat hook output priority dstnat; policy accept;
+		fib daddr type local return # pod-local
+		skuid 1337 return # mesh-sockets
+		skuid 1338 return # role-1338-sockets
+		meta nfproto ipv4 ip daddr 10.53.0.10 meta l4proto tcp th dport 53 return # resolver-10.53.0.10-tcp
+		meta nfproto ipv6 ip6 daddr fd00:53::a meta l4proto tcp th dport 53 return # resolver-fd00:53::a-tcp
+		meta l4proto tcp redirect to :15001 # redirect-to-outbound-listener
+	}
+	chain filter-input {
+		type filter hook input priority filter; policy drop;
+		ct state established accept # replies
+		ct state related meta l4proto icmp accept # icmp-errors
+		ct state related meta l4proto icmpv6 accept # icmpv6-errors
+		meta l4proto icmpv6 icmpv6 type 135 accept # neighbour-solicitation
+		meta l4proto icmpv6 icmpv6 type 136 accept # neighbour-advertisement
+		iifname "lo" accept # loopback
+		meta l4proto tcp th dport 15006 accept # inbound-listener
+		meta l4proto tcp th dport 15021 accept # health-port
+	}
+	chain filter-output {
+		type filter hook output priority filter; policy drop;
+		skuid 0 drop # namespace-entrant
+		ct state established accept # replies
+		ct state related meta l4proto icmp accept # icmp-errors
+		ct state related meta l4proto icmpv6 accept # icmpv6-errors
+		meta l4proto icmpv6 icmpv6 type 135 accept # neighbour-solicitation
+		meta l4proto icmpv6 icmpv6 type 136 accept # neighbour-advertisement
+		fib daddr type local accept # pod-local
+		meta nfproto ipv4 ip daddr 10.53.0.10 meta l4proto udp th dport 53 accept # resolver-10.53.0.10-udp
+		meta nfproto ipv4 ip daddr 10.53.0.10 meta l4proto tcp th dport 53 accept # resolver-10.53.0.10-tcp
+		meta nfproto ipv6 ip6 daddr fd00:53::a meta l4proto udp th dport 53 accept # resolver-fd00:53::a-udp
+		meta nfproto ipv6 ip6 daddr fd00:53::a meta l4proto tcp th dport 53 accept # resolver-fd00:53::a-tcp
+		skuid 1337 accept # mesh-sockets
+		skuid 1338 meta nfproto ipv4 ip daddr 10.43.0.2 meta l4proto tcp th dport 8443 accept # role-1338-destination-10.43.0.2-8443
+	}
+	chain filter-forward {
+		type filter hook forward priority filter; policy drop;
+	}
+}
