@@ -148,7 +148,7 @@ func e2eNamedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate 
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
 	}})
 	if err != nil {
