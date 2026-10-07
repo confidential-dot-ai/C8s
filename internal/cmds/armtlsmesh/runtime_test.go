@@ -53,10 +53,10 @@ func TestMeshEnvironmentRouting(t *testing.T) {
 				if p.inboundLn != cfg.listeners.inbound || p.outboundLn != cfg.listeners.outbound || r.healthListener != cfg.listeners.health {
 					t.Fatal("host must adopt reserved listeners")
 				}
-				if cap(p.connSem) != cfg.maxConns || p.maxConnsPerSrc != cfg.maxConnsPerSource {
+				if cap(p.outboundSem) != cfg.maxConns || cap(p.inboundSem) != cfg.maxConns || p.maxConnsPerSrc != cfg.maxConnsPerSource {
 					t.Fatal("host connection limits lost")
 				}
-			} else if p.inboundLn != nil || p.outboundLn != nil || r.healthListener != nil || p.connSem != nil || p.maxConnsPerSrc != 0 {
+			} else if p.inboundLn != nil || p.outboundLn != nil || r.healthListener != nil || p.outboundSem != nil || p.inboundSem != nil || p.maxConnsPerSrc != 0 {
 				t.Fatal("guest must use its own listeners and default connection limits")
 			}
 		})

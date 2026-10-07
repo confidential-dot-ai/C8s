@@ -365,7 +365,12 @@ func (f *proxyRunFixture) roundTrip(t *testing.T, payload string) string {
 	return ""
 }
 
-// waitForConnSlots blocks until every global semaphore slot has been returned.
+// heldSlots reports the semaphore slots held across both listeners.
+func (f *proxyRunFixture) heldSlots() int {
+	return len(f.p.outboundSem) + len(f.p.inboundSem)
+}
+
+// waitForConnSlots blocks until every listener semaphore slot has been returned.
 //
 // A slot is released by the deferred send in Serve's per-connection goroutine,
 // which runs only after handler() returns — strictly later than the client
@@ -379,7 +384,7 @@ func (f *proxyRunFixture) waitForConnSlots(t *testing.T) {
 	const timeout = 5 * time.Second
 	deadline := time.Now().Add(timeout)
 	for {
-		held := len(f.p.connSem)
+		held := f.heldSlots()
 		if held == 0 {
 			return
 		}
@@ -391,12 +396,13 @@ func (f *proxyRunFixture) waitForConnSlots(t *testing.T) {
 }
 
 // End-to-end through Run: plain outbound listener, TLS inbound listener, and
-// the global semaphore released after every finished connection.
+// the listener semaphores released after every finished connection.
 func TestProxyRunEndToEnd(t *testing.T) {
-	// Each app connection consumes two semaphore slots (outbound + inbound
-	// leg), so capacity 2 admits exactly one connection at a time.
+	// Each app connection consumes one slot per listener (outbound + inbound
+	// leg), so capacity 1 admits exactly one connection at a time.
 	f := startProxyRun(t, func(p *Proxy) {
-		p.connSem = make(chan struct{}, 2)
+		p.outboundSem = make(chan struct{}, 1)
+		p.inboundSem = make(chan struct{}, 1)
 	})
 
 	for i := range 3 {
@@ -404,7 +410,7 @@ func TestProxyRunEndToEnd(t *testing.T) {
 		// client already saw EOF. Dialing again before they drain races the
 		// release and the accept loop rejects (RSTs) the new connection at
 		// the global limit.
-		assertEventually(t, 5*time.Second, func() bool { return len(f.p.connSem) == 0 },
+		assertEventually(t, 5*time.Second, func() bool { return f.heldSlots() == 0 },
 			"semaphore slots not released after the previous connection")
 		want := fmt.Sprintf(`hello from run-e2e (got "ping-%d")`, i)
 		if got := f.roundTrip(t, fmt.Sprintf("ping-%d", i)); got != want {
@@ -422,7 +428,7 @@ func TestProxyRunEndToEnd(t *testing.T) {
 	// handlers' deferred releases, and asserting a zero counter turns that
 	// scheduling race into a flake (seen on loaded CI runners). Drained means
 	// released.
-	assertEventually(t, 5*time.Second, func() bool { return len(f.p.connSem) == 0 },
+	assertEventually(t, 5*time.Second, func() bool { return f.heldSlots() == 0 },
 		"semaphore slots not released after the final connection")
 
 	// Listener-ready logs must report the TLS posture per listener.
@@ -464,7 +470,7 @@ func TestProxyRunPerSourceRejectReleasesGlobalSlot(t *testing.T) {
 	defer release()
 
 	f := startProxyRun(t, func(p *Proxy) {
-		p.connSem = make(chan struct{}, 2)
+		p.outboundSem = make(chan struct{}, 2)
 		p.maxConnsPerSrc = 1
 		p.origDstFunc = func(net.Conn) (string, error) {
 			<-hold
@@ -500,6 +506,104 @@ func TestProxyRunPerSourceRejectReleasesGlobalSlot(t *testing.T) {
 		t.Errorf("connLimitRejected = %v, want 0 (per-source rejects must return the global slot)", v)
 	}
 	release()
+}
+
+// Inbound peers that connect and never handshake must neither consume
+// outbound slots nor hold inbound slots for the full header timeout.
+func TestProxyRunSilentInboundPeersDoNotStarveOutbound(t *testing.T) {
+	hold := make(chan struct{})
+	var holdOnce sync.Once
+	release := func() { holdOnce.Do(func() { close(hold) }) }
+	defer release()
+
+	f := startProxyRun(t, func(p *Proxy) {
+		p.outboundSem = make(chan struct{}, 2)
+		p.inboundSem = make(chan struct{}, 2)
+		p.destHeaderTimeout = 5 * time.Second
+		backend := p.origDstFunc
+		p.origDstFunc = func(c net.Conn) (string, error) {
+			<-hold
+			return backend(c)
+		}
+	})
+	m := f.p.metrics
+
+	opened := time.Now()
+	var silent []net.Conn
+	for range 2 {
+		c, err := net.Dial("tcp", f.p.inboundAddr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		silent = append(silent, c)
+	}
+	assertEventually(t, time.Second, func() bool { return len(f.p.inboundSem) == 2 },
+		"silent inbound connections never took the inbound slots")
+
+	out, err := net.Dial("tcp", f.p.outboundAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer out.Close()
+	assertEventually(t, time.Second, func() bool {
+		return testutil.ToFloat64(m.activeConnections.WithLabelValues("outbound")) == 1
+	}, "outbound connection was not admitted while inbound slots were full")
+	if v := testutil.ToFloat64(m.connLimitRejected); v != 0 {
+		t.Fatalf("connLimitRejected = %v with inbound slots full, want 0", v)
+	}
+
+	for i, c := range silent {
+		c.SetReadDeadline(opened.Add(f.p.destHeaderTimeout))
+		if _, err := c.Read(make([]byte, 1)); err == nil {
+			t.Fatalf("silent connection %d: read data, want close", i)
+		} else if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
+			t.Fatalf("silent connection %d still open at the header timeout", i)
+		}
+		if elapsed := time.Since(opened); elapsed > inboundHandshakeTimeout+time.Second {
+			t.Fatalf("silent connection %d closed after %v, want within ~%v", i, elapsed, inboundHandshakeTimeout)
+		}
+	}
+	assertEventually(t, 5*time.Second, func() bool { return len(f.p.inboundSem) == 0 },
+		"inbound slots not released after the handshake timeout")
+	if v := testutil.ToFloat64(m.destHeaderErrors.WithLabelValues("handshake")); v != 2 {
+		t.Errorf("destHeaderErrors{handshake} = %v, want 2", v)
+	}
+	if v := testutil.ToFloat64(m.destHeaderErrors.WithLabelValues("read")); v != 0 {
+		t.Errorf("destHeaderErrors{read} = %v, want 0", v)
+	}
+
+	release()
+	fmt.Fprint(out, "ping")
+	out.(*net.TCPConn).CloseWrite()
+	got, err := io.ReadAll(out)
+	if err != nil {
+		t.Fatalf("outbound read: %v\naccess log:\n%s", err, f.logBuf.String())
+	}
+	if want := `hello from run-e2e (got "ping")`; string(got) != want {
+		t.Fatalf("outbound reply = %q, want %q", got, want)
+	}
+	if v := testutil.ToFloat64(m.connLimitRejected); v != 0 {
+		t.Errorf("connLimitRejected = %v, want 0", v)
+	}
+}
+
+// A synchronous certificate provisioning longer than inboundHandshakeTimeout
+// must not fail the handshake it runs under.
+func TestProxyRunSlowInboundProvisioning(t *testing.T) {
+	f := startProxyRun(t, func(p *Proxy) {
+		p.destHeaderTimeout = 5 * time.Second
+		p.serverTLS = p.serverTLS.Clone()
+		get := p.serverTLS.GetCertificate
+		p.serverTLS.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			time.Sleep(inboundHandshakeTimeout + 500*time.Millisecond)
+			return get(hello)
+		}
+	})
+
+	if got, want := f.roundTrip(t, "ping"), `hello from run-e2e (got "ping")`; got != want {
+		t.Fatalf("roundTrip = %q, want %q", got, want)
+	}
 }
 
 func TestTryAcquireAndReleaseSrc(t *testing.T) {
@@ -573,7 +677,7 @@ func TestServeConnectionLimits(t *testing.T) {
 				logger:         testLogger(),
 				metrics:        m,
 				bufPool:        newBufPool(0),
-				connSem:        sem,
+				outboundSem:    sem,
 				maxConnsPerSrc: tc.perSrc,
 				drainTimeout:   200 * time.Millisecond,
 				onReady:        func() { close(ready) },
