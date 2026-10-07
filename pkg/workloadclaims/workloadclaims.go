@@ -81,6 +81,22 @@ const (
 	VolumeContainerName = "c8s-volume"
 )
 
+// MeshContainerName is the webhook-injected per-pod mesh endpoint. It reads the
+// credentials c8s-cert publishes and dials no inventory socket, so it is not a
+// SidecarContainer.
+const MeshContainerName = "c8s-mesh"
+
+// The mesh endpoint's reserved identity and ports, shared by every component
+// that has to agree on them: the injector builds the container from these, the
+// endpoint binds them, and the node enforcer matches the pod's packet rules on
+// MeshUID. MeshHealthPort carries the probes and no application traffic.
+const (
+	MeshUID          int64 = 1337
+	MeshOutboundPort int32 = 15001
+	MeshInboundPort  int32 = 15006
+	MeshHealthPort   int32 = 15021
+)
+
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.
 const CertWaitContainerName = "c8s-cert-wait"
@@ -95,7 +111,7 @@ func IsSidecarContainer(name string) bool {
 // injects. Names are host-written, so it holds only over authored input;
 // runtime matching goes by digest and entrypoint (internal/secrets.WorkloadContainers).
 func IsInjectedContainerName(name string) bool {
-	return IsSidecarContainer(name) || name == CertWaitContainerName
+	return IsSidecarContainer(name) || name == CertWaitContainerName || name == MeshContainerName
 }
 
 // InventoryEndpoint is get-cert's compiled inventory endpoint on node-CVM: the

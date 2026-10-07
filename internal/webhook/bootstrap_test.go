@@ -137,3 +137,38 @@ func TestPatchCABundle(t *testing.T) {
 		t.Fatal("PatchCABundle on a missing configuration = nil, want error")
 	}
 }
+
+func TestPatchValidatingCABundle(t *testing.T) {
+	scheme := k8sruntime.NewScheme()
+	if err := admissionv1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &admissionv1.ValidatingWebhookConfiguration{
+		Name: "c8s-validating",
+		Webhooks: []admissionv1.ValidatingWebhook{
+			{Name: "pods-validate.c8s.dev"},
+		},
+	}
+	fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).Build()
+	caPEM := []byte("-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n")
+
+	if err := PatchValidatingCABundle(context.Background(), fc, "c8s-validating", caPEM); err != nil {
+		t.Fatalf("PatchValidatingCABundle: %v", err)
+	}
+	var got admissionv1.ValidatingWebhookConfiguration
+	if err := fc.Get(context.Background(), types.NamespacedName{Name: "c8s-validating"}, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Webhooks[0].ClientConfig.CABundle, caPEM) {
+		t.Fatalf("caBundle = %q, want the patched CA PEM", got.Webhooks[0].ClientConfig.CABundle)
+	}
+
+	// Idempotent, and a missing configuration is an error: the API server must
+	// never be left trusting a stale bundle silently.
+	if err := PatchValidatingCABundle(context.Background(), fc, "c8s-validating", caPEM); err != nil {
+		t.Fatalf("re-patch: %v", err)
+	}
+	if err := PatchValidatingCABundle(context.Background(), fc, "missing", caPEM); err == nil {
+		t.Fatal("PatchValidatingCABundle on a missing configuration = nil, want error")
+	}
+}

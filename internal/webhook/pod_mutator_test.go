@@ -28,7 +28,7 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		},
 	}
 
-	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
+	mutatePod(pod, &injection{WorkloadID: "api", SAN: "api"}, Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		CDSURL:            "http://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
@@ -251,7 +251,7 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		},
 	}
 
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parseAnnotations: %v", err)
 	}
@@ -332,7 +332,7 @@ func TestParseAnnotationsRejectsWorkloadIDInvalidAsLabelValue(t *testing.T) {
 			Annotations: map[string]string{
 				AnnotationWorkload: id,
 			},
-		})
+		}, "")
 		if !errors.Is(err, errInvalidInjectionAnnotation) {
 			t.Fatalf("parseAnnotations(%q) error = %v, want invalid annotation", id, err)
 		}
@@ -370,7 +370,7 @@ func TestParseAnnotationsRejectsInvalidRenewInterval(t *testing.T) {
 			AnnotationWorkload:      "api",
 			AnnotationRenewInterval: "not-a-duration",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -381,7 +381,7 @@ func TestParseAnnotationsRejectsInjectionDetailsWithoutWorkloadAnnotation(t *tes
 		Annotations: map[string]string{
 			AnnotationCertVolume: "tls-certs",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -393,7 +393,7 @@ func TestParseAnnotationsRejectsReloadWatchWithoutMount(t *testing.T) {
 			AnnotationWorkload:         "api",
 			AnnotationReloadWatchPaths: "/public-tls/tls.crt",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -405,7 +405,7 @@ func TestParseAnnotationsRejectsIncompleteDiscovery(t *testing.T) {
 			AnnotationWorkload:            "api",
 			AnnotationDiscoveryCDSCertURL: "/.well-known/cds-cert.pem",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -421,7 +421,7 @@ func TestParseAnnotationsRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "invalid",
 		},
-	})
+	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
@@ -585,7 +585,7 @@ func TestParseAnnotationsSANOverride(t *testing.T) {
 		AnnotationWorkload: "api",
 		AnnotationSAN:      "api.default.svc",
 	}}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatalf("parseAnnotations: %v", err)
 	}
@@ -594,7 +594,7 @@ func TestParseAnnotationsSANOverride(t *testing.T) {
 	}
 
 	pod.Annotations[AnnotationSAN] = "https://api.default.svc"
-	if _, err := parseAnnotations(pod); !errors.Is(err, errInvalidInjectionAnnotation) {
+	if _, err := parseAnnotations(pod, ""); !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
 	}
 }
@@ -659,7 +659,7 @@ func TestMutatePodReplacesPreexistingCertContainer(t *testing.T) {
 		},
 	}
 
-	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
+	mutatePod(pod, &injection{WorkloadID: "api", SAN: "api"}, Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		CDSURL:            "http://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
@@ -898,7 +898,7 @@ func TestParseAnnotationsWatchPathsImplyNginxReload(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := &corev1.Pod{Annotations: tc.annotations}
-			inj, err := parseAnnotations(pod)
+			inj, err := parseAnnotations(pod, "")
 			if err != nil {
 				t.Fatalf("parseAnnotations: %v", err)
 			}
@@ -1398,7 +1398,7 @@ func TestInjectedContainersMatchThePublishedNameSet(t *testing.T) {
 // renewal or replacement is seen inside the renewal interval.
 func TestCertContainerSANAndCAWatchArgs(t *testing.T) {
 	pod := podWithApp()
-	mutatePod(pod, &injection{WorkloadID: "api"}, secretsConfig())
+	mutatePod(pod, &injection{WorkloadID: "api", SAN: "api"}, secretsConfig())
 	args := containerNamed(pod, reservedCertContainerName).Args
 	if !hasArg(args, "--san=api") {
 		t.Fatalf("c8s-cert args %v missing the selected SAN", args)

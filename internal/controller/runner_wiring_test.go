@@ -132,7 +132,7 @@ func TestSetupManagerRegistersWorkloadServiceReconcilers(t *testing.T) {
 func TestBootstrapWebhookPKIUsesExplicitServiceNamespace(t *testing.T) {
 	dir := stubWebhookCertDir(t)
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(mutatingWebhookConfig("c8s-mutating")).Build()
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
 	stubDirectClient(t, fc, nil)
 
 	opts := Options{

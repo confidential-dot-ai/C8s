@@ -1,0 +1,39 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "c8s.fullname" . }}-pod-validator
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+  {{- with .Values.webhook.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+webhooks:
+  - name: pods-validate.c8s.confidential.ai
+    admissionReviewVersions: [v1]
+    sideEffects: None
+    # A pod written through another API version is still this webhook's.
+    matchPolicy: Equivalent
+    # Not tunable: a pod admitted without its injected shape is unprotected.
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    namespaceSelector:
+      matchExpressions:
+        {{- include "c8s.webhookExcludedNamespaces" . | nindent 8 }}
+    rules:
+      # UPDATE as well as CREATE: a change on a running pod is judged against
+      # the same shape, and ephemeral containers are only visible there.
+      - operations: [CREATE, UPDATE]
+        apiGroups: [""]
+        apiVersions: [v1]
+        resources: [pods, pods/ephemeralcontainers]
+        scope: Namespaced
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: {{ include "c8s.operatorName" . }}
+        path: /validate-pods
+        port: {{ .Values.webhook.service.port }}
+      {{- if .Values.webhook.caBundle }}
+      caBundle: {{ .Values.webhook.caBundle }}
+      {{- end }}

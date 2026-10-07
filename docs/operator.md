@@ -336,10 +336,10 @@ trusted platform namespaces.
 
 `c8s uninstall` reverses `c8s install`. It runs `helm uninstall` to remove the
 release (operator, CDS, attestation-api, armtls-mesh, router, the
-webhook configuration and admission policies). The
-`MutatingWebhookConfiguration` is release-tracked, so it is deleted with the
-release — a `failurePolicy: Fail` webhook cannot outlive the operator Service
-and block pod creation cluster-wide.
+webhook configurations and admission policies). Both webhook configurations are
+release-tracked, so they are deleted with the release — a `failurePolicy: Fail`
+webhook cannot outlive the operator Service and block pod creation
+cluster-wide.
 
 It then **sweeps the host-side artifacts** that chart hooks cannot guarantee
 were removed: chart-installed NRI policy, armtls-mesh netfilter state, and the

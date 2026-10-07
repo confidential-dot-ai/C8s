@@ -98,19 +98,19 @@ func TestEphemeralGuardIgnoresAnnotationRewrite(t *testing.T) {
 		VolumeMounts: []corev1.VolumeMount{{Name: "my-certs", MountPath: "/x"}},
 	}}
 
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("annotation rewrite let an ephemeral container mount the real cert volume")
 	}
 
 	// The secrets volume has a fixed name, so it is reserved either way.
 	pod.Spec.EphemeralContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: secretsVolumeName, MountPath: "/x"}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("ephemeral container mounted the released secrets")
 	}
 
 	// A genuinely unrelated volume is still fine.
 	pod.Spec.EphemeralContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: "/x"}}
-	if err := rejectEphemeralReservedMounts(pod); err != nil {
+	if err := rejectEphemeralReach(pod); err != nil {
 		t.Fatalf("rejected a harmless ephemeral container: %v", err)
 	}
 }

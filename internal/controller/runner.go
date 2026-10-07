@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -42,10 +43,13 @@ type Options struct {
 	// mirror controller. Pod injection does not depend on CRDs.
 	DisableStatusMirror bool
 
+	// MeshImage is the armtls-mesh image the admission webhook injects as the
+	// pod's mesh endpoint. Empty leaves the node DaemonSet as the mesh. See
+	// webhook.Config.
+	MeshImage string
+
 	// GetCertImage is the c8s multi-mode binary image the admission webhook
 	// injects for get-cert bootstrap and renewal. Empty disables pod injection.
-	// Pod-to-pod mTLS is the node-level armtls-mesh DaemonSet's job, so no mesh
-	// sidecar is injected.
 	GetCertImage string
 
 	// CDSURL points at the CDS Service in-cluster (the URL the
@@ -66,7 +70,8 @@ type Options struct {
 	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
 	CDSMeasurementsConfigJSON string
 
-	// WebhookConfigName is the MutatingWebhookConfiguration to patch.
+	// WebhookConfigName is the MutatingWebhookConfiguration to patch. The pod
+	// validator's configuration is named beside it (validatorConfigName).
 	WebhookConfigName string
 
 	WebhookServiceName      string
@@ -224,13 +229,18 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		}
 	}
 
-	// Admission webhook — injects get-cert containers into annotated pods.
+	// Admission webhooks — the platform containers a pod gets, and the shape
+	// it is admitted with.
+	if opts.MeshImage != "" && opts.GetCertImage == "" {
+		return fmt.Errorf("--mesh-image needs --get-cert-image: the mesh endpoint is injected with the credential containers it reads from")
+	}
 	if opts.GetCertImage != "" {
 		if err := bootstrapWebhookPKI(ctx, mgr, opts); err != nil {
 			return fmt.Errorf("bootstrap webhook PKI: %w", err)
 		}
 		if err := webhook.Register(mgr, webhook.Config{
 			GetCertImage:              opts.GetCertImage,
+			MeshImage:                 opts.MeshImage,
 			CDSURL:                    opts.CDSURL,
 			AttestationApiURL:         opts.AttestationApiURL,
 			CDSMeasurements:           opts.CDSMeasurements,
@@ -245,8 +255,9 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)
 		}
-		logger.Info("pod-injection webhook enabled",
+		logger.Info("pod-admission webhooks enabled",
 			"image", opts.GetCertImage,
+			"mesh_image", opts.MeshImage,
 			"cds_url", opts.CDSURL)
 
 		// One-shot startup sweep: delete cw-annotated pods that were admitted
@@ -353,6 +364,9 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 	if err := webhook.PatchCABundle(ctx, c, opts.WebhookConfigName, caPEM); err != nil {
 		return err
 	}
+	if err := webhook.PatchValidatingCABundle(ctx, c, validatorConfigName(opts.WebhookConfigName), caPEM); err != nil {
+		return err
+	}
 
 	// Keep the leaf fresh in-process. The CA is stable, so the patched bundle
 	// keeps validating rotated leaves without a re-patch.
@@ -362,6 +376,17 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 		return fmt.Errorf("add webhook cert rotator: %w", err)
 	}
 	return nil
+}
+
+// The chart names the two webhook configurations beside each other, so the
+// operator is told one name and derives the other.
+const (
+	injectorConfigSuffix  = "-pod-injector"
+	validatorConfigSuffix = "-pod-validator"
+)
+
+func validatorConfigName(injectorName string) string {
+	return strings.TrimSuffix(injectorName, injectorConfigSuffix) + validatorConfigSuffix
 }
 
 // webhookCertRotator re-issues the webhook serving leaf before it expires.

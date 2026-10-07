@@ -212,7 +212,7 @@ func TestSecretsAnnotationsRequireOptIn(t *testing.T) {
 	for _, name := range []string{AnnotationSecrets, AnnotationSecretDir} {
 		pod := podWithApp()
 		pod.Annotations = map[string]string{name: "DB=/api/db"}
-		if _, err := parseAnnotations(pod); err == nil {
+		if _, err := parseAnnotations(pod, ""); err == nil {
 			t.Fatalf("%s without %s was silently ignored", name, AnnotationWorkload)
 		}
 	}
@@ -225,7 +225,7 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 		AnnotationSecrets:   " DB=/api/db , HF=/api/hf ",
 		AnnotationSecretDir: "/var/run/app-secrets",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -298,7 +298,7 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			}
 			pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{ec}
 
-			err := rejectEphemeralReservedMounts(pod)
+			err := rejectEphemeralReach(pod)
 			if tc.wantOK && err != nil {
 				t.Fatalf("rejected a harmless ephemeral container: %v", err)
 			}

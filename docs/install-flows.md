@@ -57,6 +57,7 @@ Because it lives in the chart, this runs for both `c8s install` and GitOps
 |---|---|
 | C8s operator (webhook + controllers) | Ordinary pod; release namespace is webhook-exempt |
 | MWC `pod-injector` | Cluster resource, tracked by the release |
+| VWC `pod-validator` | Cluster resource, tracked by the release |
 | CDS (verify + mesh CA + leaf signing) | Ordinary pod inside the node CVM |
 | attestation API | Baked service in `bare-metal` mode; chart DaemonSet in `gke`/`aks` |
 | armtls-mesh | Node DaemonSet |
@@ -152,6 +153,10 @@ flowchart TD
     CW -->|no| DONE["admit"]
     GC --> DONE
 ```
+
+The `pod-validator` VWC then rejects an in-scope pod whose final spec is not
+the one the injector builds, on CREATE and UPDATE of `pods` and
+`pods/ephemeralcontainers`. It is `failurePolicy: Fail` and not tunable.
 
 Get-cert injection is keyed off the pod, not a CR: the
 `confidential.ai/cw=<id>` annotation drives it in every mode. It injects a
