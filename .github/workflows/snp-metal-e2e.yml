@@ -18,6 +18,16 @@ on:
         required: false
         type: boolean
         default: false
+      suite_artifact:
+        description: 'optional extra suite: an artifact of the calling run, see .github/actions/extra-suite'
+        required: false
+        type: string
+        default: ''
+      suite_run:
+        description: 'command that runs the extra suite; empty skips it'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       c8s_ref:
@@ -52,11 +62,16 @@ jobs:
     # outer cluster uses its in-cluster service account credentials.
     runs-on: cvm-launcher
     # CDI import is pre-staged, so: boot ~1m + guest first boot ~3m + c8s CLI
-    # build ~3m + services/convergence ~3m + asserts. Headroom for a cold go cache.
-    timeout-minutes: 45
+    # build ~3m + services/convergence ~3m + asserts. Headroom for a cold go cache;
+    # an extra suite gets 20 more.
+    timeout-minutes: ${{ inputs.suite_run != '' && 65 || 45 }}
     steps:
+      # This repository even when another one calls the lane, so .github/scripts
+      # and .github/actions are the lane's: the run's own commit here, the
+      # default branch for a caller elsewhere.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: confidential-dot-ai/c8s
           persist-credentials: false
 
       - name: tools (kubectl, go, crane)
@@ -475,6 +490,14 @@ jobs:
           set -euo pipefail
           export KUBECONFIG=/tmp/guest.kubeconfig
           bash /tmp/c8s-src/test/e2e/cw-label-policy.sh
+
+      - name: extra suite
+        if: inputs.suite_run != ''
+        uses: ./.github/actions/extra-suite
+        with:
+          artifact: ${{ inputs.suite_artifact }}
+          run: ${{ inputs.suite_run }}
+          platform: snp-metal
 
       - name: diagnostics (on failure)
         if: failure() || cancelled()

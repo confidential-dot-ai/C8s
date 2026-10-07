@@ -6,12 +6,15 @@ Designed to run as a Kubernetes init container or renewal sidecar alongside a wo
 
 ## Usage
 
+These pod examples use the node attestation socket mounted at
+`/run/c8s/workload-claims/attestation-api.sock` and a memory-backed `/tls` volume.
+
 Obtain a certificate with a DNS SAN:
 
 ```bash
 get-cert \
-  --cds-url http://cds:8443 \
-  --attestation-api-url http://localhost:8400 \
+  --cds-url https://cds:8443 \
+  --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
   --san api.example.com \
   --out /tls/cert.pem \
   --key-out /tls/key.pem
@@ -21,8 +24,8 @@ Obtain a certificate with an IP SAN:
 
 ```bash
 get-cert \
-  --cds-url http://cds:8443 \
-  --attestation-api-url http://localhost:8400 \
+  --cds-url https://cds:8443 \
+  --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
   --san 10.0.0.1 \
   --out /tls/cert.pem \
   --key-out /tls/key.pem
@@ -32,11 +35,11 @@ Use an existing private key:
 
 ```bash
 get-cert \
-  --cds-url http://cds:8443 \
-  --attestation-api-url http://localhost:8400 \
+  --cds-url https://cds:8443 \
+  --attestation-api-url unix:///run/c8s/workload-claims/attestation-api.sock \
   --san api.example.com \
-  --key my-key.pem \
-  --out cert.pem
+  --key /tls/key.pem \
+  --out /tls/cert.pem
 ```
 
 ## Flags
@@ -45,7 +48,7 @@ get-cert \
 |------|-------|---------|-------------|
 | `--cds-url` | | *(required)* | URL of the running cds service |
 | `--cds-measurements` | | *(empty)* | Comma-separated SHA-384 hex launch measurements for CDS armTLS verification; empty accepts any attested CDS |
-| `--attestation-api-url` | | *(required)* | URL of the local attestation-api |
+| `--attestation-api-url` | | *(required)* | URL of the node attestation-api; pods use its mounted Unix socket |
 | `--san` | | *(required)* | Subject Alternative Name — IP address or hostname |
 | `--out` | `-o` | *(stdout)* | Path to write the signed certificate chain PEM |
 | `--key` | | *(ephemeral)* | Path to an existing PEM private key for the CSR |

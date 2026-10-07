@@ -92,6 +92,17 @@ of the node kernel), `get-kubeconfig` (SNP-gated), and the
 `c8s allowlist`/`c8s verify` CLIs (in-process hardware verification, above).
 The metal lanes (snp-metal-e2e, tdx-metal-e2e, cvm-e2e) own those.
 
+### An extra suite on the metal lanes
+
+`snp-metal-e2e.yml` and `tdx-metal-e2e.yml` take `suite_artifact` and
+`suite_run` from a calling workflow. After their own asserts pass, they
+download that artifact of the same run onto the launcher and run the command
+against the attested guest with the e2e scripts' environment
+(`.github/actions/extra-suite` lists it); whatever the command writes to
+`$SUITE_RESULTS` is uploaded as `<artifact>-results-<lane>`. The lane holds
+no credential for the suite. Called from another repository, the SNP lane
+still takes its scripts and actions from this one, at the default branch.
+
 ## Running it
 
 ```sh

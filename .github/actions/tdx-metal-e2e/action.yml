@@ -14,6 +14,12 @@ inputs:
   keep_cvm:
     description: 'Keep the CVM for staged-run debugging.'
     default: 'false'
+  suite_artifact:
+    description: 'Optional extra suite: an artifact of the calling run, see ../extra-suite.'
+    default: ''
+  suite_run:
+    description: 'Command that runs the extra suite; empty skips it.'
+    default: ''
 runs:
   using: composite
   steps:
@@ -584,6 +590,14 @@ runs:
       set -euo pipefail
       export KUBECONFIG=/tmp/guest.kubeconfig
       bash "$C8S_SOURCE_DIR/test/e2e/cw-label-policy.sh"
+
+  - name: extra suite
+    if: inputs.suite_run != ''
+    uses: ./.github/actions/extra-suite
+    with:
+      artifact: ${{ inputs.suite_artifact }}
+      run: ${{ inputs.suite_run }}
+      platform: tdx-metal
 
   - name: summary
     if: always()

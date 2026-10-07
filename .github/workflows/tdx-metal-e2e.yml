@@ -16,6 +16,16 @@ on:
         required: false
         type: boolean
         default: false
+      suite_artifact:
+        description: 'optional extra suite: an artifact of the calling run, see .github/actions/extra-suite'
+        required: false
+        type: string
+        default: ''
+      suite_run:
+        description: 'command that runs the extra suite; empty skips it'
+        required: false
+        type: string
+        default: ''
   workflow_dispatch:
     inputs:
       c8s_ref:
@@ -45,7 +55,7 @@ jobs:
   e2e:
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
-    timeout-minutes: 65
+    timeout-minutes: ${{ inputs.suite_run != '' && 85 || 65 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,3 +67,5 @@ jobs:
         with:
           c8s_ref: ${{ inputs.c8s_ref }}
           keep_cvm: ${{ inputs.keep_cvm }}
+          suite_artifact: ${{ inputs.suite_artifact }}
+          suite_run: ${{ inputs.suite_run }}

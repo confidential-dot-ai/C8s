@@ -1,0 +1,54 @@
+name: Extra suite on the attested guest
+description: >-
+  Run a caller's suite against the guest a metal lane booted and attested,
+  after the lane's own asserts. The caller uploads the suite as an artifact of
+  the same workflow run, so the lane holds no credential for it. The suite
+  gets the environment the lane's e2e scripts get (KUBECONFIG,
+  C8S_SOURCE_DIR, C8S_ALLOWLIST_URL, C8S_MEASUREMENTS_CONFIG,
+  C8S_OPERATOR_KEY, GUEST_IP) plus SUITE_DIR, SUITE_RESULTS and
+  SUITE_PLATFORM; whatever it writes to SUITE_RESULTS is uploaded, and its
+  exit status is the step's.
+
+inputs:
+  artifact:
+    description: Name of the artifact holding the suite, from the same run.
+    required: true
+  run:
+    description: Command to run, from the unpacked artifact's directory.
+    required: true
+  platform:
+    description: Lane name, exported as SUITE_PLATFORM and suffixed to the results artifact.
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/suite
+
+    - id: suite
+      shell: bash
+      env:
+        SUITE_RUN: ${{ inputs.run }}
+        SUITE_DIR: ${{ runner.temp }}/suite
+        SUITE_RESULTS: ${{ runner.temp }}/suite-results
+        SUITE_PLATFORM: ${{ inputs.platform }}
+      run: |
+        set -euo pipefail
+        export KUBECONFIG=/tmp/guest.kubeconfig
+        export C8S_SOURCE_DIR="${C8S_SOURCE_DIR:-/tmp/c8s-src}"
+        export C8S_ALLOWLIST_URL="https://$GUEST_IP:443"
+        export C8S_MEASUREMENTS_CONFIG=/tmp/launch-data/server.json
+        export C8S_OPERATOR_KEY=/tmp/launch-data/server.key
+        mkdir -p "$SUITE_RESULTS"
+        cd "$SUITE_DIR"
+        bash -c "$SUITE_RUN"
+
+    - if: always()
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: ${{ inputs.artifact }}-results-${{ inputs.platform }}
+        path: ${{ runner.temp }}/suite-results
+        if-no-files-found: warn

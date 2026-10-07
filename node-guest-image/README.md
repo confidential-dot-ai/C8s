@@ -44,8 +44,7 @@ The `node-image` domain in [`.github/build-pins.json`](../.github/build-pins.jso
 pins the confos commit the image builds with. Every pin since
 [confidential-os-builder#120](https://github.com/confidential-dot-ai/confidential-os-builder/pull/120)
 includes its immutable root.
-The independent `kata-guest` and `kernel-snapshot` pins stay unchanged. The
-node-image invariant gate requires immutable-root support by default and CI
+The node-image invariant gate requires immutable-root support by default and CI
 sets `EXPECT_IMMUTABLE_ROOT=1` explicitly.
 
 Every node VM needs a write-storage disk with virtio-blk serial

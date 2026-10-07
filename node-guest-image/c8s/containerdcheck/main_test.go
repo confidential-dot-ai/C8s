@@ -110,9 +110,7 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 			dropIns: map[string]string{
 				"10-c8s-runc.toml": runcOptions + `BinaryName = "` + wrapper + `"` + "\n",
 				"20-default.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd]\n" +
-					`default_runtime_name = "kata-qemu-tdx"` + "\n" +
-					"[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.kata-qemu-tdx]\n" +
-					`runtime_type = "io.containerd.kata-qemu-tdx.v2"` + "\n",
+					`default_runtime_name = "runhcs-wcow-process"` + "\n",
 			},
 			wantErr: "default_runtime_name",
 		},
@@ -135,9 +133,7 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 	}
 }
 
-// A kata handler is out of scope — its exec denial lives in the guest — but
-// only as long as the runc handler beside it stays wrapped.
-func TestKataHandlerIsAllowedBesideAWrappedRunc(t *testing.T) {
+func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
 	dir := buildConfigDir(t, map[string]string{
 		"10-c8s-runc.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.runc.options]\n" +
 			`BinaryName = "` + wrapper + `"` + "\n",
@@ -148,8 +144,8 @@ func TestKataHandlerIsAllowedBesideAWrappedRunc(t *testing.T) {
 	if err != nil {
 		t.Fatalf("effectiveConfig = %v", err)
 	}
-	if _, err := checkHandlers(cfg, wrapper); err != nil {
-		t.Fatalf("checkHandlers rejected a kata handler beside a wrapped runc: %v", err)
+	if _, err := checkHandlers(cfg, wrapper); err == nil || !strings.Contains(err.Error(), `unaudited shim "io.containerd.kata-qemu-tdx.v2"`) {
+		t.Fatalf("checkHandlers = %v, want an unaudited shim error for kata", err)
 	}
 }
 

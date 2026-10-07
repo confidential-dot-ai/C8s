@@ -728,10 +728,6 @@ func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {
 	}
 }
 
-// Once the installed leaf has expired and renewals keep failing, the loop must
-// exit rather than retry forever: as a native sidecar the container restarts
-// with fresh client state, which is the only self-heal available on a locked
-// guest (exec liveness probes are policy-denied there).
 func TestRunRenewalLoopExitsOnExpiredLeaf(t *testing.T) {
 	holdSIGTERM(t)
 

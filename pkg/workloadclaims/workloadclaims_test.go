@@ -399,14 +399,12 @@ func TestDigestsEndpointDoesNotServeTokens(t *testing.T) {
 	}
 }
 
-// FetchSandboxToken must reach nothing but the two compiled endpoints, the
-// baked unix socket and the guest loopback: that is what keeps the inventory
-// un-redirectable (docs/getcert-workload-binding.md, Corner 5). Each of these
-// must lose to the endpoint check, not to a failed connection.
+// Endpoint validation must reject redirects before dialing the inventory.
 func TestFetchRejectsNonCompiledEndpoint(t *testing.T) {
 	requester := testRequesterKey(t)
 	for _, ep := range []string{
 		"http://127.0.0.1:9999",
+		"http://127.0.0.1:8401",
 		"http://localhost:8401",
 		"https://inventory.example",
 		"/run/c8s/workload-claims/workload-claims.sock",
