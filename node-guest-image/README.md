@@ -217,22 +217,17 @@ core containers from the same checkout. `C8S_BINARY` supplies the binary;
 `C8S_IMAGES_DIR` supplies the same unpublished OCI layouts to both build legs,
 tagged with `C8S_REF`.
 
-The staged SNP metal CI lane requires compatible image metadata with
-`launchConfigVersion=c8s-launch/v1`:
-
-| ConfigMap | Additional required fields |
-|---|---|
-| `snp-rke2-image-refs` | `image`, `rootPvc`, `manifestRef`, `igvmFile`, `igvmHookImage`, `smp`, `snpLaunchDigest`, `c8sRef` |
-
-The SNP lane requires digest-pinned OCI references for `image`, `manifestRef`
-and `igvmHookImage`, and a hook that sets HOST_DATA from the launch public key.
-Its `smp` is currently `4`; `snpLaunchDigest` must match that variant in the
-published `manifest.json`. The paired `c8sRef` identifies the image build.
-Changing the attester requires a new measured image. The ordinary TDX lane
-resolves its published image and manifest from the selected source commit.
-Automatic TDX acceptance reads the image identity and
-`launch_config_version=c8s-launch/v1` from the publication run's validated
-evidence. Neither TDX path reads a refs ConfigMap.
+Both metal CI lanes resolve the published image and manifest from the
+selected source commit: TDX from `rke2-tdx-cdi-<sha>` and `rke2-tdx-<sha>`,
+SNP from `rke2-snp-cdi-<sha>` and `rke2-snp-<sha>`, whose `manifest.json`
+pairs each `smp` variant's `snp_launch_digest` with the digest of the IGVM
+that measures to it. The SNP lane boots the `smp=4` variant through a hook
+sidecar that sets HOST_DATA from the launch public key, and stages the CDI
+disk and the IGVM on the launcher in digest-named claims that later runs of
+the same image reuse (`.github/scripts/snp-node-image.sh`). Changing the
+attester requires a new measured image. Automatic TDX acceptance reads the
+image identity and `launch_config_version=c8s-launch/v1` from the publication
+run's validated evidence.
 
 Before either platform boots, the lane builds the paired CLI and generates
 a fresh operator key and signed server launch document. The `opkeydata` disk
