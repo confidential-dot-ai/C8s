@@ -38,11 +38,48 @@ type capturePorts struct {
 	Health   uint16 `yaml:"health"`
 }
 
-// roleBinding binds a role to its reserved UID and what it may reach.
+// roleBinding binds a role to its reserved UID and what it may reach. The
+// mesh endpoint names nothing: the enforcer installs the pod ruleset, so the
+// endpoint only proxies.
 type roleBinding struct {
 	Name         string           `yaml:"name"`
 	UID          uint32           `yaml:"uid"`
 	Destinations []netip.AddrPort `yaml:"destinations"`
+}
+
+// MeshFloor is the measured mesh policy as the node's runtime wrapper reads
+// it: the namespaces that host no member pods, and what the role behind each
+// reserved id may hold. Trusted policy reserves that number as both a UID and
+// a GID (internal/cmds/c8srunc).
+type MeshFloor struct {
+	ExemptNamespaces []string
+	ReservedIDs      map[uint32]RoleFloor
+}
+
+// RoleFloor is one platform role as the floor reads it.
+type RoleFloor struct {
+	Name string
+}
+
+// LoadMeshFloor reads the measured config and returns its mesh floor, or nil
+// when the config carries no mesh policy and the node hosts no member pods.
+// validate refuses two roles on one UID, so no reserved id names two roles.
+func LoadMeshFloor(configPath string) (*MeshFloor, error) {
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.Mesh == nil {
+		return nil, nil
+	}
+	floor := &MeshFloor{
+		ExemptNamespaces: cfg.Mesh.ExemptNamespaces,
+		ReservedIDs:      map[uint32]RoleFloor{},
+	}
+	for _, role := range cfg.Mesh.Roles {
+		floor.ReservedIDs[role.UID] = RoleFloor{Name: role.Name}
+	}
+	return floor, nil
 }
 
 // validate requires a policy the pod ruleset can be built from, at config

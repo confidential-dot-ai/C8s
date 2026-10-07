@@ -69,7 +69,7 @@ func Run(args []string) error {
 		return runSetCDSPins(os.Stdout, args[1:])
 	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
-	configPath := fs.String("config", defaultConfigPath, "path to config file")
+	configPath := fs.String("config", DefaultConfigPath, "path to config file")
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")
 	readTimeout := fs.Duration("read-timeout", 5*time.Second, "HTTP server read timeout")
 	writeTimeout := fs.Duration("write-timeout", 10*time.Second, "HTTP server write timeout")

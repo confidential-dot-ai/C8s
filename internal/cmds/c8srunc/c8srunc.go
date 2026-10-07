@@ -21,6 +21,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 )
 
 // Enforcement postures. The posture is a build-time constant so no file,
@@ -55,6 +57,8 @@ var (
 	realRunc = "/var/lib/rancher/rke2/bin/runc"
 )
 
+const meshConfig = nriimagepolicy.DefaultConfigPath
+
 // Wrapper is one dispatch decision. The zero value is not usable; use New.
 type Wrapper struct {
 	// Mode is ModeLocked or ModeDebug. Anything else denies.
@@ -63,6 +67,16 @@ type Wrapper struct {
 	// through PATH: a wrapper that could be pointed at another binary by the
 	// caller's environment would not be a choke point.
 	RealRunc string
+	// MeshConfig is the measured node policy the floor came from, named in
+	// the error when reading it failed. Floor is what New read: nil with no
+	// FloorError means the node hosts no member pods and has no floor
+	// (ocifloor.go).
+	MeshConfig string
+	Floor      *nriimagepolicy.MeshFloor
+	FloorError error
+	// Stdin is this invocation's own standard input, which the floor reads to
+	// tell a create that carries the container's stdin from one that does not.
+	Stdin *os.File
 	// Exec hands the process over to RealRunc and does not return on success.
 	Exec func(path string, argv []string, env []string) error
 	Env  []string
@@ -72,12 +86,17 @@ type Wrapper struct {
 // New returns a Wrapper carrying the build-time posture and this process's
 // environment.
 func New(stderr io.Writer) Wrapper {
+	floor, err := nriimagepolicy.LoadMeshFloor(meshConfig)
 	return Wrapper{
-		Mode:     mode,
-		RealRunc: realRunc,
-		Exec:     syscall.Exec,
-		Env:      os.Environ(),
-		Err:      stderr,
+		Mode:       mode,
+		RealRunc:   realRunc,
+		MeshConfig: meshConfig,
+		Floor:      floor,
+		FloorError: err,
+		Stdin:      os.Stdin,
+		Exec:       syscall.Exec,
+		Env:        os.Environ(),
+		Err:        stderr,
 	}
 }
 
@@ -98,11 +117,21 @@ func (w Wrapper) Run(argv []string) int {
 	if err != nil {
 		return w.deny(g, fmt.Sprintf("%s: refusing to dispatch: %v", programName, err))
 	}
+	if w.Mode != ModeLocked && w.Mode != ModeDebug {
+		return w.deny(g, fmt.Sprintf("%s: built with an unknown exec mode %q", programName, w.Mode))
+	}
 	if w.Mode == ModeLocked && g.verb == execVerb {
 		return w.deny(g, DenyMessage)
 	}
-	if w.Mode != ModeLocked && w.Mode != ModeDebug {
-		return w.deny(g, fmt.Sprintf("%s: built with an unknown exec mode %q", programName, w.Mode))
+	if g.verb == restoreVerb {
+		return w.deny(g, fmt.Sprintf("%s: %s is denied on this node: what it starts is in a checkpoint, not in the bundle the floor reads", programName, g.verb))
+	}
+	// The privilege floor holds in every mode: the exec posture is about
+	// reaching a running container, this is about what one may hold.
+	if slices.Contains(createVerbs, g.verb) {
+		if err := w.checkFloor(g.rest); err != nil {
+			return w.deny(g, fmt.Sprintf("%s: %v", programName, err))
+		}
 	}
 	if !filepath.IsAbs(w.RealRunc) {
 		return w.deny(g, fmt.Sprintf("%s: real runtime path %q is not absolute", programName, w.RealRunc))
@@ -111,6 +140,23 @@ func (w Wrapper) Run(argv []string) int {
 	err = w.Exec(w.RealRunc, handoff, w.Env)
 	fmt.Fprintf(w.Err, "%s: cannot execute %s: %v\n", programName, w.RealRunc, err)
 	return exitNoExec
+}
+
+// checkFloor applies the floor New read to the bundle this create names. A
+// policy that could not be read denies the create: a node whose measured
+// floor is unreadable starts no container of a member pod.
+func (w Wrapper) checkFloor(args []string) error {
+	if w.FloorError != nil {
+		return fmt.Errorf("read the measured mesh floor from %s: %w", w.MeshConfig, w.FloorError)
+	}
+	if w.Floor == nil {
+		return nil
+	}
+	spec, containerID, err := readBundle(args)
+	if err != nil {
+		return err
+	}
+	return requireFloor(spec, containerID, w.Stdin, *w.Floor)
 }
 
 // deny reports msg on stderr and, when the caller asked runc to log to a file,
@@ -124,9 +170,11 @@ func (w Wrapper) deny(g globals, msg string) int {
 }
 
 // globals is what the wrapper needs from runc's global options: the
-// subcommand that follows them, and where runc was told to log.
+// subcommand that follows them with its own arguments, and where runc was
+// told to log.
 type globals struct {
 	verb      string
+	rest      []string
 	logPath   string
 	logFormat string
 }
@@ -152,13 +200,15 @@ func parseGlobals(args []string) (globals, error) {
 		if arg == "--" {
 			// Go's flag package stops here and drops the token; the next
 			// argument is the subcommand.
-			if i+1 < len(args) {
-				g.verb = args[i+1]
+			if verb := i + 1; verb < len(args) {
+				g.verb = args[verb]
+				g.rest = args[verb+1:]
 			}
 			return g, nil
 		}
 		if !isFlag(arg) {
 			g.verb = arg
+			g.rest = args[i+1:]
 			return g, nil
 		}
 		name, value, hasValue := splitFlag(arg)

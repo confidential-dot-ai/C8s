@@ -405,9 +405,11 @@ hooks, CDI devices, sysctls, net devices and the seccomp policy. It does **not**
 carry the fields containerd also generates: Linux capabilities, the `privileged`
 flag itself, `no_new_privs`, masked and readonly paths, the AppArmor profile,
 and a read-only root. So this policy *infers* privilege from the cgroup
-namespace and writable `sysfs`, and cannot see a capability set at all — a pod
-adding `CAP_SYS_ADMIN` without any other privilege passes. Closing that needs
-the enforcement point to read `config.json` directly, not the NRI view.
+namespace and writable `sysfs`, and sees no capability set at all. The
+measured runtime wrapper reads the bundle's `config.json` instead and refuses
+the create for a container of a member pod that holds more than the floor
+(`docs/node-exec-mode.md`); outside a mesh policy, a pod adding
+`CAP_SYS_ADMIN` without any other privilege still passes here.
 
 Two more limits: the host user namespace is the Kubernetes default, so its
 absence is no evidence and `hostUsers: false` is not required; and a cgroup v1
