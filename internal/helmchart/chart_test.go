@@ -1373,21 +1373,27 @@ func TestChartManagedARMTLSServiceTargetPortsMatchContainerPorts(t *testing.T) {
 		service    string
 		deployment string
 		container  string
-		want       string
+		want       []string
 	}{
-		{service: "c8s-cds", deployment: "c8s-cds", container: "cds", want: "https"},
+		{
+			service:    "c8s-cds",
+			deployment: "c8s-cds",
+			container:  "cds",
+			want:       []string{"https", "secrets"},
+		},
 	} {
 		svc := renderedService(t, out, tc.service)
-		if len(svc.Spec.Ports) != 1 {
-			t.Fatalf("Service %s ports = %d, want 1", tc.service, len(svc.Spec.Ports))
+		if len(svc.Spec.Ports) != len(tc.want) {
+			t.Fatalf("Service %s ports = %d, want %d", tc.service, len(svc.Spec.Ports), len(tc.want))
 		}
-		if got := svc.Spec.Ports[0].TargetPort.String(); got != tc.want {
-			t.Fatalf("Service %s targetPort = %q, want %q", tc.service, got, tc.want)
-		}
-
 		container := renderedDeploymentContainer(t, out, tc.deployment, tc.container)
-		if _, ok := containerHostPort(container, tc.want); !ok {
-			t.Fatalf("Deployment %s container %s missing port named %q; ports=%v", tc.deployment, tc.container, tc.want, container.Ports)
+		for _, want := range tc.want {
+			if _, ok := servicePortTargeting(svc, want); !ok {
+				t.Fatalf("Service %s has no port targeting %q; ports=%v", tc.service, want, svc.Spec.Ports)
+			}
+			if _, ok := containerHostPort(container, want); !ok {
+				t.Fatalf("Deployment %s container %s missing port named %q; ports=%v", tc.deployment, tc.container, want, container.Ports)
+			}
 		}
 	}
 }
@@ -7426,7 +7432,7 @@ func TestChartComponentIngressPoliciesAreDefaultDeny(t *testing.T) {
 		component string
 		ports     []int32
 	}{
-		{"c8s-cds-ingress", "cds", []int32{8443}},
+		{"c8s-cds-ingress", "cds", []int32{8443, 8444}},
 		{"c8s-operator-ingress", "operator", []int32{9443, 8081, 8080}},
 		{"c8s-volumed-ingress", "volumed", nil},
 		{"c8s-router-ingress", "", []int32{8443}},
@@ -7670,4 +7676,70 @@ func TestChartSweepMountAdmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestChartSplitsTheSecretListener proves the delivery path of the split: CDS
+// serves the secret routes on their own port, the Service and the container
+// expose it under one name, and the operator hands that URL to the injected
+// fetchers. Without this wiring a merged chart would point them at the
+// issuance listener, which serves none of those routes.
+func TestChartSplitsTheSecretListener(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+
+	container := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
+	assertContainerHasArg(t, "cds", container.Args, "--secrets-port=8444")
+	port, ok := containerPortNamed(container, "secrets")
+	if !ok {
+		t.Fatalf("cds container has no port named secrets; ports = %v", container.Ports)
+	}
+	if port.ContainerPort != 8444 {
+		t.Errorf("cds secrets containerPort = %d, want 8444", port.ContainerPort)
+	}
+
+	svc := renderedService(t, out, "c8s-cds")
+	served, ok := servicePortTargeting(svc, "secrets")
+	if !ok {
+		t.Fatalf("Service c8s-cds has no port targeting the secrets container port; ports = %v", svc.Spec.Ports)
+	}
+	if served.Port != 8444 {
+		t.Errorf("Service secrets port = %d, want 8444", served.Port)
+	}
+
+	operatorArgs := renderedOperatorArgs(t, out)
+	assertContainerHasArg(t, "operator", operatorArgs, "--cds-secrets-url=https://c8s-cds.c8s-system.svc:8444")
+}
+
+// A shared port number would make one listener shadow the other, so the chart
+// refuses to render it.
+func TestChartRefusesOneCDSPortForBothListeners(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "cds.secretsPort=8443")
+	if err == nil {
+		t.Fatalf("helm template accepted cds.secretsPort == cds.port\n%s", out)
+	}
+	if !strings.Contains(out, "cds_port_collision") {
+		t.Fatalf("render failed without the port-collision reason: %s", out)
+	}
+}
+
+func containerPortNamed(container corev1.Container, name string) (corev1.ContainerPort, bool) {
+	for _, p := range container.Ports {
+		if p.Name == name {
+			return p, true
+		}
+	}
+	return corev1.ContainerPort{}, false
+}
+
+// servicePortTargeting finds the Service port that forwards to the named
+// container port, which is the pairing a rendered Service has to get right.
+func servicePortTargeting(svc corev1.Service, containerPort string) (corev1.ServicePort, bool) {
+	for _, p := range svc.Spec.Ports {
+		if p.TargetPort.String() == containerPort {
+			return p, true
+		}
+	}
+	return corev1.ServicePort{}, false
 }

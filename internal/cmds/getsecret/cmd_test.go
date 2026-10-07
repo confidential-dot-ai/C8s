@@ -14,7 +14,7 @@ import (
 func TestNewCmdRejectsBadSecretSpec(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{
-		"--cds-url=https://cds.example",
+		"--cds-secrets-url=https://cds.example",
 		"--attestation-api-url=http://127.0.0.1:8080",
 		"--secret=notaspec",
 	})
@@ -24,11 +24,11 @@ func TestNewCmdRejectsBadSecretSpec(t *testing.T) {
 	}
 }
 
-func TestNewCmdRejectsMissingCDSURL(t *testing.T) {
+func TestNewCmdRejectsMissingSecretsURL(t *testing.T) {
 	cmd := NewCmd()
 	cmd.SetArgs([]string{"--secret=DB=/api/db"})
-	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--cds-url") {
-		t.Fatalf("err = %v, want a missing --cds-url failure", err)
+	if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "--cds-secrets-url") {
+		t.Fatalf("err = %v, want a missing --cds-secrets-url failure", err)
 	}
 }
 
@@ -58,7 +58,7 @@ func TestRunRejectsBadMeasurements(t *testing.T) {
 
 func TestRunRejectsInvalidConfig(t *testing.T) {
 	cfg := validConfig(t)
-	cfg.CDSURL = ""
+	cfg.SecretsURL = ""
 	if err := run(cfg); err == nil {
 		t.Fatal("an invalid config was accepted")
 	}

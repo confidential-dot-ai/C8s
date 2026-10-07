@@ -1669,3 +1669,62 @@ func TestServerClientCAsFollowUpdateCACerts(t *testing.T) {
 		t.Fatalf("leaf signed by the published CA rejected: %v", err)
 	}
 }
+
+// A certless listener must not ask for a client certificate, while the mutual
+// one must: TLS requests it before any route is known, so a server whose
+// routes split by client authorization needs both configurations from one
+// manager.
+func TestCertlessServerTLSConfigRequestsNoClientCertificate(t *testing.T) {
+	_, ca := generateCACert(t)
+	cfg := testServerConfig()
+	cfg.ClientCAs = []*x509.Certificate{ca}
+	cfg.ClientAuth = tls.RequireAndVerifyClientCert
+	mutual, mgr, err := NewServerTLSConfig(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !clientCertificateRequested(t, mutual) {
+		t.Fatal("the mutual listener did not request a client certificate, so this test proves nothing")
+	}
+	if clientCertificateRequested(t, mgr.CertlessServerTLSConfig()) {
+		t.Error("the certless listener requested a client certificate")
+	}
+}
+
+// clientCertificateRequested reports whether a server asks the client for a
+// certificate during the handshake. The request is observed in the client's
+// own callback, so a server that refuses the connection afterwards still
+// counts as having asked.
+func clientCertificateRequested(t *testing.T, serverCfg *tls.Config) bool {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	srv.TLS = serverCfg
+	srv.StartTLS()
+	defer srv.Close()
+
+	var requested bool
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true, // the server's own identity is not what this observes
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			requested = true
+			return &tls.Certificate{}, nil
+		},
+	}}}
+	defer client.CloseIdleConnections()
+
+	resp, err := client.Get(srv.URL)
+	if err != nil {
+		// A listener that requires a certificate refuses the empty one above;
+		// that it asked is what this reports.
+		if !requested {
+			t.Fatalf("handshake failed without a certificate request: %v", err)
+		}
+		return true
+	}
+	resp.Body.Close()
+	return requested
+}

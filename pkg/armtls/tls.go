@@ -663,6 +663,15 @@ func (m *CertManager) SwapProvider(ctx context.Context, provider CertProvider) e
 	return m.state.SwapProvider(ctx, provider)
 }
 
+// CertlessServerTLSConfig returns a listener configuration that serves the
+// certificate this manager provisions and requests no client certificate. A
+// server whose routes split by client authorization uses it for the listener
+// that authorizes none, so both listeners present the same attested
+// certificate and rotate together.
+func (m *CertManager) CertlessServerTLSConfig() *tls.Config {
+	return servingConfig(m.state)
+}
+
 // UpdateCACerts dynamically updates the CA certificates a peer is verified
 // against: the dual-mode trust anchors of a mesh endpoint polling the CDS /ca
 // endpoint, and the ClientCAs pool of a listener whose CA renewed its
@@ -718,12 +727,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		defaultTTL:      cfg.CertTTL,
 	}
 
-	tlsCfg := &tls.Config{
-		MinVersion: tls.VersionTLS13,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			return state.getOrProvision(hello.Context())
-		},
-	}
+	tlsCfg := servingConfig(state)
 
 	// mTLS: require and verify client certificates.
 	var sharedCA *sharedCACerts
@@ -751,6 +755,17 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 
 	mgr := &CertManager{state: state, sharedCA: sharedCA}
 	return tlsCfg, mgr, nil
+}
+
+// servingConfig is the common half of every armTLS listener: TLS 1.3 and the
+// certificate state's provisioning hook.
+func servingConfig(state *certState) *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			return state.getOrProvision(hello.Context())
+		},
+	}
 }
 
 // clientCAsPerHandshake reads the client CA pool once per connection, so a

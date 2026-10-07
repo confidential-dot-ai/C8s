@@ -169,6 +169,7 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 	return config{
 		host:                       "127.0.0.1",
 		port:                       0,
+		secretsPort:                freePort(t),
 		logLevel:                   "error",
 		attestationApiURL:          attestationURL,
 		caCommonName:               "test ca",

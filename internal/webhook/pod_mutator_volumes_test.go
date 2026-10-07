@@ -382,3 +382,30 @@ func mountNames(c *corev1.Container) []string {
 	}
 	return out
 }
+
+// The secret and volume fetchers authenticate with the pod's mesh leaf, so
+// they read from the secrets listener; get-cert bootstraps that leaf against
+// the issuance listener.
+func TestFetchersReadFromTheSecretsListener(t *testing.T) {
+	pod := podWithApp()
+	cfg := secretsConfig()
+	mutatePod(pod, &injection{
+		WorkloadID: "api",
+		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
+		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
+	}, cfg)
+
+	for _, tc := range []struct {
+		container string
+		want      string
+	}{
+		{reservedSecretContainerName, "--cds-secrets-url=" + cfg.CDSSecretsURL},
+		{reservedVolumeContainerName, "--cds-secrets-url=" + cfg.CDSSecretsURL},
+		{reservedCertContainerName, "--cds-url=" + cfg.CDSURL},
+	} {
+		args := containerNamed(pod, tc.container).Args
+		if !slices.Contains(args, tc.want) {
+			t.Errorf("%s args = %v, want %s", tc.container, args, tc.want)
+		}
+	}
+}

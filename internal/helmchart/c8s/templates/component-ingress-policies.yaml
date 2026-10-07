@@ -37,6 +37,8 @@ spec:
     - ports:
         - protocol: TCP
           port: {{ .Values.cds.port }}
+        - protocol: TCP
+          port: {{ .Values.cds.secretsPort }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
