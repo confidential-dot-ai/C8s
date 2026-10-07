@@ -25,7 +25,7 @@ import (
 // of it; each command adds its own fields for what it fetches and where it
 // puts the result.
 type Config struct {
-	CDSURL                 string
+	SecretsURL             string
 	AttestationApiURL      string
 	Measurements           []string
 	RTMRs                  []string
@@ -56,7 +56,7 @@ func (c Config) Endpoint() string {
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --measurements and --rtmrs")
-	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS")
+	f.StringVar(&cfg.SecretsURL, "cds-secrets-url", "", "https base URL of the CDS secret routes, which this client reaches with the pod's mesh leaf")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
 	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
@@ -71,12 +71,12 @@ func BindFlags(f *pflag.FlagSet, cfg *Config) {
 // Validate checks the shared half of a config and canonicalises the CDS URL.
 // Each command's own validate covers the fields only it knows about.
 func (c *Config) Validate() error {
-	if c.CDSURL == "" {
-		return fmt.Errorf("--cds-url is required")
+	if c.SecretsURL == "" {
+		return fmt.Errorf("--cds-secrets-url is required")
 	}
-	c.CDSURL = strings.TrimRight(c.CDSURL, "/")
-	if !strings.HasPrefix(c.CDSURL, "https://") {
-		return fmt.Errorf("--cds-url must be https (armTLS)")
+	c.SecretsURL = strings.TrimRight(c.SecretsURL, "/")
+	if !strings.HasPrefix(c.SecretsURL, "https://") {
+		return fmt.Errorf("--cds-secrets-url must be https (armTLS)")
 	}
 	if c.AttestationApiURL == "" {
 		return fmt.Errorf("--attestation-api-url is required to verify CDS")

@@ -106,6 +106,15 @@ POST /secrets/<store path>         → 201 {"value": "<base64>"} | 409 | 403
 `PUT` on the same paths is the operator's, authorized by the operator key
 instead — see "Operator-supplied values".
 
+The workload routes answer on CDS's secrets listener (`--secrets-port`), which
+requires the mesh leaf as the client certificate and verifies it against the
+current mesh CA. They are a listener of their own because TLS asks for a client
+certificate before any route is known, and the challenge and attest exchanges
+must not be asked for one — a pod bootstrapping its leaf has none. The operator
+`PUT` and the diagnostic stay on the issuance listener, authorized by the
+operator key instead. CDS refuses to start if it would serve these routes
+without armTLS, and the two ports may not be equal.
+
 `POST /secrets` is the challenge route; the wildcard can never match it, so no
 store path is shadowed by it — a secret at `/challenge` still resolves.
 

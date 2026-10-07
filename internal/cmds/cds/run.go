@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -17,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"golang.org/x/time/rate"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -317,37 +319,42 @@ func run(cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
-	router := newRouter(deps)
-
 	go checker.Run(ctx)
 
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
-	srv := newHTTPServer(addr, router, cfg)
+	servers := []*http.Server{newHTTPServer(addr, newIssuanceRouter(deps), cfg)}
+	if secretsHandler != nil {
+		secretsAddr := fmt.Sprintf("%s:%d", cfg.host, cfg.secretsPort)
+		servers = append(servers, newHTTPServer(secretsAddr, newSecretsRouter(deps), cfg))
+		slog.Info("serving the secret routes on their own listener", "addr", secretsAddr)
+	}
 
-	serve := srv.ListenAndServe
+	serve := func(srv *http.Server) error {
+		return srv.ListenAndServe()
+	}
 	var meshPeers *armtls.CertManager
 	if cfg.armtlsPlatform != "" {
 		attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
-		serverCfg := &armtls.ServerConfig{
+		secretsTLS, certMgr, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
 			Platform:   cfg.armtlsPlatform,
 			AttestFunc: attestFunc,
 			CertTTL:    cfg.armtlsCertTTL,
 			Logger:     slog.Default(),
-		}
-		// /secrets reads a CDS-stamped field out of the caller's leaf, so the
-		// chain has to be verified by crypto/tls against the mesh CA: the
-		// armTLS path would admit a self-signed peer whose sandbox-ID extension
-		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
-		// reachable by a caller with no certificate.
-		serverCfg.ClientCAs = []*x509.Certificate{mesh.Current().CA.Cert}
-		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
-		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
+			// crypto/tls verifies the caller's chain against the mesh CA, and
+			// the pool follows the CA through renewal (see docs/secrets.md).
+			ClientCAs:  []*x509.Certificate{mesh.Current().CA.Cert},
+			ClientAuth: tls.RequireAndVerifyClientCert,
+		})
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
 		}
-		srv.TLSConfig = tlsCfg
+		issuanceTLS := certMgr.CertlessServerTLSConfig()
+		servers[0].TLSConfig = issuanceTLS
+		if secretsHandler != nil {
+			servers[1].TLSConfig = secretsTLS
+		}
 		meshPeers = certMgr
-		serve = func() error {
+		serve = func(srv *http.Server) error {
 			return srv.ListenAndServeTLS("", "")
 		}
 
@@ -362,11 +369,24 @@ func run(cfg config) error {
 		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	}
 
-	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 	go renewMeshCAWhenDue(ctx, mesh, caRenewalCheckInterval, meshPeers)
 
 	slog.Info("cds listening", "addr", addr)
-	if err := serve(); err != http.ErrServerClosed {
+	return serveAll(ctx, serve, servers...)
+}
+
+// serveAll runs every server until the first failure, which shuts the others
+// down rather than leaving a half-served CDS behind. A server closed by
+// shutdown has not failed, so a clean stop returns nil.
+func serveAll(ctx context.Context, serve func(*http.Server) error, servers ...*http.Server) error {
+	group, groupCtx := errgroup.WithContext(ctx)
+	for _, srv := range servers {
+		go cmdsutil.ShutdownOnDone(groupCtx, srv, 5*time.Second)
+		group.Go(func() error {
+			return serve(srv)
+		})
+	}
+	if err := group.Wait(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
@@ -495,6 +515,17 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
+	}
+	if cfg.port < 0 || cfg.port > 65535 {
+		return fmt.Errorf("--port must be a port number (0 lets the kernel choose one)")
+	}
+	if cfg.secretsPort < 0 || cfg.secretsPort > 65535 {
+		return fmt.Errorf("--secrets-port must be a port number (0 lets the kernel choose one)")
+	}
+	// Zero is each listener's own kernel-chosen port, so only a named port can
+	// collide.
+	if cfg.port == cfg.secretsPort && cfg.port != 0 {
+		return fmt.Errorf("--secrets-port must differ from --port (%d): the secret routes require a client certificate the issuance routes must not be asked for", cfg.port)
 	}
 	if cfg.minCAValidity <= 0 {
 		return fmt.Errorf("--min-ca-validity must be positive (it is the window CA renewal has to succeed in before /readyz fails)")

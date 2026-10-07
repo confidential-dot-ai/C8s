@@ -4,6 +4,9 @@
 {{- if not (has .Values.attestationApi.cvmMode (list "bare-metal" "gke" "aks")) -}}
 {{- fail (printf "attestationApi.cvmMode must be one of bare-metal, gke, aks (got %q)" .Values.attestationApi.cvmMode) -}}
 {{- end -}}
+{{- if eq (int .Values.cds.secretsPort) (int .Values.cds.port) -}}
+{{- fail (printf "VALIDATION_ERROR kind=cds_port_collision: cds.secretsPort must differ from cds.port (both %d). The secret routes require the pod's mesh leaf as a client certificate and the issuance routes must not be asked for one, so they are separate listeners." (int .Values.cds.port)) -}}
+{{- end -}}
 {{- $router := .Values.router -}}
 {{- $nri := .Values.nriImagePolicy -}}
 {{- $nriCDSURL := tpl (include "c8s.nriCDSURL" .) . -}}

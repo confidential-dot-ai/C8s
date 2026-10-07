@@ -75,6 +75,13 @@ http://$(HOST_IP):{{ .Values.attestationApi.port }}
 https://{{ include "c8s.cdsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.cds.port }}
 {{- end -}}
 
+{{/* The secret routes live on a listener of their own: it requires the pod's
+mesh leaf as a client certificate, which the issuance routes must not be asked
+for. */}}
+{{- define "c8s.cdsSecretsURL" -}}
+https://{{ include "c8s.cdsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.cds.secretsPort }}
+{{- end -}}
+
 {{- define "c8s.trustRootURL" -}}
 {{ include "c8s.cdsURL" . }}
 {{- end -}}

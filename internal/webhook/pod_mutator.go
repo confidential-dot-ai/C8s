@@ -159,6 +159,11 @@ type Config struct {
 	// CDSURL points at the CDS Service in-cluster.
 	CDSURL string
 
+	// CDSSecretsURL points at the CDS listener serving the secret routes. It
+	// is a listener of its own because it requires the pod's mesh leaf as a
+	// client certificate, which the issuance routes must not be asked for.
+	CDSSecretsURL string
+
 	// AttestationApiURL points at the node-local attestation-api.
 	AttestationApiURL string
 
@@ -204,6 +209,9 @@ type Config struct {
 
 // Register wires the pod mutator onto the manager's webhook server.
 func Register(mgr ctrl.Manager, cfg Config) error {
+	if cfg.CDSSecretsURL == "" {
+		return fmt.Errorf("webhook: CDSSecretsURL is required: the injected secret and volume fetchers read from the CDS listener that requires their mesh leaf")
+	}
 	cfg = cfg.withDefaults()
 	mgr.GetWebhookServer().Register("/mutate-pods", &admission.Webhook{
 		Handler: &podMutator{
@@ -1267,7 +1275,7 @@ func mediumName(m corev1.StorageMedium) string {
 func volumeContainer(inj *injection, cfg Config) corev1.Container {
 	args := []string{
 		"get-volume",
-		"--cds-url=" + cfg.CDSURL,
+		"--cds-secrets-url=" + cfg.CDSSecretsURL,
 		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
 		"--cert=" + certPath(inj.Cert.Dir, inj.Cert.CertFile),
 		"--key=" + certPath(inj.Cert.Dir, inj.Cert.KeyFile),
@@ -1302,7 +1310,7 @@ func volumeContainer(inj *injection, cfg Config) corev1.Container {
 func secretContainer(inj *injection, cfg Config) corev1.Container {
 	args := []string{
 		"get-secret",
-		"--cds-url=" + cfg.CDSURL,
+		"--cds-secrets-url=" + cfg.CDSSecretsURL,
 		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
 		"--cert=" + certPath(inj.Cert.Dir, inj.Cert.CertFile),
 		"--key=" + certPath(inj.Cert.Dir, inj.Cert.KeyFile),

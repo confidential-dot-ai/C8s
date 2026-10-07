@@ -43,6 +43,7 @@ func NewCmd() *cobra.Command {
 
 	flags.StringVar(&cfg.host, "host", "0.0.0.0", "")
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "")
+	flags.IntVar(&cfg.secretsPort, "secrets-port", 8444, "port serving the secret routes, which require a mesh leaf as the client certificate; the issuance port requests none")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
 	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of the attestation-api service")
@@ -118,6 +119,7 @@ func NewCmd() *cobra.Command {
 type config struct {
 	host                string
 	port                int
+	secretsPort         int
 	logLevel            string
 	attestationApiURL   string
 	caCommonName        string

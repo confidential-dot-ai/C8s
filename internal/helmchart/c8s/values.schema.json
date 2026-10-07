@@ -91,6 +91,14 @@
           }
         },
         "port": {},
+        "secretsPort": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 65535
+        },
         "rateBurst": {},
         "rateLimit": {},
         "rateLimiterEvictInterval": {},

@@ -52,6 +52,11 @@ type Options struct {
 	// injected get-cert containers POST evidence + CSR to).
 	CDSURL string
 
+	// CDSSecretsURL points at the CDS listener serving the secret routes,
+	// which the injected secret and volume fetchers reach with the pod's mesh
+	// leaf as their client certificate.
+	CDSSecretsURL string
+
 	// AttestationApiURL points at the attestation-api.
 	AttestationApiURL string
 
@@ -232,6 +237,7 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		if err := webhook.Register(mgr, webhook.Config{
 			GetCertImage:              opts.GetCertImage,
 			CDSURL:                    opts.CDSURL,
+			CDSSecretsURL:             opts.CDSSecretsURL,
 			AttestationApiURL:         opts.AttestationApiURL,
 			CDSMeasurements:           opts.CDSMeasurements,
 			CDSRTMRs:                  opts.CDSRTMRs,

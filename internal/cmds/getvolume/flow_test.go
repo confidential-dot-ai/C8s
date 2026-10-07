@@ -162,7 +162,7 @@ func testMutableBlobJSON(t *testing.T) []byte {
 func flowConfig(t *testing.T, url string) config {
 	t.Helper()
 	return config{
-		CDSURL:           url,
+		SecretsURL:       url,
 		Attempts:         3,
 		RetryInterval:    time.Millisecond,
 		RequestTimeout:   5 * time.Second,

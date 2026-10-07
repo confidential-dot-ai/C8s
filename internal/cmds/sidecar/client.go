@@ -76,7 +76,7 @@ func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicK
 
 	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, method, cfg.CDSURL+"/secrets"+path, nil)
+	req, err := http.NewRequestWithContext(reqCtx, method, cfg.SecretsURL+"/secrets"+path, nil)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -133,7 +133,7 @@ func envelopeCode(body []byte) string {
 func fetchChallenge(ctx context.Context, cfg Config, client *http.Client) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.CDSURL+secrets.ChallengeRoute, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.SecretsURL+secrets.ChallengeRoute, nil)
 	if err != nil {
 		return nil, err
 	}
