@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/hex"
@@ -159,15 +158,14 @@ func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*Ve
 		return nil, err
 	}
 
-	pub, err := publicKeyFromCert(cert)
-	if err != nil {
-		return nil, fmt.Errorf("armtls: extract public key: %w", err)
+	if err := checkPeerKeyType(cert); err != nil {
+		return nil, err
 	}
 
 	if err := policy.checkEvidenceOnlyPins(); err != nil {
 		return nil, err
 	}
-	return verifyOnline(att, pub, policy, nonce)
+	return verifyOnline(att, cert.PublicKey, policy, nonce)
 }
 
 // checkEvidenceOnlyPins rejects a policy the evidence alone cannot settle: the
@@ -270,17 +268,15 @@ func mapVerifyError(family TEEType, err error) error {
 	}
 }
 
-// publicKeyFromCert extracts and validates the public key from a certificate.
-func publicKeyFromCert(cert *x509.Certificate) (crypto.PublicKey, error) {
-	switch pub := cert.PublicKey.(type) {
-	case *ecdsa.PublicKey:
-		if pub.Curve != elliptic.P256() && pub.Curve != elliptic.P384() {
-			return nil, fmt.Errorf("armtls: unsupported ECDSA curve: %s", pub.Curve.Params().Name)
-		}
-		return pub, nil
-	case ed25519.PublicKey:
-		return pub, nil
-	default:
-		return nil, fmt.Errorf("armtls: unsupported key type in certificate: %T", pub)
+// checkPeerKeyType enforces the two key types a verifier accepts on either
+// path (docs/armtls.md, "Key types").
+func checkPeerKeyType(cert *x509.Certificate) error {
+	pub, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return fmt.Errorf("armtls: peer key is %T, want ECDSA P-256 or P-384", cert.PublicKey)
 	}
+	if pub.Curve != elliptic.P256() && pub.Curve != elliptic.P384() {
+		return fmt.Errorf("armtls: peer key is ECDSA %s, want P-256 or P-384", pub.Curve.Params().Name)
+	}
+	return nil
 }

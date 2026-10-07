@@ -90,7 +90,7 @@ func CreateAttestedCert(key *ecdsa.PrivateKey, att *Attestation, opts *CertOptio
 		Subject:               opts.subject(),
 		NotBefore:             now,
 		NotAfter:              now.Add(opts.ttl()),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		BasicConstraintsValid: true,
 		DNSNames:              opts.DNSNames,

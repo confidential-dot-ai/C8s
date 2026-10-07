@@ -4,7 +4,7 @@ package armtlsmesh
 
 import (
 	"context"
-	"crypto/x509"
+	"crypto/tls"
 	"errors"
 	"testing"
 
@@ -64,26 +64,28 @@ func TestMeshEnvironmentRouting(t *testing.T) {
 }
 
 func TestMeshRuntimeVerification(t *testing.T) {
-	for _, cacheSize := range []int{0, 4} {
-		r, err := newMeshRuntime(&armtls.ServerConfig{
-			AttestFunc: func(context.Context, string) (string, error) { return "", errors.New("unexpected attestation request") },
-			Platform:   "sev-snp", ClientPolicy: &armtls.VerifyPolicy{}, DynamicCACert: true,
-		}, testLogger(), cacheSize)
-		if err != nil {
-			t.Fatal(err)
+	r, err := newMeshRuntime(&armtls.ServerConfig{
+		AttestFunc: func(context.Context, string) (string, error) {
+			return "", errors.New("unexpected attestation request")
+		},
+		Platform:      "sev-snp",
+		ClientPolicy:  &armtls.VerifyPolicy{},
+		DynamicCACert: true,
+	}, testLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	failures := 0.0
+	for role, cfg := range map[string]*tls.Config{"server": r.serverTLS, "client": r.clientTLS} {
+		if !cfg.SessionTicketsDisabled || cfg.ClientSessionCache != nil {
+			t.Errorf("%s role offers session resumption", role)
 		}
-		if (r.clientTLS.ClientSessionCache != nil) != (cacheSize > 0) {
-			t.Fatalf("session cache setting %d not preserved", cacheSize)
+		if cfg.VerifyPeerCertificate == nil || cfg.VerifyPeerCertificate([][]byte{[]byte("invalid certificate")}, nil) == nil {
+			t.Fatalf("%s role must reject malformed peer certificates before CDS upgrade", role)
 		}
-		for _, verify := range []func([][]byte, [][]*x509.Certificate) error{
-			r.serverTLS.VerifyPeerCertificate, r.clientTLS.VerifyPeerCertificate,
-		} {
-			if verify == nil || verify([][]byte{[]byte("invalid certificate")}, nil) == nil {
-				t.Fatal("both TLS roles must reject malformed peer certificates before CDS upgrade")
-			}
-		}
-		if got := registryValue(t, r.metrics, "armtls_mesh_attestation_failures_total", nil); got != 2 {
-			t.Fatalf("attestation failures = %v, want 2", got)
+		failures++
+		if got := registryValue(t, r.metrics, "armtls_mesh_attestation_failures_total", nil); got != failures {
+			t.Fatalf("attestation failures after the %s role = %v, want %v", role, got, failures)
 		}
 	}
 }

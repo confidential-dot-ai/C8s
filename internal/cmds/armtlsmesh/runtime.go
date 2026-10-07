@@ -34,7 +34,7 @@ type meshRuntime struct {
 	proxy                        *Proxy
 }
 
-func newMeshRuntime(cfg *armtls.ServerConfig, logger *slog.Logger, sessionCacheSize int) (*meshRuntime, error) {
+func newMeshRuntime(cfg *armtls.ServerConfig, logger *slog.Logger) (*meshRuntime, error) {
 	serverConfig := *cfg
 	serverConfig.Logger = logger.With("cert_role", "server")
 	serverTLS, serverCertMgr, err := armtls.NewServerTLSConfig(&serverConfig)
@@ -53,9 +53,6 @@ func newMeshRuntime(cfg *armtls.ServerConfig, logger *slog.Logger, sessionCacheS
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create client TLS config: %w", err)
-	}
-	if sessionCacheSize > 0 {
-		clientTLS.ClientSessionCache = tls.NewLRUClientSessionCache(sessionCacheSize)
 	}
 	m := newMetrics()
 	if len(cfg.ClientPolicy.Policy.Measurements) > 0 {

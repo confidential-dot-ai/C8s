@@ -279,6 +279,37 @@ re-verifies the leaf's copied nonce-free `.1.1` evidence per connection,
 measurement allowlist included. **No profile sets it today**, so the gap is
 open in practice.
 
+### The mesh endpoint profile
+
+A mesh endpoint presents its pod's CDS-issued leaf and authenticates peers on
+the **chain path alone** (`NewMeshServerTLSConfig`, `NewMeshClientTLSConfig`,
+`tls.go`). A peer is accepted when, and only when:
+
+1. its leaf chains to the mesh CA the endpoint holds, at the current time and
+   with no not-before allowance,
+2. the leaf permits the purpose the peer's role needs — `serverAuth` for a
+   server, `clientAuth` for a client,
+3. its key is ECDSA P-256 or P-384, and
+4. the leaf carries exactly one well-formed sandbox-ID extension.
+
+A failed chain is never retried against the leaf's embedded evidence, so a
+self-signed peer and a peer from another mesh CA both fail.
+
+This profile authenticates member-to-member traffic only: a credential client
+reaches CDS on the evidence path, and the router is itself a member.
+
+Both roles require the ALPN protocol `c8s-mesh/1` and refuse a connection that
+negotiates anything else, so no application byte moves on a peer that does not
+speak the mesh protocol.
+
+### No session resumption
+
+Every armTLS configuration sets `SessionTicketsDisabled` and holds no client
+session cache. `crypto/tls` re-runs no peer verification on a resumed
+handshake and gives a client no revalidation hook, so a resumed connection
+would outlive the checks that admitted it — the current CA trust and sandbox
+ID on the chain path, the current pins on the evidence path.
+
 ## What armTLS guarantees — and what it does not
 
 Direct evidence verification against a pinned policy establishes the claims
@@ -360,8 +391,11 @@ sandbox** it was issued to:
 
 ```text
 OID 1.3.6.1.4.1.66378.1.4  (pod sandbox ID extension)
-SandboxID ::= IA5String     -- e.g. containerd's 64-hex sandbox ID
+SandboxID ::= UTF8String    -- e.g. containerd's 64-hex sandbox ID
 ```
+
+A leaf carries exactly one `…1.4`: one DER UTF8String whose value matches
+`[A-Za-z0-9._-]{1,128}`.
 
 The **inventory** is the component that admitted the pod's containers —
 nri-image-policy on node-CVM — so it is
@@ -588,8 +622,7 @@ degrades issuance — CDS refuses the tokens it cannot check.
 ### Cross-implementation note
 
 A non-Go verifier (e.g. `c8s-verify-js`) reading a sandbox ID needs only the DER
-IA5String at OID `1.3.6.1.4.1.66378.1.4` plus a mesh-CA chain check — the ID is
-not part of any hash preimage, so there are no canonical-serialization traps.
+UTF8String at OID `1.3.6.1.4.1.66378.1.4` plus a mesh-CA chain check.
 The token and digests formats above are internal to the inventory↔CDS path and
 are never presented to a relying party.
 
