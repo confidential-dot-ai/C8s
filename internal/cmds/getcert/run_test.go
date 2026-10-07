@@ -32,7 +32,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -183,42 +182,6 @@ func TestValidateConfigRejectsContinueOnInitialErrorWithoutRenewInterval(t *test
 	}
 }
 
-// --key-out reuses an existing key at the path instead of overwriting it.
-// This is what makes a single long-running cert sidecar safe across
-// container restarts — a fresh key would invalidate any cert CDS has
-// already issued for the previous key.
-func TestLoadOrGenerateKeyReusesExistingKeyOutFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "tls.key")
-
-	first, firstPEM, err := loadOrGenerateKey(config{KeyOutPath: path})
-	if err != nil {
-		t.Fatalf("loadOrGenerateKey(initial): %v", err)
-	}
-	if err := fileutil.WriteAtomic(path, firstPEM, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	second, _, err := loadOrGenerateKey(config{KeyOutPath: path})
-	if err != nil {
-		t.Fatalf("loadOrGenerateKey(reuse): %v", err)
-	}
-	if !first.Equal(second) {
-		t.Fatal("loadOrGenerateKey returned a different key on the second call; key-out must be reused once written")
-	}
-}
-
-func TestLoadOrGenerateKeyGeneratesWhenKeyOutFileMissing(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing.key")
-	key, pem, err := loadOrGenerateKey(config{KeyOutPath: path})
-	if err != nil {
-		t.Fatalf("loadOrGenerateKey: %v", err)
-	}
-	if key == nil || len(pem) == 0 {
-		t.Fatal("expected freshly generated key + PEM")
-	}
-}
-
 func TestWriteFileAtomicReplacesFileAndCleansTemp(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cert.pem")
@@ -365,6 +328,14 @@ func TestValidateConfigAccepts(t *testing.T) {
 			},
 		},
 		{
+			// N5: a pod the injector selected no SAN for requests none.
+			name: "no san",
+			cfg: config{
+				CDSURL:            "http://cds:8443",
+				AttestationApiURL: "http://attestation-api:8400",
+			},
+		},
+		{
 			name: "ip san",
 			cfg: config{
 				CDSURL:            "https://cds:8443",
@@ -409,7 +380,7 @@ func TestValidateConfigAccepts(t *testing.T) {
 				CDSURL:            "http://cds:8443",
 				AttestationApiURL: "http://attestation-api:8400",
 				SAN:               "host.example.com",
-				CAOutPath:         "/tls/ca.pem",
+				CAPath:            "/tls/ca.pem",
 				RenewInterval:     time.Hour,
 				CAWatchInterval:   time.Minute,
 			},
@@ -437,19 +408,14 @@ func TestValidateConfigRejects(t *testing.T) {
 		{"empty cds url", func(c *config) { c.CDSURL = "" }},
 		{"bad cds url", func(c *config) { c.CDSURL = "://nope" }},
 		{"empty attestation url", func(c *config) { c.AttestationApiURL = "" }},
-		{"empty san", func(c *config) { c.SAN = "" }},
 		{"url san", func(c *config) { c.SAN = "https://host.example.com" }},
 		{"negative ca watch interval", func(c *config) {
-			c.CAOutPath = "/tls/ca.pem"
+			c.CAPath = "/tls/ca.pem"
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = -time.Minute
 		}},
-		{"ca watch without ca-out", func(c *config) {
-			c.RenewInterval = time.Hour
-			c.CAWatchInterval = time.Minute
-		}},
 		{"ca watch without renew interval", func(c *config) {
-			c.CAOutPath = "/tls/ca.pem"
+			c.CAPath = "/tls/ca.pem"
 			c.CAWatchInterval = time.Minute
 		}},
 	}
@@ -537,86 +503,18 @@ func TestValidateOutputPaths(t *testing.T) {
 
 // TestRequireKeyOutRAMBacked: the private key's memory-only invariant is
 // enforced, not merely documented.
-func TestRequireKeyOutRAMBacked(t *testing.T) {
-	t.Run("empty key-out exempt", func(t *testing.T) {
-		if err := requireKeyOutRAMBacked(""); err != nil {
-			t.Fatalf("requireKeyOutRAMBacked(\"\"): %v", err)
-		}
-	})
-
-	t.Run("persistent storage refused", func(t *testing.T) {
-		dir := t.TempDir()
-		if fileutil.RequireRAMBacked(dir) == nil {
-			t.Skipf("%s is RAM-backed; no on-disk path to reject", dir)
-		}
-		if err := requireKeyOutRAMBacked(filepath.Join(dir, "key.pem")); err == nil {
-			t.Fatal("expected a key-out on persistent storage to be refused")
-		}
-	})
+func TestRequireRAMBackedVolume(t *testing.T) {
+	dir := t.TempDir()
+	if fileutil.RequireRAMBacked(dir) == nil {
+		t.Skipf("%s is RAM-backed; no on-disk path to reject", dir)
+	}
+	if err := requireRAMBackedVolume(dir); err == nil {
+		t.Fatal("expected a credential volume on persistent storage to be refused")
+	}
+	if err := requireRAMBackedVolume(ramBackedDir(t)); err != nil {
+		t.Fatalf("tmpfs volume refused: %v", err)
+	}
 }
-
-func TestLoadOrGenerateKey(t *testing.T) {
-	t.Run("generate ephemeral", func(t *testing.T) {
-		key, keyPEM, err := loadOrGenerateKey(config{})
-		if err != nil {
-			t.Fatalf("loadOrGenerateKey: %v", err)
-		}
-		if key == nil {
-			t.Fatal("nil key")
-		}
-		if !strings.Contains(string(keyPEM), "PRIVATE KEY") {
-			t.Fatalf("keyPEM does not look like a PEM key: %q", keyPEM)
-		}
-		if key.Curve != elliptic.P256() {
-			t.Fatalf("curve = %v, want P-256", key.Curve.Params().Name)
-		}
-	})
-
-	t.Run("load from disk", func(t *testing.T) {
-		dir := t.TempDir()
-		genKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		genPEM, err := certutil.MarshalECKeyPEM(genKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		path := filepath.Join(dir, "key.pem")
-		if err := os.WriteFile(path, genPEM, 0600); err != nil {
-			t.Fatal(err)
-		}
-
-		key, keyPEM, err := loadOrGenerateKey(config{KeyPath: path})
-		if err != nil {
-			t.Fatalf("loadOrGenerateKey: %v", err)
-		}
-		if !key.Equal(genKey) {
-			t.Fatal("loaded key does not match written key")
-		}
-		if string(keyPEM) != string(genPEM) {
-			t.Fatal("returned PEM does not match file contents")
-		}
-	})
-
-	t.Run("missing file", func(t *testing.T) {
-		if _, _, err := loadOrGenerateKey(config{KeyPath: filepath.Join(t.TempDir(), "nope.pem")}); err == nil {
-			t.Fatal("loadOrGenerateKey succeeded, want error for missing file")
-		}
-	})
-
-	t.Run("invalid key contents", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "bad.pem")
-		if err := os.WriteFile(path, []byte("not a key"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		if _, _, err := loadOrGenerateKey(config{KeyPath: path}); err == nil {
-			t.Fatal("loadOrGenerateKey succeeded, want error for invalid key")
-		}
-	})
-}
-
 func TestCreateCSR(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -636,6 +534,22 @@ func TestCreateCSR(t *testing.T) {
 		}
 		return csr
 	}
+
+	// N5: a pod without confidential.ai/cw requests no SAN at all; CDS takes
+	// the subject from the verified workload identity assertion.
+	t.Run("no san", func(t *testing.T) {
+		csrPEM, err := createCSR(key, "", armtlsExt)
+		if err != nil {
+			t.Fatalf("createCSR: %v", err)
+		}
+		csr := parseCSR(t, csrPEM)
+		if len(csr.DNSNames) != 0 || len(csr.IPAddresses) != 0 {
+			t.Fatalf("CSR carries SANs %v %v, want none", csr.DNSNames, csr.IPAddresses)
+		}
+		if len(csr.Subject.String()) != 0 {
+			t.Fatalf("CSR subject = %q, want empty", csr.Subject.String())
+		}
+	})
 
 	t.Run("dns san", func(t *testing.T) {
 		csrPEM, err := createCSR(key, "host.example.com", armtlsExt)
@@ -669,9 +583,9 @@ func TestCreateCSR(t *testing.T) {
 		}
 	})
 
-	// The workload-claims flow embeds an armTLS attestation extension into the
-	// CSR so CDS copies it onto the leaf (docs/armtls.md). Confirm an extra
-	// extension survives into the request.
+	// get-cert embeds an armTLS attestation extension into the CSR so CDS
+	// copies it onto the leaf (docs/armtls.md). Confirm an extra extension
+	// survives into the request.
 	t.Run("carries extra extension", func(t *testing.T) {
 		want := []byte{0x30, 0x03, 0x02, 0x01, 0x2A}
 		csrPEM, err := createCSR(key, "host.example.com", pkix.Extension{Id: armtls.OIDARMTLSAttestation, Value: want})
@@ -767,135 +681,39 @@ func TestReloadWatchChangedPropagatesError(t *testing.T) {
 	}
 }
 
-func TestWriteOutputsAllArtifacts(t *testing.T) {
-	dir := t.TempDir()
-	certPEM := testIssuedChainPEM(t)
-	cfg := config{
-		SAN:                    "host.example.com",
-		OutPath:                filepath.Join(dir, "cert.pem"),
-		CAOutPath:              filepath.Join(dir, "ca.pem"),
-		KeyOutPath:             filepath.Join(dir, "key.pem"),
-		DiscoveryOutPath:       filepath.Join(dir, "discovery.json"),
-		DiscoveryPublicTLSMode: "cds",
-	}
-	result := attestclient.CertificateResult{
-		Certificate: certPEM,
-		Challenge:   base64.StdEncoding.EncodeToString([]byte("challenge")),
-		Platform:    "snp",
-		Evidence:    json.RawMessage(`{"q":"e"}`),
-	}
-
-	if err := writeOutputs(cfg, []byte("KEYPEM"), result); err != nil {
-		t.Fatalf("writeOutputs: %v", err)
-	}
-
-	cert, err := os.ReadFile(cfg.OutPath)
-	if err != nil || string(cert) != certPEM {
-		t.Fatalf("cert out mismatch: err=%v", err)
-	}
-	if data, err := os.ReadFile(cfg.KeyOutPath); err != nil || string(data) != "KEYPEM" {
-		t.Fatalf("key out mismatch: err=%v", err)
-	}
-	info, err := os.Stat(cfg.KeyOutPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != 0600 {
-		t.Fatalf("key mode = %#o, want 0600", info.Mode().Perm())
-	}
-	ca, err := os.ReadFile(cfg.CAOutPath)
-	if err != nil || !strings.Contains(string(ca), "CERTIFICATE") {
-		t.Fatalf("ca out mismatch: err=%v", err)
-	}
-	var doc types.DiscoveryDocument
-	data, err := os.ReadFile(cfg.DiscoveryOutPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("discovery json: %v", err)
-	}
-	if doc.PublicTLS.Hostname != "host.example.com" {
-		t.Fatalf("discovery hostname = %q", doc.PublicTLS.Hostname)
-	}
-}
-
-func TestWriteOutputsKeyPermissions(t *testing.T) {
+func TestPublishedKeyPermissions(t *testing.T) {
+	ca := newTestCA(t)
 	for _, shared := range []bool{false, true} {
-		for _, existing := range []os.FileMode{0, 0600, 0640, 0666} {
-			t.Run(fmt.Sprintf("shared=%t/existing=%04o", shared, existing), func(t *testing.T) {
-				dir := t.TempDir()
-				dirMode := os.FileMode(0700)
-				want := os.FileMode(0600)
-				if shared {
-					dirMode = 0770 | os.ModeSetgid
-					want = 0640
-				}
-				if err := os.Chmod(dir, dirMode); err != nil {
+		t.Run(fmt.Sprintf("shared=%t", shared), func(t *testing.T) {
+			dir := t.TempDir()
+			dirMode := os.FileMode(0700)
+			want := os.FileMode(0600)
+			if shared {
+				dirMode = 0770 | os.ModeSetgid
+				want = 0640
+			}
+			if err := os.Chmod(dir, dirMode); err != nil {
+				t.Fatal(err)
+			}
+			v, err := credentialVolumeFor(filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key"), filepath.Join(dir, "ca.crt"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			key, keyPEM := testKey(t)
+			// Both the initial publication and the renewal that follows it.
+			for _, ttl := range []time.Duration{time.Hour, 2 * time.Hour} {
+				if err := publishGeneration(v, testGeneration(t, ca, key, keyPEM, testInstanceID, ttl)); err != nil {
 					t.Fatal(err)
 				}
-				keyPath := filepath.Join(dir, "key.pem")
-				if existing != 0 {
-					if err := os.WriteFile(keyPath, []byte("old key"), 0600); err != nil {
-						t.Fatal(err)
-					}
-					if err := os.Chmod(keyPath, existing); err != nil {
-						t.Fatal(err)
-					}
+				info, err := os.Stat(filepath.Join(v.dir, v.keyName))
+				if err != nil {
+					t.Fatal(err)
 				}
-				cfg := config{KeyOutPath: keyPath, OutPath: filepath.Join(dir, "cert.pem")}
-				// Check both initial issuance and renewal.
-				for _, content := range []string{"new key", "renewed key"} {
-					if err := writeOutputs(cfg, []byte(content), attestclient.CertificateResult{}); err != nil {
-						t.Fatal(err)
-					}
-					info, err := os.Stat(keyPath)
-					if err != nil {
-						t.Fatal(err)
-					}
-					if info.Mode().Perm() != want {
-						t.Fatalf("key mode = %#o, want %#o", info.Mode().Perm(), want)
-					}
-					key, err := os.ReadFile(keyPath)
-					if err != nil || string(key) != content {
-						t.Fatalf("key = %q, err = %v; want %q", key, err, content)
-					}
+				if info.Mode().Perm() != want {
+					t.Fatalf("key mode = %#o, want %#o", info.Mode().Perm(), want)
 				}
-			})
-		}
-	}
-}
-
-func TestWriteOutputsCAOutWithoutIssuerFails(t *testing.T) {
-	// A chain with only a leaf has no CA bundle to extract.
-	leafOnly := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: []byte("leaf")}))
-	err := writeOutputs(config{CAOutPath: filepath.Join(t.TempDir(), "ca.pem")}, nil, attestclient.CertificateResult{Certificate: leafOnly})
-	if err == nil {
-		t.Fatal("writeOutputs succeeded, want error extracting CA bundle from leaf-only chain")
-	}
-}
-
-func TestWriteOutputsPrintsToStdoutWithoutOutPath(t *testing.T) {
-	// OutPath "" prints the chain to stdout; capture it via a pipe.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	oldStdout := os.Stdout
-	os.Stdout = w
-	writeErr := writeOutputs(config{}, nil, attestclient.CertificateResult{Certificate: "CHAIN-PEM"})
-	os.Stdout = oldStdout
-	w.Close()
-
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if writeErr != nil {
-		t.Fatalf("writeOutputs: %v", writeErr)
-	}
-	if string(out) != "CHAIN-PEM" {
-		t.Fatalf("stdout = %q, want CHAIN-PEM", out)
+			}
+		})
 	}
 }
 
@@ -933,14 +751,17 @@ func TestSetupLoggingSetsLevel(t *testing.T) {
 // (/authenticate, /attest) and a separate attestation-api server (/attest).
 // The challenge is valid base64 and the attestation-api echoes evidence so the
 // full obtainCert flow can run without real TEE hardware.
-func startFakeServers(t *testing.T, issuedChain string) (cdsURL, attURL string) {
-	return startFakeServersRefusing(t, issuedChain, 0)
+// startFakeServers is a CDS that issues the way the real one does: it reads the
+// CSR and the sandbox token out of the attest request and signs a leaf for that
+// key, naming the instance the token asserts.
+func startFakeServers(t *testing.T, ca *testCA) (cdsURL, attURL string) {
+	return startFakeServersRefusing(t, ca, 0)
 }
 
 // startFakeServersRefusing is startFakeServers with the CDS refusing the first
 // refusals authentication attempts before it starts issuing, so a test can
 // watch get-cert recover from a CDS that is not yet ready to issue.
-func startFakeServersRefusing(t *testing.T, issuedChain string, refusals int) (cdsURL, attURL string) {
+func startFakeServersRefusing(t *testing.T, ca *testCA, refusals int) (cdsURL, attURL string) {
 	t.Helper()
 
 	att := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -974,7 +795,12 @@ func startFakeServersRefusing(t *testing.T, issuedChain string, refusals int) (c
 				"challenge": base64.StdEncoding.EncodeToString([]byte("the-challenge")),
 			})
 		case "/attest":
-			_, _ = w.Write([]byte(issuedChain))
+			chain, err := issueForAttestRequest(ca, r)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte(chain))
 		default:
 			http.NotFound(w, r)
 		}
@@ -984,27 +810,136 @@ func startFakeServersRefusing(t *testing.T, issuedChain string, refusals int) (c
 	return cds.URL, att.URL
 }
 
-func TestObtainCertEndToEnd(t *testing.T) {
-	dir := t.TempDir()
-	chain := testIssuedChainPEM(t)
-	cdsURL, attURL := startFakeServers(t, chain)
-
-	cfg := config{
-		CDSURL:            cdsURL,
-		AttestationApiURL: attURL,
-		SAN:               "host.example.com",
-		OutPath:           filepath.Join(dir, "cert.pem"),
+// issueForAttestRequest mints the leaf an attest request asks for: CDS stamps
+// the instance the inventory's token names, which is what the pod then checks.
+func issueForAttestRequest(ca *testCA, r *http.Request) (string, error) {
+	var req struct {
+		CSR          string          `json:"csr"`
+		SandboxToken json.RawMessage `json:"sandbox_token"`
 	}
-	client := plaintextCDSClient(cfg.CDSURL)
-	if _, err := obtainCert(context.Background(), cfg, client); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return "", err
+	}
+	block, _ := pem.Decode([]byte(req.CSR))
+	if block == nil {
+		return "", errors.New("attest request carries no CSR")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		return "", err
+	}
+	pub, ok := csr.PublicKey.(*ecdsa.PublicKey)
+	if !ok {
+		return "", errors.New("CSR key is not ECDSA")
+	}
+	var instanceID string
+	if len(req.SandboxToken) > 0 {
+		var token workloadclaims.SignedSandboxToken
+		if err := json.Unmarshal(req.SandboxToken, &token); err != nil {
+			return "", err
+		}
+		if instanceID, err = workloadclaims.UnverifiedSandboxIDFromToken(token.Token); err != nil {
+			return "", err
+		}
+	}
+	return ca.issue(pub, instanceID, time.Hour)
+}
+
+// testCredentials is a pod that has published nothing yet: a fresh volume, its
+// own key, and the instance its inventory asserts.
+func testCredentials(t *testing.T) *credentials {
+	t.Helper()
+	key, keyPEM := testKey(t)
+	return &credentials{volume: testVolume(t), instanceID: testInstanceID, key: key, keyPEM: keyPEM}
+}
+
+// B4: a validated response becomes the pod's first generation, and the CA key
+// that signed it becomes the pod's binding.
+func TestObtainCertPublishesAValidatedGeneration(t *testing.T) {
+	stageInventory(t, testInstanceID)
+	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+
+	cfg := config{CDSURL: cdsURL, AttestationApiURL: attURL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second}
+	creds := testCredentials(t)
+	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err != nil {
 		t.Fatalf("obtainCert: %v", err)
 	}
-	got, err := os.ReadFile(cfg.OutPath)
-	if err != nil {
-		t.Fatal(err)
+	assertReaderPaths(t, creds.volume, creds.current)
+	if id, err := armtls.SandboxIDFromCert(creds.current.Leaf); err != nil || id != testInstanceID {
+		t.Fatalf("published leaf names instance %q, %v", id, err)
 	}
-	if string(got) != chain {
-		t.Fatalf("written cert does not match issued chain")
+}
+
+// A chart component whose node runs no admission inventory
+// (--no-workload-claims) asks for no assertion, never dials the inventory, and
+// publishes a leaf that names no workload instance.
+func TestObtainCertWithoutClaimsPublishesAnUnassertedLeaf(t *testing.T) {
+	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+
+	cfg := config{CDSURL: cdsURL, AttestationApiURL: attURL, SAN: "host.example.com", NoWorkloadClaims: true}
+	creds := testCredentials(t)
+	creds.instanceID = ""
+	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err != nil {
+		t.Fatalf("obtainCert: %v", err)
+	}
+	assertReaderPaths(t, creds.volume, creds.current)
+	if id, err := armtls.SandboxIDFromCert(creds.current.Leaf); err != nil || id != "" {
+		t.Fatalf("published leaf names instance %q, %v", id, err)
+	}
+}
+
+// The mount requirement and the assertion are one decision: --no-workload-claims
+// drops both, and nothing else does.
+func TestWorkloadInstanceWithoutClaimsNeedsNoInventory(t *testing.T) {
+	previous := nodeInventory.requireMount
+	nodeInventory.requireMount = func() error { return errors.New("inventory socket directory is not mounted") }
+	t.Cleanup(func() { nodeInventory.requireMount = previous })
+
+	id, err := workloadInstance(context.Background(), config{NoWorkloadClaims: true})
+	if err != nil || id != "" {
+		t.Fatalf("workloadInstance = %q, %v, want no instance and no error", id, err)
+	}
+	if _, err := workloadInstance(context.Background(), config{}); err == nil {
+		t.Fatal("a pod that asks for claims was resumed without the inventory mount")
+	}
+}
+
+// Row 2 and row 3: a rejected assertion and an inaccessible inventory publish
+// nothing, and neither degrades to an unstamped certificate (B3).
+func TestObtainCertFailsClosedWithoutAnAssertion(t *testing.T) {
+	ca := newTestCA(t)
+	for name, handler := range map[string]http.HandlerFunc{
+		"rejected":    func(w http.ResponseWriter, r *http.Request) { http.Error(w, "denied", http.StatusForbidden) },
+		"unsupported": func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			serveSandboxRoute(t, handler)
+			cdsURL, attURL := startFakeServers(t, ca)
+			cfg := config{CDSURL: cdsURL, AttestationApiURL: attURL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second}
+			creds := testCredentials(t)
+			if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err == nil {
+				t.Fatal("issued without a workload identity assertion")
+			}
+			if creds.current != nil {
+				t.Fatal("a generation was published without an assertion")
+			}
+		})
+	}
+}
+
+// Row 6: the inventory asserts one instance and CDS names another; the pod
+// publishes nothing.
+func TestObtainCertRejectsAnotherInstancesLeaf(t *testing.T) {
+	stageInventory(t, "f3a8c1d2e4b69075")
+	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+
+	cfg := config{CDSURL: cdsURL, AttestationApiURL: attURL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second}
+	creds := testCredentials(t)
+	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err == nil {
+		t.Fatal("published a leaf naming another workload instance")
+	}
+	if _, err := storedGeneration(creds.volume); !errors.Is(err, errNoGeneration) {
+		t.Fatal("a generation for another instance was published")
 	}
 }
 
@@ -1018,9 +953,9 @@ func TestObtainCertCDSError(t *testing.T) {
 	}))
 	t.Cleanup(cds.Close)
 
-	cfg := config{CDSURL: cds.URL, AttestationApiURL: att.URL, SAN: "host.example.com"}
-	client := plaintextCDSClient(cfg.CDSURL)
-	if _, err := obtainCert(context.Background(), cfg, client); err == nil {
+	stageInventory(t, testInstanceID)
+	cfg := config{CDSURL: cds.URL, AttestationApiURL: att.URL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second}
+	if err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), testCredentials(t)); err == nil {
 		t.Fatal("obtainCert succeeded, want error when CDS fails")
 	}
 }
@@ -1041,12 +976,9 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 	}))
 	t.Cleanup(cds.Close)
 
-	cfg := config{
-		CDSURL:            cds.URL,
-		AttestationApiURL: att.URL,
-		SAN:               "host.example.com",
-	}
-	_, err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL))
+	stageInventory(t, testInstanceID)
+	cfg := config{CDSURL: cds.URL, AttestationApiURL: att.URL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second}
+	err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), testCredentials(t))
 	if err == nil {
 		t.Fatal("obtainCert succeeded, want attestation extension error")
 	}
@@ -1056,48 +988,23 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 }
 
 func TestObtainCertWithRetrySucceedsAfterTransientFailure(t *testing.T) {
-	dir := t.TempDir()
-	chain := testIssuedChainPEM(t)
-
-	att := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"platform": "snp", "evidence": mockapi.FakeSNPEvidence(nil)})
-	}))
-	t.Cleanup(att.Close)
-
-	var calls int
-	cds := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/authenticate":
-			calls++
-			if calls == 1 {
-				http.Error(w, "warming up", http.StatusServiceUnavailable)
-				return
-			}
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"challenge": base64.StdEncoding.EncodeToString([]byte("c")),
-			})
-		case "/attest":
-			_, _ = w.Write([]byte(chain))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
-	t.Cleanup(cds.Close)
+	stageInventory(t, testInstanceID)
+	cdsURL, attURL := startFakeServersRefusing(t, newTestCA(t), 1)
 
 	cfg := config{
-		CDSURL:               cds.URL,
-		AttestationApiURL:    att.URL,
-		SAN:                  "host.example.com",
-		OutPath:              filepath.Join(dir, "cert.pem"),
-		InitialRetryTimeout:  5 * time.Second,
-		InitialRetryInterval: time.Millisecond,
+		CDSURL:                cdsURL,
+		AttestationApiURL:     attURL,
+		SAN:                   "host.example.com",
+		WorkloadClaimsTimeout: 5 * time.Second,
+		InitialRetryTimeout:   5 * time.Second,
+		InitialRetryInterval:  time.Millisecond,
 	}
-	client := plaintextCDSClient(cfg.CDSURL)
-	if _, err := obtainCertWithRetry(context.Background(), cfg, client); err != nil {
+	creds := testCredentials(t)
+	if err := obtainCertWithRetry(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), creds); err != nil {
 		t.Fatalf("obtainCertWithRetry: %v", err)
 	}
-	if calls < 2 {
-		t.Fatalf("expected a retry, got %d calls", calls)
+	if creds.current == nil {
+		t.Fatal("the retried request published nothing")
 	}
 }
 
@@ -1113,9 +1020,9 @@ func TestObtainCertWithRetryNoTimeoutTriesOnce(t *testing.T) {
 	}))
 	t.Cleanup(cds.Close)
 
-	cfg := config{CDSURL: cds.URL, AttestationApiURL: att.URL, SAN: "host.example.com", InitialRetryTimeout: 0}
-	client := plaintextCDSClient(cfg.CDSURL)
-	if _, err := obtainCertWithRetry(context.Background(), cfg, client); err == nil {
+	stageInventory(t, testInstanceID)
+	cfg := config{CDSURL: cds.URL, AttestationApiURL: att.URL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second, InitialRetryTimeout: 0}
+	if err := obtainCertWithRetry(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL), testCredentials(t)); err == nil {
 		t.Fatal("obtainCertWithRetry succeeded, want error")
 	}
 	if calls != 1 {
@@ -1137,50 +1044,68 @@ func TestRunFailsFastWithoutClaimsSocketDir(t *testing.T) {
 	if _, err := os.Stat(workloadclaims.SidecarSocketDir); err == nil {
 		t.Skipf("%s exists on this host", workloadclaims.SidecarSocketDir)
 	}
+	dir := ramBackedDir(t)
 	err := run(config{
 		CDSURL:            "https://cds:8443",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
-		WorkloadClaims:    true,
+		CertPath:          filepath.Join(dir, "tls.crt"),
+		KeyPath:           filepath.Join(dir, "tls.key"),
+		CAPath:            filepath.Join(dir, "ca.crt"),
 	})
 	if err == nil || !strings.Contains(err.Error(), "inventory socket directory") {
 		t.Fatalf("run() = %v, want the missing socket-directory failure", err)
 	}
 }
 
-func TestRunFailsOnUnwritableOutputPath(t *testing.T) {
-	err := run(config{
-		CDSURL:            "https://cds:8443",
-		AttestationApiURL: "http://attestation-api:8400",
-		SAN:               "host.example.com",
-		OutPath:           filepath.Join(t.TempDir(), "missing", "cert.pem"),
-	})
-	if err == nil || !strings.Contains(err.Error(), "does not exist") {
-		t.Fatalf("error = %v, want missing output directory error", err)
-	}
-}
-
 func TestRunFailsOnBadCDSMeasurements(t *testing.T) {
-	err := run(config{
+	cfg := stagePodEnvironment(t, config{
 		CDSURL:            "https://cds:8443",
 		CDSMeasurements:   "zz",
 		AttestationApiURL: "http://attestation-api:8400",
 		SAN:               "host.example.com",
 	})
-	if err == nil || !strings.Contains(err.Error(), "--cds-measurements") {
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "--cds-measurements") {
 		t.Fatalf("error = %v, want measurements error", err)
+	}
+}
+
+func TestRunFailsOnUnwritableOutputPath(t *testing.T) {
+	cfg := stagePodEnvironment(t, config{
+		CDSURL:            "https://cds:8443",
+		AttestationApiURL: "http://attestation-api:8400",
+		SAN:               "host.example.com",
+	})
+	missing := filepath.Join(t.TempDir(), "missing")
+	cfg.CertPath = filepath.Join(missing, "tls.crt")
+	cfg.KeyPath = filepath.Join(missing, "tls.key")
+	cfg.CAPath = filepath.Join(missing, "ca.crt")
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("error = %v, want missing output directory error", err)
+	}
+}
+
+func TestRunRejectsASplitCredentialVolume(t *testing.T) {
+	cfg := stagePodEnvironment(t, config{
+		CDSURL:            "https://cds:8443",
+		AttestationApiURL: "http://attestation-api:8400",
+		SAN:               "host.example.com",
+	})
+	cfg.CAPath = filepath.Join(t.TempDir(), "ca.crt")
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "one directory") {
+		t.Fatalf("error = %v, want the one-directory requirement", err)
 	}
 }
 
 func TestRunOnceReturnsInitialError(t *testing.T) {
 	// Run-once mode (RenewInterval 0): the initial failure is returned as-is.
-	err := run(config{
+	cfg := stagePodEnvironment(t, config{
 		CDSURL:              "https://127.0.0.1:1",
 		AttestationApiURL:   "http://127.0.0.1:1",
 		SAN:                 "host.example.com",
 		InitialRetryTimeout: 0,
 	})
-	if err == nil {
+	if err := run(cfg); err == nil {
 		t.Fatal("run succeeded, want initial certificate request error")
 	}
 }
@@ -1200,9 +1125,9 @@ func serveSandboxRoute(t *testing.T, handler http.HandlerFunc) {
 	go func() { _ = srv.Serve(l) }()
 	t.Cleanup(func() { _ = srv.Close() })
 
-	old := inventoryEndpoint
-	inventoryEndpoint = func() string { return "unix://" + sock }
-	t.Cleanup(func() { inventoryEndpoint = old })
+	old := nodeInventory.endpoint
+	nodeInventory.endpoint = func() string { return "unix://" + sock }
+	t.Cleanup(func() { nodeInventory.endpoint = old })
 }
 
 func TestFetchSandboxToken(t *testing.T) {
@@ -1211,28 +1136,17 @@ func TestFetchSandboxToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	nonce := []byte("challenge-nonce")
-	baseCfg := config{WorkloadClaims: true, WorkloadClaimsTimeout: 5 * time.Second}
+	cfg := config{WorkloadClaimsTimeout: 5 * time.Second}
 
-	t.Run("disabled returns no token and no fetch", func(t *testing.T) {
-		serveSandboxRoute(t, func(w http.ResponseWriter, r *http.Request) {
-			t.Error("the inventory must not be consulted without --workload-claims")
-		})
-		raw, err := fetchSandboxToken(context.Background(), config{}, &key.PublicKey, nonce)
-		if err != nil || raw != nil {
-			t.Fatalf("= %v, %v; want nil, nil", raw, err)
-		}
-	})
-
-	t.Run("route absent issues without a sandbox ID", func(t *testing.T) {
+	// B3: an inventory without the route is a failure like any other. A
+	// certificate issued without the assertion would name no instance, so the
+	// pod could not check it against its own.
+	t.Run("route absent is fail-closed", func(t *testing.T) {
 		serveSandboxRoute(t, func(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 		})
-		raw, err := fetchSandboxToken(context.Background(), baseCfg, &key.PublicKey, nonce)
-		if err != nil {
-			t.Fatalf("a 404 route must degrade to tokenless issuance, got %v", err)
-		}
-		if raw != nil {
-			t.Fatalf("token = %s, want none", raw)
+		if _, _, err := fetchSandboxToken(context.Background(), cfg, &key.PublicKey, nonce); err == nil {
+			t.Fatal("a 404 route must abort issuance, not drop the binding")
 		}
 	})
 
@@ -1240,38 +1154,118 @@ func TestFetchSandboxToken(t *testing.T) {
 		serveSandboxRoute(t, func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "boom", http.StatusInternalServerError)
 		})
-		if _, err := fetchSandboxToken(context.Background(), baseCfg, &key.PublicKey, nonce); err == nil {
+		if _, _, err := fetchSandboxToken(context.Background(), cfg, &key.PublicKey, nonce); err == nil {
 			t.Fatal("a 500 from the inventory must abort issuance, not drop the binding")
 		}
 	})
 
-	t.Run("served token is forwarded as raw JSON", func(t *testing.T) {
-		serveSandboxRoute(t, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(workloadclaims.SignedSandboxToken{
-				Token:     []byte("token-der"),
-				Signature: []byte("signature"),
-			})
-		})
-		raw, err := fetchSandboxToken(context.Background(), baseCfg, &key.PublicKey, nonce)
+	t.Run("served token is forwarded with the instance it names", func(t *testing.T) {
+		stageInventory(t, testInstanceID)
+		raw, asserted, err := fetchSandboxToken(context.Background(), cfg, &key.PublicKey, nonce)
 		if err != nil {
 			t.Fatalf("fetchSandboxToken: %v", err)
 		}
+		if asserted != testInstanceID {
+			t.Fatalf("asserted instance = %q, want %q", asserted, testInstanceID)
+		}
 		var got workloadclaims.SignedSandboxToken
 		if err := json.Unmarshal(raw, &got); err != nil {
-			t.Fatalf("returned token is not the JSON CDS expects: %v", err)
+			t.Fatalf("unmarshal forwarded token: %v", err)
 		}
-		if string(got.Token) != "token-der" || string(got.Signature) != "signature" {
-			t.Fatalf("token roundtrip = %+v", got)
+		if len(got.Token) == 0 || len(got.Signature) == 0 {
+			t.Fatalf("forwarded token = %+v, want the inventory's", got)
+		}
+	})
+
+	t.Run("a token that is not a token is fail-closed", func(t *testing.T) {
+		serveSandboxRoute(t, func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(workloadclaims.SignedSandboxToken{Token: []byte("nonsense"), Signature: []byte("sig")})
+		})
+		if _, _, err := fetchSandboxToken(context.Background(), cfg, &key.PublicKey, nonce); err == nil {
+			t.Fatal("accepted an unreadable token")
 		}
 	})
 }
 
-// testIssuedChainPEM builds a two-cert PEM chain (leaf + one issuer) that parses
-// as real certificates, so buildDiscoveryDocument and caBundleFromChain succeed.
-func testIssuedChainPEM(t *testing.T) string {
-	t.Helper()
-	leaf := testCertificatePEM(t)
-	ca := testCertificatePEM(t)
-	return leaf + ca
+// The instance every generation must name comes from the inventory, and only
+// from there.
+func TestAssertedInstanceID(t *testing.T) {
+	cfg := config{WorkloadClaimsTimeout: 5 * time.Second}
+
+	stageInventory(t, testInstanceID)
+	got, err := assertedInstanceID(context.Background(), cfg)
+	if err != nil || got != testInstanceID {
+		t.Fatalf("instance = %q, %v; want %q", got, err, testInstanceID)
+	}
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"an unreachable route": func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) },
+		"a token that is not a token": func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewEncoder(w).Encode(workloadclaims.SignedSandboxToken{Token: []byte("nonsense"), Signature: []byte("sig")})
+		},
+		"an instance outside the extension charset": func(w http.ResponseWriter, r *http.Request) {
+			signTokenFor(t, w, r, "not a sandbox id")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			serveSandboxRoute(t, handler)
+			if _, err := assertedInstanceID(context.Background(), cfg); err == nil {
+				t.Fatal("accepted an instance the inventory did not assert")
+			}
+		})
+	}
+}
+
+// RQ2: the pod's key is minted once and then comes from its own generation, so
+// every renewal in the pod's lifetime reuses it.
+func TestCredentialsReuseThePublishedKey(t *testing.T) {
+	v, _, key := publishedVolume(t, newTestCA(t))
+	creds, err := loadCredentials(v, testInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !creds.key.Equal(key) {
+		t.Fatal("a restart minted a new key instead of reusing the published one")
+	}
+	fresh, err := loadCredentials(testVolume(t), testInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.key.Equal(key) || fresh.key.Curve != elliptic.P256() {
+		t.Fatal("a first start must mint its own P-256 key")
+	}
+}
+
+// The discovery document names the published certificate; it is public metadata
+// and not part of the generation.
+func TestWriteDiscoveryDocument(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config{
+		SAN:                    "host.example.com",
+		DiscoveryOutPath:       filepath.Join(dir, "discovery.json"),
+		DiscoveryPublicTLSMode: "cds",
+	}
+	result := attestclient.CertificateResult{
+		Certificate: testCertificatePEM(t),
+		Challenge:   base64.StdEncoding.EncodeToString([]byte("challenge")),
+		Platform:    "snp",
+		Evidence:    json.RawMessage(`{"q":"e"}`),
+	}
+	if err := writeDiscoveryDocument(cfg, result); err != nil {
+		t.Fatalf("writeDiscoveryDocument: %v", err)
+	}
+	var doc types.DiscoveryDocument
+	data, err := os.ReadFile(cfg.DiscoveryOutPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("discovery json: %v", err)
+	}
+	if doc.PublicTLS.Hostname != "host.example.com" || doc.CDSTLS.CertificatePEM != result.Certificate {
+		t.Fatalf("discovery document does not name the published certificate: %+v", doc)
+	}
+	if err := writeDiscoveryDocument(config{}, result); err != nil {
+		t.Fatalf("without --discovery-out: %v", err)
+	}
 }

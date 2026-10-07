@@ -20,6 +20,7 @@ updates:
       - /
       - /test/mock-attestation
       - /test/mock-cds
+      - /test/mock-inventory
     schedule:
       interval: weekly
     groups:
@@ -40,6 +41,7 @@ updates:
       - /cmd/volumed
       - /test/mock-attestation
       - /test/mock-cds
+      - /test/mock-inventory
     schedule:
       interval: weekly
     groups:

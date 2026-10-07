@@ -5,6 +5,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -16,8 +18,10 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -29,11 +33,19 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // caOutPath is where the ephemeral CA PEM lands so the harness can anchor
 // chain verification out-of-band (docker compose cp).
 const caOutPath = "/ca/mock-cds-ca.pem"
+
+// inventoryIdentityPort is where the mock inventory serves its sandbox-token
+// signing key. Production CDS reads that key from the inventory's armTLS
+// digests endpoint on a privileged port; the mock has no attested endpoint, so
+// it reads the same InventoryIdentity document over plain HTTP on the host the
+// token names.
+const inventoryIdentityPort = "8500"
 
 // mockLaunchDigest is the launch measurement the mock attestation-api
 // reports. Issuance is pinned to it the way production gates /attest on
@@ -119,7 +131,6 @@ func main() {
 		slog.Error("ATTESTATION_API_URL is required")
 		os.Exit(1)
 	}
-
 	if err := os.MkdirAll(filepath.Dir(caOutPath), 0o755); err != nil {
 		slog.Error("failed to create CA output directory", "error", err)
 		os.Exit(1)
@@ -204,6 +215,16 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 			return
 		}
 
+		// Sandbox identity before the evidence round-trip, in the order
+		// production checks it (internal/cmds/cds/attest.go). Every issuance
+		// needs a token: this mock signs no leaf it cannot name a sandbox for.
+		sandboxID, err := verifySandboxToken(r.Context(), req.SandboxToken, csrPubKey, challengeBytes)
+		if err != nil {
+			slog.Warn("sandbox token rejected", "error", err, "remote_addr", r.RemoteAddr)
+			writeError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+			return
+		}
+
 		// Verify the evidence binds this CSR key and the consumed challenge,
 		// the same report-data check production CDS delegates to the api.
 		expectedReportData, err := armtls.ReportDataForKey(csrPubKey, challengeBytes)
@@ -242,11 +263,24 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 			IPAddresses:  csr.IPAddresses,
 		}
 		for _, ext := range csr.Extensions {
+			// A requester-supplied instance ID would be stamped beside the
+			// asserted one, leaving two for a reader to choose between.
+			if ext.Id.Equal(armtls.OIDSandboxID) {
+				writeError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, "CSR carries a workload-instance extension")
+				return
+			}
 			if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
 				template.ExtraExtensions = append(template.ExtraExtensions, pkix.Extension{Id: ext.Id, Value: ext.Value})
-				break
 			}
 		}
+		// The sandbox the inventory asserted, stamped in the signed area like
+		// production's issuer.SignCSR; get-cert refuses a leaf naming another.
+		sandboxExt, err := armtls.MarshalSandboxIDExtension(sandboxID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
+			return
+		}
+		template.ExtraExtensions = append(template.ExtraExtensions, sandboxExt)
 
 		certDER, err := x509.CreateCertificate(rand.Reader, &template, &caCert, csr.PublicKey, &caKey)
 		if err != nil {
@@ -257,6 +291,7 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 		slog.Info("issued certificate",
 			"dns_names", csr.DNSNames,
 			"ip_addresses", csr.IPAddresses,
+			"sandbox_id", sandboxID,
 			"serial", serial.String(),
 		)
 
@@ -264,6 +299,76 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 		w.Header().Set("Content-Type", "application/x-pem-file")
 		_, _ = w.Write(append(certPEM, caPEM...))
 	}
+}
+
+// verifySandboxToken checks the inventory-signed sandbox token as production
+// CDS does (internal/cmds/cds/attest.go, verifySandboxToken): the signing key
+// comes from the endpoint the token names, that key must sign the token, its
+// nonce must be the challenge being consumed, and its key digest must name the
+// requester's CSR key. The key arrives over plain HTTP, since the lane has no
+// attested inventory for the armTLS callback.
+func verifySandboxToken(ctx context.Context, raw json.RawMessage, requesterPub *ecdsa.PublicKey, nonce []byte) (string, error) {
+	if len(raw) == 0 {
+		return "", errors.New("no sandbox token presented")
+	}
+	var token workloadclaims.SignedSandboxToken
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&token); err != nil {
+		return "", fmt.Errorf("decode sandbox token: %w", err)
+	}
+	// The host only selects a dial target: a wrong one yields a key the
+	// signature fails under. What gets dialed is the address production's
+	// client derives, re-serialized from the parsed IP rather than taken from
+	// the token's bytes.
+	host, err := workloadclaims.UnverifiedInventoryHost(token.Token)
+	if err != nil {
+		return "", err
+	}
+	dialHost, err := workloadclaims.ParseInventoryHost(host)
+	if err != nil {
+		return "", err
+	}
+	inventoryPub, err := inventoryKey(ctx, net.JoinHostPort(dialHost, inventoryIdentityPort))
+	if err != nil {
+		return "", fmt.Errorf("resolve inventory key: %w", err)
+	}
+	sandbox, err := token.Verify(inventoryPub, requesterPub, nonce)
+	if err != nil {
+		return "", err
+	}
+	return sandbox.SandboxID, nil
+}
+
+// inventoryKey fetches the sandbox-token signing key the inventory at addr
+// serves on IdentityPath.
+func inventoryKey(ctx context.Context, addr string) (*ecdsa.PublicKey, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+addr+workloadclaims.IdentityPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("inventory identity endpoint returned %d", resp.StatusCode)
+	}
+	var identity workloadclaims.InventoryIdentity
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&identity); err != nil {
+		return nil, fmt.Errorf("decode inventory identity: %w", err)
+	}
+	key, err := x509.ParsePKIXPublicKey(identity.PublicKey)
+	if err != nil {
+		return nil, fmt.Errorf("parse inventory key: %w", err)
+	}
+	pub, ok := key.(*ecdsa.PublicKey)
+	if !ok {
+		return nil, fmt.Errorf("inventory key is %T, want an ECDSA key", key)
+	}
+	return pub, nil
 }
 
 // classifyVerifyError maps a VerifyEnforced error to the status/code/message

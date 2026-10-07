@@ -184,8 +184,8 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
 		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
 		"--san=c8s-router.c8s-system.svc",
-		"--out=/tls/cert.pem",
-		"--key-out=/tls/key.pem",
+		"--cert-path=/tls/cert.pem",
+		"--key-path=/tls/key.pem",
 		"--renew-interval=1h",
 		"--reload-nginx=true",
 		"--continue-on-initial-error",
@@ -2642,6 +2642,16 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if attest.ReadinessProbe != nil {
 		t.Fatalf("no expectedWorkload: cds-attest must keep today's probe-less shape, got %+v", attest.ReadinessProbe)
 	}
+	// The flag goes with the absent mount: without the claims flow get-cert
+	// has no inventory to assert this pod's workload instance at.
+	defaultCert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
+	if !ok {
+		t.Fatal("c8s-cert init container missing")
+	}
+	assertContainerArgs(t, defaultCert, "--no-workload-claims")
+	if slices.ContainsFunc(defaultCert.VolumeMounts, func(m corev1.VolumeMount) bool { return m.Name == "workload-claims" }) {
+		t.Fatalf("get-cert mounts the inventory socket with no claims flow wired, got %+v", defaultCert.VolumeMounts)
+	}
 
 	// Readiness can only gate ingress that flows through the Service, so the
 	// gate requires the node port off (see TestChartRouterReadinessGateGuards).
@@ -2656,14 +2666,13 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	assertRouterReadyzProbe(t, out)
 
 	// The gate is satisfiable only if get-cert can earn the stamp: the
-	// claims flow must be wired on the same condition. Node-CVM shape:
-	// --workload-claims, the inventory socket mounted read-only at the
-	// compiled path, and the socket's supplemental group on the pod.
+	// claims flow must be wired on the same condition. Node-CVM shape: the
+	// inventory socket mounted read-only at the compiled path, and the
+	// socket's supplemental group on the pod.
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -2672,6 +2681,9 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	}
 	if mount == nil || mount.MountPath != "/run/c8s/workload-claims" || !mount.ReadOnly {
 		t.Fatalf("get-cert must mount the inventory socket read-only at the compiled path, got %+v", cert.VolumeMounts)
+	}
+	if slices.Contains(cert.Args, "--no-workload-claims") {
+		t.Fatalf("get-cert opts out of claims behind the mount that carries them, got %v", cert.Args)
 	}
 	dep := renderedDeployment(t, out, "c8s-router")
 	sc := dep.Spec.Template.Spec.SecurityContext
@@ -3969,7 +3981,7 @@ func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 	meshCA := cfg.location(t, "exact", "/.well-known/mesh-ca.pem")
 	meshCA.assertDirective(t, "alias", "/tls/ca.pem")
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
-		"--ca-out=/tls/ca.pem",
+		"--ca-path=/tls/ca.pem",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem")
 }
 
@@ -3982,7 +3994,7 @@ func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	assertContainerArgs(t, routerGetCertContainer(t, out, "c8s-cert"),
-		"--ca-out=/tls/ca.pem")
+		"--ca-path=/tls/ca.pem")
 }
 
 func TestRouterDiscoveryReportsCDSModeWithoutPublicTLSSecret(t *testing.T) {

@@ -78,6 +78,24 @@ func WriteAtomicRoot(root *os.Root, name string, data []byte, mode os.FileMode) 
 	return nil
 }
 
+// ReplaceSymlink points path at target in one rename, so a reader following
+// path resolves either the old target or the new one and never nothing.
+func ReplaceSymlink(path, target string) error {
+	tmpName, err := atomicTempName(filepath.Base(path))
+	if err != nil {
+		return err
+	}
+	tmp := filepath.Join(filepath.Dir(path), tmpName)
+	if err := os.Symlink(target, tmp); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
 func atomicTempName(name string) (string, error) {
 	var suffix [12]byte
 	if _, err := rand.Read(suffix[:]); err != nil {

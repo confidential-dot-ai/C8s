@@ -2,7 +2,6 @@ package getcert
 
 import (
 	"context"
-	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -86,15 +85,15 @@ func holdSIGTERM(t *testing.T) {
 // unreachableRenewalConfig is a config whose certificate requests always fail
 // fast (nothing listens on port 1) but whose validation passes, carrying run
 // into the renewal loop via continue-on-initial-error.
-func unreachableRenewalConfig() config {
-	return config{
+func unreachableRenewalConfig(t *testing.T) config {
+	return stagePodEnvironment(t, config{
 		CDSURL:                 "https://127.0.0.1:1",
 		AttestationApiURL:      "http://127.0.0.1:1",
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
 		ContinueOnInitialError: true,
 		RenewInterval:          time.Hour,
-	}
+	})
 }
 
 func terminateRun(t *testing.T, done <-chan error) {
@@ -112,19 +111,52 @@ func terminateRun(t *testing.T, done <-chan error) {
 	}
 }
 
-// stubObtainCert makes every certificate request return outcome(n), where n is
-// the 1-based attempt number, and returns a reader for the attempts' timestamps.
-func stubObtainCert(t *testing.T, outcome func(n int) (*x509.Certificate, error)) func() []time.Time {
+// stubObtainCert makes every certificate request publish what issue(n) asks
+// for — a leaf TTL, or an error — where n is the 1-based attempt number. The
+// generation is minted by ca for the pod's own key and published the way
+// obtainCert does, so the loop runs against real credential state.
+func stubObtainCert(t *testing.T, ca *testCA, issue func(n int) (time.Duration, error)) func() []time.Time {
+	return stubObtainCertMinting(t, func(creds *credentials, n int) (*Generation, error) {
+		ttl, err := issue(n)
+		if err != nil {
+			return nil, err
+		}
+		return issueFor(ca, creds, ttl)
+	})
+}
+
+// stubObtainCertNaming publishes a named generation on every request: the pod's
+// workload has been matched.
+func stubObtainCertNaming(t *testing.T, ca *testCA) func() []time.Time {
+	return stubObtainCertMinting(t, func(creds *credentials, _ int) (*Generation, error) {
+		return issueNamedFor(ca, creds, time.Hour)
+	})
+}
+
+// stubObtainCertFailing makes every certificate request fail.
+func stubObtainCertFailing(t *testing.T) func() []time.Time {
+	return stubObtainCertMinting(t, func(*credentials, int) (*Generation, error) {
+		return nil, errors.New("stubbed certificate request failure")
+	})
+}
+
+// stubObtainCertMinting replaces the issuance step and returns a reader for the
+// attempts' timestamps.
+func stubObtainCertMinting(t *testing.T, mint func(creds *credentials, n int) (*Generation, error)) func() []time.Time {
 	t.Helper()
 	var mu sync.Mutex
 	var at []time.Time
 	old := obtainCertFn
-	obtainCertFn = func(context.Context, config, attestclient.Client) (*x509.Certificate, error) {
+	obtainCertFn = func(_ context.Context, _ config, _ attestclient.Client, creds *credentials) error {
 		mu.Lock()
 		at = append(at, time.Now())
 		n := len(at)
 		mu.Unlock()
-		return outcome(n)
+		generation, err := mint(creds, n)
+		if err != nil {
+			return err
+		}
+		return creds.publish(generation, time.Now())
 	}
 	t.Cleanup(func() { obtainCertFn = old })
 	return func() []time.Time {
@@ -132,13 +164,6 @@ func stubObtainCert(t *testing.T, outcome func(n int) (*x509.Certificate, error)
 		defer mu.Unlock()
 		return append([]time.Time(nil), at...)
 	}
-}
-
-// stubObtainCertFailing makes every certificate request fail.
-func stubObtainCertFailing(t *testing.T) func() []time.Time {
-	return stubObtainCert(t, func(int) (*x509.Certificate, error) {
-		return nil, errors.New("stubbed certificate request failure")
-	})
 }
 
 // waitForAttempts polls until at least n certificate attempts were made.
@@ -180,66 +205,6 @@ func presentAsNginxMaster(t *testing.T, root string) {
 	}
 }
 
-func TestCDSHTTPClientWarnsOnlyWithoutMeasurements(t *testing.T) {
-	base := config{CDSURL: "https://cds:8443", AttestationApiURL: "http://attestation-api:8400"}
-	const warnMsg = "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement"
-
-	t.Run("unpinned warns", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		if _, err := cdsHTTPClient(base); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); !ok {
-			t.Fatal("no warning logged for an unpinned CDS measurement set")
-		}
-	})
-
-	t.Run("pinned does not warn", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		cfg := base
-		cfg.CDSMeasurements = strings.Repeat("ab", 48)
-		if _, err := cdsHTTPClient(cfg); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); ok {
-			t.Fatal("warning logged despite pinned measurements")
-		}
-	})
-}
-
-// The request log reports whether a sandbox token is bound; the token-free
-// flow must report false.
-func TestObtainCertLogsTokenFreeRequest(t *testing.T) {
-	c := captureDefaultLogger(t)
-	chain := testIssuedChainPEM(t)
-	cdsURL, attURL := startFakeServers(t, chain)
-
-	cfg := config{
-		CDSURL:            cdsURL,
-		AttestationApiURL: attURL,
-		SAN:               "host.example.com",
-		OutPath:           filepath.Join(t.TempDir(), "cert.pem"),
-	}
-	if _, err := obtainCert(context.Background(), cfg, plaintextCDSClient(cfg.CDSURL)); err != nil {
-		t.Fatalf("obtainCert: %v", err)
-	}
-
-	rec, ok := c.find("requesting certificate from cds")
-	if !ok {
-		t.Fatal("request log record missing")
-	}
-	v, ok := rec.attrs["sandbox_token"]
-	if !ok || v.Kind() != slog.KindBool {
-		t.Fatalf("sandbox_token attr = %v, want a bool", v)
-	}
-	if v.Bool() {
-		t.Fatal("sandbox_token = true for a token-free request, want false")
-	}
-}
-
-// A failed renewal is retried off the renewalRetryBase backoff, not a whole
-// --renew-interval later: by the time a renewal fails the installed leaf is
-// already close to expiry.
 func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
 	holdSIGTERM(t)
 
@@ -247,18 +212,17 @@ func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
 	renewalRetryBase = 40 * time.Millisecond
 	t.Cleanup(func() { renewalRetryBase = oldBase })
 
-	// The initial request must succeed: only with a leaf installed is a failing
-	// tick a renewal. While none has landed the loop is on the initial-retry
-	// backoff instead (TestRunRetriesInitialCertOffTheRetryBackoff).
-	leaf := &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}
-	attempts := stubObtainCert(t, func(n int) (*x509.Certificate, error) {
+	// The initial request must succeed: only with a generation published is a
+	// failing tick a renewal. While none has landed the loop is on the
+	// initial-retry backoff instead (TestRunRetriesInitialCertOffTheRetryBackoff).
+	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
 		if n == 1 {
-			return leaf, nil
+			return time.Hour, nil
 		}
-		return nil, errors.New("stubbed certificate request failure")
+		return 0, errors.New("stubbed certificate request failure")
 	})
 
-	cfg := unreachableRenewalConfig()
+	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 200 * time.Millisecond
 	cfg.ReloadNginx = false
 
@@ -290,18 +254,17 @@ func TestRunRenewalLoopRecoversAfterFailedRenewals(t *testing.T) {
 	renewalRetryBase = 40 * time.Millisecond
 	t.Cleanup(func() { renewalRetryBase = oldBase })
 
-	// The stub installs a leaf, fails three renewals — climbing the backoff —
-	// then returns a long-lived leaf on attempt 5, so post-recovery pacing is a
-	// full --renew-interval.
-	leaf := &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}
-	attempts := stubObtainCert(t, func(n int) (*x509.Certificate, error) {
+	// The stub publishes a generation, fails three renewals — climbing the
+	// backoff — then publishes a long-lived one on attempt 5, so post-recovery
+	// pacing is a full --renew-interval.
+	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
 		if n == 1 || n == 5 {
-			return leaf, nil
+			return time.Hour, nil
 		}
-		return nil, errors.New("stubbed certificate request failure")
+		return 0, errors.New("stubbed certificate request failure")
 	})
 
-	cfg := unreachableRenewalConfig()
+	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 200 * time.Millisecond
 	cfg.ReloadNginx = false
 
@@ -338,7 +301,7 @@ func TestRunRenewalLoopReloadsOnWatchChange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := unreachableRenewalConfig()
+	cfg := unreachableRenewalConfig(t)
 	cfg.ReloadNginx = true
 	cfg.ReloadWatchPaths = []string{watched}
 	cfg.ReloadWatchInterval = 20 * time.Millisecond
@@ -375,7 +338,7 @@ func TestRunRenewalLoopWithoutWatchPathsIgnoresWatchInterval(t *testing.T) {
 	holdSIGTERM(t)
 	attempts := stubObtainCertFailing(t)
 
-	cfg := unreachableRenewalConfig()
+	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 25 * time.Millisecond
 	cfg.ReloadNginx = true
 	cfg.ReloadWatchPaths = nil
@@ -390,64 +353,6 @@ func TestRunRenewalLoopWithoutWatchPathsIgnoresWatchInterval(t *testing.T) {
 	terminateRun(t, done)
 }
 
-func TestWriteOutputsWarnsOnUnpersistedEphemeralKey(t *testing.T) {
-	const warnMsg = "ephemeral key used but --key-out not set, private key will be lost"
-	result := attestclient.CertificateResult{Certificate: "CHAIN-PEM"}
-
-	t.Run("ephemeral without key-out warns", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		cfg := config{OutPath: filepath.Join(t.TempDir(), "cert.pem")}
-		if err := writeOutputs(cfg, nil, result); err != nil {
-			t.Fatalf("writeOutputs: %v", err)
-		}
-		if _, ok := c.find(warnMsg); !ok {
-			t.Fatal("no warning logged for an unpersisted ephemeral key")
-		}
-	})
-
-	t.Run("loaded key does not warn", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		cfg := config{KeyPath: "/keys/tls.key", OutPath: filepath.Join(t.TempDir(), "cert.pem")}
-		if err := writeOutputs(cfg, nil, result); err != nil {
-			t.Fatalf("writeOutputs: %v", err)
-		}
-		if _, ok := c.find(warnMsg); ok {
-			t.Fatal("warning logged despite a caller-provided key")
-		}
-	})
-}
-
-func TestLoadOrGenerateKeyKeyOutEdgeCases(t *testing.T) {
-	t.Run("empty file generates a fresh key", func(t *testing.T) {
-		path := filepath.Join(t.TempDir(), "tls.key")
-		if err := os.WriteFile(path, nil, 0600); err != nil {
-			t.Fatal(err)
-		}
-		key, keyPEM, err := loadOrGenerateKey(config{KeyOutPath: path})
-		if err != nil {
-			t.Fatalf("loadOrGenerateKey: %v", err)
-		}
-		if key == nil || len(keyPEM) == 0 {
-			t.Fatal("expected a freshly generated key for an empty key-out file")
-		}
-	})
-
-	t.Run("unstatable path fails", func(t *testing.T) {
-		file := filepath.Join(t.TempDir(), "afile")
-		if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
-			t.Fatal(err)
-		}
-		// A regular file as a path component makes Stat fail with ENOTDIR,
-		// which is not ErrNotExist and must be surfaced.
-		_, _, err := loadOrGenerateKey(config{KeyOutPath: filepath.Join(file, "tls.key")})
-		if err == nil || !strings.Contains(err.Error(), "stat") {
-			t.Fatalf("error = %v, want stat error", err)
-		}
-	})
-}
-
-// overrideProcRoot substitutes a fake /proc tree and restores the real one on
-// cleanup.
 func overrideProcRoot(t *testing.T, root string) {
 	t.Helper()
 	old := procRoot
@@ -458,18 +363,11 @@ func overrideProcRoot(t *testing.T, root string) {
 func TestRunRenewalModeFailsOnBadWatchSnapshot(t *testing.T) {
 	// continue-on-initial-error carries run past the failed first request, and
 	// the missing watch path then fails the loop setup.
-	err := run(config{
-		CDSURL:                 "https://127.0.0.1:1",
-		AttestationApiURL:      "http://127.0.0.1:1",
-		SAN:                    "host.example.com",
-		InitialRetryTimeout:    0,
-		ContinueOnInitialError: true,
-		RenewInterval:          time.Hour,
-		ReloadNginx:            true,
-		ReloadWatchPaths:       []string{filepath.Join(t.TempDir(), "missing.crt")},
-		ReloadWatchInterval:    time.Minute,
-	})
-	if err == nil || !strings.Contains(err.Error(), "stat reload watch path") {
+	cfg := unreachableRenewalConfig(t)
+	cfg.ReloadNginx = true
+	cfg.ReloadWatchPaths = []string{filepath.Join(t.TempDir(), "missing.crt")}
+	cfg.ReloadWatchInterval = time.Minute
+	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "stat reload watch path") {
 		t.Fatalf("error = %v, want watch snapshot error", err)
 	}
 }
@@ -482,7 +380,7 @@ func TestRunRetriesInitialCertOffTheRetryBackoff(t *testing.T) {
 	holdSIGTERM(t)
 	attempts := stubObtainCertFailing(t)
 
-	cfg := unreachableRenewalConfig()
+	cfg := unreachableRenewalConfig(t)
 	cfg.InitialRetryInterval = 10 * time.Millisecond
 	cfg.ReloadNginx = false
 
@@ -494,26 +392,29 @@ func TestRunRetriesInitialCertOffTheRetryBackoff(t *testing.T) {
 }
 
 // The retry cadence has to actually produce a certificate: a CDS that refuses
-// twice and then issues must leave the loop holding a leaf well inside
+// twice and then issues must leave the loop holding a generation well inside
 // --renew-interval.
 func TestRenewLoopRetriesInitialCertBeforeRenewInterval(t *testing.T) {
-	cdsURL, attURL := startFakeServersRefusing(t, testIssuedChainPEM(t), 2)
+	stageInventory(t, testInstanceID)
+	cdsURL, attURL := startFakeServersRefusing(t, newTestCA(t), 2)
 
 	cfg := config{
-		CDSURL:               cdsURL,
-		AttestationApiURL:    attURL,
-		SAN:                  "host.example.com",
-		OutPath:              filepath.Join(t.TempDir(), "cert.pem"),
-		InitialRetryInterval: 5 * time.Millisecond,
-		RenewInterval:        time.Hour,
+		CDSURL:                cdsURL,
+		AttestationApiURL:     attURL,
+		SAN:                   "host.example.com",
+		WorkloadClaimsTimeout: 5 * time.Second,
+		InitialRetryInterval:  5 * time.Millisecond,
+		RenewInterval:         time.Hour,
 	}
+	creds := testCredentials(t)
+	cfg.CertPath = filepath.Join(creds.volume.dir, creds.volume.leafName)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), nil, false) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), creds) }()
 
-	waitForFile(t, cfg.OutPath, done)
+	waitForFile(t, cfg.CertPath, done)
 
 	cancel()
 	select {
@@ -526,39 +427,42 @@ func TestRenewLoopRetriesInitialCertBeforeRenewInterval(t *testing.T) {
 	}
 }
 
-// Once the first certificate lands the cadence returns to the ordinary pacing:
+// Once the first generation lands the cadence returns to the ordinary pacing:
 // the retry backoff must not keep re-requesting for the life of the process.
 func TestRenewLoopStopsRetryingAfterFirstCert(t *testing.T) {
-	cdsURL, attURL := startFakeServers(t, testIssuedChainPEM(t))
+	stageInventory(t, testInstanceID)
+	cdsURL, attURL := startFakeServers(t, newTestCA(t))
 
 	cfg := config{
-		CDSURL:               cdsURL,
-		AttestationApiURL:    attURL,
-		SAN:                  "host.example.com",
-		OutPath:              filepath.Join(t.TempDir(), "cert.pem"),
-		InitialRetryInterval: time.Millisecond,
-		RenewInterval:        time.Hour,
+		CDSURL:                cdsURL,
+		AttestationApiURL:     attURL,
+		SAN:                   "host.example.com",
+		WorkloadClaimsTimeout: 5 * time.Second,
+		InitialRetryInterval:  time.Millisecond,
+		RenewInterval:         time.Hour,
 	}
+	creds := testCredentials(t)
+	cfg.CertPath = filepath.Join(creds.volume.dir, creds.volume.leafName)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), nil, false) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), creds) }()
 
-	waitForFile(t, cfg.OutPath, done)
-	before, err := os.Stat(cfg.OutPath)
+	waitForFile(t, cfg.CertPath, done)
+	before, err := os.Readlink(creds.volume.pointerPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Many backoff periods, no renewal tick: a rewrite here means the loop
+	// Many backoff periods, no renewal tick: another flip here means the loop
 	// never left the retry cadence.
 	time.Sleep(100 * time.Millisecond)
-	after, err := os.Stat(cfg.OutPath)
+	after, err := os.Readlink(creds.volume.pointerPath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !after.ModTime().Equal(before.ModTime()) {
-		t.Fatal("certificate rewritten after the first success: the loop is still on the retry cadence")
+	if after != before {
+		t.Fatal("generation republished after the first success: the loop is still on the retry cadence")
 	}
 
 	cancel()
@@ -673,20 +577,19 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	attempts := stubObtainCert(t, func(int) (*x509.Certificate, error) {
-		return &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}, nil
-	})
+	ca := newTestCA(t)
+	attempts := stubObtainCert(t, ca, func(int) (time.Duration, error) { return time.Hour, nil })
 
-	cfg := unreachableRenewalConfig()
-	cfg.CAOutPath = caPath
+	cfg := unreachableRenewalConfig(t)
+	cfg.CAPath = caPath
 	cfg.CAWatchInterval = 10 * time.Millisecond
 	cfg.ReloadNginx = false
 
-	leaf := &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}
+	creds := publishedCredentials(t, ca, time.Hour)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), leaf, true) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), creds) }()
 
 	// Matching bundles: many watch ticks must pass without a renewal.
 	time.Sleep(100 * time.Millisecond)
@@ -710,8 +613,63 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 	}
 }
 
-// A malformed --cds-rtmrs is refused rather than silently unpinning the
-// registers; a valid pin builds the client.
+func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
+	ca := newTestCA(t)
+	attempts := stubObtainCertNaming(t, ca)
+
+	cfg := config{
+		RenewInterval:        time.Hour,
+		UnnamedRenewInterval: 30 * time.Second,
+	}
+	creds := publishedCredentials(t, ca, time.Hour)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient("http://127.0.0.1:1"), creds) }()
+
+	at := waitForAttempts(t, attempts, 1)
+	if gap := at[0].Sub(start); gap > 3*time.Second {
+		t.Fatalf("renewed the unnamed leaf %v after publication, want within 3s", gap)
+	}
+	// Named now: no further fast polls.
+	time.Sleep(3 * time.Second)
+	if n := len(attempts()); n != 1 {
+		t.Fatalf("%d renewals after the leaf was named, want 1", n)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("renewLoop returned %v, want nil on shutdown", err)
+	}
+}
+
+func TestCDSHTTPClientWarnsOnlyWithoutMeasurements(t *testing.T) {
+	base := config{CDSURL: "https://cds:8443", AttestationApiURL: "http://attestation-api:8400"}
+	const warnMsg = "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement"
+
+	t.Run("unpinned warns", func(t *testing.T) {
+		c := captureDefaultLogger(t)
+		if _, err := cdsHTTPClient(base); err != nil {
+			t.Fatalf("cdsHTTPClient: %v", err)
+		}
+		if _, ok := c.find(warnMsg); !ok {
+			t.Fatal("no warning logged for an unpinned CDS measurement set")
+		}
+	})
+
+	t.Run("pinned does not warn", func(t *testing.T) {
+		c := captureDefaultLogger(t)
+		cfg := base
+		cfg.CDSMeasurements = strings.Repeat("ab", 48)
+		if _, err := cdsHTTPClient(cfg); err != nil {
+			t.Fatalf("cdsHTTPClient: %v", err)
+		}
+		if _, ok := c.find(warnMsg); ok {
+			t.Fatal("warning logged despite pinned measurements")
+		}
+	})
+}
+
 func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {
 	base := config{CDSURL: "https://cds:8443", AttestationApiURL: "http://attestation-api:8400"}
 
@@ -725,114 +683,5 @@ func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {
 	cfg.CDSRTMRs = "1=" + strings.Repeat("cd", 48)
 	if _, err := cdsHTTPClient(cfg); err != nil {
 		t.Fatalf("cdsHTTPClient with valid pins: %v", err)
-	}
-}
-
-func TestRunRenewalLoopExitsOnExpiredLeaf(t *testing.T) {
-	holdSIGTERM(t)
-
-	oldBase := renewalRetryBase
-	renewalRetryBase = 10 * time.Millisecond
-	t.Cleanup(func() { renewalRetryBase = oldBase })
-
-	// The initial request installs a leaf that expires almost immediately;
-	// every renewal fails.
-	leaf := &x509.Certificate{NotAfter: time.Now().Add(30 * time.Millisecond)}
-	attempts := stubObtainCert(t, func(n int) (*x509.Certificate, error) {
-		if n == 1 {
-			return leaf, nil
-		}
-		return nil, errors.New("stubbed certificate request failure")
-	})
-
-	cfg := unreachableRenewalConfig()
-	cfg.RenewInterval = 20 * time.Millisecond
-	cfg.ReloadNginx = false
-
-	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("run() = nil, want an error once the expired leaf cannot be renewed")
-		}
-		if !strings.Contains(err.Error(), "expired") {
-			t.Errorf("run() = %v, want an error naming the expired certificate", err)
-		}
-		// The initial request plus at least expiredExitFailures failed renewals.
-		if got := len(attempts()); got < 1+expiredExitFailures {
-			t.Errorf("exited after %d attempts, want at least %d", got, 1+expiredExitFailures)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not exit with an expired, unrenewable leaf")
-	}
-}
-
-// A leaf that is still valid never triggers the expired-leaf exit, however many
-// renewals fail.
-func TestRunRenewalLoopKeepsRetryingWhileLeafValid(t *testing.T) {
-	holdSIGTERM(t)
-
-	oldBase := renewalRetryBase
-	renewalRetryBase = 10 * time.Millisecond
-	t.Cleanup(func() { renewalRetryBase = oldBase })
-
-	leaf := &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}
-	attempts := stubObtainCert(t, func(n int) (*x509.Certificate, error) {
-		if n == 1 {
-			return leaf, nil
-		}
-		return nil, errors.New("stubbed certificate request failure")
-	})
-
-	cfg := unreachableRenewalConfig()
-	cfg.RenewInterval = 20 * time.Millisecond
-	cfg.ReloadNginx = false
-
-	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
-
-	waitForAttempts(t, attempts, 2+expiredExitFailures)
-	select {
-	case err := <-done:
-		t.Fatalf("run exited with %v while the leaf was still valid", err)
-	default:
-	}
-	terminateRun(t, done)
-}
-
-// A new pod's first leaf is unnamed; the next renewal must come within
-// seconds, not after a whole --unnamed-renew-interval, so the pod is named
-// soon after its main container starts.
-func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
-	named := namedLeaf(t)
-	named.NotAfter = time.Now().Add(time.Hour)
-	attempts := stubObtainCert(t, func(int) (*x509.Certificate, error) { return named, nil })
-
-	cfg := config{
-		RenewInterval:        time.Hour,
-		UnnamedRenewInterval: 30 * time.Second,
-		WorkloadClaims:       true,
-	}
-	unnamed := &x509.Certificate{NotAfter: time.Now().Add(time.Hour)}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan error, 1)
-	start := time.Now()
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient("http://127.0.0.1:1"), unnamed, true) }()
-
-	at := waitForAttempts(t, attempts, 1)
-	if gap := at[0].Sub(start); gap > 3*time.Second {
-		t.Fatalf("renewed the unnamed leaf %v after install, want within 3s", gap)
-	}
-	// Named now: no further fast polls.
-	time.Sleep(3 * time.Second)
-	if n := len(attempts()); n != 1 {
-		t.Fatalf("%d renewals after the leaf was named, want 1", n)
-	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("renewLoop returned %v, want nil on shutdown", err)
 	}
 }
