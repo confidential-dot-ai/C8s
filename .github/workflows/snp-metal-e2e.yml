@@ -86,7 +86,7 @@ jobs:
           repository: confidential-dot-ai/c8s
           persist-credentials: false
 
-      - name: tools (kubectl, go)
+      - name: tools (kubectl, go, crane)
         run: |
           set -euo pipefail
           # Every fetch here crosses the public internet from an ephemeral ARC
@@ -124,8 +124,17 @@ jobs:
             retry curl -fsSL "https://go.dev/dl/go${GOVER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
             sudo tar -C /usr/local -xzf /tmp/go.tar.gz
           fi
+          # $GITHUB_PATH only affects LATER steps, so `go` is still not on PATH
+          # inside THIS one. `go install crane` below needs it here and now.
+          export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          # crane: the c8s CLI's image inspection shells out to it
+          # (`c8s allowlist inspect-image`, in test/e2e/allowlist-enforcement.sh
+          # and an extra suite). Pinned rather than fetched through the GitHub
+          # releases API, which rate-limits by IP on a shared self-hosted host.
+          # The ephemeral ARC pod has no crane, unlike the host.
+          command -v crane >/dev/null || retry go install github.com/google/go-containerregistry/cmd/crane@v0.21.6
           # Avoid apt's intermittent IPv6 mirror failures on the launcher.
           if ! command -v jq >/dev/null; then
             retry curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o bin/jq
