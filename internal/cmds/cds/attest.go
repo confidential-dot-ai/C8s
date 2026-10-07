@@ -290,13 +290,20 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
-	certPEM, serial, err := h.CA.SignCSR(issuer.SignCSRParams{
+	certPEM, leafCN, serial, err := h.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
 		SandboxID:       sandbox.SandboxID,
 		MatchedWorkload: matched,
 	})
+	// A leaf the request does not name is a CSR-policy refusal, not a signing
+	// fault.
+	if errors.Is(err, issuer.ErrSubjectDenied) {
+		slog.Warn("leaf subject denied", "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeCSRDenied, err.Error())
+		return
+	}
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
@@ -320,7 +327,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// version it matched under, and the sandbox that vouched, so a disputed
 	// name reconstructs from the log alone.
 	issued := []any{
-		"cn", csr.Subject.CommonName,
+		"cn", leafCN,
 		"sans", csr.DNSNames,
 		"serial", serialHex(serial),
 		"ttl", ttl,

@@ -120,7 +120,7 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 			AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
 		}
 	}
-	certPEM, _, err := ca.SignCSR(params)
+	certPEM, _, _, err := ca.SignCSR(params)
 	if err != nil {
 		t.Fatal(err)
 	}
