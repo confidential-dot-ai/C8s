@@ -40,6 +40,9 @@ stored generation remains available until a replacement is published. Every
 response is validated first: matching key, chain to its own CA, this pod's
 workload instance.
 
+Replacing the CDS CA key requires recreating the pod. CA-watch renewal accepts
+a changed CA certificate only under the pod's bound issuer key.
+
 ## Flags
 
 | Flag | Short | Default | Description |
@@ -53,7 +56,7 @@ workload instance.
 | `--key-path` | | *(required)* | Path where the private key PEM is read, mode `0600` (`0640` in shared setgid directories); must be on a memory-backed filesystem |
 | `--ca-path` | | *(required)* | Path where the mesh CA PEM is read |
 | `--renew-interval` | | `0` | Re-obtain the certificate at this interval; `0` runs once and exits |
-| `--ca-watch-interval` | | `1m` | In renewal mode, compare CDS `/ca` with `--ca-path` and renew on a change; also watch the stamped allowlist policy unless `--no-workload-claims`; `0` disables |
+| `--ca-watch-interval` | | `1m` | With `--renew-interval`, compare CDS `/ca` against `--ca-path` and renew early for a changed certificate under the bound issuer key; also check allowlist policy unless `--no-workload-claims`. Replacing the CA key requires pod recreation. `0` disables |
 | `--reload-nginx` | | `true` | SIGHUP nginx after certificate renewal or watched file changes |
 | `--continue-on-initial-error` | | `false` | In renewal mode, keep running when the first certificate request fails |
 | `--no-workload-claims` | | `false` | Request certificates without a workload identity assertion, for a pod whose node runs no admission inventory; the leaf then names no workload instance |

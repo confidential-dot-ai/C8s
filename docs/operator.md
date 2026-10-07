@@ -1504,8 +1504,9 @@ stored generation remains available until its replacement is published;
 every certificate request generates a fresh key.
 
 In renewal mode, `--ca-watch-interval` defaults to one minute. It compares
-CDS `/ca` with `--ca-path` and renews on a change; it also watches the stamped
-allowlist policy unless `--no-workload-claims`.
+CDS `/ca` with `--ca-path` and renews when the CA certificate changes under
+the pod's bound issuer key; it also watches the stamped allowlist policy unless
+`--no-workload-claims`. Replacing the CDS CA key requires pod recreation.
 
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a

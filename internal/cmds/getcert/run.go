@@ -164,7 +164,7 @@ consumers that read that volume.`,
 	flags.BoolVar(&cfg.ContinueOnInitialError, "continue-on-initial-error", false, "In renewal mode, keep running when the first certificate request fails, retrying on a capped backoff until a certificate is issued")
 	flags.StringArrayVar(&cfg.ReloadWatchPaths, "reload-watch", nil, "File path to poll for changes and reload nginx when it changes (repeatable)")
 	flags.DurationVar(&cfg.ReloadWatchInterval, "reload-watch-interval", time.Minute, "Poll interval for --reload-watch paths")
-	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when the published mesh CA is no longer the one CDS holds, which a CDS restart regenerates in-memory. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
+	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", defaultCDSWatchInterval, "Poll CDS at this interval and renew when the published certificate falls behind it. Renew immediately when CDS serves a renewed certificate under the pod's bound CA key. A replacement CA key requires pod recreation. With a workload identity assertion, renew after a random delay of up to half the interval when the allowlist policy CDS serves no longer matches the snapshot stamped in the leaf, which strict clients reject. The default applies only with --renew-interval; otherwise the watch is off (0 = disabled, otherwise minimum 1s)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
@@ -296,7 +296,10 @@ func run(cfg config) error {
 
 	creds, err := resumeCredentials(ctx, cfg, volume)
 	if err != nil {
-		return err
+		// Nothing resumed means nothing was revalidated, so whatever the volume
+		// still points at is unvalidated: withdraw it before exiting, or a
+		// crashlooping sidecar would leave it readable.
+		return errors.Join(err, withdrawGeneration(volume))
 	}
 
 	if err := obtainCertWithRetry(ctx, cfg, client, creds); err != nil {
@@ -386,11 +389,8 @@ func assertedInstanceID(ctx context.Context, cfg config) (string, error) {
 // --renew-interval, and — while the published leaf is unnamed — off the fast
 // unnamed interval, so the pod's first post-completion renewal picks up its
 // matched-workload stamp promptly.
-// Each --ca-watch-interval tick polls CDS: it renews immediately when the
-// published CA is not the CA CDS holds, so a CDS restart (which regenerates
-// the mesh CA in-memory) does not leave the pod on a dead CA until the next
-// scheduled renewal, and it renews, after a jitter, when the allowlist policy
-// no longer matches the published leaf's matched-workload stamp.
+// Each --ca-watch-interval tick polls CDS for a renewed CA certificate under
+// the pod's bound key, or an allowlist policy differing from the leaf's stamp.
 //
 // Until the first generation is published the cadence is the initial-retry
 // backoff instead: the credential-wait gate holds the workload on that
@@ -451,24 +451,41 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 		slog.Info("watching cds for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAPath, "policy", !cfg.NoWorkloadClaims)
 	}
 
+	var operationCtx context.Context
+	var cancelOperation context.CancelFunc
+	defer func() {
+		if cancelOperation != nil {
+			cancelOperation()
+		}
+	}()
 	for {
+		if err := creds.withdrawUnusable(time.Now()); err != nil {
+			return err
+		}
+		if cancelOperation != nil {
+			cancelOperation()
+		}
+		operationCtx, cancelOperation = generationValidityContext(ctx, creds.current)
 		select {
-		case <-ctx.Done():
-			slog.Info("shutting down cert renewer")
-			return nil
+		case <-operationCtx.Done():
+			if ctx.Err() != nil {
+				slog.Info("shutting down cert renewer")
+				return nil
+			}
+			continue
 		case <-cdsWatchC:
 			// While nothing is published the initial-retry backoff is already
 			// re-asking as fast as allowed.
 			if creds.current == nil {
 				continue
 			}
-			stale, err := servedCAStale(ctx, client, cfg.CAPath)
+			stale, err := servedCAStale(operationCtx, client, cfg.CAPath, creds.issuer)
 			// On error, fall through: it may be local (an unreadable
 			// --ca-path), which must not mute the policy check.
 			if err != nil {
 				slog.Warn("mesh CA check failed", "error", err)
 			} else if stale {
-				slog.Info("cds holds a mesh CA other than the published one, renewing now")
+				slog.Info("cds renewed the bound mesh CA certificate, renewing now")
 				resetRenewal(0)
 				continue
 			}
@@ -484,7 +501,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if err != nil || stamp == nil {
 				continue
 			}
-			served, stale, err := stampedPolicyStale(ctx, policyClient, policyVersion, stamp.AllowlistDigest)
+			served, stale, err := stampedPolicyStale(operationCtx, policyClient, policyVersion, stamp.AllowlistDigest)
 			if err != nil {
 				slog.Warn("allowlist policy check failed", "error", err)
 				continue
@@ -504,7 +521,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 		case <-renewTimer.C:
 			policyRenewPending = false
 			published := creds.current != nil
-			err := obtainCertFn(ctx, cfg, client, creds)
+			err := obtainCertFn(operationCtx, cfg, client, creds)
 			if err != nil && !published {
 				retry := initialBackoff.NextBackOff()
 				slog.Error("certificate request failed, still nothing published", "error", err, "retry_in", retry)
@@ -512,20 +529,17 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				continue
 			}
 			if err != nil {
+				// A failed renewal retains the published generation only while
+				// it still validates; once it does not, it is withdrawn and
+				// consumers fail closed rather than serve it.
+				if withdrawErr := creds.withdrawUnusable(time.Now()); withdrawErr != nil {
+					return withdrawErr
+				}
 				// A short backoff, not a full interval: the timer is paced so
 				// it fires around half the published generation's remaining
 				// lifetime, so by the time a renewal fails the generation is
 				// already close to expiry.
 				failures++
-				if shouldRestartAfterRenewalFailures(publishedLeaf(creds.current), failures) {
-					// The published generation is dead and renewal from this
-					// process keeps failing, so retrying in-process serves an
-					// expired certificate indefinitely. Exit instead: as a
-					// native sidecar (restartPolicy: Always) the container
-					// restarts with fresh client state and re-runs the full
-					// issuance.
-					return fmt.Errorf("published certificate expired at %s and %d consecutive renewals failed (last: %w); exiting for a clean restart", creds.current.Leaf.NotAfter.Format(time.RFC3339), failures, err)
-				}
 				retry := renewalRetryInterval(cfg, creds.current, failures)
 				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures, "published", creds.current != nil)
 				resetRenewal(retry)
@@ -572,13 +586,6 @@ const (
 	// maxInitialRetryInterval caps the backoff between attempts at the first
 	// certificate.
 	maxInitialRetryInterval = time.Minute
-
-	// expiredExitFailures is how many consecutive renewal failures the loop
-	// tolerates once the published leaf has expired before exiting for a clean
-	// sidecar restart. Small, because every request in a renewal attempt is
-	// individually timed out — a failing attempt resolves in seconds — and an
-	// expired leaf means clients are already failing closed against this pod.
-	expiredExitFailures = 3
 
 	// unnamedBackoffAfter is how many consecutive unnamed renewals run at the
 	// fast poll before it doubles toward --renew-interval. A pod can be
@@ -692,10 +699,6 @@ func renewalRetryInterval(cfg config, g *generation, failures int) time.Duration
 	return min(delay, ceiling)
 }
 
-func shouldRestartAfterRenewalFailures(leaf *x509.Certificate, failures int) bool {
-	return leaf != nil && failures >= expiredExitFailures && time.Now().After(leaf.NotAfter)
-}
-
 // publishedLeaf is the certificate of the published generation, or nil when
 // nothing is published.
 func publishedLeaf(g *generation) *x509.Certificate {
@@ -748,6 +751,13 @@ func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[strin
 	slog.Warn("certificate stamped with an unexpected workload; renewing until it names the expected one", "stamped_workload", name, "expected_workload", cfg.ExpectedWorkload)
 }
 
+func generationValidityContext(ctx context.Context, g *generation) (context.Context, context.CancelFunc) {
+	if g != nil {
+		return context.WithDeadline(ctx, generationExpiry(g))
+	}
+	return context.WithCancel(ctx)
+}
+
 // obtainCertWithRetry runs the first certificate request, retrying in-process
 // on a fixed cadence until it succeeds, InitialRetryTimeout elapses, or the
 // context is cancelled. During a full-stack roll CDS and the mesh are briefly
@@ -755,12 +765,17 @@ func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[strin
 // container into kubelet's minutes-long CrashLoopBackOff. It still fails closed:
 // once the deadline passes the last error is returned and the pod publishes
 // nothing.
-func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Client, creds *credentials) error {
+func obtainCertWithRetry(ctx context.Context, cfg config, client attestclient.Client, creds *credentials) (err error) {
+	ctx, cancel := generationValidityContext(ctx, creds.current)
+	defer cancel()
+	defer func() {
+		err = errors.Join(err, creds.withdrawUnusable(time.Now()))
+	}()
 	if cfg.InitialRetryTimeout <= 0 {
 		return obtainCertFn(ctx, cfg, client, creds)
 	}
 	bo := backoff.NewConstantBackOff(cfg.InitialRetryInterval)
-	_, err := backoff.Retry(ctx, func() (struct{}, error) {
+	_, err = backoff.Retry(ctx, func() (struct{}, error) {
 		return struct{}{}, obtainCertFn(ctx, cfg, client, creds)
 	},
 		backoff.WithBackOff(bo),
@@ -1108,13 +1123,8 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 	return out, nil
 }
 
-// servedCAStale reports whether the CA published at caPath is not the one CDS
-// serves at /ca. The fetch rides the same armTLS-verified client the issuance
-// flow uses, so the refresh trusts CDS for exactly the reason the initial fetch
-// did. A stale CA means every client following the documented recovery recipe —
-// re-fetch the mesh CA from the discovery endpoint — pins a CA nothing signs
-// with anymore.
-func servedCAStale(ctx context.Context, client attestclient.Client, caPath string) (bool, error) {
+// servedCAStale detects a renewed CA certificate under the pod's bound issuer key.
+func servedCAStale(ctx context.Context, client attestclient.Client, caPath string, bound issuerKeyID) (bool, error) {
 	currentPEM, err := client.MeshCA(ctx)
 	if err != nil {
 		return false, fmt.Errorf("fetch current mesh CA from cds: %w", err)
@@ -1122,6 +1132,13 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caPath strin
 	current, err := soleCA(currentPEM)
 	if err != nil {
 		return false, fmt.Errorf("mesh CA from cds: %w", err)
+	}
+	issuer, err := issuerKeyIDOf(current)
+	if err != nil {
+		return false, err
+	}
+	if issuer != bound {
+		return false, nil
 	}
 	servedPEM, err := os.ReadFile(caPath)
 	if err != nil {

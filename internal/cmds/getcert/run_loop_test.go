@@ -510,6 +510,14 @@ func startFakeCAServer(t *testing.T, serve func() string) string {
 func TestServedCAStale(t *testing.T) {
 	caA := testCertificatePEM(t)
 	caB := testCertificatePEM(t)
+	cert, err := soleCA([]byte(caA))
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := issuerKeyIDOf(cert)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	writeServed := func(t *testing.T, content string) string {
 		t.Helper()
@@ -528,7 +536,7 @@ func TestServedCAStale(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "same CA", cds: caA, served: caA, want: false},
-		{name: "regenerated CA", cds: caB, served: caA, want: true},
+		{name: "regenerated CA", cds: caB, served: caA, want: false},
 		{name: "served file holds two certificates", cds: caA, served: caB + caA, wantErr: true},
 		{name: "unparseable cds response", cds: "not pem", served: caA, wantErr: true},
 		{name: "unparseable served file", cds: caA, served: "not pem", wantErr: true},
@@ -536,7 +544,7 @@ func TestServedCAStale(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			url := startFakeCAServer(t, func() string { return tt.cds })
-			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), writeServed(t, tt.served))
+			stale, err := servedCAStale(context.Background(), plaintextCDSClient(url), writeServed(t, tt.served), bound)
 			if tt.wantErr != (err != nil) {
 				t.Fatalf("servedCAStale err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -548,25 +556,23 @@ func TestServedCAStale(t *testing.T) {
 
 	t.Run("missing served file", func(t *testing.T) {
 		url := startFakeCAServer(t, func() string { return caA })
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), filepath.Join(t.TempDir(), "missing.pem")); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextCDSClient(url), filepath.Join(t.TempDir(), "missing.pem"), bound); err == nil {
 			t.Fatal("servedCAStale succeeded, want read error")
 		}
 	})
 
 	t.Run("cds unreachable", func(t *testing.T) {
-		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), writeServed(t, caA)); err == nil {
+		if _, err := servedCAStale(context.Background(), plaintextCDSClient("http://127.0.0.1:1"), writeServed(t, caA), bound); err == nil {
 			t.Fatal("servedCAStale succeeded, want transport error")
 		}
 	})
 }
 
-// A CDS whose /ca stops matching the published CA triggers an immediate
-// renewal instead of waiting out --renew-interval (an hour here, so any
-// renewal inside the deadline can only have come from the CA watch); while they
-// match the watch must stay quiet.
+// A renewed certificate under the bound CA key triggers an immediate renewal.
 func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
-	caA := testCertificatePEM(t)
-	caB := testCertificatePEM(t)
+	ca := newTestCA(t)
+	caA := ca.pem(t)
+	caB := ca.issueSelf(t, 48*time.Hour).pem(t)
 
 	var mu sync.Mutex
 	current := caA
@@ -581,7 +587,6 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ca := newTestCA(t)
 	attempts := stubObtainCert(t, ca, func(int) (time.Duration, error) { return time.Hour, nil })
 
 	cfg := unreachableRenewalConfig(t)
@@ -617,6 +622,103 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 	}
 }
 
+// A generation whose leaf expires while every renewal fails is withdrawn, and
+// the loop keeps retrying rather than leaving it readable or exiting into a
+// state no restart can recover.
+func TestRunRenewalLoopWithdrawsAnExpiredGeneration(t *testing.T) {
+	holdSIGTERM(t)
+
+	oldBase := renewalRetryBase
+	renewalRetryBase = 10 * time.Millisecond
+	t.Cleanup(func() { renewalRetryBase = oldBase })
+
+	// The initial request publishes a short-lived generation; every renewal
+	// fails, so the generation expires under the pod.
+	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
+		if n == 1 {
+			// Certificate times have second granularity, so a shorter leaf
+			// would already be expired when it is published.
+			return 2 * time.Second, nil
+		}
+		return 0, errors.New("stubbed certificate request failure")
+	})
+
+	cfg := unreachableRenewalConfig(t)
+	cfg.RenewInterval = 20 * time.Millisecond
+	cfg.ReloadNginx = false
+
+	done := make(chan error, 1)
+	go func() { done <- run(cfg) }()
+
+	waitForFile(t, cfg.CertPath, done)
+	waitForWithdrawal(t, cfg.CertPath, done)
+	select {
+	case err := <-done:
+		t.Fatalf("run exited with %v: a withdrawal is not a reason to stop retrying", err)
+	default:
+	}
+	if len(attempts()) < 2 {
+		t.Fatal("the generation was withdrawn without a failed renewal")
+	}
+	terminateRun(t, done)
+}
+
+// waitForWithdrawal blocks until the reader path stops resolving, which is what
+// a consumer of a withdrawn generation sees.
+func waitForWithdrawal(t *testing.T, path string, done <-chan error) {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("run returned before withdrawing %s: %v", path, err)
+		case <-deadline:
+			t.Fatalf("%s still resolves: the expired generation was not withdrawn", path)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// A valid generation stays published however many renewals fail.
+func TestRunRenewalLoopRetainsAValidGeneration(t *testing.T) {
+	holdSIGTERM(t)
+
+	oldBase := renewalRetryBase
+	renewalRetryBase = 10 * time.Millisecond
+	t.Cleanup(func() { renewalRetryBase = oldBase })
+
+	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
+		if n == 1 {
+			return time.Hour, nil
+		}
+		return 0, errors.New("stubbed certificate request failure")
+	})
+
+	cfg := unreachableRenewalConfig(t)
+	cfg.RenewInterval = 20 * time.Millisecond
+	cfg.ReloadNginx = false
+
+	done := make(chan error, 1)
+	go func() { done <- run(cfg) }()
+
+	waitForAttempts(t, attempts, 5)
+	select {
+	case err := <-done:
+		t.Fatalf("run exited with %v while its generation was still valid", err)
+	default:
+	}
+	if _, err := os.Stat(cfg.CertPath); err != nil {
+		t.Fatalf("a valid generation was withdrawn after failed renewals: %v", err)
+	}
+	terminateRun(t, done)
+}
+
+// A new pod's first leaf is unnamed; the next renewal must come within
+// seconds, not after a whole --unnamed-renew-interval, so the pod is named
+// soon after its main container starts.
 func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	ca := newTestCA(t)
 	attempts := stubObtainCertNaming(t, ca)
@@ -696,76 +798,4 @@ func TestCDSHTTPClientParsesRTMRPins(t *testing.T) {
 	if _, err := cdsHTTPClient(cfg); err != nil {
 		t.Fatalf("cdsHTTPClient with valid pins: %v", err)
 	}
-}
-
-func TestRunRenewalLoopExitsOnExpiredLeaf(t *testing.T) {
-	holdSIGTERM(t)
-
-	oldBase := renewalRetryBase
-	renewalRetryBase = 10 * time.Millisecond
-	t.Cleanup(func() { renewalRetryBase = oldBase })
-
-	// The initial request publishes a generation that expires a second later;
-	// every renewal fails.
-	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
-		if n == 1 {
-			return time.Second, nil
-		}
-		return 0, errors.New("stubbed certificate request failure")
-	})
-
-	cfg := unreachableRenewalConfig(t)
-	cfg.RenewInterval = 20 * time.Millisecond
-	cfg.ReloadNginx = false
-
-	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
-
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("run() = nil, want an error once the expired generation cannot be renewed")
-		}
-		if !strings.Contains(err.Error(), "expired") {
-			t.Errorf("run() = %v, want an error naming the expired certificate", err)
-		}
-		// The initial request plus at least expiredExitFailures failed renewals.
-		if got := len(attempts()); got < 1+expiredExitFailures {
-			t.Errorf("exited after %d attempts, want at least %d", got, 1+expiredExitFailures)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("run did not exit with an expired, unrenewable generation")
-	}
-}
-
-// A generation that is still valid never triggers the expired-leaf exit,
-// however many renewals fail.
-func TestRunRenewalLoopKeepsRetryingWhileLeafValid(t *testing.T) {
-	holdSIGTERM(t)
-
-	oldBase := renewalRetryBase
-	renewalRetryBase = 10 * time.Millisecond
-	t.Cleanup(func() { renewalRetryBase = oldBase })
-
-	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
-		if n == 1 {
-			return time.Hour, nil
-		}
-		return 0, errors.New("stubbed certificate request failure")
-	})
-
-	cfg := unreachableRenewalConfig(t)
-	cfg.RenewInterval = 20 * time.Millisecond
-	cfg.ReloadNginx = false
-
-	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
-
-	waitForAttempts(t, attempts, 2+expiredExitFailures)
-	select {
-	case err := <-done:
-		t.Fatalf("run exited with %v while the generation was still valid", err)
-	default:
-	}
-	terminateRun(t, done)
 }
