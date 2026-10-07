@@ -132,6 +132,11 @@ func TestProxyExposesOnlyAllowlistPaths(t *testing.T) {
 		{path: "/allowlist", want: http.StatusNoContent},
 		{path: "/allowlist/workloads/model", want: http.StatusNoContent},
 		{path: "/allowlisted", want: http.StatusNotFound},
+		{path: "/.well-known/c8s/objects/sha256/00", want: http.StatusNoContent},
+		{path: "/.well-known/c8s/allowlist/latest", want: http.StatusNoContent},
+		{path: "/.well-known/c8s/state", want: http.StatusNoContent},
+		{path: "/.well-known/c8s/state/challenge", want: http.StatusNoContent},
+		{path: "/.well-known/c8s/attest-pq", want: http.StatusNotFound},
 		{path: "/", want: http.StatusNotFound},
 	} {
 		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
@@ -141,8 +146,8 @@ func TestProxyExposesOnlyAllowlistPaths(t *testing.T) {
 			t.Errorf("%s status = %d, want %d", tc.path, rec.Code, tc.want)
 		}
 	}
-	if hits != 2 {
-		t.Fatalf("proxy hits = %d, want 2", hits)
+	if hits != 6 {
+		t.Fatalf("proxy hits = %d, want 6", hits)
 	}
 }
 
