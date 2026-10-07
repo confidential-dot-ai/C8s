@@ -31,9 +31,10 @@ all — CDS then takes the subject from the verified workload identity.
 The leaf, key and CA are published together, under `generations/` in the
 directory the three paths share, and one `current` symlink flip publishes them:
 the paths above resolve to one complete generation or to nothing. Each renewal
-requests its certificate on a key of its own, so a generation's key is only
-ever the one its leaf was issued for. Every response is validated first:
-matching key, chain to its own CA, this pod's workload instance.
+requests its certificate on a key of its own, so a generation's key is only ever
+the one its leaf was issued for. Every response is validated first — matching
+key, chain to its own CA, this pod's workload instance — and a published
+generation is withdrawn once it stops being valid.
 
 ## Flags
 
