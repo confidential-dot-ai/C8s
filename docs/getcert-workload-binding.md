@@ -675,6 +675,23 @@ The same ordering covers the secret and volume fetchers, which redeem at the
 same endpoint. Volume mounts also require the node's `volumed` DaemonSet and
 its Unix socket; see [Volumes](volumes.md) for setup and mount ordering.
 
+## Public hostname and mesh identity
+
+A launch-driven router can use different public and mesh names. For example,
+the mesh certificate can name `c8s.local`, while ACME requests a certificate
+for `api.confidential.ai` and `candidate.api.confidential.ai`.
+
+The baked router passes `--discovery-public-tls-hostnames-file` to get-cert.
+In ACME mode, discovery reports the first hostname from the signed launch
+input. It does not replace the mesh SAN or the CDS certificate and evidence.
+In CDS mode, discovery reports the mesh SAN. Missing or invalid hostname
+files stop startup. An empty file is valid only in CDS mode.
+
+This metadata does not prove certificate issuance. Clients must still check
+the live TLS certificate and verify that fresh front-door attestation binds
+to that certificate. A bootstrap certificate does not pass the public CA
+check merely because discovery reports the correct hostname.
+
 ## Audit pointers
 
 | Concern | Where |

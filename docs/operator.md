@@ -184,9 +184,39 @@ selects the primary IPv4 address if that is also omitted. An agent must
 always carry its server's reachable IPv4 address. `node.ip` is optional
 (`0.0.0.0` means autodetect); `node.externalIP` is an optional explicit unicast
 IPv4 address. `node.name` must be unique within the cluster. `tlsSAN` defaults
-to `c8s.local` and must be a lowercase DNS hostname. The built-in front door
-serves a CDS-issued certificate; arbitrary routes, public WebPKI configuration
-and CORS overrides are not launch settings in this image.
+to `c8s.local` and must be a lowercase DNS hostname. Arbitrary routes and CORS
+overrides are not launch settings in this image.
+
+A server document may carry an optional `router` block. It sets the router's
+catch-all upstream and public hostnames at boot, because the image cannot know
+them at build time. An agent document must not carry it.
+
+```yaml
+router:
+  upstream: "c8s-gateway.confidential-inference.svc.cluster.local:9443"
+  hostnames: ["candidate.api.confidential.ai"]
+  acmeEmail: "ops@example.com"
+  acmeDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"
+```
+
+- `upstream` is plain http to a mesh-wrapped workload Service, in the form
+  `c8s-<id>.<namespace>.svc.cluster.local:<port>`. This is the same rule the
+  chart applies to a plain http `router.upstream.address`. Without it, `/`
+  returns 404; the attestation, discovery, allowlist and health routes still
+  work.
+- `hostnames` are lowercase DNS names. When set, the in-guest `c8s acme`
+  sidecar gets one Let's Encrypt certificate for them over HTTP-01 on port 80
+  (front-door mode `acme`). When empty, nginx serves the CDS-issued mesh leaf
+  (front-door mode `cds`) and the sidecar stands by. The mode selects the
+  certificate through `router/tls.conf`, which nginx includes.
+- `acmeEmail` and `acmeDirectoryURL` are optional and need `hostnames`. Use a
+  staging directory for tests.
+
+`c8s node launch-config new` writes the block from `--router-upstream`,
+`--router-hostname` (repeatable), `--acme-email` and `--acme-directory-url`.
+The block is part of the signed bytes. Boot preparation publishes it as files
+in `/run/c8s-node/router/`, which the router pod reads at start. To change it,
+re-sign the document and relaunch the server.
 
 For KubeVirt, the same three files can be supplied as a Secret-backed ISO:
 
@@ -976,6 +1006,11 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 `front_door_mode`, and attest-lb — the transport binding to the exact serving
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
+
+On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
+signed launch file selects the mode and the upstream at boot. Mode `acme`
+applies when its `router.hostnames` is not empty, else mode `cds`. See
+"Authenticated launch configuration".
 
 ## router upstream
 

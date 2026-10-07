@@ -60,7 +60,7 @@ func TestRunIssuesAndReloads(t *testing.T) {
 		logLevel:      "debug",
 	}
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- runWith(cfg, testPublicProbeClient(t, frontDoor.URL)) }()
 
 	// The install lands a CA-issued (non-self-issued) leaf and SIGHUPs nginx.
 	deadline := time.Now().Add(30 * time.Second)
