@@ -66,14 +66,12 @@ func TestNodeImageRender(t *testing.T) {
 			docs := nodeImageDocuments(t, raw)
 			for _, key := range []string{
 				"Namespace/c8s-system", "CustomResourceDefinition/confidentialworkloads.confidential.ai",
-				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh",
+				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
 				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
-				"ValidatingAdmissionPolicy/c8s-cw-label-integrity", "ValidatingAdmissionPolicyBinding/c8s-cw-label-integrity",
+				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
-				"ValidatingAdmissionPolicy/deny-armtls-mesh-uid", "ValidatingAdmissionPolicyBinding/deny-armtls-mesh-uid",
-				"ValidatingAdmissionPolicy/deny-armtls-mesh-uid-ephemeral", "ValidatingAdmissionPolicyBinding/deny-armtls-mesh-uid-ephemeral",
-				"NetworkPolicy/armtls-mesh-tcp-only-egress", "NetworkPolicy/c8s-operator-ingress",
+				"NetworkPolicy/c8s-operator-ingress",
 			} {
 				if docs[key] == nil {
 					t.Errorf("missing %s", key)
@@ -146,7 +144,7 @@ func TestNodeImageRender(t *testing.T) {
 			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
-			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh"} {
+			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
 					t.Fatal(err)
@@ -337,6 +335,9 @@ spec:
         - name: operator
           image: registry.example.com/operator@CORE_DIGEST
           command: ["/app/c8s"]
+          args:
+            - operator
+            - --mesh-image=registry.example.com/armtls-mesh@MESH_DIGEST
       initContainers:
         - name: native-sidecar
           restartPolicy: Always
@@ -365,19 +366,6 @@ spec:
         - name: router
           image: registry.example.com/operator@CORE_DIGEST
           command: ["/app/c8s"]
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: c8s-armtls-mesh
-spec:
-  template:
-    spec:
-      containers:
-        - name: mesh
-          image: registry.example.com/operator@CORE_DIGEST
-          command: ["/app/c8s", "armtls-mesh"]
-          args: ["--platform", "snp"]
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -430,13 +418,41 @@ kind: ConfigMap
 metadata:
   name: c8s-cds-allowlist-seed
 data:
-  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
+  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"mesh":{"containers":[{"digest":"MESH_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
 ---
 # An empty trailing document is harmless.
 `
 
 func nodeImageCollectFixture() string {
-	return strings.NewReplacer("CORE_DIGEST", testDigest, "INIT_DIGEST", nodeImageTestCDSDigest).Replace(nodeImageCollectFixtureTemplate)
+	return strings.NewReplacer(
+		"CORE_DIGEST", testDigest,
+		"INIT_DIGEST", nodeImageTestCDSDigest,
+		"MESH_DIGEST", nodeImageTestMeshDigest,
+	).Replace(nodeImageCollectFixtureTemplate)
+}
+
+// The flag names the image every covered pod runs, so the node preloads it. A
+// flag carrying no image is named without one: the caller then refuses the
+// manifest rather than preloading nothing.
+func TestMeshImageArg(t *testing.T) {
+	image := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		image string
+		named bool
+	}{
+		{name: "no flag", args: []string{"operator", "--get-cert-image=x"}},
+		{name: "named", args: []string{"--mesh-image=" + image}, image: image, named: true},
+		{name: "named without an image", args: []string{"--mesh-image="}, named: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, named := meshImageArg(tc.args)
+			if named != tc.named || got != tc.image {
+				t.Fatalf("meshImageArg = (%q, %v), want (%q, %v)", got, named, tc.image, tc.named)
+			}
+		})
+	}
 }
 
 func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
@@ -478,7 +494,13 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	if string(artifacts.seed) != cm.Data["allowlist-seed.json"] {
 		t.Fatal("bootstrap seed differs from the complete manifest")
 	}
-	wantImages := []string{"registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/operator@" + testDigest}
+	// The injected endpoint is in the inventory too: the node preloads what
+	// its webhook will add to every pod.
+	wantImages := []string{
+		"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+		"registry.example.com/init@" + nodeImageTestCDSDigest,
+		"registry.example.com/operator@" + testDigest,
+	}
 	if !slices.Equal(artifacts.images, wantImages) {
 		t.Fatalf("image inventory lost init image or duplicated common image: got %v, want %v", artifacts.images, wantImages)
 	}
@@ -522,8 +544,9 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 	for _, tc := range []struct{ name, old, replacement string }{
 		{"mutable container tag", "registry.example.com/operator@" + testDigest, "registry.example.com/operator:latest"},
 		{"mutable init tag", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init:latest"},
-		{"unseeded container", "registry.example.com/operator@" + testDigest, "registry.example.com/operator@" + nodeImageTestMeshDigest},
-		{"unseeded init", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init@" + nodeImageTestMeshDigest},
+		{"unseeded container", "registry.example.com/operator@" + testDigest, "registry.example.com/operator@" + nodeImageTestRouterDigest},
+		{"unseeded init", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init@" + nodeImageTestRouterDigest},
+		{"unpinned injected image", "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest, "registry.example.com/armtls-mesh:latest"},
 		{"missing core workload", "name: c8s-cds", "name: other-cds"},
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
 		{"pinned args", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"deny"},"mounts":{"policy":"any"}}]},"init"`},
@@ -660,7 +683,7 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 // image's entrypoint, with the mounts the manifest gives it.
 func TestNodeImageCollectPinnedArgs(t *testing.T) {
 	core := `{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
-	mesh := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]}}`
+	operator := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"exact","argv":["operator","--mesh-image=registry.example.com/armtls-mesh@` + nodeImageTestMeshDigest + `"]}}`
 	entrypoint := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
 	const entrypointRouter = "        - name: router\n          image: registry.example.com/operator@" + testDigest
 	const router = entrypointRouter + "\n          command: [\"/app/c8s\"]"
@@ -675,26 +698,26 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		name, seed, manifest string
 		ok                   bool
 	}{
-		{"every invocation pinned", mesh + "," + entrypoint, "", true},
-		{"image entrypoint under a pinned command", mesh + "," + entrypoint, entrypointRouter, false},
-		{"image entrypoint and CMD under denied args", mesh + "," + entrypoint + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, entrypointRouter, false},
-		{"image entrypoint under any command and args", mesh + "," + entrypoint + "," + core, entrypointRouter, true},
-		{"entrypoint arguments not pinned", mesh + "," + entrypoint, router + "\n          args: [\"--other\"]", false},
-		{"mount the manifest lacks", strings.Replace(mesh, `"args"`, `"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]},"args"`, 1) + "," + entrypoint, "", false},
-		{"entrypoint under any command with pinned args", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, "", false},
-		{"host mount pinned", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp","readOnly":true}`), hostTmp, true},
-		{"host mount pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"emptyDir"}`), hostTmp, false},
-		{"host mount pinned writable", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
-		{"subpath pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
-		{"subpath pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
-		{"volumed placeholder pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"data"}`), placeholder, true},
-		{"volumed placeholder pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"emptyDir"}`), placeholder, false},
-		{"entrypoint under a denied command", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"deny"},"args":{"policy":"any"}}`, "", false},
-		{"env pinned", strings.Replace(mesh, `"args"`, `"env":{"policy":"deny"},"args"`, 1) + "," + entrypoint, "", false},
-		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
-		{"escape not expanded", mesh + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
-		{"defined variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]\n          env: [{name: HOST_IP, value: 10.0.0.1}]", false},
-		{"service variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]", false},
+		{"every invocation pinned", operator + "," + entrypoint, "", true},
+		{"image entrypoint under a pinned command", operator + "," + entrypoint, entrypointRouter, false},
+		{"image entrypoint and CMD under denied args", operator + "," + entrypoint + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, entrypointRouter, false},
+		{"image entrypoint under any command and args", operator + "," + entrypoint + "," + core, entrypointRouter, true},
+		{"entrypoint arguments not pinned", operator + "," + entrypoint, router + "\n          args: [\"--other\"]", false},
+		{"mount the manifest lacks", strings.Replace(operator, `"args"`, `"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]},"args"`, 1) + "," + entrypoint, "", false},
+		{"entrypoint under any command with pinned args", operator + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, "", false},
+		{"host mount pinned", operator + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp","readOnly":true}`), hostTmp, true},
+		{"host mount pinned as an emptyDir", operator + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"emptyDir"}`), hostTmp, false},
+		{"host mount pinned writable", operator + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
+		{"subpath pinned as data", operator + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
+		{"subpath pinned as an emptyDir", operator + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
+		{"volumed placeholder pinned as data", operator + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"data"}`), placeholder, true},
+		{"volumed placeholder pinned as an emptyDir", operator + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"emptyDir"}`), placeholder, false},
+		{"entrypoint under a denied command", operator + `,{"digest":"` + testDigest + `","command":{"policy":"deny"},"args":{"policy":"any"}}`, "", false},
+		{"env pinned", strings.Replace(operator, `"args"`, `"env":{"policy":"deny"},"args"`, 1) + "," + entrypoint, "", false},
+		{"escaped variable reference", operator + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
+		{"escape not expanded", operator + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
+		{"defined variable reference", operator + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]\n          env: [{name: HOST_IP, value: 10.0.0.1}]", false},
+		{"service variable reference", operator + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := strings.Replace(nodeImageCollectFixture(), core, tc.seed, 1)
@@ -755,8 +778,8 @@ func TestKubeletArgv(t *testing.T) {
 }
 
 // nodeImageEnvSeed is a seed whose core entries match the launch env: the
-// runtime's variables plus extra, under any operator, CDS and router command
-// and the mesh's pinned argv.
+// runtime's variables plus extra, under the CDS and router entrypoint and the
+// operator's pinned argv.
 func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
 	t.Helper()
 	variables := map[string]any{
@@ -772,15 +795,17 @@ func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
 		"KUBERNETES_PORT_443_TCP_PROTO": map[string]any{"exact": "tcp"},
 	}
 	component := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s"}}, "args": map[string]any{"policy": "deny"}, "env": map[string]any{"policy": "match", "variables": variables}}
-	mesh := maps.Clone(variables)
+	operatorVariables := maps.Clone(variables)
 	for name, matcher := range extra {
-		mesh[name] = matcher
+		operatorVariables[name] = matcher
 	}
-	meshEntry := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s", "armtls-mesh"}}, "args": map[string]any{"policy": "exact", "argv": []string{"--platform", "snp"}}, "env": map[string]any{"policy": "match", "variables": mesh}}
+	operatorEntry := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s"}}, "args": map[string]any{"policy": "exact", "argv": nodeImageFixtureOperatorArgv}, "env": map[string]any{"policy": "match", "variables": operatorVariables}}
 	initEntry := map[string]any{"digest": nodeImageTestCDSDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
+	meshEntry := map[string]any{"digest": nodeImageTestMeshDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	seed, err := json.Marshal(map[string]any{"schema": "c8s.allowlist/v1", "workloads": map[string]any{
-		"core": map[string]any{"containers": []any{component, meshEntry}},
+		"core": map[string]any{"containers": []any{component, operatorEntry}},
 		"init": map[string]any{"containers": []any{initEntry}},
+		"mesh": map[string]any{"containers": []any{meshEntry}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -788,21 +813,25 @@ func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
 	return string(seed)
 }
 
-const nodeImageFixtureMeshArgs = `          args: ["--platform", "snp"]`
+// nodeImageFixtureOperatorArgv is the argv the fixture's operator container
+// runs, and nodeImageFixtureOperatorArgs the manifest lines carrying it.
+var nodeImageFixtureOperatorArgv = []string{"operator", "--mesh-image=registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest}
+
+var nodeImageFixtureOperatorArgs = "            - --mesh-image=registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
 
 // nodeImageEnvFixture is the collect fixture with service links off, the seed
-// replaced, and env lines added to the mesh container.
-func nodeImageEnvFixture(t *testing.T, seed, meshEnv string) string {
+// replaced, and env lines added to the operator container.
+func nodeImageEnvFixture(t *testing.T, seed, operatorEnv string) string {
 	t.Helper()
 	fixture := strings.ReplaceAll(nodeImageCollectFixture(), "    spec:\n      containers:", "    spec:\n      enableServiceLinks: false\n      containers:")
 	start := strings.Index(fixture, "allowlist-seed.json: '") + len("allowlist-seed.json: '")
 	end := start + strings.Index(fixture[start:], "'")
 	fixture = fixture[:start] + seed + fixture[end:]
-	return strings.Replace(fixture, nodeImageFixtureMeshArgs, nodeImageFixtureMeshArgs+meshEnv, 1)
+	return strings.Replace(fixture, nodeImageFixtureOperatorArgs, nodeImageFixtureOperatorArgs+operatorEnv, 1)
 }
 
 func TestNodeImageCollectMatchedEnv(t *testing.T) {
-	const meshEnv = "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {fieldRef: {fieldPath: metadata.name}}}]"
+	const operatorEnv = "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {fieldRef: {fieldPath: metadata.name}}}]"
 	present, exact := map[string]any{"present": true}, func(v string) map[string]any { return map[string]any{"exact": v} }
 	listed := map[string]any{"MODE": exact("strict"), "POD": present}
 	with := func(name string, matcher any) map[string]any {
@@ -815,29 +844,29 @@ func TestNodeImageCollectMatchedEnv(t *testing.T) {
 		return out
 	}
 	for _, tc := range []struct {
-		name    string
-		extra   map[string]any
-		meshEnv string
-		links   bool
-		ok      bool
+		name        string
+		extra       map[string]any
+		operatorEnv string
+		links       bool
+		ok          bool
 	}{
-		{"every variable listed", listed, meshEnv, false, true},
-		{"image variable pinned exact", with("LANG", exact("C.UTF-8")), meshEnv, false, true},
-		{"literal pinned to another value", with("MODE", exact("lax")), meshEnv, false, false},
-		{"reference pinned exact", with("POD", exact("mesh-0")), meshEnv, false, false},
-		{"manifest variable not listed", with("POD", nil), meshEnv, false, false},
-		{"listed variable nothing sets", with("EXTRA", present), meshEnv, false, false},
+		{"every variable listed", listed, operatorEnv, false, true},
+		{"image variable pinned exact", with("LANG", exact("C.UTF-8")), operatorEnv, false, true},
+		{"literal pinned to another value", with("MODE", exact("lax")), operatorEnv, false, false},
+		{"reference pinned exact", with("POD", exact("mesh-0")), operatorEnv, false, false},
+		{"manifest variable not listed", with("POD", nil), operatorEnv, false, false},
+		{"listed variable nothing sets", with("EXTRA", present), operatorEnv, false, false},
 		{"kubelet-expanded literal pinned exact", with("MODE", exact("$(POD)")), "\n          env: [{name: MODE, value: $(POD)}, {name: POD, value: x}]", false, false},
 		{"kubelet-expanded literal matched present", with("MODE", present), "\n          env: [{name: MODE, value: $(POD)}, {name: POD, value: x}]", false, true},
-		{"runtime port pinned to another value", with("KUBERNETES_SERVICE_PORT", exact("6443")), meshEnv, false, false},
-		{"envFrom", listed, meshEnv + "\n          envFrom: [{configMapRef: {name: extra}}]", false, false},
+		{"runtime port pinned to another value", with("KUBERNETES_SERVICE_PORT", exact("6443")), operatorEnv, false, false},
+		{"envFrom", listed, operatorEnv + "\n          envFrom: [{configMapRef: {name: extra}}]", false, false},
 		{"optional key reference", with("POD", present), "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {secretKeyRef: {name: s, key: k, optional: true}}}]", false, false},
-		{"service links on", listed, meshEnv, true, false},
+		{"service links on", listed, operatorEnv, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := nodeImageEnvFixture(t, nodeImageEnvSeed(t, tc.extra), tc.meshEnv)
+			input := nodeImageEnvFixture(t, nodeImageEnvSeed(t, tc.extra), tc.operatorEnv)
 			if tc.links {
-				input = strings.Replace(input, "enableServiceLinks: false\n      containers:\n        - name: mesh", "containers:\n        - name: mesh", 1)
+				input = strings.Replace(input, "enableServiceLinks: false\n      containers:\n        - name: operator", "containers:\n        - name: operator", 1)
 			}
 			_, err := collectNodeImageArtifacts([]byte(input))
 			if (err == nil) != tc.ok {

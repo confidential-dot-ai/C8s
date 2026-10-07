@@ -6,7 +6,6 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
-	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -33,7 +32,6 @@ func TestAdoptMeEntryDescribesTheInjectedPod(t *testing.T) {
 		{Source: sandboxDir + "/resolv.conf", Destination: "/etc/resolv.conf", Options: []string{"rbind"}},
 		{Source: sandboxDir + "/shm", Destination: "/dev/shm", Options: []string{"rbind"}},
 		{Source: podDir + "/volumes/" + projectedPlugin + "/kube-api-access-x7k2p", Destination: serviceAccountDestination, Options: []string{"rbind", "ro"}},
-		{Source: podDir + "/volumes/" + emptyDirPlugin + "/" + webhook.CertVolumeName, Destination: webhook.CertDir, Options: []string{"rbind", "ro"}},
 	}}
 	observer := newMountObserver(fixedStorage(allowlist.MountMemory), nodeMounts{})
 	running := func() []allowlist.RunningContainer {

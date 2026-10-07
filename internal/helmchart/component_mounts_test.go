@@ -264,6 +264,14 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 						if _, ok := pins[c.Digest.String()]; !ok {
 							continue
 						}
+						// A role entry grants a platform role; the enforcer
+						// matches it against a launch it knows the arguments
+						// of but not the mounts or the environment
+						// (Index.RoleOf), so it cannot pin either. The shape
+						// entries below are what admit these digests.
+						if c.Role != "" {
+							continue
+						}
 						if c.Env.Policy != pkgallowlist.PolicyMatch {
 							t.Errorf("%s entry %s leaves env %q", source, name, c.Env.Policy)
 						}

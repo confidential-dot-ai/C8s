@@ -29,6 +29,7 @@ type meshLeafSpec struct {
 	notAfter      time.Time
 	omitSandboxID bool            // the leaf carries no sandbox-ID extension
 	sandboxExt    *pkix.Extension // replaces the well-formed sandbox-ID extension
+	armtlsExt     *pkix.Extension // an armTLS attestation extension the leaf also carries
 }
 
 func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, spec meshLeafSpec) *tls.Certificate {
@@ -56,6 +57,9 @@ func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, s
 		extensions = []pkix.Extension{*spec.sandboxExt}
 	case !spec.omitSandboxID:
 		extensions = []pkix.Extension{mustSandboxExt(t, testMeshSandboxID)}
+	}
+	if spec.armtlsExt != nil {
+		extensions = append(extensions, *spec.armtlsExt)
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:    big.NewInt(700),
@@ -166,6 +170,17 @@ func TestChainVerifyPeerCallback(t *testing.T) {
 				Value: ia5SandboxID,
 			}}).Leaf.Raw},
 			caCert, true,
+		},
+		{
+			// CDS copies the requester's armTLS extension onto the leaf, and
+			// the chain path reads neither it nor its contents:
+			// the CA signature is what authenticates this leaf. The "mesh
+			// leaf" row above carries none at all.
+			"leaf carrying a malformed armTLS extension",
+			[][]byte{signMeshLeaf(t, caKey, caCert, meshLeafSpec{
+				armtlsExt: &pkix.Extension{Id: OIDARMTLSAttestation, Value: []byte{0x30, 0x03, 0x02, 0x01}},
+			}).Leaf.Raw},
+			caCert, false,
 		},
 		{
 			"client-only purpose",

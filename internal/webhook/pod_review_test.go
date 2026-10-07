@@ -14,15 +14,14 @@ import (
 )
 
 func TestAdmissionRequiresInventoryForEveryInjection(t *testing.T) {
-	for _, mesh := range []bool{false, true} {
+	for _, annotated := range []bool{false, true} {
 		cfg := meshConfig()
-		if !mesh {
-			cfg.MeshImage = ""
-		}
 		cfg.WorkloadClaimsHostDir = ""
 		m, v := meshHandlers(t, cfg)
 		pod := podWithApp()
-		pod.Annotations = map[string]string{AnnotationWorkload: "api"}
+		if annotated {
+			pod.Annotations = map[string]string{AnnotationWorkload: "api"}
+		}
 		inj, err := parseAnnotations(pod, "tenant")
 		if err != nil {
 			t.Fatal(err)
@@ -34,7 +33,7 @@ func TestAdmissionRequiresInventoryForEveryInjection(t *testing.T) {
 			"validator": validate(t, v, injected, "tenant").Allowed,
 		} {
 			if response {
-				t.Errorf("%s admitted injection without inventory (mesh=%v)", name, mesh)
+				t.Errorf("%s admitted injection without inventory (annotated=%v)", name, annotated)
 			}
 		}
 		cfg.GetCertImage = ""
@@ -47,7 +46,6 @@ func TestAdmissionRequiresInventoryForEveryInjection(t *testing.T) {
 
 func TestAdmissionRejectsDetailsWithoutWorkload(t *testing.T) {
 	cfg := meshConfig()
-	cfg.MeshImage = ""
 	m, v := meshHandlers(t, cfg)
 	for _, annotation := range []string{AnnotationSecrets, AnnotationVolumes} {
 		pod := podWithApp()

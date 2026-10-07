@@ -68,7 +68,9 @@ func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 }
 
 // dialingRoles are the roles the ruleset permits by destination: every bound
-// role but the mesh endpoint, whose sockets it exempts by UID instead.
+// role but the mesh endpoint, whose sockets it exempts by UID instead. The
+// credential clients also reach the attestation-api on the port policy names
+// for it, at the address their CDS is on — their own node's.
 func (p meshPolicy) dialingRoles() []ruleset.Role {
 	var roles []ruleset.Role
 	for _, role := range p.Roles {
@@ -80,6 +82,12 @@ func (p meshPolicy) dialingRoles() []ruleset.Role {
 			bound.Destinations = append(bound.Destinations, ruleset.Destination{
 				Addr: dst.Addr(),
 				Port: dst.Port(),
+			})
+		}
+		if role.Name == CredentialRole && p.CredentialAttestationPort != 0 && len(bound.Destinations) > 0 {
+			bound.Destinations = append(bound.Destinations, ruleset.Destination{
+				Addr: bound.Destinations[0].Addr,
+				Port: p.CredentialAttestationPort,
 			})
 		}
 		roles = append(roles, bound)

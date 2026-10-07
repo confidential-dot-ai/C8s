@@ -58,8 +58,12 @@ type meshPolicy struct {
 	// Resolver is the address the ruleset admits on the resolver port.
 	Resolver netip.Addr `yaml:"resolver"`
 	// Capture are the mesh endpoint's own listen ports in its pod.
-	Capture capturePorts  `yaml:"capture"`
-	Roles   []roleBinding `yaml:"roles"`
+	Capture capturePorts `yaml:"capture"`
+	// CredentialAttestationPort is the port on this node's own address the
+	// injected credential clients verify evidence through, where no node-local
+	// socket serves the attestation-api. 0 names none.
+	CredentialAttestationPort uint16        `yaml:"credential_attestation_port"`
+	Roles                     []roleBinding `yaml:"roles"`
 	// ClusterRanges are this cluster's pod and Service ranges. A destination
 	// inside them is a member, so the acme egress exception excludes them and
 	// that traffic is captured like any other application connection.

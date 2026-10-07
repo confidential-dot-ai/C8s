@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,7 +59,7 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 						Mounts:  allowlist.MountPolicy{Policy: policy},
 					}}},
 				}}
-				_, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, decoded))
+				_, _, err := al.MatchWorkload(secrets.WorkloadContainers(decoded))
 				if tc.pod == nil && !errors.Is(err, allowlist.ErrNoMatch) {
 					t.Fatalf("%s accepted unavailable mount evidence: %v", policy, err)
 				}
@@ -67,6 +68,48 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The report carries the role the node's measured base binds to each launch,
+// so a consumer drops the platform's own containers without reading a command
+// line. A launch the base names no role for is reported with none.
+func TestInventoryReportsTheMeasuredRole(t *testing.T) {
+	argv := []string{"/app/c8s", "armtls-mesh"}
+	base := roleBase(t, pushDigestB, meshRole, argv)
+	p, _ := newCachedPlugin(&config{
+		Allowlist: allowlistConfig{
+			Base:    base,
+			NodeTCB: true,
+		},
+		Policy: policyConfig{Mode: ModeFailClosed},
+	}, base)
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.SetReady()
+
+	pod := makePod("default", "pod")
+	mesh := makeCtrWithImageArgs(pod.Id, "c8s-mesh", "registry/repo@"+pushDigestB, argv)
+	if err := p.StartContainer(context.Background(), pod, mesh); err != nil {
+		t.Fatalf("the pod's mesh endpoint was refused: %v", err)
+	}
+	app := makeCtrWithImageArgs(pod.Id, "app", "registry/repo@"+pushDigestA, []string{"/app"})
+	if err := p.StartContainer(context.Background(), pod, app); err != nil {
+		t.Fatalf("the workload container was refused: %v", err)
+	}
+
+	_, reported, known, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil || !known || len(reported) != 2 {
+		t.Fatalf("inventory = %+v, %v, %v", reported, known, err)
+	}
+	roles := map[string]string{}
+	for _, c := range reported {
+		roles[c.Digest] = c.Role
+	}
+	if roles[pushDigestB] != meshRole {
+		t.Fatalf("the mesh endpoint reports role %q, want %q", roles[pushDigestB], meshRole)
+	}
+	if roles[pushDigestA] != "" {
+		t.Fatalf("the workload container reports role %q, want none", roles[pushDigestA])
 	}
 }
 

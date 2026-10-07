@@ -27,10 +27,10 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
-// TestRunIssuesAndReloads drives the real run(): bootstrap placeholder, the
-// challenge listener, ACME issuance against the fake directory, nginx SIGHUP
-// on install, and shutdown on SIGTERM.
-func TestRunIssuesAndReloads(t *testing.T) {
+// TestRunIssuesAndInstalls drives the real run(): bootstrap placeholder, the
+// challenge listener, ACME issuance against the fake directory, the installed
+// key's mode, and shutdown on SIGTERM. nginx's own entrypoint reloads it.
+func TestRunIssuesAndInstalls(t *testing.T) {
 	ca := newTestCA(t)
 	port := freePort(t)
 	fake := newFakeACME(t, ca, "http://127.0.0.1:"+strconv.Itoa(port))
@@ -43,11 +43,6 @@ func TestRunIssuesAndReloads(t *testing.T) {
 	}))
 	t.Cleanup(frontDoor.Close)
 
-	hup := catchSIGHUP(t)
-	procs := t.TempDir()
-	presentAsNginxMaster(t, procs)
-	overrideProcRoot(t, procs)
-
 	certDir := filepath.Join(t.TempDir(), "tls")
 	cfg := config{
 		domains:       []string{"lb.example.com", "infer.lb.example.com"},
@@ -56,13 +51,12 @@ func TestRunIssuesAndReloads(t *testing.T) {
 		challengePort: port,
 		httpPort:      serverPort(t, frontDoor.URL),
 		certDir:       certDir,
-		reloadNginx:   true,
 		logLevel:      "debug",
 	}
 	done := make(chan error, 1)
 	go func() { done <- runWith(cfg, testPublicProbeClient(t, frontDoor.URL)) }()
 
-	// The install lands a CA-issued (non-self-issued) leaf and SIGHUPs nginx.
+	// The install lands a CA-issued (non-self-issued) leaf.
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		if time.Now().After(deadline) {
@@ -76,11 +70,6 @@ func TestRunIssuesAndReloads(t *testing.T) {
 			}
 		}
 		time.Sleep(20 * time.Millisecond)
-	}
-	select {
-	case <-hup:
-	case <-time.After(10 * time.Second):
-		t.Fatal("install did not SIGHUP nginx")
 	}
 	info, err := os.Stat(filepath.Join(certDir, keyFile))
 	if err != nil {

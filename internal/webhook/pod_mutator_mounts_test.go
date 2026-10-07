@@ -18,8 +18,13 @@ import (
 
 const (
 	chartOperatorDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	chartMeshDigest     = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	chartRuntimeDir     = "/run/nri-image-policy"
 )
+
+// chartMeshEntrypoint is the endpoint image's entrypoint, which the chart
+// carries in c8sComponents.
+var chartMeshEntrypoint = []string{"/app/c8s", "armtls-mesh"}
 
 // chartSeed renders the chart with the operator image derived and returns the
 // allowlist seed it serves.
@@ -36,10 +41,12 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",
-		"--set", "armtlsMesh.image.tag=dev",
+		"--set", "armtlsMesh.image.digest="+chartMeshDigest,
 		"--set", "nriImagePolicy.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+chartRuntimeDir,
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 	).CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -59,8 +66,9 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	return nil
 }
 
-// chartImageEnv reads the operator image's Env from the chart's c8sComponents.
-func chartImageEnv(t *testing.T) map[string]string {
+// chartImageEnv reads one component image's Env from the chart's
+// c8sComponents, named by its valuePath.
+func chartImageEnv(t *testing.T, valuePath string) map[string]string {
 	t.Helper()
 	raw, err := os.ReadFile("../helmchart/c8s/values.yaml")
 	if err != nil {
@@ -76,11 +84,11 @@ func chartImageEnv(t *testing.T) map[string]string {
 		t.Fatal(err)
 	}
 	for _, c := range values.Components {
-		if c.ValuePath == "image" {
+		if c.ValuePath == valuePath {
 			return c.ImageEnv
 		}
 	}
-	t.Fatal("values.yaml declares no operator image")
+	t.Fatalf("values.yaml declares no %s", valuePath)
 	return nil
 }
 
@@ -155,7 +163,8 @@ func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, in
 func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 	seed := chartSeed(t)
 	index := seed.BuildIndex()
-	imageEnv := chartImageEnv(t)
+	imageEnv := chartImageEnv(t, "image")
+	meshImageEnv := chartImageEnv(t, "armtlsMesh.image")
 	for _, tc := range []struct {
 		name                 string
 		discovery, inventory bool
@@ -194,24 +203,34 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 				if !workloadclaims.IsInjectedContainerName(c.Name) {
 					continue
 				}
+				// The mesh endpoint runs the endpoint image under its own
+				// entrypoint, shape and role; the rest run the operator image.
+				entrypoint := []string{secrets.InjectedBinary}
+				digest, role, containerEnv := chartOperatorDigest, "credentials", imageEnv
+				if c.Name == workloadclaims.MeshContainerName {
+					entrypoint = chartMeshEntrypoint
+					digest = chartMeshDigest
+					role = "mesh"
+					containerEnv = meshImageEnv
+				}
 				argv := c.Command
 				if len(argv) == 0 {
-					argv = append([]string{secrets.InjectedBinary}, c.Args...)
+					argv = append(slices.Clone(entrypoint), c.Args...)
 				}
 				mounts := observedSidecarMounts(t, pod, c, tc.inventory)
-				env := sidecarEnv(t, pod, c, imageEnv)
-				if !index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}) {
+				env := sidecarEnv(t, pod, c, containerEnv)
+				if !index.AdmitsContainer(allowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: env}) {
 					t.Errorf("chart seed refuses injected %s with mounts %+v", c.Name, mounts)
 				}
-				if index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: sidecarEnv(t, pod, c, imageEnv, "LD_PRELOAD=/tmp/hook.so")}) {
+				if index.AdmitsContainer(allowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: sidecarEnv(t, pod, c, containerEnv, "LD_PRELOAD=/tmp/hook.so")}) {
 					t.Errorf("chart seed admits injected %s with LD_PRELOAD", c.Name)
 				}
-				injected = append(injected, workloadclaims.SandboxContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env})
+				injected = append(injected, workloadclaims.SandboxContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: env, Role: role})
 			}
-			if len(injected) != 4 {
-				t.Fatalf("injected %d containers, want the cert sidecar, cert-wait gate, secret fetcher, and volume fetcher", len(injected))
+			if len(injected) != 5 {
+				t.Fatalf("injected %d containers, want the mesh endpoint, cert sidecar, cert-wait gate, secret fetcher, and volume fetcher", len(injected))
 			}
-			if left := secrets.WorkloadContainers(seed, injected); len(left) != 0 {
+			if left := secrets.WorkloadContainers(injected); len(left) != 0 {
 				t.Errorf("the drop set keeps injected containers: %+v", left)
 			}
 		})
@@ -224,7 +243,7 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 func TestChartSeedRefusesHostSocketMount(t *testing.T) {
 	seed := chartSeed(t)
 	index := seed.BuildIndex()
-	imageEnv := chartImageEnv(t)
+	imageEnv := chartImageEnv(t, "image")
 	pod := podWithApp()
 	pod.Annotations = map[string]string{AnnotationWorkload: "api"}
 	inj, err := parseAnnotations(pod, "default")
@@ -252,7 +271,7 @@ func TestChartSeedRefusesHostSocketMount(t *testing.T) {
 		t.Errorf("chart seed admits %s with a host socket mount %+v", c.Name, mounts)
 	}
 	ctr := workloadclaims.SandboxContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}
-	if left := secrets.WorkloadContainers(seed, []workloadclaims.SandboxContainer{ctr}); len(left) != 1 {
+	if left := secrets.WorkloadContainers([]workloadclaims.SandboxContainer{ctr}); len(left) != 1 {
 		t.Errorf("WorkloadContainers dropped %s with a host socket mount, want it kept", c.Name)
 	}
 }

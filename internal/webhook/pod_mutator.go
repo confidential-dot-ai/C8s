@@ -2,11 +2,9 @@
 // shape: a mutator that injects the platform containers and a validator that
 // rejects a pod in scope whose final shape is not the injected one.
 //
-// Scope depends on the cluster's mesh. Where the per-pod mesh endpoint carries
-// the traffic (Config.MeshImage), every pod the webhooks are called for is
-// injected and the credential volume stays private to the platform containers;
-// while the node-level armtls-mesh DaemonSet is the mesh, only pods annotated
-// confidential.ai/cw are injected and the workload reads the leaf itself.
+// Every pod the webhooks are called for is injected: its own mesh endpoint
+// carries its traffic, and the credential volume stays private to the platform
+// containers.
 //
 // Which namespaces reach the webhooks is their configurations'
 // namespaceSelector: control-plane data, deciding injection alone. Membership
@@ -77,9 +75,6 @@ const (
 	AnnotationDiscoveryCDSCertURL    = "confidential.ai/c8s-discovery-cds-cert-url"
 	AnnotationDiscoveryMeshCAURL     = "confidential.ai/c8s-discovery-mesh-ca-url"
 	AnnotationDiscoveryPublicTLSMode = "confidential.ai/c8s-discovery-public-tls-mode"
-	AnnotationGetCertRunAsUser       = "confidential.ai/c8s-get-cert-run-as-user"
-	AnnotationGetCertRunAsGroup      = "confidential.ai/c8s-get-cert-run-as-group"
-	AnnotationGetCertRunAsNonRoot    = "confidential.ai/c8s-get-cert-run-as-non-root"
 	AnnotationGetCertVerbose         = "confidential.ai/c8s-get-cert-verbose"
 
 	// AnnotationSecrets requests secrets for the pod, as a comma-separated
@@ -112,9 +107,6 @@ const defaultCertFSGroup int64 = 65532
 // there and its NotBefore is not backdated, so an equal interval would only
 // renew once the installed leaf had already expired.
 const defaultCertRenewInterval = 2 * time.Hour
-const defaultGetCertRunAsUser int64 = 65532
-const defaultGetCertRunAsGroup int64 = 65532
-const defaultGetCertRunAsNonRoot = true
 const discoveryPublicTLSModeCDS = "cds"
 const discoveryPublicTLSModeWebPKI = "webpki"
 
@@ -166,7 +158,7 @@ const reservedVolumeContainerName = workloadclaims.VolumeContainerName
 // operator-reserved: a pod may not declare its own container under it. The
 // webhook rebuilds the sidecar every call (injectInitContainers) and rejects
 // the name in the regular/ephemeral lists (rejectReservedCertContainer); the
-// cw-label-integrity VAP enforces its presence in the API server.
+// pod validator refuses a final shape without it.
 const reservedCertContainerName = workloadclaims.CertContainerName
 
 // reservedCertWaitContainerName is the injected gate init container that blocks
@@ -185,8 +177,7 @@ type Config struct {
 	// injected get-cert containers.
 	GetCertImage string
 
-	// MeshImage is the armtls-mesh image of the per-pod mesh endpoint. Setting
-	// it makes the per-pod endpoint this cluster's mesh (see podMesh).
+	// MeshImage is the armtls-mesh image the pod's mesh endpoint runs.
 	MeshImage string
 
 	// AttestationApiURL points at the node-local attestation-api.
@@ -199,11 +190,6 @@ type Config struct {
 	// CertRenewInterval is passed to the renewal sidecar. Non-positive
 	// values use the default interval.
 	CertRenewInterval time.Duration
-
-	// GetCertRunAsUser/Group/NonRoot configure injected get-cert identity.
-	GetCertRunAsUser    *int64
-	GetCertRunAsGroup   *int64
-	GetCertRunAsNonRoot *bool
 
 	// WorkloadClaimsHostDir, when set (node-CVM), is the host directory holding
 	// the nri-image-policy inventory socket. That plugin bind-mounts the
@@ -240,26 +226,14 @@ type podMutator struct {
 	cfg     Config
 }
 
-// podMesh reports whether the per-pod mesh endpoint carries this cluster's
-// application traffic rather than the node DaemonSet. It decides the injected
-// shape: the endpoint leads the pod's containers, every pod the webhook is
-// called for is injected, and the credential volume stays private.
-func (cfg Config) podMesh() bool {
-	return cfg.MeshImage != ""
-}
-
-// injectionEnabled reports whether this operator has the platform image.
+// injectionEnabled reports whether this operator holds the images the platform
+// containers run. Register refuses a configuration with only one of them.
+//
+// With them it owns the shape of every pod it is called for, which is every
+// pod of a namespace the webhook configurations' namespaceSelector does not
+// exempt.
 func (cfg Config) injectionEnabled() bool {
-	return cfg.GetCertImage != ""
-}
-
-// inScope reports whether the webhook owns this pod's shape: under the per-pod
-// mesh every pod it is called for, under the node mesh a cw-annotated one.
-func (cfg Config) inScope(pod *corev1.Pod) bool {
-	if !cfg.injectionEnabled() {
-		return false
-	}
-	return cfg.podMesh() || pod.Annotations[AnnotationWorkload] != "" || hasInjectionDetailAnnotations(pod.Annotations)
+	return cfg.GetCertImage != "" && cfg.MeshImage != ""
 }
 
 // injection captures everything the mutator decides from pod annotations.
@@ -271,7 +245,6 @@ type injection struct {
 	SAN       string
 	Cert      certSpec
 	Discovery discoverySpec
-	Security  getCertSecuritySpec
 	Secrets   secretsSpec
 	Volumes   volumesSpec
 	Verbose   bool
@@ -302,12 +275,6 @@ type discoverySpec struct {
 	CDSCertURL    string
 	MeshCAURL     string
 	PublicTLSMode string
-}
-
-type getCertSecuritySpec struct {
-	RunAsUser    *int64
-	RunAsGroup   *int64
-	RunAsNonRoot *bool
 }
 
 // parseAnnotations reads the pod's injection request. Both webhooks derive the
@@ -348,15 +315,6 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 	if inj.Cert.RenewInterval, err = durationAnnotation(annotations, AnnotationRenewInterval); err != nil {
 		return nil, err
 	}
-	if inj.Security.RunAsUser, err = int64Annotation(annotations, AnnotationGetCertRunAsUser); err != nil {
-		return nil, err
-	}
-	if inj.Security.RunAsGroup, err = int64Annotation(annotations, AnnotationGetCertRunAsGroup); err != nil {
-		return nil, err
-	}
-	if inj.Security.RunAsNonRoot, err = boolPtrAnnotation(annotations, AnnotationGetCertRunAsNonRoot); err != nil {
-		return nil, err
-	}
 	if inj.Verbose, err = boolAnnotation(annotations, AnnotationGetCertVerbose); err != nil {
 		return nil, err
 	}
@@ -393,36 +351,16 @@ func durationAnnotation(annotations map[string]string, name string) (time.Durati
 	return parsed, nil
 }
 
-func int64Annotation(annotations map[string]string, name string) (*int64, error) {
+func boolAnnotation(annotations map[string]string, name string) (bool, error) {
 	value := strings.TrimSpace(annotations[name])
 	if value == "" {
-		return nil, nil
-	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil {
-		return nil, fmt.Errorf("%w %s: %v", errInvalidInjectionAnnotation, name, err)
-	}
-	return &parsed, nil
-}
-
-func boolPtrAnnotation(annotations map[string]string, name string) (*bool, error) {
-	value := strings.TrimSpace(annotations[name])
-	if value == "" {
-		return nil, nil
+		return false, nil
 	}
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
-		return nil, fmt.Errorf("%w %s: %v", errInvalidInjectionAnnotation, name, err)
+		return false, fmt.Errorf("%w %s: %v", errInvalidInjectionAnnotation, name, err)
 	}
-	return &parsed, nil
-}
-
-func boolAnnotation(annotations map[string]string, name string) (bool, error) {
-	parsed, err := boolPtrAnnotation(annotations, name)
-	if err != nil || parsed == nil {
-		return false, err
-	}
-	return *parsed, nil
+	return parsed, nil
 }
 
 func listAnnotation(annotations map[string]string, name string) []string {
@@ -450,9 +388,6 @@ func hasInjectionDetailAnnotations(annotations map[string]string) bool {
 		AnnotationDiscoveryCDSCertURL,
 		AnnotationDiscoveryMeshCAURL,
 		AnnotationDiscoveryPublicTLSMode,
-		AnnotationGetCertRunAsUser,
-		AnnotationGetCertRunAsGroup,
-		AnnotationGetCertRunAsNonRoot,
 		AnnotationGetCertVerbose,
 		AnnotationSecrets,
 		AnnotationSecretDir,
@@ -641,13 +576,11 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Allowed("ephemeral container reaches no c8s material")
 	}
 
-	if !m.cfg.inScope(pod) {
+	if !m.cfg.injectionEnabled() {
 		return admission.Allowed("outside the injector's scope — passthrough")
 	}
-	if m.cfg.podMesh() {
-		if err := rejectRenderedProbeInput(pod); err != nil {
-			return admission.Errored(http.StatusBadRequest, err)
-		}
+	if err := rejectRenderedProbeInput(pod); err != nil {
+		return admission.Errored(http.StatusBadRequest, err)
 	}
 	if err := rejectNamespaceMismatch(pod, req.Namespace); err != nil {
 		return admission.Errored(http.StatusBadRequest, err)
@@ -733,13 +666,10 @@ func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error 
 	if err := rejectReservedVolumeVolume(pod); err != nil {
 		return err
 	}
-	if err := rejectCredentialPathAnnotations(pod); err != nil {
+	if err := rejectCredentialMounts(pod, CertVolumeName); err != nil {
 		return err
 	}
-	if !cfg.podMesh() {
-		return nil
-	}
-	if err := rejectCredentialMounts(pod, CertVolumeName); err != nil {
+	if err := rejectCredentialPathAnnotations(pod); err != nil {
 		return err
 	}
 	if err := rejectUnforwardableProbes(pod); err != nil {
@@ -885,12 +815,8 @@ func workloadSAN(cwID, namespace string) string {
 // also carry the matching opt-in annotation — otherwise an un-injected,
 // un-attested pod could join a confidential workload's Service endpoints.
 //
-// CREATE-time check only. Post-create label mutation is denied by the
-// cw-label-integrity ValidatingAdmissionPolicy (chart template
-// cw-label-integrity-policy.yaml), which encodes this invariant in CEL plus
-// UPDATE immutability. One deliberate difference: the CEL treats an empty
-// label value as absent (it can never match a managed Service selector),
-// while this check compares it against the annotation like any other value.
+// It runs on every operation the validator sees, so a post-create label
+// mutation is judged by the same rule as the CREATE.
 func validateWorkloadLabel(pod *corev1.Pod) error {
 	label, ok := pod.Labels[LabelWorkload]
 	if !ok {
@@ -918,17 +844,6 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 		ensureSupplementalGroup(pod, workloadclaims.InventorySocketGID)
 	}
 
-	if !cfg.podMesh() {
-		// The node mesh's contract: the workload reads the leaf and the CA
-		// itself. Under the per-pod mesh the volume stays private to the
-		// platform containers, which mount it themselves.
-		mountAll(pod, corev1.VolumeMount{
-			Name:      CertVolumeName,
-			MountPath: CertDir,
-			ReadOnly:  true,
-		})
-	}
-
 	// The injected sidecars share the C8s image's allowlist entry, whose env
 	// match lists every variable by name. Service links would add one set per
 	// Service in the namespace, so the sidecar's names would change whenever
@@ -936,11 +851,13 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	pod.Spec.EnableServiceLinks = new(false)
 	pod.Spec.AutomountServiceAccountToken = new(false)
 
-	var probes []string
-	if cfg.podMesh() {
-		probes = rewriteWorkloadProbes(pod)
+	probes := rewriteWorkloadProbes(pod)
+	// The pod's own endpoint leads: it runs before any credential exists.
+	injected := []corev1.Container{
+		meshContainer(cfg, probes),
+		certContainer(&effective, cfg),
+		certWaitContainer(&effective, cfg),
 	}
-	injected := cfg.platformContainers(&effective, probes)
 	if len(effective.Secrets.Specs) > 0 {
 		ensureVolume(pod, secretsVolume())
 		// Read-only for the workload, and mounted before the fetcher is built
@@ -985,26 +902,6 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	}
 }
 
-// platformContainers are the containers C8s owns here, in start order.
-func (cfg Config) platformContainers(inj *injection, probes []string) []corev1.Container {
-	if cfg.podMesh() {
-		return cfg.podMeshContainers(inj, probes)
-	}
-	return cfg.nodeMeshContainers(inj)
-}
-
-// podMeshContainers lead with the pod's own endpoint, so the pod has one before
-// any credential exists.
-func (cfg Config) podMeshContainers(inj *injection, probes []string) []corev1.Container {
-	return []corev1.Container{meshContainer(cfg, probes), certContainer(inj, cfg), certWaitContainer(inj, cfg)}
-}
-
-// nodeMeshContainers are the credential containers alone: the node DaemonSet
-// carries the mesh.
-func (cfg Config) nodeMeshContainers(inj *injection) []corev1.Container {
-	return []corev1.Container{certContainer(inj, cfg), certWaitContainer(inj, cfg)}
-}
-
 // meshContainer is the pod's mesh endpoint: a native sidecar carrying the
 // pod's captured TCP over armTLS with the credentials get-cert publishes. The
 // pod's fsGroup owns the credential volume, which is how the mesh role reads a
@@ -1017,7 +914,6 @@ func meshContainer(cfg Config, probes []string) corev1.Container {
 		ImagePullPolicy: corev1.PullIfNotPresent,
 		RestartPolicy:   &always,
 		Args: []string{
-			"pod-endpoint",
 			"--cert-path=" + certPath(certFile),
 			"--key-path=" + certPath(keyFile),
 			"--ca-path=" + certPath(caFile),
@@ -1122,7 +1018,7 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		Args:            args,
 		Env:             getCertEnv(inj),
 		VolumeMounts:    getCertVolumeMounts(inj),
-		SecurityContext: getCertSecurityContext(inj),
+		SecurityContext: getCertSecurityContext(),
 		// The workload is gated on the initial cert by the c8s-cert-wait
 		// init container (certWaitContainer), not a startupProbe here: a
 		// native sidecar is "started" the moment its process launches.
@@ -1164,7 +1060,7 @@ func certWaitContainer(inj *injection, cfg Config) corev1.Container {
 			certPath(certFile),
 		},
 		VolumeMounts:    getCertVolumeMounts(inj),
-		SecurityContext: getCertSecurityContext(inj),
+		SecurityContext: getCertSecurityContext(),
 	}
 }
 
@@ -1253,15 +1149,6 @@ func (inj *injection) withDefaults(cfg Config) injection {
 	if effective.Volumes.Dir == "" {
 		effective.Volumes.Dir = volume.DefaultDir
 	}
-	if effective.Security.RunAsUser == nil {
-		effective.Security.RunAsUser = cfg.GetCertRunAsUser
-	}
-	if effective.Security.RunAsGroup == nil {
-		effective.Security.RunAsGroup = cfg.GetCertRunAsGroup
-	}
-	if effective.Security.RunAsNonRoot == nil {
-		effective.Security.RunAsNonRoot = cfg.GetCertRunAsNonRoot
-	}
 	return effective
 }
 
@@ -1272,27 +1159,20 @@ func (cfg Config) withDefaults() Config {
 	if cfg.CertRenewInterval <= 0 {
 		cfg.CertRenewInterval = defaultCertRenewInterval
 	}
-	if cfg.GetCertRunAsUser == nil {
-		cfg.GetCertRunAsUser = new(defaultGetCertRunAsUser)
-	}
-	if cfg.GetCertRunAsGroup == nil {
-		cfg.GetCertRunAsGroup = new(defaultGetCertRunAsGroup)
-	}
-	if cfg.GetCertRunAsNonRoot == nil {
-		cfg.GetCertRunAsNonRoot = new(defaultGetCertRunAsNonRoot)
-	}
 	return cfg
 }
 
-func getCertSecurityContext(inj *injection) *corev1.SecurityContext {
-	falseValue := false
-	trueValue := true
+// getCertSecurityContext is the credential role's floor: its reserved
+// identity, and no capabilities. The identity is fixed, not a pod's to choose:
+// the node binds it to the CDS address and refuses it in any other container
+// (pkg/workloadclaims.CredentialsUID).
+func getCertSecurityContext() *corev1.SecurityContext {
 	return &corev1.SecurityContext{
-		AllowPrivilegeEscalation: &falseValue,
-		ReadOnlyRootFilesystem:   &trueValue,
-		RunAsNonRoot:             inj.Security.RunAsNonRoot,
-		RunAsUser:                inj.Security.RunAsUser,
-		RunAsGroup:               inj.Security.RunAsGroup,
+		AllowPrivilegeEscalation: new(false),
+		ReadOnlyRootFilesystem:   new(true),
+		RunAsNonRoot:             new(true),
+		RunAsUser:                new(int64(workloadclaims.CredentialsUID)),
+		RunAsGroup:               new(int64(workloadclaims.CredentialsUID)),
 		Capabilities: &corev1.Capabilities{
 			Drop: []corev1.Capability{"ALL"},
 		},
@@ -1535,7 +1415,7 @@ func volumeContainer(inj *injection, cfg Config) corev1.Container {
 		// It reads the leaf and talks to the node agent's socket; the volumes
 		// themselves are mounted into the workload, not into this.
 		VolumeMounts:    getCertVolumeMounts(inj),
-		SecurityContext: getCertSecurityContext(inj),
+		SecurityContext: getCertSecurityContext(),
 	}
 }
 
@@ -1573,7 +1453,7 @@ func secretContainer(inj *injection, cfg Config) corev1.Container {
 			Name:      secretsVolumeName,
 			MountPath: inj.Secrets.Dir,
 		}),
-		SecurityContext: getCertSecurityContext(inj),
+		SecurityContext: getCertSecurityContext(),
 	}
 }
 

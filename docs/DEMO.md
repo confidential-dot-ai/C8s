@@ -66,7 +66,7 @@ Expected injected pieces:
 
 - an init container and renewal sidecar running `c8s get-cert`;
 - an in-memory `c8s-certs` volume;
-- workload containers mounting `/etc/c8s/certs`;
+- the mesh endpoint and the credential sidecars mounting `/etc/c8s/certs`;
 - no injected credential Secret references.
 
 ## Reset

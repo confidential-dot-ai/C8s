@@ -342,6 +342,13 @@
 {{- $injected := include "c8s.injectedShapes" (dict "root" . "digest" $operator "image" (get $refs $operator) "imageEnv" (get $envs $operator)) | fromJsonArray -}}
 {{- $_ := set $shapes $operator (concat (get $shapes $operator | default list) $injected) -}}
 {{- end -}}
+{{- /* The mesh endpoint runs in every covered pod, injected like the
+       sidecars, so no chart container names it. */ -}}
+{{- $mesh := default "" .Values.armtlsMesh.image.digest -}}
+{{- if hasKey $components $mesh -}}
+{{- $endpoint := include "c8s.meshShapes" (dict "digest" $mesh "image" (get $refs $mesh) "imageEnv" (get $envs $mesh) "entrypoint" (get $pins $mesh)) | fromJsonArray -}}
+{{- $_ := set $shapes $mesh (concat (get $shapes $mesh | default list) $endpoint) -}}
+{{- end -}}
 {{- $out := dict -}}
 {{- range $digest, $entry := $components -}}
 {{- if not (hasKey $shapes $digest) -}}
@@ -494,7 +501,16 @@
 {{- range $d := (include "c8s.argvPinnedDigests" . | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
 {{- range $digest, $entry := (include "c8s.generatedShapes" . | fromJson) -}}
 {{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" (get $entry "containers")) -}}
-{{- $_ := set $workloads $name (dict "label" (get $entry "image") "initContainers" list "containers" (get $entry "containers")) -}}
+{{- /* The base alone carries the platform roles: the field is YAML-only,
+       so the seed this same shape set feeds cannot claim one. */ -}}
+{{- $tagged := list -}}
+{{- range $c := (get $entry "containers") -}}
+{{- with include "c8s.platformRole" (dict "root" $ "argv" (get (get $c "command") "argv")) -}}
+{{- $c = merge (dict "role" .) $c -}}
+{{- end -}}
+{{- $tagged = append $tagged $c -}}
+{{- end -}}
+{{- $_ := set $workloads $name (dict "label" (get $entry "image") "initContainers" list "containers" $tagged) -}}
 {{- end -}}
 {{- /* Keyed by the lowercased digest, as the entry name is: two spellings of
        one digest are one entry. */ -}}
@@ -516,6 +532,9 @@
 {{- $_ := set $workloads (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image)) (dict "label" $image "initContainers" list "containers" $list) -}}
 {{- end -}}
 {{- end -}}
+{{- range $name, $entry := (include "c8s.roleFloorWorkloads" . | fromJson) -}}
+{{- $_ := set $workloads $name $entry -}}
+{{- end -}}
 {{ $workloads | toJson }}
 {{- end -}}
 
@@ -527,6 +546,85 @@
 {{- else -}}
 {{ dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") | toJson }}
 {{- end -}}
+{{- end -}}
+
+
+{{/* The mesh endpoint shape the webhook injects into every covered pod: the
+     image's entrypoint, the three credential paths it reads, the credential
+     volume it mounts read-only, and the probe variable a pod with forwarded
+     probes carries (internal/webhook/pod_mutator.go). Takes digest, image,
+     imageEnv and entrypoint. */ -}}
+{{- define "c8s.meshShapes" -}}
+{{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
+{{- $args := list "--cert-path=/etc/c8s/certs/tls.crt" "--key-path=/etc/c8s/certs/tls.key" "--ca-path=/etc/c8s/certs/ca.crt" -}}
+{{- $out := list -}}
+{{- range $env := list (list) (list (dict "name" "C8S_MESH_PROBES" "valueFrom" (dict "fieldRef" dict))) -}}
+{{- $matched := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" $env) "where" "injected mesh endpoint") | fromJson -}}
+{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" $.entrypoint) "args" (dict "policy" "exact" "argv" $args) "mounts" (dict "policy" "exact" "rules" (list $certs)) "env" $matched) -}}
+{{- end -}}
+{{ $out | toJson }}
+{{- end -}}
+
+{{/* The platform role the enforcer grants a base container, by the
+     invocation its command pins: the credential clients the webhook injects
+     and the mesh endpoint beside them. Empty for every other invocation of
+     the same images. Takes root and argv. */ -}}
+{{- define "c8s.platformRole" -}}
+{{- $argv := .argv -}}
+{{- if and (ge (len $argv) 2) (eq (first $argv) "/c8s") (has (index $argv 1) (list "get-cert" "probe-file" "get-secret" "get-volume")) -}}
+credentials
+{{- else if and $argv (eq ($argv | toJson) (include "c8s.meshEntrypoint" .root)) -}}
+mesh
+{{- end -}}
+{{- end -}}
+
+{{/* The mesh image's entrypoint as JSON, or "null" where no mesh digest
+     reaches the allowlist. */ -}}
+{{- define "c8s.meshEntrypoint" -}}
+{{- $components := include "c8s.imageAllowlist" . | fromJson -}}
+{{- $digest := default "" .Values.armtlsMesh.image.digest -}}
+{{- if hasKey $components $digest -}}
+{{- get (get $components $digest) "entrypoint" | toJson -}}
+{{- else -}}
+null
+{{- end -}}
+{{- end -}}
+
+{{/* Role entries for a digest the base admits only through an open-args floor
+     entry (the integration lane's image-store scan): that entry pins nothing
+     but the image's executable, so the subcommand a role rides on has to be
+     named here. A digest with a rendered component shape is tagged in place
+     (c8s.baseWorkloads) instead. Takes the chart context. */ -}}
+{{- define "c8s.roleFloorWorkloads" -}}
+{{- $root := . -}}
+{{- $shaped := include "c8s.componentShapes" $root | fromJson -}}
+{{- $entries := dict -}}
+{{- range $digest, $entry := (include "c8s.openArgsEntries" $root | fromJson) -}}
+{{- if not (hasKey $shaped $digest) -}}
+{{- $image := get $entry "image" -}}
+{{- $repository := include "c8s.imageRepository" $image -}}
+{{- $argvs := list -}}
+{{- if eq $repository $root.Values.armtlsMesh.image.repository -}}
+{{- $argvs = list (dict "role" "mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
+{{- else if eq $repository $root.Values.image.repository -}}
+{{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" -}}
+{{- $argvs = append $argvs (dict "role" "credentials" "argv" (list "/c8s" $mode)) -}}
+{{- end -}}
+{{- end -}}
+{{- range $a := $argvs -}}
+{{- $containers := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
+{{- $name := printf "c8s-role-%s-%s" (last (get $a "argv")) (trimPrefix "sha256:" $digest | lower | trunc 12) -}}
+{{- $_ := set $entries $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{ $entries | toJson }}
+{{- end -}}
+
+{{/* The repository of an image reference, without its tag or digest. */ -}}
+{{- define "c8s.imageRepository" -}}
+{{- $path := . | splitList "@" | first | splitList "/" -}}
+{{- append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}

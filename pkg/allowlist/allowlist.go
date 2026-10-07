@@ -332,48 +332,6 @@ func (w Workload) containers() []Container {
 	return slices.Concat(w.InitContainers, w.Containers)
 }
 
-// AdmitsAnyArgs reports whether some entry admits the digest running argv's
-// command under an unconstrained args policy: the entry pins the executable,
-// and the arguments are the pod's to choose. It ignores mounts and
-// environment; a complete injected-container decision uses AdmitsInjected.
-func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
-	d, err := types.ParseDigest(digest)
-	if err != nil {
-		return false
-	}
-	for _, w := range a.Workloads {
-		for _, c := range w.containers() {
-			if c.Digest != d || c.Args.Policy != PolicyAny {
-				continue
-			}
-			if _, ok := c.Command.matchCommand(argv); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-// AdmitsInjected reports whether one open-args container of some entry admits
-// the complete observed container, mounts and environment included, under that
-// container's own policies, and every mount it holds is confined to the node.
-// Requiring the same container keeps the open arguments paired with the mount
-// table they were seeded with. The injected-container drop set
-// (internal/secrets) keys on it. Unavailable mount evidence is never admitted.
-func (a *Allowlist) AdmitsInjected(r RunningContainer) bool {
-	if r.Mounts == nil || slices.ContainsFunc(r.Mounts, func(m ObservedMount) bool { return !m.confined() }) {
-		return false
-	}
-	for _, w := range a.Workloads {
-		for _, c := range w.containers() {
-			if c.Args.Policy == PolicyAny && c.admits(r) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // DigestEntry is the entry that admits an image under any command line: one
 // container at digest, labelled with the image reference. `c8s allowlist add`
 // writes one; the chart's component entries pin their entrypoint instead.

@@ -320,8 +320,9 @@ application workloads until those workloads opt in with
 
 Install with the CLI. Adopt a running workload as a CW and route the front
 door to it with `--upstream` (see [Existing workload adoption](#existing-workload-adoption)
-and [Route manifest](#route-manifest)). The workload must serve TLS on the
-ref's port with its injected get-cert certificate:
+and [Route manifest](#route-manifest)). The ref's port is the port the
+workload listens on; its injected endpoint holds the mesh leaf the router
+verifies:
 
 ```bash
 c8s install \
@@ -346,7 +347,7 @@ c8s install \
 The ref syntax is `<cw-id>=<namespace>/<kind>/<name>[:<port>]`, where kind is any
 resource exposing a pod template at `spec.template` (`deployment`,
 `statefulset`, `daemonset`, or an operator CRD such as `<kind>.<group>`); the
-optional `:<port>` is the port the workload serves TLS on, needed on the ref
+optional `:<port>` is the port the workload listens on, needed on the ref
 `--upstream` selects. After Helm reports the C8s release ready, the CLI patches
 each workload pod template with `confidential.ai/cw: <id>`. Those rollouts go
 through the webhook, and the workload-service reconciler creates the `c8s-<id>`
@@ -626,12 +627,13 @@ follows these rules:
   route, gets 404. The router's own paths (`/allowlist`, `/.well-known/c8s/`,
   `/.well-known/acme-challenge/`, the discovery and certificate paths,
   `/readyz`, `/healthz`) are never routed by the manifest.
-- A workload backend (`workload`) must serve TLS with a certificate chaining
-  to the mesh CA whose matched workload name equals `workload`; an address
-  backend (`serverName`, `ca`) must present a certificate for `serverName`
-  under `ca`, which must not hold the mesh CA. The router presents its mesh
-  certificate to every backend. A failed handshake gets 502; no backend is
-  reached in plaintext.
+- A workload backend (`workload`) is reached over the mesh: the pod's own
+  endpoint presents a certificate chaining to the mesh CA whose matched
+  workload name equals `workload`, and forwards to the port the route names.
+  An address backend (`serverName`, `ca`) must present a certificate for
+  `serverName` under `ca`, which must not hold the mesh CA. The router
+  presents its mesh certificate to every backend. A failed handshake gets 502;
+  no backend is reached in plaintext.
 - `router.routing.readTimeout` bounds nginx's wait between reads, and
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long
@@ -678,10 +680,10 @@ that still sets `tunnelSlots`.
 `c8s render-values` has no `--upstream` or `--workload-ref`. Expect these
 changes:
 
-- **Backends serve TLS.** The plaintext route to an adopted workload's
-  headless Service, which relied on the node mesh, has no replacement. An
-  adopted workload stays routable only once it serves TLS on its injected
-  `/etc/c8s/certs/tls.crt` and `tls.key`; give its `--workload-ref` that port.
+- **Backends are reached over the mesh.** The plaintext route to an adopted
+  workload's headless Service has no replacement: the router dials the pod,
+  whose injected endpoint holds the mesh leaf and forwards to the port the
+  route names. Give its `--workload-ref` the port the workload listens on.
   A `protocol: http` route has no replacement either, and per-route CORS
   opt-out is gone: `router.cors` covers every manifest route.
 - **The backend's certificate must name its workload.** CDS stamps the matched
@@ -1257,8 +1259,7 @@ Choose one complete policy source. A complete policy cannot be combined with
 independent digest or register inputs such as `--measurements`,
 `--measurements-file`, or `--rtmrs` (including the `--cds-` variants where
 provided). These independent inputs remain available for policies expressed as
-a digest list and a shared register set. Mesh peers and CDS can use separate
-files; `--cds-image-policy-file` selects the CDS-only policy for `armtls-mesh`.
+a digest list and a shared register set.
 
 `c8s install` and `c8s render-values` accept image policies only when every
 image has identical RTMR pins and no `approver_key`. The Helm NRI installer
@@ -1482,7 +1483,7 @@ Injection does not require a CR lookup.
 For opted-in pods, the webhook:
 
 - adds an in-memory `emptyDir` volume named `c8s-certs`;
-- mounts that volume read-only into application containers at
+- mounts that volume into the pod's mesh endpoint and credential sidecars at
   `/etc/c8s/certs`;
 - prepends a `c8s-cert` native sidecar (init container with
   `restartPolicy: Always`) that fetches the first cert before application
@@ -1781,61 +1782,6 @@ spec:
 
 These are inert on a cluster whose CNI does not enforce NetworkPolicy.
 
-### Workload namespaces with default-deny egress
-
-The node mesh DNATs every TCP connection from one pod to another to the
-node's outbound listener, `nodeIP:15001` (`armtlsMesh.ports.outbound`),
-including connections between pods on the same node. The CNI applies the
-source pod's egress policy after that rewrite, so what it must allow is
-egress to port 15001, not the destination pod's port. A namespace that
-isolates egress and allows only its intended peers therefore drops every
-intercepted connection before the mesh sees it, and nothing logs the drop:
-`armtls_mesh_connections_total` stays at zero.
-
-The operator closes this for you. Beside every NetworkPolicy whose
-`policyTypes` include `Egress`, in a namespace the mesh intercepts, it keeps
-a companion named `<policy>-mesh-egress` that selects the same pods and
-allows egress to TCP 15001 and nothing else:
-
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-mesh-egress
-  namespace: my-app
-  labels:
-    app.kubernetes.io/managed-by: c8s-operator
-    c8s.confidential.ai/mesh-egress-companion: "true"
-  ownerReferences: [<the default-deny policy>]
-spec:
-  podSelector: <copied from default-deny>
-  policyTypes: [Egress]
-  egress:
-    - ports:
-        - protocol: TCP
-          port: 15001
-```
-
-The companion is additive and never isolates a pod on its own: it exists
-only where a policy of yours already isolates egress, and it copies that
-policy's `podSelector`. It follows the source: a selector change is
-mirrored, dropping `Egress` from the source's `policyTypes` deletes the
-companion, and deleting the source garbage-collects it. The rule names no
-peer because the rewritten destination is the node's own address, which
-CNIs classify as the host rather than as a CIDR peer. Namespaces in
-`armtlsMesh.iptablesSync.excludeSourceNamespaces` are not intercepted and
-get no companions. A policy whose own rules already admit TCP to the port
-for every destination, such as an allow-all or all-TCP rule, or the chart's
-`armtls-mesh-tcp-only-egress`, gets none either. Turn the mechanism off
-with `armtlsMesh.egressCompanionPolicy.enabled=false` and add the rule above
-to your own policies instead.
-
-The same rewrite means the CNI cannot enforce egress rules that name
-specific pod peers between confidential pods: every intercepted connection
-reaches it as a connection to the node, and the mesh's own guards decide
-what reaches a confidential pod. Service-VIP dials to confidential pods are
-dropped by the cw guard described in the [Overview](#overview).
-
 ## Validation
 
 Run the full Go suite:
@@ -1877,7 +1823,9 @@ helm template c8s internal/helmchart/c8s \
 ```
 
 To render the full default shape (image policy enabled), the chart requires the
-nri-image-policy installer image and the CDS image to be digest-pinned. The CDS
+nri-image-policy installer image and the CDS image to be digest-pinned, and
+`nriImagePolicy.mesh.resolver` to name the cluster DNS service address. Set
+`nriImagePolicy.mesh.clusterRanges` to the pod and Service CIDRs. The CDS
 node selector defaults to `role: cds`; override it if your CDS node uses a
 different label. `c8s install` fills these digests from the registry by default
 (via `crane`); for a manual render the values below are placeholders:
@@ -1891,6 +1839,8 @@ helm template c8s internal/helmchart/c8s \
   --set cds.image.tag=main \
   --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.image.tag=main \
+  --set nriImagePolicy.mesh.resolver=10.96.0.10 \
+  --set 'nriImagePolicy.mesh.clusterRanges={10.244.0.0/16,10.96.0.0/12}' \
   --set nriImagePolicy.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
   --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 >/dev/null && echo OK
 ```

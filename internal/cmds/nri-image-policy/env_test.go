@@ -421,7 +421,7 @@ func TestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "wide" {
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(cs)); err != nil || name != "wide" {
 		t.Fatalf("MatchWorkload() = %q, %v; want wide", name, err)
 	}
 
@@ -499,7 +499,7 @@ func TestSharedDigestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 			t.Fatalf("record %s lost its per-variable evidence", c.Env.Digest)
 		}
 	}
-	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "shared" {
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(cs)); err != nil || name != "shared" {
 		t.Fatalf("MatchWorkload() = %q, %v; want shared", name, err)
 	}
 

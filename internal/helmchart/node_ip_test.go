@@ -34,7 +34,7 @@ func attestationURLs(t *testing.T, out string) map[string]renderedContainer {
 			}
 		}
 	}
-	for _, want := range []string{"c8s-cds/cds", "c8s-armtls-mesh/armtls-mesh", "c8s-router/cds-attest", "c8s-router/c8s-cert"} {
+	for _, want := range []string{"c8s-cds/cds", "c8s-router/cds-attest", "c8s-router/c8s-cert"} {
 		if _, ok := urls[want]; !ok {
 			t.Fatalf("%s takes no attestation-api URL; have %v", want, slices.Sorted(maps.Keys(urls)))
 		}

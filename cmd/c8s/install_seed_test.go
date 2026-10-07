@@ -66,7 +66,12 @@ func TestSeedWorkloadsMatchesTheChart(t *testing.T) {
 
 	for _, router := range []bool{true, false} {
 		t.Run(fmt.Sprintf("router.enabled=%t", router), func(t *testing.T) {
-			set := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set", fmt.Sprintf("router.enabled=%t", router)}
+			set := []string{
+				"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+				"--set", fmt.Sprintf("router.enabled=%t", router),
+				"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
+				"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+			}
 			for i, c := range components {
 				set = append(set, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", c.valuePrefix, i+1))
 			}

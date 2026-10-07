@@ -12,6 +12,7 @@ import (
 func secretsConfig() Config {
 	return Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
+		MeshImage:         testMeshImage,
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 	}
 }
@@ -66,8 +67,8 @@ func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {
 	for _, c := range pod.Spec.InitContainers {
 		names = append(names, c.Name)
 	}
-	want := []string{reservedCertContainerName, reservedCertWaitContainerName, reservedSecretContainerName}
-	if !slices.Equal(names[:3], want) {
+	want := []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName, reservedSecretContainerName}
+	if !slices.Equal(names[:4], want) {
 		t.Fatalf("init containers = %v, want %v first", names, want)
 	}
 
