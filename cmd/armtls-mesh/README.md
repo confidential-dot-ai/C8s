@@ -141,7 +141,6 @@ destinations whose `Pod.Status.HostIP` matches this node's `NODE_IP`.
 | `--ca-poll-interval` | `5m` | Interval for polling the CDS `/ca` endpoint for CA bundle updates (cds mode) |
 | `--cert-ttl` | `24h` | Certificate lifetime; rotates at 50% of TTL |
 | `--rotation-timeout` | `30s` | Max time for background certificate rotation |
-| `--session-cache-size` | `64` | TLS session cache size per node (0 = disabled) |
 | `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 
 ### iptables sync flags

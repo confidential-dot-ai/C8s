@@ -197,6 +197,10 @@ Two implementations:
 
 The abstraction enables runtime provider swapping via `CertManager.SwapProvider()` — the old cert continues serving while the new one provisions.
 
+### No Session Resumption
+
+No armTLS configuration offers TLS session resumption: `crypto/tls` re-runs no peer verification on a resumed handshake (see `docs/armtls.md`, "No session resumption").
+
 ### Dual Verification
 
 With `CACert` set on `ServerConfig` or `ClientConfig`, the `dualVerifyPeerCallback` accepts peers via two paths:
