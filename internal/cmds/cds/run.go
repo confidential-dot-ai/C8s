@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -130,20 +132,30 @@ func run(cfg config) error {
 	)
 	caChainPEM := certutil.EncodeCertPEM(mesh.Cert.Raw)
 
-	measurements := parseReferenceDigests(cfg.measurements)
-	if len(measurements) == 0 {
-		slog.Warn("--measurements empty: /attest accepts any TEE measurement. UNSAFE outside development.")
-	} else {
-		slog.Info("measurement pinning enabled for /attest", "count", len(measurements))
-	}
 	rtmrPins, err := refvalues.ParseRegisterPins(cfg.rtmrs)
 	if err != nil {
 		return fmt.Errorf("--rtmrs: %w", err)
 	}
+	digests, err := referenceDigests(cfg.measurements)
+	if err != nil {
+		return err
+	}
+	// One pin set behind both guest decisions: issuance on /attest and the
+	// inventory callback it rests on.
+	issuancePins := armtls.Pins{
+		Measurements: digests,
+		Registers:    rtmrPins,
+		Images:       pinned.Images,
+	}
+	if !issuancePins.ConstrainsGuestIdentity() {
+		return fmt.Errorf("--measurements or --image-policy-file must name at least one guest: /attest has nothing to admit a caller against without one")
+	}
+	if servedFamily(cfg.armtlsPlatform) == teetypes.FamilyTDX && !pinsGuestCode(issuancePins) {
+		return fmt.Errorf("every pinned TDX identity must pin a register: pass --rtmrs 1=<hex>,2=<hex>, or name images carrying register pins with --image-policy-file")
+	}
+	slog.Info("guest identity pinning enabled for /attest", "digests", len(digests), "images", len(pinned.Images))
 	if len(rtmrPins) > 0 {
 		slog.Info("TDX RTMR pinning enabled for /attest", "count", len(rtmrPins))
-	} else if len(measurements) > 0 {
-		slog.Warn("--rtmrs empty: on TDX the measurement allowlist pins TDVF firmware only (MRTD); the guest kernel and rootfs are not pinned. SNP is unaffected.")
 	}
 
 	// Served at /measurements so a verifier holding the operator's own file can
@@ -151,7 +163,7 @@ func run(cfg config) error {
 	// from disk: re-reading would attest the file rather than the policy.
 	served := pinned
 	if served.Empty() {
-		served = refvalues.FromFlags(measurementBytes(measurements), rtmrPins)
+		served = refvalues.FromFlags(digests, rtmrPins)
 	}
 	served.Family = servedFamily(cfg.armtlsPlatform)
 	measurementsDoc, err := refvalues.Render(served)
@@ -191,16 +203,12 @@ func run(cfg config) error {
 
 	// The sandbox-digests callback: at issuance CDS asks the inventory that
 	// admitted a pod what the pod is running (docs/armtls.md, "Sandbox
-	// identity"). Pins the same measurement allowlist as /attest, so the
-	// inventory answering is held to the standard its armTLS certificate already met.
+	// identity"). It holds the inventory answering to the same pins /attest
+	// requires of the pod, so neither end of the gate rests on a guest the
+	// other would refuse.
 	//
-	// Needs an armTLS identity of its own, since inventories require a client
-	// certificate; without --armtls-platform there is none, and a request
-	// carrying a sandbox token is refused rather than issued unchecked. An
-	// empty --measurements does NOT disable the callback: it tracks the same
-	// posture /attest already takes above, so a dev cluster still issues
-	// sandbox-bound leaves (and can still receive secrets) instead of failing
-	// every workload.
+	// Needs an armTLS identity of its own: inventories require a client
+	// certificate.
 	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs, cfg.kubeconfig)
 	if err != nil {
 		return err
@@ -210,24 +218,24 @@ func run(cfg config) error {
 	if cfg.armtlsPlatform == "" {
 		slog.Warn("no --armtls-platform: CDS cannot call inventories back for sandbox digests, so requests carrying a sandbox token will be refused")
 	} else {
-		if len(measurements) == 0 {
-			slog.Warn("--measurements empty: CDS accepts ANY armTLS-attested inventory as the source of a sandbox's container digests, so the issuance-time allowlist gate rests on an unpinned peer. UNSAFE outside development.")
-		}
-		measurementBytes, mErr := measurementDigests(measurements)
-		if mErr != nil {
-			return mErr
-		}
 		sandboxDigests, err = workloadclaims.NewDigestsClient(
 			ctx,
 			cfg.armtlsPlatform,
 			attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL),
 			cfg.attestationApiURL,
-			armtls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images},
+			issuancePins,
 			cfg.requestTimeout,
 		)
 		if err != nil {
 			return err
 		}
+	}
+
+	// Which platforms can name a guest is settled by the deployment.
+	var platforms platformAdmission = guestMeasuredOnly{}
+	if cfg.admitAzureSNP {
+		platforms = alsoAzureSNP{}
+		slog.Warn("--admit-azure-snp: /attest admits cloud confidential VMs whose launch measurement names the provider's firmware rather than the guest image. Test clusters only")
 	}
 
 	// The ledger is written on every issuance, not only when secrets are on:
@@ -285,9 +293,8 @@ func run(cfg config) error {
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
-			Measurements:      measurements,
-			RTMRs:             rtmrPins,
-			Images:            pinned.Images,
+			Pins:              issuancePins,
+			Platforms:         platforms,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
 			AllowlistStore:    &allowlistStore,
@@ -544,39 +551,27 @@ func loadOperatorKeys(path string) ([]*ecdsa.PublicKey, []byte, error) {
 	return keys, pemBytes, nil
 }
 
-// measurementDigests renders the /attest measurement allowlist as the raw
-// digests armtls.VerifyPolicy pins, so the sandbox-digests callback accepts
-// exactly the platforms /attest does.
-func measurementDigests(allowed map[string]bool) ([][]byte, error) {
-	out := make([][]byte, 0, len(allowed))
-	for m := range allowed {
+// referenceDigests parses --measurements once, into the one form every consumer
+// takes: the pins /attest enforces, the pins the inventory callback enforces,
+// and the document /measurements serves. Sorted and deduplicated, so the served
+// document is the same bytes on every start. A non-hex entry fails startup.
+func referenceDigests(raw []string) ([][]byte, error) {
+	seen := make(map[string]bool, len(raw))
+	out := make([][]byte, 0, len(raw))
+	for _, m := range raw {
+		m = issuer.NormalizeMeasurement(m)
+		if m == "" || seen[m] {
+			continue
+		}
+		seen[m] = true
 		d, err := hex.DecodeString(m)
 		if err != nil {
-			// Dropping it would silently unpin the callback while /attest still
-			// enforces the same entry as a string — two derivations of one
-			// allowlist must not be able to disagree.
 			return nil, fmt.Errorf("--measurements entry %q is not hex", m)
 		}
 		out = append(out, d)
 	}
+	slices.SortFunc(out, bytes.Compare)
 	return out, nil
-}
-
-func parseReferenceDigests(raw []string) map[string]bool {
-	if len(raw) == 0 {
-		return nil
-	}
-	allowed := make(map[string]bool, len(raw))
-	for _, m := range raw {
-		m = issuer.NormalizeMeasurement(m)
-		if m != "" {
-			allowed[m] = true
-		}
-	}
-	if len(allowed) == 0 {
-		return nil
-	}
-	return allowed
 }
 
 // readinessFn returns a closure that flips /readyz to 503 when either the

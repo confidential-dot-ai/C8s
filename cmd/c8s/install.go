@@ -1153,7 +1153,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			}
 		}
 
-		printAttestVerifyHint(os.Stdout, installAttestEnabled)
+		printAttestVerifyHint(os.Stdout, installAttestEnabled, installMeasurements)
 		return nil
 	},
 }
@@ -1164,22 +1164,20 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 // The cluster's launch measurement M is a property of the deployed node image
 // (its manifest.json), known before the cluster runs. --measurements <M> pins it
 // into the internal mesh (cds.measurements + armtlsMesh.measurements) on the
-// install itself; external clients pin the same M when they verify. When
-// --measurements was omitted, the mesh accepts any attested peer (UNSAFE), so
-// the hint says how to fix it.
-func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
+// install itself; external clients pin the same M when they verify.
+func printAttestVerifyHint(w io.Writer, attestEnabled bool, measurements []string) {
 	if !attestEnabled {
 		return
 	}
-	if len(installMeasurements) > 0 {
+	if len(measurements) > 0 {
 		fmt.Fprintln(w, "+ router attestation sidecar enabled; mesh pinned to --measurements.")
 		fmt.Fprintln(w, "  Clients verify with the same M: c8s verify https://<router> --measurements <M>")
 		return
 	}
-	fmt.Fprintln(w, "+ router attestation sidecar enabled, but the mesh is UNPINNED (accepts any")
-	fmt.Fprintln(w, "  attested TEE). Pin it with the node image's launch measurement M (its")
-	fmt.Fprintln(w, "  manifest.json): reinstall with --measurements <M>. Clients verify with the")
-	fmt.Fprintln(w, "  same M: c8s verify https://<router> --measurements <M>.")
+	fmt.Fprintln(w, "+ router attestation sidecar enabled, but no CDS pins: CDS refuses issuance")
+	fmt.Fprintln(w, "  and every component dialing it refuses to start. Pin the node image's launch")
+	fmt.Fprintln(w, "  measurement M (its manifest.json): reinstall with --measurements <M>. Clients")
+	fmt.Fprintln(w, "  verify with the same M: c8s verify https://<router> --measurements <M>.")
 }
 
 // extractChart writes the embedded chart tree to a fresh tmpdir and returns
@@ -1490,7 +1488,7 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 	// (armtlsMesh.measurements). The operator supplies M — it is a property of the
 	// deployed node image (its manifest.json), known before the cluster runs — so
 	// the mesh is pinned from first boot rather than accept-any-then-tighten.
-	// Empty = no pinning (UNSAFE, the chart default).
+	// Empty leaves CDS refusing issuance and its clients refusing to start.
 	//
 	// Parse here, on the shared builder path, so the pinned list is validated
 	// and normalized regardless of which command emitted it — and so the fanned
@@ -2207,7 +2205,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "deploy the router attestation sidecar serving /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; pass --attest=false to omit it")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
-	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Pins the internal mesh (cds.measurements + armtlsMesh.measurements); empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
+	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Pins the internal mesh (cds.measurements + armtlsMesh.measurements); required, unless --image-policy-file names the images. Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
 	cmdsutil.BindImagePolicyFlags(installCmd.Flags(), &installMeasurementsConfig, nil, "", "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
 	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs + armtlsMesh.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")

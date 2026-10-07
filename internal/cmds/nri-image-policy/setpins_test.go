@@ -165,22 +165,6 @@ func TestSetCDSPinsFoldsCaseWhenComparing(t *testing.T) {
 	}
 }
 
-// An install with no --measurements must cost no containerd restart: the baked
-// config already says "accept any attested CDS", so there is nothing to write.
-func TestSetCDSPinsLeavesAnUnpinnedInstallAlone(t *testing.T) {
-	path := writeConfig(t, bakedConfig)
-	if got := setPins(t, path); got != pinsUnchanged {
-		t.Fatalf("outcome = %q, want %q", got, pinsUnchanged)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	if string(data) != bakedConfig {
-		t.Errorf("empty pins rewrote the baked config:\n%s", data)
-	}
-}
-
 func TestSetCDSPinsWritesRTMRsInIndexOrder(t *testing.T) {
 	path := writeConfig(t, bakedConfig)
 	setPins(t, path, "--cds-measurements", pinA, "--cds-rtmrs", "2="+pinB+",1="+pinA)
@@ -199,28 +183,6 @@ func TestSetCDSPinsWritesRTMRsInIndexOrder(t *testing.T) {
 	}
 }
 
-// An install that drops its pins clears them rather than leaving the previous
-// release's set in force.
-func TestSetCDSPinsClearsPins(t *testing.T) {
-	path := writeConfig(t, bakedConfig)
-	setPins(t, path, "--cds-measurements", pinA)
-
-	if got := setPins(t, path); got != pinsUpdated {
-		t.Fatalf("outcome = %q, want %q", got, pinsUpdated)
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read patched config: %v", err)
-	}
-	cfg, err := parseConfig(data)
-	if err != nil {
-		t.Fatalf("patched config does not load: %v", err)
-	}
-	if len(cfg.Allowlist.Pull.CDSMeasurements) != 0 {
-		t.Errorf("cds_measurements = %v, want empty", cfg.Allowlist.Pull.CDSMeasurements)
-	}
-}
-
 // Every rejection leaves the file as it was: a config the plugin cannot load
 // would stop a required NRI plugin registering, which blocks every container
 // on the node.
@@ -229,6 +191,7 @@ func TestSetCDSPinsRejectsBadInputWithoutTouchingTheFile(t *testing.T) {
 		body string
 		args []string
 	}{
+		"no measurements":          {bakedConfig, nil},
 		"measurement is not hex":   {bakedConfig, []string{"--cds-measurements", "nothex"}},
 		"measurement wrong length": {bakedConfig, []string{"--cds-measurements", "aabb"}},
 		"rtmr index 0":             {bakedConfig, []string{"--cds-rtmrs", "0=" + pinA}},

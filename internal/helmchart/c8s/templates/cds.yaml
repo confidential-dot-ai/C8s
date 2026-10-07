@@ -166,6 +166,11 @@ spec:
             {{- if .Values.cds.cnPattern }}
             - --allowed-cn-pattern={{ .Values.cds.cnPattern }}
             {{- end }}
+            {{- /* Operator-set, never implied: the launch measurement there
+                   names the provider's firmware, not the guest. */}}
+            {{- if .Values.cds.admitAzureSnp }}
+            - --admit-azure-snp
+            {{- end }}
             {{- if .Values.node.baked }}
             - --image-policy-file=/run/c8s-node/peers.json
             {{- else if .Values.cds.measurementsConfig }}

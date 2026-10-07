@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // RunMain is the body of the per-binary thin shim under cmd/<name>/main.go.
@@ -125,14 +126,25 @@ func ServeInBackground(ctx context.Context, addr string, handler http.Handler, l
 	return listener.Addr(), nil
 }
 
-// WarnIfCDSUnpinned warns when a sidecar talks to CDS without launch measurements.
-//
-// An empty set accepts any armTLS-attested CDS. "No pinning" is a supported
-// development shape (`c8s install --measurements` documents empty as UNSAFE),
-// so it stays a warning. Shared by get-cert, get-secret and get-volume: three
-// copies of this decision would be three chances to drift.
-func WarnIfCDSUnpinned(measurementCount int, warn string) {
-	if measurementCount <= 0 {
-		slog.Warn(warn)
+// ResolveCDSPins loads the CDS pin inputs a component was configured with and
+// refuses a set that names no guest. flags names those inputs in the refusal.
+func ResolveCDSPins(source ImagePolicySource, inputs MeasurementPins, flags string) (armtls.Pins, error) {
+	policy, err := source.Load(inputs)
+	if err != nil {
+		return armtls.Pins{}, err
 	}
+	pins := armtls.Pins(policy)
+	if err := RequireCDSPins(pins, flags); err != nil {
+		return armtls.Pins{}, err
+	}
+	return pins, nil
+}
+
+// RequireCDSPins refuses a CDS endpoint whose guest no pin names: armTLS proves
+// the peer is a TEE, not that it is this cluster's CDS.
+func RequireCDSPins(pins armtls.Pins, flags string) error {
+	if pins.ConstrainsGuestIdentity() {
+		return nil
+	}
+	return fmt.Errorf("refusing to authenticate CDS with no pinned guest identity: set %s", flags)
 }

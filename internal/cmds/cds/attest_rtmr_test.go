@@ -74,8 +74,9 @@ func TestAttestTDXWithMatchingRTMRsIssues(t *testing.T) {
 	stub := mockapi.New(t)
 	stub.SetVerdict(tdxVerdict(t, testMRTD, testRTMR1, testRTMR2))
 
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{testMRTD: true})
-	h.RTMRs = map[int][]byte{1: mustDecode(t, testRTMR1), 2: mustDecode(t, testRTMR2)}
+	pins := pinsForDigests(t, testMRTD)
+	pins.Registers = map[int][]byte{1: mustDecode(t, testRTMR1), 2: mustDecode(t, testRTMR2)}
+	h := newPinnedAttestHandler(t, stub.URL(), pins)
 
 	csrPEM, _ := generateCSR(t)
 	w := postAttestTDX(t, h, issueChallenge(t, h), csrPEM)
@@ -91,8 +92,9 @@ func TestAttestTDXMatchingMRTDButWrongRTMRIsRefused(t *testing.T) {
 	stub := mockapi.New(t)
 	stub.SetVerdict(tdxVerdict(t, testMRTD, otherKernel, testRTMR2))
 
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{testMRTD: true})
-	h.RTMRs = rtmrPin(t, 1, testRTMR1)
+	pins := pinsForDigests(t, testMRTD)
+	pins.Registers = rtmrPin(t, 1, testRTMR1)
+	h := newPinnedAttestHandler(t, stub.URL(), pins)
 
 	csrPEM, _ := generateCSR(t)
 	w := postAttestTDX(t, h, issueChallenge(t, h), csrPEM)
@@ -114,8 +116,9 @@ func TestAttestTDXPinnedRTMRNotReportedIsRefused(t *testing.T) {
 	stub := mockapi.New(t)
 	stub.SetVerdict(mockapi.PassingVerdict(testMRTD)) // no platform_data at all
 
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{testMRTD: true})
-	h.RTMRs = rtmrPin(t, 1, testRTMR1)
+	pins := pinsForDigests(t, testMRTD)
+	pins.Registers = rtmrPin(t, 1, testRTMR1)
+	h := newPinnedAttestHandler(t, stub.URL(), pins)
 
 	csrPEM, _ := generateCSR(t)
 	w := postAttestTDX(t, h, issueChallenge(t, h), csrPEM)
@@ -124,18 +127,19 @@ func TestAttestTDXPinnedRTMRNotReportedIsRefused(t *testing.T) {
 	}
 }
 
-// SNP evidence has no registers and folds the guest image into its launch
-// digest, so a configured RTMR pin must not lock SNP guests out of a mixed
-// fleet.
-func TestAttestSNPUnaffectedByRTMRPins(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+// SNP evidence carries no registers, so a register pin asks for a check it
+// cannot answer. Issuing on the launch digest alone would report a pin as
+// enforced that nothing enforced, so the request is refused.
+func TestAttestSNPWithRTMRPinsIsRefused(t *testing.T) {
+	stub := newStubAttestationApi(t, testLaunchDigest)
 
-	h := newTestAttestHandler(t, stub.URL(), map[string]bool{"deadbeef": true})
-	h.RTMRs = rtmrPin(t, 1, testRTMR1)
+	pins := pinsForDigests(t, testLaunchDigest)
+	pins.Registers = rtmrPin(t, 1, testRTMR1)
+	h := newPinnedAttestHandler(t, stub.URL(), pins)
 
 	csrPEM, _ := generateCSR(t)
 	w := postAttest(t, h, issueChallenge(t, h), csrPEM)
-	if w.Code != http.StatusOK {
-		t.Fatalf("status: got %d, want 200; body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
 	}
 }

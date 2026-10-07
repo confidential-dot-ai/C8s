@@ -8,14 +8,10 @@ import (
 
 func measurementHex() string { return strings.Repeat(hex.EncodeToString([]byte{0xab}), 48) }
 
-func TestParsePinsWarnsWithoutMeasurements(t *testing.T) {
+func TestParsePinsRefusesAnUnpinnedCDS(t *testing.T) {
 	cfg := Config{}
-	got, err := cfg.ParsePins()
-	if err != nil {
-		t.Fatalf("ParsePins: %v", err)
-	}
-	if len(got.Measurements) != 0 {
-		t.Fatalf("parsed %d measurements, want none", len(got.Measurements))
+	if _, err := cfg.ParsePins(); err == nil || !strings.Contains(err.Error(), "--measurements") {
+		t.Fatalf("error = %v, want a refusal naming the flag that pins CDS", err)
 	}
 }
 

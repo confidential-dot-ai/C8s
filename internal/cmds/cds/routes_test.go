@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -35,7 +37,13 @@ func newStubRouter(t *testing.T) http.Handler {
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
 	deps := dependencies{
-		AttestHandler:    AttestHandler{Challenges: &cs, CA: ca, CertTTL: time.Hour},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			CA:         ca,
+			CertTTL:    time.Hour,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
 		ReadyFn:          func() bool { return true },
 		CACertPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
@@ -57,7 +65,13 @@ func TestRouter_RateLimitsAttestationEndpoints(t *testing.T) {
 		t.Fatalf("rate limiter: %v", err)
 	}
 	deps := dependencies{
-		AttestHandler:    AttestHandler{Challenges: &cs, CA: ca, CertTTL: time.Hour},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			CA:         ca,
+			CertTTL:    time.Hour,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
 		ReadyFn:          func() bool { return true },
 		CACertPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
@@ -94,6 +108,10 @@ func TestRouter_RateLimitsAllowlistWrites(t *testing.T) {
 		t.Fatalf("rate limiter: %v", err)
 	}
 	deps := dependencies{
+		AttestHandler: AttestHandler{
+			Pins:      pinsForDigests(t, testLaunchDigest),
+			Platforms: guestMeasuredOnly{},
+		},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
 		ReadyFn:          func() bool { return true },
 		CACertPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
@@ -141,7 +159,13 @@ func TestRouter_RateLimitsAuthenticate(t *testing.T) {
 		t.Fatalf("challenge rate limiter: %v", err)
 	}
 	deps := dependencies{
-		AttestHandler:    AttestHandler{Challenges: &cs, CA: ca, CertTTL: time.Hour},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			CA:         ca,
+			CertTTL:    time.Hour,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
 		ReadyFn:          func() bool { return true },
 		CACertPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
@@ -244,7 +268,13 @@ func TestRouter_AttestRejectsOversizedBody(t *testing.T) {
 	ca, _ := issuer.NewCA("test ca", time.Hour)
 	cs := attestation.NewChallengeStore(time.Minute)
 	deps := dependencies{
-		AttestHandler:    AttestHandler{Challenges: &cs, CA: ca, CertTTL: time.Hour},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			CA:         ca,
+			CertTTL:    time.Hour,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
 		ReadyFn:          func() bool { return true },
 		CACertPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
@@ -426,24 +456,41 @@ func TestReadinessFn(t *testing.T) {
 	}
 }
 
-func TestParseReferenceDigests(t *testing.T) {
-	cases := []struct {
-		name    string
-		input   []string
-		wantLen int
+// One parse feeds the issuance pins, the inventory callback and the served
+// document, so what it drops or folds it drops or folds for all three.
+func TestReferenceDigests(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		input []string
+		want  []string
 	}{
-		{"empty", nil, 0},
-		{"whitespace only", []string{"  ", ""}, 0},
-		{"normalises case and trim", []string{"DEAD", " beef ", "dead"}, 2},
-		{"three distinct", []string{"a", "b", "c"}, 3},
-	}
-	for _, tc := range cases {
+		{"empty", nil, nil},
+		{"whitespace only", []string{"  ", ""}, nil},
+		{"folds case and trims", []string{" DEAD ", "dead"}, []string{"dead"}},
+		{"sorted", []string{"beef", "dead"}, []string{"beef", "dead"}},
+		{"sorted independently of input order", []string{"dead", "beef"}, []string{"beef", "dead"}},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := parseReferenceDigests(tc.input)
-			if len(got) != tc.wantLen {
-				t.Errorf("len: got %d, want %d (map=%v)", len(got), tc.wantLen, got)
+			got, err := referenceDigests(tc.input)
+			if err != nil {
+				t.Fatalf("referenceDigests: %v", err)
+			}
+			var hexed []string
+			for _, d := range got {
+				hexed = append(hexed, hex.EncodeToString(d))
+			}
+			if !slices.Equal(hexed, tc.want) {
+				t.Errorf("digests = %v, want %v", hexed, tc.want)
 			}
 		})
+	}
+}
+
+// A non-hex entry fails startup: dropping it would narrow one consumer of the
+// allowlist and not another.
+func TestReferenceDigestsRejectsNonHex(t *testing.T) {
+	if _, err := referenceDigests([]string{"dead", "0xnothex"}); err == nil {
+		t.Fatal("a non-hex measurement was dropped instead of failing startup")
 	}
 }
 

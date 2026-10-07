@@ -3236,6 +3236,46 @@ func TestRouterAllowlistProxyPinsCDSMeasurements(t *testing.T) {
 	assertContainerHasArg(t, "allowlist-proxy", proxy.Args, "--cds-measurements="+measurement)
 }
 
+// router's get-cert sidecar refuses to start unless a pin names the guest
+// serving the CDS it takes the mesh leaf from, so every pin source the chart
+// accepts has to reach its args.
+func TestRouterGetCertPinsCDS(t *testing.T) {
+	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
+	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("node", chartDigestA, "[]")))
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"measurements", []string{
+			"--set-string", "cds.measurements[0]=" + measurement,
+		}, "--cds-measurements=" + measurement},
+		{"image policy file", []string{
+			"--set", "cds.measurements=null",
+			"--set-file", "cds.measurementsConfig=" + policy,
+			"--set", "nriImagePolicy.enabled=false",
+			"--set", "attestationApi.cvmMode=bare-metal",
+		}, "--image-policy-file=/etc/c8s-measurements/cds.json"},
+		{"baked node image", []string{
+			"--set", "cds.measurements=null",
+			"--set", "node.baked=true",
+			"--set", "attestationApi.cvmMode=bare-metal",
+			"--set", "attestationApi.enabled=false",
+			"--set", "nriImagePolicy.enabled=false",
+			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		}, "--image-policy-file=/run/c8s-node/cds.json"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cert := routerGetCertContainer(t, out, "c8s-cert")
+			assertContainerHasArg(t, "c8s-cert", cert.Args, tc.want)
+		})
+	}
+}
+
 func TestRouterBuiltInAllowlistRouteCanBeDisabled(t *testing.T) {
 	out, err := helmTemplateRouter(t, "--set", "allowlist.enabled=false")
 	if err != nil {
@@ -4460,6 +4500,11 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 		// different, deliberately-uncovered component digest.
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
+		// A render with no CDS pin is refused (cds_pins_required), so every
+		// test carries one unless it sets its own. --set, not --set-string:
+		// helm applies every --set-string after every --set, so a string base
+		// here would shadow the per-test value.
+		"--set", "cds.measurements[0]=" + chartDigestA,
 	}
 	cmd := exec.Command("helm", append(base, args...)...)
 	cmd.Dir = "."
@@ -4768,6 +4813,60 @@ func TestChartCDSServesARMTLS(t *testing.T) {
 	// Default cds.armtlsPlatform is snp; an empty value would render
 	// "--armtls-platform=" and serve plaintext. Assert the exact default token.
 	assertContainerHasArg(t, "cds", args, "--armtls-platform=snp")
+}
+
+// Azure SEV-SNP evidence names the provider's firmware rather than a guest
+// image, so the operator admits it by name and a baked node image is refused
+// it outright.
+func TestChartCDSAdmitsAzureSNP(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+	assertContainerNoArgPrefix(t, "cds", args, "--admit-azure-snp")
+
+	out, err = helmTemplate(t, "--set", "cds.admitAzureSnp=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	args = renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+	assertContainerHasArg(t, "cds", args, "--admit-azure-snp")
+
+	out, err = helmTemplate(t,
+		"--set", "cds.admitAzureSnp=true",
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+	)
+	if err == nil {
+		t.Fatalf("baked release admitted Azure SEV-SNP:\n%s", out)
+	}
+	if !strings.Contains(out, "kind=cds_azure_snp_on_baked_node") {
+		t.Fatalf("render error does not name the admission:\n%s", out)
+	}
+}
+
+// On TDX the launch measurement is the MRTD and covers firmware alone, so a
+// release whose pins carry no register renders nothing: CDS would refuse to
+// start on it.
+func TestChartRefusesTDXPinsWithoutRegisters(t *testing.T) {
+	out, err := helmTemplate(t, "--set-string", "cds.armtlsPlatform=tdx")
+	if err == nil {
+		t.Fatalf("TDX release with no register pin rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "kind=cds_tdx_registers_required") {
+		t.Fatalf("render error does not name the missing register pins:\n%s", out)
+	}
+
+	out, err = helmTemplate(t,
+		"--set-string", "cds.armtlsPlatform=tdx",
+		"--set", "cds.rtmrs[0]=1="+chartDigestA,
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
 }
 
 // TestChartCDSDnsSanPatternAcceptsAnyNamespace pins the always-present
@@ -5181,6 +5280,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
+		"--set", "cds.measurements[0]=" + chartDigestA,
 		"--set-string", "router.upstream.address=vllm:8000",
 		// Secured (https + verify) upstream baseline for the router subchart
 		// tests, on a bare vllm address. A manual address must be app-TLS now
@@ -6280,6 +6380,7 @@ func renderExampleRouterNginxConf() string {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
+		"--set", "cds.measurements[0]="+chartDigestA,
 		// discovery defaults to enabled; scope this example to route rendering
 		// (discovery's own locations are covered by a dedicated test above).
 		"--set", "router.discovery.enabled=false",
@@ -6728,16 +6829,47 @@ func TestChartOperatorCarriesCDSMeasurementsForSecretFetcher(t *testing.T) {
 	}
 }
 
-// With no measurements configured the flag is absent rather than empty, so the
-// fetcher falls back to its own unpinned warning instead of parsing "".
-func TestChartOperatorOmitsCDSMeasurementsWhenUnset(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
+// A release that pins no CDS guest identity renders nothing: CDS would refuse
+// every issuance request and its clients would refuse to start, so the install
+// fails where the operator can still read the reason.
+func TestChartRefusesARelaseWithNoCDSPins(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "cds.measurements=null")
+	if err == nil {
+		t.Fatalf("unpinned release rendered:\n%s", out)
 	}
-	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	if strings.Contains(args, "--cds-measurements") {
-		t.Errorf("operator carries --cds-measurements with none configured: %s", args)
+	if !strings.Contains(out, "kind=cds_pins_required") {
+		t.Fatalf("render error does not name the missing pins:\n%s", out)
+	}
+}
+
+// A complete image policy pins the guest on its own, and a baked node image
+// carries its pins in the measured launch config the chart cannot see.
+func TestChartAcceptsPinsFromAPolicyFileOrTheNodeImage(t *testing.T) {
+	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("node", chartDigestA, "[]")))
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"image policy file", []string{
+			"--set", "cds.measurements=null",
+			"--set-file", "cds.measurementsConfig=" + policy,
+			"--set", "nriImagePolicy.enabled=false",
+			"--set", "attestationApi.cvmMode=bare-metal",
+		}},
+		{"baked node image", []string{
+			"--set", "cds.measurements=null",
+			"--set", "node.baked=true",
+			"--set", "attestationApi.cvmMode=bare-metal",
+			"--set", "attestationApi.enabled=false",
+			"--set", "nriImagePolicy.enabled=false",
+			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out, err := helmTemplate(t, tc.args...); err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+		})
 	}
 }
 

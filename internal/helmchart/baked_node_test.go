@@ -113,6 +113,9 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	} {
 		assertContainerHasArg(t, "cds", cds.Args, arg)
 	}
+	// The measured image names the guest it boots, so CDS admits no evidence
+	// that identifies only a provider's firmware.
+	assertContainerNoArgPrefix(t, "cds", cds.Args, "--admit-azure-snp")
 	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
 	if !ok {
 		t.Fatal("router certificate sidecar missing")

@@ -42,6 +42,8 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
+const cdsPinFlags = "--cds-measurements or --image-policy-file"
+
 // config holds all CLI configuration for get-cert.
 type config struct {
 	CDSURL                 string
@@ -123,7 +125,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags := cmd.Flags()
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443)")
-	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification (empty = accept any attested CDS)")
+	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification; required, unless --image-policy-file names the images")
 	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)")
 	flags.StringVarP(&cfg.OutPath, "out", "o", "", "Path to write the signed certificate chain PEM (prints to stdout if omitted)")
@@ -202,13 +204,13 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 }
 
 func cdsPins(cfg config) (armtls.Pins, error) {
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
-		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"))
-	if err != nil {
-		return armtls.Pins{}, err
-	}
-	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement")
-	return armtls.Pins(policy), nil
+	return cmdsutil.ResolveCDSPins(
+		cmdsutil.ImagePolicySource{
+			File: cfg.MeasurementsConfig,
+			JSON: cfg.MeasurementsConfigJSON,
+		},
+		cmdsutil.MeasurementPinsFromStrings(cfg.CDSMeasurements, cfg.CDSRTMRs, "cds-"),
+		cdsPinFlags)
 }
 
 // obtainCertFn is a var so renewal-loop tests can observe attempts.
