@@ -360,8 +360,11 @@ sandbox** it was issued to:
 
 ```text
 OID 1.3.6.1.4.1.66378.1.4  (pod sandbox ID extension)
-SandboxID ::= IA5String     -- e.g. containerd's 64-hex sandbox ID
+SandboxID ::= UTF8String    -- e.g. containerd's 64-hex sandbox ID
 ```
+
+A leaf carries exactly one `…1.4`: one DER UTF8String whose value matches
+`[A-Za-z0-9._-]{1,128}`.
 
 The **inventory** is the component that admitted the pod's containers —
 nri-image-policy on node-CVM — so it is
@@ -588,8 +591,7 @@ degrades issuance — CDS refuses the tokens it cannot check.
 ### Cross-implementation note
 
 A non-Go verifier (e.g. `c8s-verify-js`) reading a sandbox ID needs only the DER
-IA5String at OID `1.3.6.1.4.1.66378.1.4` plus a mesh-CA chain check — the ID is
-not part of any hash preimage, so there are no canonical-serialization traps.
+UTF8String at OID `1.3.6.1.4.1.66378.1.4` plus a mesh-CA chain check.
 The token and digests formats above are internal to the inventory↔CDS path and
 are never presented to a relying party.
 
