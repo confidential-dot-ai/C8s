@@ -90,7 +90,7 @@ type AttestHandler struct {
 	NamedCertTTL time.Duration
 
 	// SandboxDigests resolves a sandbox's inventory: its signing key and what
-	// the sandbox is running, over mutually-attested ARmTLS to a privileged
+	// the sandbox is running, over mutually-attested armTLS to a privileged
 	// port. nil rejects any request carrying a sandbox token, for the same
 	// reason as a nil AllowlistStore.
 	SandboxDigests sandboxDigestSource
@@ -116,7 +116,7 @@ type sandboxBinder interface {
 
 // sandboxDigestSource is the inventory callback, satisfied by
 // *workloadclaims.DigestsClient. An interface so tests can drive issuance
-// without standing up an ARmTLS inventory. FetchSandbox returns the whole
+// without standing up an armTLS inventory. FetchSandbox returns the whole
 // answer — the deduplicated digests view and the per-container (digest, argv)
 // view — so one fetch backs both the membership gate and workload matching.
 type sandboxDigestSource interface {
@@ -265,7 +265,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// or workload check cannot claim a sandbox ID it never got a cert for.
 	h.recordSandboxBinding(sandbox)
 
-	// The leaf's OID .1.1 ARmTLS extension is copied from the client's CSR
+	// The leaf's OID .1.1 armTLS extension is copied from the client's CSR
 	// (see issuer.SignCSR): the client embeds evidence bound to
 	// SHA-384(pubkey) with no nonce, which is the only form downstream
 	// armtls-mode verifiers (secret-inventory --peer-verify=armtls) can re-verify.

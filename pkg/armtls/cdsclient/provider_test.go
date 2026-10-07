@@ -44,7 +44,7 @@ func mockServersWithLeafValidity(t *testing.T, caKey *ecdsa.PrivateKey, caCert *
 
 	// CDS: authenticate returns challenge, attest verifies and returns cert.
 	// These tests cover the cdsclient HTTP plumbing in isolation; the
-	// production ARmTLS handshake against CDS is exercised by
+	// production armTLS handshake against CDS is exercised by
 	// TestProviderARMTLSHandshakeRejectsWrongMeasurement etc. via a real
 	// httptest.NewTLSServer wired with attested certs.
 	cdsSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -281,7 +281,7 @@ func TestProviderProvision(t *testing.T) {
 		t.Fatalf("TTL = %v, expected positive", ttl)
 	}
 	if !hasExtension(cert.Leaf, armtls.OIDARMTLSAttestation) {
-		t.Fatal("issued cert is missing ARmTLS attestation extension")
+		t.Fatal("issued cert is missing armTLS attestation extension")
 	}
 
 	// Verify the cert chains to the CA.

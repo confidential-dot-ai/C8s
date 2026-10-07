@@ -25,7 +25,7 @@ import (
 // channel terminates inside the measured, operator-key-bound guest.
 //
 // Go's own chain/hostname verification is disabled (InsecureSkipVerify): the
-// serving cert is self-signed and carries no SAN for the per-launch IP. ARmTLS
+// serving cert is self-signed and carries no SAN for the per-launch IP. armTLS
 // replaces it — the quote binding is strictly stronger than a CA chain here.
 func newARMTLSClient(cfg Config, exp platformVerifier) *http.Client {
 	return &http.Client{
@@ -36,7 +36,7 @@ func newARMTLSClient(cfg Config, exp platformVerifier) *http.Client {
 		},
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // ARmTLS in VerifyConnection is the real check
+				InsecureSkipVerify: true, //nolint:gosec // armTLS in VerifyConnection is the real check
 				VerifyConnection: func(cs tls.ConnectionState) error {
 					if len(cs.PeerCertificates) == 0 {
 						return fmt.Errorf("armtls: server presented no certificate")
@@ -48,7 +48,7 @@ func newARMTLSClient(cfg Config, exp platformVerifier) *http.Client {
 	}
 }
 
-// verifyServerCert runs the ARmTLS check on the :8443 leaf cert: it
+// verifyServerCert runs the armTLS check on the :8443 leaf cert: it
 // authenticates the certificate body itself (validity within the shared skew
 // bound; the self-signature under the cert's own key — the quote binds only
 // the key, so without that check any other body field could be rewritten),
@@ -68,7 +68,7 @@ func verifyServerCert(leaf *x509.Certificate, exp platformVerifier) error {
 		return fmt.Errorf("armtls: %w", err)
 	}
 	if body != certutil.BodySelfSigned {
-		return fmt.Errorf("armtls: cred-release serving cert is not self-signed (issuer != subject), so its body is authenticated by nothing this flow checks; the ARmTLS leaf must carry its own signature under the attested key")
+		return fmt.Errorf("armtls: cred-release serving cert is not self-signed (issuer != subject), so its body is authenticated by nothing this flow checks; the armTLS leaf must carry its own signature under the attested key")
 	}
 	return exp.verifyCertificate(leaf)
 }
@@ -94,8 +94,8 @@ func (exp measuredPolicy) verifyTDXCertificate(leaf *x509.Certificate) error {
 	}
 	evidence, ok := att.EmbeddedEvidence()
 	if !ok {
-		// TDX always carries a JSON envelope in the ARmTLS extension; its
-		// absence means the cert isn't a genuine TDX ARmTLS cert.
+		// TDX always carries a JSON envelope in the armTLS extension; its
+		// absence means the cert isn't a genuine TDX armTLS cert.
 		return fmt.Errorf("armtls: server cert carries no TDX attestation envelope")
 	}
 
@@ -131,7 +131,7 @@ const snpARMTLSTimeout = 30 * time.Second
 // verifySNPCertificate verifies an SNP serving certificate: it enforces the SAME two
 // pins as the attest gate — the launch digest must be one of the manifest's
 // per-SMP variants, and HOSTDATA must equal the operator-key binding — over
-// evidence extracted from a bare-metal SNP ARmTLS cert (a raw report, no
+// evidence extracted from a bare-metal SNP armTLS cert (a raw report, no
 // inline VCEK; localverify fetches it from AMD KDS).
 //
 // The REPORTDATA anchor is the cert's own key hash, so a captured quote from

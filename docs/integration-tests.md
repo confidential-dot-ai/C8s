@@ -6,7 +6,7 @@ covers and why the kind harness is shaped the way it is.
 
 | Harness | Entrypoint | CI job | Subject |
 | --- | --- | --- | --- |
-| docker-compose | `make test-integration` | Integration | get-cert's ARmTLS flow against mock CDS + mock attestation-api, nginx serving the issued leaf |
+| docker-compose | `make test-integration` | Integration | get-cert's armTLS flow against mock CDS + mock attestation-api, nginx serving the issued leaf |
 | kind cluster | `make test-integration-cluster` | Integration (cluster) | the full bare-metal-mode control plane and workload path (below) |
 | live-cluster scripts | `test/e2e/*.sh` | snp/tdx-metal-e2e | cw-label policy, mesh enforcement, allowlist enforcement, control-plane convergence on real TEEs |
 
@@ -21,7 +21,7 @@ for the node-baked api — and an `attest-proxy` sidecar publishes it on the
 hostPath unix socket the host plugin uses. Every component that delegates
 verification to the attestation-api (get-cert, CDS, armtls-mesh, the NRI
 plugin) works unchanged against it. The all-zero digest is pinned via
-`--measurements`, so every ARmTLS hop is verified exactly as in production.
+`--measurements`, so every armTLS hop is verified exactly as in production.
 
 The NRI image-policy plugin runs for real: the harness renders the chart's
 full installer DaemonSet and applies it out-of-band (bare-metal mode renders only
@@ -52,7 +52,7 @@ a port-forward).
 
 - `c8s install` end-to-end: preflights, helm install, CRDs, RBAC,
   MutatingWebhookConfiguration, ValidatingAdmissionPolicies.
-- Control-plane readiness: operator, CDS (ARmTLS serving cert via the mock
+- Control-plane readiness: operator, CDS (armTLS serving cert via the mock
   api), router (mesh cert from CDS), armtls-mesh DaemonSet.
 - NRI plugin: installer writes the binary + config, patches containerd,
   restarts it, registers, serves the admission inventory socket.

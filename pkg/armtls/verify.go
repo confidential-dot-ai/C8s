@@ -64,18 +64,18 @@ type VerifyPolicy struct {
 	AttestationVerifyTimeout time.Duration
 
 	// RequireCAEvidence selects the production trust mode for the dual CA /
-	// ARmTLS peer verifier (dualVerifyPeerCallback). When false (default), a
+	// armTLS peer verifier (dualVerifyPeerCallback). When false (default), a
 	// peer whose leaf chains to a configured CA is accepted on the CA chain
 	// alone (a sandbox-ID pin is still enforced) — the legacy/dev mode that
 	// eases rolling upgrades and CA rotation. When true, a valid CA chain is no
-	// longer sufficient: the leaf must ALSO carry re-verifiable ARmTLS evidence
+	// longer sufficient: the leaf must ALSO carry re-verifiable armTLS evidence
 	// (issuer.SignCSR copies the requester's nonce-free .1.1 extension onto the
 	// leaf), which is re-verified per connection so a CA compromise or wrong
 	// issuance policy is caught at the peer rather than trusted from the chain.
 	// The embedded evidence is nonce-free by construction (bound to the leaf
 	// key and claims, no per-connection nonce); connection liveness comes from
 	// the TLS 1.3 proof-of-possession of the leaf key. Set by the production
-	// profile; a self-signed ARmTLS peer is unaffected (it always verifies its
+	// profile; a self-signed armTLS peer is unaffected (it always verifies its
 	// evidence via the fallback path).
 	RequireCAEvidence bool
 }
@@ -115,7 +115,7 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 	return verifyOnline(att, pub, policy, nonce)
 }
 
-// VerifyCert verifies an ARmTLS certificate: it extracts the TEE attestation
+// VerifyCert verifies an armTLS certificate: it extracts the TEE attestation
 // extension and verifies it against the cert's public key.
 //
 // Trust comes from the hardware attestation chain (AMD ARK → ASK → VCEK, or

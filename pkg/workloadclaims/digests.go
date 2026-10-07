@@ -1,6 +1,6 @@
 // The sandbox-digests callback: CDS asks the inventory that admitted a pod
 // what that pod is actually running, at issuance time, over mutually-attested
-// ARmTLS (docs/armtls.md, "Sandbox identity").
+// armTLS (docs/armtls.md, "Sandbox identity").
 //
 // Direction matters. The requester never reports its own images — it only
 // proves, via the inventory-signed sandbox token, which sandbox it is in. CDS
@@ -161,7 +161,7 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 }
 
 // DigestsServerTLSConfig builds the inventory's listener config for
-// ServeDigests: it presents an ARmTLS certificate proving the inventory runs in
+// ServeDigests: it presents an armTLS certificate proving the inventory runs in
 // a TEE, and requires the caller to present a hardware-attested one too. With
 // cdsPins set the caller must satisfy them (launch measurement, and TDX RTMRs
 // when pinned), so the endpoint discloses what a node runs only to a CDS on an
@@ -223,9 +223,9 @@ func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver San
 	return nil
 }
 
-// DigestsClient is CDS's side of the callback: an ARmTLS client that verifies
+// DigestsClient is CDS's side of the callback: an armTLS client that verifies
 // the inventory's attestation — pinning its launch measurement when one is
-// configured — and presents CDS's own ARmTLS certificate, so the inventory can
+// configured — and presents CDS's own armTLS certificate, so the inventory can
 // pin CDS in turn.
 type DigestsClient struct {
 	http *http.Client
@@ -233,12 +233,12 @@ type DigestsClient struct {
 
 // NewDigestsClient builds the client. pins hold the launch digests (and any
 // TDX RTMR pins) an inventory may present — the same allowlist CDS pins for
-// the inventory's ARmTLS certificate, so a sandbox token and the callback that
-// follows it are held to one standard. Zero pins accept any ARmTLS-attested
+// the inventory's armTLS certificate, so a sandbox token and the callback that
+// follows it are held to one standard. Zero pins accept any armTLS-attested
 // inventory, matching what an empty allowlist already means for the certificate:
 // UNSAFE outside development; callers warn.
 //
-// It warms its own ARmTLS certificate before returning: provisioning costs an
+// It warms its own armTLS certificate before returning: provisioning costs an
 // attestation round-trip, and paying it lazily would put it inside the first
 // pod's issuance deadline.
 func NewDigestsClient(ctx context.Context, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, pins armtls.Pins, timeout time.Duration) (*DigestsClient, error) {
@@ -339,7 +339,7 @@ var ErrSandboxUnknown = fmt.Errorf("workloadclaims: inventory does not know this
 // InventoryKey fetches the sandbox-token signing key of the inventory on host.
 //
 // This is what gives an inventory an identity CDS can check. The key arrives
-// over ARmTLS from DigestsPort — a privileged port in the node's own network
+// over armTLS from DigestsPort — a privileged port in the node's own network
 // namespace — so answering here requires a privilege the chart's
 // deny-host-namespaces policy withholds from tenant pods. Sharing the node's
 // launch measurement, which every pod on a node-CVM does, is not enough.

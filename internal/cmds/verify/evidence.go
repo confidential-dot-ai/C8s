@@ -158,13 +158,13 @@ type leafTrust struct {
 	meshCA *x509.CertPool
 }
 
-// gatherFromARMTLSCert dials an ARmTLS TLS endpoint, captures the serving
+// gatherFromARMTLSCert dials an armTLS TLS endpoint, captures the serving
 // certificate without trusting PKI (trust comes from the embedded hardware
 // attestation), and binds REPORTDATA to the certificate key.
 func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout time.Duration, trust leafTrust) (*evidence, error) {
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: timeout},
-		// INVARIANT: PKI verification is intentionally skipped — the ARmTLS
+		// INVARIANT: PKI verification is intentionally skipped — the armTLS
 		// attestation in the cert extension is the trust anchor, verified below.
 		Config: &tls.Config{InsecureSkipVerify: true, ServerName: serverName}, //nolint:gosec
 	}
@@ -183,7 +183,7 @@ func gatherFromARMTLSCert(ctx context.Context, addr, serverName string, timeout 
 	// attested key: that is the proof of possession this path relies on, not
 	// the certificate body's own bytes.
 	trust.keyProven = true
-	return evidenceFromCert(certs[0], fmt.Sprintf("ARmTLS serving certificate at %s", addr), trust)
+	return evidenceFromCert(certs[0], fmt.Sprintf("armTLS serving certificate at %s", addr), trust)
 }
 
 // authenticateLeafBody runs the shared certificate-body checks on an

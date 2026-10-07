@@ -83,7 +83,7 @@ func testAttestedCert(t *testing.T, opts *CertOptions) (*ecdsa.PrivateKey, *Atte
 	return key, att, cert
 }
 
-// requireARMTLSExtension asserts that the certificate contains the ARmTLS
+// requireARMTLSExtension asserts that the certificate contains the armTLS
 // attestation extension.
 func requireARMTLSExtension(t *testing.T, cert *x509.Certificate) {
 	t.Helper()
@@ -92,7 +92,7 @@ func requireARMTLSExtension(t *testing.T, cert *x509.Certificate) {
 			return
 		}
 	}
-	t.Error("ARmTLS attestation extension not found in certificate")
+	t.Error("armTLS attestation extension not found in certificate")
 }
 
 func TestGenerateKeyPair(t *testing.T) {
@@ -122,8 +122,8 @@ func TestCreateAttestedCert(t *testing.T) {
 
 	requireARMTLSExtension(t, cert)
 
-	if cert.Subject.CommonName != "ARmTLS Workload" {
-		t.Errorf("CN = %q, want %q", cert.Subject.CommonName, "ARmTLS Workload")
+	if cert.Subject.CommonName != "armTLS Workload" {
+		t.Errorf("CN = %q, want %q", cert.Subject.CommonName, "armTLS Workload")
 	}
 	if len(cert.DNSNames) != 1 || cert.DNSNames[0] != "test.local" {
 		t.Errorf("DNSNames = %v, want [test.local]", cert.DNSNames)
@@ -141,7 +141,7 @@ func TestCreateAttestedCertDefaultOpts(t *testing.T) {
 
 func TestSentinelErrors(t *testing.T) {
 	t.Run("ErrNoAttestation", func(t *testing.T) {
-		// Certificate without ARmTLS extension.
+		// Certificate without armTLS extension.
 		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
 			t.Fatal(err)
@@ -175,7 +175,7 @@ func TestSNPMeasurementSizeConstant(t *testing.T) {
 	}
 }
 
-// embeddedEnvelopeCert builds an ARmTLS certificate whose attestation extension
+// embeddedEnvelopeCert builds an armTLS certificate whose attestation extension
 // carries an AttestationEvidence envelope for the given platform. Returns the
 // parsed cert and the SHA-384(pubkey) that the attestation-api would expect to
 // see bound through the report.
@@ -204,7 +204,7 @@ func embeddedEnvelopeCert(t *testing.T, platform teetypes.PlatformType, evidence
 	return cert, expectedReportData
 }
 
-// embeddedAzureCert builds an ARmTLS certificate whose attestation extension
+// embeddedAzureCert builds an armTLS certificate whose attestation extension
 // carries an az-snp envelope (the post-PR-98 wire shape).
 func embeddedAzureCert(t *testing.T) (*x509.Certificate, [64]byte) {
 	t.Helper()
@@ -620,7 +620,7 @@ func TestVerifyCertEmbeddedAzTdxEvidence(t *testing.T) {
 }
 
 // TestVerifyCertBareSNPUsesAttestationApi covers the bare-metal SNP shape:
-// the ARmTLS extension carries a raw report, which the verifier must wrap in
+// the armTLS extension carries a raw report, which the verifier must wrap in
 // the "snp" evidence envelope for attestation-api /verify. There is no
 // in-process verification, so without an AttestationApiURL the verifier must
 // fail closed rather than fall back.

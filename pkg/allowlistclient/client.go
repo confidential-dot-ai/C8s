@@ -1,6 +1,6 @@
 // Package allowlistclient is the HTTP client for the CDS allowlist API.
 //
-// Reads (List, Fetch) are unauthenticated; the attested ARmTLS channel to CDS
+// Reads (List, Fetch) are unauthenticated; the attested armTLS channel to CDS
 // provides their integrity. Writes bind an operator credential to the exact
 // method, path, and body via Authorizer, so a captured token cannot be replayed
 // against a different payload.

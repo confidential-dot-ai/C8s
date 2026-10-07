@@ -86,7 +86,7 @@ trap cleanup EXIT
 cw_namespace "$ns"
 
 # Every CDS call goes over a port-forward: router fronts /allowlist but not
-# /secrets, and the ARmTLS client verifies attestation rather than PKI
+# /secrets, and the armTLS client verifies attestation rather than PKI
 # hostnames, so one channel serves both APIs (README.md "Operator access").
 kubectl -n c8s-system port-forward svc/c8s-cds "$CDS_PORT:8443" >/dev/null 2>&1 &
 PF_CDS=$!

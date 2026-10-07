@@ -28,7 +28,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// plainServingCert generates a self-signed ECDSA serving cert with NO ARmTLS
+// plainServingCert generates a self-signed ECDSA serving cert with NO armTLS
 // extension — the shape a router front door presents.
 func plainServingCert(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
@@ -79,7 +79,7 @@ func discoveryDoc(t *testing.T, cert *x509.Certificate, challenge []byte, mode, 
 }
 
 // fakeLB serves the discovery document plus a proxied /allowlist body over TLS
-// with servingCert (no ARmTLS extension), like a router front door.
+// with servingCert (no armTLS extension), like a router front door.
 func fakeLB(t *testing.T, servingCert tls.Certificate, doc []byte) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -113,7 +113,7 @@ func approvingVerify(measurement []byte) localverify.VerifyFunc {
 }
 
 // TestNewVerifiedHTTPClient_EndToEnd is the regression test for the router
-// allowlist bug: a front door whose serving cert has no ARmTLS extension must
+// allowlist bug: a front door whose serving cert has no armTLS extension must
 // be verified via its discovery document (evidence bound to
 // SHA-384(cert pubkey ‖ challenge)) and subsequent requests must succeed
 // against the pinned serving cert.
@@ -167,7 +167,7 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 
 // TestNewVerifiedHTTPClient_NoDiscovery proves a target without a discovery
 // document (a direct CDS endpoint) signals ErrNoDiscovery so the caller falls
-// back to ARmTLS serving-cert verification.
+// back to armTLS serving-cert verification.
 func TestNewVerifiedHTTPClient_NoDiscovery(t *testing.T) {
 	srv := httptest.NewTLSServer(http.NotFoundHandler())
 	defer srv.Close()

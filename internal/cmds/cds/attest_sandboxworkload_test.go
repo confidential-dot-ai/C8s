@@ -261,7 +261,7 @@ func TestAttest_SandboxWorkload_NoTokenSkipsGate(t *testing.T) {
 
 // Dev mode: an empty measurement allowlist must not disable sandbox identity.
 // CDS still verifies the token and still gates on the inventory's answer — it
-// just accepts any ARmTLS-attested inventory rather than a pinned one, matching
+// just accepts any armTLS-attested inventory rather than a pinned one, matching
 // what an empty allowlist already means for /attest itself. Losing the whole
 // flow here would break issuance for every workload on an unpinned cluster.
 func TestAttest_SandboxWorkload_UnpinnedMeasurementsStillIssue(t *testing.T) {

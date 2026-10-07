@@ -52,10 +52,10 @@
 #                      branch SHA to test an unmerged C8s build end-to-end.
 #   C8S_BINARY=...     pre-stage this locally built multi-command c8s binary
 #                      instead of pulling nri-image-policy:<C8S_REF>. The
-#                      core container images still resolve from C8S_REF and
-#                      must support the chart's commands. The image repro gate
-#                      builds the PR's host binary this way; published images
-#                      never set it.
+#                      core container images must support its chart's commands.
+#   C8S_IMAGES_DIR=... local OCI layouts for c8s-operator, cds and armtls-mesh,
+#                      tagged with C8S_REF. Requires C8S_BINARY. The repro gate
+#                      shares these container inputs between both builds.
 #   CONFOS_DIR=...     confos checkout to build with (default: sibling of this
 #                      repo's checkout).
 #   MODULE_SIG_KEY_PEM / MODULE_SIG_KEY
@@ -76,6 +76,15 @@ tdx|snp) ;;
 esac
 [ -n "${C8S_REF:-}" ] \
     || { echo "node-guest-image/build: C8S_REF is required (published short SHA or release tag)" >&2; exit 1; }
+if [ -n "${C8S_IMAGES_DIR:-}" ]; then
+    [ -f "${C8S_BINARY:-}" ] || { echo "node-guest-image/build: C8S_IMAGES_DIR requires C8S_BINARY" >&2; exit 1; }
+    C8S_IMAGES_DIR=$(realpath -e -- "$C8S_IMAGES_DIR")
+    for image in c8s-operator cds armtls-mesh; do
+        [ -f "$C8S_IMAGES_DIR/$image/index.json" ] || {
+            echo "node-guest-image/build: missing local OCI layout for $image" >&2; exit 1;
+        }
+    done
+fi
 NGI_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 CONFOS_DIR=${CONFOS_DIR:-"$NGI_DIR/../../confidential-os-builder"}
 [ -x "$CONFOS_DIR/bin/confos" ] || { echo "node-guest-image/build: confos checkout not found at $CONFOS_DIR (set CONFOS_DIR)" >&2; exit 1; }
@@ -126,6 +135,11 @@ if [ -n "${C8S_BINARY:-}" ]; then
     [ -f "$C8S_BINARY" ] || { echo "node-guest-image/build: C8S_BINARY=$C8S_BINARY is not a file" >&2; exit 1; }
     install -D -m 0755 "$C8S_BINARY" mkosi/base/mkosi.local/mkosi.extra/usr/local/bin/c8s
 fi
+if [ -n "${C8S_IMAGES_DIR:-}" ]; then
+    rm -rf mkosi/base/mkosi.local/core-images
+    mkdir -p mkosi/base/mkosi.local/core-images
+    cp -a "$C8S_IMAGES_DIR/." mkosi/base/mkosi.local/core-images/
+fi
 exec bin/confos build "${C8S_NAME:-c8s}" \
     "${PROFILES[@]}" \
     ${DEV_PROFILE[@]+"${DEV_PROFILE[@]}"} \
@@ -135,6 +149,7 @@ exec bin/confos build "${C8S_NAME:-c8s}" \
     --sync-input "c8s-ref=${C8S_REF}" \
     --sync-input "c8s-registry=${C8S_REGISTRY:-}" \
     --sync-input "c8s-binary=${C8S_BINARY:+1}" \
+    --sync-input "c8s-images=${C8S_IMAGES_DIR:+1}" \
     --sync-input "dev=${C8S_DEV:-0}" \
     --kernel-config-fragment "$FRAGMENT" \
     --kernel-builder-package "$KB_PKGS" \

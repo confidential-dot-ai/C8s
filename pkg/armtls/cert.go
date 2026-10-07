@@ -16,7 +16,7 @@ import (
 // [CertOptions] and [ServerConfig] when no TTL is specified.
 const DefaultCertTTL = 24 * time.Hour
 
-// CertOptions configures ARmTLS certificate generation.
+// CertOptions configures armTLS certificate generation.
 type CertOptions struct {
 	// Subject for the certificate. If empty, a default is used.
 	Subject pkix.Name
@@ -36,14 +36,14 @@ func (o *CertOptions) ttl() time.Duration {
 func (o *CertOptions) subject() pkix.Name {
 	if o.Subject.CommonName == "" {
 		return pkix.Name{
-			CommonName:   "ARmTLS Workload",
+			CommonName:   "armTLS Workload",
 			Organization: []string{"Confidential"},
 		}
 	}
 	return o.Subject
 }
 
-// GenerateKeyPair creates a new ECDSA P-256 keypair suitable for ARmTLS.
+// GenerateKeyPair creates a new ECDSA P-256 keypair suitable for armTLS.
 // Returns the private key and the REPORTDATA that must be embedded in the
 // hardware attestation report to bind this key to the TEE.
 func GenerateKeyPair() (*ecdsa.PrivateKey, [64]byte, error) {

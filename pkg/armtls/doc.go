@@ -1,4 +1,4 @@
-// Package armtls implements attestation-rooted TLS (ARmTLS) for C8s.
+// Package armtls implements attestation-rooted TLS (armTLS) for C8s.
 // Peers authenticate through key-bound TEE evidence or a configured mesh CA.
 // CDS verifies attestation before issuing mesh certificates.
 //

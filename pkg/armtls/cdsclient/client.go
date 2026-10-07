@@ -62,20 +62,20 @@ type Config struct {
 	// present a DNS SAN matching --dns-san-pattern). Empty omits all SANs.
 	DNSSAN string
 
-	// TEEType is the TEE platform to stamp into the ARmTLS attestation
+	// TEEType is the TEE platform to stamp into the armTLS attestation
 	// extension. It must be specified explicitly. Only SEV-SNP is currently
 	// supported by the CDS client evidence extraction path.
 	TEEType armtls.TEEType
 
 	// CDSMeasurements, when non-empty, restricts the CDS server's
-	// accepted launch digests during the ARmTLS handshake to this set.
+	// accepted launch digests during the armTLS handshake to this set.
 	// Each entry is a 48-byte SEV-SNP measurement. Empty means "any
 	// measurement" — UNSAFE outside development; the chart should always
 	// populate this from `cds.measurements` in values.yaml.
 	CDSMeasurements [][]byte
 
 	// CDSRTMRs, when non-empty, additionally pins CDS's TDX runtime
-	// measurement registers by index during the ARmTLS handshake. On TDX the
+	// measurement registers by index during the armTLS handshake. On TDX the
 	// launch digest covers TDVF firmware alone, so without these the
 	// handshake trusts a CDS whose kernel and rootfs the host chose. Ignored
 	// when CDS presents SNP evidence. Populate from `cds.rtmrs`.
@@ -84,9 +84,9 @@ type Config struct {
 	// CDSImages additionally binds the CDS image to its authorized server key.
 	CDSImages []remote.ImagePin
 
-	// HTTPClient is an optional HTTP client. If nil, a default ARmTLS
+	// HTTPClient is an optional HTTP client. If nil, a default armTLS
 	// transport is built using the CDSMeasurements policy. Tests that
-	// need to bypass ARmTLS (e.g. against a plain HTTP fake) can supply a
+	// need to bypass armTLS (e.g. against a plain HTTP fake) can supply a
 	// custom client; production code MUST leave this nil so the client is
 	// constructed with attestation-bound peer verification.
 	HTTPClient *http.Client
@@ -102,7 +102,7 @@ type Client struct {
 }
 
 // NewClient creates an CDS attestation client. When cfg.HTTPClient is nil,
-// the returned client dials CDS over ARmTLS with a peer-verification policy
+// the returned client dials CDS over armTLS with a peer-verification policy
 // built from cfg.CDSMeasurements; this is what closes the bootstrap-channel
 // MITM gap (an on-path attacker cannot present a TEE-attested cert with an
 // allowed measurement, so the TLS handshake fails before any cert is issued).
@@ -138,8 +138,8 @@ func NewClient(cfg *Config) *Client {
 
 // RequestCert performs the full CDS attestation + certificate issuance flow:
 //  1. Generate ECDSA keypair + CSR
-//  2. Call CDS (authenticate -> attest) over ARmTLS to get a signed certificate
-//     chain. Authenticity of the response is provided by the ARmTLS handshake
+//  2. Call CDS (authenticate -> attest) over armTLS to get a signed certificate
+//     chain. Authenticity of the response is provided by the armTLS handshake
 //     (the underlying http.Client's TLSClientConfig verifies CDS's peer cert
 //     against the configured reference values).
 //  3. Return key + leaf cert + authenticated CA bundle from the signed response
@@ -276,7 +276,7 @@ func (c *Client) attestationExtension(ctx context.Context, key *ecdsa.PrivateKey
 		return pkix.Extension{}, err
 	}
 
-	// This no-nonce report is embedded for peer ARmTLS fallback. CDS still
+	// This no-nonce report is embedded for peer armTLS fallback. CDS still
 	// performs a separate challenge-bound attestation before issuing the cert.
 	reportData, err := armtls.ReportDataForKey(&key.PublicKey, nil)
 	if err != nil {

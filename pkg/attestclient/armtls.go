@@ -14,7 +14,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
-// MakeSNPARMTLSAttestFunc returns an ARmTLS AttestFunc (matching
+// MakeSNPARMTLSAttestFunc returns an armTLS AttestFunc (matching
 // pkg/armtls.ServerConfig.AttestFunc) that asks an attestation-api for
 // an SEV-SNP report binding the serving key. customData is the hex-encoded
 // REPORTDATA the armtls TLS handshake passes in; only the leading SHA-384
@@ -39,7 +39,7 @@ func MakeSNPARMTLSAttestFunc(client Client, attestationApiURL string) func(conte
 	}
 }
 
-// AttestationExtension builds a nonce-free ARmTLS attestation extension
+// AttestationExtension builds a nonce-free armTLS attestation extension
 // binding pub via the local attestation-api, for embedding in a CSR
 // (docs/armtls.md). CDS copies the extension onto the issued leaf, which is how
 // a workload leaf carries hardware evidence a verifier can re-check — the same
@@ -63,7 +63,7 @@ func (c Client) AttestationExtension(ctx context.Context, attestationApiURL stri
 	return armtls.MarshalExtension(att)
 }
 
-// ARMTLSEvidence returns the payload to embed in an ARmTLS certificate
+// ARMTLSEvidence returns the payload to embed in an armTLS certificate
 // extension: the raw report for native SEV-SNP (snp, gcp-snp), the evidence
 // envelope for everything else. See attestation-go/armtls.EvidenceForExtension
 // for why the two shapes exist and what native TDX loses on the way in.

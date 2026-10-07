@@ -1,6 +1,6 @@
 # armtls-mesh
 
-Transparent L4 TCP proxy that wraps pod-to-pod Kubernetes traffic in ARmTLS (attestation-rooted TLS). Each node runs one DaemonSet pod that intercepts TCP flows whose source and destination are known pod IPs, establishes mTLS to the destination node, and delivers traffic to local pods inside the confidential VM. Bootstrap peers verify embedded hardware evidence; in CDS mode, CDS attests the requester before issuing a certificate that peers verify against the mesh CA. Applications require zero modification.
+Transparent L4 TCP proxy that wraps pod-to-pod Kubernetes traffic in armTLS (attestation-rooted TLS). Each node runs one DaemonSet pod that intercepts TCP flows whose source and destination are known pod IPs, establishes mTLS to the destination node, and delivers traffic to local pods inside the confidential VM. Bootstrap peers verify embedded hardware evidence; in CDS mode, CDS attests the requester before issuing a certificate that peers verify against the mesh CA. Applications require zero modification.
 
 See [DESIGN.md](DESIGN.md) for architecture, trust model, and design decisions.
 
@@ -105,7 +105,7 @@ the host `FORWARD` hook (verified on iptables-mode kube-proxy with Azure
 CNI and kubenet at `bridge-nf-call-iptables=1`; run the e2e check on
 anything else), and L7 attacks through the legitimate mesh path.
 
-Inbound delivery is still protected by ARmTLS on the node-to-node leg. The
+Inbound delivery is still protected by armTLS on the node-to-node leg. The
 only plaintext segment is the final host-to-local-pod dial on the destination
 node. When the host exposes local pod-network CIDRs, `ValidateLocalDest`
 cross-checks the destination Pod IP against those CIDRs and the kernel route.
@@ -120,7 +120,7 @@ destinations whose `Pod.Status.HostIP` matches this node's `NODE_IP`.
 | `--platform` | `auto` | TEE platform: `sev-snp`, `tdx`, or `auto` (probes `/dev/{tdx_guest,sev-guest}`) |
 | `--attestation-api-url` | (required) | URL of the local attestation-api (e.g. `http://localhost:8400`) |
 | `--outbound-port` | `15001` | Outbound listener port (iptables redirect target) |
-| `--inbound-port` | `15006` | Inbound listener port (ARmTLS from peer nodes) |
+| `--inbound-port` | `15006` | Inbound listener port (armTLS from peer nodes) |
 | `--node-ip` | `$NODE_IP` | This node's IP address |
 | `--health-port` | `15021` | Health/metrics HTTP port |
 | `--iptables-metrics-file` | `/tmp/armtls-iptables-metrics.json` | Shared file read from the `iptables-sync` sidecar for iptables/ipset counters |
@@ -129,14 +129,14 @@ destinations whose `Pod.Status.HostIP` matches this node's `NODE_IP`.
 | `--idle-timeout` | `0` | Close connections idle longer than this (0 = disabled) |
 | `--keepalive` | `30s` | TCP keepalive interval (0 = disabled) |
 | `--dial-timeout` | `5s` | Plain TCP dial timeout |
-| `--tls-dial-timeout` | `10s` | ARmTLS dial timeout |
+| `--tls-dial-timeout` | `10s` | armTLS dial timeout |
 | `--dest-header-timeout` | `5s` | Inbound destination header read timeout |
 | `--drain-timeout` | `30s` | Graceful shutdown drain timeout |
 | `--local-cidr-boot-timeout` | `1s` | Synchronous retry budget at startup for host pod-network CIDR discovery; past this we fall through to the async refresh loop and `ValidateLocalDest` uses Kubernetes `Pod.Status.HostIP` ownership until discovery recovers |
 | `--measurements` | `""` | Comma-separated hex SHA-384 launch measurements (empty = accept any TEE, warns) |
 | `--cert-mode` | `self-signed` | Certificate mode: self-signed (default), cds (boots self-signed, upgrades to CDS-issued in background) |
 | `--cds-url` | `""` | CDS service URL for attestation and CA bundle retrieval (required for cds mode) |
-| `--cds-measurements` | `""` | Comma-separated SHA-384 hex launch measurements that CDS's ARmTLS peer cert must match. Empty = accept any (UNSAFE outside development) |
+| `--cds-measurements` | `""` | Comma-separated SHA-384 hex launch measurements that CDS's armTLS peer cert must match. Empty = accept any (UNSAFE outside development) |
 | `--ca-cert` | `""` | Path to CA certificate PEM for X.509 chain verification |
 | `--ca-poll-interval` | `5m` | Interval for polling the CDS `/ca` endpoint for CA bundle updates (cds mode) |
 | `--cert-ttl` | `24h` | Certificate lifetime; rotates at 50% of TTL |
@@ -169,16 +169,16 @@ The `--cert-mode` flag controls how armtls-mesh obtains TLS certificates:
 
 | Mode | Behavior |
 |------|----------|
-| `self-signed` | Default. ARmTLS self-signed certificates with attestation evidence embedded as X.509 extensions. Peers verify via hardware attestation chain. |
-| `cds` | Boots with self-signed ARmTLS, then a background goroutine contacts CDS with exponential backoff (2s → 60s), obtains CA-signed certificates, and hot-swaps them. Once upgraded, stays on CA-signed certs. |
+| `self-signed` | Default. armTLS self-signed certificates with attestation evidence embedded as X.509 extensions. Peers verify via hardware attestation chain. |
+| `cds` | Boots with self-signed armTLS, then a background goroutine contacts CDS with exponential backoff (2s → 60s), obtains CA-signed certificates, and hot-swaps them. Once upgraded, stays on CA-signed certs. |
 
 ### Bootstrap flow (cds mode)
 
-1. Proxy starts immediately with self-signed ARmTLS certificates (no CDS dependency at startup)
+1. Proxy starts immediately with self-signed armTLS certificates (no CDS dependency at startup)
 2. Background goroutine contacts CDS (one service): authenticate → attest → obtain leaf cert and authenticated CA bundle; CDS signs the CSR in-process
 3. On success, `CertManager.SwapProvider()` hot-swaps to CA-signed certificates
 4. `/ca` polling starts only after that authenticated CA bundle has seeded trust, and accepts only continuity-signed updates
-5. Peer verification accepts BOTH ARmTLS attestation AND CA-chain during the transition (dual verification)
+5. Peer verification accepts BOTH armTLS attestation AND CA-chain during the transition (dual verification)
 6. Once all nodes upgrade, CA-chain verification is the fast path
 
 This design ensures zero-downtime upgrades — nodes can be upgraded from self-signed to CDS-issued certificates without service interruption.
@@ -191,9 +191,9 @@ derives the CA bundle endpoint from `--cds-url` (the unified CDS serves
 
 When `--ca-cert` is provided, the mesh accepts peers verified via either:
 - A valid CA-signed certificate chain (fast path, standard X.509)
-- A valid ARmTLS attestation extension (fallback, hardware verification)
+- A valid armTLS attestation extension (fallback, hardware verification)
 
-This enables rolling upgrades where some nodes have CDS-issued certificates and others still use self-signed ARmTLS.
+This enables rolling upgrades where some nodes have CDS-issued certificates and others still use self-signed armTLS.
 
 ## Deployment
 
@@ -216,7 +216,7 @@ Reviewer-relevant defaults:
 
 | Value | Default | Effect |
 |-------|---------|--------|
-| `ports.inbound` | `15006` | Exposed as `hostPort` so peer nodes can establish ARmTLS sessions. |
+| `ports.inbound` | `15006` | Exposed as `hostPort` so peer nodes can establish armTLS sessions. |
 | `ports.outbound` | `15001` | Container listener and REDIRECT target only; not exposed as `hostPort`. |
 | `iptablesSync.resyncPeriod` | `30s` | Periodic reconciliation of pod ipsets and iptables rules. |
 | `iptablesSync.ipsetMaxElem` | `262144` | Maximum size for each managed ipset. |
@@ -240,7 +240,7 @@ All metrics are prefixed with `armtls_mesh_`. Key metrics:
 - `armtls_mesh_active_connections{direction}` — current open connections
 - `armtls_mesh_connections_total{direction,result}` — total connections
 - `armtls_mesh_bytes_total{direction,side}` — bytes transferred
-- `armtls_mesh_tls_dial_failures_total` — ARmTLS failures
+- `armtls_mesh_tls_dial_failures_total` — armTLS failures
 - `armtls_mesh_route_errors_total` — routing failures
 - `armtls_mesh_cert_mode{mode}` — active certificate mode (label-keyed; the configured-mode value is 1)
 - Go runtime metrics (`go_goroutines`, `go_memstats_*`) and process metrics are exposed via the standard prometheus client collectors
@@ -283,10 +283,10 @@ GOOS=linux GOARCH=amd64 go test -c -o /tmp/armtlsmesh-linux.test ./internal/cmds
 ```
 
 Tests use fake SNP attestation reports, so no AMD hardware is required. Coverage
-includes proxy data flow, ARmTLS handshakes, connection limits and drain,
+includes proxy data flow, armTLS handshakes, connection limits and drain,
 resolver validation, health endpoints, metrics, iptables/ipset rule generation,
 and Helm rendering for `hostNetwork`, `iptables-sync`, and hostPort behavior.
 
 ## Security
 
-- [ARmTLS](../../docs/armtls.md) — the attested handshake, what it guarantees, and what it does not
+- [armTLS](../../docs/armtls.md) — the attested handshake, what it guarantees, and what it does not

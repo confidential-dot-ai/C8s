@@ -60,7 +60,7 @@ type Config struct {
 // Run executes the client flow: attest + RTMR[3] gate, then CSR -> cred-release
 // -> kubeconfig.
 func Run(ctx context.Context, cfg Config) error {
-	// Signed requests must always pass through the ARmTLS verifier. An HTTP
+	// Signed requests must always pass through the armTLS verifier. An HTTP
 	// URL would bypass TLS entirely, even with VerifyConnection installed.
 	releaseURL, err := url.Parse(cfg.ReleaseBaseURL)
 	if err != nil || releaseURL.Scheme != "https" || releaseURL.Host == "" || releaseURL.User != nil || releaseURL.RawQuery != "" || releaseURL.Fragment != "" {
@@ -113,7 +113,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 
 	// 3. Exchange the CSR for a signed cert over cred-release. The :8443 dial
-	//    is ARmTLS-verified in-process by the operator's own verifier
+	//    is armTLS-verified in-process by the operator's own verifier
 	//    (newARMTLSClient): the serving cert's embedded quote must bind to the
 	//    cert key AND satisfy the same full measured-identity policy as the
 	//    attest gate, so the host can't MITM the channel.

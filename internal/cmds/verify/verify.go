@@ -165,7 +165,7 @@ outbound HTTPS to kdsintf.amd.com (no container runtime required).
 Evidence sources:
   https://host:port      GET the discovery endpoint (/v1/discovery — cert +
                          evidence with the VCEK inline), or, in --mode armtls-cert,
-                         dial the ARmTLS serving cert (bare report; the VCEK is
+                         dial the armTLS serving cert (bare report; the VCEK is
                          fetched from AMD KDS). Default mode: cds → armtls-cert,
                          lb → discovery, auto → discovery then serving cert.
   --from-file FILE       verify a saved PEM cert or attestation-response JSON.
@@ -264,7 +264,7 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 
 	// Verify in-process with attestation-go — the Go port of the engine the
 	// cluster runs. It auto-detects the platform and AMD product (incl. Siena)
-	// and fetches the VCEK from AMD KDS itself, so a bare ARmTLS report, a
+	// and fetches the VCEK from AMD KDS itself, so a bare armTLS report, a
 	// discovery doc, and an endpoint response all verify through one path.
 	var overrideERD []byte
 	if cfg.expectedRDHex != "" {
@@ -349,7 +349,7 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorK
 // verifyEvidence verifies already-gathered evidence (from any source/mode)
 // in-process with attestation-go (the Go port of the attestation-rs engine the
 // cluster runs), which auto-detects the product and fetches the VCEK from KDS
-// when it is not shipped inline — so a bare ARmTLS report and a discovery doc
+// when it is not shipped inline — so a bare armTLS report and a discovery doc
 // both work — then renders the verdict. The verification attempt (including the
 // KDS fetch) is bounded by --timeout; an unobtainable-collateral failure is
 // exit 3, not a verification verdict.
@@ -934,7 +934,7 @@ func resolveMode(cfg config) string {
 	case "cds", "workload":
 		return "armtls-cert"
 	default: // auto (or unknown kind): let gatherEvidence try the LB discovery
-		// doc, then the ARmTLS serving cert, so a bare target with no --kind is
+		// doc, then the armTLS serving cert, so a bare target with no --kind is
 		// detected either way. Returning a concrete mode here would defeat that.
 		return "auto"
 	}
@@ -1037,7 +1037,7 @@ type Outcome struct {
 	// CertBody says what authenticates the leaf certificate's body fields
 	// (subject/serial/validity): the leaf's own attested key when
 	// self-signed, a verified issuing chain, possession of the attested key
-	// proven by a live TLS handshake (the ARmTLS dial, or the discovery
+	// proven by a live TLS handshake (the armTLS dial, or the discovery
 	// gather's front-door probe), or — on attest-pq — the identity
 	// transcript the hardware evidence binds (whose chain anchor is
 	// responder-chosen; see ChainAnchor). A leaf with none of these is not

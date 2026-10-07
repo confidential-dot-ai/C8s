@@ -32,7 +32,7 @@ var (
 	ErrCertValidity = errors.New("armtls: certificate outside its validity window")
 
 	// ErrNoAttestation indicates that a certificate does not contain the
-	// ARmTLS attestation extension (OID 1.3.6.1.4.1.66378.1.1).
+	// armTLS attestation extension (OID 1.3.6.1.4.1.66378.1.1).
 	ErrNoAttestation = agarmtls.ErrNoAttestation
 
 	// ErrUnsupportedTEE indicates an unrecognized TEE platform type.

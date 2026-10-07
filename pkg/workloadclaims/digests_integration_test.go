@@ -31,7 +31,7 @@ import (
 // DigestsPort rather than anything the caller supplied. This drives a real
 // ServeDigests over a real TLS listener with a real DigestsClient transport.
 //
-// TLS here is a plain self-signed pair, not ARmTLS: attestation needs an
+// TLS here is a plain self-signed pair, not armTLS: attestation needs an
 // attestation-api, and what is under test is the protocol above the handshake.
 // routableLocalIP is an address the client's own validation accepts — loopback
 // is rejected by design, so the test binds where production would: a routable

@@ -678,7 +678,7 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 
 // handleTunnel terminates the over-encryption: it opens the sealed request
 // envelope, forwards the reconstructed request to the backend (plaintext; the
-// cluster ARmTLS mesh wraps that hop), and seals the response back to the client.
+// cluster armTLS mesh wraps that hop), and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	channel := s.useSession(r.Header.Get(sessionHeader))
 	if channel == nil {

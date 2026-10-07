@@ -123,8 +123,8 @@ alongside a workload that uses the obtained certificate.`,
 	flags := cmd.Flags()
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443)")
-	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS ARmTLS verification (empty = accept any attested CDS)")
-	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's ARmTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
+	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification (empty = accept any attested CDS)")
+	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)")
 	flags.StringVarP(&cfg.OutPath, "out", "o", "", "Path to write the signed certificate chain PEM (prints to stdout if omitted)")
 	flags.StringVar(&cfg.CAOutPath, "ca-out", "", "Path to write just the mesh CA bundle PEM (the issuer certs trailing the leaf in the CDS chain), e.g. for nginx to serve at a discovery endpoint without a separate ConfigMap")
@@ -181,13 +181,13 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
-	// CDS is reached over ARmTLS: the scheme MUST be https so the client
+	// CDS is reached over armTLS: the scheme MUST be https so the client
 	// verifies CDS's TEE attestation. A plaintext http:// URL would fall back
 	// to a client that skips attestation entirely and impersonation by any
 	// on-path peer becomes trivial. The chart only ever renders https URLs, so
 	// a non-https value is a misconfiguration, not a supported mode.
 	if parsed.Scheme != "https" {
-		return nil, fmt.Errorf("--cds-url must use https (ARmTLS); got scheme %q", parsed.Scheme)
+		return nil, fmt.Errorf("--cds-url must use https (armTLS); got scheme %q", parsed.Scheme)
 	}
 
 	pins, err := cdsPins(cfg)
@@ -196,7 +196,7 @@ func cdsHTTPClient(cfg config) (*http.Client, error) {
 	}
 	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, fmt.Errorf("cds ARmTLS client: %w", err)
+		return nil, fmt.Errorf("cds armTLS client: %w", err)
 	}
 	return client, nil
 }
@@ -207,7 +207,7 @@ func cdsPins(cfg config) (armtls.Pins, error) {
 	if err != nil {
 		return armtls.Pins{}, err
 	}
-	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any ARmTLS-attested CDS measurement")
+	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images), "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement")
 	return armtls.Pins(policy), nil
 }
 
@@ -586,12 +586,12 @@ func obtainCert(ctx context.Context, cfg config, client attestclient.Client) (*x
 		return nil, err
 	}
 
-	// Always embed a nonce-free ARmTLS .1.1 extension so a downstream armtls-mode
+	// Always embed a nonce-free armTLS .1.1 extension so a downstream armtls-mode
 	// verifier (secret-inventory --peer-verify=armtls) can re-verify the leaf —
 	// the same nonce-free embed the mesh client uses (docs/armtls.md).
 	ext, err := client.AttestationExtension(ctx, cfg.AttestationApiURL, &privateKey.PublicKey)
 	if err != nil {
-		return nil, fmt.Errorf("build ARmTLS attestation extension: %w", err)
+		return nil, fmt.Errorf("build armTLS attestation extension: %w", err)
 	}
 
 	csrPEM, err := createCSR(privateKey, cfg.SAN, ext)
@@ -834,7 +834,7 @@ func generateKey() (*ecdsa.PrivateKey, []byte, error) {
 }
 
 // createCSR builds a PEM-encoded certificate signing request with the given
-// SAN. extraExts are carried as CSR extensions (e.g. the ARmTLS attestation
+// SAN. extraExts are carried as CSR extensions (e.g. the armTLS attestation
 // extension CDS copies onto the leaf); nil for the plain flow.
 func createCSR(key *ecdsa.PrivateKey, san string, extraExts ...pkix.Extension) ([]byte, error) {
 	template := x509.CertificateRequest{
@@ -893,7 +893,7 @@ func caBundleFromChain(chainPEM []byte) ([]byte, error) {
 
 // servedCAStale reports whether the bundle written at caOutPath is missing a
 // certificate CDS currently serves at /ca. The fetch rides the same
-// ARmTLS-verified client the issuance flow uses, so the refresh trusts CDS for
+// armTLS-verified client the issuance flow uses, so the refresh trusts CDS for
 // exactly the reason the initial fetch did. A stale bundle means every client
 // following the documented recovery recipe — re-fetch the mesh CA from the
 // discovery endpoint — pins a CA nothing signs with anymore.

@@ -147,7 +147,7 @@ func TestCASignCSR_CopiesARMTLSExtension(t *testing.T) {
 			return
 		}
 	}
-	t.Fatalf("ARmTLS extension not propagated to leaf")
+	t.Fatalf("armTLS extension not propagated to leaf")
 }
 
 func TestCASignCSR_StampsSandboxID(t *testing.T) {

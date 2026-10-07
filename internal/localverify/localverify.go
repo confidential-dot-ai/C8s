@@ -99,7 +99,7 @@ func Verify(ctx context.Context, platform string, evidence json.RawMessage, p Pa
 		Platform: teetypes.NormalizePlatform(platform),
 		Evidence: evidence,
 	}
-	// A bare ARmTLS serving cert carries the SNP report with no inline VCEK;
+	// A bare armTLS serving cert carries the SNP report with no inline VCEK;
 	// the Getter lets the snp and gcp-snp arms fetch it from AMD KDS, bounded
 	// by ctx. Nothing else here reaches the network.
 	res, err := teeverify.VerifyEnvelope(ctx, envelope, p.VerifyParams, teeverify.Options{
@@ -146,7 +146,7 @@ func enforceResult(res *teetypes.VerificationResult, p Params) error {
 	return nil
 }
 
-// CertEnvelope extracts the ARmTLS attestation from a certificate and returns
+// CertEnvelope extracts the armTLS attestation from a certificate and returns
 // the evidence envelope plus the expected REPORTDATA anchor — SHA-384 over the
 // public key (no per-request nonce, so no freshness proof).
 //

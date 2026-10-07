@@ -29,7 +29,7 @@ every layer:
 4. **Verify before connecting.** Peers require attestation-rooted identity
    before any traffic flows.
 5. **Secure the egress.** Pod-originated TCP to pod and Service
-   destinations is intercepted and wrapped in ARmTLS; TCP to non-pod
+   destinations is intercepted and wrapped in armTLS; TCP to non-pod
    external destinations is neither redirected nor dropped (it leaves the
    node plaintext). Non-TCP and unmeshed inbound fail closed rather than
    flowing in the clear. The exceptions are cluster DNS (UDP/53 to the
@@ -48,7 +48,7 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
 - [Your first confidential cluster](https://confidential.ai/docs/c8s/tutorials/first-confidential-cluster), an end-to-end tutorial from bare cloud account to verified confidential workload
 - [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a C8s cluster from a browser
 - [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service C8s uses
-- [ARmTLS](docs/armtls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
+- [armTLS](docs/armtls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
 
 ## Features
 
@@ -59,7 +59,7 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
   CDS accepted and the pod's sandbox ID, so a relying party can ask *which*
   workload is behind a key, not just whether it is a genuine TEE.
 
-- **ARmTLS mesh.** A transparent L4 proxy wraps traffic between workloads in
+- **armTLS mesh.** A transparent L4 proxy wraps traffic between workloads in
   attestation-rooted mutual TLS. Bootstrap peers verify embedded evidence;
   CDS-issued certificates use mesh-CA chain verification. Final-hop plaintext
   confinement depends on [local-route validation](cmd/armtls-mesh/DESIGN.md#local-cidr-discovery);
@@ -219,7 +219,7 @@ attestation-bound certificate from CDS and renews it. Certificates land in
 
 ### Production notes
 
-- **Pin measurements.** The chart's ARmTLS handshakes accept any TEE-attested
+- **Pin measurements.** The chart's armTLS handshakes accept any TEE-attested
   peer until you pin `cds.measurements` and `armtlsMesh.measurements` to the
   expected launch digests. Leave them empty only on a trusted network.
 
@@ -262,7 +262,7 @@ attestation and reports the operator keys it pins.
 | [`cmd/cds`](cmd/cds/) | Certificate Distribution Service - verifies TEE attestation evidence, signs workload CSRs with an in-process mesh CA, and serves the allowlist and secret-release APIs | [operator docs](docs/operator.md) |
 | [`cmd/c8s`](cmd/c8s/) | Operator and install CLI for CRDs, status mirroring, webhook injection, and the embedded Helm chart | [operator docs](docs/operator.md) |
 | [`cmd/get-cert`](cmd/get-cert/) | CLI tool and init-container for TEE-attested certificate provisioning | [README](cmd/get-cert/README.md) |
-| [`cmd/armtls-mesh`](cmd/armtls-mesh/) | Transparent L4 proxy wrapping inter-node K8s traffic in ARmTLS | [README](cmd/armtls-mesh/README.md) |
+| [`cmd/armtls-mesh`](cmd/armtls-mesh/) | Transparent L4 proxy wrapping inter-node K8s traffic in armTLS | [README](cmd/armtls-mesh/README.md) |
 | [`cmd/nri-image-policy`](cmd/nri-image-policy/) | NRI plugin enforcing the image and argv allowlist on the host; also the node's admission inventory | [allowlist](docs/allowlist-and-capabilities.md) |
 | [`internal/cmds/volumed`](internal/cmds/volumed/) | Encrypted-volume agent — opens volumes into a pod's mount namespace as a node DaemonSet | [volumes](docs/volumes.md) |
 
@@ -270,7 +270,7 @@ attestation and reports the operator keys it pins.
 
 | Package | Description |
 |---|---|
-| [`pkg/armtls`](pkg/armtls/) | ARmTLS library for hardware-attested mTLS (AMD SEV-SNP, Intel TDX) — see [docs/armtls.md](docs/armtls.md) |
+| [`pkg/armtls`](pkg/armtls/) | armTLS library for hardware-attested mTLS (AMD SEV-SNP, Intel TDX) — see [docs/armtls.md](docs/armtls.md) |
 | [`pkg/armtls/cdsclient`](pkg/armtls/cdsclient/) | CDS attestation client for certificate provisioning |
 | [`pkg/attestclient`](pkg/attestclient/) | High-level client for the CDS attestation flow |
 | [`pkg/allowlistclient`](pkg/allowlistclient/) | CRUD client for the CDS allowlist API |
@@ -375,7 +375,7 @@ exempt: it already declares that nothing about it is attested.
 Do not point this CLI at router when `router.publicTLS.secretName` is set. That
 front door uses WebPKI (`public_tls.mode=webpki`), and its public certificate is
 not cryptographically bound to the discovery attestation, so the CLI
-deliberately refuses it. Use a direct CDS ARmTLS URL and the CDS launch digest;
+deliberately refuses it. Use a direct CDS armTLS URL and the CDS launch digest;
 if CDS is not otherwise routable, use a local port-forward:
 
 ```sh

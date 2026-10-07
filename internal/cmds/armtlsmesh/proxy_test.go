@@ -63,7 +63,7 @@ func (r *fixedRemoteResolver) ValidateOutboundDest(string) (bool, string) { retu
 func (r *fixedRemoteResolver) ValidateLocalDest(string) bool              { return true }
 
 // testTLSConfigs creates mutually-attested server+client TLS configs: both
-// sides mint ARmTLS certs from mockapi evidence and verify the peer
+// sides mint armTLS certs from mockapi evidence and verify the peer
 // through the production VerifyPeerCertificate. These tests exercise L4 proxy
 // plumbing, not attestation policy, so the policy pins no measurements;
 // pinning is covered by the mesh handshake tests.
@@ -246,7 +246,7 @@ func TestInboundHandler(t *testing.T) {
 		}
 	}()
 
-	// Connect as ARmTLS client, send destination header, then data.
+	// Connect as armTLS client, send destination header, then data.
 	conn, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
@@ -342,11 +342,11 @@ func TestOutboundLocal(t *testing.T) {
 	}
 	assertEventually(t, time.Second, func() bool {
 		return histogramSampleCount(p.metrics.tlsHandshakeDuration.WithLabelValues("outbound_same_node", "self-signed")) > 0
-	}, "expected same-node outbound path to perform an ARmTLS handshake")
+	}, "expected same-node outbound path to perform an armTLS handshake")
 }
 
 func TestEndToEnd(t *testing.T) {
-	// Simulates: app → node1 outbound → ARmTLS → node2 inbound → backend.
+	// Simulates: app → node1 outbound → armTLS → node2 inbound → backend.
 	backend := startBackend(t, "remote-pod")
 	serverTLS, clientTLS := testTLSConfigs(t)
 
@@ -387,7 +387,7 @@ func TestEndToEnd(t *testing.T) {
 	}
 
 	// The resolver returns node2's listener host for the remote pod. The
-	// outbound handler will dial 127.0.0.1:node2Port via ARmTLS.
+	// outbound handler will dial 127.0.0.1:node2Port via armTLS.
 
 	node1Ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -1166,10 +1166,10 @@ func TestARMTLSDialFailureMetrics(t *testing.T) {
 
 	assertEventually(t, 2*time.Second, func() bool {
 		return testutil.ToFloat64(m.tlsDialFailures) > 0 && testutil.ToFloat64(m.connectionsTotal.WithLabelValues("outbound", "error")) > 0
-	}, "tlsDialFailures/connErrorOutbound did not advance after ARmTLS dial failure")
+	}, "tlsDialFailures/connErrorOutbound did not advance after armTLS dial failure")
 
 	if testutil.ToFloat64(m.connectionsTotal.WithLabelValues("outbound", "success")) != 0 {
-		t.Error("expected connSuccessOutbound == 0 after ARmTLS dial failure")
+		t.Error("expected connSuccessOutbound == 0 after armTLS dial failure")
 	}
 }
 

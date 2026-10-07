@@ -57,7 +57,7 @@ func ExampleNewServerTLSConfig_mutualTLS() {
 		},
 		DNSNames:     []string{"app.internal"},
 		ClientPolicy: &armtls.VerifyPolicy{
-			// Require clients to present ARmTLS certificates.
+			// Require clients to present armTLS certificates.
 			// Measurements: acceptable client launch measurements.
 		},
 	})
@@ -73,7 +73,7 @@ func ExampleNewServerTLSConfig_mutualTLS() {
 func ExampleNewClientTLSConfig_mutualTLS() {
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
 		Policy: &armtls.VerifyPolicy{},
-		// Present own ARmTLS certificate to the server.
+		// Present own armTLS certificate to the server.
 		Platform: "sev-snp",
 		AttestFunc: func(ctx context.Context, customData string) (string, error) {
 			return "", fmt.Errorf("not running in a TEE")

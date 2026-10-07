@@ -58,7 +58,7 @@ func meshCA(t *testing.T, cn string) []byte {
 	return der
 }
 
-// armtlsServingCert mints the self-signed ARmTLS serving cert a direct CDS
+// armtlsServingCert mints the self-signed armTLS serving cert a direct CDS
 // presents, so the read travels the same attested path it uses in production.
 func armtlsServingCert(t *testing.T) tls.Certificate {
 	t.Helper()
@@ -96,7 +96,7 @@ func armtlsServingCert(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
 }
 
-// newAttestedCDS serves GET /ca over ARmTLS with the given status and body, and
+// newAttestedCDS serves GET /ca over armTLS with the given status and body, and
 // counts the requests that reach it.
 func newAttestedCDS(t *testing.T, status int, body []byte) (*int, string) {
 	t.Helper()

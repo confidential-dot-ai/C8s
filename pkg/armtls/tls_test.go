@@ -160,7 +160,7 @@ func TestNewServerTLSConfigWithClientCAs(t *testing.T) {
 			t.Errorf("ClientAuth = %v, want the VerifyClientCertIfGiven default", tlsCfg.ClientAuth)
 		}
 		if tlsCfg.VerifyPeerCertificate != nil {
-			t.Error("VerifyPeerCertificate must stay nil: ClientCAs verification is crypto/tls's, not ARmTLS")
+			t.Error("VerifyPeerCertificate must stay nil: ClientCAs verification is crypto/tls's, not armTLS")
 		}
 	})
 
@@ -179,7 +179,7 @@ func TestNewServerTLSConfigWithClientCAs(t *testing.T) {
 	})
 
 	t.Run("ClientCAs and ClientPolicy are mutually exclusive", func(t *testing.T) {
-		// ClientPolicy admits a self-signed ARmTLS peer, which ClientCAs exists
+		// ClientPolicy admits a self-signed armTLS peer, which ClientCAs exists
 		// to refuse; combining them must be a construction-time error, not a
 		// silently weaker listener.
 		cfg := testServerConfig()
@@ -276,7 +276,7 @@ func TestEndToEnd(t *testing.T) {
 	go http.Serve(ln, mux)
 
 	// Client skips PKI verification — in production, VerifyPeerCertificate
-	// checks the ARmTLS extension. Here we just validate TLS plumbing.
+	// checks the armTLS extension. Here we just validate TLS plumbing.
 	clientTLS := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true,
@@ -300,7 +300,7 @@ func TestEndToEnd(t *testing.T) {
 		t.Errorf("body = %q, want %q", got, "attested\n")
 	}
 
-	// Verify the server cert has ARmTLS extension.
+	// Verify the server cert has armTLS extension.
 	conn, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
@@ -311,10 +311,10 @@ func TestEndToEnd(t *testing.T) {
 }
 
 func TestMutualTLS(t *testing.T) {
-	// Server presents ARmTLS cert and requires client ARmTLS cert.
+	// Server presents armTLS cert and requires client armTLS cert.
 	// We can't use VerifyPeerCertificate callbacks here because fake reports
 	// lack valid AMD signatures. Instead we manually wire ClientAuth and
-	// verify that both sides exchange certs with ARmTLS extensions.
+	// verify that both sides exchange certs with armTLS extensions.
 	serverTLS, _, err := NewServerTLSConfig(testServerConfig())
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +342,7 @@ func TestMutualTLS(t *testing.T) {
 	})
 	go http.Serve(ln, mux)
 
-	// Client presents its own ARmTLS cert.
+	// Client presents its own armTLS cert.
 	clientProvider := &SelfSignedProvider{
 		Platform:   "sev-snp",
 		AttestFunc: fakeAttestFunc,
@@ -371,7 +371,7 @@ func TestMutualTLS(t *testing.T) {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
 
-	// Verify server cert has ARmTLS extension.
+	// Verify server cert has armTLS extension.
 	conn, err := tls.Dial("tcp", ln.Addr().String(), clientTLS)
 	if err != nil {
 		t.Fatal(err)
@@ -379,7 +379,7 @@ func TestMutualTLS(t *testing.T) {
 	defer conn.Close()
 	requireARMTLSExtension(t, conn.ConnectionState().PeerCertificates[0])
 
-	// Verify client cert (as seen by server) has ARmTLS extension.
+	// Verify client cert (as seen by server) has armTLS extension.
 	mu.Lock()
 	defer mu.Unlock()
 	if clientCert == nil {
@@ -767,7 +767,7 @@ func TestDualVerifyPeerCallback_CASigned(t *testing.T) {
 }
 
 func TestDualVerifyPeerCallback_ARMTLSSelfSigned(t *testing.T) {
-	// The ARmTLS fallback path: a self-signed attested cert fails CA-chain
+	// The armTLS fallback path: a self-signed attested cert fails CA-chain
 	// verification, so the callback falls back to attestation verification,
 	// which is delegated to a (mocked) attestation-api.
 	_, _, armtlsCert := testAttestedCert(t, &CertOptions{TTL: 1 * time.Hour})
@@ -783,12 +783,12 @@ func TestDualVerifyPeerCallback_ARMTLSSelfSigned(t *testing.T) {
 	)
 
 	if err := verifyFunc([][]byte{armtlsCert.Raw}, nil); err != nil {
-		t.Fatalf("ARmTLS fallback failed: %v", err)
+		t.Fatalf("armTLS fallback failed: %v", err)
 	}
 }
 
 func TestDualVerifyPeerCallback_BothFail(t *testing.T) {
-	// Generate a random self-signed leaf cert (no CA chain, no ARmTLS extension).
+	// Generate a random self-signed leaf cert (no CA chain, no armTLS extension).
 	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -813,14 +813,14 @@ func TestDualVerifyPeerCallback_BothFail(t *testing.T) {
 	// Random cert should fail both verification paths.
 	err = verifyFunc([][]byte{leafCertDER}, nil)
 	if err == nil {
-		t.Fatal("expected error when both CA chain and ARmTLS verification fail")
+		t.Fatal("expected error when both CA chain and armTLS verification fail")
 	}
 	errMsg := err.Error()
 	if !strings.Contains(errMsg, "CA chain") {
 		t.Errorf("error should mention 'CA chain', got: %v", errMsg)
 	}
-	if !strings.Contains(errMsg, "ARmTLS") {
-		t.Errorf("error should mention 'ARmTLS', got: %v", errMsg)
+	if !strings.Contains(errMsg, "armTLS") {
+		t.Errorf("error should mention 'armTLS', got: %v", errMsg)
 	}
 }
 
@@ -881,7 +881,7 @@ func TestDualVerifyPeerCallback_CASignedEnforcesSandboxPin(t *testing.T) {
 			t.Fatalf("CA-signed leaf rejected when no pin configured: %v", err)
 		}
 	})
-	// A self-signed ARmTLS peer can put any string in the extension, so the pin
+	// A self-signed armTLS peer can put any string in the extension, so the pin
 	// must not be satisfiable off the CA path.
 	t.Run("self-signed cannot satisfy the pin", func(t *testing.T) {
 		selfKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -970,7 +970,7 @@ func TestDualVerifyPeerCallback_CASignedEnforcesWorkloadPin(t *testing.T) {
 			t.Fatalf("CA-signed leaf rejected when no pin configured: %v", err)
 		}
 	})
-	// A self-signed ARmTLS peer's stamp is whatever it chose, so the pin must
+	// A self-signed armTLS peer's stamp is whatever it chose, so the pin must
 	// never be satisfiable off the CA path — VerifyCert fails closed on it.
 	t.Run("self-signed cannot satisfy the pin", func(t *testing.T) {
 		selfKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -1003,7 +1003,7 @@ func TestDualVerifyPeerCallback_CASignedEnforcesWorkloadPin(t *testing.T) {
 }
 
 // TestDualVerifyPeerCallback_RequireCAEvidence covers the production trust mode:
-// a valid CA chain is no longer sufficient — the leaf's embedded ARmTLS evidence
+// a valid CA chain is no longer sufficient — the leaf's embedded armTLS evidence
 // (issuer copies the requester's nonce-free .1.1 extension onto the leaf) is
 // re-verified per connection, catching a CA compromise or wrong issuance policy.
 func TestDualVerifyPeerCallback_RequireCAEvidence(t *testing.T) {
@@ -1014,7 +1014,7 @@ func TestDualVerifyPeerCallback_RequireCAEvidence(t *testing.T) {
 	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
 
 	// caSignedLeaf builds a CA-signed leaf over key, optionally carrying the
-	// ARmTLS .1.1 evidence extension.
+	// armTLS .1.1 evidence extension.
 	caSignedLeaf := func(t *testing.T, key *ecdsa.PrivateKey, armtlsExt *pkix.Extension) []byte {
 		t.Helper()
 		tmpl := &x509.Certificate{

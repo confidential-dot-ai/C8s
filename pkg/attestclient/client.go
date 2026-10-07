@@ -45,9 +45,9 @@ type Client struct {
 // Certificate is the PEM chain issued by CDS. Challenge, Platform, and
 // Evidence are the attestation material that authorized issuance.
 //
-// Authenticity of Certificate on the network path is provided by the ARmTLS
+// Authenticity of Certificate on the network path is provided by the armTLS
 // handshake the caller performed against CDS (see pkg/armtls.NewClientTLSConfig);
-// callers MUST construct this client over an ARmTLS-verified transport.
+// callers MUST construct this client over an armTLS-verified transport.
 type CertificateResult struct {
 	Certificate string
 	Challenge   string
@@ -232,7 +232,7 @@ func (c Client) AttestContext(ctx context.Context, req attestRequest) (string, e
 }
 
 // MeshCA fetches the mesh CA bundle CDS currently serves at /ca.
-// Authenticity comes from the ARmTLS transport the client was constructed
+// Authenticity comes from the armTLS transport the client was constructed
 // over, the same channel that authenticates the CA trailing an issued chain.
 func (c Client) MeshCA(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/ca", nil)

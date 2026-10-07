@@ -63,7 +63,7 @@ func (c *CA) SignCSR(p SignCSRParams) (certPEM []byte, serial *big.Int, err erro
 	if err := certutil.AppendAttestationDigest(template, digest[:]); err != nil {
 		return nil, nil, err
 	}
-	// The client's CSR-supplied ARmTLS extension is copied verbatim: only the
+	// The client's CSR-supplied armTLS extension is copied verbatim: only the
 	// client can produce evidence bound to its bare key (no nonce), which is
 	// what downstream armtls-mode verifiers re-verify. The extension is opaque
 	// here — verifiers check it against the leaf's key via the attestation-api,

@@ -32,7 +32,7 @@ import (
 )
 
 // routerServer stands in for the router front door: a TLS server whose serving
-// cert carries NO ARmTLS extension, serving its discovery document plus the
+// cert carries NO armTLS extension, serving its discovery document plus the
 // CDS allowlist read handler it proxies.
 func routerServer(t *testing.T, measurementChallenge []byte) *httptest.Server {
 	t.Helper()
@@ -124,7 +124,7 @@ func runCmdWith(verify localverify.VerifyFunc, args ...string) (string, string, 
 }
 
 // TestListThroughRouter is the regression test for `c8s allowlist list` against
-// a router front door: the serving cert has no ARmTLS extension (OID
+// a router front door: the serving cert has no armTLS extension (OID
 // 1.3.6.1.4.1.66378.1.1), so the CLI must verify the LB's discovery document
 // instead of failing the handshake, then read the allowlist over the pinned
 // cert.
@@ -164,7 +164,7 @@ func TestListThroughRouterFailsClosed(t *testing.T) {
 }
 
 // armtlsCDSServer stands in for a port-forwarded CDS: a TLS server whose
-// serving cert DOES carry the ARmTLS extension (an embedded az-snp envelope),
+// serving cert DOES carry the armTLS extension (an embedded az-snp envelope),
 // serving the allowlist read handler and no discovery document.
 func armtlsCDSServer(t *testing.T) *httptest.Server {
 	t.Helper()
@@ -193,7 +193,7 @@ func armtlsCDSServer(t *testing.T) *httptest.Server {
 }
 
 // TestListDirectARMTLS drives the non-fronted path end to end: no discovery
-// document (ErrNoDiscovery fallback), so the CLI verifies the ARmTLS serving
+// document (ErrNoDiscovery fallback), so the CLI verifies the armTLS serving
 // cert in-process — the verifier must receive the embedded envelope and the
 // cert-key anchor — then reads the allowlist over the verified handshake.
 func TestListDirectARMTLS(t *testing.T) {
@@ -217,7 +217,7 @@ func TestListDirectARMTLS(t *testing.T) {
 		"--measurements", hex.EncodeToString(measurement),
 	)
 	if err != nil {
-		t.Fatalf("list against a direct ARmTLS CDS failed: %v (stderr: %s)", err, errOut)
+		t.Fatalf("list against a direct armTLS CDS failed: %v (stderr: %s)", err, errOut)
 	}
 	if !sawVerify {
 		t.Fatal("evidence verifier was not called")

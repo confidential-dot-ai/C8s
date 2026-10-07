@@ -1,6 +1,6 @@
 // Package routerdiscovery consumes the router front-door discovery contract
 // (types.DiscoveryDocument, served at /v1/discovery, written by get-cert).
-// The front door's serving cert carries no ARmTLS extension; its trust path is
+// The front door's serving cert carries no armTLS extension; its trust path is
 // the discovery document instead: attestation evidence captured at issuance,
 // with REPORTDATA binding the serving-cert key + issuance challenge
 // (armtls.ReportDataForKey).
@@ -52,7 +52,7 @@ const maxDocumentBytes = 1 << 20
 
 // ErrNoDiscovery reports that the target serves no discovery document
 // (unreachable, or a non-200 on the discovery path). Callers use it to fall
-// back to direct ARmTLS serving-cert verification
+// back to direct armTLS serving-cert verification
 // (localverify.NewARMTLSHTTPClient). A document that is present but malformed
 // or failing verification is NOT this error — those fail closed.
 var ErrNoDiscovery = errors.New("routerdiscovery: target serves no discovery document")
@@ -70,7 +70,7 @@ var ErrNoDiscovery = errors.New("routerdiscovery: target serves no discovery doc
 // verify is localverify.Verify in production, a stub in tests.
 //
 // Returns [ErrNoDiscovery] when base serves no discovery document, so callers
-// can fall back to direct ARmTLS verification for a non-fronted endpoint.
+// can fall back to direct armTLS verification for a non-fronted endpoint.
 //
 // The issuance challenge is fixed, not a per-request nonce, so freshness is
 // not proven — the same trade-off as `c8s verify` discovery mode.

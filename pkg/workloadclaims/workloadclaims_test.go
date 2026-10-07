@@ -71,7 +71,7 @@ func serveTokens(t *testing.T, resolver SandboxResolver, signer *SandboxTokenSig
 }
 
 // serveDigestsOnUnix runs the digests endpoint over a unix socket so the tests
-// can exercise the handler without standing up ARmTLS. In production the
+// can exercise the handler without standing up armTLS. In production the
 // listener is a mutually-attested TLS listener (see ServeDigests).
 func serveDigestsOnUnix(t *testing.T, resolver SandboxResolver) string {
 	t.Helper()
@@ -432,7 +432,7 @@ func TestValidateInventoryHost(t *testing.T) {
 	}
 }
 
-// A sandbox token is mintable by anything holding an attested ARmTLS key, so the
+// A sandbox token is mintable by anything holding an attested armTLS key, so the
 // address it carries is attacker-chosen. These are the request-forgery targets
 // that must never be dialable: the cloud metadata service, CDS's own loopback,
 // and names that let DNS pick the destination after the check.

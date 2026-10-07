@@ -53,7 +53,7 @@ func (id *clientIdentity) csrPEM() ([]byte, error) {
 
 // requestCredential mints an operator-signed JWT bound to the exact request
 // body, POSTs the CSR to the cred-release endpoint, and returns the issued
-// cert + cluster CA. httpClient is the (ARmTLS or plain) transport to :8443;
+// cert + cluster CA. httpClient is the (armTLS or plain) transport to :8443;
 // operatorKeyPEM is the operator PRIVATE key that authorizes the release.
 func requestCredential(ctx context.Context, httpClient *http.Client, baseURL string, operatorKeyPEM, csrPEM []byte, role string) (*credrelease.ReleaseResponse, error) {
 	signer, err := operatorauth.NewSignerFromKeyPEM(operatorKeyPEM)

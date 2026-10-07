@@ -161,7 +161,7 @@ func newHealthyAttestationApi(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// validRunConfig returns a config that passes run()'s validation with ARmTLS
+// validRunConfig returns a config that passes run()'s validation with armTLS
 // disabled, an in-tempdir allowlist DB, and hermetic endpoints.
 func validRunConfig(t *testing.T, attestationURL string) config {
 	t.Helper()
@@ -507,7 +507,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	}
 }
 
-// TestRun_ARMTLSWarmupFailureFailsClosed: with ARmTLS enabled, a failed serving
+// TestRun_ARMTLSWarmupFailureFailsClosed: with armTLS enabled, a failed serving
 // cert warm-up must abort startup instead of serving.
 func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -528,7 +528,7 @@ func TestRun_ARMTLSWarmupFailureFailsClosed(t *testing.T) {
 	case <-time.After(20 * time.Second):
 		_ = syscall.Kill(syscall.Getpid(), syscall.SIGTERM)
 		<-errCh
-		t.Fatal("run() kept serving after ARmTLS warm-up failure")
+		t.Fatal("run() kept serving after armTLS warm-up failure")
 	}
 }
 

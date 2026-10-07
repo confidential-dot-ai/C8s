@@ -50,7 +50,7 @@ func TestNewCmdRequiresARMTLSPlatform(t *testing.T) {
 	if flag == nil {
 		t.Fatal("missing --armtls-platform flag")
 	}
-	// No default: a silently-assumed TEE must never serve ARmTLS.
+	// No default: a silently-assumed TEE must never serve armTLS.
 	if flag.DefValue != "" {
 		t.Fatalf("default --armtls-platform = %q, want required with no default", flag.DefValue)
 	}

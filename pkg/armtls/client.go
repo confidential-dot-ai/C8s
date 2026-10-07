@@ -9,7 +9,7 @@ import (
 )
 
 // NewVerifyingHTTPClient returns an http.Client whose TLS handshake
-// verifies the peer's ARmTLS attestation extension against the supplied
+// verifies the peer's armTLS attestation extension against the supplied
 // pins (launch-measurement reference values plus any TDX RTMR pins). Zero pins
 // falls back to TOFU on the attestation extension — UNSAFE outside
 // development; the caller is expected to warn.
@@ -33,7 +33,7 @@ func NewVerifyingHTTPClient(pins Pins, attestationApiURL string) (*http.Client, 
 	return HTTPClient(tlsCfg), nil
 }
 
-// HTTPClient wraps tlsCfg in the standard ARmTLS client shape: 5s dial, 10s
+// HTTPClient wraps tlsCfg in the standard armTLS client shape: 5s dial, 10s
 // response-header, 30s overall, MaxIdleConns=5, MaxConnsPerHost=2. Shared by
 // the delegated verifier above and the in-process one (internal/localverify)
 // so the two clients cannot drift on pooling or timeouts.

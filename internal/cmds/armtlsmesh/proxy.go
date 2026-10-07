@@ -18,7 +18,7 @@ import (
 	"time"
 )
 
-// Resolver maps pod IPs to node IPs for routing ARmTLS connections.
+// Resolver maps pod IPs to node IPs for routing armTLS connections.
 type Resolver interface {
 	Resolve(podIP string) (nodeIP string, local bool)
 	// ValidateOutboundDest reports whether ip is a known pod destination
@@ -31,9 +31,9 @@ type Resolver interface {
 	ValidateLocalDest(ip string) bool
 }
 
-// Proxy is a transparent L4 TCP proxy that wraps pod traffic in ARmTLS
-// mTLS. Outbound (:15001) intercepts app traffic and initiates ARmTLS to the
-// destination node. Inbound (:15006) accepts ARmTLS from peer nodes and delivers
+// Proxy is a transparent L4 TCP proxy that wraps pod traffic in armTLS
+// mTLS. Outbound (:15001) intercepts app traffic and initiates armTLS to the
+// destination node. Inbound (:15006) accepts armTLS from peer nodes and delivers
 // to the local pod.
 type Proxy struct {
 	outboundAddr string
@@ -364,7 +364,7 @@ func (p *Proxy) handleOutbound(ctx context.Context, downstream net.Conn) {
 	}
 	// Even on the same-node path we dial nodeIP (not 127.0.0.1): the inbound
 	// listener binds the host netns under hostNetwork: true, the dial reaches
-	// it via the kernel's local-routing path, and the ARmTLS handshake stays
+	// it via the kernel's local-routing path, and the armTLS handshake stays
 	// uniform across local/remote so attestation is the only thing that gates
 	// byte relay. The old plaintext same-node shortcut is gone — see
 	// DESIGN.md "Local vs remote path".
@@ -395,7 +395,7 @@ func (p *Proxy) handleOutbound(ctx context.Context, downstream net.Conn) {
 	p.recordOutbound(fwd, rev, local)
 }
 
-// dialAndPipeARMTLS dials via ARmTLS, sends the destination header, then pipes.
+// dialAndPipeARMTLS dials via armTLS, sends the destination header, then pipes.
 // Returns the TLS handshake duration as the third value (zero if handshake failed).
 func (p *Proxy) dialAndPipeARMTLS(ctx context.Context, downstream net.Conn, remoteAddr, destHeader string, log *slog.Logger) (fwd, rev pipeResult, tlsHandshakeDur time.Duration) {
 	tlsStart := time.Now()
@@ -408,7 +408,7 @@ func (p *Proxy) dialAndPipeARMTLS(ctx context.Context, downstream net.Conn, remo
 	}).DialContext(ctx, "tcp", remoteAddr)
 	if err != nil {
 		p.metrics.tlsDialFailures.Inc()
-		log.Warn("ARmTLS dial failed", "node", remoteAddr, "error", err)
+		log.Warn("armTLS dial failed", "node", remoteAddr, "error", err)
 		fwd.Err = err
 		rev.Err = err
 		return

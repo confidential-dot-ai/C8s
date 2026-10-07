@@ -1,6 +1,6 @@
-# ARmTLS: how C8s components authenticate each other
+# armTLS: how C8s components authenticate each other
 
-ARmTLS (attestation-rooted TLS) is C8s's TLS 1.3 authentication model.
+armTLS (attestation-rooted TLS) is C8s's TLS 1.3 authentication model.
 During bootstrap, peers verify the hardware attestation embedded in a
 self-signed certificate and its binding to the TLS key. For CDS-issued
 certificates, the Certificate Distribution Service verifies the caller's
@@ -9,7 +9,7 @@ the mesh CA. Both paths root the peer's identity in attested code and hardware.
 Mesh traffic between nodes, certificate issuance and allowlist reads use
 these authenticated channels.
 
-This doc walks the process step by step: what is in an ARmTLS certificate, how
+This doc walks the process step by step: what is in an armTLS certificate, how
 a handshake verifies it, how the self-signed bootstrap regime upgrades to
 CDS-issued certificates, what the whole construction does and does not
 guarantee, how it operates on confidential nodes, and which certificate is
@@ -63,7 +63,7 @@ configured, the callback also accepts certificates chaining to that CA:
 CDS checked the requester's attestation before issuance. The TLS handshake
 proves possession of the corresponding private key in either path.
 
-## Anatomy of an ARmTLS certificate
+## Anatomy of an armTLS certificate
 
 `pkg/armtls` builds self-signed bootstrap certificates like this (`cert.go`,
 `provider.go`), over the extension format in
@@ -86,7 +86,7 @@ proves possession of the corresponding private key in either path.
    evidence embedded as a custom extension:
 
    ```text
-   OID 1.3.6.1.4.1.66378.1.1  (ARmTLS attestation extension)
+   OID 1.3.6.1.4.1.66378.1.1  (armTLS attestation extension)
    TEEAttestation ::= SEQUENCE {
        teeType     INTEGER,      -- 1 = SEV-SNP, 2 = TDX
        report      OCTET STRING, -- evidence, two shapes (below)
@@ -98,7 +98,7 @@ The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 
 | OID | Extension | Stamped by |
 |---|---|---|
-| `…1.1` | ARmTLS attestation (`TEEAttestation`) — format owned by attestation-go/armtls, OID assigned here in `pkg/armtls` | the attesting component, on its own certificate and on its CSR |
+| `…1.1` | armTLS attestation (`TEEAttestation`) — format owned by attestation-go/armtls, OID assigned here in `pkg/armtls` | the attesting component, on its own certificate and on its CSR |
 | `…1.2` | SHA-256 audit digest of the issuance evidence — `pkg/certutil` | CDS, on every issued leaf |
 | `…1.4` | pod sandbox ID — `sandbox.go`, see [Sandbox identity](#sandbox-identity-which-workload-is-behind-a-key) | CDS, on a leaf whose requester presented a sandbox token |
 | `…1.5` | matched workload — `matchedworkload.go`, see [Matched workload](#matched-workload-which-allowlist-entry-is-behind-a-key) | CDS, on a leaf whose sandbox's high-water inventory uniquely matches one allowlist entry |
@@ -194,7 +194,7 @@ last three re-exported from attestation-go/armtls.
 
 ## From self-signed to CA-issued: the CDS regime
 
-Self-signed ARmTLS verifies embedded hardware evidence at each full handshake,
+Self-signed armTLS verifies embedded hardware evidence at each full handshake,
 using the local attestation-api. Resumed TLS sessions reuse the established
 identity. In CDS mode, certificate issuance performs
 caller attestation centrally and peers verify the resulting mesh-CA chain.
@@ -226,9 +226,9 @@ then vouches for the issued identity.
 
 Properties worth noting:
 
-- **The transport for steps 1 and 4 is itself ARmTLS.** CDS self-provisions an
-  ARmTLS serving certificate bound to its own launch measurement; clients pin
-  it with `--cds-measurements`. The challenge–response plus the ARmTLS channel
+- **The transport for steps 1 and 4 is itself armTLS.** CDS self-provisions an
+  armTLS serving certificate bound to its own launch measurement; clients pin
+  it with `--cds-measurements`. The challenge–response plus the armTLS channel
   close the bootstrap window against a pod-network impostor — *iff*
   measurements are pinned.
 - **The mesh CA private key exists only in CDS process memory** (P-384, CN
@@ -237,7 +237,7 @@ Properties worth noting:
   CA and workloads re-bootstrap.
 - **Issued leaves are capped at 24h** and always carry a SHA-256 digest of
   the issuance evidence as an audit extension. When the CSR itself embeds an
-  ARmTLS extension — the mesh client and get-cert both do, bound to the bare
+  armTLS extension — the mesh client and get-cert both do, bound to the bare
   key with no nonce — it is copied into the leaf, which is what keeps the
   attestation fallback working on CDS-issued certs (`internal/issuer/sign.go`).
 - **The challenge is the freshness proof.** Single-use and TTL-bound
@@ -279,7 +279,7 @@ re-verifies the leaf's copied nonce-free `.1.1` evidence per connection,
 measurement allowlist included. **No profile sets it today**, so the gap is
 open in practice.
 
-## What ARmTLS guarantees — and what it does not
+## What armTLS guarantees — and what it does not
 
 Direct evidence verification against a pinned policy establishes the claims
 below, assuming C8s's trust assumptions hold. The CA-chain path relies on
@@ -348,7 +348,7 @@ What it does **not** guarantee:
   workload. Enforcing per-workload measurement at `/attest` is unimplemented.
 - **Post-boot integrity.** The launch digest covers boot state; runtime
   compromise inside a measured node is out of scope for launch attestation.
-- **Availability.** A hostile host can always refuse service; ARmTLS turns
+- **Availability.** A hostile host can always refuse service; armTLS turns
   host compromise into DoS, not data exposure.
 
 ## Sandbox identity: which workload is behind a key
@@ -371,7 +371,7 @@ sandbox. It serves two disjoint surfaces (`pkg/workloadclaims`):
 | Surface | Route | Listener | Caller bound by |
 |---|---|---|---|
 | tokens | `POST /sandbox` | a node-local Unix socket | kernel peer credentials (`SO_PEERCRED` + `SO_PEERPIDFD`) |
-| identity + digests | `GET /identity`, `GET /digests/{sandboxID}` | `:1019` (`workloadclaims.DigestsPort`), mutually-attested ARmTLS | the client leaf's launch measurement (CDS's) |
+| identity + digests | `GET /identity`, `GET /digests/{sandboxID}` | `:1019` (`workloadclaims.DigestsPort`), mutually-attested armTLS | the client leaf's launch measurement (CDS's) |
 
 The token surface cannot enumerate other sandboxes; the network surface cannot
 mint identity.
@@ -458,9 +458,9 @@ get-cert forwards the envelope opaquely in the `/attest` request body
    addresses CDS refuses every request carrying a sandbox token. A pod's IP is
    in the pod CIDR, so a workload cannot name itself as its node's inventory.
 3. fetches the signing key from `https://<host>:1019/identity` over
-   mutually-attested ARmTLS (`workloadclaims.DigestsClient.InventoryKey`,
+   mutually-attested armTLS (`workloadclaims.DigestsClient.InventoryKey`,
    pinning the same measurement allowlist `/attest` uses and presenting CDS's
-   own ARmTLS certificate).
+   own armTLS certificate).
 4. verifies the token signature under that key, requires `version == 2`,
    requires `nonce` to be the same single-use challenge it is consuming for this
    request, requires `keyDigest` to name the CSR key — whose possession the CSR
@@ -513,11 +513,11 @@ authenticates it. The verifier encodes that:
   `dualVerifyPeerCallback` (`checkSandboxPin`, `verify.go`), after the chain
   verifies against the CA pool.
 
-A self-signed ARmTLS peer can put any string in the extension and must never
+A self-signed armTLS peer can put any string in the extension and must never
 satisfy a pin.
 
 **Residual trust.** The key's provenance is "answered on `:1019` at an address
-inside the node bound, over ARmTLS on an allowed measurement". That narrows to a
+inside the node bound, over armTLS on an allowed measurement". That narrows to a
 *node*, not to a process: anything able to bind that port on a node — the
 inventory, or a privileged node DaemonSet — can sign for any sandbox that
 node admitted. Fleet-wide the residual is
@@ -566,15 +566,15 @@ bound must cover those addresses: `cds.sandboxInventoryCIDRs` (`c8s install
 list — a node added later is covered without a CDS restart.
 
 An empty measurement allowlist does not disable any of this — it tracks the same
-posture `/attest` takes (see "What ARmTLS guarantees"): both ends still require
-a hardware-attested ARmTLS peer, they just pin no measurement, so any TEE can
+posture `/attest` takes (see "What armTLS guarantees"): both ends still require
+a hardware-attested armTLS peer, they just pin no measurement, so any TEE can
 answer as the inventory and any TEE can read what a node runs. Both ends log it
 as UNSAFE outside development. The token verification and the issuance-time
 allowlist gate are unaffected. A `--measurements` entry that is not hex fails
 CDS startup rather than silently unpinning the callback.
 
 What does disable the callback is a CDS with no `--armtls-platform`: it has no
-ARmTLS identity to present, so it makes no callback and **refuses** any request
+armTLS identity to present, so it makes no callback and **refuses** any request
 carrying a sandbox token. CDS measurements that fail to *parse* (a typo, as
 opposed to being unset) fail the node plugin's config validation at startup.
 
@@ -693,14 +693,14 @@ transcript.
   `VerifyPolicy.WorkloadName` is set — neither checks CA provenance.
 - The pin is enforced only on the chain-verified branch of
   `dualVerifyPeerCallback` (`CheckWorkloadPin`), and is cleared before the
-  `RequireCAEvidence` re-verification. A self-signed ARmTLS peer can never
+  `RequireCAEvidence` re-verification. A self-signed armTLS peer can never
   satisfy it.
 - `armtls.PeerMatchedWorkload(tls.ConnectionState)` reads a verified peer's
   stamp off a live connection for relying parties that route or authorize by
   name; it refuses a connection whose chain was not verified. It therefore
   requires a `ServerConfig.ClientCAs` listener — the only branch where
   crypto/tls builds the chain and fills `VerifiedChains`. A `ClientPolicy`
-  listener (which admits a self-signed ARmTLS peer by design) and every mesh
+  listener (which admits a self-signed armTLS peer by design) and every mesh
   client (`InsecureSkipVerify`) leave it empty, so the function errors there.
   That is the contract: on those connections nothing vouches for the stamp.
   A caller that needs the name on such a hop must verify the leaf against the
@@ -759,7 +759,7 @@ confidentiality.)
   and always produces evidence for the *caller's own node* — nothing
   routable can request evidence, and `/verify` verdicts never cross a node
   boundary.
-- **ARmTLS endpoints:** armtls-mesh runs as a host-network DaemonSet
+- **armTLS endpoints:** armtls-mesh runs as a host-network DaemonSet
   (outbound :15001, inbound :15006). iptables/ipset interception DNATs
   pod-to-pod TCP through it; the node-to-node leg is attested mTLS; the final
   host-to-local-pod dial is plaintext *inside the node's encrypted memory*
@@ -775,7 +775,7 @@ confidentiality.)
 - **DNS.** The egress guards carve out UDP/53 to any destination, on the
   node. A resolver sits outside the guest's trust
   boundary whatever its address, so its answers are untrusted input: they
-  select which endpoint a workload dials, and the ARmTLS handshake at that
+  select which endpoint a workload dials, and the armTLS handshake at that
   endpoint is what authenticates the peer. A host that swaps, forges or
   drops a DNS answer redirects or denies a connection it cannot read, which
   it can do at the network layer regardless. The carve-out is scoped to the
@@ -786,13 +786,13 @@ confidentiality.)
 
 | Certificate | Private key lives | Signed by | Presented where | Verified by | Purpose |
 |---|---|---|---|---|---|
-| Self-signed ARmTLS cert (mesh bootstrap / `--cert-mode self-signed`) | armtls-mesh process memory (in the TEE) | itself — trust is the embedded attestation | mesh inbound :15006 and outbound dials (mTLS both ways) | peer's ARmTLS verification: local attestation-api `/verify` + measurement allowlist | pod-to-pod transport before (or without) CDS |
-| CDS ARmTLS serving cert | CDS process memory | itself — attestation bound to CDS's own measurement | CDS API (:8443) | clients pin `--cds-measurements` (get-cert, armtls-mesh, allowlist CLI, nri-image-policy) | protect the issuance/allowlist API from pod-network impostors |
+| Self-signed armTLS cert (mesh bootstrap / `--cert-mode self-signed`) | armtls-mesh process memory (in the TEE) | itself — trust is the embedded attestation | mesh inbound :15006 and outbound dials (mTLS both ways) | peer's armTLS verification: local attestation-api `/verify` + measurement allowlist | pod-to-pod transport before (or without) CDS |
+| CDS armTLS serving cert | CDS process memory | itself — attestation bound to CDS's own measurement | CDS API (:8443) | clients pin `--cds-measurements` (get-cert, armtls-mesh, allowlist CLI, nri-image-policy) | protect the issuance/allowlist API from pod-network impostors |
 | Mesh CA (P-384, CN `c8s Mesh CA`, 1y) | CDS process memory only — never a Secret, never disk | self-signed root | never served as a leaf; public bundle via `GET /ca` and issuance responses | continuity check: new bundle must be signed by an already-trusted CA | root of trust for the CA-chain fast path |
 | CDS-issued workload leaf (≤ 24h) | pod volume written by get-cert (`/etc/c8s/certs`, keys 0640 with fsGroup) — inside the node TEE | mesh CA, after challenge–attest–certify | workload's own listeners; router upstream mTLS | chain to the mesh CA bundle | nameable workload identity (SAN = workload id / `c8s-<id>` Service), plus the sandbox-ID extension when the requester presented a sandbox token |
-| CDS-issued mesh leaf (`--cert-mode cds`) | armtls-mesh process memory | mesh CA; the leaf preserves the CSR's ARmTLS extension (CN `armtls-mesh-<nodeIP>`) | mesh ports, replacing the self-signed cert after `SwapProvider` | dual verification: CA chain fast path, embedded-evidence fallback | post-bootstrap mesh identity without per-handshake attestation cost |
+| CDS-issued mesh leaf (`--cert-mode cds`) | armtls-mesh process memory | mesh CA; the leaf preserves the CSR's armTLS extension (CN `armtls-mesh-<nodeIP>`) | mesh ports, replacing the self-signed cert after `SwapProvider` | dual verification: CA chain fast path, embedded-evidence fallback | post-bootstrap mesh identity without per-handshake attestation cost |
 | router public leaf | router pod volume — get-cert init container (mode `cds`) or the `c8s acme` sidecar's Memory-medium emptyDir (mode `acme`) — or an operator-supplied `publicTLS` Secret (mode `webpki`, host-visible) | mesh CA (`cds`), ACME CA (`acme`), or external CA (`webpki`) | public HTTPS front door | browsers: standard TLS; verifiers: `cds-attest` binds the leaf SPKI or session keys into REPORTDATA | TLS termination for external clients, attestably bound to the TEE |
-| Inventory identity/digests certs (self-signed ARmTLS, both ends) | nri-image-policy process memory; CDS process memory for the client side | itself — attestation bound to the node's own measurement | the inventory's `:1019` endpoint (fixed, privileged), mTLS both ways | mutual: CDS pins the inventory measurement, the inventory pins CDS's | let CDS resolve the sandbox-token signing key and ask what a pod sandbox is running before issuing that pod a leaf |
+| Inventory identity/digests certs (self-signed armTLS, both ends) | nri-image-policy process memory; CDS process memory for the client side | itself — attestation bound to the node's own measurement | the inventory's `:1019` endpoint (fixed, privileged), mTLS both ways | mutual: CDS pins the inventory measurement, the inventory pins CDS's | let CDS resolve the sandbox-token signing key and ask what a pod sandbox is running before issuing that pod a leaf |
 
 Related authentication surfaces:
 
@@ -804,7 +804,7 @@ Related authentication surfaces:
   attestation and a post-quantum over-encrypted channel — see
   [c8s-verify-js](https://github.com/confidential-dot-ai/c8s-verify-js).
 - **Attested RKE2 credential release** (`c8s cred-release`) and the
-  operator/allowlist CLIs are ARmTLS *clients* of the surfaces above rather
+  operator/allowlist CLIs are armTLS *clients* of the surfaces above rather
   than new certificate types.
 
 ## Reading order for the curious

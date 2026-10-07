@@ -192,9 +192,9 @@ func run(cfg config) error {
 	// The sandbox-digests callback: at issuance CDS asks the inventory that
 	// admitted a pod what the pod is running (docs/armtls.md, "Sandbox
 	// identity"). Pins the same measurement allowlist as /attest, so the
-	// inventory answering is held to the standard its ARmTLS certificate already met.
+	// inventory answering is held to the standard its armTLS certificate already met.
 	//
-	// Needs an ARmTLS identity of its own, since inventories require a client
+	// Needs an armTLS identity of its own, since inventories require a client
 	// certificate; without --armtls-platform there is none, and a request
 	// carrying a sandbox token is refused rather than issued unchecked. An
 	// empty --measurements does NOT disable the callback: it tracks the same
@@ -211,7 +211,7 @@ func run(cfg config) error {
 		slog.Warn("no --armtls-platform: CDS cannot call inventories back for sandbox digests, so requests carrying a sandbox token will be refused")
 	} else {
 		if len(measurements) == 0 {
-			slog.Warn("--measurements empty: CDS accepts ANY ARmTLS-attested inventory as the source of a sandbox's container digests, so the issuance-time allowlist gate rests on an unpinned peer. UNSAFE outside development.")
+			slog.Warn("--measurements empty: CDS accepts ANY armTLS-attested inventory as the source of a sandbox's container digests, so the issuance-time allowlist gate rests on an unpinned peer. UNSAFE outside development.")
 		}
 		measurementBytes, mErr := measurementDigests(measurements)
 		if mErr != nil {
@@ -333,7 +333,7 @@ func run(cfg config) error {
 		}
 		// /secrets reads a CDS-stamped field out of the caller's leaf, so the
 		// chain has to be verified by crypto/tls against the mesh CA: the
-		// ARmTLS path would admit a self-signed peer whose sandbox-ID extension
+		// armTLS path would admit a self-signed peer whose sandbox-ID extension
 		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
 		// reachable by a caller with no certificate.
 		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
@@ -353,14 +353,14 @@ func run(cfg config) error {
 
 		go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
-		slog.Info("cds listening (ARmTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
+		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
 		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
 			return err
 		}
 		return nil
 	}
 
-	slog.Warn("ARmTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
+	slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
 	slog.Info("cds listening", "addr", addr)
@@ -385,7 +385,7 @@ func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {
 }
 
 // serverLogFilter routes net/http server error lines to slog. The kubelet's
-// tcpSocket probes (the only probe shape a mutual ARmTLS port supports) open
+// tcpSocket probes (the only probe shape a mutual armTLS port supports) open
 // the port and drop it every few seconds, which net/http reports as a TLS
 // handshake EOF or reset — demote exactly those to debug so real handshake
 // faults keep a visible log level.

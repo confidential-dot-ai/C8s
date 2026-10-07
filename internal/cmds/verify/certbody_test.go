@@ -136,7 +136,7 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 		}
 	})
 
-	// A live ARmTLS dial is different in kind: completing the handshake proves
+	// A live armTLS dial is different in kind: completing the handshake proves
 	// the peer holds the attested private key, which a re-minted body around
 	// someone else's SPKI cannot do. That path records the proof instead of
 	// demanding a chain.

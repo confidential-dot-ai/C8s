@@ -40,7 +40,7 @@ func discoveryDocWith(t *testing.T, certPEM string, challenge []byte, evidence s
 }
 
 // attestedTLSServer starts an httptest TLS server whose serving certificate is
-// a (fake-report) ARmTLS attested cert, so cert-mode gathering succeeds.
+// a (fake-report) armTLS attested cert, so cert-mode gathering succeeds.
 func attestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -78,7 +78,7 @@ func TestGatherFromARMTLSCert(t *testing.T) {
 		}
 	})
 
-	t.Run("plain cert without ARmTLS extension", func(t *testing.T) {
+	t.Run("plain cert without armTLS extension", func(t *testing.T) {
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		defer srv.Close()
 		_, err := gatherFromARMTLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})

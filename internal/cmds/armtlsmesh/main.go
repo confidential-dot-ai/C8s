@@ -77,7 +77,7 @@ func newArmtlsMeshCommand() *cobra.Command {
 	var cfg proxyConfig
 	cmd := &cobra.Command{
 		Use:           "armtls-mesh",
-		Short:         "ARmTLS L4 mesh proxy",
+		Short:         "armTLS L4 mesh proxy",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -153,12 +153,12 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.attestationApiURL, "attestation-api-url", "", "URL of the local attestation-api (e.g. http://localhost:8400)")
 	fs.StringVar(&c.kubeconfig, "kubeconfig", "", "path to a kubeconfig for the pod resolver's API access; empty uses the in-cluster service-account config")
 	fs.IntVar(&c.outboundPort, "outbound-port", 15001, "outbound listener port (intercepted app traffic)")
-	fs.IntVar(&c.inboundPort, "inbound-port", 15006, "inbound listener port (ARmTLS from peer nodes)")
+	fs.IntVar(&c.inboundPort, "inbound-port", 15006, "inbound listener port (armTLS from peer nodes)")
 	fs.StringVar(&c.nodeIP, "node-ip", "", "this node's IP (auto-detected from NODE_IP env if unset)")
 	fs.StringVar(&c.certDNSSAN, "cert-dns-san", "", "DNS SAN placed on the CDS-issued mesh cert (must match CDS --dns-san-pattern; empty omits SANs). Not used for peer verification, which is attestation-based.")
 	fs.StringVar(&c.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	fs.DurationVar(&c.dialTimeout, "dial-timeout", 5*time.Second, "plain TCP dial timeout")
-	fs.DurationVar(&c.tlsDialTimeout, "tls-dial-timeout", 10*time.Second, "ARmTLS dial timeout")
+	fs.DurationVar(&c.tlsDialTimeout, "tls-dial-timeout", 10*time.Second, "armTLS dial timeout")
 	fs.DurationVar(&c.destHeaderTimeout, "dest-header-timeout", 5*time.Second, "inbound destination header read timeout")
 	fs.DurationVar(&c.drainTimeout, "drain-timeout", 30*time.Second, "graceful shutdown drain timeout")
 	fs.DurationVar(&c.keepAlive, "keepalive", 30*time.Second, "TCP keepalive interval (0 to disable)")
@@ -170,14 +170,14 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.rtmrs, "rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> mesh peers must satisfy (RTMR[1] guest kernel, RTMR[2] cmdline with the dm-verity root hash). SNP peers are unaffected. Empty = no RTMR pinning: on TDX --measurements then pins TDVF firmware only, UNSAFE")
 	cmdsutil.BindImagePolicyFlags(fs, &c.measurementsConfig, nil, "", "pins mesh peers; also pins CDS unless --cds-image-policy-file is set; excludes --measurements and --rtmrs")
 	cmdsutil.BindImagePolicyFlags(fs, &c.cdsMeasurementsConfig, nil, "cds-", "pins CDS independently of mesh peers; excludes --cds-measurements and --cds-rtmrs")
-	fs.DurationVar(&c.certTTL, "cert-ttl", 24*time.Hour, "ARmTLS certificate lifetime (rotates at 50%)")
+	fs.DurationVar(&c.certTTL, "cert-ttl", 24*time.Hour, "armTLS certificate lifetime (rotates at 50%)")
 	fs.DurationVar(&c.rotationTimeout, "rotation-timeout", 30*time.Second, "max time for background certificate rotation")
 	fs.StringVar(&c.certMode, "cert-mode", "self-signed", "certificate mode: self-signed (default), cds (boots self-signed, upgrades to CDS-issued in background)")
 	fs.StringVar(&c.cdsURL, "cds-url", "", "CDS service URL for attestation and CA bundle retrieval (required for cds mode)")
 	fs.StringVar(&c.caCertPath, "ca-cert", "", "path to CA certificate file for peer verification")
 	fs.DurationVar(&c.caPollInterval, "ca-poll-interval", 5*time.Minute, "interval to poll CDS /ca for CA bundle updates")
-	fs.StringVar(&c.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements that CDS's ARmTLS peer cert must match. Empty = accept any (UNSAFE outside development).")
-	fs.StringVar(&c.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> that CDS's ARmTLS peer cert must additionally satisfy. Ignored when CDS presents SNP evidence. Empty = launch-digest pinning only")
+	fs.StringVar(&c.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements that CDS's armTLS peer cert must match. Empty = accept any (UNSAFE outside development).")
+	fs.StringVar(&c.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> that CDS's armTLS peer cert must additionally satisfy. Ignored when CDS presents SNP evidence. Empty = launch-digest pinning only")
 	fs.IntVar(&c.sessionCacheSize, "session-cache-size", 64, "TLS session cache size per node (0 disables session resumption)")
 	fs.BoolVar(&c.accessLog, "access-log", true, "emit per-connection structured access log")
 	fs.StringVar(&c.certPipelineProbeURL, "cert-pipeline-probe-url", "", "CDS /readyz URL for pipeline health probing (empty = disabled)")
@@ -296,12 +296,12 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		return fmt.Errorf("--cds-rtmrs: %w", err)
 	}
 	if c.certMode == "cds" && len(cdsMeasurements) == 0 {
-		logger.Warn("--cds-measurements not set; the ARmTLS handshake will accept any CDS measurement. Set this to the chart-distributed launch digest of CDS to close bootstrap MITM.")
+		logger.Warn("--cds-measurements not set; the armTLS handshake will accept any CDS measurement. Set this to the chart-distributed launch digest of CDS to close bootstrap MITM.")
 	}
 
 	// The self-signed boot cert carries no SAN: mesh peers authenticate it by
 	// hardware attestation, not by SAN/hostname (NewServerTLSConfig sets
-	// InsecureSkipVerify and verifies the ARmTLS extension). The CDS-issued
+	// InsecureSkipVerify and verifies the armTLS extension). The CDS-issued
 	// upgrade cert does carry a DNS SAN (see cdsclient.Config.DNSSAN).
 	runtime, err := newMeshRuntime(&armtls.ServerConfig{
 		Platform:        c.platform,
@@ -630,7 +630,7 @@ func validatePort(flag string, port int) error {
 }
 
 // makeAttestFunc returns an AttestFunc that calls the attestation-api
-// via attestclient. Used for ARmTLS self-signed certificates.
+// via attestclient. Used for armTLS self-signed certificates.
 func makeAttestFunc(client attestclient.Client, attestationApiURL string) func(context.Context, string) (string, error) {
 	return func(ctx context.Context, customData string) (string, error) {
 		// customData is hex-encoded REPORTDATA (e.g. SHA-384 of pubkey,

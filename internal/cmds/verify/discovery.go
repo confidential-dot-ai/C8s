@@ -168,7 +168,7 @@ func fetchDiscoveryDoc(ctx context.Context, client *http.Client, base *url.URL, 
 // observed is the leaf the target connection's TLS handshake presented (nil
 // when no handshake was made). Byte-identical to the attested cert, the
 // completed handshake proves the peer holds the attestation-bound key — the
-// same possession backstop as the ARmTLS path — and the verdict may stand on
+// same possession backstop as the armTLS path — and the verdict may stand on
 // the front door speaking the attested key (applyFrontDoorPolicy).
 //
 // An unknown public_tls.mode fails closed here — a securityError, so auto

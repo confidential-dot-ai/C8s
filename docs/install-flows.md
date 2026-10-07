@@ -168,7 +168,7 @@ trusted platform namespaces.
 
 CDS carries no `cw` annotation: a get-cert sidecar would dial CDS, and CDS
 dialing itself from its own init container is a bootstrap deadlock. It
-self-provisions its serving cert via ARmTLS.
+self-provisions its serving cert via armTLS.
 
 ---
 

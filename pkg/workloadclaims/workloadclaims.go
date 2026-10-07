@@ -8,7 +8,7 @@
 //     signed sandbox token naming its own sandbox — nothing the caller sends
 //     names the pod. On node-CVM that is a Unix socket, whose kernel peer
 //     credentials bind the caller;
-//   - a network endpoint over mutually-attested ARmTLS, where CDS asks which
+//   - a network endpoint over mutually-attested armTLS, where CDS asks which
 //     image digests a named sandbox is currently running.
 //
 // Keeping them apart bounds each: the socket cannot enumerate other sandboxes,
@@ -297,7 +297,7 @@ func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, 
 
 // ServeDigests runs the CDS-facing digests endpoint on l until ctx is done. It
 // serves GET SandboxDigestsPrefix+<sandboxID> only, and answers for ANY
-// sandbox — so l MUST be a mutually-attested ARmTLS listener that admits only
+// sandbox — so l MUST be a mutually-attested armTLS listener that admits only
 // CDS (BuildDigestsTLSConfig). Over a plain listener this would disclose the
 // node's running images to anyone who can reach the port.
 func ServeDigests(ctx context.Context, l net.Listener, resolver SandboxResolver, identity []byte) error {

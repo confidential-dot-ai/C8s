@@ -78,7 +78,7 @@ func (c *stdoutCapture) hasMsg(msg string) bool {
 	return hasMsg(decodeLogRecords(c.String()), msg)
 }
 
-// junkClientCert returns a self-signed cert with no ARmTLS extension: the
+// junkClientCert returns a self-signed cert with no armTLS extension: the
 // mesh's peer verification must reject it.
 func junkClientCert(t *testing.T) tls.Certificate {
 	t.Helper()
@@ -211,7 +211,7 @@ func TestRunProxySelfSignedReadiness(t *testing.T) {
 		t.Errorf("cert_mode_configured{cds} = %v in self-signed mode, want 0", v)
 	}
 
-	// A client without ARmTLS evidence must fail peer verification. The
+	// A client without armTLS evidence must fail peer verification. The
 	// dialer verifies the mesh server normally; its own junk cert is what
 	// the server must reject.
 	junkClientTLS, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
@@ -338,7 +338,7 @@ func TestRunProxyCDSModeDegraded(t *testing.T) {
 
 	// Startup posture logs.
 	assertEventually(t, 10*time.Second, func() bool {
-		return capture.hasMsg("--cds-measurements not set; the ARmTLS handshake will accept any CDS measurement. Set this to the chart-distributed launch digest of CDS to close bootstrap MITM.") &&
+		return capture.hasMsg("--cds-measurements not set; the armTLS handshake will accept any CDS measurement. Set this to the chart-distributed launch digest of CDS to close bootstrap MITM.") &&
 			capture.hasMsg("CA bundle refresh enabled")
 	}, "cds-mode startup logs missing")
 

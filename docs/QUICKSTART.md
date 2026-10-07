@@ -153,7 +153,7 @@ for the singleton operational guidance. Run this chart inside the intended
 CVM trust boundary; the supported chart path no longer has external CDS
 URL values.
 
-The chart's ARmTLS handshakes accept any TEE-attested peer unless the
+The chart's armTLS handshakes accept any TEE-attested peer unless the
 operator pins `cds.measurements` and `armtlsMesh.measurements` to the
 expected launch digests. Leave these empty only on a trusted Pod network.
 

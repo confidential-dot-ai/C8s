@@ -1382,7 +1382,7 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // vTPM HCL report wraps an SNP report on an SEV-SNP CVM (az-snp) or a TD quote
 // on an Intel TDX CVM (az-tdx). Both are supported; --hardware-platform tdx on
 // aks selects the az-tdx shape (no /dev/tdx-guest needed — the TD quote comes
-// from the vTPM), and the mesh/CDS ARmTLS platform is set to tdx accordingly.
+// from the vTPM), and the mesh/CDS armTLS platform is set to tdx accordingly.
 //
 // Mixed-hardware inside a single cluster (some SNP hosts, some TDX hosts) is
 // out of scope for now — a cluster is one hardware platform. Mixed support
@@ -1427,7 +1427,7 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 		"--set", "attestationApi.teeDevices.tdxGuest="+tdxGuest,
 		"--set", "attestationApi.teeDevices.tpm="+tpm,
 	)
-	// Propagate the CPU TEE to every component that names its ARmTLS platform.
+	// Propagate the CPU TEE to every component that names its armTLS platform.
 	// These default to SNP in the chart; on a TDX cluster CDS (which self-warms
 	// its serving cert via the attestation-api and is non-privileged, so it
 	// cannot probe /dev/tdx_guest to auto-detect) and the armtls-mesh must be

@@ -1196,7 +1196,7 @@ func TestRunDiscoveryVerify_EndToEnd(t *testing.T) {
 // TestResolveMode locks in kind→mode routing. The regression it guards: an
 // explicit --kind must drive the evidence mode when --mode is left at its
 // (auto) default, so `c8s cds verify --kind lb` resolves to discovery rather
-// than dialing for the embedded ARmTLS extension the LB front door never
+// than dialing for the embedded armTLS extension the LB front door never
 // serves. An explicit non-auto --mode always wins over kind.
 func TestResolveMode(t *testing.T) {
 	cases := []struct {
@@ -1489,11 +1489,11 @@ func TestGatherEvidence_AutoPrefersDiscovery(t *testing.T) {
 }
 
 // TestGatherEvidence_AutoFallsBackToServingCert proves auto mode falls through
-// to the ARmTLS serving cert when discovery is absent (a non-LB TLS endpoint):
+// to the armTLS serving cert when discovery is absent (a non-LB TLS endpoint):
 // the surfaced error is the cert-path verdict, not the discovery 404.
 func TestGatherEvidence_AutoFallsBackToServingCert(t *testing.T) {
 	// 404s every path (no /v1/discovery) and presents httptest's plain serving
-	// cert, which carries no ARmTLS extension.
+	// cert, which carries no armTLS extension.
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "not found", http.StatusNotFound)
 	}))
@@ -1599,7 +1599,7 @@ func TestGatherEvidence_ModesAndErrors(t *testing.T) {
 		if err != nil {
 			t.Fatalf("armtls-cert mode: %v", err)
 		}
-		if !strings.Contains(ev.source, "ARmTLS serving certificate") {
+		if !strings.Contains(ev.source, "armTLS serving certificate") {
 			t.Errorf("source = %q, want the cert path", ev.source)
 		}
 	})

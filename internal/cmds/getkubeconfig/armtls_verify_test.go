@@ -96,7 +96,7 @@ func mustKeyPEM(t *testing.T, key *ecdsa.PrivateKey) []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
 }
 
-// attestedCert builds a genuine ARmTLS TDX cert carrying the given evidence
+// attestedCert builds a genuine armTLS TDX cert carrying the given evidence
 // envelope, bound to the cert's own key (as the real serving path does).
 func attestedCert(t *testing.T, envelope teetypes.AttestationEvidence) *x509.Certificate {
 	t.Helper()
@@ -127,7 +127,7 @@ type capturedVerify struct {
 	params   teetypes.VerifyParams
 }
 
-// verifyRecorder collects verifier calls; the ARmTLS dial can invoke the
+// verifyRecorder collects verifier calls; the armTLS dial can invoke the
 // verifier off the test goroutine, so reads and writes go through the mutex.
 type verifyRecorder struct {
 	mu    sync.Mutex
@@ -198,7 +198,7 @@ func TestVerifyEvidenceRejectsPlatformMismatch(t *testing.T) {
 }
 
 func TestVerifyServerCertNoExtension(t *testing.T) {
-	// A plain (non-ARmTLS) cert must be rejected before any verification.
+	// A plain (non-armTLS) cert must be rejected before any verification.
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	tmpl := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
@@ -213,7 +213,7 @@ func TestVerifyServerCertNoExtension(t *testing.T) {
 
 	err = verifyServerCert(cert, testPolicy(t, operatorPub(t)))
 	if err == nil || !strings.Contains(err.Error(), "armtls:") {
-		t.Fatalf("want ARmTLS extraction error, got %v", err)
+		t.Fatalf("want armTLS extraction error, got %v", err)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestVerifyServerCertRejectsBadReportData(t *testing.T) {
 	}
 }
 
-// The ARmTLS dial enforces the IDENTICAL policy as the attest gate: every
+// The armTLS dial enforces the IDENTICAL policy as the attest gate: every
 // register of the measured identity fails it independently.
 func TestVerifyServerCertRejectsEachMismatchedRegister(t *testing.T) {
 	pub := operatorPub(t)
@@ -285,7 +285,7 @@ func TestVerifyServerCertAccepts(t *testing.T) {
 		t.Fatalf("want accept, got %v", err)
 	}
 	// The verifier must be asked to bind the quote to THIS cert's public key —
-	// the check that ties the ARmTLS channel to the attested guest.
+	// the check that ties the armTLS channel to the attested guest.
 	want, err := armtls.ReportDataForKey(cert.PublicKey, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -299,7 +299,7 @@ func TestVerifyServerCertAccepts(t *testing.T) {
 	}
 }
 
-// mintServingCert builds a self-issued ARmTLS-shaped cert with chosen
+// mintServingCert builds a self-issued armTLS-shaped cert with chosen
 // validity, embedded key from holder, and signature from signer.
 func mintServingCert(t *testing.T, holder *ecdsa.PublicKey, signer *ecdsa.PrivateKey, notBefore, notAfter time.Time) *x509.Certificate {
 	t.Helper()
@@ -490,7 +490,7 @@ func stubSNPARMTLS(t *testing.T, res *teetypes.VerificationResult, err error) *l
 	return &got
 }
 
-// snpAttestedCert builds an ARmTLS cert carrying a RAW SNP report — the shape
+// snpAttestedCert builds an armTLS cert carrying a RAW SNP report — the shape
 // bare-metal SNP guests actually present (no JSON envelope), which is why the
 // dial has its own arm.
 func snpAttestedCert(t *testing.T) *x509.Certificate {
@@ -586,7 +586,7 @@ func TestVerifyServerCertSNPPropagatesVerifierError(t *testing.T) {
 // null — the shape the guest attestation-api actually serves (c8s#415). It
 // used to go through attestation-go's offline path, which requires the VCEK
 // inline and fetches nothing, so every real SNP node failed the gate with
-// "evidence is missing cert_chain.vcek" while the ARmTLS dial arm (already on
+// "evidence is missing cert_chain.vcek" while the armTLS dial arm (already on
 // localverify) would have accepted the same node.
 func TestAttestGateAcceptsSNPEvidenceWithoutInlineVCEK(t *testing.T) {
 	exp := snpTestPolicy(t, operatorPub(t))

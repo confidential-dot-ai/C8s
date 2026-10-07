@@ -1,4 +1,4 @@
-# get-cert and the sandbox-identity → ARmTLS cert binding
+# get-cert and the sandbox-identity → armTLS cert binding
 
 This walks the **sandbox-identity** path end to end: how a pod's mesh
 certificate comes to name the sandbox it was issued to, how CDS gates that
@@ -111,7 +111,7 @@ unix socket, and there are two separate threats:
   disjoint surfaces (`pkg/workloadclaims`): `POST /sandbox` on a **local** endpoint
   get-cert dials at a compiled unix socket path, and `GET /identity` +
   `GET /digests/{sandboxID}` on a **network endpoint over mutually-attested
-  ARmTLS**, at the fixed privileged port `workloadclaims.DigestsPort` (1019),
+  armTLS**, at the fixed privileged port `workloadclaims.DigestsPort` (1019),
   that only CDS talks to. The token endpoint cannot enumerate other sandboxes;
   the network endpoint cannot mint identity.
   - **node-CVM**: `nri-image-policy` (the host NRI plugin), token route on a
@@ -154,8 +154,8 @@ unix socket, and there are two separate threats:
    requires it to be a routable unicast IP literal inside the node bound
    (`--sandbox-inventory-cidr`, or the live node list when unset), and fetches
    the signing key from `GET /identity` at `<host>:1019` over mutually-attested
-   ARmTLS (`workloadclaims.DigestsClient`, pinning the same measurements
-   `/attest` uses, presenting CDS's own ARmTLS certificate). Only then does it
+   armTLS (`workloadclaims.DigestsClient`, pinning the same measurements
+   `/attest` uses, presenting CDS's own armTLS certificate). Only then does it
    verify the signature, and require the token's nonce to be the challenge it is
    consuming and its key digest to name the CSR key. It verifies the requester's
    evidence and CSR policy as usual, then asks `GET /digests/{sandboxID}` at the
@@ -385,7 +385,7 @@ CDS refuses every request carrying a token.
 
 What actually establishes the inventory's identity is *where the key comes
 from*: `GET /identity` on `workloadclaims.DigestsPort` (1019), a privileged port
-in the node's own network namespace, over mutually-attested ARmTLS. Binding it
+in the node's own network namespace, over mutually-attested armTLS. Binding it
 needs `hostNetwork`, which the chart's `deny-host-namespaces` policy withholds
 from tenant pods; a pod's own IP is in the pod CIDR anyway. Measurement alone
 could not make this distinction on node-CVM, where every pod shares the node's
@@ -421,7 +421,7 @@ addressed by name would forfeit three properties:
   admission record for this pod (Corner 1). An HTTP call to another
   genuinely-attested node or pod cannot prove co-location: it would pass a
   measurement check yet answer for the wrong pod (the "any attested TEE passes"
-  problem). This is also why authenticating the inventory's ARmTLS cert would not
+  problem). This is also why authenticating the inventory's armTLS cert would not
   help — a cert proves *measurement*, not that you reached the local inventory.
 - **DNS-immunity.** A kernel path has no name-resolution step. Cluster DNS is
   control-plane-configured, so a hostname endpoint would be redirectable
@@ -439,7 +439,7 @@ peer-credential binding (it names the sandbox the token already vouched for),
 and it is reached at a numeric address the operator's CIDRs bound rather than a
 resolved name. What it does need — that the answering party holds the node's
 network namespace and is a measured inventory, and that the asking party is CDS
-— is what the privileged port plus mutual ARmTLS provides. The pattern: go over
+— is what the privileged port plus mutual armTLS provides. The pattern: go over
 the network only when you can authenticate what answers; stay on the local
 endpoint when what you need is co-location, which attestation cannot prove.
 
@@ -555,7 +555,7 @@ splits cleanly:
 **And a subverted socket is bounded anyway.** A swapped socket can hand get-cert
 a token, but not one CDS accepts: the signature must verify under a key CDS
 fetched from `:1019` at an address inside the operator's node CIDRs, over
-mutually-attested ARmTLS. Naming a real node's address does not help — that
+mutually-attested armTLS. Naming a real node's address does not help — that
 node's inventory holds the key, and it did not sign this token. The worst a
 co-tenant swap achieves is denying the pod its sandbox ID.
 
@@ -646,10 +646,10 @@ containerd sets `required_plugins`, so a plugin exit takes container creation
 down node-wide, whereas a missing digests endpoint only degrades issuance.
 
 **Unpinned measurements do not disable the flow.** With an empty measurement
-allowlist both ends still require a hardware-attested ARmTLS peer but pin no
+allowlist both ends still require a hardware-attested armTLS peer but pin no
 measurement — any TEE can answer as the inventory, and any TEE that can reach
 the port can read what a node runs. Both log it as UNSAFE outside development;
-the allowlist gate still runs. A CDS with no `--armtls-platform` has no ARmTLS
+the allowlist gate still runs. A CDS with no `--armtls-platform` has no armTLS
 identity to present, makes no callback, and **refuses** any request carrying a
 sandbox token. A `--measurements` entry that is not hex fails CDS startup rather
 than silently unpinning the callback; the same typo fails the plugin's
@@ -682,6 +682,6 @@ its Unix socket; see [Volumes](volumes.md) for setup and mount ordering.
 | Inventory protocol (both surfaces), sandbox token, peer-cred + cgroup binding | `pkg/workloadclaims/` |
 | node-CVM inventory (shallowest-tracked resolution, sandbox/container eviction) | `internal/cmds/nri-image-policy/inventory.go` |
 | get-cert challenge → token fetch → `/attest` forward | `internal/cmds/getcert/run.go`, `pkg/attestclient/client.go` |
-| get-cert leaf-embed (nonce-free ARmTLS extension on the CSR) | `pkg/attestclient/armtls.go` (`AttestationExtension`) |
+| get-cert leaf-embed (nonce-free armTLS extension on the CSR) | `pkg/attestclient/armtls.go` (`AttestationExtension`) |
 | CDS token verify + inventory callback + allowlist membership gate + leaf stamp | `internal/cmds/cds/attest.go`, `internal/issuer/sign.go` |
 | verifier pin | `internal/cmds/verify/` (`--sandbox-id`, `--mesh-ca`) |

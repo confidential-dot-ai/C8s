@@ -22,7 +22,7 @@ import (
 )
 
 // attestedMeshTLSConfigs returns server and client TLS configs wired like
-// runProxy's: both sides mint self-signed ARmTLS certs from mockapi
+// runProxy's: both sides mint self-signed armTLS certs from mockapi
 // evidence and verify the peer through the production VerifyPeerCertificate
 // against the policy meshVerifyPolicy builds from the measurements string.
 func attestedMeshTLSConfigs(t *testing.T, stub *mockapi.Stub, measurements string) (server, client *tls.Config) {

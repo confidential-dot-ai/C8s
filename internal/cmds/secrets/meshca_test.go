@@ -72,7 +72,7 @@ func writePEM(t *testing.T, name string, ders ...[]byte) string {
 	return path
 }
 
-// armtlsServingCert mints the self-signed ARmTLS serving cert a direct CDS
+// armtlsServingCert mints the self-signed armTLS serving cert a direct CDS
 // presents, so the CLI reaches the write over the same attested path it uses in
 // production rather than over plaintext.
 func armtlsServingCert(t *testing.T) tls.Certificate {
@@ -112,7 +112,7 @@ func armtlsServingCert(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
 }
 
-// newAttestedCDS serves the secrets API over ARmTLS, answering GET /ca with
+// newAttestedCDS serves the secrets API over armTLS, answering GET /ca with
 // caDER. Returns the fake and its https URL.
 func newAttestedCDS(t *testing.T, caDER []byte) (*fakeCDS, string) {
 	t.Helper()

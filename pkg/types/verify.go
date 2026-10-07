@@ -117,7 +117,7 @@ type HeaderField struct {
 // over-encrypted record sent to POST /.well-known/c8s/tunnel. The whole request
 // — method, path, headers, and body — is sealed, so a TLS-terminating proxy in
 // front of the LB sees only ciphertext. The sidecar decrypts it and forwards the
-// reconstructed request as plaintext to the backend (the cluster ARmTLS mesh wraps
+// reconstructed request as plaintext to the backend (the cluster armTLS mesh wraps
 // that hop).
 type TunnelRequest struct {
 	Method  string        `cbor:"method"`

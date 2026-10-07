@@ -22,7 +22,7 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
     kubectl -n "$ns" rollout status "$workload" --timeout=8m
   done
   # Public policies are host-staged, not stored in Kubernetes. Check that
-  # every consumer uses its required read-only file. The external ARmTLS
+  # every consumer uses its required read-only file. The external armTLS
   # request below verifies the actual endpoint against the signed policy.
   kubectl -n "$ns" get "${workloads[@]}" -o json | jq -e '
     def policy($workload; $container; $flag):

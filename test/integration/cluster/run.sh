@@ -7,7 +7,7 @@
 # CLI, CRDs, the admission webhook and ValidatingAdmissionPolicies live in a
 # real API server, the NRI image-admission plugin registered against a real
 # containerd, workload-certificate issuance with sandbox-identity claims, the
-# operator-signed allowlist loop into admission decisions, the ARmTLS mesh
+# operator-signed allowlist loop into admission decisions, the armTLS mesh
 # wrapping traffic, workload adoption, and uninstall.
 #
 # The TEE is replaced at exactly one point: evidence generation. A

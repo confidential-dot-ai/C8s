@@ -3,7 +3,7 @@
 //
 // The bundle is the anchor `--mesh-ca` takes on `c8s secrets put` and
 // `c8s verify`. It is read from the same `GET /ca` route that gate compares
-// against, over the channel cdsconn builds — ARmTLS to a direct CDS URL, a
+// against, over the channel cdsconn builds — armTLS to a direct CDS URL, a
 // verified discovery document at a router front door.
 package cdsca
 

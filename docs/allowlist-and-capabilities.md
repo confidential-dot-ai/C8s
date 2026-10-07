@@ -475,7 +475,7 @@ the candidate set ([`secrets.md`](secrets.md#the-injected-drop-set)).
 
 ## Distribution and trust
 
-CDS serves the allowlist over an ARmTLS channel that consumers pin to CDS's
+CDS serves the allowlist over an armTLS channel that consumers pin to CDS's
 launch measurement. The document body is not itself signed; its integrity in
 transit is the attested channel. Provenance of the *write policy* is checkable:
 `c8s cds verify --operator-keys` cross-checks the key set CDS serves at
@@ -548,9 +548,9 @@ plugin's first successful policy pull and kubelet retry.
 ## CLI
 
 `c8s allowlist` reads and mutates the allowlist. Reads are unauthenticated (the
-ARmTLS channel provides integrity); writes are signed with the operator key you
+armTLS channel provides integrity); writes are signed with the operator key you
 supply via `--operator-key` (or `C8S_OPERATOR_KEY`). Persistent flags: `--url`,
-`--measurements`/`--measurements-file` (ARmTLS pins), `--timeout`,
+`--measurements`/`--measurements-file` (armTLS pins), `--timeout`,
 `--operator-key`, `-o text|json`, `--insecure`.
 
 ```

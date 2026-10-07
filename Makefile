@@ -57,7 +57,7 @@ build-get-cert:
 		-o $(BUILD_DIR)/get-cert ./cmd/get-cert
 	@echo "Built $(BUILD_DIR)/get-cert"
 
-# --- ARmTLS Mesh ---
+# --- armTLS Mesh ---
 
 build-armtls-mesh:
 	@mkdir -p $(BUILD_DIR)

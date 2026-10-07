@@ -42,7 +42,7 @@ const defaultLocalCIDRBootTimeout = time.Second
 var localCIDRBootInterval = 200 * time.Millisecond
 
 // k8sResolver watches K8s Pods and maps podIP → nodeIP (hostIP).
-// Trust model: the API server provides routing hints; ARmTLS attestation
+// Trust model: the API server provides routing hints; armTLS attestation
 // is the actual trust boundary. A compromised control plane can cause DoS
 // (handshake failure to non-TEE node) but never data leakage.
 type k8sResolver struct {

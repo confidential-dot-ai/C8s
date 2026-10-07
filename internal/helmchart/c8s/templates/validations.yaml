@@ -74,7 +74,7 @@
 {{- end -}}
 {{- end -}}
 {{- if and $nri.enabled (not (hasPrefix "https://" $nriCDSURL)) -}}
-{{- fail (printf "nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got %q): the host plugin must fetch the allowlist over ARmTLS" $nriCDSURL) -}}
+{{- fail (printf "nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got %q): the host plugin must fetch the allowlist over armTLS" $nriCDSURL) -}}
 {{- end -}}
 {{- /*
   The derived form is a node-local NodePort address, so there has to be one.

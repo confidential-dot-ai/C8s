@@ -942,7 +942,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
 		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to the components that name their ARmTLS
+		// propagates the CPU TEE to the components that name their armTLS
 		// platform, or CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
 			out = append(out,
@@ -995,7 +995,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		"gke + tdx":            {"gke", "tdx", build("gke", "tdx", "false", "true", "false")},
 		"bare-metal + tdx":     {"bare-metal", "tdx", build("bare-metal", "tdx", "false", "true", "false")},
 		"aks + sev-snp":        {"aks", "sev-snp", build("aks", "sev-snp", "false", "false", "true")},
-		// az-tdx: Azure vTPM (tpm=true, no guest device) + TDX ARmTLS platform.
+		// az-tdx: Azure vTPM (tpm=true, no guest device) + TDX armTLS platform.
 		"aks + tdx (az-tdx)": {"aks", "tdx", build("aks", "tdx", "false", "false", "true")},
 	}
 	for name, tc := range cases {
@@ -1066,7 +1066,7 @@ func TestAppendCvmModeInstallArgsRejectsUnknownHardwarePlatform(t *testing.T) {
 func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 	// aks + tdx is the Azure-vTPM TDX (az-tdx) shape: the node's vTPM HCL report
 	// wraps a TD quote, so it needs the vTPM device (tpm=true, no guest device)
-	// and the TDX ARmTLS platform on CDS/mesh — not a refusal.
+	// and the TDX armTLS platform on CDS/mesh — not a refusal.
 	got, err := appendCvmModeInstallArgs([]string{"upgrade"}, "aks", "tdx")
 	if err != nil {
 		t.Fatalf("appendCvmModeInstallArgs(aks, tdx): unexpected error %v", err)

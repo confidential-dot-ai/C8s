@@ -13,7 +13,7 @@ import (
 )
 
 // bareSnpEvidence strips cert_chain from the real Zen4c/Genoa fixture, yielding
-// the {attestation_report}-only evidence a bare ARmTLS serving cert produces —
+// the {attestation_report}-only evidence a bare armTLS serving cert produces —
 // the shape that forces the AMD KDS fetch.
 func bareSnpEvidence(t *testing.T) *evidence {
 	t.Helper()

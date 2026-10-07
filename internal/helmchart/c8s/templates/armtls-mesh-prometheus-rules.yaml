@@ -20,7 +20,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh resolver watch stream stale on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh resolver watch stream stale on {{`{{ $labels.instance }}`}}"
             description: >-
               The K8s pod informer has not received any event for over
               5 minutes. This is a watch-stream liveness signal — the
@@ -35,7 +35,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh on {{`{{ $labels.instance }}`}} has no measurement pinning"
+            summary: "armTLS mesh on {{`{{ $labels.instance }}`}} has no measurement pinning"
             description: >-
               --measurements is not set. Any TEE attestation will be accepted.
 
@@ -45,7 +45,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh on {{`{{ $labels.instance }}`}} is rejecting connections"
+            summary: "armTLS mesh on {{`{{ $labels.instance }}`}} is rejecting connections"
             description: >-
               Global connection limit reached. Investigate potential DoS.
 
@@ -55,7 +55,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh cert mode mismatch on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh cert mode mismatch on {{`{{ $labels.instance }}`}}"
             description: >-
               CDS certificate upgrade may be stuck. Check CDS.
 
@@ -65,7 +65,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "ARmTLS attestation failures on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS attestation failures on {{`{{ $labels.instance }}`}}"
             description: >-
               Peer attestation verification is failing. A non-TEE node may be connecting.
 
@@ -75,7 +75,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh cert pipeline unhealthy on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh cert pipeline unhealthy on {{`{{ $labels.instance }}`}}"
             description: >-
               CDS unreachable for over 10 minutes. Certificate renewal will fail.
 
@@ -85,7 +85,7 @@ spec:
           labels:
             severity: critical
           annotations:
-            summary: "ARmTLS mesh accept loop degraded on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh accept loop degraded on {{`{{ $labels.instance }}`}}"
             description: >-
               Accept loop has hit consecutive errors. Listener may be failing.
 
@@ -95,9 +95,9 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh high TLS handshake failure rate on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh high TLS handshake failure rate on {{`{{ $labels.instance }}`}}"
             description: >-
-              Sustained ARmTLS handshake failures. Possible measurement mismatch or misconfigured peer.
+              Sustained armTLS handshake failures. Possible measurement mismatch or misconfigured peer.
 
         - alert: ARMTLSMeshLocalCIDRRouteCheckUnavailable
           expr: armtls_mesh_resolver_local_cidrs == 0
@@ -105,7 +105,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh local CIDR route check unavailable on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh local CIDR route check unavailable on {{`{{ $labels.instance }}`}}"
             description: >-
               ValidateLocalDest has no host-discovered pod-network CIDRs.
               Inbound pod delivery is using Kubernetes Pod.Status.HostIP
@@ -121,7 +121,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh iptables-sync stale on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh iptables-sync stale on {{`{{ $labels.instance }}`}}"
             description: >-
               The iptables-sync sidecar's in-process counters
               (jump-position, ipset overflow) cannot signal a wedge after
@@ -138,7 +138,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh observed direct dials to :15001 on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh observed direct dials to :15001 on {{`{{ $labels.instance }}`}}"
             description: >-
               Something reached the host-network outbound listener with
               the node IP or loopback as the original destination — only
@@ -153,7 +153,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh iptables ipset overflow on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh iptables ipset overflow on {{`{{ $labels.instance }}`}}"
             description: >-
               Pod count exceeded --ipset-maxelem; the reconcile rejected
               the restore and the live ipset is stale. New pod IPs will
@@ -166,7 +166,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh jump-position contention on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh jump-position contention on {{`{{ $labels.instance }}`}}"
             description: >-
               The watchdog has been reasserting our PREROUTING/OUTPUT
               jump at position 1 more than once per minute for 10
@@ -182,7 +182,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh dropping non-mesh traffic to cw pods on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh dropping non-mesh traffic to cw pods on {{`{{ $labels.instance }}`}}"
             description: >-
               The cw guard chain is dropping packets: something is reaching
               confidential-workload pods outside the mesh. Causes, most
@@ -210,7 +210,7 @@ spec:
           labels:
             severity: warning
           annotations:
-            summary: "ARmTLS mesh memory usage > 85% on {{`{{ $labels.instance }}`}}"
+            summary: "armTLS mesh memory usage > 85% on {{`{{ $labels.instance }}`}}"
             description: >-
               Container memory above 85% of limit. Risk of OOMKill.
 {{- end }}

@@ -21,7 +21,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
-// attestedCertWithWindow mints a self-signed ARmTLS certificate carrying a
+// attestedCertWithWindow mints a self-signed armTLS certificate carrying a
 // well-formed attestation extension but the given validity window, so tests
 // can put genuine-looking evidence inside an unacceptable window.
 func attestedCertWithWindow(t *testing.T, notBefore, notAfter time.Time) *x509.Certificate {
@@ -87,7 +87,7 @@ func TestVerifyCertEnforcesValidity(t *testing.T) {
 	})
 }
 
-// The dual verifier's ARmTLS fallback accepts a self-signed peer on its
+// The dual verifier's armTLS fallback accepts a self-signed peer on its
 // evidence alone; the validity window is the only freshness bound that
 // evidence has, so an expired peer must be refused — and cheaply, before any
 // attestation-api round-trip.
@@ -243,7 +243,7 @@ func caSignedLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, n
 // The two branches of the dual verifier must share one validity window.
 // x509.Verify grants no NotBefore skew of its own, so a CA-signed leaf minted
 // a few minutes into the verifier's future used to fail the chain branch and
-// fall through to ARmTLS — where the sandbox and workload pins are not
+// fall through to armTLS — where the sandbox and workload pins are not
 // enforced at all. The skew is granted at the NotBefore end only.
 func TestDualVerifyPeerCallbackSharesTheSkewWindow(t *testing.T) {
 	caKey, caCert := generateCACert(t)
@@ -264,10 +264,10 @@ func TestDualVerifyPeerCallbackSharesTheSkewWindow(t *testing.T) {
 		if err == nil {
 			t.Fatal("a leaf with no sandbox-ID extension satisfied a sandbox pin")
 		}
-		// The chain branch's own rejection, not the ARmTLS fallback's "pin
+		// The chain branch's own rejection, not the armTLS fallback's "pin
 		// requires a CA-verified certificate" — that difference IS the bug.
 		if !strings.Contains(err.Error(), "CA-signed peer failed the sandbox-ID pin") {
-			t.Fatalf("err = %v, want the chain branch's pin rejection (the leaf fell through to ARmTLS)", err)
+			t.Fatalf("err = %v, want the chain branch's pin rejection (the leaf fell through to armTLS)", err)
 		}
 	})
 

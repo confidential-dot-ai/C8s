@@ -5,7 +5,7 @@ Source: [templates/_certificates.tpl](../../templates/_certificates.tpl).
 
 `c8s.getCertContainers` renders the `c8s-cert` native sidecar and the
 `c8s-cert-wait` init container for chart-owned components. The sidecar obtains
-and renews a CDS-issued mesh certificate over ARmTLS. Nginx reloads by SIGHUP in the shared PID namespace.
+and renews a CDS-issued mesh certificate over armTLS. Nginx reloads by SIGHUP in the shared PID namespace.
 `--key-out` loads an existing key across container restarts.
 
 The wait container gates workload startup on the certificate file using

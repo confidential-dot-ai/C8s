@@ -16,14 +16,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
-// Logger is an optional structured logger for ARmTLS operations.
+// Logger is an optional structured logger for armTLS operations.
 // If nil, no logging occurs. Compatible with [log/slog.Logger].
 type Logger interface {
 	Info(msg string, args ...any)
 	Warn(msg string, args ...any)
 }
 
-// ServerConfig configures an ARmTLS server.
+// ServerConfig configures an armTLS server.
 type ServerConfig struct {
 	// Platform is the TEE platform: "sev-snp" or "tdx".
 	Platform string
@@ -52,7 +52,7 @@ type ServerConfig struct {
 	// DNSNames for the server certificate.
 	DNSNames []string
 
-	// Subject for the certificate. Defaults to "ARmTLS Workload".
+	// Subject for the certificate. Defaults to "armTLS Workload".
 	Subject pkix.Name
 
 	// CertTTL is the certificate lifetime. Default: 24h.
@@ -60,14 +60,14 @@ type ServerConfig struct {
 	CertTTL time.Duration
 
 	// ClientPolicy, when set, enables mTLS: the server requires client
-	// certificates and verifies their ARmTLS attestation against this policy.
+	// certificates and verifies their armTLS attestation against this policy.
 	// When nil, the server does not request client certificates.
 	ClientPolicy *VerifyPolicy
 
 	// ClientCAs, when set, has crypto/tls verify a presented client
 	// certificate against these roots, with no embedded-evidence fallback: a leaf that does
 	// not chain is rejected in the handshake. Mutually exclusive with
-	// ClientPolicy, whose dual verifier accepts a self-signed ARmTLS peer as a
+	// ClientPolicy, whose dual verifier accepts a self-signed armTLS peer as a
 	// fallback — for a handler that reads a CDS-stamped field out of the leaf
 	// (the sandbox ID), that fallback would let any attested TEE assert an
 	// arbitrary value.
@@ -95,14 +95,14 @@ type ServerConfig struct {
 	Logger Logger
 }
 
-// ClientConfig configures an ARmTLS client that verifies embedded evidence
+// ClientConfig configures an armTLS client that verifies embedded evidence
 // or a certificate chain to a configured mesh CA.
 type ClientConfig struct {
 	// Policy defines acceptable attestation claims for the server.
 	Policy *VerifyPolicy
 
 	// Platform and AttestFunc, when both set, enable mTLS: the client
-	// presents its own ARmTLS certificate to the server. Both must be
+	// presents its own armTLS certificate to the server. Both must be
 	// set together or both left unset.
 	Platform   string
 	AttestFunc func(ctx context.Context, customData string) (string, error)
@@ -618,7 +618,7 @@ func (s *sharedCACerts) getPool() *x509.CertPool {
 	return s.pool.Load()
 }
 
-// CertManager provides access to the ARmTLS certificate lifecycle.
+// CertManager provides access to the armTLS certificate lifecycle.
 // Use WarmUp to eagerly provision the certificate at startup and CertReady
 // to gate readiness probes.
 type CertManager struct {
@@ -672,12 +672,12 @@ func (m *CertManager) UpdateCACerts(certs []*x509.Certificate) {
 	}
 }
 
-// NewServerTLSConfig creates a tls.Config for an ARmTLS server. The private
+// NewServerTLSConfig creates a tls.Config for an armTLS server. The private
 // key is generated in memory and never written to disk. The attestation report
 // is obtained lazily on the first TLS handshake and cached until rotation.
 //
 // If ClientPolicy is set, the server requires client certificates and verifies
-// their ARmTLS attestation (mTLS). If CACert is also set, the server accepts
+// their armTLS attestation (mTLS). If CACert is also set, the server accepts
 // peers with either verified embedded evidence or a certificate chain to the CA.
 //
 // If CertProvider is set, it is used for certificate provisioning instead of
@@ -729,7 +729,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 	switch {
 	case len(cfg.ClientCAs) > 0:
 		if cfg.ClientPolicy != nil {
-			return nil, nil, fmt.Errorf("armtls: ClientCAs and ClientPolicy are mutually exclusive (ClientPolicy admits a self-signed ARmTLS peer, which ClientCAs exists to refuse)")
+			return nil, nil, fmt.Errorf("armtls: ClientCAs and ClientPolicy are mutually exclusive (ClientPolicy admits a self-signed armTLS peer, which ClientCAs exists to refuse)")
 		}
 		pool := x509.NewCertPool()
 		for _, c := range cfg.ClientCAs {
@@ -754,7 +754,7 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 	return tlsCfg, mgr, nil
 }
 
-// NewClientTLSConfig creates a tls.Config for an ARmTLS client. Peer verification
+// NewClientTLSConfig creates a tls.Config for an armTLS client. Peer verification
 // checks key-bound TEE evidence or a chain to the configured mesh CA.
 // Policy.RequireCAEvidence also requires evidence verification for CA-signed
 // certificates.
@@ -836,7 +836,7 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 }
 
 // verifyPeerCallback returns a VerifyPeerCertificate function that checks
-// the peer's ARmTLS attestation against the given policy.
+// the peer's armTLS attestation against the given policy.
 func verifyPeerCallback(policy *VerifyPolicy) func([][]byte, [][]*x509.Certificate) error {
 	// Extract nonce from policy for use in verification.
 	var nonce []byte
@@ -865,7 +865,7 @@ func verifyPeerCallback(policy *VerifyPolicy) func([][]byte, [][]*x509.Certifica
 // dualVerifyPeerCallback returns a VerifyPeerCertificate function that accepts
 // peers with either verified embedded evidence or a certificate chain to any
 // of the given CAs. This enables rolling upgrades where some nodes have
-// CA-signed certificates and others still use self-signed ARmTLS. The
+// CA-signed certificates and others still use self-signed armTLS. The
 // multi-cert pool also supports CA rotation: include both old and new CA
 // during the transition window.
 func dualVerifyPeerCallback(policy *VerifyPolicy, shared *sharedCACerts) func([][]byte, [][]*x509.Certificate) error {
@@ -928,7 +928,7 @@ func dualVerifyPeerCallback(policy *VerifyPolicy, shared *sharedCACerts) func([]
 			// depends on the trust mode (see VerifyPolicy.RequireCAEvidence).
 			if policy != nil && policy.RequireCAEvidence {
 				// Production mode: the CA chain alone is not sufficient. The leaf
-				// must carry re-verifiable ARmTLS evidence (issuer.SignCSR copies
+				// must carry re-verifiable armTLS evidence (issuer.SignCSR copies
 				// the requester's nonce-free .1.1 extension onto the leaf), which
 				// we re-verify here so a CA compromise or wrong issuance policy is
 				// caught at the peer instead of trusted from the chain. VerifyCert
@@ -954,7 +954,7 @@ func dualVerifyPeerCallback(policy *VerifyPolicy, shared *sharedCACerts) func([]
 		// whoever minted it — and VerifyCert fails closed on one.
 		_, err = VerifyCert(cert, policy, nonce)
 		if err != nil {
-			return fmt.Errorf("armtls: peer verification failed (CA chain: %v; ARmTLS: %w)", chainErr, err)
+			return fmt.Errorf("armtls: peer verification failed (CA chain: %v; armTLS: %w)", chainErr, err)
 		}
 		return nil
 	}

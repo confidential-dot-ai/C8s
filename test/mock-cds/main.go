@@ -1,5 +1,5 @@
 // mock-cds is a fake CDS for integration testing: it serves the production
-// wire contract (ARmTLS, /authenticate, /attest — internal/cmds/cds) backed
+// wire contract (armTLS, /authenticate, /attest — internal/cmds/cds) backed
 // by the mock attestation-api instead of a TEE, and signs CSRs with an
 // ephemeral CA. Use only in test environments.
 package main
@@ -146,7 +146,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 	})
 
-	// Serve ARmTLS like production CDS: the attestation-api supplies the
+	// Serve armTLS like production CDS: the attestation-api supplies the
 	// evidence binding the serving key, and callers verify the handshake
 	// against the same api.
 	tlsCfg, _, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
@@ -159,7 +159,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("mock cds starting (ARmTLS)", "port", port)
+	slog.Info("mock cds starting (armTLS)", "port", port)
 	srv := &http.Server{Addr: ":" + port, Handler: mux, TLSConfig: tlsCfg}
 	if err := srv.ListenAndServeTLS("", ""); err != nil {
 		slog.Error("server failed", "error", err)
@@ -227,7 +227,7 @@ func handleAttest(store *challengeStore, verifier remote.Client) http.HandlerFun
 			return
 		}
 
-		// Sign the certificate with the mock CA. The ARmTLS extension is
+		// Sign the certificate with the mock CA. The armTLS extension is
 		// copied from the CSR like production's issuer.SignCSR, so the leaf
 		// stays re-verifiable downstream.
 		serial, _ := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))

@@ -24,7 +24,7 @@ import (
 )
 
 // armtlsServingCert mints a self-signed serving cert carrying an az-snp
-// evidence envelope in the ARmTLS extension, with the given validity window.
+// evidence envelope in the armTLS extension, with the given validity window.
 func armtlsServingCert(t *testing.T, notBefore, notAfter time.Time) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -112,7 +112,7 @@ func TestNewARMTLSHTTPClientEnforcesPeerCertValidity(t *testing.T) {
 }
 
 // caSignedARMTLSCert mints a CA-issued serving cert carrying a well-formed
-// ARmTLS extension: genuine evidence, but a body nothing on this path
+// armTLS extension: genuine evidence, but a body nothing on this path
 // authenticates (issuer != subject, and this client verifies no chain).
 func caSignedARMTLSCert(t *testing.T) tls.Certificate {
 	t.Helper()
@@ -153,7 +153,7 @@ func caSignedARMTLSCert(t *testing.T) tls.Certificate {
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: leaf.PrivateKey, Leaf: parsed}
 }
 
-// Peers here are self-signed ARmTLS leaves; this client verifies no chain and
+// Peers here are self-signed armTLS leaves; this client verifies no chain and
 // holds no CA. A CA-vouched leaf therefore arrives with NOTHING having
 // authenticated its body — no signature is checked when issuer != subject —
 // so its window, subject and stamps are whatever the producer of the bytes
@@ -178,7 +178,7 @@ func TestNewARMTLSHTTPClientRejectsCAVouchedPeer(t *testing.T) {
 	}
 }
 
-// attestedTLSServer serves over TLS with a (fake-report) ARmTLS attested cert.
+// attestedTLSServer serves over TLS with a (fake-report) armTLS attested cert.
 func attestedTLSServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -270,7 +270,7 @@ func TestNewARMTLSHTTPClientHandshake(t *testing.T) {
 		rec := &recordingVerify{}
 		client := NewARMTLSHTTPClient(nil, rec.fn, 5*time.Second)
 		if _, err := client.Get(plain.URL); err == nil {
-			t.Fatal("a cert without the ARmTLS extension must fail the request")
+			t.Fatal("a cert without the armTLS extension must fail the request")
 		}
 	})
 }

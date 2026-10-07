@@ -210,7 +210,7 @@ func TestInboundHeaderAtSizeLimitAccepted(t *testing.T) {
 	}
 }
 
-// A failed ARmTLS dial happens before any handshake completes, so the access
+// A failed armTLS dial happens before any handshake completes, so the access
 // log must classify it as tls_error and the handshake histogram must not
 // record a bogus zero-duration sample.
 func TestOutboundDialFailureClassifiedAsTLSError(t *testing.T) {
@@ -265,7 +265,7 @@ func TestOutboundDialFailureClassifiedAsTLSError(t *testing.T) {
 }
 
 // proxyRunFixture starts a full Proxy.Run with both listeners, wired so
-// outbound traffic loops through the ARmTLS inbound path to a local backend.
+// outbound traffic loops through the armTLS inbound path to a local backend.
 type proxyRunFixture struct {
 	p       *Proxy
 	backend string
@@ -333,7 +333,7 @@ func (f *proxyRunFixture) roundTrip(t *testing.T, payload string) string {
 	t.Helper()
 	// The proxy legitimately resets a client instead of serving it in two
 	// transient situations: the accept loop closing an accepted conn at a
-	// connection limit, and the upstream ARmTLS leg failing its dial or
+	// connection limit, and the upstream armTLS leg failing its dial or
 	// handshake (the handler then closes the downstream with the payload
 	// unread, which the kernel turns into an RST). On a starved CI runner
 	// either case fires rarely; retry a reset a few times — the response-byte

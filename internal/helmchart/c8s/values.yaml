@@ -264,7 +264,7 @@ cds:
   cnPattern: ""
   ## The single flat allowlist of SHA-384 hex launch digests, used two ways:
   ##   1. CDS admits these to call /attest.
-  ##   2. The armtls-mesh daemonset and nri-image-policy plugin pin CDS's ARmTLS
+  ##   2. The armtls-mesh daemonset and nri-image-policy plugin pin CDS's armTLS
   ##      serving cert against it when they dial CDS.
   ## Empty = no pinning (UNSAFE outside dev).
   measurements: []
@@ -273,7 +273,7 @@ cds:
   ## pins the guest kernel and RTMR[2] the command line carrying the dm-verity
   ## root hash. Used the same two ways as `measurements`: CDS requires them of
   ## TDX callers on /attest, and every component dialing CDS
-  ## pins CDS's ARmTLS cert against them. Ignored for SNP evidence. Empty = no
+  ## pins CDS's armTLS cert against them. Ignored for SNP evidence. Empty = no
   ## RTMR pinning (on TDX the measurement pin then confers no guest-code
   ## identity, UNSAFE).
   rtmrs: []
@@ -294,7 +294,7 @@ cds:
   rateLimiterMaxEntries: 10000
   rateLimiterEvictInterval: 1m
   rateLimiterIdleTimeout: 5m
-  ## ARmTLS settings for the cds serving cert. Without this, clients talk to
+  ## armTLS settings for the cds serving cert. Without this, clients talk to
   ## cds over plaintext HTTP and an on-path attacker can forge responses.
   ## Empty platform disables TLS — UNSAFE outside tests.
   armtlsPlatform: snp
@@ -394,7 +394,7 @@ attestationApi:
       cpu: 500m
       memory: 256Mi
 
-## ARmTLS service mesh: transparent L4 proxy with hardware-attested mTLS.
+## armTLS service mesh: transparent L4 proxy with hardware-attested mTLS.
 ##
 ## --- CRITICAL OPERATIONAL REQUIREMENT ---
 ## The armtls-mesh DaemonSet hardcodes hostNetwork: true and
@@ -420,7 +420,7 @@ armtlsMesh:
 
   imagePullSecrets: []
 
-  # -- ARmTLS TEE type embedded in and verified on mesh certs: sev-snp or tdx.
+  # -- armTLS TEE type embedded in and verified on mesh certs: sev-snp or tdx.
   #    This is the wire-level platform identifier, not the attestation-api
   #    detection vocab (az-snp and bare-metal snp both verify as sev-snp here);
   #    attestation-api still auto-detects how to gather the evidence.
@@ -469,7 +469,7 @@ armtlsMesh:
   rotationTimeout: "30s"
 
   # CDS integration (used when certMode=cds). The launch-measurement allowlist
-  # for CDS's ARmTLS peer cert comes from the parent's cds.measurements, not
+  # for CDS's armTLS peer cert comes from the parent's cds.measurements, not
   # a per-component mirror.
   cds:
     caPollInterval: "5m"
@@ -667,7 +667,7 @@ nriImagePolicy:
   # CDS image to pin here.
   cds:
     ## Host-process NRI pulls through the chart-managed CDS NodePort and
-    ## verifies CDS ARmTLS instead of trusting cluster DNS or ClusterIP routing.
+    ## verifies CDS armTLS instead of trusting cluster DNS or ClusterIP routing.
     ## Empty derives https://127.0.0.1:<cds.service.nodePort>; set a full URL
     ## only to point the plugin somewhere else entirely.
     url: ""
@@ -961,7 +961,7 @@ router:
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the
-  # chart-managed CDS Service's ARmTLS evidence; nginx forwards the original
+  # chart-managed CDS Service's armTLS evidence; nginx forwards the original
   # method, URI, body, and Authorization header unchanged. Reads remain
   # unauthenticated at CDS.
   # Writes still require the short-lived, body-bound operator token minted by
@@ -972,7 +972,7 @@ router:
   # public route entirely.
   allowlist:
     enabled: true
-    # -- Loopback port for the ARmTLS-verifying allowlist proxy. This is not a
+    # -- Loopback port for the armTLS-verifying allowlist proxy. This is not a
     # pod or Service port and is reachable only inside the router pod.
     proxyPort: 8801
     # -- nginx write limiting, per public client and in aggregate across all

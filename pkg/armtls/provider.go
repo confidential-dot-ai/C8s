@@ -26,7 +26,7 @@ type CertProvider interface {
 	Provision(ctx context.Context) (*tls.Certificate, time.Duration, error)
 }
 
-// SelfSignedProvider provisions self-signed ARmTLS certificates using local
+// SelfSignedProvider provisions self-signed armTLS certificates using local
 // hardware attestation. This is the default provider — it wraps the existing
 // provisionCert() logic behind the CertProvider interface.
 type SelfSignedProvider struct {

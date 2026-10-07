@@ -14,7 +14,7 @@ IMAGE_TAG=it
 NS=c8s-system
 CDS_LOCAL_PORT=18443
 # The mock attestation-api's synthetic launch digest (all zero). Pinned into
-# cds.measurements / armtlsMesh.measurements so every ARmTLS hop is verified
+# cds.measurements / armtlsMesh.measurements so every armTLS hop is verified
 # against it, exactly as a pinned production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 # Test-client and workload images. The workload image joins the install-time

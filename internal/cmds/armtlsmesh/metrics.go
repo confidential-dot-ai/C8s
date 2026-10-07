@@ -99,7 +99,7 @@ func newMetrics() *metrics {
 	}, []string{"direction", "side"})
 	m.tlsDialFailures = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_tls_dial_failures_total",
-		Help: "ARmTLS dial failures.",
+		Help: "armTLS dial failures.",
 	})
 	m.dialFailures = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_dial_failures_total",
@@ -183,13 +183,13 @@ func newMetrics() *metrics {
 	})
 	m.certRotationFailures = factory.NewCounterVec(prometheus.CounterOpts{
 		Name: "armtls_mesh_cert_rotation_failures_total",
-		Help: "Background ARmTLS certificate rotation failures by certificate role.",
+		Help: "Background armTLS certificate rotation failures by certificate role.",
 	}, []string{"role"})
 	m.certRotationFailures.WithLabelValues("server")
 	m.certRotationFailures.WithLabelValues("client")
 	m.attestationFailures = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_attestation_failures_total",
-		Help: "ARmTLS peer attestation verification failures.",
+		Help: "armTLS peer attestation verification failures.",
 	})
 	m.acceptErrors = factory.NewCounter(prometheus.CounterOpts{
 		Name: "armtls_mesh_accept_errors_total",
@@ -210,12 +210,12 @@ func newMetrics() *metrics {
 	m.certPipelineHealthy.Set(-1)
 	m.certExpiry = factory.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "armtls_mesh_cert_expiry_timestamp_seconds",
-		Help: "Unix timestamp when the ARmTLS certificate expires.",
+		Help: "Unix timestamp when the armTLS certificate expires.",
 	}, []string{"role"})
 
 	m.tlsHandshakeDuration = factory.NewHistogramVec(histOpts(
 		"armtls_mesh_tls_handshake_duration_seconds",
-		"ARmTLS handshake duration in seconds."), dirCert)
+		"armTLS handshake duration in seconds."), dirCert)
 	m.connectionDuration = factory.NewHistogramVec(histOpts(
 		"armtls_mesh_connection_duration_seconds",
 		"Total connection duration from accept to close in seconds."), dirCert)

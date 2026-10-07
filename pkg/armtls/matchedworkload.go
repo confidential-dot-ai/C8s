@@ -192,14 +192,14 @@ func CheckWorkloadPin(cert *x509.Certificate, expectedName string) error {
 // PeerMatchedWorkload returns the matched-workload stamp of the peer's leaf on
 // a live connection, for relying parties that route or authorize by name. The
 // stamp is CA-vouched, so the peer chain must have been verified by crypto/tls
-// against the mesh CA (VerifiedChains non-empty) — a self-signed ARmTLS peer's
+// against the mesh CA (VerifiedChains non-empty) — a self-signed armTLS peer's
 // extension is whatever it chose, and is refused here. nil with no error means
 // the verified peer carries no stamp.
 //
 // This means it only works on a ServerConfig.ClientCAs listener, the one branch
 // that lets crypto/tls build the chain itself. It returns an error on every
 // other C8s connection today: a ClientPolicy listener verifies through
-// dualVerifyPeerCallback (which deliberately also admits a self-signed ARmTLS
+// dualVerifyPeerCallback (which deliberately also admits a self-signed armTLS
 // peer) and every mesh client sets InsecureSkipVerify, and neither populates
 // VerifiedChains.
 //

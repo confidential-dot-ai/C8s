@@ -20,7 +20,7 @@ The operator tree is built around these pieces:
 - `internal/webhook` injects get-cert containers into opted-in pods so each
   workload can fetch and renew a leaf certificate through CDS.
 
-The operator does not inject the ARmTLS mesh sidecar. Pod-to-pod mTLS remains
+The operator does not inject the armTLS mesh sidecar. Pod-to-pod mTLS remains
 the responsibility of node-level `armtls-mesh`, deployed as a DaemonSet by
 the chart or as systemd services by the measured node image. The chart-managed
 mesh excludes `kube-system` and its own release namespace as local traffic
@@ -85,7 +85,7 @@ The supported chart shape is chart-managed and CVM-only. The chart does not
 support a non-CVM install shape or a bring-your-own CDS endpoint shape.
 
 `c8s install` (including `--cvm-mode=bare-metal`) is for chart-managed clusters.
-The [measured node image](../node-guest-image/README.md) runs CDS, the ARmTLS
+The [measured node image](../node-guest-image/README.md) runs CDS, the armTLS
 mesh, router and operator as Kubernetes workloads rendered from this chart
 at **image build time**. Their pinned container images are baked into the
 image too. RKE2 applies the manifests at boot; no guest Helm installation is
@@ -233,10 +233,10 @@ policy from private staging and reaches CDS through the signed server
 address and NodePort. Join tokens and private keys never enter the public
 policy directory.
 
-Join tokens remain secret RKE2 enrollment credentials. The ARmTLS mesh protects
+Join tokens remain secret RKE2 enrollment credentials. The armTLS mesh protects
 selected pod traffic; it does not wrap the RKE2 supervisor on port `9345` or the
 Kubernetes API on port `6443`. A token holder with network access can attempt
-RKE2 enrollment without a C8s ARmTLS identity, including from a non-confidential
+RKE2 enrollment without a C8s armTLS identity, including from a non-confidential
 pod. The server token carries server-enrollment authority; the separate agent
 token only permits agent enrollment. Neither token supplies the launch signing
 key or satisfies the image-and-role-key attestation policy. See
@@ -438,7 +438,7 @@ The router discovery endpoints (`/.well-known/mesh-ca.pem`,
 `/.well-known/cds-cert.pem`, `/v1/discovery`) track the new CA without a
 router restart: the c8s-cert sidecar polls CDS's `/ca` every
 `router.certProvisioning.caWatchInterval` (default 1m) over the same
-ARmTLS-verified channel it obtains certificates on, and re-issues its leaf —
+armTLS-verified channel it obtains certificates on, and re-issues its leaf —
 rewriting the served CA bundle and discovery document — as soon as CDS holds
 a CA the served bundle is missing. External clients that pinned the old CA
 must still re-fetch it from the discovery endpoint.
@@ -530,7 +530,7 @@ caching. Certificate verification still runs for every report; revocation data
 is never served from this disk cache. Cache failures do not block a successful fetch.
 
 ```bash
-# CDS's ARmTLS endpoint answers unattested clients:
+# CDS's armTLS endpoint answers unattested clients:
 kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443 &
 
 c8s cds verify https://localhost:8443 --measurements <sha384-launch-digest>
@@ -634,7 +634,7 @@ belongs to is not proven). JSON renders these as
 
 Caveats the output surfaces:
 
-- **Freshness.** Verifying an ARmTLS serving cert binds REPORTDATA to the
+- **Freshness.** Verifying an armTLS serving cert binds REPORTDATA to the
   certificate key, not a per-request nonce, so it proves "this key was born in a
   TEE with this measurement" but not "freshly now" (`fresh: false`).
 
@@ -685,7 +685,7 @@ directly.
 `c8s get-kubeconfig` obtains an operator kubeconfig (or, with `--role
 log-reader`, a logs-only one) from a measured node CVM.
 Before any credential flows it enforces the node's **full measured identity**,
-both on the ARmTLS connection and on a fresh nonce-bound attestation report:
+both on the armTLS connection and on a fresh nonce-bound attestation report:
 
 - **platform** — the `--image-manifest` shape selects it (a TDX tuple or SNP
   `snp_variants`); a node of any other platform is refused up front;
@@ -965,7 +965,7 @@ is attest-pq-only.
 The chart publishes CDS's complete `/allowlist` API through router by default.
 It renders exact `/allowlist` and `/allowlist/` prefix locations backed by the
 release's chart-managed CDS Service, so lookalike paths such as `/allowlisted`
-are not exposed. The router-to-CDS hop verifies CDS's ARmTLS attestation using
+are not exposed. The router-to-CDS hop verifies CDS's armTLS attestation using
 `cds.measurements`; `c8s install --measurements` populates that pin in node-CVM
 mode. An empty pin still verifies that the peer is a TEE but accepts any launch
 measurement, which is unsafe outside development.
@@ -1009,7 +1009,7 @@ router or CDS.
 Use the router URL with `c8s allowlist --url` and pin router's launch digest
 with `--measurements` only when `router.publicTLS.mode` is `cds`. In the other
 modes the public certificate is not yet bound to the discovery attestation and
-the CLI refuses that front door. Use a direct CDS ARmTLS URL (or a CDS
+the CLI refuses that front door. Use a direct CDS armTLS URL (or a CDS
 port-forward) and pin the CDS launch digest instead.
 
 Set `router.allowlist.enabled=false` to remove this route. For compatibility,
@@ -1133,7 +1133,7 @@ it:
 | Policy | Selects | Accepts |
 |---|---|---|
 | `c8s-attestation-api` | attestation-api | nothing (it binds pod loopback) |
-| `c8s-cds-ingress` | cds | `cds.port` (ARmTLS; also the NodePort route) |
+| `c8s-cds-ingress` | cds | `cds.port` (armTLS; also the NodePort route) |
 | `c8s-operator-ingress` | operator | 9443 webhook, 8081 probes, 8080 metrics |
 | `c8s-volumed-ingress` | volumed | nothing (it serves a node-local Unix socket) |
 | `c8s-router-ingress` | router | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |

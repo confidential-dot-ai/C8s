@@ -13,7 +13,7 @@ import (
 )
 
 // NewARMTLSHTTPClient returns an http.Client whose TLS handshake verifies the
-// peer's ARmTLS attestation extension against measurements (empty accepts any
+// peer's armTLS attestation extension against measurements (empty accepts any
 // attested peer — callers warn). The in-process counterpart of
 // armtls.NewVerifyingHTTPClient, sharing its transport (armtls.HTTPClient).
 // verify is [Verify] in production, a stub in tests; verifyTimeout bounds
@@ -36,7 +36,7 @@ func NewARMTLSHTTPClient(measurements [][]byte, verify VerifyFunc, verifyTimeout
 			// own signature under its attested key. Cheap, and it keeps an
 			// expired cert from costing an evidence verification.
 			//
-			// Peers on this path are self-signed ARmTLS leaves (this client
+			// Peers on this path are self-signed armTLS leaves (this client
 			// verifies no chain and holds no CA), so the classification must
 			// come back BodySelfSigned. Assert it instead of discarding it: a
 			// CA-vouched leaf here would have had NOTHING authenticate its

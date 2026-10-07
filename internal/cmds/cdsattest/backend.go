@@ -55,7 +55,7 @@ func (EchoBackend) Forward(_ context.Context, req types.TunnelRequest) (types.Tu
 }
 
 // HTTPBackend forwards the decrypted request to a real upstream. The connection
-// is plaintext HTTP by default — the cluster's transparent ARmTLS mesh wraps the
+// is plaintext HTTP by default — the cluster's transparent armTLS mesh wraps the
 // sidecar→backend hop, exactly like every other C8s workload. When the upstream
 // is https it does mTLS with the LB's CDS-issued client cert and verifies the
 // peer against the mesh CA (mirroring the router nginx proxy_ssl_* config).
@@ -70,7 +70,7 @@ type HTTPBackend struct {
 // connections open indefinitely.
 const defaultUpstreamTimeout = 30 * time.Second
 
-// HTTPBackendOptions configures the ARmTLS/mTLS material for an https upstream.
+// HTTPBackendOptions configures the armTLS/mTLS material for an https upstream.
 type HTTPBackendOptions struct {
 	// ClientCertFile/ClientKeyFile present the CDS-issued cert to the backend.
 	ClientCertFile string

@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -35,7 +36,7 @@ import (
 const tdxEnvelope = `{"platform":"tdx","evidence":{}}`
 
 // newAttestedTLSServer starts a TLS httptest server whose serving cert is a
-// genuine ARmTLS attested cert (quote envelope embedded, self-signed), the
+// genuine armTLS attested cert (quote envelope embedded, self-signed), the
 // same shape the cred-release endpoint serves.
 func newAttestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 	t.Helper()
@@ -122,7 +123,7 @@ func releaseHandler(t *testing.T, status int, respBody string, gotRole *atomic.V
 }
 
 // testEnv wires up a full fake node: operator key + image manifest on disk,
-// the caller's attest endpoint URL, ARmTLS cred-release endpoint, and a
+// the caller's attest endpoint URL, armTLS cred-release endpoint, and a
 // stubbed verifier that accepts iff the claims satisfy the full
 // measured-identity policy.
 type testEnv struct {
@@ -191,7 +192,7 @@ func (e testEnv) config() Config {
 }
 
 // TestRunEndToEnd drives the full client flow against fake endpoints: attest
-// gate, ARmTLS dial (verified via the stub), operator-signed CSR exchange, and
+// gate, armTLS dial (verified via the stub), operator-signed CSR exchange, and
 // kubeconfig assembly on disk.
 func TestRunEndToEnd(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
@@ -299,7 +300,7 @@ func TestRunRejectsWrongRTMR3(t *testing.T) {
 	}
 }
 
-// TestARMTLSClientRejectsPlainCert confirms the ARmTLS dial fails closed
+// TestARMTLSClientRejectsPlainCert confirms the armTLS dial fails closed
 // against a server whose cert carries no attestation envelope (a host MITM).
 func TestARMTLSClientRejectsPlainCert(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
@@ -309,8 +310,8 @@ func TestARMTLSClientRejectsPlainCert(t *testing.T) {
 	cfg := env.config()
 	cfg.ReleaseBaseURL = plain.URL
 	err := Run(context.Background(), cfg)
-	if err == nil || !strings.Contains(err.Error(), "carries no ARmTLS attestation extension") {
-		t.Fatalf("want ARmTLS handshake failure (no ARmTLS extension), got %v", err)
+	if !errors.Is(err, armtls.ErrNoAttestation) {
+		t.Fatalf("want armTLS handshake failure (no armTLS extension), got %v", err)
 	}
 }
 

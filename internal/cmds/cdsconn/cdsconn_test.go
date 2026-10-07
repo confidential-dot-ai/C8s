@@ -53,7 +53,7 @@ func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
 }
 
 // A target that serves no discovery document is a direct CDS URL, which is
-// verified by ARmTLS on its serving certificate rather than through a front
+// verified by armTLS on its serving certificate rather than through a front
 // door. Nothing is dialled until a request is made, so the fallback yields a
 // client rather than an error.
 func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
@@ -232,7 +232,7 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 	}
 }
 
-// An https CDS with no --measurements is attested but not identified: ARmTLS
+// An https CDS with no --measurements is attested but not identified: armTLS
 // proves the peer is a TEE, not that it is the CDS this operator meant. Reads
 // only warn, but a signed token hands `c8s secrets put`'s secret and
 // `c8s allowlist`'s policy change to whatever answered, so minting one is

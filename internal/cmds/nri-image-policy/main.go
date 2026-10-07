@@ -239,7 +239,7 @@ func Run(args []string) error {
 	return nil
 }
 
-// allowlistPullHTTPClient builds the ARmTLS client for the CDS pull. The pull
+// allowlistPullHTTPClient builds the armTLS client for the CDS pull. The pull
 // URL is always https (enforced by config.Validate), so this always verifies
 // the CDS attestation handshake.
 func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
@@ -248,11 +248,11 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 		return nil, err
 	}
 	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
-		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any ARmTLS-attested CDS measurement")
+		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
 	}
 	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
-		return nil, fmt.Errorf("CDS ARmTLS client: %w", err)
+		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
 	client.Timeout = cfg.Timeout
 	return client, nil
@@ -494,14 +494,14 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 }
 
 // startSandboxDigests serves the CDS-facing digests endpoint over
-// mutually-attested ARmTLS (docs/armtls.md, "Sandbox identity").
+// mutually-attested armTLS (docs/armtls.md, "Sandbox identity").
 func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, signer *workloadclaims.SandboxTokenSigner) error {
 	pins, err := cfg.Allowlist.Pull.cdsPins()
 	if err != nil {
 		return err
 	}
 	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
-		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY ARmTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
+		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	// The attest func is platform-agnostic despite its name (see its doc

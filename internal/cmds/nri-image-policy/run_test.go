@@ -476,7 +476,7 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 // The accept-any-measurement warning is a security signal: it must fire
 // exactly when no measurement is pinned.
 func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
-	const warning = "accepts any ARmTLS-attested CDS measurement"
+	const warning = "accepts any armTLS-attested CDS measurement"
 	var buf bytes.Buffer
 	orig := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))

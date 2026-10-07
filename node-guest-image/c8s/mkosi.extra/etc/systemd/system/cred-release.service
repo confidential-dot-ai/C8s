@@ -7,7 +7,7 @@ Documentation=https://github.com/confidential-dot-ai/c8s
 StartLimitIntervalSec=300
 StartLimitBurst=5
 # Needs the RKE2 client-CA (to sign operator certs) and the attestation-api
-# (to fetch the ARmTLS serving cert's quote from :8400). rke2-server
+# (to fetch the armTLS serving cert's quote from :8400). rke2-server
 # creates /var/lib/rancher/rke2/server/tls/client-ca.* only once it has
 # initialised, so we order after it and gate on the key existing (the Exec
 # startpre below), rather than racing a half-initialised control plane.

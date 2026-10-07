@@ -32,7 +32,7 @@ spec:
   policyTypes:
     - Ingress
   ingress:
-    # ARmTLS from anywhere: get-cert runs beside every adopted workload, and the
+    # armTLS from anywhere: get-cert runs beside every adopted workload, and the
     # NodePort route arrives off-cluster.
     - ports:
         - protocol: TCP

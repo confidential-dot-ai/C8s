@@ -264,7 +264,7 @@ func TestChartRendersARMTLSHostRoutingDefaults(t *testing.T) {
 	if !argvContainsFlagValue(mesh.Args, "--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json") {
 		t.Errorf("armtls-mesh args missing the shared iptables metrics file flag; args=%q", mesh.Args)
 	}
-	// --platform is the ARmTLS TEE type; an empty value (the old missing
+	// --platform is the armTLS TEE type; an empty value (the old missing
 	// default) trips the binary's "--platform is required" check, so the mesh
 	// pod never starts. Pin the non-empty default.
 	if !argvContainsFlagValue(mesh.Args, "--platform", "sev-snp") {
@@ -1495,7 +1495,7 @@ func TestChartOperatorDialsTrustRootOverHTTPS(t *testing.T) {
 
 // TestChartArmtlsMeshCDSMeasurementsFlagsThrough confirms the single
 // cds.measurements reaches the daemonset's --cds-measurements flag — without
-// this the ARmTLS handshake accepts any measurement and the H1 defence
+// this the armTLS handshake accepts any measurement and the H1 defence
 // collapses to "trust the cluster network". armtls-mesh reads the parent's
 // cds.measurements directly, so there is no mirror to drift.
 func TestChartArmtlsMeshCDSMeasurementsFlagsThrough(t *testing.T) {
@@ -1706,7 +1706,7 @@ func TestChartRejectsPlaintextNRIAllowlist(t *testing.T) {
 	if err == nil {
 		t.Fatalf("helm template succeeded, want plaintext NRI allowlist failure\n%s", out)
 	}
-	assertHelmFailMessage(t, out, `nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got "http://c8s-cds.c8s-system.svc:8443"): the host plugin must fetch the allowlist over ARmTLS`)
+	assertHelmFailMessage(t, out, `nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got "http://c8s-cds.c8s-system.svc:8443"): the host plugin must fetch the allowlist over armTLS`)
 }
 
 // parseValidationErrorKind extracts kind=<id> from helm's stderr when the
@@ -2094,7 +2094,7 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 	}
 
 	// router allowlist proxy: pod-netns, uses the same verifier endpoint for
-	// the ARmTLS hop to CDS.
+	// the armTLS hop to CDS.
 	allowlistProxy := renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy")
 	assertContainerArgs(t, allowlistProxy, hostIPURL)
 	if !hasHostIPEnv(allowlistProxy) {
@@ -4701,7 +4701,7 @@ func TestChartCDSAllowlistPersistentTracksPVC(t *testing.T) {
 }
 
 // TestChartCDSServesARMTLS confirms the cds container renders with a non-empty
-// --armtls-platform by default, i.e. ARmTLS serving is ON. An empty platform
+// --armtls-platform by default, i.e. armTLS serving is ON. An empty platform
 // makes cds serve /attest over plaintext HTTP,
 // collapsing the H1 bootstrap-channel MITM defence — a regression this guards.
 func TestChartCDSServesARMTLS(t *testing.T) {
@@ -5160,7 +5160,7 @@ func prefixRouterSetArgs(args []string) []string {
 }
 
 // Example_routerConfig renders the router ConfigMap for a representative route
-// set — one plaintext HTTP backend (/allowlist) and one ARmTLS-verified HTTPS
+// set — one plaintext HTTP backend (/allowlist) and one armTLS-verified HTTPS
 // backend (/tenant/) — and prints the generated nginx.conf. It doubles as a
 // golden test of templates/configmap.yaml: a template edit that changes the
 // rendered config must be reflected in the Output block, so the full config
@@ -5746,7 +5746,7 @@ func TestChartComponentArgsDoNotRepeatTheEntrypointSubcommand(t *testing.T) {
 // bakes the plugin with empty cds_measurements, and the chart is the only thing
 // that knows this release's pins — so an install that does not carry them into
 // the baked config leaves the component deciding which images may run on the
-// node willing to take its allowlist from ANY ARmTLS-attested CDS, and its
+// node willing to take its allowlist from ANY armTLS-attested CDS, and its
 // sandbox-digests endpoint willing to answer any of them. Regression for a
 // bare-metal run that found exactly that (2026-08-26).
 func TestChartPinsCDSInBareMetalMode(t *testing.T) {

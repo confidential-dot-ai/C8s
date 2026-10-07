@@ -26,14 +26,14 @@ import (
 
 // TestProviderARMTLSRejectsUnattestedCDS proves the cdsclient's default
 // (no HTTPClient override) http.Client refuses to talk to an CDS server
-// whose serving cert lacks an ARmTLS attestation extension. This is the
+// whose serving cert lacks an armTLS attestation extension. This is the
 // safety net that closes the bootstrap-channel MITM gap: an on-path attacker
 // cannot present a TEE-attested cert with an allowed measurement, so the TLS
 // handshake fails before any cert-issuance bytes flow.
 func TestProviderARMTLSRejectsUnattestedCDS(t *testing.T) {
 	as := mockapi.New(t)
 
-	// Plain HTTPS server with a regular self-signed cert (no ARmTLS extension).
+	// Plain HTTPS server with a regular self-signed cert (no armTLS extension).
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatalf("unexpected request to unattested CDS: %s", r.URL.Path)
 	}))
@@ -46,7 +46,7 @@ func TestProviderARMTLSRejectsUnattestedCDS(t *testing.T) {
 		NodeIP:            "10.0.0.1",
 		TEEType:           armtls.TEETypeSEVSNP,
 		CDSMeasurements:   [][]byte{make([]byte, armtls.SNPMeasurementSize)},
-		// HTTPClient deliberately nil so NewClient builds the ARmTLS transport.
+		// HTTPClient deliberately nil so NewClient builds the armTLS transport.
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestProviderARMTLSRejectsUnattestedCDS(t *testing.T) {
 // TestProviderARMTLSRejectsCertWithoutAttestationExtension is a tighter test
 // than the previous one: it stands up an HTTPS server whose cert is issued by
 // a well-known x509 path (not self-signed by httptest), and confirms the
-// cdsclient still rejects it because the cert lacks the ARmTLS extension.
+// cdsclient still rejects it because the cert lacks the armTLS extension.
 func TestProviderARMTLSRejectsCertWithoutAttestationExtension(t *testing.T) {
 	as := mockapi.New(t)
 
@@ -113,12 +113,12 @@ func TestProviderARMTLSRejectsCertWithoutAttestationExtension(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := p.Provision(context.Background()); err == nil {
-		t.Fatal("Provision accepted CDS cert without an ARmTLS attestation extension")
+		t.Fatal("Provision accepted CDS cert without an armTLS attestation extension")
 	}
 }
 
 // TestProviderARMTLSRejectsCDSWithUnpinnedMeasurement proves the measurement
-// pin closes the bootstrap-channel MITM gap: a real ARmTLS listener whose
+// pin closes the bootstrap-channel MITM gap: a real armTLS listener whose
 // evidence verifies but whose launch digest is not in CDSMeasurements must
 // fail the handshake with ErrPolicyViolation before any CDS request flows.
 func TestProviderARMTLSRejectsCDSWithUnpinnedMeasurement(t *testing.T) {
@@ -153,7 +153,7 @@ func TestProviderARMTLSRejectsCDSWithUnpinnedMeasurement(t *testing.T) {
 		NodeIP:            "10.0.0.1",
 		TEEType:           armtls.TEETypeSEVSNP,
 		CDSMeasurements:   [][]byte{pinned},
-		// HTTPClient deliberately nil so NewClient builds the ARmTLS transport.
+		// HTTPClient deliberately nil so NewClient builds the armTLS transport.
 	}, nil)
 	if err != nil {
 		t.Fatal(err)

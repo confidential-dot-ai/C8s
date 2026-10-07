@@ -42,7 +42,7 @@ func TestNewClientDefaultTransport(t *testing.T) {
 		t.Errorf("IdleConnTimeout = %v, want 30s", tr.IdleConnTimeout)
 	}
 	if tr.TLSClientConfig == nil {
-		t.Fatal("TLSClientConfig is nil: CDS would be dialed without ARmTLS peer verification")
+		t.Fatal("TLSClientConfig is nil: CDS would be dialed without armTLS peer verification")
 	}
 	if tr.TLSClientConfig.MinVersion != tls.VersionTLS13 {
 		t.Errorf("MinVersion = %v, want TLS 1.3", tr.TLSClientConfig.MinVersion)

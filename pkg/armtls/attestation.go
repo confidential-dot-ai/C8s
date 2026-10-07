@@ -10,12 +10,12 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 )
 
-// The ARmTLS extension, its wire format and its verification live in
+// The armTLS extension, its wire format and its verification live in
 // attestation-go/armtls. What follows is the C8s spelling of that surface, kept
 // because many call sites and the docs use these names. New code can take the
 // library names directly.
 
-// Attestation is the TEE evidence an ARmTLS certificate extension carries.
+// Attestation is the TEE evidence an armTLS certificate extension carries.
 type Attestation = agarmtls.Attestation
 
 // TEEType is the hardware TEE family an extension records. The extension
@@ -42,12 +42,12 @@ const (
 // format, C8s owns the OID it is carried under.
 //
 //	1.3.6.1.4.1.66378.1   - confidential TEE attestation arc
-//	1.3.6.1.4.1.66378.1.1 - ARmTLS attestation extension
+//	1.3.6.1.4.1.66378.1.1 - armTLS attestation extension
 //	1.3.6.1.4.1.66378.1.2 - attestation-evidence audit digest (certutil)
 //	1.3.6.1.4.1.66378.1.4 - pod sandbox ID extension (sandbox.go)
 //	1.3.6.1.4.1.66378.1.5 - matched workload extension (matchedworkload.go)
 //
-// .1.3 was the ARmTLS config-claims extension; it is retired, not reusable.
+// .1.3 was the armTLS config-claims extension; it is retired, not reusable.
 var (
 	OIDConfidentialTEE   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1}
 	OIDARMTLSAttestation = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 66378, 1, 1}

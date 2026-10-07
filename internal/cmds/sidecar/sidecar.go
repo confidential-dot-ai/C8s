@@ -57,7 +57,7 @@ func (c Config) Endpoint() string {
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
 	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --measurements and --rtmrs")
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS")
-	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's ARmTLS certificate")
+	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
 	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")
 	f.StringSliceVar(&cfg.RTMRs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable; ignored when CDS presents SNP evidence, empty pins no registers)")
 	f.StringVar(&cfg.CertPath, "cert", "/run/c8s/certs/tls.crt", "the pod's CDS-issued certificate, presented to CDS")
@@ -76,7 +76,7 @@ func (c *Config) Validate() error {
 	}
 	c.CDSURL = strings.TrimRight(c.CDSURL, "/")
 	if !strings.HasPrefix(c.CDSURL, "https://") {
-		return fmt.Errorf("--cds-url must be https (ARmTLS)")
+		return fmt.Errorf("--cds-url must be https (armTLS)")
 	}
 	if c.AttestationApiURL == "" {
 		return fmt.Errorf("--attestation-api-url is required to verify CDS")

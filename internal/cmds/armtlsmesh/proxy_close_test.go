@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-// startMeshChain wires app -> outbound proxy -> ARmTLS -> inbound proxy ->
+// startMeshChain wires app -> outbound proxy -> armTLS -> inbound proxy ->
 // backend, mirroring TestEndToEnd, and returns the outbound listener address.
 func startMeshChain(t *testing.T, backend string, idle time.Duration) string {
 	t.Helper()

@@ -39,7 +39,7 @@ import (
 
 func TestCDSHTTPClientRejectsPlainHTTP(t *testing.T) {
 	// A non-https --cds-url must be refused, not quietly served over a client
-	// that skips ARmTLS attestation of CDS.
+	// that skips armTLS attestation of CDS.
 	for _, scheme := range []string{"http://cds:8443", "cds:8443", "tcp://cds:8443"} {
 		if _, err := cdsHTTPClient(config{CDSURL: scheme, AttestationApiURL: "http://attestation-api:8400"}); err == nil {
 			t.Fatalf("cdsHTTPClient(%q) succeeded, want error for non-https scheme", scheme)
@@ -56,7 +56,7 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 		t.Fatalf("cdsHTTPClient: %v", err)
 	}
 	if client == http.DefaultClient {
-		t.Fatal("client = http.DefaultClient, want ARmTLS client")
+		t.Fatal("client = http.DefaultClient, want armTLS client")
 	}
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
@@ -66,7 +66,7 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 		t.Fatal("TLSClientConfig is nil")
 	}
 	if !transport.TLSClientConfig.InsecureSkipVerify {
-		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want ARmTLS verification path")
+		t.Fatal("TLSClientConfig.InsecureSkipVerify = false, want armTLS verification path")
 	}
 }
 
@@ -643,19 +643,19 @@ func TestCreateCSR(t *testing.T) {
 			t.Fatalf("createCSR: %v", err)
 		}
 		csr := parseCSR(t, csrPEM)
-		// INVARIANT: the CSR carries the ARmTLS extension so CDS can copy it
+		// INVARIANT: the CSR carries the armTLS extension so CDS can copy it
 		// into the issued leaf for downstream armtls-mode re-verification.
 		found := false
 		for _, ext := range csr.Extensions {
 			if ext.Id.Equal(armtls.OIDARMTLSAttestation) {
 				found = true
 				if string(ext.Value) != string(armtlsExt.Value) {
-					t.Fatalf("ARmTLS ext value = %x, want %x", ext.Value, armtlsExt.Value)
+					t.Fatalf("armTLS ext value = %x, want %x", ext.Value, armtlsExt.Value)
 				}
 			}
 		}
 		if !found {
-			t.Fatal("CSR missing the ARmTLS attestation extension")
+			t.Fatal("CSR missing the armTLS attestation extension")
 		}
 	})
 
@@ -669,7 +669,7 @@ func TestCreateCSR(t *testing.T) {
 		}
 	})
 
-	// The workload-claims flow embeds an ARmTLS attestation extension into the
+	// The workload-claims flow embeds an armTLS attestation extension into the
 	// CSR so CDS copies it onto the leaf (docs/armtls.md). Confirm an extra
 	// extension survives into the request.
 	t.Run("carries extra extension", func(t *testing.T) {
@@ -693,7 +693,7 @@ func TestCreateCSR(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Fatal("ARmTLS extension not carried into the CSR")
+			t.Fatal("armTLS extension not carried into the CSR")
 		}
 	})
 }
@@ -1050,7 +1050,7 @@ func TestObtainCertAttestationExtensionError(t *testing.T) {
 	if err == nil {
 		t.Fatal("obtainCert succeeded, want attestation extension error")
 	}
-	if !strings.Contains(err.Error(), "build ARmTLS attestation extension") {
+	if !strings.Contains(err.Error(), "build armTLS attestation extension") {
 		t.Fatalf("error = %v, want attestation extension error", err)
 	}
 }

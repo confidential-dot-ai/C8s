@@ -88,7 +88,7 @@ func NewCmd() *cobra.Command {
 	flags.IntVar(&cfg.secretsMaxValueBytes, "secrets-max-value-bytes", 4096, "max bytes in one secret value")
 	flags.IntVar(&cfg.sandboxLedgerMax, "sandbox-ledger-max-entries", 10000, "max sandbox-to-inventory bindings held in memory")
 
-	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the ARmTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
+	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
 
 	_ = cmd.MarkFlagRequired("armtls-platform")
@@ -101,7 +101,7 @@ func NewCmd() *cobra.Command {
 	// Mode is intentionally left at auto: resolveMode derives it from --kind
 	// (cds → armtls-cert, lb → discovery), so `c8s cds verify --kind lb` targets
 	// the LB's discovery doc. Presetting Mode: "armtls-cert" here would shadow
-	// that and make --kind lb dial for the embedded ARmTLS extension the LB
+	// that and make --kind lb dial for the embedded armTLS extension the LB
 	// front door never serves.
 	cmd.AddCommand(verify.NewCmd(verify.Defaults{
 		Use:         "verify [target]",
@@ -168,7 +168,7 @@ type config struct {
 // Config directly.
 func validateARMTLSPlatformFlag(v string) error {
 	if strings.TrimSpace(v) == "" {
-		return fmt.Errorf("--armtls-platform must not be empty (ARmTLS is mandatory; tests construct Config directly)")
+		return fmt.Errorf("--armtls-platform must not be empty (armTLS is mandatory; tests construct Config directly)")
 	}
 	if _, err := teetypes.ParseFamily(v); err != nil {
 		return fmt.Errorf("--armtls-platform: %w", err)
