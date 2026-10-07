@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 
@@ -14,9 +15,11 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // Prepare publishes a fixed set of nonsecret workload inputs from the
@@ -69,13 +72,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	if !ok {
 		return fmt.Errorf("baked NRI policy missing pull")
 	}
-	baseData, err := json.Marshal(a["base"])
+	base, err := bakedBase(a["base"])
 	if err != nil {
-		return fmt.Errorf("baked NRI base: %w", err)
-	}
-	base, err := allowlist.ParseJSON(baseData)
-	if err != nil {
-		return fmt.Errorf("baked NRI base: %w", err)
+		return err
 	}
 	if err := mergeWorkloads(base, bakedSeed, true); err != nil {
 		return fmt.Errorf("merge chart seed into NRI base: %w", err)
@@ -85,6 +84,21 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 	pull["cds_measurements_config"] = launchDir + "cds.json"
 	delete(pull, "cds_measurements")
 	delete(pull, "cds_rtmrs")
+	// A node carrying no mesh policy hosts no member pods, so there is no
+	// role to bind.
+	if mesh, declared := floor["mesh"]; declared {
+		policy, ok := mesh.(map[string]any)
+		if !ok {
+			return fmt.Errorf("baked NRI mesh policy is %T, not a mapping", mesh)
+		}
+		address, err := d.CDSAddrPort()
+		if err != nil {
+			return err
+		}
+		if err := appendCredentialRole(policy, address); err != nil {
+			return err
+		}
+	}
 	data, err = yaml.Marshal(floor)
 	if err != nil {
 		return err
@@ -114,6 +128,60 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		return err
 	}
 	return fileutil.WriteAtomic(policyPath, data, 0600)
+}
+
+// bakedBase decodes the measured base out of the boot config it is written in.
+// It is read as YAML, not through the JSON ingest, because a declared platform
+// role is a YAML-only field: the JSON path refuses it so that a document CDS
+// serves can never claim a role (pkg/allowlist, MM4).
+func bakedBase(declared any) (*allowlist.Allowlist, error) {
+	data, err := yaml.Marshal(declared)
+	if err != nil {
+		return nil, fmt.Errorf("baked NRI base: %w", err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var base allowlist.Allowlist
+	if err := dec.Decode(&base); err != nil {
+		return nil, fmt.Errorf("baked NRI base: %w", err)
+	}
+	if err := base.Normalize(); err != nil {
+		return nil, fmt.Errorf("baked NRI base: %w", err)
+	}
+	return &base, nil
+}
+
+// appendCredentialRole completes the measured mesh policy with the one binding
+// only a launched node can know: the injected credential clients reach this
+// cluster's CDS and nothing else. A policy that already names that role, or
+// its reserved identity, is a measured policy this step would contradict.
+func appendCredentialRole(policy map[string]any, address netip.AddrPort) error {
+	declared, ok := policy["roles"]
+	if !ok {
+		declared = []any{}
+	}
+	roles, ok := declared.([]any)
+	if !ok {
+		return fmt.Errorf("baked NRI mesh roles are %T, not a list", declared)
+	}
+	for _, declared := range roles {
+		role, ok := declared.(map[string]any)
+		if !ok {
+			return fmt.Errorf("baked NRI mesh role is %T, not a mapping", declared)
+		}
+		if role["name"] == nriimagepolicy.CredentialRole {
+			return fmt.Errorf("baked NRI mesh policy already binds the %s role", nriimagepolicy.CredentialRole)
+		}
+		if uid, declared := role["uid"]; declared && fmt.Sprint(uid) == fmt.Sprint(workloadclaims.CredentialsUID) {
+			return fmt.Errorf("baked NRI mesh role %v holds uid %v, reserved for the %s role", role["name"], uid, nriimagepolicy.CredentialRole)
+		}
+	}
+	policy["roles"] = append(roles, map[string]any{
+		"name":         nriimagepolicy.CredentialRole,
+		"uid":          workloadclaims.CredentialsUID,
+		"destinations": []any{address.String()},
+	})
+	return nil
 }
 
 // serverConfig holds the inputs only a server publishes. An agent must never

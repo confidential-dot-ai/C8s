@@ -135,7 +135,7 @@ func TestMeshContainerShape(t *testing.T) {
 		}
 	}
 	sc := mesh.SecurityContext
-	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != workloadclaims.MeshUID {
+	if sc == nil || sc.RunAsUser == nil || *sc.RunAsUser != int64(workloadclaims.MeshUID) {
 		t.Fatalf("mesh runAsUser = %v, want the reserved %d", sc, workloadclaims.MeshUID)
 	}
 	if len(sc.Capabilities.Add) != 0 || !slices.Contains(sc.Capabilities.Drop, corev1.Capability("ALL")) {

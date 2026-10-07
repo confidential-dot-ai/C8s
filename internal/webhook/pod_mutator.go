@@ -1035,8 +1035,8 @@ func meshSecurityContext() *corev1.SecurityContext {
 		AllowPrivilegeEscalation: new(false),
 		ReadOnlyRootFilesystem:   new(true),
 		RunAsNonRoot:             new(true),
-		RunAsUser:                new(workloadclaims.MeshUID),
-		RunAsGroup:               new(workloadclaims.MeshUID),
+		RunAsUser:                new(int64(workloadclaims.MeshUID)),
+		RunAsGroup:               new(int64(workloadclaims.MeshUID)),
 		Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
 	}

@@ -99,11 +99,17 @@ const MeshContainerName = "c8s-mesh"
 // endpoint binds them, and the node enforcer matches the pod's packet rules on
 // MeshUID. MeshHealthPort carries the probes and no application traffic.
 const (
-	MeshUID          int64 = 1337
-	MeshOutboundPort int32 = 15001
-	MeshInboundPort  int32 = 15006
-	MeshHealthPort   int32 = 15021
+	MeshUID          uint32 = 1337
+	MeshOutboundPort int32  = 15001
+	MeshInboundPort  int32  = 15006
+	MeshHealthPort   int32  = 15021
 )
+
+// CredentialsUID is the reserved identity of the injected credential clients.
+// The injector runs them as it, the node binds it to the CDS address, and the
+// enforcer refuses it in any other container, so a pod cannot reach the CDS
+// with a socket of its own.
+const CredentialsUID uint32 = 1338
 
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.

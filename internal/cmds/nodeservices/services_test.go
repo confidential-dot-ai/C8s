@@ -13,7 +13,9 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	nriimagepolicy "github.com/confidential-dot-ai/c8s/internal/cmds/nri-image-policy"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func testPins(t *testing.T) refvalues.ReferenceValues {
@@ -294,3 +296,173 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 		}
 	}
 }
+
+// A launched node completes its measured mesh policy with the one binding only
+// a launch knows: the injected credential clients reach this cluster's CDS. The
+// measured parts are untouched, so staging cannot widen them.
+func TestPrepareBindsTheCredentialRoleToTheStagedCDS(t *testing.T) {
+	root := prepareRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor))
+	doc := document(t, launchconfig.Server)
+
+	if err := Prepare(root, doc); err != nil {
+		t.Fatal(err)
+	}
+
+	staged := stagedMeshPolicy(t, root)
+	if got, want := staged.ExemptNamespaces, []string{"kube-system"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("staged exempt namespaces = %v, want the measured %v", got, want)
+	}
+	if got := staged.Capture; got != (stagedCapture{Outbound: 15001, Inbound: 15006, Health: 15021}) {
+		t.Errorf("staging changed the measured capture ports: %+v", got)
+	}
+	if len(staged.Roles) != 2 {
+		t.Fatalf("staged roles = %+v, want the measured mesh role plus the credential role", staged.Roles)
+	}
+	if got := staged.Roles[0]; got.Name != "mesh" || got.UID != workloadclaims.MeshUID {
+		t.Errorf("staging changed the measured mesh role: %+v", got)
+	}
+	credentials := staged.Roles[1]
+	if credentials.Name != nriimagepolicy.CredentialRole || credentials.UID != workloadclaims.CredentialsUID {
+		t.Errorf("credential role = %+v, want %s on the reserved uid %d", credentials, nriimagepolicy.CredentialRole, workloadclaims.CredentialsUID)
+	}
+	if want := []string{"192.0.2.10:30808"}; !reflect.DeepEqual(credentials.Destinations, want) {
+		t.Errorf("credential destinations = %v, want this cluster's CDS %v", credentials.Destinations, want)
+	}
+}
+
+// A node whose measured config carries no mesh policy hosts no member pods, so
+// there is no role to bind and staging adds none.
+func TestPrepareAddsNoRoleWithoutAMeshPolicy(t *testing.T) {
+	root := prepareRoot(t)
+
+	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), nriimagepolicy.CredentialRole) {
+		t.Fatal("staging invented a mesh role on a node that hosts no members")
+	}
+}
+
+// A measured policy that already binds the credential role, or its reserved
+// identity, is one this step would contradict rather than complete.
+func TestPrepareRefusesToRebindTheCredentialRole(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		role string
+	}{
+		{"the role bound twice", "    - name: " + nriimagepolicy.CredentialRole + "\n      uid: 1400\n      destinations: [\"192.0.2.9:8443\"]\n"},
+		{"its uid held by another role", "    - name: router\n      uid: 1338\n      destinations: [\"192.0.2.9:8443\"]\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := prepareRoot(t)
+			writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(meshFloor+tc.role))
+
+			if err := Prepare(root, document(t, launchconfig.Server)); err == nil {
+				t.Fatal("staging completed a policy that already binds the credential role")
+			}
+		})
+	}
+}
+
+// A declared platform role survives staging: it is the measured base's own
+// field, and the enforcer grants a role from nowhere else (MM4).
+func TestPrepareKeepsTheMeasuredRoles(t *testing.T) {
+	root := prepareRoot(t)
+	writeInput(t, root, "/usr/lib/c8s/image-policy.yaml", []byte(roleFloor))
+
+	if err := Prepare(root, document(t, launchconfig.Server)); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged struct {
+		Allowlist struct {
+			Base allowlist.Allowlist `yaml:"base"`
+		} `yaml:"allowlist"`
+	}
+	if err := yaml.Unmarshal(data, &staged); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := allowlist.RunningContainer{Digest: "sha256:" + strings.Repeat("b", 64)}
+	if got := staged.Allowlist.Base.BuildIndex().RoleOf(endpoint); got != "mesh" {
+		t.Fatalf("the staged base grants the mesh endpoint the role %q, want mesh", got)
+	}
+}
+
+// roleFloor is a baked config whose measured base tags the mesh endpoint with
+// its platform role.
+const roleFloor = `platform: tdx
+allowlist:
+  base:
+    schema: c8s.allowlist/v1
+    workloads:
+      mesh-endpoint:
+        containers:
+          - digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+            role: "mesh"
+            command: {policy: any}
+            args: {policy: any}
+            mounts: {policy: any}
+  pull:
+    url: https://127.0.0.1:30808
+    timeout: 30s
+policy:
+  mode: fail-closed
+  enforce_existing: true
+`
+
+// stagedMeshPolicy reads the mesh policy out of the staged boot config as the
+// plugin's own loader would type it.
+func stagedMeshPolicy(t *testing.T, root string) stagedMesh {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "etc/nri/conf.d/image-policy.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var staged struct {
+		Mesh stagedMesh `yaml:"mesh"`
+	}
+	if err := yaml.Unmarshal(data, &staged); err != nil {
+		t.Fatal(err)
+	}
+	return staged.Mesh
+}
+
+type stagedMesh struct {
+	ExemptNamespaces []string      `yaml:"exempt_namespaces"`
+	Capture          stagedCapture `yaml:"capture"`
+	Roles            []stagedRole  `yaml:"roles"`
+}
+
+type stagedCapture struct {
+	Outbound uint16 `yaml:"outbound"`
+	Inbound  uint16 `yaml:"inbound"`
+	Health   uint16 `yaml:"health"`
+}
+
+type stagedRole struct {
+	Name         string   `yaml:"name"`
+	UID          uint32   `yaml:"uid"`
+	Destinations []string `yaml:"destinations"`
+}
+
+// meshFloor is the baked config of a node that hosts members: the measured
+// mesh policy with its own role bound and the credential destination left to
+// the launch.
+const meshFloor = floor + `mesh:
+  exempt_namespaces: [kube-system]
+  resolvers: ["10.53.0.10"]
+  capture: {outbound: 15001, inbound: 15006, health: 15021}
+  roles:
+    - name: mesh
+      uid: 1337
+`

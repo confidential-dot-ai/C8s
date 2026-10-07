@@ -392,22 +392,32 @@ func (c *config) Validate() error {
 	return validateLabelRules(c.Policy.LabelRules)
 }
 
-// validateMesh refuses a mesh policy this node cannot enforce: a role is
-// granted from the node's own measured base, and a member pod needs trusted
-// enforcement from node startup (MM2).
+// validateMesh refuses a mesh policy this node cannot enforce. What the policy
+// must come with depends on the lane, decided once by meshLane.
 func (c *config) validateMesh() error {
 	if c.Mesh == nil {
 		return nil
 	}
-	switch {
-	case !meshSupported:
+	if !meshSupported {
 		return errors.New("mesh is only implemented on linux: the pod ruleset is nftables in a network namespace")
-	case !c.Allowlist.NodeTCB:
-		return errors.New("mesh requires allowlist.node_tcb: a platform role is granted from the node's own measured policy")
-	case c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting:
+	}
+	if err := c.Mesh.validate(); err != nil {
+		return err
+	}
+	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
 		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
 	}
-	return c.Mesh.validate()
+	return nil
+}
+
+// requiresTrustedMeshEnforcement reports whether this node's mesh policy is
+// one the cluster admin could not write. A config claiming the node TCB is
+// measured with a baked image, and its members' protection rests on
+// fail-closed admission and the boot gate; a chart-rendered config is an
+// install, where the mesh runs for test clusters and the admin who wrote the
+// policy could undo the enforcement anyway (decision 5).
+func (c *config) requiresTrustedMeshEnforcement() bool {
+	return c.Allowlist.NodeTCB
 }
 
 // validateLabelRules checks label rules for errors.

@@ -168,3 +168,47 @@ func TestChartRouterKeepsItsOwnPolicyFlagOnBakedNodes(t *testing.T) {
 		t.Fatal("the enforcer mounts its policy over the node config path a chart-rendered client reads")
 	}
 }
+
+// On a baked node the mesh's exempt namespaces are measured into the image, so
+// the render refuses a release whose injection scope could diverge from them.
+func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
+	baked := []string{
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
+		"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
+	}
+	if out, err := helmTemplate(t, baked...); err != nil {
+		t.Fatalf("the baked default must render: %v\n%s", err, out)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		kind string
+	}{
+		{
+			name: "another release namespace",
+			args: []string{"--namespace", "tenant-platform"},
+			kind: "kind=baked_release_namespace",
+		},
+		{
+			name: "an exclusion only the webhooks know",
+			args: []string{"--set", "webhook.extraExcluded={tenant-a}"},
+			kind: "kind=baked_webhook_exclusions",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(baked, tc.args...)...)
+			if err == nil {
+				t.Fatalf("the render accepted %s: %s", tc.name, out)
+			}
+			if !strings.Contains(out, tc.kind) {
+				t.Fatalf("render failed for another reason, want %s:\n%s", tc.kind, out)
+			}
+		})
+	}
+}

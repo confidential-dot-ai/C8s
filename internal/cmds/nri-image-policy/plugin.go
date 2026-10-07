@@ -172,6 +172,11 @@ func newPlugin(
 	}
 	p.boot = newBootGate(cfg, logger)
 	p.mesh = newMeshGate(cfg.Mesh, logger)
+	if cfg.Mesh != nil {
+		logger.Info("mesh gate enabled",
+			"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
+			"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
+	}
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
