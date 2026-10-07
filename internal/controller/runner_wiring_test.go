@@ -73,7 +73,6 @@ func TestSetupManagerWebhookRegisters(t *testing.T) {
 	opts := Options{
 		DisableStatusMirror: true,
 		GetCertImage:        "ghcr.io/c8s/c8s:latest",
-		CDSURL:              "https://cds.c8s-system.svc",
 	}
 	if err := setupManager(context.Background(), mgr, nil, opts, logr.Discard()); err != nil {
 		t.Fatalf("setupManager: %v", err)

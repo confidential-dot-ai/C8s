@@ -83,6 +83,18 @@ func injectedPinsMount(c *api.Container) {
 	})
 }
 
+// injectedAddressMount turns the container into a sidecar carrying the CDS
+// address mount sidecarAdjustment adds.
+func injectedAddressMount(c *api.Container) {
+	c.Name = workloadclaims.CertContainerName
+	c.Mounts = append(c.Mounts, &api.Mount{
+		Destination: workloadclaims.CDSAddressPath,
+		Type:        "bind",
+		Source:      "/var/run/nri-image-policy/cds-address",
+		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
+	})
+}
+
 // injectedSocketMount turns the container into a sidecar carrying the mount
 // sidecarAdjustment adds.
 func injectedSocketMount(c *api.Container) {
@@ -97,12 +109,13 @@ func injectedSocketMount(c *api.Container) {
 
 func TestSandboxViolations(t *testing.T) {
 	tests := []struct {
-		name      string
-		pod       func(*api.PodSandbox)
-		ctr       func(*api.Container)
-		ownSocket string
-		ownPins   string
-		want      string // substring of the expected violation; empty means admitted
+		name       string
+		pod        func(*api.PodSandbox)
+		ctr        func(*api.Container)
+		ownSocket  string
+		ownPins    string
+		ownAddress string
+		want       string // substring of the expected violation; empty means admitted
 	}{
 		{
 			name: "ordinary pod",
@@ -119,6 +132,24 @@ func TestSandboxViolations(t *testing.T) {
 			ctr:       injectedPinsMount,
 			ownSocket: "/var/run/nri-image-policy",
 			ownPins:   "/run/c8s-node/cds.json",
+		},
+		{
+			name:       "the node's own CDS address mount",
+			pod:        injectedPod,
+			ctr:        injectedAddressMount,
+			ownSocket:  "/var/run/nri-image-policy",
+			ownAddress: "/var/run/nri-image-policy/cds-address",
+		},
+		{
+			name: "a CDS address mount from a source the plugin does not own",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedAddressMount(c)
+				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-cds-address"
+			},
+			ownSocket:  "/var/run/nri-image-policy",
+			ownAddress: "/var/run/nri-image-policy/cds-address",
+			want:       "host path bind mount",
 		},
 		{
 			name: "a CDS policy mount from a source the plugin does not own",
@@ -345,8 +376,9 @@ func TestSandboxViolations(t *testing.T) {
 				tt.ctr(ctr)
 			}
 			own := nodeMounts{
-				socketDir: tt.ownSocket,
-				cdsPins:   tt.ownPins,
+				socketDir:  tt.ownSocket,
+				cdsPins:    tt.ownPins,
+				cdsAddress: tt.ownAddress,
 			}
 			got := observeSandbox(pod, ctr, own).violations()
 			if tt.want == "" {

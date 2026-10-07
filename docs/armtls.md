@@ -229,8 +229,10 @@ Properties worth noting:
 - **The transport for steps 1 and 4 is itself armTLS.** CDS self-provisions an
   armTLS serving certificate bound to its own launch measurement. An injected
   client reads the pins from the node policy the enforcer bind-mounts at
-  `/run/c8s/cds-pins.json` and refuses pins passed to it; every other client
-  pins with `--cds-measurements`. The challenge–response plus the armTLS channel
+  `/run/c8s/cds-pins.json`, and the endpoint it dials from
+  `/run/c8s/cds-address`, refusing pins or a `--cds-url` passed to it; every
+  other client pins with `--cds-measurements` and dials `--cds-url`. The
+  challenge–response plus the armTLS channel
   close the bootstrap window against a pod-network impostor — *iff*
   measurements are pinned.
 - **The mesh CA private key exists only in CDS process memory** (P-384, CN

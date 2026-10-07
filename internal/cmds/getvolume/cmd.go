@@ -31,6 +31,9 @@ The key must already be in the store, put there by ` + "`c8s volume create`" + `
 Nothing here creates one.`,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := cfg.ResolveCDSEndpoint(); err != nil {
+				return err
+			}
 			for _, spec := range specs {
 				v, err := parseVolumeSpec(spec)
 				if err != nil {

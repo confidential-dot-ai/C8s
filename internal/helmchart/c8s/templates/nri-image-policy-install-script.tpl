@@ -256,6 +256,9 @@ workload_claims:
   # host's — a caller PID from SO_PEERCRED resolves directly.
   proc_root: "/proc"
   advertise_host: {{ $root.Values.nriImagePolicy.sandboxDigests.advertiseHost | quote }}
+  # An injected credential client dials CDS at this node's own address and this
+  # port, and its pod ruleset admits exactly that endpoint.
+  cds_node_port: {{ required "cds.service.nodePort is required with nriImagePolicy.enabled=true: an injected credential client dials CDS at its own node's address and that port" $root.Values.cds.service.nodePort }}
 allowlist:
   pull:
     url: {{ include "c8s.nriCDSURL" $root | quote }}

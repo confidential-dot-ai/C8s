@@ -52,10 +52,6 @@ type Options struct {
 	// injects for get-cert bootstrap and renewal. Empty disables pod injection.
 	GetCertImage string
 
-	// CDSURL points at the CDS Service in-cluster (the URL the
-	// injected get-cert containers POST evidence + CSR to).
-	CDSURL string
-
 	// AttestationApiURL points at the attestation-api.
 	AttestationApiURL string
 
@@ -252,7 +248,6 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		if err := webhook.Register(mgr, webhook.Config{
 			GetCertImage:          opts.GetCertImage,
 			MeshImage:             opts.MeshImage,
-			CDSURL:                opts.CDSURL,
 			AttestationApiURL:     opts.AttestationApiURL,
 			CertFSGroup:           new(opts.CertFSGroup),
 			CertRenewInterval:     opts.CertRenewInterval,
@@ -265,8 +260,7 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		}
 		logger.Info("pod-admission webhooks enabled",
 			"image", opts.GetCertImage,
-			"mesh_image", opts.MeshImage,
-			"cds_url", opts.CDSURL)
+			"mesh_image", opts.MeshImage)
 
 		// One-shot startup sweep: delete cw-annotated pods that were admitted
 		// while the webhook was down (so never injected) and let their owners

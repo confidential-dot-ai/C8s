@@ -3,7 +3,6 @@ package getcert
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -11,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -181,30 +179,6 @@ func waitForAttempts(t *testing.T, attempts func() []time.Time, n int) []time.Ti
 	}
 }
 
-// catchSIGHUP subscribes for the reload signal ReloadNginx sends the master.
-func catchSIGHUP(t *testing.T) <-chan os.Signal {
-	t.Helper()
-	hup := make(chan os.Signal, 1)
-	signal.Notify(hup, syscall.SIGHUP)
-	t.Cleanup(func() { signal.Stop(hup) })
-	return hup
-}
-
-// presentAsNginxMaster makes ReloadNginx find this test process under root.
-func presentAsNginxMaster(t *testing.T, root string) {
-	t.Helper()
-	pidDir := filepath.Join(root, strconv.Itoa(os.Getpid()))
-	if err := os.MkdirAll(pidDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(pidDir, "comm"), []byte("nginx\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(pidDir, "cmdline"), []byte("nginx: master process\x00"), 0644); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
 	holdSIGTERM(t)
 
@@ -224,7 +198,6 @@ func TestRunRenewalLoopRetriesFailedRenewal(t *testing.T) {
 
 	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 200 * time.Millisecond
-	cfg.ReloadNginx = false
 
 	done := make(chan error, 1)
 	go func() { done <- run(cfg) }()
@@ -266,7 +239,6 @@ func TestRunRenewalLoopRecoversAfterFailedRenewals(t *testing.T) {
 
 	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 200 * time.Millisecond
-	cfg.ReloadNginx = false
 
 	done := make(chan error, 1)
 	go func() { done <- run(cfg) }()
@@ -285,93 +257,6 @@ func TestRunRenewalLoopRecoversAfterFailedRenewals(t *testing.T) {
 	}
 }
 
-// A changed watch file triggers an nginx reload, and a failed reload does
-// not stop the watcher: later changes still reload.
-func TestRunRenewalLoopReloadsOnWatchChange(t *testing.T) {
-	holdSIGTERM(t)
-	hup := catchSIGHUP(t)
-
-	// No nginx master yet, so the first reloads fail; the watcher proving
-	// live afterwards means those failures were tolerated.
-	root := t.TempDir()
-	overrideProcRoot(t, root)
-
-	watched := filepath.Join(t.TempDir(), "tls.crt")
-	if err := os.WriteFile(watched, []byte("v1"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := unreachableRenewalConfig(t)
-	cfg.ReloadNginx = true
-	cfg.ReloadWatchPaths = []string{watched}
-	cfg.ReloadWatchInterval = 20 * time.Millisecond
-
-	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
-
-	// A change written before the loop's initial snapshot is invisible to the
-	// watcher, so keep changing the file: every post-snapshot change is a
-	// failed reload while the master is absent.
-	for i := 2; i <= 4; i++ {
-		if err := os.WriteFile(watched, []byte(fmt.Sprintf("v%d", i)), 0644); err != nil {
-			t.Fatal(err)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	presentAsNginxMaster(t, root)
-	if err := os.WriteFile(watched, []byte("v5"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-hup:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no nginx reload after the watched file changed")
-	}
-	terminateRun(t, done)
-}
-
-// Without watch paths the loop must not set up a watch ticker: a zero watch
-// interval is only rejected (or used) when paths are configured, so run must
-// come up and shut down cleanly.
-func TestRunRenewalLoopWithoutWatchPathsIgnoresWatchInterval(t *testing.T) {
-	holdSIGTERM(t)
-	attempts := stubObtainCertFailing(t)
-
-	cfg := unreachableRenewalConfig(t)
-	cfg.RenewInterval = 25 * time.Millisecond
-	cfg.ReloadNginx = true
-	cfg.ReloadWatchPaths = nil
-	cfg.ReloadWatchInterval = 0
-
-	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
-
-	// A second attempt means the tolerated initial failure carried run into
-	// the renewal loop.
-	waitForAttempts(t, attempts, 2)
-	terminateRun(t, done)
-}
-
-func overrideProcRoot(t *testing.T, root string) {
-	t.Helper()
-	old := procRoot
-	procRoot = root
-	t.Cleanup(func() { procRoot = old })
-}
-
-func TestRunRenewalModeFailsOnBadWatchSnapshot(t *testing.T) {
-	// continue-on-initial-error carries run past the failed first request, and
-	// the missing watch path then fails the loop setup.
-	cfg := unreachableRenewalConfig(t)
-	cfg.ReloadNginx = true
-	cfg.ReloadWatchPaths = []string{filepath.Join(t.TempDir(), "missing.crt")}
-	cfg.ReloadWatchInterval = time.Minute
-	if err := run(cfg); err == nil || !strings.Contains(err.Error(), "stat reload watch path") {
-		t.Fatalf("error = %v, want watch snapshot error", err)
-	}
-}
-
 // A workload is gated on its first certificate by c8s-cert-wait, so while none
 // has landed the loop must re-ask on the initial-retry backoff rather than wait
 // out --renew-interval. It is an hour here, so four attempts inside the
@@ -382,7 +267,6 @@ func TestRunRetriesInitialCertOffTheRetryBackoff(t *testing.T) {
 
 	cfg := unreachableRenewalConfig(t)
 	cfg.InitialRetryInterval = 10 * time.Millisecond
-	cfg.ReloadNginx = false
 
 	done := make(chan error, 1)
 	go func() { done <- run(cfg) }()
@@ -583,7 +467,6 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 	cfg := unreachableRenewalConfig(t)
 	cfg.CAPath = caPath
 	cfg.CAWatchInterval = 10 * time.Millisecond
-	cfg.ReloadNginx = false
 
 	creds := publishedCredentials(t, ca, time.Hour)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -636,7 +519,6 @@ func TestRunRenewalLoopWithdrawsAnExpiredGeneration(t *testing.T) {
 
 	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 20 * time.Millisecond
-	cfg.ReloadNginx = false
 
 	done := make(chan error, 1)
 	go func() { done <- run(cfg) }()
@@ -690,7 +572,6 @@ func TestRunRenewalLoopRetainsAValidGeneration(t *testing.T) {
 
 	cfg := unreachableRenewalConfig(t)
 	cfg.RenewInterval = 20 * time.Millisecond
-	cfg.ReloadNginx = false
 
 	done := make(chan error, 1)
 	go func() { done <- run(cfg) }()

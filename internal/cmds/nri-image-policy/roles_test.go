@@ -8,6 +8,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // testCertRole is a platform role the enforcer itself does not act on; the
@@ -15,9 +16,11 @@ import (
 const testCertRole = "get-cert"
 
 const (
-	testMeshUID     = uint32(1337)
-	testCertUID     = uint32(1338)
-	testRouterUID   = uint32(1339)
+	testMeshUID   = uint32(1337)
+	testRouterUID = uint32(1339)
+	// Not the credential clients' reserved id, which trusted policy refuses
+	// to any other role.
+	testCertUID     = workloadclaims.CredentialsUID + 2
 	testWorkloadUID = uint32(65532)
 )
 
@@ -104,6 +107,24 @@ func TestMeshPolicyValidation(t *testing.T) {
 			},
 			tcb:   true,
 			wants: "share uid",
+		},
+		{
+			name: "a role on the credential clients' reserved uid",
+			mesh: func(m *meshPolicy) {
+				m.Roles[1].UID = workloadclaims.CredentialsUID
+			},
+			tcb:   true,
+			wants: "reserved for the " + CredentialRole + " role",
+		},
+		{
+			name: "the credential role reaching two addresses",
+			mesh: func(m *meshPolicy) {
+				m.Roles[1].Name = CredentialRole
+				m.Roles[1].UID = workloadclaims.CredentialsUID
+				m.Roles[1].Destinations = append(m.Roles[1].Destinations, netip.MustParseAddrPort("10.43.0.6:8443"))
+			},
+			tcb:   true,
+			wants: "needs exactly one destination",
 		},
 		{
 			name: "no mesh endpoint binding",
@@ -214,7 +235,7 @@ mesh:
     - name: mesh
       uid: 1337
     - name: get-cert
-      uid: 1338
+      uid: 1341
       destinations: ["` + destination + `"]
 `)
 	}

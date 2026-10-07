@@ -75,10 +75,6 @@ http://$(HOST_IP):{{ .Values.attestationApi.port }}
 https://{{ include "c8s.cdsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.cds.port }}
 {{- end -}}
 
-{{- define "c8s.trustRootURL" -}}
-{{ include "c8s.cdsURL" . }}
-{{- end -}}
-
 {{- define "c8s.attestationApiConfig" -}}
 {{- $root := .root -}}
 [server]

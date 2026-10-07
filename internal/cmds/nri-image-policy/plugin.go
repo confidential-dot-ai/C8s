@@ -143,6 +143,12 @@ type plugin struct {
 	// prepareCDSPins sets it before any container can be created (cdspins.go).
 	cdsPins string
 
+	// cdsAddress is the node-side path of the CDS endpoint handed to those
+	// same clients, or "" when no pod of this node is injected.
+	// prepareCDSAddress sets it before any container can be created
+	// (cdsaddress.go).
+	cdsAddress string
+
 	// boot is the boot gate: nil unless policy.fatal_existing. See
 	// bootgate.go. bootRestart records that this registration is a plugin
 	// restart, which makes the startup check's denials fatal.
@@ -680,8 +686,9 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
 	obs := observeSandbox(pod, ctr, nodeMounts{
-		socketDir: cfg.WorkloadClaims.SocketDir,
-		cdsPins:   p.cdsPins,
+		socketDir:  cfg.WorkloadClaims.SocketDir,
+		cdsPins:    p.cdsPins,
+		cdsAddress: p.cdsAddress,
 	})
 	violations := obs.violations()
 	if len(violations) == 0 {
@@ -1037,14 +1044,15 @@ func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRe
 
 // sidecarAdjustment bind-mounts what the node hands a webhook-injected
 // credential sidecar, read-only: the inventory's socket directory at
-// workloadclaims.SidecarSocketDir, and the node's CDS attestation policy at
-// workloadclaims.CDSPinsPath. Both are OCI-level replacements for a pod-spec
+// workloadclaims.SidecarSocketDir, the node's CDS attestation policy at
+// workloadclaims.CDSPinsPath, and the CDS endpoint it dials at
+// workloadclaims.CDSAddressPath. All are OCI-level replacements for a pod-spec
 // hostPath volume, which PodSecurity baseline and restricted would reject. nil
 // for every other container.
 //
-// The policy mount is what makes the pins trusted: the client reads a compiled
-// path, so a pod cannot name another source and the control plane cannot pass
-// one as an argument.
+// The two policy mounts are what make the CDS a client reaches trusted: it
+// reads compiled paths, so a pod cannot name another source and the control
+// plane cannot pass one as an argument.
 //
 // The annotation+name gate scopes the mounts; it is NOT a security boundary.
 // Both are tenant-forgeable, so every socket in the directory must stay safe
@@ -1062,6 +1070,9 @@ func (p *plugin) sidecarAdjustment(pod *api.PodSandbox, ctr *api.Container) *api
 	}
 	if pinsCDS := p.cdsPins != ""; pinsCDS {
 		mounts = append(mounts, readOnlyBind(p.cdsPins, workloadclaims.CDSPinsPath))
+	}
+	if p.cdsAddress != "" {
+		mounts = append(mounts, readOnlyBind(p.cdsAddress, workloadclaims.CDSAddressPath))
 	}
 	if len(mounts) == 0 {
 		return nil

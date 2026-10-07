@@ -68,6 +68,77 @@ metadata:
   labels:
     {{- include "router.labels" . | nindent 4 }}
 data:
+  # INVARIANT: nginx is this script's child, so no process namespace is shared.
+  reload.sh: |
+    #!/bin/sh
+    set -eu
+    # Fixed: the front door serves the previous certificate for at most this
+    # long after a renewal.
+    interval=5
+    watched="{{ include "router.filesNginxLoads" . }}"
+
+    # A publication relinks the leaf and its key one file at a time, so a tick
+    # can land on a leaf whose key has not arrived yet. nginx tests what it
+    # would load, and nothing is signalled until that test passes.
+    load_attempts=5
+    load_delay=1
+
+    # Exit 2 says a file nginx loads is gone: the generation was withdrawn, and
+    # serving on would serve a certificate C8s took back. Any other failure is
+    # a read straddling a publication, which the next tick sees whole.
+    fingerprint() {
+        for file in $watched; do
+            if [ ! -r "$file" ]; then
+                echo "router: $file is not readable" >&2
+                return 2
+            fi
+            md5sum "$file" || return 1
+        done
+    }
+
+    # loadable waits out a publication in progress: a leaf and a key that do
+    # not belong together are the one state that passes the fingerprint and
+    # fails the load.
+    loadable() {
+        attempt=1
+        while [ "$attempt" -le "$load_attempts" ]; do
+            if nginx -t; then
+                return 0
+            fi
+            echo "router: nginx will not load the watched files; retrying" >&2
+            sleep "$load_delay"
+            attempt=$((attempt + 1))
+        done
+        return 1
+    }
+
+    previous="$(fingerprint)"
+    nginx -g 'daemon off;' &
+    nginx_pid=$!
+    trap 'kill -TERM "$nginx_pid" 2>/dev/null; exit 0' TERM INT
+    trap 'kill -QUIT "$nginx_pid" 2>/dev/null; exit 0' QUIT
+
+    nginx_alive() { kill -0 "$nginx_pid" 2>/dev/null; }
+
+    while nginx_alive; do
+        sleep "$interval"
+        current="$(fingerprint)" && status=0 || status=$?
+        case "$status" in
+            0)
+                if [ "$current" != "$previous" ]; then
+                    if loadable; then
+                        kill -HUP "$nginx_pid"
+                        previous="$current"
+                    else
+                        echo "router: keeping the running configuration; retrying next tick" >&2
+                    fi
+                fi
+                ;;
+            2) exit 1 ;;
+            *) echo "router: certificates unread this tick; retrying" >&2 ;;
+        esac
+    done
+    wait "$nginx_pid"
   nginx.conf: |
     worker_processes auto;
     error_log /var/log/nginx/error.log warn;

@@ -187,7 +187,7 @@ self-provisions its serving cert via armTLS.
 ## Certificate and attestation flows
 
 **Node attestation.** Workloads annotated `cw` get a get-cert sidecar
-that dials CDS over the cluster Service (`--cds-url`); CDS verifies the request
+that dials the CDS endpoint its node mounts; CDS verifies the request
 against the **host** attestation-service DaemonSet and signs the CSR with its
 in-memory mesh CA — verify and sign happen in one process.
 
