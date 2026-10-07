@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,8 +17,17 @@ import (
 func TestTDXBuildUsesSelectedSource(t *testing.T) {
 	var action lifecycleDocument
 	readYAML(t, "../../.github/actions/tdx-metal-e2e/action.yml", &action)
+	testBuildUsesSelectedSource(t, action.Runs.Steps, true, []string{
+		"assert components converged", "assert the image floor denies, then opens to a signed write",
+		"assert a confidential workload runs with an injected cert"})
+}
+
+// The build step of one lane: its source selection, the environment it hands
+// the later steps, and that the downstream steps run from that source. A lane
+// with an exact-image mode also takes the publication SHA.
+func testBuildUsesSelectedSource(t *testing.T, steps []workflowStep, exact bool, downstream []string) {
 	var build workflowStep
-	for _, step := range action.Runs.Steps {
+	for _, step := range steps {
 		if step.Name == "build the c8s CLI at the paired ref" {
 			build = step
 		}
@@ -25,10 +35,12 @@ func TestTDXBuildUsesSelectedSource(t *testing.T) {
 	if build.Run == "" {
 		t.Fatal("missing CLI build step")
 	}
-	if build.Env["EXACT_IMAGE"] != "${{ inputs.exact_image == 'true' }}" ||
-		build.Env["SOURCE_SHA"] != "${{ github.event.workflow_run.head_sha }}" ||
-		build.Env["C8S_REF_INPUT"] != "${{ inputs.c8s_ref }}" {
-		t.Error("build step must receive exact mode, publication SHA and the requested source")
+	if build.Env["C8S_REF_INPUT"] != "${{ inputs.c8s_ref }}" {
+		t.Error("build step must receive the requested source")
+	}
+	if exact && (build.Env["EXACT_IMAGE"] != "${{ inputs.exact_image == 'true' }}" ||
+		build.Env["SOURCE_SHA"] != "${{ github.event.workflow_run.head_sha }}") {
+		t.Error("build step must receive exact mode and the publication SHA")
 	}
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
@@ -131,6 +143,9 @@ printf 'run %s\n' "$(cat "$TDX_TEST_BINARY_SOURCE")" >> "$TDX_TEST_COMMANDS"
 		{name: "staged option input", mode: "false", input: "--help"},
 		{name: "staged nonexistent input", mode: "false", input: "nonexistent", clone: true},
 	} {
+		if tc.mode == "true" && !exact {
+			continue
+		}
 		t.Run(tc.name, func(t *testing.T) {
 			output := t.TempDir()
 			checkout := filepath.Join(output, "private checkout")
@@ -206,9 +221,8 @@ printf 'run %s\n' "$(cat "$TDX_TEST_BINARY_SOURCE")" >> "$TDX_TEST_COMMANDS"
 			}
 			env = append(env, assignments...)
 			var ran []string
-			for _, step := range action.Runs.Steps {
-				switch step.Name {
-				case "assert components converged", "assert the image floor denies, then opens to a signed write", "assert a confidential workload runs with an injected cert":
+			for _, step := range steps {
+				if slices.Contains(downstream, step.Name) {
 					cmd := exec.CommandContext(ctx, "bash", "-c", step.Run)
 					cmd.Dir, cmd.Env = output, env
 					if log, err := cmd.CombinedOutput(); err != nil {
@@ -218,7 +232,7 @@ printf 'run %s\n' "$(cat "$TDX_TEST_BINARY_SOURCE")" >> "$TDX_TEST_COMMANDS"
 				}
 			}
 			wantRouting := "components-ready.sh " + tc.wantSHA + "\nallowlist-enforcement.sh " + tc.wantSHA + "\ncw-workload.sh " + tc.wantSHA + "\n"
-			if len(ran) != 3 || read("routing") != wantRouting {
+			if len(ran) != len(downstream) || read("routing") != wantRouting {
 				t.Fatalf("downstream tests did not all use selected source: steps=%v routing=%q", ran, read("routing"))
 			}
 		})

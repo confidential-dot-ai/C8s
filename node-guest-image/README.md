@@ -227,7 +227,7 @@ disk and the IGVM on the launcher in digest-named claims that later runs of
 the same image reuse (`.github/scripts/snp-node-image.sh`). Changing the
 attester requires a new measured image. Automatic TDX acceptance reads the
 image identity and `launch_config_version=c8s-launch/v1` from the publication
-run's validated evidence. Neither lane reads a refs ConfigMap.
+run's validated evidence.
 
 Before either platform boots, the lane builds the paired CLI and generates
 a fresh operator key and signed server launch document. The `opkeydata` disk

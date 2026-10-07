@@ -86,7 +86,7 @@ jobs:
           repository: confidential-dot-ai/c8s
           persist-credentials: false
 
-      - name: tools (kubectl, go, crane)
+      - name: tools (kubectl, go)
         run: |
           set -euo pipefail
           # Every fetch here crosses the public internet from an ephemeral ARC
@@ -124,16 +124,8 @@ jobs:
             retry curl -fsSL "https://go.dev/dl/go${GOVER}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
             sudo tar -C /usr/local -xzf /tmp/go.tar.gz
           fi
-          # $GITHUB_PATH only affects LATER steps, so `go` is still not on PATH
-          # inside THIS one. `go install crane` below needs it here and now.
-          export PATH="/usr/local/go/bin:$HOME/go/bin:$PATH"
           echo "/usr/local/go/bin" >> "$GITHUB_PATH"
           echo "$HOME/go/bin" >> "$GITHUB_PATH"
-          # crane: the image-tag lookups below use it. Pinned rather than
-          # fetched through the GitHub releases API, which rate-limits by IP
-          # on a shared self-hosted host. The ephemeral ARC pod has no crane,
-          # unlike the host, so install rather than assume.
-          command -v crane >/dev/null || retry go install github.com/google/go-containerregistry/cmd/crane@v0.21.6
           # Avoid apt's intermittent IPv6 mirror failures on the launcher.
           if ! command -v jq >/dev/null; then
             retry curl -fsSL https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64 -o bin/jq
@@ -190,13 +182,13 @@ jobs:
              inuse=$(jq -nr --argjson vmis "$vmis" --argjson vms "$vms" '
                [$vmis.items[].spec.volumes[]?, $vms.items[].spec.template.spec.volumes[]?]
                | .[] | (.persistentVolumeClaim.claimName // .dataVolume.name // empty)'); then
-            for pvc in $(kubectl -n "$NS" get pvc -l 'ci.confidential.ai/managed=true,ci.confidential.ai/resource in (snp-node-root, snp-node-igvm)' -o name); do
-              name=${pvc#persistentvolumeclaim/}
+            kubectl -n "$NS" get pvc -l 'ci.confidential.ai/managed=true,ci.confidential.ai/resource in (snp-node-root, snp-node-igvm)' -o json \
+              | jq -r '.items[] | "\(.metadata.name) \(.metadata.creationTimestamp)"' \
+              | while read -r name ct; do
               [[ "$name" =~ ^c8s-snp-(root|igvm)-[0-9a-f]{12}$ ]] || continue
               grep -qx "$name" <<<"$inuse" && continue
-              ct=$(kubectl -n "$NS" get "$pvc" -o jsonpath='{.metadata.creationTimestamp}')
               age=$(( NOW - $(date -u -d "$ct" +%s 2>/dev/null || echo "$NOW") ))
-              [ "$age" -gt 604800 ] && { echo "reaping $name (unused, ${age}s old)"; kubectl -n "$NS" delete "$pvc" --ignore-not-found --wait=false; }
+              [ "$age" -gt 604800 ] && { echo "reaping $name (unused, ${age}s old)"; kubectl -n "$NS" delete pvc "$name" --ignore-not-found --wait=false; }
             done
           else
             echo "keeping shared claims: VM inventory is unavailable"
@@ -266,8 +258,7 @@ jobs:
           # Only the pair built from one commit works: the image's measured base
           # pins its own build's CDS digest. c8s-image publishes rke2-snp-cdi-<sha>
           # (the CDI disk) and rke2-snp-<sha> (an ORAS artifact: the IGVMs and
-          # manifest.json, whose variant for this vCPU count pairs a launch
-          # digest with the IGVM that measures to it).
+          # manifest.json; what the lane trusts from it is in snp-node-image.sh).
           . "$GITHUB_WORKSPACE/bin/retry.sh"
           [[ "$c8sRef" =~ ^[0-9a-f]{7}$ ]] || { echo "::error::invalid image source ref"; exit 1; }
           oci=${IMAGE_REPO#ghcr.io/}
@@ -287,13 +278,13 @@ jobs:
           [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for rke2-snp-cdi-${c8sRef} on 4 attempts"; exit 1; }
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
             "https://ghcr.io/v2/${oci}/manifests/rke2-snp-${c8sRef}" -o /tmp/image-oras.json
-          mlayer=$(jq -er '[.layers[] | select(.annotations["org.opencontainers.image.title"]=="manifest.json")] | if length == 1 then .[0].digest else error("expected one manifest.json layer") end' /tmp/image-oras.json)
-          [[ "$mlayer" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::invalid manifest layer digest"; exit 1; }
+          mlayer=$(bash .github/scripts/snp-node-image.sh manifest-layer /tmp/image-oras.json)
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${oci}/blobs/$mlayer" -o /tmp/image-manifest.json
           # Refuses anything but one smp=$SMP variant whose IGVM is a layer of
           # the artifact; names the digest-keyed claims the stages below share.
-          bash .github/scripts/snp-node-image.sh env /tmp/image-oras.json /tmp/image-manifest.json "$IMG_DIGEST" "$SMP" >> "$GITHUB_ENV"
-          echo "c8s under test ${c8sRef} on its own node image rke2-snp-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(jq -r --argjson smp "$SMP" '.snp_variants[] | select(.smp == $smp) | .measurement.snp_launch_digest[0:16]' /tmp/image-manifest.json)..."
+          resolved=$(bash .github/scripts/snp-node-image.sh env /tmp/image-oras.json /tmp/image-manifest.json "$IMG_DIGEST" "$SMP")
+          printf '%s\n' "$resolved" >> "$GITHUB_ENV"
+          echo "c8s under test ${c8sRef} on its own node image rke2-snp-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^snpLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
 
       - name: stage the root disk on the launcher (no-op when already staged)
         run: |
@@ -306,7 +297,7 @@ jobs:
           if [ -n "$existing" ]; then
             bash .github/scripts/snp-node-image.sh check-root-pvc "$image" <<<"$existing"
           else
-            bash .github/scripts/snp-node-image.sh root-pvc "$rootPvc" "$image" "$NS" | kubectl create -f -
+            bash .github/scripts/snp-node-image.sh root-pvc "$image" "$NS" | kubectl create -f -
           fi
           for i in $(seq 1 120); do
             phase=$(kubectl -n "$NS" get pvc "$rootPvc" -o jsonpath='{.metadata.annotations.cdi\.kubevirt\.io/storage\.pod\.phase}' 2>/dev/null || true)
@@ -329,17 +320,17 @@ jobs:
           if [ -n "$existing" ]; then
             bash .github/scripts/snp-node-image.sh check-igvm-pvc "$igvmDigest" <<<"$existing"
           else
-            bash .github/scripts/snp-node-image.sh igvm-pvc "$igvmPvc" "$NS" "$igvmDigest" | kubectl create -f -
+            bash .github/scripts/snp-node-image.sh igvm-pvc "$NS" "$igvmDigest" | kubectl create -f -
           fi
-          kubectl -n "$NS" delete pod "$VM-igvm" --ignore-not-found --wait=true --timeout=60s
+          # The pod bounds itself (activeDeadlineSeconds); this loop reports.
           bash .github/scripts/snp-node-image.sh igvm-pod "$VM-igvm" "$NS" "$igvmPvc" "$igvmFile" "$igvmDigest" "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" | kubectl create -f -
-          for i in $(seq 1 90); do
+          for i in $(seq 1 66); do
             phase=$(kubectl -n "$NS" get pod "$VM-igvm" -o jsonpath='{.status.phase}' 2>/dev/null || true)
             case "$phase" in
               Succeeded) kubectl -n "$NS" logs "$VM-igvm" | tail -2; break ;;
               Failed) kubectl -n "$NS" logs "$VM-igvm" | tail -10; echo "::error::fetching $igvmFile ($igvmDigest) into $igvmPvc failed"; exit 1 ;;
             esac
-            [ "$i" -lt 90 ] || { kubectl -n "$NS" describe pod "$VM-igvm" | tail -15; echo "::error::fetching $igvmFile did not finish in 15 min (phase ${phase:-none})"; exit 1; }
+            [ "$i" -lt 66 ] || { kubectl -n "$NS" describe pod "$VM-igvm" | tail -15; echo "::error::fetching $igvmFile did not finish in 11 min (phase ${phase:-none})"; exit 1; }
             sleep 10
           done
           # Release the claim before the VM mounts it.

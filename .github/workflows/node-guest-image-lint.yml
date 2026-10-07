@@ -280,7 +280,7 @@ jobs:
       - name: Check the SNP node image resolution and staging manifests
         run: bash .github/scripts/tests/test-snp-node-image.sh
 
-      - name: Check AppArmor scripts
+      - name: Shellcheck the AppArmor, acceptance and staging scripts
         run: |
           shellcheck -x -P SCRIPTDIR node-guest-image/check-apparmor-config.sh \
             node-guest-image/c8s/mkosi.extra/usr/local/bin/apparmor-enforce.sh \

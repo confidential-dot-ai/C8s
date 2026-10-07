@@ -57,7 +57,6 @@ done
 for mutation in \
   'del(.layers[1])' \
   '.layers += [.layers[1]]' \
-  'del(.layers[2])' \
   '.layers[1].digest = "sha256:short"' \
   '{}'; do
   jq "$mutation" "$fixture/oras.json" > "$fixture/mutated.json"
@@ -67,27 +66,32 @@ reject bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "$cdi" 8
 reject bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "$repo@$cdi" 4
 reject bash "$script" env "$fixture/oras.json" "$fixture/manifest.json" "sha256:$igvm_hex" x
 
+[[ $(bash "$script" manifest-layer "$fixture/oras.json") == "sha256:$other_hex" ]] || fail 'manifest.json layer'
+pass
+for mutation in 'del(.layers[2])' '.layers += [.layers[2]]' '.layers[2].digest = "sha256:short"' '{}'; do
+  jq "$mutation" "$fixture/oras.json" > "$fixture/mutated.json"
+  reject bash "$script" manifest-layer "$fixture/mutated.json"
+done
+
 image="$repo@$cdi"
-pvc=$(bash "$script" root-pvc c8s-snp-root-cccccccccccc "$image" confai-images)
+pvc=$(bash "$script" root-pvc "$image" confai-images)
 jq -e --arg image "$image" '
   .kind == "PersistentVolumeClaim" and .metadata.name == "c8s-snp-root-cccccccccccc" and
   .metadata.namespace == "confai-images" and
   .metadata.labels["ci.confidential.ai/resource"] == "snp-node-root" and
-  .metadata.labels["confai.confidential.ai/source-digest-sha256"] == "cccccccccccc" and
   .metadata.annotations["cdi.kubevirt.io/storage.import.endpoint"] == ("docker://" + $image) and
   .metadata.annotations["cdi.kubevirt.io/storage.import.secretName"] == "ghcr-pull" and
   .spec.storageClassName == "local-path"' <<<"$pvc" >/dev/null || fail 'root PVC manifest'
 pass
 bash "$script" check-root-pvc "$image" <<<"$pvc"
 pass
-reject bash "$script" root-pvc c8s-snp-root-cccccccccccc "ghcr.io/untrusted/image@$cdi" confai-images
-reject bash "$script" root-pvc c8s-snp-root-dddddddddddd "$image" confai-images
-reject bash "$script" root-pvc c8s-snp-root-cccccccccccc "$repo:rke2-snp-cdi" confai-images
+reject bash "$script" root-pvc "ghcr.io/untrusted/image@$cdi" confai-images
+reject bash "$script" root-pvc "$repo:rke2-snp-cdi" confai-images
 # Adopting a claim that imported another image, or that no run owns, is refused.
 reject bash "$script" check-root-pvc "$repo@sha256:$other_hex" <<<"$pvc"
 reject bash "$script" check-root-pvc "$image" <<<"$(jq 'del(.metadata.labels)' <<<"$pvc")"
 
-igvm=$(bash "$script" igvm-pvc c8s-snp-igvm-dddddddddddd confai-images "sha256:$igvm_hex")
+igvm=$(bash "$script" igvm-pvc confai-images "sha256:$igvm_hex")
 jq -e --arg d "sha256:$igvm_hex" '
   .metadata.name == "c8s-snp-igvm-dddddddddddd" and
   .metadata.labels["ci.confidential.ai/resource"] == "snp-node-igvm" and
@@ -95,7 +99,7 @@ jq -e --arg d "sha256:$igvm_hex" '
 pass
 bash "$script" check-igvm-pvc "sha256:$igvm_hex" <<<"$igvm"
 pass
-reject bash "$script" igvm-pvc c8s-snp-igvm-eeeeeeeeeeee confai-images "sha256:$igvm_hex"
+reject bash "$script" igvm-pvc confai-images "$igvm_hex"
 reject bash "$script" check-igvm-pvc "sha256:$other_hex" <<<"$igvm"
 
 pod=$(bash "$script" igvm-pod c8s-snp-123-1-igvm confai-images c8s-snp-igvm-dddddddddddd guest-smp4.igvm "sha256:$igvm_hex" 123 confidential-dot-ai/C8s)
@@ -104,9 +108,11 @@ jq -e --arg d "$igvm_hex" '
   .metadata.labels["ci.confidential.ai/run-id"] == "123" and
   .metadata.annotations["ci.confidential.ai/repo"] == "confidential-dot-ai/C8s" and
   .spec.volumes[0].persistentVolumeClaim.claimName == "c8s-snp-igvm-dddddddddddd" and
+  (.spec.activeDeadlineSeconds | type == "number") and
   (.spec.containers[0].image | test("^docker[.]io/curlimages/curl@sha256:[0-9a-f]{64}$")) and
   (.spec.containers[0].env | map({(.name): .value}) | add) ==
-    {IGVM_FILE: "guest-smp4.igvm", IGVM_SHA256: $d, OCI_REPO: "confidential-dot-ai/node-guest-base"} and
+    {IGVM_FILE: "guest-smp4.igvm", IGVM_SHA256: $d, OCI_REPO: "confidential-dot-ai/node-guest-base",
+     FETCH_MAX_TIME: ((.spec.activeDeadlineSeconds - 60) | tostring)} and
   (.spec.containers[0].command[2] | contains($d) | not) and
   .spec.securityContext.runAsNonRoot == true and
   .spec.containers[0].securityContext.allowPrivilegeEscalation == false' <<<"$pod" >/dev/null || fail 'IGVM fetch pod manifest'
