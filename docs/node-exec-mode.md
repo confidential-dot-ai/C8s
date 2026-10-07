@@ -64,8 +64,7 @@ RKE2 does, merges the drop-ins containerd imports, and asserts that every
 enabled ordinary-pod handler runs the wrapper. It fails on an empty
 `BinaryName` (which means `PATH` runc), an alternate runc, a later drop-in that
 unwraps the handler, an unaudited shim, and a `default_runtime_name` that is
-not one of the wrapped handlers. Kata handlers pass: their exec denial is the
-guest policy, not this wrapper.
+not one of the wrapped handlers.
 
 RKE2 adds a handler for each runtime binary it finds on `PATH` — `crun`, the
 nvidia runtimes, the wasm shims (k3s `pkg/agent/containerd/runtimes.go`). None
@@ -81,8 +80,8 @@ records the RKE2 version it came from, and the invariants gate compares that to
 ## Writing a component that runs on such a node
 
 A C8s-owned exec probe or lifecycle exec hook cannot pass on a locked node, so
-the chart renders none outside the kata templates and
-`TestChartRendersNoExecProbesOutsideKata` keeps it that way. Use, in order of
+the chart renders none and
+`TestChartRendersNoExecProbes` keeps it that way. Use, in order of
 preference:
 
 1. An HTTP, TCP or gRPC probe against a port the component already serves.

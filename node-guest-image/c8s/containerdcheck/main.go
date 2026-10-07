@@ -52,11 +52,6 @@ const (
 	windowsShim = "io.containerd.runhcs.v1"
 )
 
-// kataShimPrefix marks the pod-as-CVM handlers. They do not run ordinary pods
-// and do not take a runc BinaryName; their exec choke point is the guest
-// policy (internal/kataspec), not this wrapper.
-const kataShimPrefix = "io.containerd.kata"
-
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
@@ -272,18 +267,15 @@ func checkHandlers(cfg map[string]any, wrapper string) ([]string, error) {
 			return nil, fmt.Errorf("runtime handler %q is not a table", name)
 		}
 		shim, _ := handler["runtime_type"].(string)
-		switch {
-		case shim == runcShim:
-		case shim == windowsShim:
+		switch shim {
+		case runcShim:
+		case windowsShim:
 			// Windows-only shim the base template always emits; it has no
 			// binary on a Linux node, so a pod selecting it never starts.
 			continue
-		case strings.HasPrefix(shim, kataShimPrefix):
-			// pod-as-CVM: exec is denied in the guest, not here.
-			continue
 		default:
-			return nil, fmt.Errorf("runtime handler %q uses unaudited shim %q; only %s (wrapped), %s and %s* handlers may be enabled",
-				name, shim, runcShim, windowsShim, kataShimPrefix)
+			return nil, fmt.Errorf("runtime handler %q uses unaudited shim %q; only %s (wrapped) and %s handlers may be enabled",
+				name, shim, runcShim, windowsShim)
 		}
 		binary, _ := table(handler, "options")["BinaryName"].(string)
 		if binary != wrapper {
