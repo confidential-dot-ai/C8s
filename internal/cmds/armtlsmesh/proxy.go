@@ -432,7 +432,7 @@ func (p *Proxy) dialAndPipeARMTLS(ctx context.Context, downstream net.Conn, remo
 		return
 	}
 
-	fwd, rev = p.pipe(p.wrapIdle(downstream), p.wrapIdle(upstream))
+	fwd, rev = pipeConns(p.bufPool, p.wrapIdle(downstream), p.wrapIdle(upstream))
 	return
 }
 
@@ -594,7 +594,7 @@ func (p *Proxy) handleInbound(ctx context.Context, downstream net.Conn) {
 	entry.ttfb = pipeStart.Sub(start)
 	p.metrics.timeToFirstByte.WithLabelValues("inbound", cm).Observe(entry.ttfb.Seconds())
 
-	fwd, rev := p.pipe(p.wrapIdle(&bufferedConn{downstream, reader}), p.wrapIdle(upstream))
+	fwd, rev := pipeConns(p.bufPool, p.wrapIdle(&bufferedConn{downstream, reader}), p.wrapIdle(upstream))
 	entry.bytesFwd = fwd.N
 	entry.bytesRev = rev.N
 	if fwd.Err != nil || rev.Err != nil {
@@ -773,12 +773,9 @@ func (p *Proxy) releaseSrc(srcIP string, cnt *atomic.Int64) {
 	}
 }
 
-// pipe copies bytes bidirectionally until both directions are done.
-func (p *Proxy) pipe(a, b net.Conn) (fwd, rev pipeResult) {
-	pool := p.bufPool
-	if pool == nil {
-		pool = newBufPool(0)
-	}
+// pipeConns copies bytes bidirectionally until both directions are done. The
+// pool holds the relay buffers.
+func pipeConns(pool *sync.Pool, a, b net.Conn) (fwd, rev pipeResult) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 	cp := func(dst, src net.Conn, r *pipeResult) {

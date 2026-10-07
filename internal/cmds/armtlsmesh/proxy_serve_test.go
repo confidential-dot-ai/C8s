@@ -103,7 +103,7 @@ func TestRecordOutboundResultLabels(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			m := testMetrics()
-			p := &Proxy{metrics: m}
+			p := &Proxy{metrics: m, bufPool: newBufPool(0)}
 			p.recordOutbound(pipeResult{Err: tc.fwd}, pipeResult{Err: tc.rev}, tc.local)
 			if got := testutil.ToFloat64(m.connectionsTotal.WithLabelValues(tc.wantDir, tc.wantResult)); got != 1 {
 				t.Errorf("connectionsTotal{%s,%s} = %v, want 1", tc.wantDir, tc.wantResult, got)
@@ -167,6 +167,7 @@ func TestInboundHeaderAtSizeLimitAccepted(t *testing.T) {
 		resolver:          &staticResolver{nodeIP: "127.0.0.1"},
 		logger:            testLogger(),
 		metrics:           testMetrics(),
+		bufPool:           newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -226,6 +227,7 @@ func TestOutboundDialFailureClassifiedAsTLSError(t *testing.T) {
 		accessLog:   true,
 		logger:      slog.New(slog.NewJSONHandler(&logBuf, nil)),
 		metrics:     m,
+		bufPool:     newBufPool(0),
 	}
 
 	ctx := t.Context()
