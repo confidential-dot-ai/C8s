@@ -554,9 +554,12 @@ c8s cds verify https://$SERVER:30808 --image-policy-file demo/server.json \
   --served-policy-file demo/peers.json --operator-keys demo/server/pubkey
 ```
 
-Passing `demo/peers.json` for both flags also verifies — either entry admits
-this image — but is the weaker pin: evidence carrying an agent launch key
-would pass too. Prefer the split form.
+Both policy files must name the same TEE family, and every target pin in
+`server.json` must appear in `peers.json`, including its image measurements
+and launch-key anchor. Inconsistent files produce a usage error before
+connecting to the target.
+For `kind=cds`, a target policy with multiple launch-key anchors produces a
+warning: any identity it admits, including an agent, can pass as CDS.
 
 The launch digest(s) to pin are the same values discussed under measurement
 pinning (the node CVM digest). They

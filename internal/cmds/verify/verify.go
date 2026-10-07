@@ -385,6 +385,7 @@ func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllow
 	applyWorkloadPolicy(oc, cfg, ev, held)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
+	applyCDSIdentityWarning(oc, cfg, plan.refValues)
 }
 
 // demoteToPartial turns a passing verdict into a partial one, naming the
@@ -565,12 +566,14 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		if err != nil {
 			return nil, fmt.Errorf("--served-policy-file: %w", err)
 		}
+		if cfg.measurementsConfig != "" {
+			if err := validateTargetInServedPolicy(refValues, values); err != nil {
+				return nil, err
+			}
+		}
 		served = &servedSet{flag: "--served-policy-file", want: values}
 	} else if cfg.measurementsConfig != "" {
-		served = &servedSet{flag: "--image-policy-file", want: refvalues.ReferenceValues{
-			Family: refValues.Family,
-			Images: append([]remote.ImagePin(nil), refValues.Images...),
-		}}
+		served = &servedSet{flag: "--image-policy-file", want: refValues}
 	}
 
 	// --image-manifest carries MRTD in the same tuple as RTMR[1]/[2]. It is

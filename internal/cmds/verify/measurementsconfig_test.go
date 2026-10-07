@@ -1,15 +1,19 @@
 package verify
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,12 +29,28 @@ func loadNodeIdentities(t *testing.T) (serverOnly, serverAndAgent refvalues.Refe
 	if err != nil {
 		t.Fatal(err)
 	}
-	if full.Images[0].Name != "server" {
-		t.Fatalf("fixture leads with %q, the server entry must come first", full.Images[0].Name)
+	if len(full.Images) != 2 || full.Images[0].Name != "server" || full.Images[1].Name != "agent" {
+		t.Fatal("fixture must contain server then agent")
+	}
+	if len(full.Images[0].Anchor) == 0 || len(full.Images[1].Anchor) == 0 || bytes.Equal(full.Images[0].Anchor, full.Images[1].Anchor) {
+		t.Fatal("server and agent must have distinct launch anchors")
 	}
 	server := full
 	server.Images = full.Images[:1]
 	return server, full
+}
+
+func writeImagePolicy(t *testing.T, name string, values refvalues.ReferenceValues) string {
+	t.Helper()
+	data, err := refvalues.Format(values)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 const (
@@ -210,37 +230,51 @@ func TestFetchServedMeasurementsReportsAMissingEndpoint(t *testing.T) {
 func TestCheckServedPolicyPrefersServedPolicyFile(t *testing.T) {
 	serverOnly, serverAndAgent := loadNodeIdentities(t)
 	report := measurementsReport{served: serverAndAgent, fetched: true}
+	serverPath := writeImagePolicy(t, "server.json", serverOnly)
+	peersPath := writeImagePolicy(t, "peers.json", serverAndAgent)
 
-	// With --served-policy-file the equality check compares against it, not
-	// the narrower --image-policy-file target pin.
-	plan := &verifyPlan{refValues: serverOnly, served: &servedSet{flag: "--served-policy-file", want: serverAndAgent}}
+	plan, err := buildPolicy(config{measurementsConfig: serverPath, servedPolicyFile: peersPath})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fail, msgs := collectFailures()
 	checkServedPolicy(plan, report, fail)
 	if len(*msgs) != 0 {
 		t.Fatalf("served set equals --served-policy-file, got %v", *msgs)
 	}
 
-	// Without it the check falls back to --image-policy-file: the agent
-	// entries CDS admits are reported, pinning the pre-split behaviour.
-	plan = &verifyPlan{refValues: serverOnly, served: &servedSet{flag: "--image-policy-file", want: serverOnly}}
+	plan, err = buildPolicy(config{measurementsConfig: serverPath})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fail, msgs = collectFailures()
 	checkServedPolicy(plan, report, fail)
 	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "admits an image --image-policy-file does not pin") {
 		t.Fatalf("fallback to --image-policy-file changed: %v", *msgs)
 	}
+	if !strings.Contains((*msgs)[0], "if the target serves agent identities too, name the served set with --served-policy-file") {
+		t.Fatalf("missing served-policy hint: %v", *msgs)
+	}
 
-	// A --served-policy-file missing an entry the target admits fails,
-	// naming its own flag.
-	plan = &verifyPlan{served: &servedSet{flag: "--served-policy-file", want: serverOnly}}
+	plan, err = buildPolicy(config{servedPolicyFile: serverPath})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fail, msgs = collectFailures()
 	checkServedPolicy(plan, report, fail)
 	if len(*msgs) != 1 || !strings.Contains((*msgs)[0], "admits an image --served-policy-file does not pin") {
 		t.Fatalf("narrow --served-policy-file not reported: %v", *msgs)
 	}
+	if strings.Contains((*msgs)[0], "name the served set") {
+		t.Fatalf("explicit served policy must not suggest itself: %v", *msgs)
+	}
 
-	// No policy flag, no check — even with a fetched report.
+	plan, err = buildPolicy(config{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	fail, msgs = collectFailures()
-	checkServedPolicy(&verifyPlan{}, report, fail)
+	checkServedPolicy(plan, report, fail)
 	if len(*msgs) != 0 {
 		t.Fatalf("check ran without a policy flag: %v", *msgs)
 	}
@@ -271,14 +305,7 @@ func TestGatherMeasurementsRunsForServedPolicyFileAlone(t *testing.T) {
 
 func TestBuildPolicyLoadsServedPolicyFile(t *testing.T) {
 	_, serverAndAgent := loadNodeIdentities(t)
-	path := filepath.Join(t.TempDir(), "peers.json")
-	data, err := refvalues.Format(serverAndAgent)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	path := writeImagePolicy(t, "peers.json", serverAndAgent)
 
 	plan, err := buildPolicy(config{servedPolicyFile: path})
 	if err != nil {
@@ -306,5 +333,87 @@ func TestBuildPolicyLoadsServedPolicyFile(t *testing.T) {
 	// --image-manifest (the error below is the missing manifest file).
 	if _, err := buildPolicy(config{servedPolicyFile: path, imageManifest: path + ".missing"}); err == nil || strings.Contains(err.Error(), "--served-policy-file") {
 		t.Fatalf("--served-policy-file must not exclude --image-manifest: %v", err)
+	}
+}
+
+func TestPolicyFilesRejectInconsistentPinsBeforeConnecting(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		change  func(target, served *refvalues.ReferenceValues)
+		wantErr string
+	}{
+		{"different families", func(_, served *refvalues.ReferenceValues) {
+			served.Family = teetypes.FamilySNP
+			for i := range served.Images {
+				served.Images[i].Registers = nil
+			}
+		}, "same TEE family"},
+		{"missing server", func(_, served *refvalues.ReferenceValues) {
+			served.Images = served.Images[1:]
+		}, "complete target pin"},
+		{"different anchor", func(_, served *refvalues.ReferenceValues) {
+			served.Images[0].Anchor = served.Images[1].Anchor
+			served.Images = served.Images[:1]
+		}, "complete target pin"},
+		{"different image", func(_, served *refvalues.ReferenceValues) {
+			served.Images[0].Digest = bytes.Repeat([]byte{0xff}, 48)
+		}, "complete target pin"},
+		{"different register", func(_, served *refvalues.ReferenceValues) {
+			served.Images[0].Registers = maps.Clone(served.Images[0].Registers)
+			served.Images[0].Registers[1] = bytes.Repeat([]byte{0xff}, 48)
+		}, "complete target pin"},
+		{"dropped register", func(_, served *refvalues.ReferenceValues) {
+			served.Images[0].Registers = maps.Clone(served.Images[0].Registers)
+			delete(served.Images[0].Registers, 1)
+		}, "complete target pin"},
+		{"only one target appears", func(target, served *refvalues.ReferenceValues) {
+			*target = *served
+			served.Images = served.Images[:1]
+		}, "complete target pin"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			target, served := loadNodeIdentities(t)
+			served.Images = slices.Clone(served.Images)
+			tc.change(&target, &served)
+			var requests atomic.Int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.WriteHeader(http.StatusInternalServerError)
+			}))
+			defer srv.Close()
+			cfg := config{
+				kind:               "cds",
+				mode:               "discovery",
+				url:                srv.URL,
+				measurementsConfig: writeImagePolicy(t, "server.json", target),
+				servedPolicyFile:   writeImagePolicy(t, "peers.json", served),
+			}
+			var out, errOut bytes.Buffer
+			if code := run(context.Background(), cfg, &out, &errOut); code != exitUsage {
+				t.Fatalf("exit = %d, want usage; output = %s; error = %s", code, &out, &errOut)
+			}
+			for _, want := range []string{"--image-policy-file", "--served-policy-file", tc.wantErr} {
+				if !strings.Contains(errOut.String(), want) {
+					t.Errorf("error %q does not contain %q", errOut.String(), want)
+				}
+			}
+			if requests.Load() != 0 {
+				t.Fatal("inconsistent policy files caused a network request")
+			}
+		})
+	}
+}
+
+func TestPolicyFilesAcceptTargetSubsetWithDifferentNamesAndOrder(t *testing.T) {
+	target, served := loadNodeIdentities(t)
+	served.Images = slices.Clone(served.Images)
+	served.Images[0].Name = "renamed-server"
+	slices.Reverse(served.Images)
+	_, err := buildPolicy(config{
+		measurementsConfig: writeImagePolicy(t, "server.json", target),
+		servedPolicyFile:   writeImagePolicy(t, "peers.json", served),
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

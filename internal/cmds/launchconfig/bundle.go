@@ -1,6 +1,7 @@
 package launchconfig
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
@@ -130,7 +132,13 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err != nil {
 		return err
 	}
-	serverPin := peerPins.Images[0]
+	serverPinIndex := slices.IndexFunc(peerPins.Images, func(pin remote.ImagePin) bool {
+		return bytes.Equal(pin.Anchor, []byte(serverPub))
+	})
+	if serverPinIndex < 0 {
+		return errors.New("peer policy is missing the server launch-key anchor")
+	}
+	serverPin := peerPins.Images[serverPinIndex]
 	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: peerPins.Family, Images: []remote.ImagePin{serverPin}})
 	if err != nil {
 		return err
