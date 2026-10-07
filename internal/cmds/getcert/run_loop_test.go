@@ -613,6 +613,103 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 	}
 }
 
+// Row 13: a generation whose leaf expires while every renewal fails is
+// withdrawn, and the loop keeps retrying rather than leaving it readable or
+// exiting into a state no restart can recover.
+func TestRunRenewalLoopWithdrawsAnExpiredGeneration(t *testing.T) {
+	holdSIGTERM(t)
+
+	oldBase := renewalRetryBase
+	renewalRetryBase = 10 * time.Millisecond
+	t.Cleanup(func() { renewalRetryBase = oldBase })
+
+	// The initial request publishes a short-lived generation; every renewal
+	// fails, so the generation expires under the pod.
+	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
+		if n == 1 {
+			// Certificate times have second granularity, so a shorter leaf
+			// would already be expired when it is published.
+			return 2 * time.Second, nil
+		}
+		return 0, errors.New("stubbed certificate request failure")
+	})
+
+	cfg := unreachableRenewalConfig(t)
+	cfg.RenewInterval = 20 * time.Millisecond
+	cfg.ReloadNginx = false
+
+	done := make(chan error, 1)
+	go func() { done <- run(cfg) }()
+
+	waitForFile(t, cfg.CertPath, done)
+	waitForWithdrawal(t, cfg.CertPath, done)
+	select {
+	case err := <-done:
+		t.Fatalf("run exited with %v: a withdrawal is not a reason to stop retrying", err)
+	default:
+	}
+	if len(attempts()) < 2 {
+		t.Fatal("the generation was withdrawn without a failed renewal")
+	}
+	terminateRun(t, done)
+}
+
+// waitForWithdrawal blocks until the reader path stops resolving, which is what
+// a consumer of a withdrawn generation sees.
+func waitForWithdrawal(t *testing.T, path string, done <-chan error) {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("run returned before withdrawing %s: %v", path, err)
+		case <-deadline:
+			t.Fatalf("%s still resolves: the expired generation was not withdrawn", path)
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+// A valid generation stays published however many renewals fail (R4).
+func TestRunRenewalLoopRetainsAValidGeneration(t *testing.T) {
+	holdSIGTERM(t)
+
+	oldBase := renewalRetryBase
+	renewalRetryBase = 10 * time.Millisecond
+	t.Cleanup(func() { renewalRetryBase = oldBase })
+
+	attempts := stubObtainCert(t, newTestCA(t), func(n int) (time.Duration, error) {
+		if n == 1 {
+			return time.Hour, nil
+		}
+		return 0, errors.New("stubbed certificate request failure")
+	})
+
+	cfg := unreachableRenewalConfig(t)
+	cfg.RenewInterval = 20 * time.Millisecond
+	cfg.ReloadNginx = false
+
+	done := make(chan error, 1)
+	go func() { done <- run(cfg) }()
+
+	waitForAttempts(t, attempts, 5)
+	select {
+	case err := <-done:
+		t.Fatalf("run exited with %v while its generation was still valid", err)
+	default:
+	}
+	if _, err := os.Stat(cfg.CertPath); err != nil {
+		t.Fatalf("a valid generation was withdrawn after failed renewals: %v", err)
+	}
+	terminateRun(t, done)
+}
+
+// A new pod's first leaf is unnamed; the next renewal must come within
+// seconds, not after a whole --unnamed-renew-interval, so the pod is named
+// soon after its main container starts.
 func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	ca := newTestCA(t)
 	attempts := stubObtainCertNaming(t, ca)

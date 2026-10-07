@@ -863,6 +863,9 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		// splitting the bundle in an entrypoint.
 		"--ca-path=" + certPath(inj.Cert.Dir, inj.Cert.CAFile),
 		"--renew-interval=" + inj.Cert.RenewInterval.String(),
+		// A CA renewed or replaced under CDS mid-interval is picked up here
+		// rather than at the next scheduled renewal (get-cert.md R3).
+		"--ca-watch-interval=" + caWatchInterval.String(),
 		"--reload-nginx=" + strconv.FormatBool(inj.Reload.Nginx),
 		"--continue-on-initial-error",
 	}
@@ -890,6 +893,11 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		// native sidecar is "started" the moment its process launches.
 	}
 }
+
+// caWatchInterval is how often the sidecar asks CDS whether it holds a mesh CA
+// the pod's published set is missing: one authenticated GET, and only a changed
+// set renews.
+const caWatchInterval = time.Minute
 
 // sanArg asks for no SAN explicitly when none was selected, so an empty value
 // can never pass for a choice (N5).

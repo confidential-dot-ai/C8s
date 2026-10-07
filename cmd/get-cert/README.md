@@ -31,8 +31,8 @@ all — CDS then takes the subject from the verified workload identity.
 The leaf, key and CA set are published together, under `generations/` in the
 directory the three paths share, and one `current` symlink flip publishes them:
 the paths above resolve to one complete generation or to nothing. Every response
-is validated first: matching key, chain to its own CA set, this pod's workload
-instance.
+is validated first — matching key, chain to its own CA set, this pod's workload
+instance — and a published generation is withdrawn once it stops being valid.
 
 ## Flags
 

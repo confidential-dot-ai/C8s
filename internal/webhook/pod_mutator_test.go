@@ -1393,13 +1393,18 @@ func TestInjectedContainersMatchThePublishedNameSet(t *testing.T) {
 	}
 }
 
-// N5: a pod the webhook selected no SAN for asks for none explicitly.
-func TestCertContainerSANArg(t *testing.T) {
+// N5 and R3 on the injected sidecar: a pod the webhook selected no SAN for asks
+// for none explicitly, and every injected sidecar watches the CDS CA set so a
+// renewal or replacement is seen inside the renewal interval.
+func TestCertContainerSANAndCAWatchArgs(t *testing.T) {
 	pod := podWithApp()
 	mutatePod(pod, &injection{WorkloadID: "api"}, secretsConfig())
 	args := containerNamed(pod, reservedCertContainerName).Args
 	if !hasArg(args, "--san=api") {
 		t.Fatalf("c8s-cert args %v missing the selected SAN", args)
+	}
+	if !hasArg(args, "--ca-watch-interval="+caWatchInterval.String()) {
+		t.Fatalf("c8s-cert args %v missing the CA watch interval", args)
 	}
 
 	sanless := podWithApp()

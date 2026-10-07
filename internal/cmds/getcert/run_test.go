@@ -856,8 +856,9 @@ func testCredentials(t *testing.T) *credentials {
 // B4: a validated response becomes the pod's first generation, and the CA key
 // that signed it becomes the pod's binding.
 func TestObtainCertPublishesAValidatedGeneration(t *testing.T) {
+	ca := newTestCA(t)
 	stageInventory(t, testInstanceID)
-	cdsURL, attURL := startFakeServers(t, newTestCA(t))
+	cdsURL, attURL := startFakeServers(t, ca)
 
 	cfg := config{CDSURL: cdsURL, AttestationApiURL: attURL, SAN: "host.example.com", WorkloadClaimsTimeout: 5 * time.Second}
 	creds := testCredentials(t)
@@ -867,6 +868,13 @@ func TestObtainCertPublishesAValidatedGeneration(t *testing.T) {
 	assertReaderPaths(t, creds.volume, creds.current)
 	if id, err := armtls.SandboxIDFromCert(creds.current.Leaf); err != nil || id != testInstanceID {
 		t.Fatalf("published leaf names instance %q, %v", id, err)
+	}
+	want, err := issuerKeyIDOf(ca.cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record, err := loadIssuerRecord(creds.volume); err != nil || record != want {
+		t.Fatalf("issuer record = %q, %v; want the issuing CA key %q", record, err, want)
 	}
 }
 
@@ -1267,5 +1275,36 @@ func TestWriteDiscoveryDocument(t *testing.T) {
 	}
 	if err := writeDiscoveryDocument(config{}, result); err != nil {
 		t.Fatalf("without --discovery-out: %v", err)
+	}
+}
+
+// R3, R4: a restart that cannot resume withdraws what the volume still points
+// at. A crashlooping sidecar would otherwise leave an unvalidated generation
+// readable for as long as the pod lives.
+func TestRunWithdrawsWhenResumingFails(t *testing.T) {
+	v, _, _ := publishedVolume(t, newTestCA(t))
+	cfg := config{
+		CDSURL:                "https://cds:8443",
+		AttestationApiURL:     "http://attestation-api:8400",
+		SAN:                   "host.example.com",
+		WorkloadClaimsTimeout: time.Second,
+		CertPath:              filepath.Join(v.dir, v.leafName),
+		KeyPath:               filepath.Join(v.dir, v.keyName),
+		CAPath:                filepath.Join(v.dir, v.caName),
+	}
+	// An inventory that refuses: the pod cannot know which instance it is, so
+	// nothing it holds can be revalidated.
+	serveSandboxRoute(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "denied", http.StatusForbidden)
+	})
+
+	if err := run(cfg); err == nil {
+		t.Fatal("run succeeded without a workload identity assertion")
+	}
+	if _, err := os.Stat(cfg.CertPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the generation is still readable after a failed resume: %v", err)
+	}
+	if _, err := loadIssuerRecord(v); err != nil {
+		t.Fatalf("the binding did not survive the failed resume: %v", err)
 	}
 }

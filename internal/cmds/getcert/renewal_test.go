@@ -114,6 +114,10 @@ func TestRenewalIntervalFiresBeforeLeafExpiry(t *testing.T) {
 			cfg: config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second},
 			gen: paced(pacing{leaf: &x509.Certificate{}, leafTTL: 20 * time.Second, caTTL: 24 * time.Hour}),
 		},
+		"CA set expiring before the leaf": {
+			cfg: config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent},
+			gen: paced(pacing{leaf: namedLeaf(t), leafTTL: 6 * time.Hour, caTTL: 30 * time.Second}),
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			remaining := time.Until(generationExpiry(tc.gen))
