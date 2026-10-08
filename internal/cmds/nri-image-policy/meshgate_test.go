@@ -620,3 +620,43 @@ func TestStartContainerOpensTheGateOnTheMeshEndpointAlone(t *testing.T) {
 		t.Fatalf("a pod outside the mesh's scope was refused: %v", err)
 	}
 }
+
+// The install that deploys CDS deploys the router too, so a member pod's
+// containers are created while the enforcer is still initializing. The gate
+// refuses them until the pod's own endpoint has started, so that start is
+// recorded on the initializing path as well — otherwise the endpoint runs and
+// the rest of the pod is refused for the sandbox's life.
+func TestMeshEndpointStartOpensTheGateWhileInitializing(t *testing.T) {
+	const meshImage = "registry/repo@" + pushDigestB
+	p, _ := newCachedPlugin(&config{
+		Policy: policyConfig{Mode: ModeFailClosed},
+		Allowlist: allowlistConfig{
+			Base: roleBase(t, pushDigestB, meshRole, []string{"/app/c8s", "armtls-mesh"}),
+			Pull: pullConfig{URL: "https://cds"},
+		},
+	}, anyAllowlist(map[string]string{pushDigestA: "served"}))
+	pod := meshPod("default", "pod", testNetNS)
+	gate, state := gateWithPod(pod)
+	p.mesh = gate
+	endpoint := makeCtrWithImageArgs(pod.GetId(), "c8s-mesh", meshImage,
+		[]string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"})
+	endpoint.User = &api.User{Uid: testMeshUID}
+
+	if p.Ready() {
+		t.Fatal("the plugin is ready, so this is not the initializing path")
+	}
+	if err := p.StartContainer(context.Background(), pod, endpoint); err != nil {
+		t.Fatalf("the mesh endpoint was refused while the enforcer was initializing: %v", err)
+	}
+	if !state.meshStarted {
+		t.Fatal("the mesh endpoint started without opening the gate for the rest of the pod")
+	}
+
+	cert := &api.Container{
+		Name: "c8s-cert",
+		User: &api.User{Uid: testCertUID},
+	}
+	if _, _, err := gate.admissible(pod, cert, gatedContainer{role: testCertRole}); err != nil {
+		t.Fatalf("a role container was refused behind a started mesh endpoint: %v", err)
+	}
+}

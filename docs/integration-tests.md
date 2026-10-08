@@ -78,7 +78,9 @@ a port-forward).
   plaintext — proven by the drop/wrap counters (rule ordering between
   kube-proxy and the mesh is not stable). Mirrors
   `test/e2e/mesh-cw-enforcement.sh`.
-- router front door: HTTPS verified against the CDS mesh CA.
+- router front door: HTTPS verified against the CDS mesh CA, from a pod of an
+  exempt namespace — the in-cluster stand-in for the external clients it
+  serves, because a member's dial would be captured into armTLS.
 - Workload adoption: `c8s install --workload-ref` patches a running
   deployment, its rollout goes through injection, the status mirror reports
   `kubectl get cwl`, and router routes the front door to it over the mesh.

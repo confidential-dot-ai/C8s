@@ -732,7 +732,7 @@ router:
     https: ""
 
   # -- Public hostnames for the front door, as a list. Empty defaults to the
-  # chart-managed Service DNS name: <release>-router.<namespace>.svc. Every entry
+  # chart-managed Service DNS name: <release>-router.c8s-router.svc. Every entry
   # becomes an nginx server_name, so one router can answer on several hostnames
   # the serving cert (publicTLS) covers. The FIRST entry is the single identity
   # on the CDS-issued mesh cert — pin it in cds.dnsSanPatterns; the rest widen
@@ -774,12 +774,12 @@ router:
       # -- SNI/verification name for the HTTPS upstream. Must match the upstream
       # cert SAN. Empty defaults to the address host.
       serverName: ""
-      # -- CA file nginx verifies the upstream against. Defaults to the get-cert
-      # output at <tlsMountPath>/cert.pem, which CDS returns as leaf+CA chain, so
-      # CDS-issued upstream certs verify out of the box. Set to
-      # <meshCA.mountPath>/<meshCA.key> (and provide that ConfigMap) or another
-      # path for a different upstream.
-      trustedCAPath: /tls/cert.pem
+      # -- CA file nginx verifies the upstream against. Empty defaults to the
+      # get-cert output on the member credential volume, which CDS returns as
+      # leaf+CA chain, so CDS-issued upstream certs verify out of the box. Set
+      # to <meshCA.mountPath>/<meshCA.key> (and provide that ConfigMap) or
+      # another path for a different upstream.
+      trustedCAPath: ""
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the
@@ -895,9 +895,9 @@ router:
     maxAge: 600
 
   # -- Public TLS credential presented to internet clients. mode selects it:
-  # cds (default) serves the CDS-issued mesh leaf at tlsMountPath; webpki
-  # serves the operator Secret named by secretName (host-visible key, so the
-  # front door is attest-pq only); acme has the in-pod `c8s acme` sidecar
+  # cds (default) serves the CDS-issued mesh leaf; webpki serves the operator
+  # Secret named by secretName (host-visible key, so the front door is
+  # attest-pq only); acme has the in-pod `c8s acme` sidecar
   # issue a multi-SAN leaf for the san list (TEE-held key — requires
   # attestationApi.cvmMode=bare-metal).
   # secretName/certKey/keyKey/mountPath apply to webpki only.
@@ -993,12 +993,8 @@ router:
     # exactly this name, and the chart wires a readinessProbe on the cds-attest
     # container (an HTTPS httpGet through nginx, which proxies /readyz to the
     # sidecar's loopback port), so ingress withholds traffic while the front
-    # door's committed mesh identity is unnamed. Setting it also switches the
-    # router get-cert onto the workload-claims flow (inventory socket mount +
-    # supplemental group on node-CVM) — without that
-    # no stamp could ever arrive and the gate would hold the front door at 503
-    # forever. The named entry must match the router pod's own non-injected
-    # container set (nginx).
+    # door's committed mesh identity is unnamed. The named entry must match the
+    # router pod's own non-injected container set (nginx).
     #
     # Requires attest.enabled and hostPort.enabled: false — readiness only
     # withdraws Service endpoints, while a hostPort is published by the CNI
@@ -1037,11 +1033,6 @@ router:
     #    rke2-coredns-rke2-coredns.kube-system, else kube-dns.kube-system.
     #    Set explicitly on clusters whose DNS Service is named differently.
     resolver: ""
-    # -- UID/GID used by nginx and the get-cert containers so both can access
-    #    the in-memory CDS key material on the shared tls-certs volume.
-    runAsUser: 101
-    runAsGroup: 101
-    runAsNonRoot: true
     resources: {}
 
   service:
@@ -1064,10 +1055,6 @@ router:
     # service.beta.kubernetes.io/azure-pip-name on AKS); the deprecated
     # spec.loadBalancerIP field is intentionally not exposed.
     annotations: {}
-
-  # -- Volume mount path for the CDS-issued TLS certificate and key shared
-  # between get-cert and nginx.
-  tlsMountPath: "/tls"
 
 ## Common pod-level security knobs.
 podSecurityContext:

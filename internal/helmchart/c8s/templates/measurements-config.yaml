@@ -1,8 +1,7 @@
 {{- /*
 The measurements config: the VM images this cluster runs, each pinned as a
-whole image. Shared by every component that verifies one — cds and the
-router's allowlist-proxy — so it lives in its own ConfigMap rather than beside
-a single component's own material.
+whole image. CDS verifies one against it, so it lives in its own ConfigMap
+rather than beside a single component's own material.
 
 Public policy, not secret: these are the digests a verifier compares evidence
 against.

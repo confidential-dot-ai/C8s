@@ -188,22 +188,119 @@ allowlist:
       # The platform roles the enforcer grants inside a member pod. A role
       # comes from this measured base alone: the JSON ingest drops the field,
       # so a document CDS serves can never claim one (pkg/allowlist).
+      #
+      # INVARIANT: every command, and every exact args and mounts policy, is
+      # what the injector builds for that container over the image's
+      # entrypoint (internal/webhook, TestMeasuredBaseAdmitsTheInjectedArgv).
+      # An args or mounts policy is any only where the pod chooses them.
       c8s-mesh-endpoint:
-        label: "@MESH_REPO@@@MESH_DIGEST@"
+        label: "armtls-mesh"
         containers:
           - digest: "@MESH_DIGEST@"
             image: "@MESH_REPO@@@MESH_DIGEST@"
             role: "mesh"
-            command: {policy: any}
-            args: {policy: any}
-            mounts: {policy: any}
-      c8s-credential-clients:
-        label: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            command: {policy: exact, argv: ["/app/c8s", "armtls-mesh"]}
+            args:
+              policy: exact
+              argv:
+                - "--cert-path=/etc/c8s/certs/tls.crt"
+                - "--key-path=/etc/c8s/certs/tls.key"
+                - "--ca-path=/etc/c8s/certs/ca.crt"
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+      c8s-get-cert:
+        label: "c8s get-cert"
         containers:
           - digest: "@OPERATOR_DIGEST@"
             image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
             role: "credentials"
-            command: {policy: any}
+            command: {policy: exact, argv: ["/c8s", "get-cert"]}
+            # Per pod: the SAN it requests and the discovery files it writes.
+            args: {policy: any}
+            mounts: {policy: any}
+      c8s-probe-file:
+        label: "c8s probe-file"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "probe-file"]}
+            args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
+            # Per pod: the discovery volume get-cert writes.
+            mounts: {policy: any}
+      c8s-get-secret:
+        label: "c8s get-secret"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-secret"]}
+            # Per pod: the secrets it fetches and where they land.
+            args: {policy: any}
+            mounts: {policy: any}
+      c8s-get-volume:
+        label: "c8s get-volume"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-volume"]}
+            # Per pod: the volumes it opens and where they are mounted.
+            args: {policy: any}
+            mounts: {policy: any}
+      # The router's own containers. The chart renders its pod itself, and
+      # every pod of the router namespace holds platform-role containers
+      # only, so each of them takes a role from here. The router
+      # role serves the front door's ports; the acme role is the one that
+      # reaches outside the cluster in the clear; the credentials role
+      # reaches the node's CDS.
+      c8s-router-nginx:
+        label: "nginx reload"
+        containers:
+          - digest: "@ROUTER_DIGEST@"
+            image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
+            role: "router"
+            command: {policy: exact, argv: ["/bin/sh", "/etc/nginx/reload.sh"]}
+            args: {policy: deny}
+            mounts: {policy: any}
+      c8s-acme:
+        label: "c8s acme"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "acme"
+            command: {policy: exact, argv: ["/c8s", "acme"]}
+            # Per cluster: the domains it proves, the ACME directory it uses
+            # and the account it registers.
+            args: {policy: any}
+            # Its own leaf's volume and nothing else: the ACME key is the one
+            # credential this role mints for itself.
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s-acme-tls"
+                  kind: "emptyDir"
+      c8s-cds-attest:
+        label: "c8s cds-attest"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "router"
+            command: {policy: exact, argv: ["/c8s", "cds-attest"]}
+            # Per cluster: the upstream it fronts and the leaf it binds.
+            args: {policy: any}
+            mounts: {policy: any}
+      c8s-allowlist-proxy:
+        label: "c8s allowlist-proxy"
+        containers:
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "allowlist-proxy"]}
+            # Per cluster: the port it listens on.
             args: {policy: any}
             mounts: {policy: any}
   pull:

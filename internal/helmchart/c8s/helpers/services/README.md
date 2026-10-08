@@ -35,8 +35,12 @@ virtual host. The token-bearing launch directory is never mounted into pods.
 Missing policy files fail startup. Workload sidecars retain NRI socket injection.
 Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 
-`c8s.cdsURL` builds the in-cluster CDS Service URL. `c8s.nriCDSURL` uses
-`nriImagePolicy.cds.url` when supplied, otherwise
+`c8s.routerMeshNamespace` is the namespace whose pods serve the router's own
+ports (`c8s-router`). The chart renders that Namespace under the fixed name the
+enforcer compiles in (`pkg/workloadclaims.RouterNamespace`).
+
+`c8s.cdsURL` builds the in-cluster CDS Service URL.
+`c8s.nriCDSURL` uses `nriImagePolicy.cds.url` when supplied, otherwise
 `https://127.0.0.1:<cds.service.nodePort>` for the host plugin.
 
 `c8s.router.resolver` honors `router.nginx.resolver`. Otherwise `nriImagePolicy.distro=rke2`

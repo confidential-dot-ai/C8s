@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"slices"
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -102,6 +103,74 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 			for _, name := range []string{"c8s-mesh-endpoint", "c8s-get-cert", "c8s-cert-wait", "c8s-get-secret", "c8s-get-volume"} {
 				if _, ok := seed.Workloads[name]; ok {
 					t.Errorf("seed carries the role entry %q, whose role the JSON ingest drops", name)
+				}
+			}
+		})
+	}
+}
+
+// The router pod's own containers hold the same roles, and the chart renders
+// that pod itself. Its nginx comes from Docker Hub, which an image reference
+// may name explicitly, so the lane's floor labels the front door's digest
+// docker.io/<repository>@<digest> while the component value names the bare
+// repository.
+const roleNginxDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000e3"
+
+// routerPodRoles is the role every container of the rendered router pod takes.
+var routerPodRoles = map[string]string{
+	"c8s-mesh":        "mesh",
+	"c8s-cert":        "credentials",
+	"c8s-cert-wait":   "credentials",
+	"allowlist-proxy": "credentials",
+	"nginx":           "router",
+	"cds-attest":      "router",
+	"acme":            "acme",
+}
+
+// TestChartBaseGrantsTheRouterPodItsRoles proves the rendered base grants
+// every container of the router pod the role it runs as, whether a digest
+// reaches that base as a derived component image or as a hand-pinned
+// bootstrapAllowlist entry labelled the way the cluster lane's store scan
+// writes it.
+func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
+	digestArgs := []string{
+		"--set-string", "armtlsMesh.image.digest=" + roleMeshDigest,
+		"--set-string", "image.digest=" + roleOperatorDigest,
+		"--set-string", "router.nginx.image.digest=" + roleNginxDigest,
+		"--set", "router.attest.enabled=true",
+		"--set-string", "router.publicTLS.mode=acme",
+		"--set", "router.san={lb.example.com}",
+	}
+	// Tag-referenced C8s images and a registry-qualified front door, as the
+	// lane's containerd store lists what it loaded and pulled.
+	floorArgs := append(
+		anyArgvEntryArgs("mesh-floor", roleMeshDigest, "ghcr.io/confidential-dot-ai/armtls-mesh:it"),
+		anyArgvEntryArgs("operator-floor", roleOperatorDigest, "ghcr.io/confidential-dot-ai/c8s-operator:it")...,
+	)
+	floorArgs = append(floorArgs,
+		anyArgvEntryArgs("nginx-floor", roleNginxDigest, "docker.io/nginxinc/nginx-unprivileged@"+roleNginxDigest)...,
+	)
+	cases := map[string][]string{
+		"derived component digests": append(digestArgs, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"),
+		"bootstrap floor digests":   append(digestArgs, floorArgs...),
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+			base := cfg.Allowlist.Base.BuildIndex()
+			pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+			for _, container := range append(slices.Clone(pod.InitContainers), pod.Containers...) {
+				want, held := routerPodRoles[container.Name]
+				if !held {
+					t.Errorf("router container %q holds no platform role, so the enforcer refuses the pod", container.Name)
+					continue
+				}
+				if got := base.RoleOf(observedLaunch(container)); got != want {
+					t.Errorf("the base grants %s the role %q, want %q", container.Name, got, want)
 				}
 			}
 		})

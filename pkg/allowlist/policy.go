@@ -122,26 +122,29 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// noRole is what a container holds until a declaration grants it a role.
+const noRole = ""
+
 // RoleOf reports the platform role this policy binds to an observed
 // container. A role rides on the whole verified identity, and two
 // declarations naming different roles for one launch bind none.
 func (i *Index) RoleOf(r RunningContainer) string {
 	if i == nil {
-		return ""
+		return noRole
 	}
 	d, err := types.ParseDigest(r.Digest)
 	if err != nil {
-		return ""
+		return noRole
 	}
 	r.Digest = d.String()
 	var roles []string
 	for _, c := range i.byDigest[r.Digest] {
-		if c.Role != "" && c.admits(r) && !slices.Contains(roles, c.Role) {
+		if c.Role != noRole && c.admits(r) && !slices.Contains(roles, c.Role) {
 			roles = append(roles, c.Role)
 		}
 	}
 	if len(roles) != 1 {
-		return ""
+		return noRole
 	}
 	return roles[0]
 }

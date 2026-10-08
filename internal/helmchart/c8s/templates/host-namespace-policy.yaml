@@ -5,9 +5,10 @@ blanket hostPath denial. The inventory socket directory reaches credential
 sidecars through NRI below the Pod spec, so no volume or image exception is
 needed here.
 
-The release namespace, kube-system, local-path-storage, and configured
-exemptions host trusted platform components that legitimately need privileges
-which tenant workloads must never receive.
+The release namespace, the router role's own, kube-system, local-path-storage,
+and configured exemptions host trusted platform components that legitimately
+need privileges which tenant workloads must never receive: a front-door pod
+binds the node's port and reads its inventory socket.
 */}}
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
@@ -32,6 +33,7 @@ spec:
           operator: NotIn
           values:
             - {{ .Release.Namespace }}
+            - {{ include "c8s.routerMeshNamespace" . }}
             - kube-system
             - local-path-storage
             {{- range .Values.hostNamespacePolicy.exemptNamespaces }}
@@ -366,6 +368,7 @@ spec:
           operator: NotIn
           values:
             - {{ .Release.Namespace }}
+            - {{ include "c8s.routerMeshNamespace" . }}
             - kube-system
             - local-path-storage
             {{- range .Values.hostNamespacePolicy.exemptNamespaces }}

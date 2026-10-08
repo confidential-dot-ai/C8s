@@ -6,6 +6,7 @@ package allowlistproxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -20,8 +21,10 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const (
@@ -39,6 +42,20 @@ type config struct {
 	attestationAPIURL  string
 	requestTimeout     time.Duration
 	readHeaderTimeout  time.Duration
+}
+
+// What the enforcer mounts for a credentials-role container, each at the one
+// compiled path its client reads. Tests point them elsewhere.
+var (
+	nodeAddressPath = workloadclaims.CDSAddressPath
+	nodePinsPath    = workloadclaims.CDSPinsPath
+	nodeVerifier    = workloadclaims.AttestationAPISocket
+)
+
+// cds is the CDS this proxy dials and the pins it holds it to.
+type cds struct {
+	url  string
+	pins remote.Policy
 }
 
 // NewCmd returns the internal allowlist-proxy subcommand used by the router
@@ -125,24 +142,72 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	if cfg.requestTimeout <= 0 {
 		return nil, fmt.Errorf("--request-timeout must be positive")
 	}
-	target, err := parseCDSURL(cfg.cdsURL)
+	resolved, err := cfg.resolveCDS()
 	if err != nil {
 		return nil, err
 	}
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.measurementsConfig}).Load(
-		cmdsutil.MeasurementPins{Measurements: cfg.cdsMeasurements, Registers: cfg.cdsRTMRs, Prefix: "cds-"})
+	target, err := parseCDSURL(resolved.url)
 	if err != nil {
 		return nil, err
 	}
-	if len(policy.Measurements) == 0 && len(policy.Images) == 0 {
+	if len(resolved.pins.Measurements) == 0 && len(resolved.pins.Images) == 0 {
 		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS (unsafe outside development)")
 	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL)
+	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(resolved.pins), cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}
+	logger.Info("router allowlist proxy verifying CDS", "cds_url", resolved.url)
 	proxy := newReverseProxy(target, httpClient.Transport, cfg.requestTimeout, logger)
 	return newRouter(proxy), nil
+}
+
+// resolveCDS fixes the CDS this proxy dials, the pins it holds it to and the
+// verifier that decides them. All three come from one source: while the
+// enforcer mounts the node's endpoint, policy and attestation-api for a
+// credentials-role container, they are the only source and a flag naming
+// another is refused (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins,
+// cmdsutil.RequireNodeVerifier).
+func (cfg config) resolveCDS() (cds, error) {
+	endpoint, endpointFromNode, err := cmdsutil.ResolveCDSEndpoint(nodeAddressPath, cfg.cdsURL)
+	if err != nil {
+		return cds{}, err
+	}
+	pins, pinsFromNode, err := cmdsutil.ResolveCDSPins(nodePinsPath,
+		cmdsutil.ImagePolicySource{File: cfg.measurementsConfig},
+		cmdsutil.MeasurementPins{
+			Measurements: cfg.cdsMeasurements,
+			Registers:    cfg.cdsRTMRs,
+			Prefix:       "cds-",
+		})
+	if err != nil {
+		return cds{}, err
+	}
+	if err := cmdsutil.RequireNodeVerifier(nodePinsPath, nodeVerifier, cfg.attestationAPIURL); err != nil {
+		return cds{}, err
+	}
+	if endpointFromNode != pinsFromNode {
+		mounted := nodePinsPath
+		missing := nodeAddressPath
+		if endpointFromNode {
+			mounted = nodeAddressPath
+			missing = nodePinsPath
+		}
+		return cds{}, fmt.Errorf("this node provides %s but not %s: a CDS endpoint and the pins it is held to must come from one source", mounted, missing)
+	}
+	if endpointFromNode {
+		return cds{
+			url:  cmdsutil.CDSURL(endpoint),
+			pins: pins,
+		}, nil
+	}
+	if cfg.cdsURL == "" {
+		return cds{}, errors.New("--cds-url is required: no node hands this client a CDS endpoint")
+	}
+	return cds{
+		url:  cfg.cdsURL,
+		pins: pins,
+	}, nil
 }
 
 func parseCDSURL(raw string) (*url.URL, error) {

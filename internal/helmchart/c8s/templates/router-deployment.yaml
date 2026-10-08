@@ -23,7 +23,7 @@ withheld. */ -}}
 {{- end -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
-{{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
+{{- $defaultMeshCAPath := include "c8s.caFile" . -}}
 {{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
 {{- $attestUsesHTTPSUpstream := and .Values.router.attest.enabled (eq .Values.router.upstream.protocol "https") -}}
 {{- $upstreamAddress := .Values.router.upstream.address -}}
@@ -33,7 +33,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ include "router.fullname" . }}
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
     {{- include "router.labels" . | nindent 4 }}
 spec:
@@ -64,11 +64,6 @@ spec:
         {{- include "router.selectorLabels" . | nindent 8 }}
       annotations:
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
-        {{- if .Values.cds.measurementsConfig }}
-        # A ConfigMap edit alone does not change the pod template, so without
-        # this a tightened pin would not roll the router.
-        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
-        {{- end }}
     spec:
       {{- /* Same control-plane pin as CDS: a baked image boots one server,
              and only servers carry this RKE2 role label. */}}
@@ -78,7 +73,19 @@ spec:
       {{- end }}
 
       {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.router.imagePullSecrets) | nindent 6 }}
+      {{- /* Every container of this pod holds a platform role the measured
+             base grants it, and runs as that role's reserved identity:
+             c8s.meshUID for the endpoint, c8s.credentialsUID for get-cert,
+             the probe-file gate and the allowlist proxy, c8s.routerUID for
+             nginx and cds-attest, c8s.acmeUID for acme — the one identity of
+             this pod the node lets out of the cluster in the clear. The
+             volume group (c8s.certFsGroup) is what lets a role read what
+             another role wrote. */}}
       initContainers:
+        {{- /* The endpoint leads: the enforcer gates the rest of the pod on
+               its start, and every other container's traffic is captured
+               into it. */}}
+        {{- include "c8s.meshEndpointContainer" . | nindent 8 }}
         {{- include "router.getCertContainers" . | nindent 8 }}
         {{- if eq $publicTLSMode "acme" }}
         # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
@@ -122,9 +129,8 @@ spec:
               mountPath: {{ include "router.acmeCertDir" . }}
           securityContext:
             {{- include "c8s.getCertSecurityContext" (dict
-              "runAsUser" .Values.router.nginx.runAsUser
-              "runAsGroup" .Values.router.nginx.runAsGroup
-              "runAsNonRoot" .Values.router.nginx.runAsNonRoot
+              "runAsUser" (include "c8s.acmeUID" .)
+              "runAsGroup" (include "c8s.acmeUID" .)
             ) | nindent 12 }}
         {{- end }}
       containers:
@@ -154,9 +160,9 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
-            runAsNonRoot: {{ .Values.router.nginx.runAsNonRoot }}
-            runAsUser: {{ include "c8s.int" .Values.router.nginx.runAsUser }}
-            runAsGroup: {{ include "c8s.int" .Values.router.nginx.runAsGroup }}
+            runAsNonRoot: true
+            runAsUser: {{ include "c8s.routerUID" . }}
+            runAsGroup: {{ include "c8s.routerUID" . }}
             capabilities:
               drop:
                 - ALL
@@ -178,7 +184,7 @@ spec:
 
           volumeMounts:
             - name: tls-certs
-              mountPath: {{ .Values.router.tlsMountPath }}
+              mountPath: {{ include "c8s.certDir" . }}
               readOnly: true
             {{- if eq $publicTLSMode "webpki" }}
             - name: public-tls
@@ -244,9 +250,9 @@ spec:
             # credential, never the optional publicTLS Secret: report_data
             # commits the X-Wing key exchange to this leaf and the sidecar
             # proves possession with its matching private key.
-            - --mesh-identity-cert-file={{ .Values.router.tlsMountPath }}/cert.pem
-            - --mesh-identity-key-file={{ .Values.router.tlsMountPath }}/key.pem
-            - --mesh-identity-ca-file={{ .Values.router.tlsMountPath }}/ca.pem
+            - --mesh-identity-cert-file={{ include "c8s.certFile" . }}
+            - --mesh-identity-key-file={{ include "c8s.keyFile" . }}
+            - --mesh-identity-ca-file={{ include "c8s.caFile" . }}
             # Terminate over-encryption here and forward to the same workload
             # backend nginx proxies to. An http upstream is plaintext at the
             # app layer; pointed at a headless Service (an adopted workload),
@@ -260,8 +266,8 @@ spec:
             {{- if $attestUsesHTTPSUpstream }}
             - --upstream-ca={{ $upstreamTrustedCAPath }}
             {{- if .Values.router.upstream.tls.useCDSClientCert }}
-            - --upstream-cert={{ .Values.router.tlsMountPath }}/cert.pem
-            - --upstream-key={{ .Values.router.tlsMountPath }}/key.pem
+            - --upstream-cert={{ include "c8s.certFile" . }}
+            - --upstream-key={{ include "c8s.keyFile" . }}
             {{- end }}
             - --upstream-server-name={{ $attestUpstreamServerName }}
             {{- end }}
@@ -295,7 +301,7 @@ spec:
           {{- end }}
           volumeMounts:
             - name: tls-certs
-              mountPath: {{ .Values.router.tlsMountPath }}
+              mountPath: {{ include "c8s.certDir" . }}
               readOnly: true
             {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
             {{- if eq $publicTLSMode "webpki" }}
@@ -314,6 +320,8 @@ spec:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             runAsNonRoot: true
+            runAsUser: {{ include "c8s.routerUID" . }}
+            runAsGroup: {{ include "c8s.routerUID" . }}
             capabilities:
               drop:
                 - ALL
@@ -329,44 +337,39 @@ spec:
         - name: allowlist-proxy
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
+          {{- /* It holds the credentials role, so the node hands it the CDS
+                 endpoint and the pins, and refuses an argument naming either
+                 (cmdsutil.ResolveCDSEndpoint, cmdsutil.ResolveCDSPins). */}}
           args:
             - allowlist-proxy
             - --host=127.0.0.1
             - --port={{ include "c8s.int" .Values.router.allowlist.proxyPort }}
-            - --cds-url={{ include "c8s.cdsURL" . }}
-            - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-            {{- if .Values.node.baked }}
-            - --image-policy-file=/run/c8s-node/cds.json
-            {{- else if .Values.cds.measurementsConfig }}
-            - --image-policy-file=/etc/c8s-measurements/cds.json
-            {{- else }}
-            {{- with .Values.cds.measurements }}
-            - --cds-measurements={{ join "," . }}
-            {{- end }}
-            {{- with .Values.cds.rtmrs }}
-            - --cds-rtmrs={{ join "," . }}
-            {{- end }}
-            {{- end }}
+            - --attestation-api-url={{ include "router.credentialsVerifierURL" . }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: the proxy verifies CDS through the node-baked
           # attestation-api, reached from this pod via its node IP.
           env:
             {{- . | nindent 12 }}
           {{- end }}
-          {{- if or (include "c8s.attestationApiSocketPresent" .) .Values.cds.measurementsConfig }}
+          {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) }}
           volumeMounts:
-            {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
-            {{- include "c8s.nodeConfigMount" . | nindent 12 }}
-            {{- if .Values.cds.measurementsConfig }}
-            - name: measurements-config
-              mountPath: /etc/c8s-measurements
+            {{- if eq (include "router.mountInventorySocket" .) "true" }}
+            # The inventory socket directory at the compiled path get-cert
+            # mounts it on, so this sidecar names the node's own verifier.
+            - name: workload-claims
+              mountPath: /run/c8s/workload-claims
               readOnly: true
+            {{- else }}
+            {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
             {{- end }}
           {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
             runAsNonRoot: true
+            {{- /* It dials CDS, so it holds the credentials role. */}}
+            runAsUser: {{ include "c8s.credentialsUID" . }}
+            runAsGroup: {{ include "c8s.credentialsUID" . }}
             capabilities:
               drop:
                 - ALL
@@ -381,11 +384,6 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
-        {{- if .Values.cds.measurementsConfig }}
-        - name: measurements-config
-          configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-        {{- end }}
         {{- if eq $publicTLSMode "webpki" }}
         - name: public-tls
           secret:
@@ -434,15 +432,12 @@ spec:
         {{- /* Shares the admission inventory's socket directory — see c8s.attestationApiSocket. */}}
         {{- include "c8s.attestationApiSocketVolume" . | nindent 8 }}
       securityContext:
-        runAsNonRoot: {{ .Values.router.nginx.runAsNonRoot }}
-        fsGroup: {{ include "c8s.int" .Values.router.nginx.runAsGroup }}
+        runAsNonRoot: true
+        fsGroup: {{ include "c8s.certFsGroup" . }}
         {{- if or (eq (include "router.mountInventorySocket" .) "true") (include "c8s.attestationApiSocketPresent" .) }}
         # workloadclaims.InventorySocketGID: the inventory and attest-proxy
         # chgrp their sockets to this group so the non-root get-cert sidecar
-        # (on the nginx uid) can connect. get-cert must stay on the nginx uid —
-        # it SIGHUPs nginx on renewal, and a different uid gets "operation not
-        # permitted", after which nginx serves a stale leaf that every
-        # exact-DER client correctly refuses.
+        # can connect.
         supplementalGroups: [65532]
         {{- end }}
         seccompProfile:

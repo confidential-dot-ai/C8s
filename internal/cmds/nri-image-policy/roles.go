@@ -42,11 +42,13 @@ const routerNamespace = workloadclaims.RouterNamespace
 // forwards is captured wherever its name resolves.
 //
 // INVARIANT: routerListeners are the container ports the chart's router pod
-// binds (router.nginx.httpsPort and the HTTP-01 port), and acmeEgressPorts are
-// the ports public certificate issuance uses.
+// binds (router.nginx.httpsPort, the HTTP-01 port and the acme sidecar's
+// readiness port), and acmeEgressPorts are the ports public certificate
+// issuance uses: the directory the sidecar orders from, and the plain HTTP
+// port each public name is checked on before validation.
 var (
-	routerListeners = []uint16{8443, 8080}
-	acmeEgressPorts = []uint16{443}
+	routerListeners = []uint16{8443, 8080, 8403}
+	acmeEgressPorts = []uint16{443, 80}
 )
 
 // meshPolicy is the trusted mesh policy: the pod ruleset's inputs and the

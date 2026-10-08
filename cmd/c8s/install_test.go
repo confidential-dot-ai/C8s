@@ -23,6 +23,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var errTestResolve = errors.New("simulated resolve failure")
@@ -330,7 +331,8 @@ func TestValidateWorkloadAdoptionFlags(t *testing.T) {
 	}{
 		{name: "no ref is valid", wait: false},
 		{name: "adopt in a separate namespace is valid", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: true},
-		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "release namespace", "excluded"}},
+		{name: "ref rejects release namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-system/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", "c8s-system", "excluded"}},
+		{name: "ref rejects the router namespace", releaseNS: "c8s-system", refs: []string{"router=c8s-router/deployment/vllm"}, wait: true, wantErr: []string{"--workload-ref", workloadclaims.RouterNamespace, "excluded"}},
 		{name: "ref requires wait", releaseNS: "c8s-system", refs: []string{"router=workloads/deployment/vllm"}, wait: false, wantErr: []string{"--workload-ref", "--wait=true"}},
 	}
 	for _, tt := range tests {

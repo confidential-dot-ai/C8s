@@ -69,17 +69,17 @@ func TestChartRouterReloadWatchesTheServedCertificates(t *testing.T) {
 	}{
 		{
 			name: "mesh leaf",
-			line: `watched="/tls/cert.pem /tls/key.pem /tls/ca.pem"`,
+			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt"`,
 		},
 		{
 			name: "public web PKI certificate",
 			args: []string{"--set-string", "router.publicTLS.mode=webpki", "--set-string", "router.publicTLS.secretName=front-door"},
-			line: `watched="/tls/cert.pem /tls/key.pem /tls/ca.pem /public-tls/tls.crt /public-tls/tls.key"`,
+			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt /public-tls/tls.crt /public-tls/tls.key"`,
 		},
 		{
 			name: "acme certificate and key",
 			args: []string{"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}", "--set-string", "router.acme.email=ops@example.com"},
-			line: `watched="/tls/cert.pem /tls/key.pem /tls/ca.pem /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-tls/key.pem"`,
+			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-tls/key.pem"`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

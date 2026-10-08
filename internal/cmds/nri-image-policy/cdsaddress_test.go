@@ -198,14 +198,14 @@ func TestCDSAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 		cdsAddress: "/var/run/nri-image-policy/cds-address",
 	}
 	pod := &api.PodSandbox{Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"}}
-	mount := addressMount(t, p.sidecarAdjustment(pod, &api.Container{Name: workloadclaims.CertContainerName}))
+	mount := addressMount(t, mustCredentialMounts(t, p, pod, &api.Container{Name: workloadclaims.CertContainerName}))
 	if mount.GetSource() != p.cdsAddress {
 		t.Fatalf("source = %q, want the plugin's own file", mount.GetSource())
 	}
 	if !slices.Contains(mount.GetOptions(), "ro") {
 		t.Fatalf("options = %v, want a read-only mount", mount.GetOptions())
 	}
-	if got := p.sidecarAdjustment(pod, &api.Container{Name: "app"}); got != nil {
+	if got := mustCredentialMounts(t, p, pod, &api.Container{Name: "app"}); got != nil {
 		t.Fatalf("workload adjustment = %+v, want none", got)
 	}
 }

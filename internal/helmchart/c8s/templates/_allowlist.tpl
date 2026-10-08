@@ -88,8 +88,9 @@
 
 {{/* The platform-role entries of the rendered base, mirroring the measured
      base (node-guest-image/c8s/image-policy.yaml.in). The enforcer grants a
-     role from the base alone, so an injected container on a reserved uid is
-     refused on a node whose base names no role for it.
+     role from the base alone, so a container on a reserved uid — an injected
+     one, or one of the router pod the chart renders itself — is refused on a
+     node whose base names no role for it.
 
      INVARIANT: each command is the image's entrypoint (cmd/c8s/Dockerfile,
      cmd/armtls-mesh/Dockerfile) plus the component's own subcommand where the
@@ -100,14 +101,24 @@
      entry. */ -}}
 {{- define "c8s.roleWorkloads" -}}
 {{- $root := . -}}
+{{- $meshRepository := include "c8s.imageRepository" .Values.armtlsMesh.image.repository -}}
+{{- $credentialsRepository := include "c8s.imageRepository" .Values.image.repository -}}
+{{- $nginxRepository := include "c8s.imageRepository" .Values.router.nginx.image.repository -}}
+{{- $repositories := list $meshRepository $credentialsRepository $nginxRepository -}}
+{{- if ne (len (uniq $repositories)) (len $repositories) -}}
+{{- fail (printf "VALIDATION_ERROR kind=shared_component_repository: the mesh endpoint, the C8s components and the front door must come from distinct repositories, so each digest takes the role of what it runs; got %v" $repositories) -}}
+{{- end -}}
 {{- $mesh := list -}}
 {{- $credentials := list -}}
+{{- $nginx := list -}}
 {{- range $digest, $image := (merge (include "c8s.anyArgvDigests" $root | fromJson) (include "c8s.imageAllowlist" $root | fromJson)) -}}
 {{- $repository := include "c8s.imageRepository" $image -}}
-{{- if eq $repository $root.Values.armtlsMesh.image.repository -}}
+{{- if eq $repository $meshRepository -}}
 {{- $mesh = append $mesh (dict "digest" $digest "image" $image) -}}
-{{- else if eq $repository $root.Values.image.repository -}}
+{{- else if eq $repository $credentialsRepository -}}
 {{- $credentials = append $credentials (dict "digest" $digest "image" $image) -}}
+{{- else if eq $repository $nginxRepository -}}
+{{- $nginx = append $nginx (dict "digest" $digest "image" $image) -}}
 {{- end -}}
 {{- end -}}
 {{- $entries := dict -}}
@@ -116,7 +127,11 @@
   (dict "name" "c8s-get-cert" "role" "credentials" "argv" (list "/c8s" "get-cert") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-cert-wait" "role" "credentials" "argv" (list "/c8s" "probe-file") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-get-secret" "role" "credentials" "argv" (list "/c8s" "get-secret") "images" $credentials "label" $root.Values.image.repository)
-  (dict "name" "c8s-get-volume" "role" "credentials" "argv" (list "/c8s" "get-volume") "images" $credentials "label" $root.Values.image.repository) -}}
+  (dict "name" "c8s-get-volume" "role" "credentials" "argv" (list "/c8s" "get-volume") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-router-nginx" "role" "router" "argv" (list "/bin/sh" "/etc/nginx/reload.sh") "images" $nginx "label" $root.Values.router.nginx.image.repository)
+  (dict "name" "c8s-acme" "role" "acme" "argv" (list "/c8s" "acme") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-cds-attest" "role" "router" "argv" (list "/c8s" "cds-attest") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-allowlist-proxy" "role" "credentials" "argv" (list "/c8s" "allowlist-proxy") "images" $credentials "label" $root.Values.image.repository) -}}
 {{- $containers := list -}}
 {{- range $image := $role.images -}}
 {{- $containers = append $containers (dict "digest" $image.digest "image" $image.image "role" $role.role "command" (dict "policy" "exact" "argv" $role.argv) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
@@ -128,10 +143,15 @@
 {{ $entries | toJson }}
 {{- end -}}
 
-{{/* The repository of an image reference, without its tag or digest. */ -}}
+{{/* The repository an image reference names, as one canonical string: no tag,
+     no digest, and Docker Hub's implicit registry and library namespace left
+     off, so a reference naming them explicitly and a component value that
+     omits them compare equal. */ -}}
 {{- define "c8s.imageRepository" -}}
 {{- $path := . | splitList "@" | first | splitList "/" -}}
-{{- append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
+{{- $repository := append (initial $path) (last $path | splitList ":" | first) | join "/" -}}
+{{- $repository = regexReplaceAll "^(index\\.)?docker\\.io/" $repository "" -}}
+{{- regexReplaceAll "^library/" $repository "" -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}
@@ -207,12 +227,27 @@
 {{- end -}}
 
 {{- define "c8s.allowlistSeedJSON" -}}
+{{- $root := . -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
+{{- $meshRepository := include "c8s.imageRepository" .Values.armtlsMesh.image.repository -}}
 {{- range $digest, $image := (include "c8s.imageAllowlist" . | fromJson) -}}
 {{- if not (has $digest $pinnedDigests) -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
 {{- $container := dict "digest" $digest "image" $image "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") "env" (dict "policy" "any") -}}
+{{- if eq (include "c8s.imageRepository" $image) $meshRepository -}}
+{{- /* INVARIANT: equal to the mesh entry of the measured base (node-guest-image/c8s/image-policy.yaml.in) and to the container the injector builds (internal/webhook, meshContainer); env is the kubelet's, which adds the pod's service variables. */ -}}
+{{- $container = dict
+  "digest" $digest
+  "image" $image
+  "command" (dict "policy" "exact" "argv" (list "/app/c8s" "armtls-mesh"))
+  "args" (dict "policy" "exact" "argv" (list
+    (printf "--cert-path=%s" (include "c8s.certFile" $root))
+    (printf "--key-path=%s" (include "c8s.keyFile" $root))
+    (printf "--ca-path=%s" (include "c8s.caFile" $root))))
+  "mounts" (dict "policy" "exact" "rules" (list (dict "destination" (include "c8s.certDir" $root) "kind" "emptyDir")))
+  "env" (dict "policy" "any") -}}
+{{- end -}}
 {{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
 {{- end -}}
 {{- end -}}

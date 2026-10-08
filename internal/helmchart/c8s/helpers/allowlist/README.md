@@ -43,6 +43,10 @@ Keep this naming rule aligned with `pkg/allowlist.DigestEntryName`.
 `c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived image
 digest outside `c8s.argvPinnedDigests`, with command, args, environment, and mount
 policies set to `any`, followed by `c8s.argvPinnedEntries` and `bootstrapAllowlist.workloads`.
+A digest of the mesh repository is the exception: its entry pins the command, the
+arguments and the credential mount of the measured base's mesh entry
+([image-policy.yaml.in](../../../../../node-guest-image/c8s/image-policy.yaml.in)),
+which is the container the injector builds; its environment stays `any`.
 A supplied workload replaces the entire derived entry of the same name. The document must satisfy `pkg/allowlist.ParseJSON`.
 
 ## Argv-pinned entries

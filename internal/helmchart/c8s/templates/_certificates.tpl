@@ -2,22 +2,29 @@
 
 {{- define "c8s.getCertContainers" -}}
 {{- $root := .root -}}
+{{- $certOut := include "c8s.certFile" $root -}}
+{{- $security := include "c8s.getCertSecurityContext" (dict
+  "runAsUser" (include "c8s.credentialsUID" $root)
+  "runAsGroup" (include "c8s.credentialsUID" $root)
+) -}}
 - name: c8s-cert
   image: {{ include "c8s.image" $root }}
   imagePullPolicy: {{ $root.Values.image.pullPolicy }}
   restartPolicy: Always
+  {{- /* This container holds the credentials role, so the node hands it the
+         one CDS its pod may reach and refuses an argument naming another
+         (cmdsutil.ResolveCDSEndpoint). */}}
   args:
     - get-cert
-    - --cds-url={{ include "c8s.cdsURL" $root }}
-    - --attestation-api-url={{ include "c8s.attestationApiURL" $root }}
+    - --attestation-api-url={{ .attestationApiURL }}
     {{- if .sanFile }}
     - --san-file={{ .sanFile }}
     {{- else }}
     - --san={{ .san }}
     {{- end }}
-    - --cert-path={{ .certOut }}
-    - --key-path={{ .keyOut }}
-    - --ca-path={{ .caOut }}
+    - --cert-path={{ $certOut }}
+    - --key-path={{ include "c8s.keyFile" $root }}
+    - --ca-path={{ include "c8s.caFile" $root }}
     # Retry CDS in-process during a roll instead of exiting into kubelet
     # CrashLoopBackOff; still fails closed once the timeout elapses.
     - --initial-retry-timeout={{ $root.Values.certProvisioning.initialRetryTimeout }}
@@ -33,21 +40,24 @@
     {{- . | nindent 4 }}
   {{- end }}
   volumeMounts:
-    - name: {{ .volume }}
-      mountPath: {{ .mountPath }}
+    - name: tls-certs
+      mountPath: {{ include "c8s.certDir" $root }}
     {{- with .extraMounts }}
     {{- . | nindent 4 }}
     {{- end }}
   # The workload is gated on the initial cert by the c8s-cert-wait init
   # container below, not a startupProbe here.
   securityContext:
-    {{- include "c8s.getCertSecurityContext" . | nindent 4 }}
+    {{- $security | nindent 4 }}
 # c8s-cert-wait gates the workload on the initial cert without an exec probe.
 # A plain (run-once) init container blocks on the cert file, and normal
 # init-completion ordering holds the workload until the attested cert exists —
 # fail-closed.
 # The `/c8s` path is the binary location from cmd/c8s/Dockerfile; command
 # bypasses the ENTRYPOINT so the full path must match.
+#
+# INVARIANT: this argv is the one the injector builds (internal/webhook
+# "certWaitContainer"), which the measured base pins for the credentials role.
 - name: c8s-cert-wait
   image: {{ include "c8s.image" $root }}
   imagePullPolicy: {{ $root.Values.image.pullPolicy }}
@@ -55,19 +65,19 @@
     - /c8s
     - probe-file
     - --wait
-    - --timeout=3m
-    - {{ .certOut }}
+    - --timeout=3m0s
+    - {{ $certOut }}
   volumeMounts:
-    - name: {{ .volume }}
-      mountPath: {{ .mountPath }}
+    - name: tls-certs
+      mountPath: {{ include "c8s.certDir" $root }}
   securityContext:
-    {{- include "c8s.getCertSecurityContext" . | nindent 4 }}
+    {{- $security | nindent 4 }}
 {{- end -}}
 
 {{- define "c8s.getCertSecurityContext" -}}
 allowPrivilegeEscalation: false
 readOnlyRootFilesystem: true
-runAsNonRoot: {{ .runAsNonRoot }}
+runAsNonRoot: true
 runAsUser: {{ include "c8s.int" .runAsUser }}
 runAsGroup: {{ include "c8s.int" .runAsGroup }}
 capabilities:

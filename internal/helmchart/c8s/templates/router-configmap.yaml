@@ -9,7 +9,7 @@
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
 {{- include "router.validateProtocol" (required "protocol must be http or https" .Values.router.upstream.protocol) -}}
-{{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
+{{- $defaultMeshCAPath := include "c8s.caFile" . -}}
 {{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
 {{- $upstreamAddress := .Values.router.upstream.address | trim -}}
 {{- $upstreamMeshWrapped := eq (include "router.meshWrappedUpstream" $upstreamAddress) "true" -}}
@@ -64,7 +64,7 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "router.fullname" . }}-nginx
-  namespace: {{ .Release.Namespace }}
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
   labels:
     {{- include "router.labels" . | nindent 4 }}
 data:
@@ -297,7 +297,7 @@ data:
                 {{- include "router.corsLocationDirectives" $routeCors | nindent 16 }}
                 {{- end }}
                 {{- if eq $backendProtocol "https" }}
-                {{- include "router.proxySSLDirectives" (dict "protocol" $backendProtocol "tls" $backendTLS "serverName" $backendServerName "trustedCAPath" $backendTrustedCAPath "tlsMountPath" $.Values.router.tlsMountPath) | nindent 16 }}
+                {{- include "router.proxySSLDirectives" (dict "protocol" $backendProtocol "tls" $backendTLS "serverName" $backendServerName "trustedCAPath" $backendTrustedCAPath "certFile" (include "c8s.certFile" $) "keyFile" (include "c8s.keyFile" $)) | nindent 16 }}
                 {{- end }}
                 proxy_pass {{ $backendProtocol }}://route_{{ $i }};
                 proxy_set_header Host $host;
@@ -329,7 +329,7 @@ data:
                 access_log off;
                 default_type application/x-pem-file;
                 add_header Cache-Control "no-store" always;
-                alias {{ .Values.router.tlsMountPath }}/cert.pem;
+                alias {{ include "c8s.certFile" . }};
             }
 
             {{- if .Values.router.meshCA.expose }}
@@ -388,7 +388,7 @@ data:
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
                 {{- end }}
                 {{- if eq .Values.router.upstream.protocol "https" }}
-                {{- include "router.proxySSLDirectives" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "tlsMountPath" .Values.router.tlsMountPath) | nindent 16 }}
+                {{- include "router.proxySSLDirectives" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "certFile" (include "c8s.certFile" .) "keyFile" (include "c8s.keyFile" .)) | nindent 16 }}
                 {{- end }}
                 {{- if $upstreamMeshWrapped }}
                 set $backend_addr {{ $upstreamAddress }};

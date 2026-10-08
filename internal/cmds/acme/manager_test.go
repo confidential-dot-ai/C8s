@@ -70,7 +70,7 @@ func TestIssueHTTP01MultiSAN(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("leaf SANs = %v, want %v", leaf.DNSNames, testDomains)
 	}
-	// Chain includes the CA; key is on disk 0600.
+	// Chain includes the CA; the key is group-readable on disk.
 	chain, err := os.ReadFile(mgr.certPath())
 	if err != nil {
 		t.Fatal(err)
@@ -89,8 +89,10 @@ func TestIssueHTTP01MultiSAN(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("key mode = %v, want 0600", info.Mode().Perm())
+	// Group-readable: nginx serves this key as another identity, and the
+	// pod's fsGroup owns the directory.
+	if info.Mode().Perm() != keyMode {
+		t.Fatalf("key mode = %v, want %v", info.Mode().Perm(), os.FileMode(keyMode))
 	}
 	// The challenge tokens are gone after issuance (no dangling responders).
 	if len(mgr.tokens) != 0 {
@@ -157,8 +159,10 @@ func TestBootstrapWritesSelfSignedPlaceholder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("key mode = %v, want 0600", info.Mode().Perm())
+	// Group-readable: nginx serves this key as another identity, and the
+	// pod's fsGroup owns the directory.
+	if info.Mode().Perm() != keyMode {
+		t.Fatalf("key mode = %v, want %v", info.Mode().Perm(), os.FileMode(keyMode))
 	}
 	if !mgr.needsIssue() {
 		t.Fatal("self-signed bootstrap reported serviceable")
