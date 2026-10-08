@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -20,7 +21,9 @@ import (
 	"testing"
 	"time"
 
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/ratls"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -164,21 +167,68 @@ func TestRolloutFencesSessions(t *testing.T) {
 }
 
 func TestRolloutVerifyPeer(t *testing.T) {
-	stamped := writeStampedMeshIdentity(t, "model").leaf
-	inBound := "sha256:" + strings.Repeat("42", 32)
+	policy := func(entries map[string]string) []byte {
+		doc := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{}}
+		for name, label := range entries {
+			doc.Workloads[name] = pkgallowlist.Workload{Label: label, Containers: []pkgallowlist.Container{}}
+		}
+		b, err := doc.Canonical()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	p := policy(map[string]string{"model": "a", "other": "x"})
+	q := policy(map[string]string{"model": "a", "other": "y"})
+	r := policy(map[string]string{"model": "b"})
+	objects := map[string][]byte{}
+	digest := func(b []byte) (string, []byte) {
+		sum := sha256.Sum256(b)
+		d := "sha256:" + hex.EncodeToString(sum[:])
+		objects["/.well-known/c8s/objects/sha256/"+hex.EncodeToString(sum[:])] = b
+		return d, sum[:]
+	}
+	pd, pRaw := digest(p)
+	qd, qRaw := digest(q)
+	rd, _ := digest(r)
+	tampered := sha256.Sum256([]byte("tampered"))
+	objects["/.well-known/c8s/objects/sha256/"+hex.EncodeToString(tampered[:])] = p
+	objSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		b, ok := objects[req.URL.Path]
+		if !ok {
+			http.NotFound(w, req)
+			return
+		}
+		w.Write(b)
+	}))
+	defer objSrv.Close()
+
+	leaf := func(name string, d []byte) *x509.Certificate {
+		ext, err := ratls.MarshalMatchedWorkloadExtension(&ratls.MatchedWorkload{Name: name, AllowlistVersion: "1", AllowlistDigest: d})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return writeTestMeshIdentityWithLeafExtensions(t, ext).leaf
+	}
 	for _, tc := range []struct {
-		name  string
-		leaf  *x509.Certificate
-		bound []string
-		ok    bool
+		name     string
+		leaf     *x509.Certificate
+		bound    []string
+		workload string
+		ok       bool
 	}{
-		{"stamp in bound", stamped, []string{"sha256:p", inBound}, true},
-		{"stamp outside bound", stamped, []string{"sha256:p"}, false},
-		{"no stamp", writeTestMeshIdentity(t).leaf, []string{inBound}, false},
+		{"stamp in bound", leaf("model", qRaw), []string{qd}, "", true},
+		{"entry unchanged since the stamp", leaf("model", pRaw), []string{qd}, "", true},
+		{"entry changed since the stamp", leaf("other", pRaw), []string{qd}, "", false},
+		{"entry changed in every bound policy", leaf("model", pRaw), []string{rd}, "", false},
+		{"stamped policy does not match its digest", leaf("model", tampered[:]), []string{qd}, "", false},
+		{"expected workload", leaf("model", qRaw), []string{qd}, "model", true},
+		{"other workload", leaf("model", qRaw), []string{qd}, "other", false},
+		{"no stamp", writeTestMeshIdentity(t).leaf, []string{pd}, "", false},
 	} {
-		r := newRollout("", "")
-		r.bound = tc.bound
-		if err := r.verifyPeer(tc.leaf); (err == nil) != tc.ok {
+		fence := newRollout(objSrv.URL, "")
+		fence.bound, fence.workload = tc.bound, tc.workload
+		if err := fence.verifyPeer(tc.leaf); (err == nil) != tc.ok {
 			t.Errorf("%s: verifyPeer = %v, want ok=%v", tc.name, err, tc.ok)
 		}
 	}

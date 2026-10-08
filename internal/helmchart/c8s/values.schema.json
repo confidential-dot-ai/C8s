@@ -518,7 +518,8 @@
                 "verify": {},
                 "verifyDepth": {}
               }
-            }
+            },
+            "workload": {}
           }
         }
       }

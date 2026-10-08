@@ -66,7 +66,7 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			pr.Out.Header.Del(verifiedStateHeader)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
-			if cause := context.Cause(r.Context()); errors.Is(cause, errBoundChanged) || errors.Is(cause, errStateExpired) {
+			if cause := context.Cause(r.Context()); errors.Is(cause, errBoundChanged) || errors.Is(cause, errAuthorityChanged) || errors.Is(cause, errStateExpired) {
 				log.Info("front-door forward cancelled", "path", r.URL.Path, "cause", cause)
 				refuseReconnect(w)
 				return

@@ -48,6 +48,7 @@ type config struct {
 	upstreamKeyFile    string
 	upstreamServerName string
 	cdsStateURL        string
+	upstreamWorkload   string
 	lbForwardPort      int
 }
 
@@ -87,6 +88,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")
 	f.StringVar(&cfg.cdsStateURL, "cds-state-url", "", "allowlist-proxy base URL (http://127.0.0.1:<port>). Set, attestation bundles carry CDS's nonce-bound rollout state, sessions are fenced on it, and --upstream must be https with a mesh leaf whose matched-workload stamp names a policy in the bound")
 	f.IntVar(&cfg.lbForwardPort, "lb-forward-port", 0, "with --cds-state-url, loopback port on which nginx hands front-door requests to the sidecar, which fences them on the rollout state and forwards them to --upstream (0 disables)")
+	f.StringVar(&cfg.upstreamWorkload, "upstream-workload", "", "with --cds-state-url, the allowlist entry name the upstream's matched-workload stamp must carry (empty admits any entry the bound holds)")
 	f.StringVar(&cfg.upstreamServerName, "upstream-server-name", "", "SNI/verification name for an https upstream")
 	return cmd
 }
@@ -134,6 +136,9 @@ func run(cfg config) error {
 	if cfg.cdsStateURL != "" && !strings.HasPrefix(cfg.cdsStateURL, "http://") && !strings.HasPrefix(cfg.cdsStateURL, "https://") {
 		return fmt.Errorf("--cds-state-url must be an http:// or https:// URL, got %q", cfg.cdsStateURL)
 	}
+	if cfg.upstreamWorkload != "" && cfg.cdsStateURL == "" {
+		return fmt.Errorf("--upstream-workload requires --cds-state-url")
+	}
 	if cfg.cdsStateURL != "" && cfg.meshIdentityCAFile == "" {
 		return fmt.Errorf("--cds-state-url requires --mesh-identity-ca-file to verify the CDS state")
 	}
@@ -142,6 +147,7 @@ func run(cfg config) error {
 	var verifyPeer func(*x509.Certificate) error
 	if cfg.cdsStateURL != "" {
 		fence = newRollout(cfg.cdsStateURL, cfg.meshIdentityCAFile)
+		fence.workload = cfg.upstreamWorkload
 		verifyPeer = fence.verifyPeer
 		// A pinned client's envelope holds only for attested receivers.
 		if cfg.upstream != "" && !strings.HasPrefix(cfg.upstream, "https://") {
