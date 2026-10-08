@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -117,7 +118,9 @@ func (b *HTTPBackend) ResetConnections() {
 // defaultUpstreamTimeout bounds a single forwarded request to the upstream
 // backend (connect + headers + body) when HTTPBackendOptions.Timeout is unset.
 // It guards the sidecar against slow or hung upstreams holding decrypted-traffic
-// connections open indefinitely.
+// connections open indefinitely. It is the http.Client timeout, so it covers
+// Forward only; the pinned-mode lb forwarder uses the Transport directly and
+// is bounded by the dial and TLS handshake timeouts, not by this.
 const defaultUpstreamTimeout = 30 * time.Second
 
 // HTTPBackendOptions configures the raTLS/mTLS material for an https upstream.
@@ -189,10 +192,16 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 		return nil, fmt.Errorf("upstream must be an http:// or https:// URL, got %q", base)
 	}
 	transport := newResettableTransport(func() *http.Transport {
+		// Bound the dial and handshake so a dead upstream pod fails fast
+		// with 502 instead of hanging until nginx gives up. There is no
+		// ResponseHeaderTimeout: a non-streaming LLM response sends its
+		// headers only when generation ends.
 		return &http.Transport{
-			MaxIdleConns:    100,
-			IdleConnTimeout: 90 * time.Second,
-			TLSClientConfig: tlsCfg,
+			DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+			MaxIdleConns:        100,
+			IdleConnTimeout:     90 * time.Second,
+			TLSClientConfig:     tlsCfg,
 		}
 	})
 
