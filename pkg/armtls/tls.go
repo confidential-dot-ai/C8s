@@ -41,15 +41,6 @@ type ServerConfig struct {
 	// constructed from Platform and AttestFunc.
 	CertProvider CertProvider
 
-	// CACert enables mesh-CA verification with embedded-evidence fallback.
-	CACert []*x509.Certificate
-
-	// DynamicCACert, when true, enables dual-mode verification with an
-	// initially empty CA pool. CA certs are populated later via
-	// CertManager.UpdateCACerts. Until then, peers require embedded evidence.
-	// Use this when CA certs are fetched at runtime (e.g., from CDS /ca).
-	DynamicCACert bool
-
 	// DNSNames for the server certificate.
 	DNSNames []string
 
@@ -65,24 +56,23 @@ type ServerConfig struct {
 	// When nil, the server does not request client certificates.
 	ClientPolicy *VerifyPolicy
 
-	// ClientCAs, when set, has crypto/tls verify a presented client
-	// certificate against these roots, with no embedded-evidence fallback: a leaf that does
-	// not chain is rejected in the handshake. Mutually exclusive with
-	// ClientPolicy, whose dual verifier accepts a self-signed armTLS peer as a
-	// fallback — for a handler that reads a CDS-stamped field out of the leaf
-	// (the sandbox ID), that fallback would let any attested TEE assert an
-	// arbitrary value.
+	// ClientCA, when set, has crypto/tls verify a presented client certificate
+	// against that root: a leaf that does not chain is rejected in the
+	// handshake. Mutually exclusive with ClientPolicy, which admits a
+	// self-issued armTLS peer — for a handler that reads a CDS-stamped field
+	// out of the leaf (the sandbox ID), that would let any attested TEE assert
+	// an arbitrary value.
 	//
 	// Pair it with ClientAuth to choose whether a certificate is required.
 	// Because the chain is verified here, r.TLS.VerifiedChains is populated and
 	// a handler need not re-verify.
-	ClientCAs []*x509.Certificate
+	ClientCA *x509.Certificate
 
-	// ClientAuth selects how a client certificate is demanded when ClientCAs is
+	// ClientAuth selects how a client certificate is demanded when ClientCA is
 	// set; it defaults to tls.VerifyClientCertIfGiven, which lets a certless
 	// caller still reach the routes that need no identity while holding any
-	// certificate that IS presented to the ClientCAs roots. Ignored unless
-	// ClientCAs is set.
+	// certificate that IS presented to the ClientCA root. Ignored unless
+	// ClientCA is set.
 	ClientAuth tls.ClientAuthType
 
 	// RotationTimeout is the maximum time allowed for background certificate
@@ -96,10 +86,11 @@ type ServerConfig struct {
 	Logger Logger
 }
 
-// ClientConfig configures an armTLS client that verifies embedded evidence
-// or a certificate chain to a configured mesh CA.
+// ClientConfig configures an armTLS client that verifies the server's own
+// evidence.
 type ClientConfig struct {
-	// Policy defines acceptable attestation claims for the server.
+	// Policy defines acceptable attestation claims for the server. Required:
+	// the client verifies the server against it on every handshake.
 	Policy *VerifyPolicy
 
 	// Platform and AttestFunc, when both set, enable mTLS: the client
@@ -112,14 +103,6 @@ type ClientConfig struct {
 	// certificate provisioning. When nil, a SelfSignedProvider is constructed
 	// from Platform and AttestFunc (if both are set).
 	CertProvider CertProvider
-
-	// CACert enables mesh-CA verification with embedded-evidence fallback.
-	CACert []*x509.Certificate
-
-	// DynamicCACert, when true, enables dual-mode verification with an
-	// initially empty CA pool. CA certs are populated later via
-	// CertManager.UpdateCACerts.
-	DynamicCACert bool
 
 	// CertTTL is the client certificate lifetime. Default: 24h.
 	// Only used when Platform and AttestFunc are set.
@@ -593,38 +576,11 @@ func (s *certState) SwapProvider(ctx context.Context, provider CertProvider) err
 	return nil
 }
 
-// sharedCACerts holds a dynamically-updatable list of CA certificates
-// for dual-mode (CA chain + embedded evidence) peer verification.
-type sharedCACerts struct {
-	pool  atomic.Pointer[x509.CertPool]
-	certs atomic.Pointer[[]*x509.Certificate]
-}
-
-func newSharedCACerts(certs []*x509.Certificate) *sharedCACerts {
-	s := &sharedCACerts{}
-	s.update(certs)
-	return s
-}
-
-func (s *sharedCACerts) update(certs []*x509.Certificate) {
-	pool := x509.NewCertPool()
-	for _, ca := range certs {
-		pool.AddCert(ca)
-	}
-	s.pool.Store(pool)
-	s.certs.Store(&certs)
-}
-
-func (s *sharedCACerts) getPool() *x509.CertPool {
-	return s.pool.Load()
-}
-
 // CertManager provides access to the armTLS certificate lifecycle.
 // Use WarmUp to eagerly provision the certificate at startup and CertReady
 // to gate readiness probes.
 type CertManager struct {
-	state    *certState
-	sharedCA *sharedCACerts // non-nil when dual-mode verification is active
+	state *certState
 }
 
 // WarmUp eagerly provisions the certificate. Call this at startup (after
@@ -664,22 +620,13 @@ func (m *CertManager) SwapProvider(ctx context.Context, provider CertProvider) e
 	return m.state.SwapProvider(ctx, provider)
 }
 
-// UpdateCACerts dynamically updates the CA certificates used for dual-mode
-// peer verification. This is used by the CA bundle refresh goroutine when
-// polling the CDS /ca endpoint in CDS-backed modes.
-func (m *CertManager) UpdateCACerts(certs []*x509.Certificate) {
-	if m.sharedCA != nil {
-		m.sharedCA.update(certs)
-	}
-}
-
 // NewServerTLSConfig creates a tls.Config for an armTLS server. The private
 // key is generated in memory and never written to disk. The attestation report
 // is obtained lazily on the first TLS handshake and cached until rotation.
 //
 // If ClientPolicy is set, the server requires client certificates and verifies
-// their armTLS attestation (mTLS). If CACert is also set, the server accepts
-// peers with either verified embedded evidence or a certificate chain to the CA.
+// their armTLS attestation (mTLS): a self-issued leaf carrying key-bound
+// evidence. ClientCA verifies a chain instead, and the two are exclusive.
 //
 // If CertProvider is set, it is used for certificate provisioning instead of
 // Platform/AttestFunc. When CertProvider is nil, Platform and AttestFunc are
@@ -726,17 +673,15 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 	}
 	refuseResumption(tlsCfg)
 
-	// mTLS: require and verify client certificates.
-	var sharedCA *sharedCACerts
+	// mTLS: require and verify client certificates. A listener authenticates
+	// its peers one way.
+	if cfg.ClientCA != nil && cfg.ClientPolicy != nil {
+		return nil, nil, fmt.Errorf("armtls: ClientCA and ClientPolicy are mutually exclusive (ClientPolicy admits a self-issued armTLS peer, which ClientCA exists to refuse)")
+	}
 	switch {
-	case len(cfg.ClientCAs) > 0:
-		if cfg.ClientPolicy != nil {
-			return nil, nil, fmt.Errorf("armtls: ClientCAs and ClientPolicy are mutually exclusive (ClientPolicy admits a self-signed armTLS peer, which ClientCAs exists to refuse)")
-		}
+	case cfg.ClientCA != nil:
 		pool := x509.NewCertPool()
-		for _, c := range cfg.ClientCAs {
-			pool.AddCert(c)
-		}
+		pool.AddCert(cfg.ClientCA)
 		tlsCfg.ClientCAs = pool
 		tlsCfg.ClientAuth = cfg.ClientAuth
 		if tlsCfg.ClientAuth == tls.NoClientCert {
@@ -744,22 +689,16 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 		}
 	case cfg.ClientPolicy != nil:
 		tlsCfg.ClientAuth = tls.RequireAnyClientCert
-		if len(cfg.CACert) > 0 || cfg.DynamicCACert {
-			sharedCA = newSharedCACerts(cfg.CACert) // empty slice is fine — falls through to embedded-evidence verification
-			tlsCfg.VerifyPeerCertificate = dualVerifyPeerCallback(cfg.ClientPolicy, sharedCA)
-		} else {
-			tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
-		}
+		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.ClientPolicy, x509.ExtKeyUsageClientAuth)
 	}
 
-	mgr := &CertManager{state: state, sharedCA: sharedCA}
-	return tlsCfg, mgr, nil
+	return tlsCfg, &CertManager{state: state}, nil
 }
 
-// NewClientTLSConfig creates a tls.Config for an armTLS client. Peer verification
-// checks key-bound TEE evidence or a chain to the configured mesh CA.
-// Policy.RequireCAEvidence also requires evidence verification for CA-signed
-// certificates.
+// NewClientTLSConfig creates a tls.Config for an armTLS client. Peer
+// verification checks key-bound TEE evidence of a self-issued certificate; a
+// CDS-issued leaf is verified on the chain path instead
+// (NewMeshClientTLSConfig).
 //
 // If Platform and AttestFunc are set (or CertProvider is set), the client
 // presents its own certificate for mutual attestation (mTLS).
@@ -791,20 +730,17 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 		}
 	}
 
+	if cfg.Policy == nil {
+		return nil, nil, fmt.Errorf("armtls: Policy is required: the client verifies the server's evidence against it on every handshake")
+	}
+
 	tlsCfg := &tls.Config{
 		MinVersion:         tls.VersionTLS13,
 		InsecureSkipVerify: true, // Custom peer verification.
 	}
 	refuseResumption(tlsCfg)
 
-	// Peer verification: dual-mode if CACert is set (or DynamicCACert for runtime population).
-	var clientSharedCA *sharedCACerts
-	if len(cfg.CACert) > 0 || cfg.DynamicCACert {
-		clientSharedCA = newSharedCACerts(cfg.CACert) // empty slice is fine — falls through to embedded-evidence verification
-		tlsCfg.VerifyPeerCertificate = dualVerifyPeerCallback(cfg.Policy, clientSharedCA)
-	} else {
-		tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.Policy, x509.ExtKeyUsageServerAuth)
-	}
+	tlsCfg.VerifyPeerCertificate = verifyPeerCallback(cfg.Policy, x509.ExtKeyUsageServerAuth)
 
 	var mgr *CertManager
 
@@ -832,23 +768,18 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 			return state.getOrProvision(info.Context())
 		}
 
-		mgr = &CertManager{state: state, sharedCA: clientSharedCA}
+		mgr = &CertManager{state: state}
 	}
 
 	return tlsCfg, mgr, nil
 }
 
 // verifyPeerCallback returns a VerifyPeerCertificate function that checks the
-// peer's armTLS attestation against the given policy. peerPurpose is the TLS
-// purpose the peer's role requires: clientAuth for a client, serverAuth for a
-// server.
+// peer's armTLS attestation against the given policy, which is required.
+// peerPurpose is the TLS purpose the peer's role requires: clientAuth for a
+// client, serverAuth for a server.
 func verifyPeerCallback(policy *VerifyPolicy, peerPurpose x509.ExtKeyUsage) func([][]byte, [][]*x509.Certificate) error {
-	// Extract nonce from policy for use in verification.
-	var nonce []byte
-	if policy != nil {
-		nonce = policy.Nonce
-	}
-
+	nonce := policy.Nonce
 	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 		cert, err := parsePeerLeaf(rawCerts)
 		if err != nil {
@@ -862,104 +793,6 @@ func verifyPeerCallback(policy *VerifyPolicy, peerPurpose x509.ExtKeyUsage) func
 		}
 		if _, err := VerifyCert(cert, policy, nonce); err != nil {
 			return fmt.Errorf("armtls: peer attestation failed: %w", err)
-		}
-		return nil
-	}
-}
-
-// dualVerifyPeerCallback returns a VerifyPeerCertificate function that accepts
-// peers with either verified embedded evidence or a certificate chain to any
-// of the given CAs. This enables rolling upgrades where some nodes have
-// CA-signed certificates and others still use self-signed armTLS. The
-// multi-cert pool also supports CA rotation: include both old and new CA
-// during the transition window.
-func dualVerifyPeerCallback(policy *VerifyPolicy, shared *sharedCACerts) func([][]byte, [][]*x509.Certificate) error {
-	var nonce []byte
-	if policy != nil {
-		nonce = policy.Nonce
-	}
-
-	return func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
-		if len(rawCerts) == 0 {
-			return fmt.Errorf("armtls: no peer certificate")
-		}
-
-		cert, err := x509.ParseCertificate(rawCerts[0])
-		if err != nil {
-			return fmt.Errorf("armtls: parse peer cert: %w", err)
-		}
-
-		// Try X.509 chain verification first (fast path — no AMD KDS).
-		// Read the CA pool atomically so UpdateCACerts is safe.
-		caPool := shared.getPool()
-		intermediates := x509.NewCertPool()
-		for _, rawCert := range rawCerts[1:] {
-			if ic, err := x509.ParseCertificate(rawCert); err == nil {
-				intermediates.AddCert(ic)
-			}
-		}
-		// Both branches must share one validity window. x509.Verify grants no
-		// NotBefore skew while certutil.CheckValidity (the embedded-evidence branch,
-		// through VerifyCert) grants certutil.LeafValiditySkew, so without
-		// CurrentTime a CA-signed leaf minted a couple of minutes into our
-		// future fails the chain here and silently falls through to embedded-evidence verification —
-		// where the sandbox and workload pins below are not enforced at all.
-		// Shifting CurrentTime closes that divergence; the leaf's own NotAfter
-		// is then re-checked at the true now, so the shift buys nothing at the
-		// expiry end.
-		now := time.Now()
-		_, chainErr := cert.Verify(x509.VerifyOptions{
-			Roots:         caPool,
-			Intermediates: intermediates,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-			CurrentTime:   now.Add(certutil.LeafValiditySkew),
-		})
-		if chainErr == nil {
-			chainErr = certutil.CheckValidity(cert, now)
-		}
-		if chainErr == nil {
-			// The chain is verified here and only here, so this is the one place
-			// a sandbox-ID or workload pin can be enforced: CDS's signature over
-			// the leaf is what authenticates both. No-ops when no pin is set.
-			if policy != nil {
-				if err := CheckSandboxPin(cert, policy.SandboxID); err != nil {
-					return fmt.Errorf("armtls: CA-signed peer failed the sandbox-ID pin: %w", err)
-				}
-				if err := CheckWorkloadPin(cert, policy.WorkloadName); err != nil {
-					return fmt.Errorf("armtls: CA-signed peer failed the workload pin: %w", err)
-				}
-			}
-			// A valid CA chain authenticates the issuer; what else must hold
-			// depends on the trust mode (see VerifyPolicy.RequireCAEvidence).
-			if policy != nil && policy.RequireCAEvidence {
-				// Production mode: the CA chain alone is not sufficient. The leaf
-				// must carry re-verifiable armTLS evidence (issuer.SignCSR copies
-				// the requester's nonce-free .1.1 extension onto the leaf), which
-				// we re-verify here so a CA compromise or wrong issuance policy is
-				// caught at the peer instead of trusted from the chain. VerifyCert
-				// checks the hardware evidence, launch measurement, and the key
-				// binding via the attestation-api. The embedded evidence is
-				// nonce-free by construction, so verify with a nil nonce; TLS 1.3
-				// supplies connection liveness. A leaf with no (or stale/forged)
-				// evidence fails closed. The sandbox and workload pins are already
-				// enforced above and are not evidence-bound, so clear them for
-				// this call.
-				evidencePolicy := *policy
-				evidencePolicy.SandboxID = ""
-				evidencePolicy.WorkloadName = ""
-				if _, err := VerifyCert(cert, &evidencePolicy, nil); err != nil {
-					return fmt.Errorf("armtls: CA-signed peer failed embedded-evidence re-verification: %w", err)
-				}
-			}
-			return nil
-		}
-
-		// Fall back to embedded-evidence verification. A sandbox-ID pin cannot
-		// be satisfied here — a self-signed leaf's extension is chosen by
-		// whoever minted it — and VerifyCert fails closed on one.
-		_, err = VerifyCert(cert, policy, nonce)
-		if err != nil {
-			return fmt.Errorf("armtls: peer verification failed (CA chain: %v; armTLS: %w)", chainErr, err)
 		}
 		return nil
 	}

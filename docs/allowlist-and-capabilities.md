@@ -451,8 +451,7 @@ Two independent points enforce, at different strengths:
    high-water `(digest, argv)` inventory uniquely matches one workload entry,
    the leaf is stamped with that entry's name and the snapshot's version and
    canonical digest (OID `…1.5`, `docs/armtls.md` "Matched workload"), which is
-   what `c8s verify --workload/--allowlist` and
-   `armtls.VerifyPolicy.WorkloadName` enforce against the mesh-CA chain.
+   what `c8s verify --workload/--allowlist` enforces against the mesh-CA chain.
 
 ### What each layer can and cannot promise
 

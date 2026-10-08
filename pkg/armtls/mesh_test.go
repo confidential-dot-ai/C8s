@@ -284,17 +284,10 @@ func TestEveryConfigRefusesResumption(t *testing.T) {
 			cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
 			return NewServerTLSConfig(cfg)
 		},
-		"dual-verification server": func(t *testing.T) (*tls.Config, *CertManager, error) {
-			_, caCert := generateCACert(t)
-			cfg := testServerConfig()
-			cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
-			cfg.CACert = []*x509.Certificate{caCert}
-			return NewServerTLSConfig(cfg)
-		},
 		"client-CA server": func(t *testing.T) (*tls.Config, *CertManager, error) {
 			_, caCert := generateCACert(t)
 			cfg := testServerConfig()
-			cfg.ClientCAs = []*x509.Certificate{caCert}
+			cfg.ClientCA = caCert
 			return NewServerTLSConfig(cfg)
 		},
 		"evidence client": func(t *testing.T) (*tls.Config, *CertManager, error) {

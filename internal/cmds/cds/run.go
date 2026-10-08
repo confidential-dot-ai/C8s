@@ -336,7 +336,7 @@ func run(cfg config) error {
 		// armTLS path would admit a self-signed peer whose sandbox-ID extension
 		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
 		// reachable by a caller with no certificate.
-		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
+		serverCfg.ClientCA = mesh.Cert
 		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
 		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
 		if err != nil {

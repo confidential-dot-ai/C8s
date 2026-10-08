@@ -196,8 +196,7 @@ func (c *Client) fetchAndParseCABundle(ctx context.Context) ([]*x509.Certificate
 	return certs, nil
 }
 
-// TrustedCABundle returns the currently accepted CA bundle. The returned slice
-// can be passed to armtls.CertManager.UpdateCACerts.
+// TrustedCABundle returns the currently accepted CA bundle.
 func (c *Client) TrustedCABundle() []*x509.Certificate {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
