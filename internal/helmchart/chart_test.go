@@ -4540,6 +4540,61 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 
 // noUpstreamArgs clears the mesh-wrapped upstream that helmTemplate pins by
 // default, for tests exercising the manual router.upstream paths.
+// assertRouterUpstreamTimeouts checks the catch-all route outlives nginx's 60s
+// read/send default (non-streaming LLM responses send nothing until done) and
+// gives up quickly on a dead upstream.
+func assertRouterUpstreamTimeouts(t *testing.T, route *nginxBlock, readTimeout string) {
+	t.Helper()
+	for name, want := range map[string]string{
+		"proxy_connect_timeout": "5s",
+		"proxy_read_timeout":    readTimeout,
+		"proxy_send_timeout":    readTimeout,
+	} {
+		if got := route.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{want}) {
+			t.Errorf("location / %s = %v, want exactly [%s]", name, got, want)
+		}
+	}
+}
+
+func TestChartRouterUpstreamReadTimeout(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "3600s")
+
+	out, err = helmTemplate(t, "--set-string", "router.upstream.readTimeout=900s")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "900s")
+
+	if out, err := helmTemplate(t, "--set-string", "router.upstream.readTimeout=1h; return 200"); err == nil || !strings.Contains(out+err.Error(), "router.upstream.readTimeout must be an nginx time") {
+		t.Errorf("readTimeout with injected directive rendered: %v", err)
+	}
+}
+
+// assertRouterWebSocketUpgrade checks location / passes a client's WebSocket
+// upgrade on to the upstream.
+func assertRouterWebSocketUpgrade(t *testing.T, cfg nginxConfig, route *nginxBlock) {
+	t.Helper()
+	upgrade := cfg.mapBlock(t, "$http_upgrade", "$connection_upgrade")
+	upgrade.assertDirective(t, "default", "upgrade")
+	upgrade.assertDirective(t, `""`, "close")
+	route.assertDirective(t, "proxy_set_header", "Upgrade", "$http_upgrade")
+	route.assertDirective(t, "proxy_set_header", "Connection", "$connection_upgrade")
+	route.assertDirective(t, "proxy_http_version", "1.1")
+}
+
+func TestChartRouterWebSocketUpgrade(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedRouterNginxConfig(t, out)
+	assertRouterWebSocketUpgrade(t, cfg, cfg.location(t, "prefix", "/"))
+}
+
 func noUpstreamArgs(args ...string) []string {
 	return append([]string{"--set-string", "router.upstream.address="}, args...)
 }
@@ -5259,6 +5314,13 @@ func Example_routerConfig() {
 	//
 	//     sendfile on;
 	//     keepalive_timeout 65;
+	//
+	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
+	//     # other requests keep Connection: close to the upstream.
+	//     map $http_upgrade $connection_upgrade {
+	//         default upgrade;
+	//         "" close;
+	//     }
 	//     upstream route_0 {
 	//         server c8s-cds.c8s-system.svc:8443;
 	//     }
@@ -5327,6 +5389,14 @@ func Example_routerConfig() {
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//             proxy_set_header Upgrade $http_upgrade;
+	//             proxy_set_header Connection $connection_upgrade;
+	//             # A non-streaming completion sends nothing until it is done, so
+	//             # nginx's 60s default read timeout would 504 long generations.
+	//             # A dead upstream must fail fast instead.
+	//             proxy_connect_timeout 5s;
+	//             proxy_read_timeout 3600s;
+	//             proxy_send_timeout 3600s;
 	//             proxy_buffering off;
 	//             proxy_http_version 1.1;
 	//         }

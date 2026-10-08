@@ -1093,12 +1093,23 @@ func secretsVolume() corev1.Volume {
 // Reserved container names are checked too. The pod-CREATE path already does
 // that, but Kubernetes strips spec.ephemeralContainers at CREATE, so that check
 // only ever runs against an empty list.
+//
+// On an injected pod no container may be targeted: every one mounts C8s
+// material, and a target shares its process namespace, so a same-UID process
+// reads its files through /proc/<pid>/root.
 func rejectEphemeralReservedMounts(pod *corev1.Pod) error {
 	reserved := reservedVolumeNames(pod)
+	injected := slices.ContainsFunc(pod.Spec.InitContainers, func(c corev1.Container) bool {
+		return workloadclaims.IsInjectedContainerName(c.Name)
+	})
 	for _, c := range pod.Spec.EphemeralContainers {
 		if workloadclaims.IsInjectedContainerName(c.Name) {
 			return fmt.Errorf("%w: ephemeral container name %q is reserved for the injected c8s containers",
 				errInvalidInjectionAnnotation, c.Name)
+		}
+		if injected && c.TargetContainerName != "" {
+			return fmt.Errorf("%w: ephemeral container %q may not target %q: it would share that container's process namespace",
+				errInvalidInjectionAnnotation, c.Name, c.TargetContainerName)
 		}
 		for _, m := range c.VolumeMounts {
 			// By prefix as well as by set: an opened volume is reserved

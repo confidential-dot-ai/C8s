@@ -157,9 +157,24 @@ func TestNewBundleBootsServerAndAgentsOnBothPlatforms(t *testing.T) {
 				t.Fatal(err)
 			}
 			want, _ := server.referenceValues()
-			if len(policy.Images) != 1 || policy.Family != want.Family || !bytes.Equal(policy.Images[0].Anchor, want.Images[0].Anchor) ||
-				!bytes.Equal(policy.Images[0].Digest, want.Images[0].Digest) {
-				t.Fatalf("server.json pins %+v, want the server entry %+v", policy, want.Images[0])
+			if len(policy.Images) != 1 || policy.Family != want.Family || string(policy.Images[0].Anchor) != server.Server.OperatorPublicKey ||
+				!bytes.Equal(policy.Images[0].Digest, mustDecodeHex(server.Image.Measurement)) {
+				t.Fatalf("server.json does not pin the server image and launch key: %+v", policy)
+			}
+			// peers.json is the full set CDS admits and serves: the server
+			// entry plus one agent entry under the bundle's agent key.
+			peers, err := refvalues.Load(filepath.Join(dir, peersPolicy))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !reflect.DeepEqual(peers, want) {
+				t.Fatalf("peers.json = %+v, want server.referenceValues() %+v", peers, want)
+			}
+			if len(peers.Images) != 2 || bytes.Equal(peers.Images[0].Anchor, peers.Images[1].Anchor) {
+				t.Fatalf("peers.json must hold two entries with distinct launch-key anchors: %+v", peers.Images)
+			}
+			if missing, _ := refvalues.Diff(policy, peers); len(missing) != 0 {
+				t.Fatal("server.json is missing from peers.json")
 			}
 			for _, f := range []string{serverKeyFile, agentKeyFile, filepath.Join(serverDir, documentFile), filepath.Join("demo-f1", signatureFile)} {
 				info, err := os.Stat(filepath.Join(dir, f))

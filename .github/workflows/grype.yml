@@ -9,7 +9,7 @@ on:
   # No push trigger: a fresh advisory against an unchanged pin would paint
   # main red without any commit to blame; PRs and the weekly run cover it.
   pull_request:
-    branches: [main]
+    branches: [main, beta]
     paths:
       - "**.go"
       - "go.mod"

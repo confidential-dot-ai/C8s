@@ -5,15 +5,16 @@
 name: c8s-image
 
 # Every Docker run spawns one of these, PR runs included, and only the
-# main-push one builds — so a single merge produces one building run plus
+# main-push (or protected beta-push) one builds — so a single merge produces one building run plus
 # several correctly-skipped siblings that are otherwise indistinguishable in
 # the UI and `gh run list` (same name, branch and SHA). Saying which is which
 # in the run name is what stops "my guest-image merge produced no image"
 # being the obvious-but-wrong reading of that list.
 run-name: >-
-  ${{ (github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main')
-      && 'c8s-image BUILDS (main push)'
-   || format('c8s-image skipped ({0} on {1}, not a main push)', github.event.workflow_run.event, github.event.workflow_run.head_branch) }}
+  ${{ (github.event.workflow_run.event == 'push' &&
+       (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'beta'))
+      && format('c8s-image BUILDS ({0} push)', github.event.workflow_run.head_branch)
+   || format('c8s-image skipped ({0} on {1}, not a main or beta push)', github.event.workflow_run.event, github.event.workflow_run.head_branch) }}
 
 on:
   # build-c8s resolves cds:<sha> / nri-image-policy:<sha>, which Docker
@@ -32,17 +33,19 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # A stable tag is created inside the successful parent Docker run. Resolve it
-  # from that run's exact revision only for the trusted automatic main path;
-  # manual node-image rebuilds must never mint or move release aliases.
+  # A release tag is created inside the successful parent Docker run. Resolve it
+  # from that run's exact revision only for the trusted automatic main and beta
+  # paths; manual node-image rebuilds must never mint or move release aliases.
+  # main resolves only stable tags and beta only -beta.N tags.
   release-context:
-    name: Resolve stable release context
+    name: Resolve release context
     if: |
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == github.repository &&
       github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main'
+      (github.event.workflow_run.head_branch == 'main' ||
+       github.event.workflow_run.head_branch == 'beta')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -56,9 +59,10 @@ jobs:
           persist-credentials: false
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      - name: Find its canonical stable tag
+      - name: Find its canonical release tag
         id: release-tag
         env:
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
@@ -68,13 +72,21 @@ jobs:
             echo "::error::parent Docker revision is not the checked-out full commit SHA"
             exit 1
           fi
+          case "$HEAD_BRANCH" in
+            main) pattern='^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$' ;;
+            beta) pattern='^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)-beta[.][1-9][0-9]*$' ;;
+            *)
+              echo "::error::no release channel for branch $HEAD_BRANCH"
+              exit 1
+              ;;
+          esac
           mapfile -t release_tags < <(
             git tag --points-at "$HEAD_SHA" --list 'v*' \
-              | grep -E '^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$' \
+              | grep -E "$pattern" \
               | sort -V
           )
           if [ "${#release_tags[@]}" -gt 1 ]; then
-            echo "::error::multiple stable release tags name $HEAD_SHA"
+            echo "::error::multiple $HEAD_BRANCH release tags name $HEAD_SHA"
             printf '%s\n' "${release_tags[@]}"
             exit 1
           fi
@@ -111,7 +123,7 @@ jobs:
   # network failure may leave a subset; a rerun repairs missing aliases and
   # rejects any existing alias whose digest differs.
   promote-release:
-    name: Publish stable node-image aliases
+    name: Publish exact node-image release aliases
     needs: [release-context, build-and-push]
     if: |
       always() &&
@@ -146,7 +158,7 @@ jobs:
           set -euo pipefail
 
           if [[ ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || \
-             [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]; then
+             [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]; then
             echo "::error::invalid node-image release context"
             exit 1
           fi

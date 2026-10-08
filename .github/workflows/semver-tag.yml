@@ -24,6 +24,9 @@ env:
   # Fulcio and GITHUB_REPOSITORY keep the case of the repository name, and
   # cosign compares the identity exactly.
   RELEASE_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/main
+  # The protected beta branch signs prereleases under its own identity, so a
+  # verifier that pins the main identity never accepts a beta.
+  RELEASE_BETA_SIGNER_IDENTITY: https://github.com/confidential-dot-ai/C8s/.github/workflows/semver-tag.yml@refs/heads/beta
   RELEASE_SIGNER_ISSUER: https://token.actions.githubusercontent.com
   RELEASE_MAJOR: "0"
   RELEASE_WAIT_ATTEMPTS: "60"
@@ -38,6 +41,7 @@ jobs:
       actions: read
       contents: read
     outputs:
+      channel: ${{ steps.version.outputs.channel }}
       image-matrix: ${{ steps.release-images.outputs.matrix }}
       publish: ${{ steps.version.outputs.publish }}
       tag: ${{ steps.version.outputs.tag }}
@@ -54,8 +58,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ "$EVENT_NAME" != push ] || [ "$EVENT_REF" != refs/heads/main ]; then
-            echo "::error::releases may only originate from a push to main"
+          if [ "$EVENT_NAME" != push ] || \
+             { [ "$EVENT_REF" != refs/heads/main ] && [ "$EVENT_REF" != refs/heads/beta ]; }; then
+            echo "::error::releases may only originate from a push to main or beta"
             exit 1
           fi
           if [ "$TARGET_SHA" != "$EVENT_SHA" ] || [[ ! "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]; then
@@ -64,8 +69,9 @@ jobs:
           fi
 
       # Repository-monotonic run IDs serialize release calculation without
-      # dropping a middle merge from the Docker -> e2e workflow chain.
-      - name: Wait for older Docker runs on main
+      # dropping a middle merge from the Docker -> e2e workflow chain. Each
+      # release branch serializes only against its own pushes.
+      - name: Wait for older Docker runs on this branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -79,7 +85,7 @@ jobs:
           older=0
           for ((attempt = 1; attempt <= RELEASE_WAIT_ATTEMPTS; attempt++)); do
             if ! older="$(
-              github_api "/repos/$GITHUB_REPOSITORY/actions/workflows/docker.yml/runs?event=push&branch=main&per_page=100" \
+              github_api "/repos/$GITHUB_REPOSITORY/actions/workflows/docker.yml/runs?event=push&branch=$GITHUB_REF_NAME&per_page=100" \
                 --jq '.workflow_runs[] | select(.status != "completed") | .id' \
                 | awk -v current="$GITHUB_RUN_ID" 'NF && $1+0 < current+0' \
                 | wc -l \
@@ -90,7 +96,7 @@ jobs:
             fi
 
             if [ "$older" = "0" ]; then
-              echo "no older in-flight Docker run on main"
+              echo "no older in-flight Docker run on $GITHUB_REF_NAME"
               break
             fi
 
@@ -141,9 +147,10 @@ jobs:
           test "$("$binary" --version)" = "git-cliff $GIT_CLIFF_VERSION"
           echo "GIT_CLIFF_BIN=$binary" >> "$GITHUB_ENV"
 
-      - name: Calculate stable pre-1.0 SemVer
+      - name: Calculate pre-1.0 SemVer
         id: version
         env:
+          RELEASE_CHANNEL: ${{ github.ref == 'refs/heads/beta' && 'beta' || 'stable' }}
           TARGET_SHA: ${{ inputs.target-sha }}
         run: .github/scripts/calculate-release-version.sh
 
@@ -286,7 +293,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          [[ "$VERSION" =~ ^0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
+          [[ "$VERSION" =~ ^0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)(-beta[.][1-9][0-9]*)?$ ]]
           test "$(git rev-parse HEAD)" = "$TARGET_SHA"
           source_epoch="$(git show -s --format=%ct "$TARGET_SHA")"
           [[ "$source_epoch" =~ ^[0-9]+$ ]]
@@ -352,6 +359,7 @@ jobs:
 
       - name: Validate release inputs and payload
         env:
+          CHANNEL: ${{ needs.calculate.outputs.channel }}
           RELEASE_MATRIX: ${{ needs.calculate.outputs.image-matrix }}
           RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
           TARGET_SHA: ${{ inputs.target-sha }}
@@ -360,7 +368,11 @@ jobs:
           set -euo pipefail
 
           [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
+          case "$CHANNEL" in
+            stable) [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]] ;;
+            beta) [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)-beta[.][1-9][0-9]*$ ]] ;;
+            *) exit 1 ;;
+          esac
           test "$RELEASE_TAG" = "v$VERSION"
 
           mapfile -t payload < <(find dist -mindepth 1 -maxdepth 1 -type f -print | sort)
@@ -599,6 +611,7 @@ jobs:
       deployment: false
     env:
       BUNDLE: release-statement.sigstore.json
+      CHANNEL: ${{ needs.calculate.outputs.channel }}
       GH_TOKEN: ${{ github.token }}
       RELEASE_TAG: ${{ needs.calculate.outputs.tag }}
       STATEMENT: release-statement.json
@@ -632,12 +645,26 @@ jobs:
               gh api -H "X-GitHub-Api-Version: $GITHUB_API_VERSION" "$@"
           }
 
-          [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
-          if [ "https://github.com/$GITHUB_REPOSITORY/.github/workflows/semver-tag.yml@refs/heads/main" \
-               != "$RELEASE_SIGNER_IDENTITY" ]; then
-            echo "::error::$GITHUB_REPOSITORY does not match RELEASE_SIGNER_IDENTITY; if this repository was renamed, update it and docs/releases.md"
+          case "$CHANNEL" in
+            stable)
+              [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)$ ]]
+              signer_ref=refs/heads/main
+              signer_identity="$RELEASE_SIGNER_IDENTITY"
+              ;;
+            beta)
+              [[ "$RELEASE_TAG" =~ ^v0[.](0|[1-9][0-9]*)[.](0|[1-9][0-9]*)-beta[.][1-9][0-9]*$ ]]
+              signer_ref=refs/heads/beta
+              signer_identity="$RELEASE_BETA_SIGNER_IDENTITY"
+              ;;
+            *) exit 1 ;;
+          esac
+          test "$GITHUB_REF" = "$signer_ref"
+          if [ "https://github.com/$GITHUB_REPOSITORY/.github/workflows/semver-tag.yml@$signer_ref" \
+               != "$signer_identity" ]; then
+            echo "::error::$GITHUB_REPOSITORY does not match the $CHANNEL signer identity; if this repository was renamed, update it and docs/releases.md"
             exit 1
           fi
+          echo "SIGNER_IDENTITY=$signer_identity" >> "$GITHUB_ENV"
           IFS=$'\t' read -r ref_type ref_sha <<< "$(
             github_api "/repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" \
               --jq '[.object.type, .object.sha] | @tsv'
@@ -662,11 +689,17 @@ jobs:
       # A retry verifies existing assets instead of replacing them. The
       # release is marked Latest only when this tag is the newest stable
       # release, so a repair run for an older tag cannot take Latest back.
+      # A beta is always a GitHub prerelease and never Latest.
       - name: Sign and publish or verify release statement
         run: |
           set -euo pipefail
 
           [[ "$UPDATE_LATEST" =~ ^(true|false)$ ]]
+          prerelease=false
+          if [ "$CHANNEL" = beta ]; then
+            prerelease=true
+            test "$UPDATE_LATEST" = false
+          fi
 
           gh_release() {
             timeout --kill-after=5s "$GH_API_TIMEOUT" \
@@ -675,7 +708,7 @@ jobs:
           verify() {
             "$COSIGN_BIN" verify-blob \
               --bundle "$BUNDLE" \
-              --certificate-identity "$RELEASE_SIGNER_IDENTITY" \
+              --certificate-identity "$SIGNER_IDENTITY" \
               --certificate-oidc-issuer "$RELEASE_SIGNER_ISSUER" \
               "$STATEMENT"
           }
@@ -710,6 +743,7 @@ jobs:
             gh_release create "$RELEASE_TAG" \
               --verify-tag \
               --latest="$UPDATE_LATEST" \
+              --prerelease="$prerelease" \
               --title "$RELEASE_TAG" \
               --notes "Release $RELEASE_TAG from $TARGET_SHA. See docs/releases.md to verify $STATEMENT." \
               "$STATEMENT" "$BUNDLE"

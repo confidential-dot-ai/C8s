@@ -718,11 +718,11 @@ func TestConnectionLimit(t *testing.T) {
 
 	m := testMetrics()
 	p := &Proxy{
-		serverTLS: serverTLS,
-		resolver:  &staticResolver{nodeIP: "127.0.0.1"},
-		logger:    testLogger(),
-		metrics:   m,
-		connSem:   make(chan struct{}, 1), // limit to 1 concurrent
+		serverTLS:  serverTLS,
+		resolver:   &staticResolver{nodeIP: "127.0.0.1"},
+		logger:     testLogger(),
+		metrics:    m,
+		inboundSem: make(chan struct{}, 1), // limit to 1 concurrent
 	}
 
 	ctx := t.Context()
@@ -743,7 +743,7 @@ func TestConnectionLimit(t *testing.T) {
 
 			// Simulate the connection limit check from serve().
 			select {
-			case p.connSem <- struct{}{}:
+			case p.inboundSem <- struct{}{}:
 			default:
 				p.metrics.connLimitRejected.Add(1)
 				conn.Close()
@@ -753,7 +753,7 @@ func TestConnectionLimit(t *testing.T) {
 			p.activeConns.Add(1)
 			go func() {
 				defer func() {
-					<-p.connSem
+					<-p.inboundSem
 					p.activeConns.Done()
 				}()
 				p.handleInbound(ctx, conn)
@@ -771,7 +771,7 @@ func TestConnectionLimit(t *testing.T) {
 	// Wait for the accept goroutine to claim the semaphore slot so the
 	// second connection actually races against an in-flight handler.
 	assertEventually(t, time.Second, func() bool {
-		return len(p.connSem) == cap(p.connSem)
+		return len(p.inboundSem) == cap(p.inboundSem)
 	}, "first connection did not consume the limit-1 semaphore slot")
 
 	// Second connection: should be rejected (limit=1, one in-flight).

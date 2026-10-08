@@ -1,6 +1,7 @@
 package launchconfig
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -11,11 +12,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -29,12 +32,15 @@ import (
 //	                      get-kubeconfig and signed CDS writes use
 //	<dir>/agent.key    the one agent launch key this cluster trusts
 //	<dir>/server.json     client policy pinning the server (C8S_MEASUREMENTS_CONFIG)
+//	<dir>/peers.json      every launch identity CDS admits and serves
+//	                      (c8s cds verify --served-policy-file)
 //	<dir>/server/         pubkey, launch.yaml, launch.yaml.sig
 //	<dir>/<agent>/     pubkey, launch.yaml, launch.yaml.sig, one per agent
 const (
 	serverKeyFile = "server.key"
 	agentKeyFile  = "agent.key"
 	serverPolicy  = "server.json"
+	peersPolicy   = "peers.json"
 	serverDir     = "server"
 	pubkeyFile    = "pubkey"
 	documentFile  = "launch.yaml"
@@ -127,15 +133,29 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err
 	}
-	pins, err := server.referenceValues()
+	peerPins, err := server.referenceValues()
 	if err != nil {
 		return err
 	}
-	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1]})
+	serverPinIndex := slices.IndexFunc(peerPins.Images, func(pin remote.ImagePin) bool {
+		return bytes.Equal(pin.Anchor, []byte(serverPub))
+	})
+	if serverPinIndex < 0 {
+		return errors.New("peer policy is missing the server launch-key anchor")
+	}
+	serverPin := peerPins.Images[serverPinIndex]
+	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: peerPins.Family, Images: []remote.ImagePin{serverPin}})
 	if err != nil {
 		return err
 	}
 	if err := writeNew(filepath.Join(opts.Dir, serverPolicy), policy, 0o644); err != nil {
+		return err
+	}
+	peers, err := refvalues.Format(peerPins)
+	if err != nil {
+		return err
+	}
+	if err := writeNew(filepath.Join(opts.Dir, peersPolicy), peers, 0o644); err != nil {
 		return err
 	}
 	for _, name := range opts.Agents {

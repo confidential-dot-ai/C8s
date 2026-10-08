@@ -32,8 +32,9 @@ import (
 const (
 	challengePrefix = "/.well-known/acme-challenge/"
 	issueTimeout    = 5 * time.Minute
-	// recheckInterval paces the renewal loop; retryInterval is the loop's
-	// pace while no serviceable certificate is on disk.
+	// recheckInterval paces the renewal loop; retryInterval is its pace while
+	// the disk certificate misses a configured name, so a hostname that starts
+	// reaching this router is picked up quickly.
 	recheckInterval = time.Hour
 	retryInterval   = time.Minute
 	accountKeyFile  = "account.key"
@@ -41,8 +42,8 @@ const (
 	keyFile         = "key.pem"
 )
 
-// manager issues and renews one multi-SAN certificate covering the configured
-// domain set. Account key and issued key/cert live under --cert-dir only.
+// manager issues and renews one certificate for the configured domains whose
+// public HTTP challenge paths reach this router. Account key and issued key/cert live under --cert-dir only.
 type manager struct {
 	directoryURL string
 	email        string
@@ -56,6 +57,10 @@ type manager struct {
 	// starting. 0 (tests without a front door) skips the probe; the CLI
 	// validates the flag into 1-65535.
 	httpPort int
+	// probe dials each configured domain's public challenge path, so issuance
+	// covers only the domains that reach this router. nil (tests without a
+	// front door) treats every domain as reachable.
+	probe *http.Client
 
 	// recheck/retry pace run; tests tighten them.
 	recheck time.Duration
@@ -105,8 +110,8 @@ func (m *manager) handler() http.Handler {
 }
 
 // run issues eagerly, then re-checks until ctx is done. Renewal fires at 2/3
-// of the certificate's lifetime; while no serviceable certificate is on disk
-// the loop re-tries at retryInterval.
+// of the certificate's lifetime; while the disk certificate does not cover
+// every configured name the loop re-checks at retryInterval.
 func (m *manager) run(ctx context.Context) {
 	if err := m.bootstrap(); err != nil {
 		m.log.Error("bootstrap certificate failed", "error", err)
@@ -215,11 +220,19 @@ func (m *manager) ensure(ctx context.Context) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, issueTimeout)
 	defer cancel()
-	if err := m.issue(ctx); err != nil {
-		m.log.Error("certificate issuance failed", "domains", m.domains, "error", err)
+	domains := m.reachableDomains(ctx)
+	if len(domains) == 0 {
+		m.log.Warn("no configured hostname reaches this router's public HTTP challenge path")
 		return
 	}
-	m.log.Info("certificate issued", "domains", m.domains)
+	if !m.needsIssueFor(domains) {
+		return
+	}
+	if err := m.issueDomains(ctx, domains); err != nil {
+		m.log.Error("certificate issuance failed", "domains", domains, "error", err)
+		return
+	}
+	m.log.Info("certificate issued", "domains", domains)
 	if m.onInstall != nil {
 		m.onInstall()
 	}
@@ -317,7 +330,9 @@ func (m *manager) frontDoorReady(ctx context.Context) error {
 
 // issue runs the RFC 8555 HTTP-01 flow for the configured domain set and
 // installs key + full chain under --cert-dir.
-func (m *manager) issue(ctx context.Context) error {
+func (m *manager) issue(ctx context.Context) error { return m.issueDomains(ctx, m.domains) }
+
+func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 	if m.httpPort != 0 {
 		if err := m.frontDoorReady(ctx); err != nil {
 			return err
@@ -327,7 +342,7 @@ func (m *manager) issue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(m.domains...))
+	order, err := client.AuthorizeOrder(ctx, acme.DomainIDs(domains...))
 	if err != nil {
 		return fmt.Errorf("new order: %w", err)
 	}
@@ -344,7 +359,7 @@ func (m *manager) issue(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: m.domains}, key)
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{DNSNames: domains}, key)
 	if err != nil {
 		return fmt.Errorf("create CSR: %w", err)
 	}
@@ -413,4 +428,96 @@ func (m *manager) fulfillAuthorization(ctx context.Context, client *acme.Client,
 		return fmt.Errorf("authorization did not validate: %w", err)
 	}
 	return nil
+}
+
+// needsIssueFor keeps a valid certificate when it already covers the reachable
+// names. Names outside the signed launch configuration are never retained.
+// A configured name the certificate covers but the probe missed may be a
+// transient failure, so it blocks issuance until 5/6 of the lifetime.
+func (m *manager) needsIssueFor(domains []string) bool {
+	leaf, err := m.diskLeaf()
+	if err != nil || bytes.Equal(leaf.RawIssuer, leaf.RawSubject) {
+		return true
+	}
+	for _, name := range leaf.DNSNames {
+		if !slices.Contains(m.domains, name) {
+			return true
+		}
+	}
+	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
+	if time.Now().Before(leaf.NotBefore.Add(lifetime * 5 / 6)) {
+		for _, name := range leaf.DNSNames {
+			if !slices.Contains(domains, name) {
+				return false
+			}
+		}
+	}
+	for _, name := range domains {
+		if !slices.Contains(leaf.DNSNames, name) {
+			return true
+		}
+	}
+	return time.Now().After(leaf.NotBefore.Add(lifetime * 2 / 3))
+}
+
+// reachableDomains prevents an unavailable launch hostname from blocking the
+// other names. This probe is only a readiness check. The CA still performs
+// normal HTTP-01 ownership validation before it issues any certificate.
+func (m *manager) reachableDomains(ctx context.Context) []string {
+	if m.probe == nil {
+		return slices.Clone(m.domains)
+	}
+	var reachable []string
+	for _, name := range m.domains {
+		if ctx.Err() != nil {
+			break
+		}
+		if m.probeDomain(ctx, name) {
+			reachable = append(reachable, name)
+		}
+	}
+	return reachable
+}
+
+// probeDomain reports whether a request to name's public challenge path comes
+// back to this manager: it serves a one-off token and checks the answer.
+func (m *manager) probeDomain(ctx context.Context, name string) bool {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return false
+	}
+	token := base64.RawURLEncoding.EncodeToString(raw[:])
+	proof := "c8s-public-probe." + token
+	m.mu.Lock()
+	m.tokens[token] = proof
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		delete(m.tokens, token)
+		m.mu.Unlock()
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+name+challengePrefix+token, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := m.probe.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256))
+	return err == nil && resp.StatusCode == http.StatusOK && string(body) == proof
+}
+
+// publicProbeClient dials public names directly, with no proxy and no
+// redirects, so a probe answer proves the path reaches this router.
+func publicProbeClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	transport.DisableKeepAlives = true
+	return &http.Client{
+		Transport:     transport,
+		Timeout:       5 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 }

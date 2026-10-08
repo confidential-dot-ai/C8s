@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/net/netutil"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -36,6 +37,15 @@ const (
 	// upstreamResponseHeaderTimeout bounds the slowest evidence generation.
 	upstreamResponseHeaderTimeout = 30 * time.Second
 	healthcheckTimeout            = 3 * time.Second
+	// defaultRequestTimeout bounds reading and answering one request. It must
+	// exceed the slowest /attest: once the body is read, an expiring read
+	// deadline cancels the request context and with it the upstream call.
+	defaultRequestTimeout = 2 * upstreamResponseHeaderTimeout
+	defaultIdleTimeout    = 30 * time.Second
+	maxHeaderBytes        = 16 << 10
+	// maxConcurrentConns caps accepted sockets and upstream connections alike,
+	// well above the node's consumers (CDS, ratls-mesh, sidecars, NRI).
+	maxConcurrentConns = 256
 )
 
 type config struct {
@@ -44,13 +54,20 @@ type config struct {
 	upstream          string
 	healthAddr        string
 	readHeaderTimeout time.Duration
+	readTimeout       time.Duration
+	writeTimeout      time.Duration
+	idleTimeout       time.Duration
 }
 
 // NewCmd returns the attest-proxy subcommand. It runs as a sidecar in the
 // attestation-api DaemonSet pod, publishing the pod-loopback API on the
 // node-local socket.
 func NewCmd() *cobra.Command {
-	var cfg config
+	cfg := config{
+		readTimeout:  defaultRequestTimeout,
+		writeTimeout: defaultRequestTimeout,
+		idleTimeout:  defaultIdleTimeout,
+	}
 	cmd := &cobra.Command{
 		Use:          "attest-proxy",
 		Short:        "Serve the pod-local attestation-api on a node-local Unix socket",
@@ -122,6 +139,10 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 	srv := &http.Server{
 		Handler:           proxy,
 		ReadHeaderTimeout: cfg.readHeaderTimeout,
+		ReadTimeout:       cfg.readTimeout,
+		WriteTimeout:      cfg.writeTimeout,
+		IdleTimeout:       cfg.idleTimeout,
+		MaxHeaderBytes:    maxHeaderBytes,
 	}
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
@@ -136,7 +157,7 @@ func serve(ctx context.Context, cfg config, proxy http.Handler, listener net.Lis
 	}
 
 	slog.Info("attestation proxy listening", "socket", cfg.socket, "upstream", cfg.upstream)
-	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
+	if err := srv.Serve(netutil.LimitListener(listener, maxConcurrentConns)); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -184,6 +205,7 @@ func newProxy(cfg config) (http.Handler, error) {
 	transport := &http.Transport{
 		DialContext:           (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
 		ResponseHeaderTimeout: upstreamResponseHeaderTimeout,
+		MaxConnsPerHost:       maxConcurrentConns,
 	}
 	proxy := &httputil.ReverseProxy{
 		Transport: transport,

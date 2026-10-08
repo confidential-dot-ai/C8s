@@ -11,7 +11,8 @@ import (
 )
 
 // Exercise the unchanged inline preflight against real Git history. The
-// privileged launcher must receive only a SHA proven to belong to main.
+// privileged launcher must receive only a SHA proven to belong to the
+// protected branch it was pushed to: main, or beta.
 func TestTDXSourceProvenance(t *testing.T) {
 	raw, err := os.ReadFile("../../.github/workflows/tdx-image-acceptance.yml")
 	if err != nil {
@@ -64,27 +65,37 @@ func TestTDXSourceProvenance(t *testing.T) {
 	parent := git("commit-tree", tree, "-m", "accepted parent")
 	head := git("commit-tree", tree, "-p", parent, "-m", "current main")
 	untrusted := git("commit-tree", tree, "-p", parent, "-m", "unmerged branch")
+	beta := git("commit-tree", tree, "-p", parent, "-m", "current beta")
 	git("update-ref", "refs/remotes/origin/main", head)
+	git("update-ref", "refs/remotes/origin/beta", beta)
+	git("update-ref", "refs/remotes/origin/feat/x", untrusted)
 
 	for _, tc := range []struct {
-		name, source, want string
+		name, branch, source, want string
 	}{
-		{"main tip", head, head},
-		{"older main build", parent, parent},
-		{"unmerged branch", untrusted, ""},
-		{"missing commit", strings.Repeat("a", 40), ""},
-		{"symbolic ref", "refs/remotes/origin/main", ""},
-		{"empty source", "", ""},
-		{"option injection", "--help", ""},
-		{"output injection", head + "\nsha=" + untrusted, ""},
-		{"nonhex SHA", strings.Repeat("g", 40), ""},
+		{"main tip", "main", head, head},
+		{"older main build", "main", parent, parent},
+		{"beta tip", "beta", beta, beta},
+		{"older beta build", "beta", parent, parent},
+		{"beta commit claimed as main", "main", beta, ""},
+		{"main commit claimed as beta", "beta", head, ""},
+		{"unprotected branch", "feat/x", untrusted, ""},
+		{"empty branch", "", head, ""},
+		{"branch path traversal", "../../heads/main", head, ""},
+		{"unmerged branch", "main", untrusted, ""},
+		{"missing commit", "main", strings.Repeat("a", 40), ""},
+		{"symbolic ref", "main", "refs/remotes/origin/main", ""},
+		{"empty source", "main", "", ""},
+		{"option injection", "main", "--help", ""},
+		{"output injection", "main", head + "\nsha=" + untrusted, ""},
+		{"nonhex SHA", "main", strings.Repeat("g", 40), ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			output := filepath.Join(t.TempDir(), "output")
 			cmd := exec.Command("bash", "-c", script)
 			cmd.Dir = repo
 			cmd.Env = append(os.Environ(),
-				"SOURCE_SHA="+tc.source, "GITHUB_OUTPUT="+output)
+				"SOURCE_BRANCH="+tc.branch, "SOURCE_SHA="+tc.source, "GITHUB_OUTPUT="+output)
 			log, err := cmd.CombinedOutput()
 			got, readErr := os.ReadFile(output)
 			if tc.want == "" {

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, beta, "feat/**"]
     tags: ["v*"]
     paths: &go-paths
       - "**.go"
@@ -21,7 +21,7 @@ on:
       - ".gremlins.yaml"
       - ".github/workflows/ci.yml"
   pull_request:
-    branches: [main, "feat/**"]
+    branches: [main, beta, "feat/**"]
     paths: *go-paths
 
 concurrency:

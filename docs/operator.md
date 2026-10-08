@@ -155,6 +155,7 @@ The bundle directory is created new and never reused:
 | `demo/server.key` | server launch key; also the operator key for `c8s get-kubeconfig --operator-key` and signed CDS writes |
 | `demo/agent.key` | the agent launch key every agent boots with |
 | `demo/server.json` | `C8S_MEASUREMENTS_CONFIG` for clients of this cluster |
+| `demo/peers.json` | every launch identity CDS admits and serves; `c8s cds verify --served-policy-file` |
 | `demo/server/` | `pubkey`, `launch.yaml`, `launch.yaml.sig`: the server's opkeydata |
 | `demo/<agent>/` | the same three files for each agent |
 
@@ -571,6 +572,24 @@ c8s cds verify https://localhost:8443 --measurements-file digests.txt -o json
 
 PKI/SAN mismatch when dialing localhost or a pod IP is fine — `verify` trusts
 the attestation embedded in the serving cert, not the certificate chain.
+
+On a cluster created with `c8s launch-config new`, `--image-policy-file` alone
+cannot pass: it pins the CDS server's identity, but the served-set check
+against `/measurements` is exact, and CDS admits the agents' launch keys
+beside the server's. The bundle carries both policies — pin the target with
+`server.json` and name the served set with `peers.json`:
+
+```bash
+c8s cds verify https://$SERVER:30808 --image-policy-file demo/server.json \
+  --served-policy-file demo/peers.json --operator-keys demo/server/pubkey
+```
+
+Both policy files must name the same TEE family, and every target pin in
+`server.json` must appear in `peers.json`, including its image measurements
+and launch-key anchor. Inconsistent files produce a usage error before
+connecting to the target.
+For `kind=cds`, a target policy with multiple launch-key anchors produces a
+warning: any identity it admits, including an agent, can pass as CDS.
 
 The launch digest(s) to pin are the same values discussed under measurement
 pinning (the node CVM digest). They

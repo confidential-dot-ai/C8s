@@ -946,6 +946,10 @@ router:
     address: ""
     # -- Protocol for the upstream connection (http or https).
     protocol: http
+    # -- How long nginx waits for the upstream between reads and writes on the
+    # catch-all route, as an nginx time. A non-streaming completion sends
+    # nothing until it is done, so this must outlive the longest generation.
+    readTimeout: 3600s
     tls:
       # -- Present the CDS-issued certificate to HTTPS upstreams.
       useCDSClientCert: true
