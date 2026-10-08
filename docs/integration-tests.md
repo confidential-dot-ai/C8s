@@ -135,6 +135,11 @@ with the harness's own helpers (`cds_write`, `node_exec`, `run_pod`,
 `$C8S_IT_WORKDIR/cds-pf.pid` across processes; `cds_pf_stop` ends it. Delete
 the cluster with `kind delete cluster --name c8s-it`.
 
+A driver that should not depend on those helpers directly, such as an external
+conformance suite, uses the fixed question-and-answer interface of
+[`test/conformance/backends/kind.sh`](../test/conformance/README.md) instead;
+the metal lanes offer the same interface through `metal.sh`.
+
 ### Failure notes
 
 - A pod stuck `CreateContainerError` with `image not in allowlist` is the NRI

@@ -18,6 +18,7 @@ on:
       - "cmd/c8s/node_services*.go"
       - "internal/helmchart/**"
       - "test/e2e/**"
+      - "test/conformance/**"
       - ".github/workflows/node-guest-image-lint.yml"
       - ".github/build-pins.json"
       - ".github/scripts/pin-manifest.sh"
@@ -290,6 +291,7 @@ jobs:
             .github/scripts/snp-node-image.sh \
             .github/scripts/tests/test-snp-node-image.sh
           shellcheck -x -P SCRIPTDIR test/e2e/lib{,-test}.sh
+          shellcheck -x -P SCRIPTDIR test/conformance/backends/*.sh
 
       - name: Exercise the real AppArmor kernel and parser
         env:
