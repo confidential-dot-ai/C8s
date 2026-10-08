@@ -28,6 +28,7 @@ func newTestManager(t *testing.T, ca *testCA, domains []string, onInstall func()
 	t.Cleanup(challengeSrv.Close)
 	// The front-door probe hits the challenge listener directly.
 	mgr.httpPort = serverPort(t, challengeSrv.URL)
+	mgr.probe = testPublicProbeClient(t, challengeSrv.URL)
 	mgr.directoryURL = newFakeACME(t, ca, challengeSrv.URL).directoryURL()
 	return mgr
 }
@@ -510,5 +511,116 @@ func TestIssueWaitsForFrontDoor(t *testing.T) {
 	defer cancel()
 	if err := mgr.issue(ctx); err != nil {
 		t.Fatalf("issue: %v", err)
+	}
+}
+
+type probeRewriteTransport struct{ base *url.URL }
+
+func (t probeRewriteTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	copy := r.Clone(r.Context())
+	u := *r.URL
+	u.Scheme = t.base.Scheme
+	u.Host = t.base.Host
+	copy.URL = &u
+	copy.Host = r.URL.Host
+	return http.DefaultTransport.RoundTrip(copy)
+}
+func testPublicProbeClient(t *testing.T, base string) *http.Client {
+	t.Helper()
+	u, err := url.Parse(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &http.Client{Timeout: time.Second, Transport: probeRewriteTransport{u}, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+}
+
+// Candidate can obtain and renew TLS while production still reaches another cluster.
+// When production later reaches this router, the certificate gains that name.
+func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
+	ca := newTestCA(t)
+	installs := 0
+	mgr := newTestManager(t, ca, testDomains, func() { installs++ })
+	var productionReady atomic.Bool
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == testDomains[0] && !productionReady.Load() {
+			http.NotFound(w, r)
+			return
+		}
+		mgr.handler().ServeHTTP(w, r)
+	}))
+	defer front.Close()
+	mgr.probe = testPublicProbeClient(t, front.URL)
+	ctx := context.Background()
+	mgr.ensure(ctx)
+	leaf, err := mgr.diskLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(leaf.DNSNames, testDomains[1:]) {
+		t.Fatalf("candidate SANs = %v", leaf.DNSNames)
+	}
+	if installs != 1 {
+		t.Fatalf("installs = %d", installs)
+	}
+	before, _ := os.ReadFile(mgr.certPath())
+	mgr.ensure(ctx)
+	after, _ := os.ReadFile(mgr.certPath())
+	if installs != 1 || !bytes.Equal(before, after) {
+		t.Fatal("issued again without a change")
+	}
+	// A due candidate certificate renews without production validation.
+	key, chain := backdatedCert(t, ca, testDomains[1:], -9*time.Hour, 3*time.Hour)
+	writeCertPair(t, mgr, key, chain)
+	mgr.ensure(ctx)
+	if installs != 2 {
+		t.Fatal("candidate certificate did not renew")
+	}
+	productionReady.Store(true)
+	mgr.ensure(ctx)
+	leaf, err = mgr.diskLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sameDomainSet(leaf.DNSNames, testDomains) || installs != 3 {
+		t.Fatalf("expanded SANs = %v, installs = %d", leaf.DNSNames, installs)
+	}
+	if len(mgr.tokens) != 0 {
+		t.Fatal("probe tokens remain")
+	}
+}
+
+func TestPublicProbeRejectsOtherResponses(t *testing.T) {
+	for _, mode := range []string{"not found", "wrong body", "redirect"} {
+		t.Run(mode, func(t *testing.T) {
+			ca := newTestCA(t)
+			installs := 0
+			mgr := newTestManager(t, ca, testDomains, func() { installs++ })
+			key, chain := backdatedCert(t, ca, testDomains[1:], -time.Hour, 24*time.Hour)
+			writeCertPair(t, mgr, key, chain)
+			front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch mode {
+				case "not found":
+					http.NotFound(w, r)
+				case "wrong body":
+					w.Write([]byte("not this router"))
+				case "redirect":
+					http.Redirect(w, r, "/elsewhere", http.StatusFound)
+				}
+			}))
+			defer front.Close()
+			mgr.probe = testPublicProbeClient(t, front.URL)
+			mgr.directoryURL = "http://127.0.0.1:1/must-not-contact"
+			mgr.ensure(context.Background())
+			after, err := os.ReadFile(mgr.certPath())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if installs != 0 || !bytes.Equal(after, chain) {
+				t.Fatal("unreachable names changed the certificate")
+			}
+			if len(mgr.tokens) != 0 {
+				t.Fatal("probe tokens remain")
+			}
+		})
 	}
 }
