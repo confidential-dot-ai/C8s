@@ -33,6 +33,9 @@ type Store struct {
 	authority string
 	lease     time.Duration
 	started   time.Time
+	// state memoizes State until the next committed mutation.
+	state    *State
+	stateGen uint64
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.

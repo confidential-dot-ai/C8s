@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,6 +43,7 @@ type config struct {
 	upstreamCertFile   string
 	upstreamKeyFile    string
 	upstreamServerName string
+	cdsStateURL        string
 }
 
 // NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
@@ -78,6 +80,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.upstreamCAFile, "upstream-ca", "", "PEM CA bundle to verify an https upstream (the mesh CA)")
 	f.StringVar(&cfg.upstreamCertFile, "upstream-cert", "", "client cert presented to an https upstream (the CDS-issued LB cert)")
 	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")
+	f.StringVar(&cfg.cdsStateURL, "cds-state-url", "", "allowlist-proxy base URL (http://127.0.0.1:<port>). Set, attest-pq bundles carry CDS's nonce-bound rollout state and sessions are fenced on it; --upstream must then be https and is verified against --mesh-identity-ca-file")
 	f.StringVar(&cfg.upstreamServerName, "upstream-server-name", "", "SNI/verification name for an https upstream")
 	return cmd
 }
@@ -119,6 +122,19 @@ func run(cfg config) error {
 	}
 
 	var backend Backend
+	if cfg.cdsStateURL != "" && !strings.HasPrefix(cfg.cdsStateURL, "http://") && !strings.HasPrefix(cfg.cdsStateURL, "https://") {
+		return fmt.Errorf("--cds-state-url must be an http:// or https:// URL, got %q", cfg.cdsStateURL)
+	}
+	if cfg.cdsStateURL != "" && cfg.meshIdentityCAFile == "" {
+		return fmt.Errorf("--cds-state-url requires --mesh-identity-ca-file to verify the CDS state")
+	}
+	if cfg.cdsStateURL != "" && cfg.upstream != "" {
+		// A pinned client's envelope holds only for attested receivers.
+		if !strings.HasPrefix(cfg.upstream, "https://") {
+			return fmt.Errorf("--cds-state-url requires an https --upstream")
+		}
+		cfg.upstreamCAFile = cfg.meshIdentityCAFile
+	}
 	if cfg.upstream != "" {
 		hb, err := NewHTTPBackend(cfg.upstream, HTTPBackendOptions{
 			TrustedCAFile:  cfg.upstreamCAFile,
@@ -148,6 +164,7 @@ func run(cfg config) error {
 		Backend:              backend,
 		SessionTTL:           cfg.sessionTTL,
 		SessionMaxAge:        cfg.sessionMaxAge,
+		CDSStateURL:          cfg.cdsStateURL,
 	})
 
 	addr := cfg.host + ":" + strconv.Itoa(cfg.port)

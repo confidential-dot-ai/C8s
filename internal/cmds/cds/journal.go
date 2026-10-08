@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // wellKnown prefixes the public rollout-journal routes.
@@ -27,13 +28,6 @@ var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 func authorityFingerprint(spki []byte) string {
 	sum := sha256.Sum256(spki)
 	return "sha256:" + hex.EncodeToString(sum[:])
-}
-
-// signedState is the wire form of a signed state: Signature is ASN.1 ECDSA
-// over SHA-384 of the exact State bytes, by the key /ca certifies.
-type signedState struct {
-	State     json.RawMessage `json:"state"`
-	Signature []byte          `json:"signature"`
 }
 
 func handleObject(store *allowlist.Store) http.HandlerFunc {
@@ -102,7 +96,7 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, signedState{State: body, Signature: sig})
+		writeJSON(w, types.SignedRolloutState{State: body, Signature: sig})
 	}
 }
 

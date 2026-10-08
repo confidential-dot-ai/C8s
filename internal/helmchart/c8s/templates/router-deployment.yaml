@@ -235,6 +235,12 @@ spec:
             {{- if .Values.router.attest.expectedWorkload }}
             - --expected-workload={{ .Values.router.attest.expectedWorkload }}
             {{- end }}
+            {{- if .Values.router.attest.pinnedAllowlist }}
+            {{- if not (and $renderAllowlistProxy $attestUsesHTTPSUpstream) }}
+            {{- fail "router.attest.pinnedAllowlist requires router.allowlist.enabled and router.upstream.protocol=https" }}
+            {{- end }}
+            - --cds-state-url=http://127.0.0.1:{{ .Values.router.allowlist.proxyPort }}
+            {{- end }}
             # The identity-bound PQ flow must use the TEE-held mesh
             # credential, never the optional publicTLS Secret: report_data
             # commits the X-Wing key exchange to this leaf and the sidecar

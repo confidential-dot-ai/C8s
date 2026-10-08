@@ -101,6 +101,33 @@ type AttestationBundle struct {
 	// observed on its own TLS connection and verify the transcript with that
 	// value — trusting the served field would let a relay substitute the leaf.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	// CDSState (attest-pq with a pinned-allowlist router) is CDS's rollout
+	// state bound to this request's nonce. Its Bound is the session's policy
+	// envelope: the router closes the session once the bound outgrows it.
+	CDSState *SignedRolloutState `json:"cds_state,omitempty"`
+}
+
+// RolloutState is CDS's allowlist rollout state. Bound lists the policy
+// digests that may still be executing, oldest first. See
+// docs/allowlist-and-capabilities.md, "Rollout journal".
+type RolloutState struct {
+	Protocol  int      `json:"protocol"`
+	Authority string   `json:"authority"`
+	Position  uint64   `json:"position"`
+	Head      string   `json:"head"`
+	Version   string   `json:"allowlist_version"`
+	Policy    string   `json:"policy"`
+	Bound     []string `json:"bound"`
+	Pending   string   `json:"pending,omitempty"`
+	Lease     int64    `json:"lease_seconds"`
+	Nonce     string   `json:"nonce,omitempty"`
+}
+
+// SignedRolloutState carries the exact RolloutState bytes and an ASN.1 ECDSA
+// signature over their SHA-384 by the mesh CA key.
+type SignedRolloutState struct {
+	State     json.RawMessage `json:"state"`
+	Signature []byte          `json:"signature"`
 }
 
 // HeaderField is one HTTP header field in a tunnel envelope, on the wire a

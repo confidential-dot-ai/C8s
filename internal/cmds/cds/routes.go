@@ -68,8 +68,11 @@ func newRouter(deps dependencies) http.Handler {
 	store := deps.AllowlistHandler.Store
 	r.Get(wellKnown+"/objects/sha256/{hex}", handleObject(store))
 	r.Get(wellKnown+"/allowlist/latest", handleLatest(store))
-	r.Method(http.MethodGet, wellKnown+"/state", deps.protected(handleState(store, deps.StateKey, false)))
-	r.Method(http.MethodPost, wellKnown+"/state/challenge", deps.protected(handleState(store, deps.StateKey, true)))
+	// Unmetered like GET /allowlist: routers read the state every second and
+	// once per attest-pq, which a per-node budget shared with /attest cannot
+	// carry. nginx meters the public route.
+	r.Get(wellKnown+"/state", handleState(store, deps.StateKey, false))
+	r.Method(http.MethodPost, wellKnown+"/state/challenge", capBody(deps.MaxRequestSize, handleState(store, deps.StateKey, true)))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
 	// token. PUT is the operator's, on allowlistWrite so it carries the same
