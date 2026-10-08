@@ -49,6 +49,45 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	}
 }
 
+// The router answers from the signed route manifest it fetches from CDS, so a
+// pod of its namespace reaches the one endpoint the credential role is bound
+// to — this node's own — and, where policy names a port for it, the verifier
+// that weighs that CDS's evidence at the same address.
+func TestPodRulesetGivesTheRouterRoleTheNodesCDS(t *testing.T) {
+	policy := meshRoles()
+	policy.Roles = append(policy.Roles, roleBinding{
+		Name:         CredentialRole,
+		UID:          workloadclaims.CredentialsUID,
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.2:30808")},
+	})
+
+	node := netip.MustParseAddr("172.18.0.2")
+	want := []ruleset.Destination{{Addr: node, Port: 30808}}
+	server := policy.podRuleset(routerNamespace).Server
+	if !slices.Equal(server.Services, want) {
+		t.Fatalf("router services = %+v, want this node's CDS alone", server.Services)
+	}
+	if member := policy.podRuleset("default").Server; len(member.Services) != 0 {
+		t.Fatalf("a pod outside that namespace reaches %+v", member.Services)
+	}
+
+	// A node whose attestation-api answers over a port, not a socket: the
+	// router verifies that CDS's evidence there and nowhere else.
+	policy.CredentialAttestationPort = 8400
+	want = append(want, ruleset.Destination{Addr: node, Port: 8400})
+	if got := policy.podRuleset(routerNamespace).Server.Services; !slices.Equal(got, want) {
+		t.Fatalf("router services = %+v, want the CDS and its verifier on this node", got)
+	}
+}
+
+// A policy that binds no CDS leaves the router role without one, as it leaves
+// the credential clients without one.
+func TestPodRulesetWithoutABoundCDSServesTheRouterRoleNone(t *testing.T) {
+	if server := meshRoles().podRuleset(routerNamespace).Server; len(server.Services) != 0 {
+		t.Fatalf("router services = %+v, want none", server.Services)
+	}
+}
+
 // The injected credential clients verify CDS evidence through the
 // attestation-api on their own node, so the ruleset admits that port at the
 // address their CDS is on and the clients' identity alone reaches it.

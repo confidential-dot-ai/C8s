@@ -9,6 +9,13 @@ and renews a CDS-issued mesh certificate over armTLS.
 A valid stored generation remains available across sidecar restarts until its
 replacement is published. Every certificate request generates a fresh key.
 
+Both containers hold the credentials role, which the node's measured base
+grants to the pinned argv they run ([mesh endpoint helpers](../mesh/README.md)),
+so the credential paths, the `tls-certs` volume, the reserved identity and the
+wait container's timeout are the injector's: `c8s.certDir`, `c8s.certFile`,
+`c8s.keyFile`, `c8s.caFile` and `c8s.credentialsUID` in
+[_helpers.tpl](../../templates/_helpers.tpl) are the single source for them.
+
 The wait container gates workload startup on the certificate file using
 `/c8s probe-file`. Init-container completion holds the workload until its
 certificate exists. Keep the `/c8s` command aligned with the binary location
@@ -19,13 +26,10 @@ The helper takes a dict with these fields:
 | Field | Purpose |
 | --- | --- |
 | `root` | Chart root for image and endpoint helpers |
+| `attestationApiURL` | The attestation-api the sidecar verifies CDS through |
 | `san` | Certificate workload identity or Service DNS name |
 | `sanFile` | Optional verified SAN file; replaces `san` for baked node images |
-| `certOut`, `keyOut` | Certificate and private-key output paths |
-| `caOut` | Optional output path for the mesh CA bundle trailing the leaf |
-| `volume`, `mountPath` | Writable certificate volume and its mount directory |
 | `renewInterval` | Go duration, such as `6h` or `30m` |
-| `runAsUser`, `runAsGroup`, `runAsNonRoot` | Consumer-compatible security context |
 | `extraArgs` | Optional list of additional get-cert arguments |
 | `extraMounts` | Optional rendered volumeMount YAML |
 

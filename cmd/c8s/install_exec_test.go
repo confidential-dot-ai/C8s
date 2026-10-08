@@ -22,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 const testDigest = "sha256:abababababababababababababababababababababababababababababababab"
@@ -1003,8 +1004,10 @@ func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
 		t.Fatalf("Parse(--routes-out) = %v", err)
 	}
 	want := []pkgroutes.Route{{Path: "/", Match: pkgroutes.MatchPrefix, Backend: pkgroutes.Backend{Address: "c8s-infer.ws.svc.cluster.local:8000", Workload: "infer"}}}
-	if routes := m.Hosts["c8s-router.c8s-system.svc"].Routes; m.Revision < 1e9 || len(m.Hosts) != 1 || !reflect.DeepEqual(routes, want) {
-		t.Errorf("--routes-out = revision %d, hosts %v, want a Unix-time revision routing c8s-router.c8s-system.svc / to %+v", m.Revision, m.Hosts, want[0])
+	// The host is the router's own SAN, which names the namespace it serves.
+	host := "c8s-router." + workloadclaims.RouterNamespace + ".svc"
+	if routes := m.Hosts[host].Routes; m.Revision < 1e9 || len(m.Hosts) != 1 || !reflect.DeepEqual(routes, want) {
+		t.Errorf("--routes-out = revision %d, hosts %v, want a Unix-time revision routing %s / to %+v", m.Revision, m.Hosts, host, want[0])
 	}
 }
 

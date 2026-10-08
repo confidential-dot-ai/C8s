@@ -50,6 +50,10 @@ type ServerRole struct {
 	UID       uint32
 	Listeners []uint16
 	Egress    ServerEgress
+	// Services are the destinations this role itself reaches in the clear,
+	// each one address and port: its own node's CDS, which it fetches the
+	// signed route manifest from. Everything else it dials is captured.
+	Services []Destination
 	// ClusterRanges are this cluster's pod and Service ranges: the egress
 	// exception excludes them, so a connection to a member is captured and
 	// rides the mesh like any other.
@@ -125,6 +129,14 @@ func (s ServerRole) validate() error {
 	}
 	if len(s.Egress.Ports) > 0 && len(s.ClusterRanges) == 0 {
 		return fmt.Errorf("%w: server role UID %d has egress ports and no cluster ranges to exclude from them", ErrPolicy, s.UID)
+	}
+	for _, dst := range s.Services {
+		if err := validRemoteAddress(dst.Addr); err != nil {
+			return err
+		}
+		if dst.Port == 0 {
+			return fmt.Errorf("%w: server role UID %d service %s has no port", ErrPolicy, s.UID, dst.Addr)
+		}
 	}
 	for _, in := range s.ClusterRanges {
 		if err := validClusterRange(in); err != nil {

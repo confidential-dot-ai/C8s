@@ -92,8 +92,9 @@ func TestClusterDeploymentFixturesMeetRestrictedPolicy(t *testing.T) {
 				for _, p := range app.Ports {
 					ports = append(ports, p.ContainerPort)
 				}
-				// adopt-me also serves TLS on its get-cert leaf once adopted.
-				want := map[string][]int32{"workload.yaml": {8080}, "adopt-me.yaml": {8080, 8443}}[file]
+				// Both serve in the clear: an adopted pod's own endpoint
+				// holds its leaf and carries what reaches it.
+				want := map[string][]int32{"workload.yaml": {8080}, "adopt-me.yaml": {8080}}[file]
 				if !reflect.DeepEqual(ports, want) {
 					t.Errorf("fixture ports = %v, want %v", ports, want)
 				}
@@ -167,7 +168,7 @@ func TestClusterHarnessKeepsImageAndBackendRoutingAligned(t *testing.T) {
 	for _, required := range []string{
 		`images pull "docker.io/$WORKLOAD_IMAGE"`,
 		`grep -Fq "docker.io/$WORKLOAD_IMAGE" "$WORKDIR/floor.tsv"`,
-		`--workload-ref web=adopted/deployment/web:8443 --upstream web`,
+		`--workload-ref web=adopted/deployment/web:8080 --upstream web`,
 		`python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"`,
 	} {
 		if !strings.Contains(harness, required) {

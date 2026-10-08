@@ -33,12 +33,9 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	wantPolicies := map[string]string{
-		"c8s-cds/cds":                "peers.json",
-		"c8s-router/c8s-cert":        "cds.json",
-		"c8s-router/allowlist-proxy": "cds.json",
-		"c8s-router/cds-attest":      "cds.json",
-	}
+	// CDS alone: the router's clients hold platform roles, so the enforcer
+	// mounts the node's policy for them and the chart passes none.
+	wantPolicies := map[string]string{"c8s-cds/cds": "peers.json"}
 	workloads := renderedPodSpecs(t, out)
 	if len(workloads) != 3 {
 		t.Fatalf("baked chart should contain operator, CDS and router; got %d workloads", len(workloads))
@@ -86,10 +83,10 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		t.Errorf("missing policy consumers: %v", wantPolicies)
 	}
 
-	for _, name := range []string{"c8s-cds", "c8s-router"} {
+	for name, namespace := range map[string]string{"c8s-cds": "c8s-system", "c8s-router": workloadclaims.RouterNamespace} {
 		deployment := renderedDeployment(t, out, name)
-		if deployment.Namespace != "c8s-system" || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 || deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
-			t.Errorf("%s must be a namespaced singleton with Recreate strategy", name)
+		if deployment.Namespace != namespace || deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 || deployment.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+			t.Errorf("%s must be a singleton of %s with Recreate strategy", name, namespace)
 		}
 		if deployment.Spec.Template.Spec.NodeSelector["node-role.kubernetes.io/control-plane"] != "true" {
 			t.Errorf("%s must run on the signed server node", name)
@@ -121,7 +118,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		t.Error("router must expose host 443 through unprivileged container port 8443")
 	}
 	config := renderedConfigMap(t, out, "c8s-router-nginx")
-	if config.Namespace != "c8s-system" || !strings.Contains(config.Data["nginx.conf"], "server_name _;") {
+	if config.Namespace != workloadclaims.RouterNamespace || !strings.Contains(config.Data["nginx.conf"], "server_name _;") {
 		t.Error("baked router must retain its namespaced nginx config with a default virtual host")
 	}
 }
@@ -175,7 +172,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 
 	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{
-		"tls-cds.conf":  "ssl_certificate     /tls/cert.pem;\nssl_certificate_key /tls/key.pem;",
+		"tls-cds.conf":  "ssl_certificate     /etc/c8s/certs/tls.crt;\nssl_certificate_key /etc/c8s/certs/tls.key;",
 		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem;\nssl_certificate_key /etc/c8s-acme-tls/key.pem;",
 	} {
 		if snippets[key] != want {
@@ -195,14 +192,14 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 		"--domains-file=/run/c8s-node/router/hostnames",
 		"--acme-email-file=/run/c8s-node/router/acme-email",
 		"--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
-		"--standby-cert-dir=/tls",
+		"--standby-cert-dir=/etc/c8s/certs",
 		"--cert-dir=/etc/c8s-acme-tls",
 	} {
 		assertContainerHasArg(t, "acme", acme.Args, arg)
 	}
 	assertContainerNoArgPrefix(t, "acme", acme.Args, "--domains=")
 	assertContainerMount(t, acme, "node-config", "/run/c8s-node")
-	assertContainerMount(t, acme, "tls-certs", "/tls")
+	assertContainerMount(t, acme, "tls-certs", "/etc/c8s/certs")
 
 	// Discovery must report the mode the front door serves, never a
 	// build-time cds while the launch file selects acme.
@@ -234,7 +231,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	for _, arg := range []string{
 		"--front-door-mode-file=/run/c8s-node/router/front-door-mode",
-		"--serving-cert-file=/tls/cert.pem",
+		"--serving-cert-file=/etc/c8s/certs/tls.crt",
 		"--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
 	} {
 		assertContainerHasArg(t, "cds-attest", attest.Args, arg)
@@ -315,11 +312,13 @@ func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
 	}
 }
 
-// The enforcer's policy mount has a destination of its own, so a
-// chart-rendered client on a baked node keeps reading the node config it
-// mounts itself: its own --image-policy-file is not refused as a pod-supplied
-// pin (see cmdsutil.ResolveCDSPins).
-func TestChartRouterKeepsItsOwnPolicyFlagOnBakedNodes(t *testing.T) {
+// The router's credential clients hold the measured credentials role, so the
+// enforcer hands them the node's CDS endpoint, pins and attestation-api, and
+// refuses an argument naming another (cmdsutil.ResolveCDSEndpoint,
+// cmdsutil.ResolveCDSPins, cmdsutil.RequireNodeVerifier). The chart passes no
+// endpoint and no pins, on a baked node or anywhere else, and names the
+// node's own verifier.
+func TestChartRouterTakesItsCDSFromTheNode(t *testing.T) {
 	out, err := helmTemplate(t,
 		"--set", "node.baked=true",
 		"--set", "attestationApi.cvmMode=bare-metal",
@@ -332,24 +331,39 @@ func TestChartRouterKeepsItsOwnPolicyFlagOnBakedNodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	nodePolicy := "/run/c8s-node/cds.json"
-	var args []string
+	want := []string{"allowlist-proxy", "c8s-cert"}
+	var found []string
 	for _, workload := range renderedPodSpecs(t, out) {
 		if workload.name != "c8s-router" {
 			continue
 		}
 		for _, c := range append(workload.spec.Containers, workload.spec.InitContainers...) {
-			if c.Name == "c8s-cert" {
-				args = c.Args
+			if !slices.Contains(want, c.Name) {
+				continue
 			}
+			found = append(found, c.Name)
+			assertNoArgWithPrefix(t, "router/"+c.Name, c.Args,
+				"--cds-url", "--image-policy-file", "--cds-measurements", "--cds-rtmrs")
+			assertContainerHasArg(t, "router/"+c.Name, c.Args,
+				"--attestation-api-url=unix://"+workloadclaims.AttestationAPISocket)
 		}
 	}
-	if args == nil {
-		t.Fatal("the baked router renders no c8s-cert container")
+	slices.Sort(found)
+	if !slices.Equal(found, want) {
+		t.Fatalf("the baked router renders the credential clients %v, want %v", found, want)
 	}
-	assertContainerHasArg(t, "router/c8s-cert", args, "--image-policy-file="+nodePolicy)
-	if workloadclaims.CDSPinsPath == nodePolicy {
-		t.Fatal("the enforcer mounts its policy over the node config path a chart-rendered client reads")
+}
+
+// assertNoArgWithPrefix fails when a container names an argument the node
+// hands it instead.
+func assertNoArgWithPrefix(t *testing.T, name string, args []string, prefixes ...string) {
+	t.Helper()
+	for _, arg := range args {
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(arg, prefix) {
+				t.Errorf("%s names its own %s (%s); the node hands it one and refuses this", name, prefix, arg)
+			}
+		}
 	}
 }
 

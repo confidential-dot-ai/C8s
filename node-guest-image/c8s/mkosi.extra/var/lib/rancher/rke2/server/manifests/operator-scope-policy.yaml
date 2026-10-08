@@ -3,9 +3,11 @@
 # denied, in admission and regardless of RBAC, every write that could disable
 # a guard or reach the host:
 #   - anything in the privileged namespaces: kube-system and
-#     local-path-storage (PodSecurity-exempt) and c8s-system (labelled
-#     privileged for the baked operator), where a pod, a HelmChart, a
-#     service-account token secret or an edited DaemonSet is root on the node;
+#     local-path-storage (PodSecurity-exempt), c8s-system (labelled
+#     privileged for the baked operator) and c8s-router (labelled privileged
+#     for the router role, whose pods may serve ports of their own), where a
+#     pod, a HelmChart, a service-account token secret or an edited DaemonSet
+#     is root on the node;
 #   - cluster-scoped RBAC, admission policies and webhooks, HelmChart/Addon
 #     CRs (helm-controller applies them with full authority),
 #     CustomResourceDefinitions (deleting one cascade-deletes every object of
@@ -47,8 +49,8 @@ spec:
     - name: sub
       expression: "has(request.subResource) ? request.subResource : ''"
   validations:
-    - expression: "!(variables.ns in ['kube-system', 'local-path-storage', 'c8s-system'])"
-      message: "c8s credentials may not write in the privileged namespaces (kube-system, local-path-storage, c8s-system)"
+    - expression: "!(variables.ns in ['kube-system', 'local-path-storage', 'c8s-system', 'c8s-router'])"
+      message: "c8s credentials may not write in the privileged namespaces (kube-system, local-path-storage, c8s-system, c8s-router)"
     - expression: >-
         !(request.resource.group in ['admissionregistration.k8s.io', 'apiextensions.k8s.io', 'helm.cattle.io', 'k3s.cattle.io', 'storage.k8s.io', 'apiregistration.k8s.io', 'certificates.k8s.io'])
       message: "c8s credentials may not write admission policies, CustomResourceDefinitions, HelmCharts, storage classes, API registrations or certificate requests"

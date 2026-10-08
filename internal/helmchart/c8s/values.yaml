@@ -825,7 +825,7 @@ router:
     https: ""
 
   # -- Public hostnames for the front door, as a list. Empty defaults to the
-  # chart-managed Service DNS name: <release>-router.<namespace>.svc. Every entry
+  # chart-managed Service DNS name: <release>-router.c8s-router.svc. Every entry
   # becomes an nginx server_name, so one router can answer on several hostnames
   # the serving cert (publicTLS) covers. The FIRST entry is the single identity
   # on the CDS-issued mesh cert — pin it in cds.dnsSanPatterns; the rest widen
@@ -974,12 +974,13 @@ router:
     maxAge: 600
 
   # -- Public TLS credential presented to internet clients. mode selects it:
-  # cds (default) serves the CDS-issued mesh leaf at tlsMountPath; webpki
-  # serves the operator Secret named by secretName (host-visible key, so the
-  # front door is attest-pq only); acme has the in-pod `c8s acme` sidecar
+  # cds (default) serves the CDS-issued mesh leaf; webpki serves the operator
+  # Secret named by secretName (host-visible key, so the front door is
+  # attest-pq only); acme has the in-pod `c8s acme` sidecar
   # issue a multi-SAN leaf for the san list (TEE-held key — requires
   # attestationApi.cvmMode=bare-metal).
-  # secretName/certKey/keyKey/mountPath apply to webpki only.
+  # secretName/certKey/keyKey/mountPath apply to webpki only; the Secret lives
+  # in the c8s-router namespace, the one the router pod runs in.
   publicTLS:
     mode: cds
     secretName: ""
@@ -1089,13 +1090,9 @@ router:
     # exactly this name, and the chart wires a readinessProbe on the cds-attest
     # container (an HTTPS httpGet through nginx, which proxies /readyz to the
     # sidecar's loopback port), so ingress withholds traffic while the front
-    # door's committed mesh identity is unnamed. Setting it also switches the
-    # router get-cert onto the workload-claims flow (inventory socket mount +
-    # supplemental group on node-CVM) — without that
-    # no stamp could ever arrive and the gate would hold the front door at 503
-    # forever. The named entry must match the router pod's own non-injected
-    # container set: nginx plus the c8s image as cds-attest, allowlist-proxy
-    # and, when enabled, the acme sidecar. The chart seeds that entry as
+    # door's committed mesh identity is unnamed. The named entry must match the
+    # router pod's own container set that holds no platform role, which is
+    # nginx alone. The chart seeds that entry as
     # c8s-router-<12 hex of its content hash> when router.nginx.image.digest
     # and image.digest are set and
     # nriImagePolicy.bootstrapAllowlist.deriveComponents is true.
@@ -1141,11 +1138,6 @@ router:
     #    (targetPort references the named `https` port), so public 443 is
     #    unaffected; front it with a LoadBalancer for external ingress.
     httpsPort: 8443
-    # -- UID/GID used by nginx and the get-cert containers so both can access
-    #    the in-memory CDS key material on the shared tls-certs volume.
-    runAsUser: 101
-    runAsGroup: 101
-    runAsNonRoot: true
     resources: {}
     # -- Memory for the tunnel request bodies nginx holds until cds-attest
     # reads them, up to 8 MiB per upload in progress, charged to nginx's
@@ -1180,10 +1172,6 @@ router:
     # service.beta.kubernetes.io/azure-pip-name on AKS); the deprecated
     # spec.loadBalancerIP field is intentionally not exposed.
     annotations: {}
-
-  # -- Volume mount path for the CDS-issued TLS certificate and key shared
-  # between get-cert and nginx.
-  tlsMountPath: "/tls"
 
 ## Common pod-level security knobs.
 podSecurityContext:

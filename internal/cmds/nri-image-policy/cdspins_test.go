@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"context"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -211,7 +213,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 	}
 
 	for _, name := range []string{workloadclaims.CertContainerName, workloadclaims.SecretContainerName, workloadclaims.VolumeContainerName} {
-		adjust := p.sidecarAdjustment(pod, &api.Container{
+		adjust := mustCredentialMounts(t, p, pod, &api.Container{
 			Name:         name,
 			PodSandboxId: "sandbox",
 		})
@@ -231,7 +233,7 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		Name:         "app",
 		PodSandboxId: "sandbox",
 	}
-	if adjust := p.sidecarAdjustment(pod, workload); adjust != nil {
+	if adjust := mustCredentialMounts(t, p, pod, workload); adjust != nil {
 		t.Fatalf("workload container received node mounts: %+v", adjust.GetMounts())
 	}
 	uninjected := &api.PodSandbox{
@@ -242,8 +244,78 @@ func TestSidecarAdjustmentMountsTheNodePolicy(t *testing.T) {
 		Name:         workloadclaims.CertContainerName,
 		PodSandboxId: "sandbox",
 	}
-	if adjust := p.sidecarAdjustment(uninjected, cert); adjust != nil {
+	if adjust := mustCredentialMounts(t, p, uninjected, cert); adjust != nil {
 		t.Fatalf("uninjected pod received node mounts: %+v", adjust.GetMounts())
+	}
+}
+
+// The router's pod is chart-rendered, so no annotation marks it; the measured
+// credentials role on its reserved identity is what the node addresses its CDS
+// to.
+func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
+	dir := t.TempDir()
+	renderInTempDir(t)
+	base := &allowlist.Allowlist{
+		Schema: allowlist.Schema,
+		Workloads: map[string]allowlist.Workload{
+			"c8s-allowlist-proxy": {Containers: []allowlist.Container{{
+				Digest: mustDigestOrPanic(pushDigestA),
+				Role:   CredentialRole,
+				Command: allowlist.ArgvPolicy{
+					Policy: allowlist.PolicyExact,
+					Argv:   []string{"/c8s", "allowlist-proxy"},
+				},
+				Args:   allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyAny},
+			}}},
+		},
+	}
+	p := testPlugin(t, &config{
+		Platform:       "sev-snp",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+		Allowlist:      allowlistConfig{Base: base, Pull: pullConfig{CDSMeasurements: []string{testDigestA}}},
+	})
+	p.policy = newPolicyStore(base)
+	if err := p.prepareCDSPins(); err != nil {
+		t.Fatalf("prepareCDSPins: %v", err)
+	}
+	pod := &api.PodSandbox{
+		Id:        "sandbox",
+		Uid:       "uid",
+		Namespace: "c8s-router",
+	}
+	proxy := &api.Container{
+		Name:         "allowlist-proxy",
+		PodSandboxId: "sandbox",
+		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
+		Args:         []string{"/c8s", "allowlist-proxy", "--port=8801"},
+		User:         &api.User{Uid: workloadclaims.CredentialsUID},
+	}
+	if mountTo(mustCredentialMounts(t, p, pod, proxy), workloadclaims.CDSPinsPath) == nil {
+		t.Error("a credentials-role container was handed no CDS policy, so it would dial an unpinned CDS")
+	}
+
+	// An ordinary container of the same pod asks for nothing and gets
+	// nothing; one taking the credentials identity that the base grants no
+	// role is refused.
+	app := &api.Container{
+		Name:         "app",
+		PodSandboxId: "sandbox",
+		Annotations:  proxy.Annotations,
+	}
+	if adjust, err := p.credentialMounts(context.Background(), pod, app); adjust != nil || err != nil {
+		t.Errorf("a container outside the credentials identity got (%+v, %v), want nothing", adjust.GetMounts(), err)
+	}
+	app.User = &api.User{Uid: workloadclaims.CredentialsUID}
+	app.Args = []string{"/c8s", "operator"}
+	if _, err := p.credentialMounts(context.Background(), pod, app); err == nil {
+		t.Error("a container took the credentials identity without the role, so it would reach CDS unpinned")
+	}
+
+	// A nil User is uid 0, not the reserved identity.
+	proxy.User = nil
+	if adjust, err := p.credentialMounts(context.Background(), pod, proxy); adjust != nil || err != nil {
+		t.Errorf("a container declaring no user got (%+v, %v), want nothing", adjust.GetMounts(), err)
 	}
 }
 
@@ -260,7 +332,7 @@ func TestSidecarAdjustmentWithoutPins(t *testing.T) {
 		Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"},
 	}
 
-	adjust := p.sidecarAdjustment(pod, &api.Container{
+	adjust := mustCredentialMounts(t, p, pod, &api.Container{
 		Name:         workloadclaims.CertContainerName,
 		PodSandboxId: "sandbox",
 	})
@@ -282,6 +354,17 @@ func testPlugin(t *testing.T, cfg *config) *plugin {
 		t.Fatalf("newPlugin: %v", err)
 	}
 	return p
+}
+
+// mustCredentialMounts is the adjustment the node adds for one container, for
+// the cases where it must not be a refusal.
+func mustCredentialMounts(t *testing.T, p *plugin, pod *api.PodSandbox, ctr *api.Container) *api.ContainerAdjustment {
+	t.Helper()
+	adjustment, err := p.credentialMounts(context.Background(), pod, ctr)
+	if err != nil {
+		t.Fatalf("container %q refused: %v", ctr.GetName(), err)
+	}
+	return adjustment
 }
 
 func mountTo(adjust *api.ContainerAdjustment, destination string) *api.Mount {

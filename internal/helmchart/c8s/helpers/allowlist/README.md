@@ -144,8 +144,13 @@ the NRI plugin adds it and observes it as a platform mount, which exact rules
 never match. The webhook turns service links off in every pod it injects into.
 The destinations match the webhook's fixed ones (`internal/webhook`).
 
-`c8s.componentShapes` collects both per digest. Every component digest must
-have a rendered container, or the render fails.
+`c8s.meshShapes` adds the pod mesh endpoint to the endpoint image's entry,
+pinned to its entrypoint, arguments and credential mount, with one container
+per combination of the optional probe variable.
+
+`c8s.componentShapes` collects them per digest, tagging each shape the node
+grants a platform role with `role` (`c8s.platformRole`). Every component
+digest must have a rendered container, or the render fails.
 [component_mounts_test.go](../../../component_mounts_test.go) checks that the
 seed and the base admit every rendered component container exactly as
 rendered, with the environment it launches with, and refuse it with one

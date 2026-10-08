@@ -75,8 +75,10 @@ func TestRunIssuesAndInstalls(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("key mode = %v, want 0600", info.Mode().Perm())
+	// Group-readable: nginx serves this key as another identity, and the
+	// pod's fsGroup owns the directory.
+	if info.Mode().Perm() != keyMode {
+		t.Fatalf("key mode = %v, want %v", info.Mode().Perm(), os.FileMode(keyMode))
 	}
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {

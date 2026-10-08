@@ -40,6 +40,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/webhook"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var (
@@ -1258,7 +1259,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		var routes upstreamRoutes
 		var cds cdsTarget
 		if upstream != "" {
-			hosts, skipped := routeHosts(values, installRelease, installNamespace)
+			hosts, skipped := routeHosts(values, installRelease)
 			for _, san := range skipped {
 				fmt.Fprintf(os.Stderr, "warning: router.san entry %q cannot be a route manifest host, so --%s routes no requests for it\n", san, flagUpstream)
 			}
@@ -1853,9 +1854,10 @@ func validateWorkloadAdoptionFlags(releaseNamespace string, adoptions []workload
 	if len(adoptions) == 0 {
 		return nil
 	}
+	uninjected := []string{releaseNamespace, workloadclaims.RouterNamespace}
 	for _, a := range adoptions {
-		if a.ref.namespace == releaseNamespace {
-			return fmt.Errorf("--%s cannot target the release namespace %q; that namespace is excluded from c8s workload injection", flagWorkloadRef, releaseNamespace)
+		if slices.Contains(uninjected, a.ref.namespace) {
+			return fmt.Errorf("--%s cannot target %q; that namespace is excluded from c8s workload injection", flagWorkloadRef, a.ref.namespace)
 		}
 	}
 	if !wait {
