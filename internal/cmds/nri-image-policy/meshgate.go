@@ -26,13 +26,13 @@ type meshGate struct {
 }
 
 // protectedPod is one protected sandbox: a refusal holds for its life, and
-// serverRole makes it role-only.
+// kubeNamespace is what trusted policy built its ruleset from.
 type protectedPod struct {
 	netns           podNamespace
 	refusal         error
 	meshStarted     bool
 	workloadCreated bool
-	serverRole      string
+	kubeNamespace   string
 	roleLaunches    []roleLaunch
 }
 
@@ -97,8 +97,9 @@ func (g *meshGate) protect(pod *api.PodSandbox) error {
 	}
 	netns, err := installProtection(pod, *g.policy)
 	g.pods[pod.GetId()] = &protectedPod{
-		netns:   netns,
-		refusal: err,
+		netns:         netns,
+		refusal:       err,
+		kubeNamespace: pod.GetNamespace(),
 	}
 	if err != nil {
 		return fmt.Errorf("protect pod %s/%s: %w", pod.GetNamespace(), pod.GetName(), err)
@@ -116,7 +117,7 @@ func installProtection(pod *api.PodSandbox, policy meshPolicy) (podNamespace, er
 	if err != nil {
 		return netns, err
 	}
-	if err := installPodRuleset(netns, policy); err != nil {
+	if err := installPodRuleset(netns, policy, pod.GetNamespace()); err != nil {
 		return netns, err
 	}
 	return netns, nil
@@ -155,9 +156,6 @@ func (g *meshGate) noteLaunched(sandboxID string, launch gatedContainer) {
 			state.workloadCreated = true
 			return
 		}
-		if servesOwnPorts(launch.role) {
-			state.serverRole = launch.role
-		}
 		if !state.admittedBefore(launch) {
 			state.roleLaunches = append(state.roleLaunches, launch.identity())
 		}
@@ -179,11 +177,11 @@ func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedCo
 	if !g.hosts(pod) {
 		return nil
 	}
-	netns, err := g.admissible(pod, ctr, launch)
+	netns, kubeNamespace, err := g.admissible(pod, ctr, launch)
 	if err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
-	if err := verifyPodRuleset(netns, *g.policy); err != nil {
+	if err := verifyPodRuleset(netns, *g.policy, kubeNamespace); err != nil {
 		return fmt.Errorf("mesh gate: container %s of pod %s/%s: %w", ctr.GetName(), pod.GetNamespace(), pod.GetName(), err)
 	}
 	g.noteLaunched(pod.GetId(), launch)
@@ -192,18 +190,25 @@ func (g *meshGate) admit(pod *api.PodSandbox, ctr *api.Container, launch gatedCo
 
 // admissible answers from the enforcer's record, and returns the namespace
 // whose live ruleset is still to verify.
-func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch gatedContainer) (podNamespace, error) {
+func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch gatedContainer) (podNamespace, string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, err := g.state(pod.GetId())
 	if err != nil {
-		return podNamespace{}, err
+		return podNamespace{}, "", err
 	}
 	// Protection a pod never had cannot be established by a later check, so a
 	// namespace that moved refuses the sandbox for its life.
 	if reported := podNetworkNamespace(pod); reported != state.netns.path {
 		state.refusal = fmt.Errorf("the reported network namespace moved from %s to %s", state.netns.path, reported)
-		return podNamespace{}, state.refusal
+		return podNamespace{}, "", state.refusal
+	}
+	// The installed ruleset was built for the namespace the sandbox started
+	// in, so a container reported in another one is a container this pod's
+	// rules say nothing about.
+	if reported := pod.GetNamespace(); reported != state.kubeNamespace {
+		state.refusal = fmt.Errorf("the reported namespace moved from %s to %s", state.kubeNamespace, reported)
+		return podNamespace{}, "", state.refusal
 	}
 	for _, check := range []func() error{
 		func() error { return state.requireRoleOrder(launch) },
@@ -212,10 +217,10 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 		func() error { return launch.requireNoNetworkChange() },
 	} {
 		if err := check(); err != nil {
-			return podNamespace{}, err
+			return podNamespace{}, "", err
 		}
 	}
-	return state.netns, nil
+	return state.netns, state.kubeNamespace, nil
 }
 
 // verifyMember is the verification an identity assertion requires: a current
@@ -235,26 +240,27 @@ func (g *meshGate) verifyMember(sandboxID string) error {
 // verifyMemberRuleset verifies the live ruleset of a protected sandbox whose
 // mesh endpoint is running.
 func (g *meshGate) verifyMemberRuleset(sandboxID string) error {
-	netns, err := g.memberNamespace(sandboxID)
+	netns, kubeNamespace, err := g.memberNamespace(sandboxID)
 	if err != nil {
 		return err
 	}
-	return verifyPodRuleset(netns, *g.policy)
+	return verifyPodRuleset(netns, *g.policy, kubeNamespace)
 }
 
-// memberNamespace is the namespace of a protected sandbox whose verified mesh
-// endpoint is running.
-func (g *meshGate) memberNamespace(sandboxID string) (podNamespace, error) {
+// memberNamespace is the network namespace of a protected sandbox whose
+// verified mesh endpoint is running, with the Kubernetes namespace its ruleset
+// was built for.
+func (g *meshGate) memberNamespace(sandboxID string) (podNamespace, string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	state, err := g.state(sandboxID)
 	if err != nil {
-		return podNamespace{}, err
+		return podNamespace{}, "", err
 	}
 	if !state.meshStarted {
-		return podNamespace{}, fmt.Errorf("sandbox %s runs no verified mesh endpoint", sandboxID)
+		return podNamespace{}, "", fmt.Errorf("sandbox %s runs no verified mesh endpoint", sandboxID)
 	}
-	return state.netns, nil
+	return state.netns, state.kubeNamespace, nil
 }
 
 // state is the record of a sandbox that is not refused. Callers hold g.mu.
@@ -305,11 +311,12 @@ func (c gatedContainer) identity() roleLaunch {
 	}
 }
 
-// requireRoleOnlyPod requires a pod serving a role's own ports to hold role
-// containers only: an inbound accept cannot be tied to a socket UID.
+// requireRoleOnlyPod requires a pod of the router's namespace to hold role
+// containers only, from its first container: an inbound accept cannot be tied
+// to a socket UID, so those listeners are open to anything that runs there.
 func (s *protectedPod) requireRoleOnlyPod(role string) error {
-	if role == "" && s.serverRole != "" {
-		return fmt.Errorf("this pod serves the %s role's own ports, so only its platform roles may run here", s.serverRole)
+	if role == "" && s.kubeNamespace == routerNamespace {
+		return fmt.Errorf("this pod serves the %s role's own ports, so only its platform roles may run here", routerRole)
 	}
 	return nil
 }
@@ -322,12 +329,6 @@ func (c gatedContainer) requireNoNetworkChange() error {
 		return errors.New("an adjustment re-points the container's namespaces or moves a host network device in")
 	}
 	return nil
-}
-
-// servesOwnPorts names the roles listening on ports of their own: the router
-// serves the cluster's external traffic.
-func servesOwnPorts(role string) bool {
-	return role == routerRole
 }
 
 // proveSandboxNamespace proves that path is the network namespace the

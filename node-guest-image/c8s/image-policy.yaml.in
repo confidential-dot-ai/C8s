@@ -231,6 +231,14 @@ mesh:
   # config.yaml.d drop-in that moves the cluster DNS breaks name resolution in
   # member pods closed, never open.
   resolver: "10.53.0.10"
+  # This cluster's pod and Service ranges. The acme role of the router's
+  # namespace is the one identity whose sockets leave the cluster in the clear,
+  # and its exception excludes these ranges, so a dial to a member is captured
+  # and rides the mesh like any other application connection.
+  #
+  # INVARIANT: equal to cluster-cidr and service-cidr in
+  # etc/rancher/rke2/config.yaml.
+  cluster_ranges: ["10.52.0.0/16", "10.53.0.0/16"]
   # INVARIANT: equal to the ports the injected endpoint binds
   # (pkg/workloadclaims.Mesh*Port).
   capture:

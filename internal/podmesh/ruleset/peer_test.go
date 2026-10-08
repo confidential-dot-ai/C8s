@@ -19,7 +19,8 @@ var peerAddresses = []string{resolver + "/24", service + "/24", unapproved + "/2
 
 // peerServices are the ports the peer accepts on, so traffic the ruleset
 // admits completes instead of waiting.
-var peerServices = []string{address(service, servicePort), address(resolver, 53), address(unapproved, 8080), address(unapproved, 53)}
+var peerServices = []string{address(service, servicePort), address(resolver, 53), address(unapproved, 8080),
+	address(unapproved, 53), address(unapproved, serverEgressPort), address(service, serverEgressPort)}
 
 // peerNamespace is the node side of the pod's veth: the resolver, the
 // credential service and the addresses outside trusted policy all live here,
@@ -63,6 +64,25 @@ func (p *peerNamespace) run(job func() error) error {
 
 func (p *peerNamespace) stop() {
 	close(p.work)
+}
+
+// dial opens one connection to the pod from the peer side, from a source port
+// of its own, and leaves the pod's ruleset to answer or drop it.
+func (p *peerNamespace) dial(destination string, sourcePort uint16) error {
+	return p.run(func() error {
+		dialer := net.Dialer{
+			Timeout:   waitFor,
+			LocalAddr: localAddress("tcp", sourcePort),
+		}
+		conn, err := dialer.Dial("tcp", destination)
+		if err != nil {
+			if deniedLocally(err) {
+				return nil
+			}
+			return fmt.Errorf("dial %s from the peer: %w", destination, err)
+		}
+		return conn.Close()
+	})
 }
 
 // inject sends an answer the pod never asked for.

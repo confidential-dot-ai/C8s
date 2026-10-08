@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"net/netip"
 	"strings"
 	"testing"
 
@@ -39,7 +38,10 @@ func meshPod(namespace, name, netnsPath string) *api.PodSandbox {
 // state rules can be exercised without a kernel namespace.
 func gateWithPod(pod *api.PodSandbox) (*meshGate, *protectedPod) {
 	gate := newMeshGate(meshRoles(), slog.Default())
-	state := &protectedPod{netns: testNamespace()}
+	state := &protectedPod{
+		netns:         testNamespace(),
+		kubeNamespace: pod.GetNamespace(),
+	}
 	gate.pods[pod.GetId()] = state
 	return gate, state
 }
@@ -168,7 +170,7 @@ func TestMeshGateRefusals(t *testing.T) {
 			if tc.arrange != nil {
 				tc.arrange(gate, state, pod)
 			}
-			_, err := gate.admissible(pod, tc.ctr, tc.launch)
+			_, _, err := gate.admissible(pod, tc.ctr, tc.launch)
 			if err == nil {
 				t.Fatalf("admitted %s", tc.name)
 			}
@@ -189,10 +191,10 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 		Name: "c8s-mesh",
 		User: &api.User{Uid: testMeshUID},
 	}
-	if _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
+	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
 		t.Fatalf("the mesh endpoint was refused before its own start: %v", err)
 	}
-	if _, err := gate.memberNamespace(pod.GetId()); err == nil {
+	if _, _, err := gate.memberNamespace(pod.GetId()); err == nil {
 		t.Fatal("a sandbox with no running mesh endpoint was verified as a member")
 	}
 
@@ -202,10 +204,10 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 		User: &api.User{Uid: testWorkloadUID},
 	}
 	launch := gatedContainer{}
-	if _, err := gate.admissible(pod, workload, launch); err != nil {
+	if _, _, err := gate.admissible(pod, workload, launch); err != nil {
 		t.Fatalf("a workload was refused behind a running mesh endpoint: %v", err)
 	}
-	if _, err := gate.memberNamespace(pod.GetId()); err != nil {
+	if _, _, err := gate.memberNamespace(pod.GetId()); err != nil {
 		t.Fatalf("a protected pod with a running mesh endpoint is no member: %v", err)
 	}
 	// A container is on the record only once it has been admitted, which
@@ -221,12 +223,12 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 		Name: "sidecar",
 		User: &api.User{Uid: testWorkloadUID},
 	}
-	if _, err := gate.admissible(pod, joiner, gatedContainer{}); err != nil {
+	if _, _, err := gate.admissible(pod, joiner, gatedContainer{}); err != nil {
 		t.Fatalf("a container joining a pod that holds an identity was refused: %v", err)
 	}
 
 	gate.forget(pod.GetId())
-	if _, err := gate.admissible(pod, workload, launch); err == nil {
+	if _, _, err := gate.admissible(pod, workload, launch); err == nil {
 		t.Fatal("a forgotten sandbox still carries protection")
 	}
 }
@@ -247,7 +249,7 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 		argv:   []string{"/usr/bin/c8s", "get-cert"},
 	}
 	gate.noteMeshStarted(pod.GetId())
-	if _, err := gate.admissible(pod, cert, launch); err != nil {
+	if _, _, err := gate.admissible(pod, cert, launch); err != nil {
 		t.Fatalf("a role container was refused ahead of the pod's applications: %v", err)
 	}
 	gate.noteLaunched(pod.GetId(), launch)
@@ -256,7 +258,7 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 		t.Fatal("an admitted workload is not on the pod's record")
 	}
 
-	if _, err := gate.admissible(pod, cert, launch); err != nil {
+	if _, _, err := gate.admissible(pod, cert, launch); err != nil {
 		t.Fatalf("a replacement of an admitted role launch was refused: %v", err)
 	}
 	for _, tc := range []struct {
@@ -289,7 +291,7 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := gate.admissible(pod, cert, tc.launch)
+			_, _, err := gate.admissible(pod, cert, tc.launch)
 			if err == nil {
 				t.Fatalf("admitted %s after the pod's applications started", tc.name)
 			}
@@ -300,20 +302,16 @@ func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 	}
 }
 
-// A pod that serves a role's own ports holds role containers only: nothing
-// else in it could bind that role's listen port first.
-func TestMeshGateKeepsAServerRolePodRoleOnly(t *testing.T) {
+// A pod of the router's namespace holds role containers only: nothing else in
+// it could bind the router's listen port first.
+func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 	policy := meshRoles()
-	policy.Roles = append(policy.Roles, roleBinding{
-		Name:         routerRole,
-		UID:          testRouterUID,
-		Destinations: []netip.AddrPort{netip.MustParseAddrPort("10.43.0.5:8443")},
-	})
-	pod := meshPod("default", "router", testNetNS)
+	pod := meshPod(routerNamespace, "router", testNetNS)
 	gate := newMeshGate(policy, discardLogger())
 	gate.pods[pod.GetId()] = &protectedPod{
-		netns:       testNamespace(),
-		meshStarted: true,
+		netns:         testNamespace(),
+		meshStarted:   true,
+		kubeNamespace: pod.GetNamespace(),
 	}
 
 	router := &api.Container{
@@ -321,7 +319,7 @@ func TestMeshGateKeepsAServerRolePodRoleOnly(t *testing.T) {
 		User: &api.User{Uid: testRouterUID},
 	}
 	launch := gatedContainer{role: routerRole}
-	if _, err := gate.admissible(pod, router, launch); err != nil {
+	if _, _, err := gate.admissible(pod, router, launch); err != nil {
 		t.Fatalf("the router role was refused in its own pod: %v", err)
 	}
 	gate.noteLaunched(pod.GetId(), launch)
@@ -329,7 +327,7 @@ func TestMeshGateKeepsAServerRolePodRoleOnly(t *testing.T) {
 		Name: "app",
 		User: &api.User{Uid: testWorkloadUID},
 	}
-	_, err := gate.admissible(pod, workload, gatedContainer{})
+	_, _, err := gate.admissible(pod, workload, gatedContainer{})
 	if err == nil {
 		t.Fatal("a workload joined a pod that serves the router's own ports")
 	}
@@ -337,12 +335,12 @@ func TestMeshGateKeepsAServerRolePodRoleOnly(t *testing.T) {
 		t.Fatalf("error = %v, want the role-only rule", err)
 	}
 
-	// A pod without such a role keeps running workloads.
+	// A pod of any other namespace keeps running workloads.
 	plain := meshPod("default", "pod", testNetNS)
 	plainGate, state := gateWithPod(plain)
 	state.meshStarted = true
-	if _, err := plainGate.admissible(plain, workload, gatedContainer{}); err != nil {
-		t.Fatalf("a workload was refused in a pod with no server role: %v", err)
+	if _, _, err := plainGate.admissible(plain, workload, gatedContainer{}); err != nil {
+		t.Fatalf("a workload was refused in a pod outside the router's namespace: %v", err)
 	}
 }
 
@@ -358,7 +356,7 @@ func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 		Name: "app",
 		User: &api.User{Uid: testWorkloadUID},
 	}
-	_, err := gate.admissible(pod, workload, gatedContainer{})
+	_, _, err := gate.admissible(pod, workload, gatedContainer{})
 	if err == nil || !strings.Contains(err.Error(), "before this enforcer connected") {
 		t.Fatalf("error = %v, want the pre-existing sandbox refusal", err)
 	}

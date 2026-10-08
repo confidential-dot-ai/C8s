@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,13 +19,13 @@ const testCertRole = "get-cert"
 const (
 	testMeshUID   = uint32(1337)
 	testRouterUID = uint32(1339)
-	// Not the credential clients' reserved id, which trusted policy refuses
-	// to any other role.
-	testCertUID     = workloadclaims.CredentialsUID + 2
+	// No reserved id: trusted policy refuses one of those to any other role.
+	testCertUID     = workloadclaims.AcmeUID + 2
 	testWorkloadUID = uint32(65532)
 )
 
-// meshRoles is a mesh policy binding the mesh endpoint and get-cert.
+// meshRoles is a mesh policy binding the mesh endpoint and get-cert, with the
+// cluster ranges the acme role's egress exception excludes.
 func meshRoles() *meshPolicy {
 	return &meshPolicy{
 		ExemptNamespaces: []string{"kube-system"},
@@ -34,6 +35,7 @@ func meshRoles() *meshPolicy {
 			Inbound:  15006,
 			Health:   15021,
 		},
+		ClusterRanges: []netip.Prefix{netip.MustParsePrefix("10.52.0.0/16")},
 		Roles: []roleBinding{
 			{
 				Name: meshRole,
@@ -127,10 +129,32 @@ func TestMeshPolicyValidation(t *testing.T) {
 			wants: "needs exactly one destination",
 		},
 		{
-			name: "no mesh endpoint binding",
+			name: "the router's namespace exempt from the mesh",
 			mesh: func(m *meshPolicy) {
-				m.Roles = m.Roles[1:]
+				m.ExemptNamespaces = append(m.ExemptNamespaces, routerNamespace)
 			},
+			tcb:   true,
+			wants: "whose pods serve the router's ports",
+		},
+		{
+			name: "a dialing role on the router's identity",
+			mesh: func(m *meshPolicy) {
+				m.Roles[0].UID = workloadclaims.RouterUID
+			},
+			tcb:   true,
+			wants: "reserved for the " + routerRole + " role",
+		},
+		{
+			name: "a dialing role on the egress identity",
+			mesh: func(m *meshPolicy) {
+				m.Roles[0].UID = workloadclaims.AcmeUID
+			},
+			tcb:   true,
+			wants: "reserved for the " + acmeRole + " role",
+		},
+		{
+			name:  "no mesh endpoint binding",
+			mesh:  func(m *meshPolicy) { m.Roles = m.Roles[1:] },
 			tcb:   true,
 			wants: "binds no reserved uid to the mesh role",
 		},
@@ -355,5 +379,33 @@ func TestRequireRoleIdentity(t *testing.T) {
 				t.Fatalf("requireRoleIdentity = %v, refused=%v", err, tc.refused)
 			}
 		})
+	}
+}
+
+// The router's compiled ports and identities carry the invariants the policy
+// schema used to restate: the platform identities are distinct, so the acme
+// role alone holds the egress ports and a connection the router forwards is
+// captured wherever its name resolves; and no port the router answers on or
+// reaches is a mesh listener port, whose traffic belongs to the pod's endpoint
+// alone.
+func TestTheRoutersCompiledPortsAndIdentitiesCollideWithNothing(t *testing.T) {
+	roles := map[uint32]string{
+		workloadclaims.MeshUID:        meshRole,
+		workloadclaims.CredentialsUID: CredentialRole,
+		workloadclaims.RouterUID:      routerRole,
+		workloadclaims.AcmeUID:        acmeRole,
+	}
+	if len(roles) != 4 {
+		t.Errorf("the platform roles share a reserved identity: %v", roles)
+	}
+	capture := []uint16{
+		uint16(workloadclaims.MeshOutboundPort),
+		uint16(workloadclaims.MeshInboundPort),
+		uint16(workloadclaims.MeshHealthPort),
+	}
+	for _, port := range slices.Concat(routerListeners, acmeEgressPorts) {
+		if port == 0 || slices.Contains(capture, port) {
+			t.Errorf("the router holds port %d, which belongs to the pod's mesh endpoint", port)
+		}
 	}
 }

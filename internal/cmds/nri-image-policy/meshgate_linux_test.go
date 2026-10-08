@@ -27,14 +27,20 @@ func notANamespace(t *testing.T) string {
 	return path
 }
 
+// A second dialing role, so a pod ruleset is read from more than one binding.
+const (
+	testDialRole = "dialer"
+	testDialUID  = uint32(1341)
+)
+
 // The pod ruleset comes from trusted policy alone: the mesh endpoint's
 // reserved UID owns the capture ports, and every other role carries only the
 // destinations its binding names.
 func TestPodRulesetCarriesTrustedPolicyOnly(t *testing.T) {
 	policy := meshRoles()
 	policy.Roles = append(policy.Roles, roleBinding{
-		Name: routerRole,
-		UID:  testRouterUID,
+		Name: testDialRole,
+		UID:  testDialUID,
 		Destinations: []netip.AddrPort{
 			netip.MustParseAddrPort("10.43.0.6:8443"),
 			netip.MustParseAddrPort("10.43.0.7:9443"),
@@ -60,7 +66,7 @@ func TestPodRulesetCarriesTrustedPolicyOnly(t *testing.T) {
 				},
 			},
 			{
-				UID: testRouterUID,
+				UID: testDialUID,
 				Destinations: []ruleset.Destination{
 					{
 						Addr: netip.MustParseAddr("10.43.0.6"),
@@ -74,7 +80,7 @@ func TestPodRulesetCarriesTrustedPolicyOnly(t *testing.T) {
 			},
 		},
 	}
-	if got := policy.podRuleset(); !reflect.DeepEqual(got, want) {
+	if got := policy.podRuleset("default"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("podRuleset = %+v, want %+v", got, want)
 	}
 }
@@ -140,7 +146,7 @@ func TestProveSandboxNamespaceRefusals(t *testing.T) {
 // namespace say nothing about this pod.
 func TestVerifyPodRulesetNeedsTheInstalledNamespace(t *testing.T) {
 	gone := podNamespace{path: filepath.Join(t.TempDir(), "gone")}
-	err := verifyPodRuleset(gone, *meshRoles())
+	err := verifyPodRuleset(gone, *meshRoles(), "default")
 	if err == nil || !strings.Contains(err.Error(), "describe network namespace") {
 		t.Fatalf("error = %v, want the unreadable-namespace refusal", err)
 	}
@@ -157,7 +163,7 @@ func TestVerifyPodRulesetNeedsTheInstalledNamespace(t *testing.T) {
 			inode:  described.id.inode + 1,
 		},
 	}
-	err = verifyPodRuleset(replaced, *meshRoles())
+	err = verifyPodRuleset(replaced, *meshRoles(), "default")
 	if err == nil || !strings.Contains(err.Error(), "was replaced") {
 		t.Fatalf("error = %v, want the replaced-namespace refusal", err)
 	}
@@ -209,13 +215,16 @@ func TestAdmitAndVerifyReadTheLiveRuleset(t *testing.T) {
 	}
 	pod := meshPod("default", "pod", regular)
 	gate := newMeshGate(meshRoles(), discardLogger())
-	gate.pods[pod.GetId()] = &protectedPod{netns: described}
+	gate.pods[pod.GetId()] = &protectedPod{
+		netns:         described,
+		kubeNamespace: pod.GetNamespace(),
+	}
 
 	mesh := &api.Container{
 		Name: "c8s-mesh",
 		User: &api.User{Uid: testMeshUID},
 	}
-	if _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
+	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
 		t.Fatalf("the enforcer's own record refused the mesh endpoint: %v", err)
 	}
 	if err := gate.admit(pod, mesh, gatedContainer{role: meshRole}); err == nil {
@@ -223,7 +232,7 @@ func TestAdmitAndVerifyReadTheLiveRuleset(t *testing.T) {
 	}
 
 	gate.noteMeshStarted(pod.GetId())
-	if _, err := gate.memberNamespace(pod.GetId()); err != nil {
+	if _, _, err := gate.memberNamespace(pod.GetId()); err != nil {
 		t.Fatalf("the record refused a member namespace: %v", err)
 	}
 	if err := gate.verifyMemberRuleset(pod.GetId()); err == nil {

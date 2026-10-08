@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -173,6 +174,13 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		t.Errorf("mesh role = %+v, want the reserved uid %d", bound, workloadclaims.MeshUID)
 	}
 
+	// The acme role's egress exception excludes the cluster's own ranges, so
+	// the measured policy carries them.
+	wantRanges := []string{"10.52.0.0/16", "10.53.0.0/16"}
+	if got := prefixStrings(mesh.ClusterRanges); !slices.Equal(got, wantRanges) {
+		t.Errorf("mesh.cluster_ranges = %v, want the baked cluster-cidr and service-cidr %v", got, wantRanges)
+	}
+
 	// System images must remain admitted with their host mounts at final admission.
 	store := newPolicyStore(cfg.Allowlist.Base)
 	for d := range baseEntries {
@@ -182,4 +190,13 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 			t.Errorf("base entry %q is not admitted by digest alone", d)
 		}
 	}
+}
+
+// prefixStrings renders the ranges as the config writes them.
+func prefixStrings(ranges []netip.Prefix) []string {
+	out := make([]string, 0, len(ranges))
+	for _, in := range ranges {
+		out = append(out, in.String())
+	}
+	return out
 }
