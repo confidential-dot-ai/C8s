@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"sort"
@@ -60,14 +61,65 @@ func (EchoBackend) Forward(_ context.Context, req types.TunnelRequest) (types.Tu
 // is https it does mTLS with the LB's CDS-issued client cert and verifies the
 // peer against the mesh CA (mirroring the router nginx proxy_ssl_* config).
 type HTTPBackend struct {
-	base   string // upstream base URL, e.g. http://vllm-router-service.vllm.svc.cluster.local
-	client *http.Client
+	base      string // upstream base URL, e.g. http://vllm-router-service.vllm.svc.cluster.local
+	client    *http.Client
+	transport *resettableTransport
+}
+
+// resettableTransport is an http.Transport whose connection pool can be
+// dropped at once. Reset swaps in a fresh transport and closes the old one's
+// idle connections, so every later request dials, and re-runs the TLS peer
+// check, instead of reusing a connection verified under older rules.
+// Requests already in flight on the old transport finish on it; the rollout
+// fence cancels those through their context.
+type resettableTransport struct {
+	newTransport func() *http.Transport
+
+	mu      sync.Mutex
+	current *http.Transport
+}
+
+func newResettableTransport(newTransport func() *http.Transport) *resettableTransport {
+	return &resettableTransport{newTransport: newTransport, current: newTransport()}
+}
+
+// RoundTrip implements http.RoundTripper.
+func (t *resettableTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.mu.Lock()
+	cur := t.current
+	t.mu.Unlock()
+	return cur.RoundTrip(req)
+}
+
+// Reset drops the connection pool.
+func (t *resettableTransport) Reset() {
+	t.mu.Lock()
+	old := t.current
+	t.current = t.newTransport()
+	t.mu.Unlock()
+	old.CloseIdleConnections()
+}
+
+// CloseIdleConnections lets http.Client.CloseIdleConnections reach the pool.
+func (t *resettableTransport) CloseIdleConnections() {
+	t.mu.Lock()
+	cur := t.current
+	t.mu.Unlock()
+	cur.CloseIdleConnections()
+}
+
+// ResetConnections drops every pooled upstream connection, so the next
+// request re-handshakes and re-checks the upstream's leaf.
+func (b *HTTPBackend) ResetConnections() {
+	b.transport.Reset()
 }
 
 // defaultUpstreamTimeout bounds a single forwarded request to the upstream
 // backend (connect + headers + body) when HTTPBackendOptions.Timeout is unset.
 // It guards the sidecar against slow or hung upstreams holding decrypted-traffic
-// connections open indefinitely.
+// connections open indefinitely. It is the http.Client timeout, so it covers
+// Forward only; the pinned-mode lb forwarder uses the Transport directly and
+// is bounded by the dial and TLS handshake timeouts, not by this.
 const defaultUpstreamTimeout = 30 * time.Second
 
 // HTTPBackendOptions configures the raTLS/mTLS material for an https upstream.
@@ -90,12 +142,9 @@ type HTTPBackendOptions struct {
 // NewHTTPBackend builds an HTTP(S) forwarding backend for base (a full URL).
 func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) {
 	base = strings.TrimRight(base, "/")
-	transport := &http.Transport{
-		MaxIdleConns:    100,
-		IdleConnTimeout: 90 * time.Second,
-	}
+	var tlsCfg *tls.Config
 	if strings.HasPrefix(base, "https://") {
-		tlsCfg := &tls.Config{ServerName: opts.ServerName, MinVersion: tls.VersionTLS12}
+		tlsCfg = &tls.Config{ServerName: opts.ServerName, MinVersion: tls.VersionTLS12}
 		if opts.TrustedCAFile != "" {
 			caPEM, err := os.ReadFile(opts.TrustedCAFile)
 			if err != nil {
@@ -122,16 +171,28 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 				return opts.VerifyPeer(cs.PeerCertificates[0])
 			}
 		}
-		transport.TLSClientConfig = tlsCfg
 	} else if !strings.HasPrefix(base, "http://") {
 		return nil, fmt.Errorf("upstream must be an http:// or https:// URL, got %q", base)
 	}
+	transport := newResettableTransport(func() *http.Transport {
+		// Bound the dial and handshake so a dead upstream pod fails fast
+		// with 502 instead of hanging until nginx gives up. There is no
+		// ResponseHeaderTimeout: a non-streaming LLM response sends its
+		// headers only when generation ends.
+		return &http.Transport{
+			DialContext:         (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout: 10 * time.Second,
+			MaxIdleConns:        100,
+			IdleConnTimeout:     90 * time.Second,
+			TLSClientConfig:     tlsCfg,
+		}
+	})
 
 	timeout := opts.Timeout
 	if timeout <= 0 {
 		timeout = defaultUpstreamTimeout
 	}
-	return &HTTPBackend{base: base, client: &http.Client{Transport: transport, Timeout: timeout}}, nil
+	return &HTTPBackend{base: base, client: &http.Client{Transport: transport, Timeout: timeout}, transport: transport}, nil
 }
 
 // upstreamCertRecheckInterval is how often the upstream client credential is

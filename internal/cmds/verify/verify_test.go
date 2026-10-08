@@ -235,6 +235,7 @@ func TestParseExpectedReportData(t *testing.T) {
 type endpointIdentity struct {
 	leaf     *x509.Certificate
 	ca       *x509.Certificate
+	caKey    *ecdsa.PrivateKey
 	key      *ecdsa.PrivateKey
 	chainPEM string
 }
@@ -285,7 +286,7 @@ func mintEndpointIdentity(t *testing.T) *endpointIdentity {
 	}
 	chain := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})) +
 		string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER}))
-	return &endpointIdentity{leaf: leaf, ca: ca, key: leafKey, chainPEM: chain}
+	return &endpointIdentity{leaf: leaf, ca: ca, caKey: caKey, key: leafKey, chainPEM: chain}
 }
 
 // ed25519Pub returns a fresh Ed25519 public key for the non-ECDSA-leaf case.

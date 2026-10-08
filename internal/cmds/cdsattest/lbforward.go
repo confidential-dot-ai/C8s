@@ -1,6 +1,8 @@
 package cdsattest
 
 import (
+	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httputil"
@@ -18,10 +20,35 @@ const connectionTimeHeader = "X-C8s-Connection-Time"
 // overflowing into a future connection start.
 const maxConnectionAge = 365 * 24 * time.Hour
 
+// verifiedStateHeader carries the journal head (the rollout state's "head")
+// the client verified. A request carrying it is admitted only if it equals
+// the router's head at admission; a request already streaming is cancelled
+// by a bound change, not by a head change that leaves the bound unchanged.
+// Requests without it are served as before.
+const verifiedStateHeader = "X-C8s-Verified-State"
+
+// reconnectStatus refuses a request whose client must open a new connection
+// and attest again. It is private to the loopback hop: nginx cannot close the
+// client's keepalive connection on an upstream 503 or Connection: close, so
+// location / maps this status to a 503 from a location with keepalive off
+// (router-configmap.yaml, @c8s_reconnect). Connection: close is also set for
+// a client that talks to the forwarder directly.
+const reconnectStatus = 590
+
+const reconnectMessage = "the allowlist bound changed: open a new connection and attest again"
+
+func refuseReconnect(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	http.Error(w, reconnectMessage, reconnectStatus)
+}
+
 // newLBForwarder streams front-door requests nginx hands over in pinned mode
 // to the upstream, through the backend's stamp-checking transport. A request
 // is refused when the client's connection predates the router's last view of
 // a widened bound, since its attest-lb check may have seen the older bound.
+// A request in flight when the bound changes is cancelled: a streamed
+// response (SSE, token streams) is cut off, and the client must reconnect
+// and attest again.
 func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (http.Handler, error) {
 	target, err := url.Parse(backend.base)
 	if err != nil {
@@ -36,8 +63,14 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			pr.Out.Header["X-Forwarded-For"] = pr.In.Header["X-Forwarded-For"]
 			pr.Out.Header["X-Forwarded-Proto"] = pr.In.Header["X-Forwarded-Proto"]
 			pr.Out.Header.Del(connectionTimeHeader)
+			pr.Out.Header.Del(verifiedStateHeader)
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if cause := context.Cause(r.Context()); errors.Is(cause, errBoundChanged) || errors.Is(cause, errStateExpired) {
+				log.Info("front-door forward cancelled", "path", r.URL.Path, "cause", cause)
+				refuseReconnect(w)
+				return
+			}
 			log.Warn("front-door forward failed", "path", r.URL.Path, "error", err)
 			http.Error(w, "backend error", http.StatusBadGateway)
 		},
@@ -49,11 +82,21 @@ func newLBForwarder(fence *rollout, backend *HTTPBackend, log *slog.Logger) (htt
 			http.Error(w, "missing connection time", http.StatusForbidden)
 			return
 		}
+		// Taken before the fence check, so a bound change after it still
+		// cancels the forward.
+		ctx, cancel := fence.requestContext(r.Context())
+		defer cancel()
 		now := time.Now()
 		if !fence.admitsConnection(now.Add(-time.Duration(age*float64(time.Second))), now) {
-			http.Error(w, "the allowlist bound changed: open a new connection and attest again", http.StatusServiceUnavailable)
+			refuseReconnect(w)
 			return
 		}
-		proxy.ServeHTTP(w, r)
+		// Opt-in: a client that sends no header is served as before; one that
+		// sends a state other than the current head must re-verify.
+		if got := r.Header.Get(verifiedStateHeader); got != "" && got != fence.currentHead() {
+			http.Error(w, "state changed: re-verify", http.StatusServiceUnavailable)
+			return
+		}
+		proxy.ServeHTTP(w, r.WithContext(ctx))
 	}), nil
 }

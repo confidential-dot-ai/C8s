@@ -151,13 +151,7 @@ func run(cfg config) error {
 	}
 	if cfg.upstream != "" {
 		var err error
-		hb, err = NewHTTPBackend(cfg.upstream, HTTPBackendOptions{
-			TrustedCAFile:  cfg.upstreamCAFile,
-			ClientCertFile: cfg.upstreamCertFile,
-			ClientKeyFile:  cfg.upstreamKeyFile,
-			ServerName:     cfg.upstreamServerName,
-			VerifyPeer:     verifyPeer,
-		})
+		hb, err = newUpstream(cfg, fence, verifyPeer)
 		if err != nil {
 			return err
 		}
@@ -215,6 +209,26 @@ func run(cfg config) error {
 
 	logger.Info("LB browser-facing endpoints listening", "addr", addr)
 	return srv.Serve(ctx, httpSrv)
+}
+
+// newUpstream builds the upstream backend. Under a fence, a bound change drops
+// every pooled upstream connection, so the next request re-handshakes and
+// re-checks the upstream's leaf.
+func newUpstream(cfg config, fence *rollout, verifyPeer func(*x509.Certificate) error) (*HTTPBackend, error) {
+	hb, err := NewHTTPBackend(cfg.upstream, HTTPBackendOptions{
+		TrustedCAFile:  cfg.upstreamCAFile,
+		ClientCertFile: cfg.upstreamCertFile,
+		ClientKeyFile:  cfg.upstreamKeyFile,
+		ServerName:     cfg.upstreamServerName,
+		VerifyPeer:     verifyPeer,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if fence != nil {
+		fence.onBoundChange(hb.ResetConnections)
+	}
+	return hb, nil
 }
 
 func newLogger(level string) *slog.Logger {

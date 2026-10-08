@@ -717,6 +717,14 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 // envelope, forwards the reconstructed request to the backend (plaintext; the
 // cluster raTLS mesh wraps that hop), and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if s.rollout != nil {
+		// Taken before the fence check: a bound change after it cancels the
+		// forward, so no request outlives the bound it was admitted under.
+		var cancel context.CancelFunc
+		ctx, cancel = s.rollout.requestContext(ctx)
+		defer cancel()
+	}
 	channel := s.useSession(r.Header.Get(sessionHeader))
 	if channel == nil {
 		writeErr(w, http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
@@ -749,8 +757,11 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	env.Headers = setHeaderField(env.Headers, exporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	resp, err := s.backend.Forward(r.Context(), env)
+	resp, err := s.backend.Forward(ctx, env)
 	if err != nil {
+		if cause := context.Cause(ctx); cause != nil {
+			err = fmt.Errorf("%w (%v)", err, cause)
+		}
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
 	}
@@ -803,6 +814,7 @@ func (s *Server) pollRollout(ctx context.Context) {
 			return
 		case <-ticker.C:
 		}
+		s.rollout.expire(time.Now())
 		bound, err := s.rollout.poll(ctx)
 		if err != nil {
 			if ctx.Err() == nil {

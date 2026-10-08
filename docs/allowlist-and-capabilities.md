@@ -590,8 +590,27 @@ the state every second and fences traffic on it:
   so an attest-lb client re-attests on a new connection.
 - Nothing is forwarded before the router's first state read, or while its
   last read is older than `lease_seconds`.
+- A client that wants each request tied to the state it verified sends
+  `X-C8s-Verified-State: <head>`, the journal `head` of that state
+  (`c8s verify` prints it as `state:`). If the header is not the router's
+  current head, the router answers 503 `state changed: re-verify` and does
+  not forward. Requests without the header are served as before. The
+  router strips the header before forwarding.
+- The router refuses a state whose journal went backwards under the same
+  `authority`: a lower `position`, or another `head` at the same position.
+  Its last good read then ages out, so a rolled-back journal stops traffic
+  instead of being served. A state under a new `authority` (CDS restarted
+  and regenerated its key) is accepted and logged as a journal reset.
 
 A widening reaches the fence within one poll interval.
+
+Every change to `bound` (widening or narrowing) also:
+
+- cancels every request the router is forwarding, so a streamed response
+  (SSE, token streams) admitted under the old bound ends, and the client
+  reconnects and attests again;
+- drops the router's pooled upstream connections, so the next request
+  re-handshakes and the upstream's stamp is checked against the new bound.
 
 CDS activates a publication only after that lease, so fenced traffic never
 reaches a workload the client did not accept. The router forwards only to

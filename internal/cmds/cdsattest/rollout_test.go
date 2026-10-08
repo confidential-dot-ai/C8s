@@ -31,6 +31,19 @@ type fakeCDSState struct {
 	bound []string
 	key   *ecdsa.PrivateKey
 	age   time.Duration // shifts issued_at; negative issues stale states
+
+	authority string
+	position  uint64
+	head      string
+
+	protocol     int  // 0 serves protocol 1
+	stateContext bool // signs GET /state under the challenge context
+}
+
+func (f *fakeCDSState) setJournal(authority string, position uint64, head string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.authority, f.position, f.head = authority, position, head
 }
 
 func (f *fakeCDSState) setKey(key *ecdsa.PrivateKey) {
@@ -47,11 +60,18 @@ func (f *fakeCDSState) setBound(bound ...string) {
 
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
-	st := types.RolloutState{Bound: f.bound, Lease: 30}
+	protocol := f.protocol
+	if protocol == 0 {
+		protocol = 1
+	}
+	st := types.RolloutState{Protocol: protocol, Authority: f.authority, Position: f.position, Head: f.head, Bound: f.bound, Lease: 30}
 	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
 	sigContext := rolloutstate.ContextState
+	if f.stateContext {
+		sigContext = rolloutstate.ContextChallenge
+	}
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
 		json.NewDecoder(r.Body).Decode(&req)
@@ -194,8 +214,8 @@ func TestHTTPBackendRunsVerifyPeer(t *testing.T) {
 
 func TestLBForwarderFencesConnections(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get(connectionTimeHeader) != "" {
-			t.Error("connection time header leaked upstream")
+		if r.Header.Get(connectionTimeHeader) != "" || r.Header.Get(verifiedStateHeader) != "" {
+			t.Error("fence header leaked upstream")
 		}
 		w.Write([]byte("ok"))
 	}))
@@ -213,17 +233,19 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 	req.Header.Set(connectionTimeHeader, "0.001")
 	w := httptest.NewRecorder()
 	forwarder.ServeHTTP(w, req)
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("request before the first state read = %d, want 503", w.Code)
+	if w.Code != reconnectStatus {
+		t.Fatalf("request before the first state read = %d, want %d", w.Code, reconnectStatus)
 	}
 	fence.lease = 30 * time.Second
 	fence.seenAt = time.Now()
 	fence.widenedAt = time.Now().Add(-10 * time.Second)
+	fence.head = "sha256:h1"
 	status := func(connectionTime string) int {
 		req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 		if connectionTime != "" {
 			req.Header.Set(connectionTimeHeader, connectionTime)
 		}
+		req.Header.Set(verifiedStateHeader, "sha256:h1")
 		w := httptest.NewRecorder()
 		forwarder.ServeHTTP(w, req)
 		return w.Code
@@ -235,7 +257,7 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 		want           int
 	}{
 		{"connection opened after the last widening", "1.500", http.StatusOK},
-		{"connection older than the last widening", "20.000", http.StatusServiceUnavailable},
+		{"connection older than the last widening", "20.000", reconnectStatus},
 		{"no connection time", "", http.StatusForbidden},
 		{"unrepresentable connection time", "1e20", http.StatusForbidden},
 		{"NaN connection time", "NaN", http.StatusForbidden},
@@ -245,8 +267,8 @@ func TestLBForwarderFencesConnections(t *testing.T) {
 		}
 	}
 	fence.seenAt = time.Now().Add(-time.Minute)
-	if got := status("1.500"); got != http.StatusServiceUnavailable {
-		t.Errorf("stale state: status %d, want 503", got)
+	if got := status("1.500"); got != reconnectStatus {
+		t.Errorf("stale state: status %d, want %d", got, reconnectStatus)
 	}
 }
 
@@ -303,8 +325,58 @@ func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {
 		t.Fatal("zero-lease state is fresh forever")
 	}
 	r.lease = time.Minute
-	if !r.fresh(now.Add(30*time.Second)) || r.fresh(now.Add(time.Minute)) {
-		t.Fatal("a positive lease does not bound freshness")
+	if !r.fresh(now.Add(29*time.Second)) || r.fresh(now.Add(30*time.Second)) {
+		t.Fatal("a positive lease does not bound freshness to half of it")
+	}
+}
+
+func TestRolloutExpireCancelsForwards(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	resets := 0
+	fence.onBoundChange(func() { resets++ })
+	ctx, cancel := fence.requestContext(context.Background())
+	defer cancel()
+
+	fence.expire(time.Now())
+	if ctx.Err() != nil {
+		t.Fatal("expire cancelled a request on a fresh state")
+	}
+	fence.expire(time.Now().Add(time.Hour))
+	waitDone(t, ctx)
+	if !errors.Is(context.Cause(ctx), errStateExpired) || resets != 1 {
+		t.Fatalf("after expiry: cause %v, resets %d; want errStateExpired, 1", context.Cause(ctx), resets)
+	}
+	fence.expire(time.Now().Add(time.Hour))
+	if resets != 1 {
+		t.Fatalf("a second expire on the same stale state reset the pool again (%d resets)", resets)
+	}
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fresh, cancelFresh := fence.requestContext(context.Background())
+	defer cancelFresh()
+	fence.expire(time.Now().Add(time.Hour))
+	waitDone(t, fresh)
+	if !errors.Is(context.Cause(fresh), errStateExpired) {
+		t.Fatal("a new read did not re-arm expiry")
+	}
+}
+
+// waitDone waits for ctx, which context.AfterFunc cancels asynchronously.
+func waitDone(t *testing.T, ctx context.Context) {
+	t.Helper()
+	select {
+	case <-ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("request context not cancelled")
 	}
 }
 
@@ -320,5 +392,124 @@ func TestRolloutRefusesExpiredState(t *testing.T) {
 	}
 	if fence.fresh(time.Now()) {
 		t.Fatal("an expired state made the fence fresh")
+	}
+}
+
+func TestRolloutRefusesJournalRegression(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	poll := func() error {
+		_, err := fence.poll(context.Background())
+		return err
+	}
+
+	cds.setJournal("sha256:a", 5, "sha256:h5")
+	if err := poll(); err != nil {
+		t.Fatal(err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:h6")
+	if err := poll(); err != nil {
+		t.Fatalf("forward progress refused: %v", err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:h6")
+	if err := poll(); err != nil {
+		t.Fatalf("an unchanged head refused: %v", err)
+	}
+	cds.setJournal("sha256:a", 3, "sha256:h3")
+	if err := poll(); err == nil || !strings.Contains(err.Error(), "backwards") {
+		t.Fatalf("a lower position under the same authority = %v, want refused", err)
+	}
+	cds.setJournal("sha256:a", 6, "sha256:other")
+	goodRead := fence.seenAt
+	if err := poll(); err == nil || !strings.Contains(err.Error(), "forked") {
+		t.Fatalf("another head at the same position = %v, want refused", err)
+	}
+	// The refused read does not refresh the fence: it closes once the last
+	// good read ages out.
+	if !fence.seenAt.Equal(goodRead) || fence.fresh(goodRead.Add(30*time.Second)) {
+		t.Fatal("a refused state kept the fence open")
+	}
+	// A refused state is not stored.
+	if fence.position != 6 || fence.head != "sha256:h6" {
+		t.Fatalf("fence journal = %d %s, want 6 sha256:h6", fence.position, fence.head)
+	}
+	// A new authority (a CDS restart) may start over.
+	cds.setJournal("sha256:b", 0, "sha256:g0")
+	if err := poll(); err != nil {
+		t.Fatalf("a new authority's journal refused: %v", err)
+	}
+	if fence.authority != "sha256:b" || fence.position != 0 {
+		t.Fatalf("fence journal = %s %d, want sha256:b 0", fence.authority, fence.position)
+	}
+}
+
+func TestLBForwarderRequiresVerifiedState(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) }))
+	defer upstream.Close()
+	backend, err := NewHTTPBackend(upstream.URL, HTTPBackendOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey}
+	cds.setBound("sha256:p")
+	cds.setJournal("sha256:a", 1, "sha256:h1")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	forwarder, err := newLBForwarder(fence, backend, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	send := func(state string) (int, string) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Header.Set(connectionTimeHeader, "0")
+		if state != "" {
+			req.Header.Set(verifiedStateHeader, state)
+		}
+		w := httptest.NewRecorder()
+		forwarder.ServeHTTP(w, req)
+		return w.Code, w.Body.String()
+	}
+	if code, body := send("sha256:h1"); code != http.StatusOK || body != "ok" {
+		t.Fatalf("matching state = %d %q, want 200 forwarded", code, body)
+	}
+	if code, body := send(""); code != http.StatusOK || body != "ok" {
+		t.Fatalf("absent state header = %d %q, want 200 forwarded", code, body)
+	}
+	cds.setJournal("sha256:a", 2, "sha256:h2")
+	if _, err := fence.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if code, body := send("sha256:h1"); code != http.StatusServiceUnavailable || !strings.Contains(body, "state changed: re-verify") {
+		t.Fatalf("stale state = %d %q, want 503 re-verify", code, body)
+	}
+}
+
+// A challenge signature (over a caller-chosen nonce) served as GET /state,
+// or a state with an unknown protocol, is refused and leaves the fence closed.
+func TestRolloutRefusesWrongContextAndProtocol(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	for _, cds := range []*fakeCDSState{
+		{key: identity.caKey, stateContext: true},
+		{key: identity.caKey, protocol: 2},
+	} {
+		cds.setBound("sha256:p")
+		cdsSrv := httptest.NewServer(cds)
+		fence := newRollout(cdsSrv.URL, identity.caFile)
+		if _, err := fence.poll(context.Background()); err == nil {
+			t.Errorf("poll accepted state (context swapped %v, protocol %d)", cds.stateContext, cds.protocol)
+		}
+		if fence.fresh(time.Now()) {
+			t.Error("a refused state opened the fence")
+		}
+		cdsSrv.Close()
 	}
 }

@@ -7,8 +7,10 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"slices"
@@ -41,17 +43,96 @@ type rollout struct {
 	caFile string // mesh CA bundle; every state must verify against it
 	client *http.Client
 
-	mu     sync.Mutex
-	bound  []string
-	lease  time.Duration
-	seenAt time.Time // when the request behind bound was sent
+	mu sync.Mutex
+	// authority, position and head are the journal coordinates of the last
+	// stored state. Under one authority the journal only moves forward; a
+	// new authority (a CDS restart, which regenerates the mesh CA) may start
+	// over, and is logged.
+	authority string
+	position  uint64
+	head      string
+	bound     []string
+	lease     time.Duration
+	seenAt    time.Time // when the request behind bound was sent
 	// widenedAt is when this router last saw the bound gain a digest; it
 	// starts at process start, since a restart forgets earlier widenings.
 	widenedAt time.Time
+	// gen is cancelled, and replaced, every time the bound changes. Every
+	// forwarded request runs under it (requestContext), so no request admitted
+	// under one bound keeps streaming under the next.
+	gen       context.Context
+	cancelGen context.CancelCauseFunc
+	// expired is set once gen was cancelled because the last read went
+	// stale; the next stored state clears it.
+	expired bool
+	// onChange runs, under mu, before gen is replaced. The upstream backend
+	// registers its connection reset here, so a request admitted under the new
+	// bound never reuses a connection whose peer was checked under the old one.
+	onChange []func()
 }
 
+// errBoundChanged cancels a forwarded request when the bound changes.
+var errBoundChanged = errors.New("the allowlist bound changed")
+
+// errStateExpired cancels a forwarded request when the router can no longer
+// refresh the state it was admitted under.
+var errStateExpired = errors.New("the allowlist state expired")
+
 func newRollout(url, caFile string) *rollout {
-	return &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}, widenedAt: time.Now()}
+	r := &rollout{url: url, caFile: caFile, client: &http.Client{Timeout: 5 * time.Second}, widenedAt: time.Now()}
+	r.gen, r.cancelGen = context.WithCancelCause(context.Background())
+	return r
+}
+
+// onBoundChange registers f to run every time the bound changes.
+func (r *rollout) onBoundChange(f func()) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onChange = append(r.onChange, f)
+}
+
+// requestContext derives a context from parent that is also cancelled, with
+// cause errBoundChanged or errStateExpired, when the bound next changes or the
+// state expires. Callers take it before
+// they check the fence, so a change between the check and the forward still
+// cancels the request.
+func (r *rollout) requestContext(parent context.Context) (context.Context, context.CancelFunc) {
+	r.mu.Lock()
+	gen := r.gen
+	r.mu.Unlock()
+	ctx, cancel := context.WithCancelCause(parent)
+	stop := context.AfterFunc(gen, func() { cancel(context.Cause(gen)) })
+	return ctx, func() {
+		stop()
+		cancel(context.Canceled)
+	}
+}
+
+// boundChanged runs the change hooks, then cancels every request admitted
+// under the previous bound. Callers hold r.mu.
+func (r *rollout) boundChanged() {
+	r.resetGen(errBoundChanged)
+}
+
+func (r *rollout) resetGen(cause error) {
+	for _, f := range r.onChange {
+		f()
+	}
+	r.cancelGen(cause)
+	r.gen, r.cancelGen = context.WithCancelCause(context.Background())
+}
+
+// expire cancels every forwarded request once the last read is stale. A
+// router that stops seeing CDS cannot see a widening either, so requests it
+// admitted must end before the publication it missed can activate.
+func (r *rollout) expire(now time.Time) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.expired || r.seenAt.IsZero() || r.fresh(now) {
+		return
+	}
+	r.expired = true
+	r.resetGen(errStateExpired)
 }
 
 // challenge fetches the state bound to nonce.
@@ -114,15 +195,55 @@ func (r *rollout) fetch(ctx context.Context, method, path string, body []byte, s
 		return nil, nil, err
 	}
 
+	if st.Protocol != stateProtocol {
+		return nil, nil, fmt.Errorf("CDS state protocol %d, want %d", st.Protocol, stateProtocol)
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if sent.After(r.seenAt) {
+		if err := r.checkProgress(&st); err != nil {
+			return nil, nil, err
+		}
+		r.authority, r.position, r.head = st.Authority, st.Position, st.Head
 		if !covers(r.bound, st.Bound) {
 			r.widenedAt = time.Now()
 		}
+		changed := !slices.Equal(r.bound, st.Bound)
 		r.seenAt, r.bound, r.lease = sent, st.Bound, time.Duration(st.Lease)*time.Second
+		r.expired = false
+		if changed {
+			r.boundChanged()
+		}
 	}
 	return &signed, &st, nil
+}
+
+// stateProtocol is the RolloutState protocol this router understands.
+const stateProtocol = 1
+
+// checkProgress refuses a state whose journal went backwards under the
+// authority of the last stored state: a lower position, or another head at
+// the same position. A state under a new authority is accepted, since a CDS
+// restart regenerates the mesh CA and may start a new journal, and logged.
+// Callers hold r.mu.
+func (r *rollout) checkProgress(st *types.RolloutState) error {
+	if r.seenAt.IsZero() {
+		return nil
+	}
+	if st.Authority != r.authority {
+		slog.Warn("CDS rollout authority changed: accepting a new journal",
+			"old_authority", r.authority, "old_position", r.position,
+			"new_authority", st.Authority, "new_position", st.Position)
+		return nil
+	}
+	switch {
+	case st.Position < r.position:
+		return fmt.Errorf("CDS journal went backwards under authority %s: position %d after %d", st.Authority, st.Position, r.position)
+	case st.Position == r.position && st.Head != r.head:
+		return fmt.Errorf("CDS journal forked under authority %s: head %s at position %d, was %s", st.Authority, st.Head, st.Position, r.head)
+	}
+	return nil
 }
 
 // verify requires the state to be signed by a key in the mesh CA bundle, the
@@ -184,6 +305,13 @@ func (r *rollout) verifyPeer(leaf *x509.Certificate) error {
 	return nil
 }
 
+// currentHead is the journal head of the last stored state.
+func (r *rollout) currentHead() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.head
+}
+
 // admitsConnection reports whether a request on a front-door connection
 // opened at start may be forwarded at now: the state must be fresh and the
 // bound must not have widened since the client could have checked it.
@@ -194,11 +322,13 @@ func (r *rollout) admitsConnection(start, now time.Time) bool {
 }
 
 // fresh reports whether a state has been read and whether the last read is
-// younger than the lease. A state advertising no lease is held to
-// zeroLeaseMaxStateAge instead: it is never fresh forever, so the router
-// still stops serving when it loses CDS. Callers hold r.mu.
+// younger than half the lease, which leaves expire and the clocks of CDS and
+// this router a margin before a missed publication activates. A state
+// advertising no lease is held to zeroLeaseMaxStateAge instead: it is never
+// fresh forever, so the router still stops serving when it loses CDS.
+// Callers hold r.mu.
 func (r *rollout) fresh(now time.Time) bool {
-	maxAge := r.lease
+	maxAge := r.lease / 2
 	if maxAge <= 0 {
 		maxAge = zeroLeaseMaxStateAge
 	}

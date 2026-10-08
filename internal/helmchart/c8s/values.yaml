@@ -945,6 +945,8 @@ router:
     address: ""
     # -- Protocol for the upstream connection (http or https).
     protocol: http
+    # -- nginx proxy_read_timeout/proxy_send_timeout for the catch-all route; long enough for non-streaming LLM responses.
+    readTimeout: 3600s
     tls:
       # -- Present the CDS-issued certificate to HTTPS upstreams.
       useCDSClientCert: true
