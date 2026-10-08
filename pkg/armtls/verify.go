@@ -32,20 +32,6 @@ type VerifyPolicy struct {
 	// check is performed (TLS 1.3 already provides replay protection).
 	Nonce []byte
 
-	// SandboxID, when set, is the CRI pod sandbox ID the certificate's
-	// sandbox-ID extension must carry (docs/armtls.md, "Sandbox identity").
-	// Only [VerifyCert] can enforce it (the ID rides the certificate);
-	// [VerifyAttestation] fails closed when it is set.
-	SandboxID string
-
-	// WorkloadName, when set, is the allowlist entry name the certificate's
-	// matched-workload extension must carry (docs/armtls.md, "Matched
-	// workload"). Like SandboxID it is CA-vouched: it is enforced only on the
-	// chain-verified branch of the dual peer verifier, and VerifyAttestation /
-	// VerifyCert fail closed when it is set — neither checks a CA chain, so
-	// neither can authenticate the stamp.
-	WorkloadName string
-
 	// AttestationApiURL is the attestation-api whose /verify endpoint performs
 	// all evidence verification: hardware signature chain, REPORTDATA key
 	// binding, debug policy, and minimum TCB. Required: there is no
@@ -61,22 +47,6 @@ type VerifyPolicy struct {
 	// AttestationVerifyTimeout bounds online attestation-api verification.
 	// If unset, a conservative default is used.
 	AttestationVerifyTimeout time.Duration
-
-	// RequireCAEvidence selects the production trust mode for the dual CA /
-	// armTLS peer verifier (dualVerifyPeerCallback). When false (default), a
-	// peer whose leaf chains to a configured CA is accepted on the CA chain
-	// alone (a sandbox-ID pin is still enforced) — the legacy/dev mode that
-	// eases rolling upgrades and CA rotation. When true, a valid CA chain is no
-	// longer sufficient: the leaf must ALSO carry re-verifiable armTLS evidence
-	// (issuer.SignCSR copies the requester's nonce-free .1.1 extension onto the
-	// leaf), which is re-verified per connection so a CA compromise or wrong
-	// issuance policy is caught at the peer rather than trusted from the chain.
-	// The embedded evidence is nonce-free by construction (bound to the leaf
-	// key and claims, no per-connection nonce); connection liveness comes from
-	// the TLS 1.3 proof-of-possession of the leaf key. Set by the production
-	// profile; a self-signed armTLS peer is unaffected (it always verifies its
-	// evidence via the fallback path).
-	RequireCAEvidence bool
 }
 
 // VerifyResult contains the verified attestation claims extracted from the cert.
@@ -108,7 +78,7 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 	if policy == nil {
 		policy = &VerifyPolicy{}
 	}
-	if err := policy.checkEvidenceOnlyPins(); err != nil {
+	if err := policy.requireAttestationApi(); err != nil {
 		return nil, err
 	}
 	return verifyOnline(att, pub, policy, nonce)
@@ -119,11 +89,9 @@ func VerifyAttestation(pub crypto.PublicKey, att *Attestation, policy *VerifyPol
 //
 // Trust comes from the hardware attestation chain (AMD ARK → ASK → VCEK, or
 // Intel equivalent for TDX) as verified by the same-TCB attestation-api, not
-// from any certificate authority signature. A sandbox-ID pin therefore cannot
-// be enforced here: the ID rests on CDS's signature over the leaf, which this
-// path does not check (docs/armtls.md, "Sandbox identity").
+// from any certificate authority signature.
 //
-// The certificate body is authenticated first (certutil.AuthenticateLeafBody):
+// The certificate body is authenticated first (requireSelfIssued):
 // the validity window (NotBefore within [certutil.LeafValiditySkew], NotAfter
 // with no allowance), because the embedded evidence carries no per-connection
 // nonce and the window is the only freshness bound this path has; and, for a
@@ -137,19 +105,16 @@ func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*Ve
 		policy = &VerifyPolicy{}
 	}
 
-	// Split out so a window failure keeps its own sentinel; callers
-	// (dualVerifyPeerCallback, the mesh proxies) branch on ErrCertValidity.
+	// Split out so a window failure keeps its own sentinel, which callers
+	// branch on (ErrCertValidity).
 	now := time.Now()
 	if err := certutil.CheckValidity(cert, now); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrCertValidity, err)
 	}
-	// The classification is not actionable at this layer: both classes reach
-	// here legitimately — the self-signed mesh peer, and (via
-	// dualVerifyPeerCallback's RequireCAEvidence step) a CA-signed leaf whose
-	// chain that caller has already verified. What the call buys is the
-	// self-signature check on the self-issued case, which is the half of body
-	// authentication this path would otherwise skip.
-	if _, err := certutil.AuthenticateLeafBody(cert, now); err != nil {
+	// This path verifies no chain, so the leaf must be self-issued: the
+	// evidence binds the key alone. A CDS-issued leaf is verified on the
+	// chain path (NewMeshClientTLSConfig).
+	if err := requireSelfIssued(cert, now); err != nil {
 		return nil, fmt.Errorf("armtls: peer certificate body: %w", err)
 	}
 
@@ -162,25 +127,31 @@ func VerifyCert(cert *x509.Certificate, policy *VerifyPolicy, nonce []byte) (*Ve
 		return nil, err
 	}
 
-	if err := policy.checkEvidenceOnlyPins(); err != nil {
+	if err := policy.requireAttestationApi(); err != nil {
 		return nil, err
 	}
 	return verifyOnline(att, cert.PublicKey, policy, nonce)
 }
 
-// checkEvidenceOnlyPins rejects a policy the evidence alone cannot settle: the
-// sandbox ID and the matched workload are CA-vouched stamps, and neither
-// [VerifyAttestation] nor [VerifyCert] verifies a chain. It also requires the
-// attestation-api, since there is no in-process verification path here.
-func (p *VerifyPolicy) checkEvidenceOnlyPins() error {
+// requireSelfIssued authenticates a certificate body the caller holds no chain
+// for: the validity window and the self-signature under the certificate's own
+// key.
+func requireSelfIssued(cert *x509.Certificate, now time.Time) error {
+	body, err := certutil.AuthenticateLeafBody(cert, now)
+	if err != nil {
+		return err
+	}
+	if body != certutil.BodySelfSigned {
+		return fmt.Errorf("not self-issued: its body is %s", body)
+	}
+	return nil
+}
+
+// requireAttestationApi enforces the attestation-api URL every evidence path
+// needs: there is no in-process verification path here.
+func (p *VerifyPolicy) requireAttestationApi() error {
 	if p.AttestationApiURL == "" {
 		return fmt.Errorf("%w: attestation-api URL is required", ErrInvalidReport)
-	}
-	if p.SandboxID != "" {
-		return fmt.Errorf("%w: sandbox-ID pin requires a CA-verified certificate", ErrPolicyViolation)
-	}
-	if p.WorkloadName != "" {
-		return fmt.Errorf("%w: workload pin requires a CA-verified certificate", ErrPolicyViolation)
 	}
 	return nil
 }

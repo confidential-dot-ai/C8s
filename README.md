@@ -484,11 +484,10 @@ than let you discover them:
   from the operator's escrow file. Rotation, versioning and delete are absent
   — a replaced value is gone, and pods keep what they read at startup.
 
-- **Mesh peers are verified by CA chain, not per-peer measurement.** Leaves
-  carry the evidence CDS verified at issuance, and `VerifyPolicy` has a
-  `RequireCAEvidence` mode that re-checks it — measurement included — on every
-  connection, but no shipped profile enables it. There are no SPIFFE-style URI
-  SANs, and per-workload peer policy is not enforced.
+- **Mesh peers are verified by CA chain, not per-peer measurement.** A
+  chain-path peer proved its measurement to CDS at issuance only; nothing
+  re-checks it per connection. There are no SPIFFE-style URI SANs, and
+  per-workload peer policy is not enforced.
 
 - **A workload's sandbox identity is CA-vouched, not hardware-bound.** The
   sandbox ID in a leaf is signed in by the mesh CA on the word of an on-node

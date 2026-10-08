@@ -437,7 +437,7 @@ func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
 		AttestFunc:           armtlsAttestFunc(cfg),
 		CertTTL:              cfg.armtlsCertTTL,
 		Logger:               slog.Default(),
-		ClientCAs:            []*x509.Certificate{meshCA},
+		ClientCA:             meshCA,
 		ClientAuth:           tls.VerifyClientCertIfGiven,
 		MeasuredPoliciesFile: cfg.measuredPolicies,
 	}

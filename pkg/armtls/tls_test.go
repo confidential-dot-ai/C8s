@@ -142,31 +142,31 @@ func TestNewServerTLSConfigWithoutClientPolicy(t *testing.T) {
 	}
 }
 
-func TestNewServerTLSConfigWithClientCAs(t *testing.T) {
+func TestNewServerTLSConfigWithClientCA(t *testing.T) {
 	_, ca := generateCACert(t)
 
 	t.Run("pool installed with verify-if-given default", func(t *testing.T) {
 		cfg := testServerConfig()
-		cfg.ClientCAs = []*x509.Certificate{ca}
+		cfg.ClientCA = ca
 
 		tlsCfg, _, err := NewServerTLSConfig(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if tlsCfg.ClientCAs == nil {
-			t.Fatal("ClientCAs pool not installed")
+			t.Fatal("the client CA pool is not installed")
 		}
 		if tlsCfg.ClientAuth != tls.VerifyClientCertIfGiven {
 			t.Errorf("ClientAuth = %v, want the VerifyClientCertIfGiven default", tlsCfg.ClientAuth)
 		}
 		if tlsCfg.VerifyPeerCertificate != nil {
-			t.Error("VerifyPeerCertificate must stay nil: ClientCAs verification is crypto/tls's, not armTLS")
+			t.Error("VerifyPeerCertificate must stay nil: ClientCA verification is crypto/tls's, not armTLS")
 		}
 	})
 
 	t.Run("explicit ClientAuth is kept", func(t *testing.T) {
 		cfg := testServerConfig()
-		cfg.ClientCAs = []*x509.Certificate{ca}
+		cfg.ClientCA = ca
 		cfg.ClientAuth = tls.RequireAndVerifyClientCert
 
 		tlsCfg, _, err := NewServerTLSConfig(cfg)
@@ -178,12 +178,12 @@ func TestNewServerTLSConfigWithClientCAs(t *testing.T) {
 		}
 	})
 
-	t.Run("ClientCAs and ClientPolicy are mutually exclusive", func(t *testing.T) {
-		// ClientPolicy admits a self-signed armTLS peer, which ClientCAs exists
+	t.Run("ClientCA and ClientPolicy are mutually exclusive", func(t *testing.T) {
+		// ClientPolicy admits a self-issued armTLS peer, which ClientCA exists
 		// to refuse; combining them must be a construction-time error, not a
 		// silently weaker listener.
 		cfg := testServerConfig()
-		cfg.ClientCAs = []*x509.Certificate{ca}
+		cfg.ClientCA = ca
 		cfg.ClientPolicy = &VerifyPolicy{}
 
 		if _, _, err := NewServerTLSConfig(cfg); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
@@ -214,6 +214,7 @@ func TestNewClientTLSConfig(t *testing.T) {
 
 func TestNewClientTLSConfigWithAttestation(t *testing.T) {
 	tlsCfg, _, err := NewClientTLSConfig(&ClientConfig{
+		Policy:     &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
 		Platform:   "sev-snp",
 		AttestFunc: fakeAttestFunc,
 		CertTTL:    1 * time.Hour,
@@ -418,6 +419,7 @@ func TestTDXPlatformAcceptedAtConfigTime(t *testing.T) {
 		t.Errorf("expected TDX server config to build, got: %v", err)
 	}
 	if _, _, err := NewClientTLSConfig(&ClientConfig{
+		Policy:     &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
 		Platform:   "tdx",
 		AttestFunc: fakeAttestFunc,
 	}); err != nil {
@@ -736,351 +738,6 @@ func generateCACert(t *testing.T) (*ecdsa.PrivateKey, *x509.Certificate) {
 	return caKey, caCert
 }
 
-func TestDualVerifyPeerCallback_CASigned(t *testing.T) {
-	// Generate a CA keypair and self-signed CA cert.
-	caKey, caCert := generateCACert(t)
-
-	// Generate a leaf keypair and cert signed by the CA.
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(200),
-		Subject:      pkix.Name{CommonName: "leaf"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-	}
-	leafCertDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Get the dual-verify callback.
-	verifyFunc := dualVerifyPeerCallback(&VerifyPolicy{}, newSharedCACerts([]*x509.Certificate{caCert}))
-
-	// CA-signed cert should be accepted.
-	if err := verifyFunc([][]byte{leafCertDER}, nil); err != nil {
-		t.Fatalf("expected CA-signed cert to be accepted, got: %v", err)
-	}
-}
-
-func TestDualVerifyPeerCallback_ARMTLSSelfSigned(t *testing.T) {
-	// The armTLS fallback path: a self-signed attested cert fails CA-chain
-	// verification, so the callback falls back to attestation verification,
-	// which is delegated to a (mocked) attestation-api.
-	_, _, armtlsCert := testAttestedCert(t, &CertOptions{TTL: 1 * time.Hour})
-
-	measurement := bytes.Repeat([]byte{0x42}, SNPMeasurementSize)
-	stub := mockapi.New(t)
-	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
-
-	_, caCert := generateCACert(t)
-	verifyFunc := dualVerifyPeerCallback(
-		&VerifyPolicy{AttestationApiURL: stub.URL(), Policy: remote.Policy{Measurements: [][]byte{measurement}}},
-		newSharedCACerts([]*x509.Certificate{caCert}),
-	)
-
-	if err := verifyFunc([][]byte{armtlsCert.Raw}, nil); err != nil {
-		t.Fatalf("armTLS fallback failed: %v", err)
-	}
-}
-
-func TestDualVerifyPeerCallback_BothFail(t *testing.T) {
-	// Generate a random self-signed leaf cert (no CA chain, no armTLS extension).
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(300),
-		Subject:      pkix.Name{CommonName: "random-leaf"},
-		NotBefore:    time.Now(),
-		NotAfter:     time.Now().Add(24 * time.Hour),
-	}
-	leafCertDER, err := x509.CreateCertificate(rand.Reader, leafTmpl, leafTmpl, &leafKey.PublicKey, leafKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Generate a CA cert.
-	_, caCert := generateCACert(t)
-
-	// Get the dual-verify callback.
-	verifyFunc := dualVerifyPeerCallback(&VerifyPolicy{}, newSharedCACerts([]*x509.Certificate{caCert}))
-
-	// Random cert should fail both verification paths.
-	err = verifyFunc([][]byte{leafCertDER}, nil)
-	if err == nil {
-		t.Fatal("expected error when both CA chain and armTLS verification fail")
-	}
-	errMsg := err.Error()
-	if !strings.Contains(errMsg, "CA chain") {
-		t.Errorf("error should mention 'CA chain', got: %v", errMsg)
-	}
-	if !strings.Contains(errMsg, "armTLS") {
-		t.Errorf("error should mention 'armTLS', got: %v", errMsg)
-	}
-}
-
-func TestDualVerifyPeerCallback_CASignedEnforcesSandboxPin(t *testing.T) {
-	caKey, caCert := generateCACert(t)
-	shared := newSharedCACerts([]*x509.Certificate{caCert})
-
-	// makeLeaf builds a CA-signed leaf, optionally carrying a sandbox-ID
-	// extension ("" = none).
-	makeLeaf := func(t *testing.T, sandboxID string) []byte {
-		t.Helper()
-		leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tmpl := &x509.Certificate{
-			SerialNumber: big.NewInt(400),
-			Subject:      pkix.Name{CommonName: "workload"},
-			NotBefore:    time.Now().Add(-time.Hour),
-			NotAfter:     time.Now().Add(time.Hour),
-			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		}
-		if sandboxID != "" {
-			ext, err := MarshalSandboxIDExtension(sandboxID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			tmpl.ExtraExtensions = []pkix.Extension{ext}
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &leafKey.PublicKey, caKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return der
-	}
-
-	const pinned = "abc123def456"
-	verify := dualVerifyPeerCallback(&VerifyPolicy{SandboxID: pinned}, shared)
-
-	t.Run("missing sandbox ID rejected", func(t *testing.T) {
-		if err := verify([][]byte{makeLeaf(t, "")}, nil); err == nil {
-			t.Fatal("CA-signed leaf without a sandbox ID accepted despite a configured pin")
-		}
-	})
-	t.Run("mismatched sandbox ID rejected", func(t *testing.T) {
-		if err := verify([][]byte{makeLeaf(t, "someothersandbox")}, nil); err == nil {
-			t.Fatal("CA-signed leaf with a mismatched sandbox ID accepted")
-		}
-	})
-	t.Run("matching sandbox ID accepted", func(t *testing.T) {
-		if err := verify([][]byte{makeLeaf(t, pinned)}, nil); err != nil {
-			t.Fatalf("CA-signed leaf with matching pin rejected: %v", err)
-		}
-	})
-	t.Run("no pin accepts CA-signed", func(t *testing.T) {
-		v := dualVerifyPeerCallback(&VerifyPolicy{}, shared)
-		if err := v([][]byte{makeLeaf(t, "")}, nil); err != nil {
-			t.Fatalf("CA-signed leaf rejected when no pin configured: %v", err)
-		}
-	})
-	// A self-signed armTLS peer can put any string in the extension, so the pin
-	// must not be satisfiable off the CA path.
-	t.Run("self-signed cannot satisfy the pin", func(t *testing.T) {
-		selfKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ext, err := MarshalSandboxIDExtension(pinned)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tmpl := &x509.Certificate{
-			SerialNumber:    big.NewInt(401),
-			Subject:         pkix.Name{CommonName: "impostor"},
-			NotBefore:       time.Now().Add(-time.Hour),
-			NotAfter:        time.Now().Add(time.Hour),
-			ExtraExtensions: []pkix.Extension{ext},
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &selfKey.PublicKey, selfKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := verify([][]byte{der}, nil); err == nil {
-			t.Fatal("self-signed leaf claiming the pinned sandbox ID was accepted")
-		}
-	})
-}
-
-func TestDualVerifyPeerCallback_CASignedEnforcesWorkloadPin(t *testing.T) {
-	caKey, caCert := generateCACert(t)
-	shared := newSharedCACerts([]*x509.Certificate{caCert})
-
-	// makeLeaf builds a CA-signed leaf, optionally carrying a matched-workload
-	// stamp ("" = none).
-	makeLeaf := func(t *testing.T, workload string) []byte {
-		t.Helper()
-		leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tmpl := &x509.Certificate{
-			SerialNumber: big.NewInt(500),
-			Subject:      pkix.Name{CommonName: "workload"},
-			NotBefore:    time.Now().Add(-time.Hour),
-			NotAfter:     time.Now().Add(time.Hour),
-			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		}
-		if workload != "" {
-			ext, err := MarshalMatchedWorkloadExtension(&MatchedWorkload{
-				Name:             workload,
-				AllowlistVersion: "3",
-				AllowlistDigest:  bytes.Repeat([]byte{0x22}, 32),
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			tmpl.ExtraExtensions = []pkix.Extension{ext}
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &leafKey.PublicKey, caKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return der
-	}
-
-	const pinned = "api"
-	verify := dualVerifyPeerCallback(&VerifyPolicy{WorkloadName: pinned}, shared)
-
-	t.Run("missing stamp rejected", func(t *testing.T) {
-		if err := verify([][]byte{makeLeaf(t, "")}, nil); err == nil {
-			t.Fatal("CA-signed leaf without a workload stamp accepted despite a configured pin")
-		}
-	})
-	t.Run("mismatched name rejected", func(t *testing.T) {
-		if err := verify([][]byte{makeLeaf(t, "other")}, nil); err == nil {
-			t.Fatal("CA-signed leaf with a mismatched workload accepted")
-		}
-	})
-	t.Run("matching name accepted", func(t *testing.T) {
-		if err := verify([][]byte{makeLeaf(t, pinned)}, nil); err != nil {
-			t.Fatalf("CA-signed leaf with matching pin rejected: %v", err)
-		}
-	})
-	t.Run("no pin accepts CA-signed", func(t *testing.T) {
-		v := dualVerifyPeerCallback(&VerifyPolicy{}, shared)
-		if err := v([][]byte{makeLeaf(t, "")}, nil); err != nil {
-			t.Fatalf("CA-signed leaf rejected when no pin configured: %v", err)
-		}
-	})
-	// A self-signed armTLS peer's stamp is whatever it chose, so the pin must
-	// never be satisfiable off the CA path — VerifyCert fails closed on it.
-	t.Run("self-signed cannot satisfy the pin", func(t *testing.T) {
-		selfKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		ext, err := MarshalMatchedWorkloadExtension(&MatchedWorkload{
-			Name:             pinned,
-			AllowlistVersion: "3",
-			AllowlistDigest:  bytes.Repeat([]byte{0x22}, 32),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		tmpl := &x509.Certificate{
-			SerialNumber:    big.NewInt(501),
-			Subject:         pkix.Name{CommonName: "impostor"},
-			NotBefore:       time.Now().Add(-time.Hour),
-			NotAfter:        time.Now().Add(time.Hour),
-			ExtraExtensions: []pkix.Extension{ext},
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &selfKey.PublicKey, selfKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := verify([][]byte{der}, nil); err == nil {
-			t.Fatal("self-signed leaf claiming the pinned workload was accepted")
-		}
-	})
-}
-
-// TestDualVerifyPeerCallback_RequireCAEvidence covers the production trust mode:
-// a valid CA chain is no longer sufficient — the leaf's embedded armTLS evidence
-// (issuer copies the requester's nonce-free .1.1 extension onto the leaf) is
-// re-verified per connection, catching a CA compromise or wrong issuance policy.
-func TestDualVerifyPeerCallback_RequireCAEvidence(t *testing.T) {
-	caKey, caCert := generateCACert(t)
-	shared := newSharedCACerts([]*x509.Certificate{caCert})
-	measurement := bytes.Repeat([]byte{0x42}, SNPMeasurementSize)
-	stub := mockapi.New(t)
-	stub.SetVerdict(mockapi.PassingVerdict(hex.EncodeToString(measurement)))
-
-	// caSignedLeaf builds a CA-signed leaf over key, optionally carrying the
-	// armTLS .1.1 evidence extension.
-	caSignedLeaf := func(t *testing.T, key *ecdsa.PrivateKey, armtlsExt *pkix.Extension) []byte {
-		t.Helper()
-		tmpl := &x509.Certificate{
-			SerialNumber: big.NewInt(500),
-			Subject:      pkix.Name{CommonName: "workload"},
-			NotBefore:    time.Now().Add(-time.Hour),
-			NotAfter:     time.Now().Add(time.Hour),
-			ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-		}
-		if armtlsExt != nil {
-			tmpl.ExtraExtensions = []pkix.Extension{*armtlsExt}
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return der
-	}
-	freshKey := func(t *testing.T) *ecdsa.PrivateKey {
-		t.Helper()
-		k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return k
-	}
-
-	// A CA-signed leaf carrying evidence bound to its own key (the shape the
-	// issuer produces by copying the requester's .1.1 extension).
-	key, att := testKeyAndAttestation(t)
-	ext, err := MarshalExtension(att)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafWithEvidence := caSignedLeaf(t, key, &ext)
-
-	t.Run("accepts CA leaf with re-verifiable evidence", func(t *testing.T) {
-		policy := &VerifyPolicy{AttestationApiURL: stub.URL(), RequireCAEvidence: true, Policy: remote.Policy{Measurements: [][]byte{measurement}}}
-		if err := dualVerifyPeerCallback(policy, shared)([][]byte{leafWithEvidence}, nil); err != nil {
-			t.Fatalf("valid CA leaf with embedded evidence rejected: %v", err)
-		}
-	})
-
-	t.Run("rejects CA leaf without embedded evidence", func(t *testing.T) {
-		policy := &VerifyPolicy{AttestationApiURL: stub.URL(), RequireCAEvidence: true, Policy: remote.Policy{Measurements: [][]byte{measurement}}}
-		if err := dualVerifyPeerCallback(policy, shared)([][]byte{caSignedLeaf(t, freshKey(t), nil)}, nil); err == nil {
-			t.Fatal("CA leaf without embedded evidence accepted in production mode")
-		}
-	})
-
-	t.Run("rejects CA leaf whose measurement is not pinned", func(t *testing.T) {
-		other := bytes.Repeat([]byte{0x99}, SNPMeasurementSize)
-		policy := &VerifyPolicy{AttestationApiURL: stub.URL(), RequireCAEvidence: true, Policy: remote.Policy{Measurements: [][]byte{other}}}
-		if err := dualVerifyPeerCallback(policy, shared)([][]byte{leafWithEvidence}, nil); err == nil {
-			t.Fatal("CA leaf with an unpinned launch measurement accepted in production mode")
-		}
-	})
-
-	t.Run("legacy mode still accepts CA leaf without evidence", func(t *testing.T) {
-		policy := &VerifyPolicy{AttestationApiURL: stub.URL()} // RequireCAEvidence: false
-		if err := dualVerifyPeerCallback(policy, shared)([][]byte{caSignedLeaf(t, freshKey(t), nil)}, nil); err != nil {
-			t.Fatalf("legacy CA-only mode rejected a CA-signed leaf: %v", err)
-		}
-	})
-}
-
 func TestSwapProvider(t *testing.T) {
 	// Create a server TLS config with fakeAttestFunc.
 	cfg := testServerConfig()
@@ -1396,60 +1053,95 @@ func TestSwapProviderRotateAtHalvesDefaultTTL(t *testing.T) {
 	requireRotateAtNear(t, rotateAtOf(s), start, 4*time.Hour, 6*time.Hour)
 }
 
-func TestServerTLSConfigWithoutCACertStaysARMTLSOnly(t *testing.T) {
+// A chain-signed leaf is refused on the evidence path: an armTLS peer proves
+// itself with key-bound evidence on a self-issued certificate, and no mesh CA
+// the process holds changes that.
+func TestChainSignedPeerIsRefusedOnTheServerEvidencePath(t *testing.T) {
+	caKey, caCert := generateCACert(t)
 	cfg := testServerConfig()
 	cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
-	tlsCfg, mgr, err := NewServerTLSConfig(cfg)
+	server, _, err := NewServerTLSConfig(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	caKey, caCert := generateCACert(t)
-	// No CACert/DynamicCACert configured: this must be a no-op, and a
-	// CA-signed peer must still be rejected (attestation is the only path).
-	mgr.UpdateCACerts([]*x509.Certificate{caCert})
-	if err := tlsCfg.VerifyPeerCertificate([][]byte{caSignedLeafDER(t, caKey, caCert)}, nil); err == nil {
-		t.Fatal("CA-signed peer accepted without CACert/DynamicCACert configured")
+	if err := server.VerifyPeerCertificate([][]byte{caSignedLeafDER(t, caKey, caCert)}, nil); err == nil {
+		t.Fatal("a chain-signed peer was accepted on the evidence path")
 	}
 }
 
-func TestServerTLSConfigDynamicCACertUpdate(t *testing.T) {
-	cfg := testServerConfig()
-	cfg.ClientPolicy = &VerifyPolicy{}
-	cfg.DynamicCACert = true
-	tlsCfg, mgr, err := NewServerTLSConfig(cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-
+func TestChainSignedPeerIsRefusedOnTheClientEvidencePath(t *testing.T) {
 	caKey, caCert := generateCACert(t)
-	leaf := caSignedLeafDER(t, caKey, caCert)
-	if err := tlsCfg.VerifyPeerCertificate([][]byte{leaf}, nil); err == nil {
-		t.Fatal("CA-signed peer accepted before the CA was published")
-	}
-	mgr.UpdateCACerts([]*x509.Certificate{caCert})
-	if err := tlsCfg.VerifyPeerCertificate([][]byte{leaf}, nil); err != nil {
-		t.Fatalf("CA-signed peer rejected after UpdateCACerts: %v", err)
-	}
-}
-
-func TestClientTLSConfigWithoutCACertStaysARMTLSOnly(t *testing.T) {
-	tlsCfg, mgr, err := NewClientTLSConfig(&ClientConfig{
-		Policy:       &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
-		CertProvider: &mockProvider{cert: generateSimpleCert(t), ttl: time.Hour},
+	client, _, err := NewClientTLSConfig(&ClientConfig{
+		Policy: &VerifyPolicy{AttestationApiURL: "http://unused.invalid"},
+		CertProvider: &mockProvider{
+			cert: generateSimpleCert(t),
+			ttl:  time.Hour,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if mgr == nil {
-		t.Fatal("CertManager is nil with a CertProvider configured")
+	if err := client.VerifyPeerCertificate([][]byte{caSignedLeafDER(t, caKey, caCert)}, nil); err == nil {
+		t.Fatal("a chain-signed peer was accepted on the evidence path")
 	}
+}
 
-	caKey, caCert := generateCACert(t)
-	mgr.UpdateCACerts([]*x509.Certificate{caCert})
-	if err := tlsCfg.VerifyPeerCertificate([][]byte{caSignedLeafDER(t, caKey, caCert)}, nil); err == nil {
-		t.Fatal("CA-signed peer accepted without CACert/DynamicCACert configured")
+// A listener authenticates its peers one way: a client policy admits the
+// self-issued peer a client CA exists to refuse.
+func TestServerRefusesBothPeerAuthentications(t *testing.T) {
+	_, caCert := generateCACert(t)
+	cfg := testServerConfig()
+	cfg.ClientCA = caCert
+	cfg.ClientPolicy = &VerifyPolicy{AttestationApiURL: "http://unused.invalid"}
+	if _, _, err := NewServerTLSConfig(cfg); err == nil {
+		t.Fatal("a listener was configured with both a client CA and a client policy")
 	}
+}
+
+// The evidence path requires the purpose the peer's role needs, so a
+// self-issued leaf permitting neither is refused before any attestation-api
+// round-trip.
+func TestEvidencePathRequiresTheRolePurpose(t *testing.T) {
+	stub := mockapi.New(t)
+	attested := attestedCertWithPurposes(t)
+	for name, purpose := range map[string]x509.ExtKeyUsage{
+		"server": x509.ExtKeyUsageServerAuth,
+		"client": x509.ExtKeyUsageClientAuth,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cb := verifyPeerCallback(&VerifyPolicy{AttestationApiURL: stub.URL()}, purpose)
+			if err := cb([][]byte{attested}, nil); err == nil {
+				t.Fatal("a leaf permitting no purpose was accepted")
+			}
+		})
+	}
+	if got := len(stub.VerifyRequests()); got != 0 {
+		t.Fatalf("a leaf with no purpose consumed %d attestation-api call(s), want 0", got)
+	}
+}
+
+// attestedCertWithPurposes mints a self-issued armTLS certificate carrying
+// genuine evidence and the given extended key usages.
+func attestedCertWithPurposes(t *testing.T, purposes ...x509.ExtKeyUsage) []byte {
+	t.Helper()
+	key, att := testKeyAndAttestation(t)
+	ext, err := MarshalExtension(att)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:    big.NewInt(640),
+		Subject:         pkix.Name{CommonName: "purposeless-armtls"},
+		NotBefore:       time.Now().Add(-time.Hour),
+		NotAfter:        time.Now().Add(time.Hour),
+		ExtKeyUsage:     purposes,
+		ExtraExtensions: []pkix.Extension{ext},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
 }
 
 func TestVerifyPeerCallback(t *testing.T) {
@@ -1482,55 +1174,6 @@ func TestVerifyPeerCallback(t *testing.T) {
 				t.Fatalf("verify err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestDualVerifyPeerCallbackNilPolicy(t *testing.T) {
-	caKey, caCert := generateCACert(t)
-	cb := dualVerifyPeerCallback(nil, newSharedCACerts([]*x509.Certificate{caCert}))
-	if err := cb([][]byte{caSignedLeafDER(t, caKey, caCert)}, nil); err != nil {
-		t.Fatalf("CA-signed peer rejected under nil policy: %v", err)
-	}
-}
-
-func TestDualVerifyPeerCallbackIntermediateChain(t *testing.T) {
-	newCA := func(t *testing.T, cn string, parentKey *ecdsa.PrivateKey, parent *x509.Certificate) (*ecdsa.PrivateKey, *x509.Certificate) {
-		t.Helper()
-		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-		if err != nil {
-			t.Fatal(err)
-		}
-		tmpl := &x509.Certificate{
-			SerialNumber:          big.NewInt(600),
-			Subject:               pkix.Name{CommonName: cn},
-			NotBefore:             time.Now().Add(-time.Hour),
-			NotAfter:              time.Now().Add(time.Hour),
-			IsCA:                  true,
-			BasicConstraintsValid: true,
-			KeyUsage:              x509.KeyUsageCertSign,
-		}
-		if parent == nil {
-			parent, parentKey = tmpl, key
-		}
-		der, err := x509.CreateCertificate(rand.Reader, tmpl, parent, &key.PublicKey, parentKey)
-		if err != nil {
-			t.Fatal(err)
-		}
-		cert, err := x509.ParseCertificate(der)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return key, cert
-	}
-
-	rootKey, rootCert := newCA(t, "root", nil, nil)
-	interKey, interCert := newCA(t, "intermediate", rootKey, rootCert)
-	leaf := caSignedLeafDER(t, interKey, interCert)
-
-	cb := dualVerifyPeerCallback(&VerifyPolicy{}, newSharedCACerts([]*x509.Certificate{rootCert}))
-	// Peer presents leaf + intermediate; only the root is pinned locally.
-	if err := cb([][]byte{leaf, interCert.Raw}, nil); err != nil {
-		t.Fatalf("chain via intermediate rejected: %v", err)
 	}
 }
 
