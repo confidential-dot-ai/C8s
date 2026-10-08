@@ -59,6 +59,9 @@ type evidence struct {
 	// fresh is true when erd binds a caller-supplied nonce, so a passing
 	// verification proves the evidence was produced for THIS check (not replayed).
 	fresh bool
+	// measured is the bundle's list of allowlist policies the node extended
+	// into RTMR[3]; applyRTMRPins accepts a prefix of it that replays.
+	measured []string
 	// source describes where the evidence came from (for output).
 	source string
 	// certSHA256 is the hex SHA-256 of the serving certificate (cert modes only).
@@ -147,6 +150,8 @@ type attestationResponse struct {
 	SessionID     string                    `json:"session_id"`
 	IdentityProof *types.MeshIdentityProof  `json:"identity_proof"`
 	CDSState      *types.SignedRolloutState `json:"cds_state"`
+	// MeasuredPolicies is types.AttestationBundle.MeasuredPolicies.
+	MeasuredPolicies []string `json:"measured_policies"`
 }
 
 // stateDigest is the transcript commitment to the bundle's rollout state.
@@ -438,6 +443,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	return &evidence{
 		rollout:          rollout,
 		rolloutErr:       rolloutErr,
+		measured:         r.MeasuredPolicies,
 		platform:         platformOrDefault(r.Platform),
 		rawEvidence:      r.Evidence,
 		erd:              erd,

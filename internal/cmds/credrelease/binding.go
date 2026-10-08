@@ -20,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -31,6 +32,10 @@ import (
 // Var (not const) so tests can point it at a temp file.
 var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 
+// measuredPoliciesPath is the NRI plugin's journal of the allowlist policies
+// it extended into RTMR[3] (internal/policymeasure).
+var measuredPoliciesPath = "/var/run/nri-image-policy/" + policymeasure.JournalName
+
 // ErrNoOperatorKey is returned (wrapped) by the Load* functions when no
 // operator pubkey is staged at all: the VM was launched without an opkeydata
 // disk. It is deliberately distinct from fs.ErrNotExist so that no other
@@ -38,11 +43,11 @@ var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 // boot.
 var ErrNoOperatorKey = errors.New("no operator pubkey staged")
 
-// readOperatorPubkey reads the operator public key the initrd staged off the
+// ReadOperatorPubkey reads the operator public key the initrd staged off the
 // opkeydata disk. The bytes are exactly what the initrd hashed into the launch
 // binding, so runtimemeasure can re-derive the same digest. Absence is
 // reported as ErrNoOperatorKey; every other read failure is a hard error.
-func readOperatorPubkey() ([]byte, error) {
+func ReadOperatorPubkey() ([]byte, error) {
 	pub, err := os.ReadFile(operatorPubkeyPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s — was the VM launched with an operator key?", ErrNoOperatorKey, operatorPubkeyPath)
@@ -123,13 +128,13 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 //
 // Which field carries the binding, and how wide it is, is runtimemeasure's
 // problem: this reads the verified report and asks whether it names this key.
-// Workload digests are nil because the node image runs no workload measurer, so
-// the binding must equal the bare seed exactly; any extension beyond it means
-// an unexpected measurer ran, and the comparison fails closed.
+// The node image runs no workload measurer, so the binding must equal the seed
+// followed by the allowlist policies the NRI plugin journaled; any other
+// extension means an unexpected measurer ran, and the comparison fails closed.
 //
 // Called once at service start; the binding is fixed for the life of the guest.
 func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]byte, error) {
-	pub, err := readOperatorPubkey()
+	pub, err := ReadOperatorPubkey()
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +145,7 @@ func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]b
 	if err != nil {
 		return nil, err
 	}
-	if err := runtimemeasure.VerifyBinding(report, pub, nil); err != nil {
+	if err := verifyNodeBinding(report, pub); err != nil {
 		return nil, err
 	}
 	return pub, nil
@@ -163,13 +168,13 @@ type MeasuredIdentity struct {
 // key is missing or its binding fails; OperatorKeyErr records that failure.
 // The returned error is reserved for self-report, image, or platform failures.
 func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL string) (MeasuredIdentity, error) {
-	pub, pubErr := readOperatorPubkey()
+	pub, pubErr := ReadOperatorPubkey()
 	report, err := verifiedSelfReport(ctx, attestationAPIURL)
 	if err != nil {
 		return MeasuredIdentity{}, err
 	}
 	if pubErr == nil {
-		pubErr = runtimemeasure.VerifyBinding(report, pub, nil)
+		pubErr = verifyNodeBinding(report, pub)
 	}
 	if pubErr != nil {
 		pub = nil
@@ -182,4 +187,16 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 		return MeasuredIdentity{}, fmt.Errorf("this image was built for platform %q but the verified self-report is from %q", platform, report.Platform)
 	}
 	return MeasuredIdentity{OperatorKey: pub, OperatorKeyErr: pubErr, Image: identity}, nil
+}
+
+// verifyNodeBinding checks that report binds anchor, followed by a prefix of
+// the measured allowlist policies: the journal is read after the report, so
+// it may hold extends the report does not.
+func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error {
+	policies, err := policymeasure.Read(measuredPoliciesPath)
+	if err != nil {
+		return fmt.Errorf("read measured policies: %w", err)
+	}
+	_, err = policymeasure.Prefix(report, anchor, policies)
+	return err
 }

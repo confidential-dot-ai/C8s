@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -51,6 +52,11 @@ type measuredPolicy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
+	// policies fetches the allowlist policies the node reports it measured
+	// after the workloads (credrelease.MeasuredPoliciesPath), or is nil. The
+	// list is untrusted: checkIdentity accepts it only as far as the quote's
+	// register replays.
+	policies func() []string
 }
 
 // platform is the bare-metal tag of the manifest's family. Cloud overlays are
@@ -121,11 +127,24 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 // workloadDigests is empty on SNP — it has no runtime-extend register, and
 // workloadChain refuses --workload-image there — so the binding checked is the
 // launch-committed HOSTDATA alone.
+//
+// A quote may predate the node's later policy extends, so it is checked
+// against the workloads followed by each prefix of the measured policies.
 func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
 	}
-	return runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
+	err := runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
+	if err == nil || exp.policies == nil {
+		return err
+	}
+	policies := exp.policies()
+	for k := len(policies); k > 0; k-- {
+		if runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, append(slices.Clone(exp.workloadDigests), policies[:k]...)) == nil {
+			return nil
+		}
+	}
+	return err
 }
 
 // verifyEvidence verifies an evidence envelope with attestation-go (HW chain +

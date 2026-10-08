@@ -704,6 +704,33 @@ when given, or else the set the router serves at `/.well-known/c8s/operator-keys
 either way its hash must equal the attested `operator_keys`. Verification
 fails with `policy_not_signed` or `operator_keys_mismatch` otherwise.
 
+#### Measured policy history
+
+This is off by default. With `allowlist.pull.measure_policies: true` in the
+NRI plugin's configuration on TDX, the NRI plugin extends RTMR[3] with each pulled policy's digest
+before it applies the policy, once per digest, and records the extends in
+`measured-policies` in its runtime directory (a tmpfs, reset at boot like
+the register). RTMR[3] is then the operator-key seed followed by every
+policy the node enforced since boot. A policy the plugin cannot measure is
+not applied.
+
+The attest-pq and attest-lb bundles carry that list as `measured_policies`.
+With `--operator-pkey`, `c8s verify` replays it against the quote's RTMR[3]
+and prints it as the node's history. `--pin-policy` then also requires every
+policy in the history to be pinned (`policy_history_not_pinned`), and
+`--trust-operator` requires each to be signed. A node that ran a policy
+nobody reviewed fails verification until it reboots, even after the bound
+drains back. The history covers the router's node only. SEV-SNP has no
+runtime measurement register, so there is no history there.
+
+`cred-release` and launch-config verification replay the same journal when
+they check the operator-key binding, `cred-release` serves it at
+`/measured-policies`, and `c8s get-kubeconfig` replays it when the bare seed
+does not match. The other operator-key anchor checks do not yet: CDS's node
+identity check and the RA-TLS pins every component uses require RTMR[3] to
+equal the bare seed, so a node that measures policies fails them. Leave it
+off until attestation-go carries the event log in evidence.
+
 #### Immutable allowlist
 
 With `cds.allowlistImmutable: true` (`--allowlist-immutable`), CDS refuses

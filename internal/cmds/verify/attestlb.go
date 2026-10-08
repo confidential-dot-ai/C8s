@@ -133,6 +133,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, source string) (*
 		workload:         workload,
 		workloadErr:      workloadErr,
 		rollout:          rollout,
+		measured:         r.MeasuredPolicies,
 		rolloutErr:       rolloutErr,
 	}, nil
 }

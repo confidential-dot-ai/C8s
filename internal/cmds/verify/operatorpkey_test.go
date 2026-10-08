@@ -12,10 +12,13 @@ import (
 	"encoding/pem"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // operatorKeypair writes an ECDSA operator keypair to disk and returns the
@@ -243,5 +246,41 @@ func TestOperatorPkeyFlagErrors(t *testing.T) {
 	// The pin itself is fine — only the combinations above are refused.
 	if plan := mustPlan(t, config{imageManifest: manifest, operatorPubkey: pubPath}); !bytes.Equal(plan.pins.rtmr3, operatorSeed(pubPEM)) {
 		t.Error("the valid case must still resolve the derived pin")
+	}
+}
+
+// With --operator-pkey, RTMR[3] may be the seed followed by a prefix of the
+// policies the node reports it measured; that prefix is the node's history.
+func TestOperatorPkeyReplaysMeasuredPolicies(t *testing.T) {
+	pubPath, _, pubPEM := operatorKeypair(t)
+	plan := mustPlan(t, config{imageManifest: writeTestManifest(t), operatorPubkey: pubPath})
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pubPEM), []string{p})
+	claims := matchingRTMRs()
+	claims["rtmr_3"] = hex.EncodeToString(reg[:])
+	for _, tc := range []struct {
+		name     string
+		measured []string
+		history  []string
+		ok       bool
+	}{
+		{"list ahead of the quote", []string{p, q}, []string{p}, true},
+		{"list that does not replay", []string{q}, nil, false},
+		{"no list", nil, nil, false},
+	} {
+		pins := plan.pins
+		pins.measured = tc.measured
+		var oc Outcome
+		if ok := applyRTMRPins(&oc, pins, tdxResult(testMRTD, claims)); ok != tc.ok || !slices.Equal(oc.MeasuredPolicies, tc.history) {
+			t.Errorf("%s: applyRTMRPins = %v (history %v, error %q), want %v with history %v", tc.name, ok, oc.MeasuredPolicies, oc.Error, tc.ok, tc.history)
+		}
+	}
+
+	state := &types.RolloutState{Bound: []string{p}, Lease: 30}
+	oc := Outcome{Verified: true, MeasuredPolicies: []string{q, p}}
+	applyPinPolicy(&oc, config{pinPolicies: []string{p}}, &evidence{fresh: true, rollout: state})
+	if oc.Verified || !strings.Contains(oc.Error, "policy_history_not_pinned") {
+		t.Fatalf("history outside the pins: verified=%v error=%q, want policy_history_not_pinned", oc.Verified, oc.Error)
 	}
 }

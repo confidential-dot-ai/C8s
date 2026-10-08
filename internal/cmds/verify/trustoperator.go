@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -58,7 +59,13 @@ func trustOperator(ctx context.Context, cfg config, ev *evidence, oc *Outcome) {
 		fail("operator_keys_mismatch: the attested state names operator key set %q, not this one (%s)", ev.rollout.OperatorKeys, hash)
 		return
 	}
-	for _, digest := range ev.rollout.Bound {
+	for _, d := range oc.MeasuredPolicies {
+		if !policyDigestRE.MatchString(d) {
+			fail("policy_not_signed: malformed digest %q in the node's measured policy history (RTMR[3])", d)
+			return
+		}
+	}
+	for _, digest := range policyUnion(ev.rollout.Bound, oc.MeasuredPolicies) {
 		if !policyDigestRE.MatchString(digest) {
 			fail("policy_not_signed: malformed digest %q in the rollout state", digest)
 			return
@@ -104,4 +111,15 @@ func operatorKeySet(ctx context.Context, cfg config, client *http.Client, baseUR
 		return nil, fmt.Errorf("fetch the router's operator keys: %w", err)
 	}
 	return operatorauth.ParsePublicKeysPEM(pemBytes)
+}
+
+// policyUnion is bound followed by the measured policies it does not hold.
+func policyUnion(bound, measured []string) []string {
+	out := slices.Clone(bound)
+	for _, d := range measured {
+		if !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	return out
 }

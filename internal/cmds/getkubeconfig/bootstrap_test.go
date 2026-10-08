@@ -78,6 +78,10 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 	nonces := make(chan []byte, 8)
 	releases := &atomic.Int32{}
 	srv := newPlatformAttestedTLSServer(t, platform, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == credrelease.MeasuredPoliciesPath {
+			http.NotFound(w, r)
+			return
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Error(err)

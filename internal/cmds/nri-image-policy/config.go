@@ -88,6 +88,10 @@ type pullConfig struct {
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
 	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	// MeasurePolicies extends RTMR[3] with each applied policy (TDX). Off by
+	// default: CDS's node identity check and the RA-TLS pins still require
+	// RTMR[3] to equal the bare operator-key seed.
+	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
 // validatePolicyInputs rejects competing CDS identity policy sources before I/O.

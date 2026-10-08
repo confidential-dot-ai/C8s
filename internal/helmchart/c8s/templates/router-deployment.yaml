@@ -235,6 +235,9 @@ spec:
             {{- if .Values.router.attest.expectedWorkload }}
             - --expected-workload={{ .Values.router.attest.expectedWorkload }}
             {{- end }}
+            {{- if .Values.node.baked }}
+            - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+            {{- end }}
             {{- if eq (include "router.pinnedAllowlist" .) "true" }}
             - --cds-state-url=http://127.0.0.1:{{ .Values.router.allowlist.proxyPort }}
             - --lb-forward-port={{ .Values.router.attest.forwardPort }}
