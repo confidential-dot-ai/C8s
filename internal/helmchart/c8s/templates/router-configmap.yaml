@@ -119,6 +119,15 @@ data:
         limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ $allowlistWriteTotalRate }}r/s;
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
 {{- end }}
+{{- if $upstreamAddress }}
+
+        # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
+        # other requests keep Connection: close to the upstream.
+        map $http_upgrade $connection_upgrade {
+            default upgrade;
+            "" close;
+        }
+{{- end }}
 
         {{- if $upstreamMeshWrapped }}
         # A mesh-wrapped catch-all is dialed via a variable (see location /), so
@@ -318,6 +327,12 @@ data:
                 # CDS rollout state and checks the upstream's stamp.
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.forwardPort }};
                 proxy_set_header X-C8s-Connection-Time $connection_time;
+                # The sidecar answers 590 when the client must reconnect and
+                # attest again; @c8s_reconnect turns it into a 503 and closes
+                # the client connection (nginx keeps it open on an upstream
+                # 503, even with Connection: close).
+                proxy_intercept_errors on;
+                error_page 590 = @c8s_reconnect;
                 {{- else }}
                 {{- if eq .Values.router.upstream.protocol "https" }}
                 {{- include "router.proxySSLDirectives" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "tlsMountPath" .Values.router.tlsMountPath) | nindent 16 }}
@@ -329,10 +344,22 @@ data:
                 proxy_pass {{ .Values.router.upstream.protocol }}://catch_all;
                 {{- end }}
                 {{- end }}
+                {{- $readTimeout := toString (default "3600s" .Values.router.upstream.readTimeout) }}
+                {{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) }}
+                {{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) }}
+                {{- end }}
+                # A non-streaming completion sends nothing until it is done, so
+                # nginx's 60s default read timeout would 504 long generations.
+                # A dead upstream must fail fast instead.
+                proxy_connect_timeout 5s;
+                proxy_read_timeout {{ $readTimeout }};
+                proxy_send_timeout {{ $readTimeout }};
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $connection_upgrade;
                 {{- /*
                   Stream responses through instead of accumulating them.
 
@@ -356,6 +383,17 @@ data:
                 proxy_buffering off;
                 proxy_http_version 1.1;
             }
+            {{- if $pinnedAllowlist }}
+
+            location @c8s_reconnect {
+                {{- if default false .Values.router.cors.enabled }}
+                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
+                {{- end }}
+                keepalive_timeout 0;
+                default_type text/plain;
+                return 503 "the allowlist bound changed: open a new connection and attest again\n";
+            }
+            {{- end }}
             {{- end }}
 
             location /healthz {
