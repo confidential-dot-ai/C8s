@@ -7,7 +7,11 @@
 package helmchart
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -245,6 +249,70 @@ func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
 					t.Errorf("entry %q grants any argv for pinned digest %s — the pin is void", name, digest[:19])
 				}
 			}
+		}
+	}
+}
+
+// The pre-imported images of a test node share one long name prefix and
+// differ only in their digest suffix, which is the key shape that made the
+// rendered base allowlist come out in a different order per evaluation.
+func importedFloorValues() string {
+	var b strings.Builder
+	b.WriteString("nriImagePolicy:\n  bootstrapAllowlist:\n    workloads:\n")
+	for i := 0; i < 20; i++ {
+		sum := sha256.Sum256([]byte(fmt.Sprintf("imported-%d", i)))
+		digest := hex.EncodeToString(sum[:])
+		ref := "import-2026-10-08@sha256:" + digest
+		fmt.Fprintf(&b, "      import-2026-10-08-%s:\n", digest[:12])
+		fmt.Fprintf(&b, "        label: %s\n", ref)
+		b.WriteString("        containers:\n")
+		fmt.Fprintf(&b, "          - digest: sha256:%s\n", digest)
+		fmt.Fprintf(&b, "            image: %s\n", ref)
+		b.WriteString("            command:\n              policy: any\n")
+		b.WriteString("            args:\n              policy: any\n")
+		b.WriteString("            mounts:\n              policy: any\n")
+	}
+	return b.String()
+}
+
+// The installer's own init container is admitted by one entry: the argv-exact
+// pin the same chart renders for it. The two copies of that argv come from
+// separate evaluations of one template, so the rendered text must be a
+// function of the values alone. A base allowlist whose key order varies per
+// evaluation leaves the installer's launch matching no entry, and the
+// enforcer kills the container that is installing it.
+func TestChartInstallerArgvPinIsRenderDeterministic(t *testing.T) {
+	values := filepath.Join(t.TempDir(), "floor.yaml")
+	if err := os.WriteFile(values, []byte(importedFloorValues()), 0o600); err != nil {
+		t.Fatalf("write the floor values: %v", err)
+	}
+	first := ""
+	for render := range 3 {
+		out, err := helmTemplate(t, "-f", values)
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+		install, ok := findContainer(worker.Spec.Template.Spec.InitContainers, "install")
+		if !ok {
+			t.Fatalf("the installer DaemonSet has no install initContainer\n%s", out)
+		}
+		argv := effectiveArgv(install)
+		seed := renderedSeed(t, out)
+		admitted := seed.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{
+			Digest: baseNRIDigest,
+			Argv:   argv,
+		})
+		if !admitted {
+			t.Fatalf("render %d: the seed does not admit the installer's own argv", render)
+		}
+		script := argv[len(argv)-1]
+		if first == "" {
+			first = script
+			continue
+		}
+		if script != first {
+			t.Errorf("render %d: the installer script is not a function of the values", render)
 		}
 	}
 }

@@ -276,8 +276,9 @@ allowlist:
       []
 {{- end }}
   base:
+    {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
     {{- $base := include "c8s.baseWorkloads" $root | fromJson -}}
-    {{- dict "schema" "c8s.allowlist/v1" "workloads" $base | toYaml | nindent 4 }}
+    {{- dict "schema" "c8s.allowlist/v1" "workloads" $base | toJson | nindent 4 }}
 containerd:
   socket: {{ include "nri-image-policy.containerdSocket" $root | quote }}
   namespace: {{ $root.Values.nriImagePolicy.containerd.namespace | quote }}
