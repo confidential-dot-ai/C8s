@@ -579,8 +579,9 @@ render when one of those is missing, or `false` to turn pinned mode off.
 With pinned mode on, attest-pq and attest-lb bundles carry
 `cds_state`: the signed state bound to the client's nonce, with the state
 JSON as base64 so clients hash the exact bytes CDS signed. Both transcripts
-commit SHA-384 of those bytes, so the state is part of the
-attested REPORT_DATA. The router reads
+end with one more length-prefixed field, SHA-384 of those bytes, so the state
+is part of the attested REPORT_DATA. A bundle without `cds_state` omits the
+field and hashes as it did before pinned mode existed. The router reads
 the state every second and fences traffic on it:
 
 - An attest-pq session's envelope is the `bound` it was opened under. The
@@ -589,7 +590,8 @@ the state every second and fences traffic on it:
   request whose connection opened before the router last saw `bound` widen,
   so an attest-lb client re-attests on a new connection.
 - Nothing is forwarded before the router's first state read, or while its
-  last read is older than `lease_seconds`.
+  last read is older than half of `lease_seconds`. Once it is, the router
+  also ends every request it is forwarding.
 - A client that wants each request tied to the state it verified sends
   `X-C8s-Verified-State: <head>`, the journal `head` of that state
   (`c8s verify` prints it as `state:`). If the header is not the router's
@@ -628,21 +630,28 @@ every forward fails.
 Every attested value can be pinned out of band or taken from the router and
 checked against the attestation. For the mesh CA, pass `--mesh-ca`, or let
 verify use the CA the transcript commits; the verdict then names the anchor
-as responder-chosen. For policies, pin them as below, or pass
+as responder-chosen. The pinned bound is only as trustworthy as the key that
+signed it, so `--pin-policy` requires `--mesh-ca`, or a pinned baked node:
+`--image-manifest` with an RTMR[3] pin (`--operator-pkey`). A genuine router
+on that image takes its CA only from the CDS its measured configuration
+pins, so the CA the transcript commits is a genuine CDS's. For policies, pin them as
+below, or pass
 `--fetch-allowlists DIR` to download every policy in the attested bound and
 keep it only if it hashes to its attested digest.
 
 To verify against pinned policies, run:
 
 ```sh
-c8s verify --mode MODE --image-manifest IMAGE_JSON --pin-policy sha256:POLICY_HEX ROUTER_URL
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX ROUTER_URL
 ```
 
 - `MODE`: `attest-pq`, or `attest-lb` to check the TLS front door itself.
-- `IMAGE_JSON`: the node image you trust. On the baked `bare-metal` image,
-  its measured launch config pins the router to a CDS running the same image,
-  so the committed mesh CA is a genuine CDS's. Other installs set the router's
-  CDS pins from Helm values: add `--mesh-ca`.
+- `IMAGE_JSON`: the node image you trust.
+- `MESH_CA_PEM`: the CDS mesh CA, fetched from a CDS you verified (for
+  example with `c8s cds verify`). A CDS restart regenerates the CA, so fetch
+  it again after one. On a baked `bare-metal` node, replace
+  `--mesh-ca MESH_CA_PEM` with `--operator-pkey OPERATOR_PUB_PEM` to take the
+  CA from the transcript instead.
 - `POLICY_HEX`: a policy digest you reviewed; repeat the flag for each one.
 - `ROUTER_URL`: the router front door.
 

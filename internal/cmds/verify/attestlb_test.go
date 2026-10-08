@@ -58,6 +58,15 @@ func TestGatherFromAttestLB(t *testing.T) {
 		t.Errorf("evidence = fresh %v, leaf %v; want a fresh verdict on the committed mesh leaf", ev.fresh, ev.leaf != nil)
 	}
 
+	// Evidence from another connection would not bind this one's serving leaf.
+	redirect := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, ts.URL+r.URL.RequestURI(), http.StatusFound)
+	}))
+	defer redirect.Close()
+	if ev, err := gatherFromAttestLB(context.Background(), redirect.URL, "", 5*time.Second); err == nil {
+		t.Fatalf("gather through a redirect = %+v, want it refused", ev)
+	}
+
 	relayed := attestLBServer(t, id, []byte("another serving leaf"))
 	defer relayed.Close()
 	if _, err := gatherFromAttestLB(context.Background(), relayed.URL, "", 5*time.Second); err == nil || !isSecurityError(err) {

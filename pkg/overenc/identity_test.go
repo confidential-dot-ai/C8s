@@ -32,7 +32,7 @@ func TestIdentityTranscriptHashBindsEveryField(t *testing.T) {
 	if len(base) != sha512.Size384 {
 		t.Fatalf("transcript hash length = %d, want %d", len(base), sha512.Size384)
 	}
-	const vector = "8f534c54dce6062fbf66e7f9b4317ab98b736786c72f101de5df3b4f1951e090325fccc6f700083b03a132a07d40c9df"
+	const vector = "003e433637125a49cb2136a5e8148f6de5fd16c43caa11bcc79e49865da4c5e32625e54f7a9a33476954eb7f745fcae3"
 	if hex.EncodeToString(base) != vector {
 		t.Fatalf("cross-language transcript vector = %x, want %s", base, vector)
 	}
@@ -40,8 +40,9 @@ func TestIdentityTranscriptHashBindsEveryField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Equal(withState, base) {
-		t.Fatal("state digest does not change the transcript")
+	const stateVector = "050a0fc785c1fdc2a4b04ed9e6a31e03a6581ea8f8509b13118b11f5ec8aa97a20beae8c8c0f8032f834e20c81a73353"
+	if hex.EncodeToString(withState) != stateVector {
+		t.Fatalf("cross-language transcript vector with a state = %x, want %s", withState, stateVector)
 	}
 	if _, err := IdentityTranscriptHash(mode, ek, ct, sessionID, nonce, leaf, ca, []byte{1}); err == nil {
 		t.Fatal("accepted a state digest that is neither empty nor SHA-384")

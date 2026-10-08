@@ -7,8 +7,11 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -105,8 +108,33 @@ func TestBuildPolicyPinPolicyFormat(t *testing.T) {
 	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:p"}}); err == nil || !strings.Contains(err.Error(), "is not sha256:") {
 		t.Fatalf("buildPolicy(malformed --pin-policy) = %v, want the format error", err)
 	}
-	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}}); err != nil {
-		t.Fatalf("buildPolicy(--pin-policy without --mesh-ca) = %v, want it accepted", err)
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}}); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
+		t.Fatalf("buildPolicy(--pin-policy without --mesh-ca) = %v, want the --mesh-ca error", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P384(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "mesh CA"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caFile := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := buildPolicy(config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}, meshCA: caFile}); err != nil {
+		t.Fatalf("buildPolicy(--pin-policy with --mesh-ca) = %v, want it accepted", err)
+	}
+	pubPath, _, _ := operatorKeypair(t)
+	baked := config{pinPolicies: []string{"sha256:" + strings.Repeat("ab", 32)}, imageManifest: writeTestManifest(t), operatorPubkey: pubPath}
+	if _, err := buildPolicy(baked); err != nil {
+		t.Fatalf("buildPolicy(--pin-policy with a pinned baked node) = %v, want it accepted", err)
+	}
+	baked.operatorPubkey = ""
+	if _, err := buildPolicy(baked); err == nil || !strings.Contains(err.Error(), "--pin-policy requires --mesh-ca") {
+		t.Fatalf("buildPolicy(--pin-policy with an image pin but no RTMR[3]) = %v, want the --mesh-ca error", err)
 	}
 }
 

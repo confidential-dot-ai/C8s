@@ -23,8 +23,9 @@ const (
 // the session id, and the client nonce — together with the exact mesh leaf
 // and issuing mesh CA to one SHA-384 value suitable for TEE report_data. The
 // evidence therefore covers both sides of the exchange, not only the server's
-// contribution. stateDigest is StateDigest of the bundle's CDS rollout state,
-// empty when it carries none. Every variable-length field is length-prefixed
+// contribution. stateDigest is StateDigest of the bundle's CDS rollout state;
+// it is appended only when present, so a bundle without a state hashes as it
+// did before the field existed. Every variable-length field is length-prefixed
 // to make the transcript unambiguous across the Go and browser implementations.
 func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leafDER, caDER, stateDigest []byte) ([]byte, error) {
 	if mode == "" {
@@ -62,10 +63,15 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 		xwingCT,
 		sessionID,
 		nonce,
-		stateDigest,
 	} {
 		var err error
 		if encoded, err = appendLengthPrefixed(encoded, field); err != nil {
+			return nil, err
+		}
+	}
+	if len(stateDigest) > 0 {
+		var err error
+		if encoded, err = appendLengthPrefixed(encoded, stateDigest); err != nil {
 			return nil, err
 		}
 	}
@@ -80,8 +86,10 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 //
 //	SHA-384( LP("c8s/attest-lb/v1") || LP(mode) || LP(nonce) ||
 //	         LP(SHA-256(serving_leaf_DER)) || LP(SHA-256(mesh_leaf_DER)) ||
-//	         LP(SHA-256(mesh_CA_DER)) || LP(state_digest) )
+//	         LP(SHA-256(mesh_CA_DER)) [ || LP(state_digest) ] )
 //
+// LP(state_digest) is present only when the bundle carries a CDS rollout
+// state, so a bundle without one hashes as it did before the field existed.
 // A client recomputes it from the exact leaf it observed on the connection
 // being authorized, so a response relayed through a different serving leaf
 // fails even when both leaves share an issuer.
@@ -110,10 +118,15 @@ func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafD
 		servingHash[:],
 		meshHash[:],
 		caHash[:],
-		stateDigest,
 	} {
 		var err error
 		if encoded, err = appendLengthPrefixed(encoded, field); err != nil {
+			return nil, err
+		}
+	}
+	if len(stateDigest) > 0 {
+		var err error
+		if encoded, err = appendLengthPrefixed(encoded, stateDigest); err != nil {
 			return nil, err
 		}
 	}
