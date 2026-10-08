@@ -226,6 +226,10 @@ cds:
   # and disables pinned-allowlist verification. A positive lease must be at
   # least 10s. router.attest.pinnedAllowlist refuses to render with 0s.
   allowlistActivationLease: 60s
+  # -- Refuse every allowlist write and attest it in the rollout state
+  # (operator_keys: none). Changing the allowlist then needs a new install.
+  # Secret writes keep their operator authorization.
+  allowlistImmutable: false
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp

@@ -19,6 +19,7 @@
       "properties": {
         "allowlistDB": {},
         "allowlistActivationLease": {},
+        "allowlistImmutable": {},
         "ca": {
           "type": [
             "object",

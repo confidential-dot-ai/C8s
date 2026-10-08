@@ -126,6 +126,11 @@ func run(cfg config) error {
 	}
 	defer allowlistStore.Close()
 
+	if operatorKeysHash != "" {
+		writeAuthorizer = singleUse(writeAuthorizer, &allowlistStore, time.Duration(cfg.jwtClockSkew)*time.Second)
+	}
+	allowlistWriteAuthorizer, allowlistWriters := allowlistAuthorizer(cfg.allowlistImmutable, writeAuthorizer, operatorKeysHash)
+
 	// CDS generates its mesh CA in process at startup; the private key never
 	// touches a Kubernetes Secret.
 	mesh, err := issuer.NewCAWithCurve(cfg.caCommonName, cfg.caCertValidity, elliptic.P384())
@@ -312,7 +317,7 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   writeAuthorizer,
+			WriteAuthorizer:   allowlistWriteAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
@@ -327,6 +332,7 @@ func run(cfg config) error {
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 		StateKey:          mesh.Key,
+		AllowlistWriters:  allowlistWriters,
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)

@@ -52,6 +52,28 @@ func handleObject(store *allowlist.Store) http.HandlerFunc {
 	}
 }
 
+// handleSignature serves the operator write token that signed a policy.
+func handleSignature(store *allowlist.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h := chi.URLParam(r, "hex")
+		if !objectHex.MatchString(h) {
+			http.Error(w, "object digest must be 64 lowercase hex", http.StatusBadRequest)
+			return
+		}
+		token, ok, err := store.Signature("sha256:" + h)
+		if err != nil {
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+			return
+		}
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte(token))
+	}
+}
+
 func handleLatest(store *allowlist.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		st, err := store.State()
@@ -63,9 +85,10 @@ func handleLatest(store *allowlist.Store) http.HandlerFunc {
 	}
 }
 
-// handleState serves the signed state. With challenge set it reads
-// {"nonce":"<hex>"} and binds the nonce into the signed state.
-func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) http.HandlerFunc {
+// handleState serves the signed state, naming writers as its operator_keys.
+// With challenge set it reads {"nonce":"<hex>"} and binds the nonce into the
+// signed state.
+func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, writers string, challenge bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		st, err := store.State()
 		if err != nil {
@@ -86,6 +109,7 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			}
 			st.Nonce = req.Nonce
 		}
+		st.OperatorKeys = writers
 		rolloutstate.Stamp(&st, time.Now())
 		body, err := json.Marshal(st)
 		if err != nil {

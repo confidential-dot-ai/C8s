@@ -489,7 +489,9 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins.
+operator public keys it pins. CDS accepts each token once: it records the
+token in the allowlist database until it expires and refuses it after that,
+so the token it publishes as a policy signature cannot redo the write.
 
 ### Refresh and anti-rollback
 
@@ -682,6 +684,43 @@ have not pinned. Fetch it from `/.well-known/c8s/objects/sha256/<hex>`, check
 that its SHA-256 matches, review it, and add it as another `--pin-policy`.
 The failure starts at publication, one lease before CDS enforces the new
 policy, which leaves that lease to review it.
+
+#### Operator-signed allowlists
+
+To accept any policy the operator signed instead of pinning digests, run:
+
+```sh
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --trust-operator ROUTER_URL
+```
+
+Every policy in the attested bound must carry an operator signature: the
+write token of a `PUT /allowlist` whose body is that policy's exact canonical
+bytes. `c8s allowlist upload` sends canonical bytes, so its writes are
+signed, and CDS serves the token at
+`/.well-known/c8s/objects/sha256/<hex>/signature`. A per-workload write
+(`c8s allowlist add`, `remove`) leaves its policy unsigned: re-upload the
+whole document to sign it. The operator key set is `--trust-operator-keys`
+when given, or else the set the router serves at `/.well-known/c8s/operator-keys`;
+either way its hash must equal the attested `operator_keys`. Verification
+fails with `policy_not_signed` or `operator_keys_mismatch` otherwise.
+
+#### Immutable allowlist
+
+With `cds.allowlistImmutable: true` (`--allowlist-immutable`), CDS refuses
+every allowlist write, whatever key signs it, and the rollout state reports
+`operator_keys: none`. Otherwise `operator_keys` is the hash of the key set
+that may write the allowlist (`operatorauth.KeySetHash`). Secret writes keep
+their operator authorization.
+
+To require that the pinned policy can no longer change, add `--immutable`:
+
+```sh
+c8s verify --mode MODE --image-manifest IMAGE_JSON --mesh-ca MESH_CA_PEM --pin-policy sha256:POLICY_HEX --immutable ROUTER_URL
+```
+
+Verification then fails with `allowlist_mutable` unless the state reports
+`operator_keys: none`. Changing the allowlist needs a new install, whose
+policy digest fails the pin.
 
 Policy pins cover the CDS-served document only. The NRI base allowlist, exempt
 namespaces and enforcement mode come from the node image's measured boot
