@@ -67,11 +67,11 @@ const (
 	clientRateLimit = 400
 	clientRateBurst = 800
 
-	// A limiter refuses a key it has no bucket for once its map is full, so
-	// the map size is the ceiling on how many callers it can meter at once.
-	// clientBuckets covers the distinct clients a front door sees inside one
-	// idle timeout; the session limiter also carries one bucket per live
-	// session, so its map holds the whole session store on top of them.
+	// A full limiter evicts its least recently seen bucket for a new key, so
+	// the map size is how many callers it meters at once. clientBuckets
+	// covers the distinct clients a front door sees inside one idle timeout;
+	// the session limiter also carries one bucket per live session, so its
+	// map holds the whole session store on top of them.
 	clientBuckets        = 1 << 16
 	sessionBuckets       = maxSessions + clientBuckets
 	limiterEvictInterval = time.Minute
