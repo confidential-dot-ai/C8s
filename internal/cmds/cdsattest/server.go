@@ -471,7 +471,17 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce)
+	var state *types.SignedRolloutState
+	var envelope []string
+	if s.rollout != nil {
+		if state, envelope, err = s.rollout.challenge(r.Context(), nonce); err != nil {
+			s.log.Error("CDS rollout state unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAttestationUnavailable, "could not obtain the CDS rollout state")
+			return
+		}
+	}
+
+	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, stateDigest(state))
 	if err != nil {
 		s.log.Error("bind mesh identity", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "mesh identity binding failed")
@@ -483,16 +493,6 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("evidence provider failed", "error", err)
 		writeErr(w, http.StatusBadGateway, types.ErrorCodeAttestationUnavailable, "could not obtain attestation evidence")
 		return
-	}
-
-	var state *types.SignedRolloutState
-	var envelope []string
-	if s.rollout != nil {
-		if state, envelope, err = s.rollout.challenge(r.Context(), nonce); err != nil {
-			s.log.Error("CDS rollout state unavailable", "error", err)
-			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAttestationUnavailable, "could not obtain the CDS rollout state")
-			return
-		}
 	}
 
 	channel, err := overenc.NewServerChannel(sharedSecret, reportData, sessionID)
@@ -559,7 +559,15 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce)
+	var state *types.SignedRolloutState
+	if s.rollout != nil {
+		if state, _, err = s.rollout.challenge(r.Context(), nonce); err != nil {
+			s.log.Error("CDS rollout state unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAttestationUnavailable, "could not obtain the CDS rollout state")
+			return
+		}
+	}
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, stateDigest(state))
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -571,14 +579,6 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		s.log.Error("evidence provider failed", "error", err)
 		writeErr(w, http.StatusBadGateway, types.ErrorCodeAttestationUnavailable, "could not obtain attestation evidence")
 		return
-	}
-	var state *types.SignedRolloutState
-	if s.rollout != nil {
-		if state, _, err = s.rollout.challenge(r.Context(), nonce); err != nil {
-			s.log.Error("CDS rollout state unavailable", "error", err)
-			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAttestationUnavailable, "could not obtain the CDS rollout state")
-			return
-		}
 	}
 
 	servingLeafHash := sha256.Sum256(servingLeafDER)
@@ -594,6 +594,14 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
 		CDSState:          state,
 	})
+}
+
+// stateDigest is the transcript commitment to state, nil without one.
+func stateDigest(state *types.SignedRolloutState) []byte {
+	if state == nil {
+		return nil
+	}
+	return overenc.StateDigest(state.State)
 }
 
 // meshIdentity loads the mesh credential set from the three files.

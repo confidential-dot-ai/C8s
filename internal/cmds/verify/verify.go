@@ -120,6 +120,7 @@ type config struct {
 	workload           string
 	allowlistFile      string
 	pinPolicies        []string
+	fetchAllowlists    string
 	meshCA             string
 	initDataHex        string
 	allowDebug         bool
@@ -213,7 +214,8 @@ responder chose).`,
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/ratls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/ratls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests. Requires --mesh-ca")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated). attest-pq and attest-lb only: the bundle's CDS rollout state must verify against the committed mesh CA, answer this request's nonce, carry a positive activation lease, and bound every policy that may run to these digests")
+	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to write every policy in the attested rollout bound to, fetched from the target and checked against its attested digest (attest-pq and attest-lb)")
 	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
@@ -372,6 +374,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
 	applyInitDataNote(&oc, result, plan)
+	fetchAllowlists(ctx, cfg, &oc)
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
 }
@@ -610,9 +613,6 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		if !policyDigestRE.MatchString(d) {
 			return nil, fmt.Errorf("--pin-policy %q is not sha256:<64 lowercase hex>", d)
 		}
-	}
-	if len(cfg.pinPolicies) > 0 && cfg.meshCA == "" {
-		return nil, fmt.Errorf("--pin-policy requires --mesh-ca: the rollout bound is vouched by CDS's signature, and only a pinned mesh CA says which CDS")
 	}
 
 	initDataHash, err := parseInitDataPin(cfg.initDataHex)
@@ -1091,6 +1091,8 @@ type Outcome struct {
 	// land in Error (pinned_state_absent, pinned_state_invalid,
 	// pinned_state_stale, pinned_state_unleased, policy_not_pinned).
 	AllowlistBound []string `json:"allowlist_bound,omitempty"`
+	// AllowlistFiles are the --fetch-allowlists files, one per bound policy.
+	AllowlistFiles []string `json:"allowlist_files,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1697,6 +1699,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	}
 	if len(oc.AllowlistBound) > 0 {
 		fmt.Fprintf(out, "  allowlist:    %s\n", strings.Join(oc.AllowlistBound, ", "))
+	}
+	for _, path := range oc.AllowlistFiles {
+		fmt.Fprintf(out, "                wrote %s\n", path)
 	}
 	if len(oc.OperatorKeys) > 0 {
 		label := "operator keys (allowlist writes; CDS-reported config, NOT covered by the measurement):"

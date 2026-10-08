@@ -118,7 +118,7 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if b.FrontDoorMode != types.FrontDoorModeCDS {
 		t.Errorf("front_door_mode = %q, want %q", b.FrontDoorMode, types.FrontDoorModeCDS)
 	}
-	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw)
+	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +154,11 @@ func TestAttestLBTranscriptDiffersFromPQ(t *testing.T) {
 	nonce := make([]byte, 32)
 	pq, err := overenc.IdentityTranscriptHash(types.FrontDoorModeCDS,
 		make([]byte, overenc.XWingEKBytes), make([]byte, overenc.XWingCTBytes),
-		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw)
+		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw)
+	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

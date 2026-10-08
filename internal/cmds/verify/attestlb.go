@@ -100,7 +100,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, source string) (*
 	if err != nil {
 		return nil, err
 	}
-	erd, err := overenc.LBTranscriptHash(r.FrontDoorMode, nonce, servingLeaf, leaf.Raw, ca.Raw)
+	erd, err := overenc.LBTranscriptHash(r.FrontDoorMode, nonce, servingLeaf, leaf.Raw, ca.Raw, r.stateDigest())
 	if err != nil {
 		return nil, fmt.Errorf("compute attest-lb transcript: %w", err)
 	}

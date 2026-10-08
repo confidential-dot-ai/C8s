@@ -23,9 +23,10 @@ const (
 // the session id, and the client nonce — together with the exact mesh leaf
 // and issuing mesh CA to one SHA-384 value suitable for TEE report_data. The
 // evidence therefore covers both sides of the exchange, not only the server's
-// contribution. Every variable-length field is length-prefixed to make the
-// transcript unambiguous across the Go and browser implementations.
-func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leafDER, caDER []byte) ([]byte, error) {
+// contribution. stateDigest is StateDigest of the bundle's CDS rollout state,
+// empty when it carries none. Every variable-length field is length-prefixed
+// to make the transcript unambiguous across the Go and browser implementations.
+func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leafDER, caDER, stateDigest []byte) ([]byte, error) {
 	if mode == "" {
 		return nil, fmt.Errorf("overenc: identity transcript requires a front-door mode")
 	}
@@ -44,6 +45,9 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 	if len(leafDER) == 0 || len(caDER) == 0 {
 		return nil, fmt.Errorf("overenc: identity transcript requires leaf and CA certificates")
 	}
+	if err := checkStateDigest(stateDigest); err != nil {
+		return nil, err
+	}
 
 	leafHash := sha256.Sum256(leafDER)
 	caHash := sha256.Sum256(caDER)
@@ -58,6 +62,7 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 		xwingCT,
 		sessionID,
 		nonce,
+		stateDigest,
 	} {
 		var err error
 		if encoded, err = appendLengthPrefixed(encoded, field); err != nil {
@@ -75,12 +80,12 @@ func IdentityTranscriptHash(mode types.FrontDoorMode, xwingEK, xwingCT, sessionI
 //
 //	SHA-384( LP("c8s/attest-lb/v1") || LP(mode) || LP(nonce) ||
 //	         LP(SHA-256(serving_leaf_DER)) || LP(SHA-256(mesh_leaf_DER)) ||
-//	         LP(SHA-256(mesh_CA_DER)) )
+//	         LP(SHA-256(mesh_CA_DER)) || LP(state_digest) )
 //
 // A client recomputes it from the exact leaf it observed on the connection
 // being authorized, so a response relayed through a different serving leaf
 // fails even when both leaves share an issuer.
-func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafDER, caDER []byte) ([]byte, error) {
+func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafDER, caDER, stateDigest []byte) ([]byte, error) {
 	if mode == "" {
 		return nil, fmt.Errorf("overenc: lb transcript requires a front-door mode")
 	}
@@ -89,6 +94,9 @@ func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafD
 	}
 	if len(servingLeafDER) == 0 || len(meshLeafDER) == 0 || len(caDER) == 0 {
 		return nil, fmt.Errorf("overenc: lb transcript requires serving leaf, mesh leaf, and CA certificates")
+	}
+	if err := checkStateDigest(stateDigest); err != nil {
+		return nil, err
 	}
 
 	servingHash := sha256.Sum256(servingLeafDER)
@@ -102,6 +110,7 @@ func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafD
 		servingHash[:],
 		meshHash[:],
 		caHash[:],
+		stateDigest,
 	} {
 		var err error
 		if encoded, err = appendLengthPrefixed(encoded, field); err != nil {
@@ -110,6 +119,23 @@ func LBTranscriptHash(mode types.FrontDoorMode, nonce, servingLeafDER, meshLeafD
 	}
 	sum := sha512.Sum384(encoded)
 	return sum[:], nil
+}
+
+// StateDigest is the SHA-384 of the exact CDS rollout state bytes a bundle
+// carries, or nil when it carries none.
+func StateDigest(state []byte) []byte {
+	if len(state) == 0 {
+		return nil
+	}
+	sum := sha512.Sum384(state)
+	return sum[:]
+}
+
+func checkStateDigest(d []byte) error {
+	if len(d) != 0 && len(d) != sha512.Size384 {
+		return fmt.Errorf("overenc: transcript state digest must be empty or %d bytes, got %d", sha512.Size384, len(d))
+	}
+	return nil
 }
 
 // appendLengthPrefixed is the single owner of the transcript's LP(field) wire
