@@ -22,9 +22,9 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
-	"k8s.io/apimachinery/pkg/util/validation"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
 var procRoot = "/proc"
@@ -174,7 +174,7 @@ func validateConfig(cfg *config) error {
 	}
 	seen := make(map[string]struct{}, len(cfg.domains))
 	for _, d := range cfg.domains {
-		if err := validateDomain(d); err != nil {
+		if err := launchconfig.ValidateHostname(d); err != nil {
 			return fmt.Errorf("--domains: %w", err)
 		}
 		if _, dup := seen[d]; dup {
@@ -199,22 +199,6 @@ func validateConfig(cfg *config) error {
 	}
 	if cfg.readyPort != 0 && (cfg.readyPort == cfg.challengePort || cfg.readyPort == cfg.httpPort) {
 		return fmt.Errorf("--ready-port must differ from --challenge-port and --http-port, got %d", cfg.readyPort)
-	}
-	return nil
-}
-
-// validateDomain checks an RFC 1123 hostname.
-func validateDomain(domain string) error {
-	if domain == "" {
-		return fmt.Errorf("must not be empty")
-	}
-	if len(domain) > 253 {
-		return fmt.Errorf("%q exceeds 253 characters", domain)
-	}
-	for label := range strings.SplitSeq(domain, ".") {
-		if len(validation.IsDNS1123Label(label)) > 0 {
-			return fmt.Errorf("%q is not a valid RFC 1123 hostname", domain)
-		}
 	}
 	return nil
 }

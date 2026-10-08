@@ -31,6 +31,7 @@ func TestValidateConfig(t *testing.T) {
 		{"bad domain", func(c *config) { c.domains = []string{"-bad-"} }, "--domains"},
 		{"domain with scheme", func(c *config) { c.domains = []string{"https://lb"} }, "--domains"},
 		{"empty domain", func(c *config) { c.domains = []string{""} }, "--domains"},
+		{"ip domain", func(c *config) { c.domains = []string{"192.0.2.1"} }, "--domains"},
 		{"overlong domain", func(c *config) { c.domains = []string{strings.Repeat("a.", 127) + "aa"} }, "--domains"},
 		{"duplicate domain", func(c *config) { c.domains = []string{"lb.example.com", "lb.example.com"} }, "twice"},
 		{"bad directory url", func(c *config) { c.directoryURL = "acme.example" }, "--acme-directory-url"},
