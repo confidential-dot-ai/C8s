@@ -159,8 +159,20 @@ func TestJournalPendingSurvivesLeaseRemoval(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	staged, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+
 	if err := store.StartJournal("sha256:auth", 0); err != nil {
 		t.Fatal(err)
+	}
+	restarted, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Position != staged.Position || restarted.Head != staged.Head || restarted.Pending != staged.Pending {
+		t.Fatalf("state after restart = %+v, want the staged state %+v", restarted, staged)
 	}
 	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); !errors.Is(err, ErrUpdatePending) {
 		t.Fatalf("write over a pending update without a lease = %v, want ErrUpdatePending", err)
@@ -168,11 +180,47 @@ func TestJournalPendingSurvivesLeaseRemoval(t *testing.T) {
 	if ok, err := store.Activate(time.Now()); !ok || err != nil {
 		t.Fatalf("Activate without a lease = %v, %v; want true, nil", ok, err)
 	}
-	doc, _, err := store.LoadAll()
+	doc, version, err := store.LoadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := doc.Workloads["a"]; !ok {
 		t.Fatalf("activated document = %v, want the staged entry a", doc.Workloads)
+	}
+	if version != staged.Version {
+		t.Fatalf("activated version = %s, want the published %s", version, staged.Version)
+	}
+}
+
+func TestJournalReplayRefusesBrokenChain(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate string
+	}{
+		{"tampered event", "UPDATE journal_object SET body = CAST(REPLACE(CAST(body AS TEXT), 'published', 'drained') AS BLOB) WHERE digest = (SELECT digest FROM journal_event WHERE position = 1)"},
+		{"dropped event", "DELETE FROM journal_event WHERE position = 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, err := OpenInMemory()
+			if err != nil {
+				t.Fatalf("open: %v", err)
+			}
+			defer store.Close()
+			if err := store.StartJournal("sha256:auth", 0); err != nil {
+				t.Fatal(err)
+			}
+			for name, d := range map[string]string{"a": digestA, "b": digestB} {
+				if err := store.PutWorkload(name, oneContainerWorkload(mustParseDigest(t, d))); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := store.db.Exec(tc.mutate); err != nil {
+				t.Fatal(err)
+			}
+			store.gen++
+			if st, err := store.State(); err == nil {
+				t.Fatalf("State() over a broken chain = %+v, want an error", st)
+			}
+		})
 	}
 }

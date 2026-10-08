@@ -3,9 +3,7 @@ package cds
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/rand"
 	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/hex"
 	"encoding/json"
 	"log/slog"
@@ -16,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -85,13 +84,17 @@ func handleState(store *allowlist.Store, key *ecdsa.PrivateKey, challenge bool) 
 			}
 			st.Nonce = req.Nonce
 		}
+		rolloutstate.Stamp(&st, time.Now())
 		body, err := json.Marshal(st)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return
 		}
-		sum := sha512.Sum384(body)
-		sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+		sigContext := rolloutstate.ContextState
+		if challenge {
+			sigContext = rolloutstate.ContextChallenge
+		}
+		sig, err := rolloutstate.Sign(key, sigContext, body)
 		if err != nil {
 			http.Error(w, "internal server error", http.StatusInternalServerError)
 			return

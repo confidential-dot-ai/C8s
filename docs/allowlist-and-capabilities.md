@@ -538,8 +538,17 @@ journal over the same verified CDS proxy as `/allowlist`:
 
 `bound` lists every policy digest that may still run, oldest first. A
 publication that keeps every source entry replaces a single-policy bound; any
-other publication widens it. The signature is ASN.1 ECDSA over SHA-384 of the
-exact `state` bytes, by the mesh CA key that `/ca` certifies. The `authority`
+other publication widens it.
+
+The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
+SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
+context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and
+`c8s/rollout-state-challenge/v1` for the challenge. The prefix keeps the CA
+key from signing bare JSON, and a state signed for one endpoint does not
+verify as the other. Each signed state carries `issued_at` and `expires_at`
+(Unix seconds, 60s apart). The router and `c8s verify` refuse a state outside
+that window, with 2 minutes of clock skew allowed, so a captured unchallenged
+state cannot be replayed indefinitely. The `authority`
 field is `sha256:` over that key's SubjectPublicKeyInfo. CDS generates the key
 at each start, so a restart changes the authority and verifiers re-anchor on
 it; each event keeps the authority current when it was appended. A write that
@@ -552,12 +561,22 @@ serving the previous document to enforcers, issuance and secret release until
 the lease has run from both the publication and CDS's start. The state shows
 the staged digest as `pending`, and CDS refuses any other write with 409 until
 it activates. `c8s allowlist` reports a staged write as applied. The router
-fences attest-pq sessions on the same lease, so a lease of `0s`, the default,
-applies writes at once and gives pinned verifiers nothing to rely on.
+fences attest-pq sessions on the same lease. The default is `60s`. A lease of
+`0s` applies writes at once and gives pinned verifiers nothing to rely on, so
+the chart refuses `0s` while pinned mode is on, and CDS refuses a positive
+lease under `10s`, which leaves routers several one-second polls to see a
+publication before it activates. A router that reads a
+state with `lease_seconds: 0` still treats the read as stale after 5 seconds;
+it never serves on one read forever.
 
 ### Pinned allowlists
 
-With `router.attest.pinnedAllowlist`, attest-pq and attest-lb bundles carry
+`router.attest.pinnedAllowlist` is `auto` by default: pinned mode turns on
+whenever the router has an https `router.upstream`, the built-in allowlist
+route, attest enabled and no `router.routes`. Set it to `true` to fail the
+render when one of those is missing, or `false` to turn pinned mode off.
+
+With pinned mode on, attest-pq and attest-lb bundles carry
 `cds_state`: the signed state bound to the client's nonce, with the state
 JSON as base64 so clients hash the exact bytes CDS signed. Both transcripts
 commit SHA-384 of those bytes, so the state is part of the

@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
-	"crypto/sha512"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -30,6 +30,7 @@ type fakeCDSState struct {
 	mu    sync.Mutex
 	bound []string
 	key   *ecdsa.PrivateKey
+	age   time.Duration // shifts issued_at; negative issues stale states
 }
 
 func (f *fakeCDSState) setKey(key *ecdsa.PrivateKey) {
@@ -47,16 +48,18 @@ func (f *fakeCDSState) setBound(bound ...string) {
 func (f *fakeCDSState) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	st := types.RolloutState{Bound: f.bound, Lease: 30}
+	rolloutstate.Stamp(&st, time.Now().Add(f.age))
 	key := f.key
 	f.mu.Unlock()
+	sigContext := rolloutstate.ContextState
 	if r.Method == http.MethodPost {
 		var req struct{ Nonce string }
 		json.NewDecoder(r.Body).Decode(&req)
 		st.Nonce = req.Nonce
+		sigContext = rolloutstate.ContextChallenge
 	}
 	body, _ := json.Marshal(st)
-	sum := sha512.Sum384(body)
-	sig, _ := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	sig, _ := rolloutstate.Sign(key, sigContext, body)
 	json.NewEncoder(w).Encode(types.SignedRolloutState{State: body, Signature: sig})
 }
 
@@ -280,5 +283,42 @@ func TestAttestLBCarriesRolloutState(t *testing.T) {
 	var st types.RolloutState
 	if b.CDSState == nil || json.Unmarshal(b.CDSState.State, &st) != nil || st.Nonce != hex.EncodeToString(nonce) {
 		t.Fatalf("attest-lb bundle state = %+v, want the state bound to nonce %x", b.CDSState, nonce)
+	}
+}
+
+func TestRolloutZeroLeaseIsNotFreshForever(t *testing.T) {
+	r := newRollout("", "")
+	now := time.Now()
+	if r.fresh(now) {
+		t.Fatal("fresh before any state read")
+	}
+	r.seenAt = now
+	if !r.fresh(now.Add(time.Second)) {
+		t.Fatal("zero-lease state is stale one second after the read")
+	}
+	if r.fresh(now.Add(zeroLeaseMaxStateAge)) {
+		t.Fatal("zero-lease state is still fresh after zeroLeaseMaxStateAge")
+	}
+	if r.fresh(now.Add(24 * time.Hour)) {
+		t.Fatal("zero-lease state is fresh forever")
+	}
+	r.lease = time.Minute
+	if !r.fresh(now.Add(30*time.Second)) || r.fresh(now.Add(time.Minute)) {
+		t.Fatal("a positive lease does not bound freshness")
+	}
+}
+
+func TestRolloutRefusesExpiredState(t *testing.T) {
+	identity := writeTestMeshIdentity(t)
+	cds := &fakeCDSState{key: identity.caKey, age: -(rolloutstate.Validity + rolloutstate.MaxClockSkew + time.Minute)}
+	cds.setBound("sha256:p")
+	cdsSrv := httptest.NewServer(cds)
+	defer cdsSrv.Close()
+	fence := newRollout(cdsSrv.URL, identity.caFile)
+	if _, err := fence.poll(context.Background()); err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("poll of an expired state = %v, want an expiry error", err)
+	}
+	if fence.fresh(time.Now()) {
+		t.Fatal("an expired state made the fence fresh")
 	}
 }

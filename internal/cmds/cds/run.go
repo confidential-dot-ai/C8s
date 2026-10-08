@@ -51,6 +51,12 @@ func run(cfg config) error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.attestationApiURL); err != nil {
 		return err
 	}
+	if err := validateActivationLease(cfg.activationLease); err != nil {
+		return err
+	}
+	if cfg.activationLease == 0 {
+		slog.Warn("--allowlist-activation-lease=0: allowlist writes apply at once and routers cannot fence pinned clients")
+	}
 	dnsPatterns, err := compileDNSPatterns(cfg.dnsSANPatterns, cfg.dnsSANFile)
 	if err != nil {
 		return err

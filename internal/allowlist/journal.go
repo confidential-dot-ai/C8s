@@ -78,6 +78,16 @@ func (s *Store) StartJournal(authority string, lease time.Duration) error {
 		return err
 	}
 	defer tx.Rollback()
+	// A pending update leaves its source document in the tables while the
+	// head names the target: publishing now would journal a spurious return
+	// to the source.
+	var pending int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM journal_pending").Scan(&pending); err != nil {
+		return err
+	}
+	if pending > 0 {
+		return tx.Commit()
+	}
 	if _, err := publishTx(tx, authority); err != nil {
 		return err
 	}
@@ -96,6 +106,10 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 	if n > 0 {
 		return ErrUpdatePending
 	}
+	sourceHead, _, err := headTx(tx)
+	if err != nil {
+		return err
+	}
 	source, err := publishTx(tx, s.authority)
 	if err != nil || source == nil || s.lease <= 0 {
 		return err
@@ -111,7 +125,7 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 	if err := replaceContentsTx(tx, &prev); err != nil {
 		return err
 	}
-	if _, err := tx.Exec("UPDATE allowlist_version SET version = CAST(CAST(version AS INTEGER) - 1 AS TEXT)"); err != nil {
+	if err := setVersionTx(tx, sourceHead.Version); err != nil {
 		return err
 	}
 	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, time.Now().UnixMilli())
@@ -146,6 +160,15 @@ func (s *Store) Activate(now time.Time) (bool, error) {
 	if now.Before(since.Add(s.lease)) {
 		return false, nil
 	}
+	// Writes are refused while an update is pending, so the head is its
+	// publication and carries the version the target is served under.
+	head, _, err := headTx(tx)
+	if err != nil {
+		return false, err
+	}
+	if head.Target != target {
+		return false, fmt.Errorf("pending target %s is not the journal head's %s", target, head.Target)
+	}
 	body, err := objectTx(tx, target)
 	if err != nil {
 		return false, err
@@ -157,7 +180,7 @@ func (s *Store) Activate(now time.Time) (bool, error) {
 	if err := replaceContentsTx(tx, &q); err != nil {
 		return false, err
 	}
-	if err := bumpVersionTx(tx); err != nil {
+	if err := setVersionTx(tx, head.Version); err != nil {
 		return false, err
 	}
 	if _, err := tx.Exec("DELETE FROM journal_pending"); err != nil {
@@ -222,6 +245,11 @@ func publishTx(tx *sql.Tx, authority string) ([]byte, error) {
 		return nil, err
 	}
 	return pBytes, nil
+}
+
+func setVersionTx(tx *sql.Tx, version string) error {
+	_, err := tx.Exec("UPDATE allowlist_version SET version = ?", version)
+	return err
 }
 
 // covers reports whether q retains every workload entry of the canonical
@@ -294,6 +322,8 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 // State replays the journal into the current rollout state. The bound widens
 // with every publication that requires draining and collapses to the target
 // on a drained event or on a covering publication over a single policy.
+// Replay refuses a journal whose event digests, positions or parent links do
+// not chain, so a corrupted store fails closed instead of signing a state.
 func (s *Store) State() (State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -321,9 +351,15 @@ func (s *Store) State() (State, error) {
 		if err := rows.Scan(&d, &body); err != nil {
 			return State{}, err
 		}
+		if objectDigest(body) != d {
+			return State{}, fmt.Errorf("journal event %s does not match its digest", d)
+		}
 		var ev Event
 		if err := json.Unmarshal(body, &ev); err != nil {
 			return State{}, fmt.Errorf("decode journal event %s: %w", d, err)
+		}
+		if ev.Parent != st.Head || (st.Head != "" && ev.Position != st.Position+1) || (st.Head == "" && ev.Position != 0) {
+			return State{}, fmt.Errorf("journal event %s at position %d does not follow %s at %d", d, ev.Position, st.Head, st.Position)
 		}
 		switch {
 		case ev.Type == EventDrained, !ev.DrainRequired && len(st.Bound) <= 1:

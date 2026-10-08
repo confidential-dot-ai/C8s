@@ -26,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/ratls"
+	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -432,7 +433,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	var rollout *types.RolloutState
 	var rolloutErr error
 	if r.CDSState != nil {
-		rollout, rolloutErr = verifyRolloutState(r.CDSState, ca, nonce)
+		rollout, rolloutErr = verifyRolloutState(r.CDSState, ca, nonce, fresh)
 	}
 	return &evidence{
 		rollout:          rollout,
@@ -453,15 +454,16 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	}, nil
 }
 
-// verifyRolloutState checks that ca's key signed the state and that the state
-// answers nonce.
-func verifyRolloutState(signed *types.SignedRolloutState, ca *x509.Certificate, nonce []byte) (*types.RolloutState, error) {
+// verifyRolloutState checks that ca's key signed the state, that the state
+// answers nonce and, for a live (fresh) bundle, that the state is inside its
+// validity window. A saved bundle is replayed after the window by design;
+// its staleness is reported separately.
+func verifyRolloutState(signed *types.SignedRolloutState, ca *x509.Certificate, nonce []byte, live bool) (*types.RolloutState, error) {
 	key, ok := ca.PublicKey.(*ecdsa.PublicKey)
 	if !ok {
 		return nil, fmt.Errorf("mesh CA key is %T, not ECDSA", ca.PublicKey)
 	}
-	sum := sha512.Sum384(signed.State)
-	if !ecdsa.VerifyASN1(key, sum[:], signed.Signature) {
+	if !rolloutstate.Verify(key, rolloutstate.ContextChallenge, signed.State, signed.Signature) {
 		return nil, fmt.Errorf("CDS rollout state signature does not verify against the committed mesh CA")
 	}
 	var st types.RolloutState
@@ -470,6 +472,11 @@ func verifyRolloutState(signed *types.SignedRolloutState, ca *x509.Certificate, 
 	}
 	if st.Nonce != hex.EncodeToString(nonce) {
 		return nil, fmt.Errorf("CDS rollout state answers another nonce")
+	}
+	if live {
+		if err := rolloutstate.CheckTime(&st, time.Now()); err != nil {
+			return nil, err
+		}
 	}
 	return &st, nil
 }
