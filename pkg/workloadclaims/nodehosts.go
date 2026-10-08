@@ -2,6 +2,7 @@ package workloadclaims
 
 import (
 	"net"
+	"slices"
 	"sync/atomic"
 
 	corev1 "k8s.io/api/core/v1"
@@ -84,7 +85,8 @@ func NodeHostCIDRs(nodes []*corev1.Node) (hosts []*net.IPNet, excluded []string)
 // swapped atomically by the caller's informer. Before the first SetNodes it
 // holds nothing, so Contains fails closed.
 type NodeHosts struct {
-	snap atomic.Pointer[cidrSet]
+	snap  atomic.Pointer[cidrSet]
+	nodes atomic.Pointer[[][]string]
 }
 
 // SetNodes re-derives the bound and swaps it in. It reports the node
@@ -94,12 +96,40 @@ func (h *NodeHosts) SetNodes(nodes []*corev1.Node) (excluded []string) {
 	hosts, excluded := NodeHostCIDRs(nodes)
 	set := cidrSet(hosts)
 	h.snap.Store(&set)
+	var perNode [][]string
+	for _, n := range nodes {
+		nodeHosts, _ := NodeHostCIDRs([]*corev1.Node{n})
+		var addrs []string
+		for _, c := range nodeHosts {
+			if set.contains(c.IP.String()) {
+				addrs = append(addrs, c.IP.String())
+			}
+		}
+		if len(addrs) > 0 {
+			perNode = append(perNode, addrs)
+		}
+	}
+	h.nodes.Store(&perNode)
 	return excluded
 }
 
 func (h *NodeHosts) Contains(host string) bool {
 	snap := h.snap.Load()
 	return snap != nil && snap.contains(host)
+}
+
+// Nodes lists each node's addresses in the bound, one list per node. The
+// result is a copy the caller may change.
+func (h *NodeHosts) Nodes() [][]string {
+	nodes := h.nodes.Load()
+	if nodes == nil {
+		return nil
+	}
+	out := make([][]string, len(*nodes))
+	for i, addrs := range *nodes {
+		out[i] = slices.Clone(addrs)
+	}
+	return out
 }
 
 func (h *NodeHosts) Empty() bool {

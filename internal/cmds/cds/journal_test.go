@@ -1,21 +1,30 @@
 package cds
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
+	"github.com/confidential-dot-ai/c8s/internal/sandboxledger"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestJournalRoutes(t *testing.T) {
@@ -111,4 +120,120 @@ func TestJournalPolicyMatchesSnapshotDigest(t *testing.T) {
 	if want := "sha256:" + hex.EncodeToString(snapshot.Digest); st.Policy != want {
 		t.Fatalf("journal policy = %s, want snapshot digest %s", st.Policy, want)
 	}
+}
+
+type fakeAcker map[string]workloadclaims.PolicyAck
+
+func (f fakeAcker) PolicyAck(_ context.Context, host string) (workloadclaims.PolicyAck, error) {
+	ack, ok := f[host]
+	if !ok {
+		return ack, errors.New("unreachable")
+	}
+	return ack, nil
+}
+
+func TestNodeAcks(t *testing.T) {
+	clean := workloadclaims.PolicyAck{Policy: "sha256:q", Clean: true}
+	for _, tc := range []struct {
+		name   string
+		nodes  [][]string
+		acks   fakeAcker
+		ok     bool
+		acked  []string
+		reason string
+	}{
+		{"every node clean", [][]string{{"10.0.0.1"}, {"10.0.0.2"}}, fakeAcker{"10.0.0.1": clean, "10.0.0.2": clean}, true, []string{"10.0.0.1", "10.0.0.2"}, ""},
+		{"node clean on one of its addresses", [][]string{{"fec0::1", "10.0.0.1"}}, fakeAcker{"10.0.0.1": clean}, true, []string{"10.0.0.1"}, ""},
+		{"no nodes known", nil, fakeAcker{}, false, nil, "no nodes known"},
+		{"node unreachable", [][]string{{"10.0.0.1"}, {"10.0.0.2"}}, fakeAcker{"10.0.0.1": clean}, false, []string{"10.0.0.2"}, "unreachable"},
+		{"node on another policy", [][]string{{"10.0.0.1"}}, fakeAcker{"10.0.0.1": {Policy: "sha256:p", Clean: true}}, false, []string{"10.0.0.1"}, "acknowledges sha256:p"},
+		{"node still running a denied container", [][]string{{"10.0.0.1"}}, fakeAcker{"10.0.0.1": {Policy: "sha256:q"}}, false, []string{"10.0.0.1"}, "denies"},
+	} {
+		acks := nodeAcks{client: tc.acks, nodes: func() [][]string { return tc.nodes }}
+		ok, addrs, why := acks.acked(context.Background(), "sha256:q")
+		if ok != tc.ok || !slices.Equal(addrs, tc.acked) || !strings.Contains(why, tc.reason) || (tc.ok && why != "") {
+			t.Errorf("%s: acked = %v, %v, %q; want %v, %v, reason containing %q", tc.name, ok, addrs, why, tc.ok, tc.acked, tc.reason)
+		}
+	}
+}
+
+func TestDrainAcksGroupsNodes(t *testing.T) {
+	if drainAcks(nil, nil, nil) != nil {
+		t.Fatal("drainAcks without an inventory client drains")
+	}
+	var nodes workloadclaims.NodeHosts
+	nodes.SetNodes([]*corev1.Node{{
+		Status: corev1.NodeStatus{Addresses: []corev1.NodeAddress{
+			{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			{Type: corev1.NodeInternalIP, Address: "fec0::1"},
+		}},
+	}})
+	ledger := sandboxledger.New(time.Hour, 10)
+	ledger.Record("s1", "10.0.0.1")
+	ledger.Record("s2", "10.0.0.9")
+	acks := drainAcks(&workloadclaims.DigestsClient{}, &nodes, ledger)
+	got := acks.nodes()
+	want := [][]string{{"10.0.0.1", "fec0::1"}, {"10.0.0.9"}}
+	if !slices.EqualFunc(got, want, slices.Equal) {
+		t.Fatalf("drain nodes = %v, want %v", got, want)
+	}
+}
+
+// journalLoop drains a widened bound once every node acknowledges the
+// enforced policy, and not before.
+func TestJournalLoopDrainsOnAcks(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := startJournal(&store, "sha256:auth", config{}); err != nil {
+		t.Fatal(err)
+	}
+	w := pkgallowlist.Workload{Containers: []pkgallowlist.Container{{Digest: digest(t, digestA)}}}
+	if err := store.PutWorkload("a", w); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.State()
+	if err != nil || len(st.Bound) != 2 {
+		t.Fatalf("state after a narrowing = %+v, %v; want a 2-entry bound", st, err)
+	}
+	var mu sync.Mutex
+	acker := fakeAcker{"10.0.0.1": {Policy: st.Policy}}
+	acks := &nodeAcks{client: lockedAcker{&mu, acker}, nodes: func() [][]string { return [][]string{{"10.0.0.1"}} }, every: time.Millisecond}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go journalLoop(ctx, &store, time.Millisecond, acks)
+
+	time.Sleep(50 * time.Millisecond)
+	if st, _ := store.State(); len(st.Bound) != 2 {
+		t.Fatalf("bound = %v with a node not clean, want it kept", st.Bound)
+	}
+	mu.Lock()
+	acker["10.0.0.1"] = workloadclaims.PolicyAck{Policy: st.Policy, Clean: true}
+	mu.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if st, _ := store.State(); len(st.Bound) == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("bound not drained after every node acknowledged the enforced policy")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type lockedAcker struct {
+	mu *sync.Mutex
+	f  fakeAcker
+}
+
+func (l lockedAcker) PolicyAck(ctx context.Context, host string) (workloadclaims.PolicyAck, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.f.PolicyAck(ctx, host)
 }

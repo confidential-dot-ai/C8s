@@ -212,7 +212,11 @@ func Run(args []string) error {
 	plugin.SetReady()
 	logger.Info("plugin ready")
 
+	plugin.RunDeferredCheck(ctx)
 	if cfg.PullEnabled() {
+		// Acknowledge the initially pulled policy before the pull loop can
+		// swap it; later pulls do it in onApply.
+		plugin.RecheckRunning(ctx)
 		go runPullLoop(ctx, pullLoopArgs{
 			client:   wlClient,
 			store:    store,
@@ -220,10 +224,11 @@ func Run(args []string) error {
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
 			logger:   logger,
+			// Stop running containers the new policy no longer admits, then
+			// acknowledge it.
+			onApply: func() { plugin.RecheckRunning(ctx) },
 		})
 	}
-
-	plugin.RunDeferredCheck(ctx)
 
 	select {
 	case err := <-pluginErrCh:
@@ -299,7 +304,8 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 
 		reqCtx, reqCancel := context.WithTimeout(ctx, args.timeout)
 		args.logger.Info("fetching initial allowlist from CDS", "attempt", attempt)
-		wl, etag, notModified, err := args.client.Fetch(reqCtx, "")
+		served, notModified, err := args.client.FetchServed(reqCtx, "")
+		wl, etag := served.Allowlist, served.ETag
 		reqCancel()
 		if err == nil {
 			if notModified {
@@ -308,7 +314,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 				err = errInitialAllowlistNil
 			} else {
 				version := parseVersion(etag)
-				args.store.apply(wl, version)
+				args.store.applyServed(wl, version, served.Digest)
 				args.logger.Info("initial allowlist pulled from CDS",
 					"workloads", len(wl.Workloads),
 					"version", version,
@@ -340,6 +346,8 @@ type pullLoopArgs struct {
 	timeout  time.Duration
 	etag     string
 	logger   *slog.Logger
+	// onApply runs after a newly pulled allowlist is applied.
+	onApply func()
 }
 
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
@@ -359,7 +367,8 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, args.timeout)
-		wl, newETag, notModified, err := args.client.Fetch(reqCtx, etag)
+		served, notModified, err := args.client.FetchServed(reqCtx, etag)
+		wl, newETag := served.Allowlist, served.ETag
 		cancel()
 		if err != nil {
 			args.logger.Warn("pull loop fetch failed", "error", err)
@@ -374,7 +383,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		version := parseVersion(newETag)
-		if !args.store.apply(wl, version) {
+		if !args.store.applyServed(wl, version, served.Digest) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
 				"pulled_version", version, "etag", newETag)
 			continue
@@ -385,6 +394,9 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			"version", version,
 			"etag", etag,
 		)
+		if args.onApply != nil {
+			args.onApply()
+		}
 	}
 }
 

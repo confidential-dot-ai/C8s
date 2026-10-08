@@ -2,6 +2,8 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
@@ -43,6 +45,9 @@ const (
 type policySnapshot struct {
 	index   *allowlist.Index
 	version uint64
+	// digest is sha256:<hex> of the pulled document's canonical bytes, the
+	// digest CDS journals it under; empty before the first pull.
+	digest string
 }
 
 // policyStore holds the current admission snapshot. A single writer (the pull
@@ -98,10 +103,21 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 // the untrusted host a persisted file is itself host-controlled. See
 // docs/allowlist-and-capabilities.md.
 func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
+	var digest string
+	if b, err := pulled.Canonical(); err == nil {
+		sum := sha256.Sum256(b)
+		digest = "sha256:" + hex.EncodeToString(sum[:])
+	}
+	return s.applyServed(pulled, version, digest)
+}
+
+// applyServed is apply for a pulled document whose served digest is known:
+// the node acknowledges exactly the digest CDS journals.
+func (s *policyStore) applyServed(pulled *allowlist.Allowlist, version uint64, digest string) bool {
 	if cur := s.snap.Load(); cur != nil && version < cur.version {
 		return false
 	}
-	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version})
+	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version, digest: digest})
 	return true
 }
 
@@ -145,6 +161,70 @@ type plugin struct {
 	deferredMu   sync.Mutex
 	deferredPods []*api.PodSandbox
 	deferredCtrs []*api.Container
+
+	// running holds every container seen at Synchronize or started since,
+	// until it is removed, so RecheckRunning can check it against a newly
+	// applied policy. recheckMu keeps two rechecks from overlapping.
+	runningMu sync.Mutex
+	running   map[string]runningContainer
+	recheckMu sync.Mutex
+}
+
+type runningContainer struct {
+	pod *api.PodSandbox
+	ctr *api.Container
+}
+
+// trackRunning records containers (with their pods) for RecheckRunning.
+func (p *plugin) trackRunning(pods []*api.PodSandbox, ctrs []*api.Container) {
+	podByID := make(map[string]*api.PodSandbox, len(pods))
+	for _, pod := range pods {
+		podByID[pod.GetId()] = pod
+	}
+	p.runningMu.Lock()
+	defer p.runningMu.Unlock()
+	if p.running == nil {
+		p.running = make(map[string]runningContainer)
+	}
+	for _, ctr := range ctrs {
+		if pod := podByID[ctr.GetPodSandboxId()]; pod != nil {
+			p.running[ctr.GetId()] = runningContainer{pod: pod, ctr: ctr}
+		}
+	}
+}
+
+// untrack drops a container from RecheckRunning's set.
+func (p *plugin) untrack(id string) {
+	p.runningMu.Lock()
+	delete(p.running, id)
+	p.runningMu.Unlock()
+}
+
+// RecheckRunning runs the existing-container check over every tracked
+// container, so a policy that removes or narrows an entry stops containers
+// it no longer admits. Exempt namespaces, audit mode and enforce_existing
+// apply as in the startup check. The inventory then acknowledges the policy,
+// clean only when no checked container it denies is left running.
+func (p *plugin) RecheckRunning(ctx context.Context) {
+	p.recheckMu.Lock()
+	defer p.recheckMu.Unlock()
+	policy := p.policy.current().digest
+	p.runningMu.Lock()
+	var pods []*api.PodSandbox
+	var ctrs []*api.Container
+	for _, rc := range p.running {
+		pods = append(pods, rc.pod)
+		ctrs = append(ctrs, rc.ctr)
+	}
+	p.runningMu.Unlock()
+	denied := 0
+	if len(ctrs) > 0 {
+		denied = p.checkExisting(ctx, p.cfg, pods, ctrs)
+	}
+	if p.inventory != nil && policy != "" {
+		p.inventory.setPolicyAck(workloadclaims.PolicyAck{Policy: policy, Clean: denied == 0})
+		p.logger.Info("acknowledged allowlist policy", "policy", policy, "denied_running", denied)
+	}
 }
 
 func newPlugin(
@@ -229,11 +309,11 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	mask.Set(api.Event_CREATE_CONTAINER)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	// RecheckRunning's container set must drop removed containers.
+	mask.Set(api.Event_REMOVE_CONTAINER)
 	if p.inventory != nil {
-		// The inventory needs eviction on stop to stay correct across pod churn,
-		// and the pod-sandbox lifecycle to keep its sandbox set (the /sandbox
-		// and /digests routes) live.
-		mask.Set(api.Event_REMOVE_CONTAINER)
+		// The inventory needs the pod-sandbox lifecycle to keep its sandbox
+		// set (the /sandbox and /digests routes) live.
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
 	}
@@ -241,9 +321,10 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 }
 
 // RemoveContainer evicts a stopped container from caller resolution; the
-// sandbox's record keeps it (inventory.remove). Only subscribed when the
-// inventory is enabled (see Configure).
+// sandbox's record keeps it (inventory.remove). It also drops the container
+// from RecheckRunning's set.
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	p.untrack(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -764,6 +845,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 	// Load or capture the exempt-namespace snapshot from this connect-time set,
 	// before any container check reads it and regardless of readiness.
 	p.initExempt(ctx, pods, ctrs)
+	p.trackRunning(pods, ctrs)
 
 	if !p.shouldCheckExisting() {
 		p.logger.Info("startup check disabled", "pods", len(pods), "containers", len(ctrs))
@@ -787,7 +869,10 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 
 // checkExisting records every container it is handed, checks the ones whose pod
 // sandbox it was also handed, and kills violations when enforce_existing is set.
-func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.PodSandbox, ctrs []*api.Container) {
+//
+// It returns how many denied containers outside an exempt namespace it left
+// running.
+func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.PodSandbox, ctrs []*api.Container) int {
 	p.logger.Info("checking existing containers",
 		"pods", len(pods), "containers", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
 
@@ -797,7 +882,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		podByID[pod.GetId()] = pod
 	}
 
-	var killed, failed int
+	var killed, failed, left int
 	for _, ctr := range ctrs {
 		// Recorded ahead of the lookup that can skip it; the record needs no pod.
 		imageRef := ctr.GetAnnotations()[annotationImageName]
@@ -820,6 +905,7 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		}
 		// enforce_existing off: the check only feeds the inventory.
 		if cfg.Policy.Mode == ModeAudit || !cfg.Policy.EnforceExisting {
+			left++
 			continue
 		}
 		// A restart of the gated plugin found a running container the current
@@ -832,13 +918,18 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		if err := p.containerd.StopContainer(ctx, ctr.GetId()); err != nil {
 			p.logger.Error("sync: failed to kill container", "container", ctr.GetName(), "error", err)
 			failed++
+			left++
 		} else {
 			killed++
+			// Stopped, not yet removed: a later recheck must not try again and
+			// count the failure against this node's acknowledgement.
+			p.untrack(ctr.GetId())
 		}
 	}
 
 	p.logger.Info("existing-container check complete",
 		"killed", killed, "failed", failed, "checked", len(ctrs), "enforcing", cfg.Policy.EnforceExisting)
+	return left
 }
 
 // RunDeferredCheck checks the pods/containers that were seen during Synchronize
@@ -916,6 +1007,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 			return err
 		}
 		p.recordUncheckedForInventory(pod, ctr, imageRef)
+		p.trackRunning([]*api.PodSandbox{pod}, []*api.Container{ctr})
 		return nil
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
@@ -923,6 +1015,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		return fmt.Errorf("%s", reason)
 	}
 	p.recordForInventory(ctx, pod, ctr, imageRef)
+	p.trackRunning([]*api.PodSandbox{pod}, []*api.Container{ctr})
 	return nil
 }
 

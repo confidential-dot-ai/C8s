@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -136,13 +137,8 @@ func run(cfg config) error {
 		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
 	)
 	caChainPEM := certutil.EncodeCertPEM(mesh.Cert.Raw)
-	if err := allowlistStore.StartJournal(authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo), cfg.activationLease); err != nil {
-		return fmt.Errorf("start allowlist journal: %w", err)
-	}
-	// Without a lease, an update staged by an earlier run activates now
-	// rather than blocking writes forever.
-	if _, err := allowlistStore.Activate(time.Now()); err != nil {
-		return fmt.Errorf("activate pending allowlist update: %w", err)
+	if err := startJournal(&allowlistStore, authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo), cfg); err != nil {
+		return err
 	}
 
 	measurements := parseReferenceDigests(cfg.measurements)
@@ -252,6 +248,7 @@ func run(cfg config) error {
 	// fail closed for every pod until its certificate next renews.
 	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
 	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
+	go journalLoop(ctx, &allowlistStore, time.Second, drainAcks(sandboxDigests, inventoryHosts, sandboxBindings))
 
 	var (
 		secretsHandler  *secrets.Handler
@@ -330,9 +327,6 @@ func run(cfg config) error {
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
 		StateKey:          mesh.Key,
-	}
-	if cfg.activationLease > 0 {
-		go activationLoop(ctx, &allowlistStore)
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
@@ -617,4 +611,27 @@ func readinessFn(svcReady func() bool, caCert *x509.Certificate, minCAValidity t
 		}
 		return true
 	}
+}
+
+// drainAcks lists every node that may run a workload: those the cluster's
+// node objects name, with all their addresses, and those that vouched for a
+// sandbox whose certificate may still be valid and no node object names. It
+// returns nil, which never drains, without a sandbox inventory to ask.
+func drainAcks(client *workloadclaims.DigestsClient, inventoryHosts workloadclaims.InventoryHosts, bindings *sandboxledger.Ledger) *nodeAcks {
+	if client == nil {
+		return nil
+	}
+	nodes, _ := inventoryHosts.(*workloadclaims.NodeHosts)
+	return &nodeAcks{client: client, nodes: func() [][]string {
+		var groups [][]string
+		if nodes != nil {
+			groups = nodes.Nodes()
+		}
+		for _, h := range bindings.Hosts() {
+			if !slices.ContainsFunc(groups, func(g []string) bool { return slices.Contains(g, h) }) {
+				groups = append(groups, []string{h})
+			}
+		}
+		return groups
+	}}
 }

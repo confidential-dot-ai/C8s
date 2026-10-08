@@ -1,6 +1,7 @@
 package sandboxledger
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -118,5 +119,21 @@ func TestEvictionLoopStops(t *testing.T) {
 	case <-stopped:
 	case <-time.After(2 * time.Second):
 		t.Fatal("EvictionLoop did not return when done closed")
+	}
+}
+
+func TestHostsListsLiveBindings(t *testing.T) {
+	now := time.Now()
+	l := New(time.Hour, 10)
+	l.now = func() time.Time { return now }
+	l.Record("a", "10.0.0.1")
+	l.Record("b", "10.0.0.1")
+	l.Record("c", "10.0.0.2")
+	if got := l.Hosts(); len(got) != 2 || !slices.Contains(got, "10.0.0.1") || !slices.Contains(got, "10.0.0.2") {
+		t.Fatalf("Hosts() = %v, want both hosts once", got)
+	}
+	l.now = func() time.Time { return now.Add(2 * time.Hour) }
+	if got := l.Hosts(); len(got) != 0 {
+		t.Fatalf("Hosts() after every binding expired = %v, want none", got)
 	}
 }

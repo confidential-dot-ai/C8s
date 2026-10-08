@@ -116,3 +116,17 @@ func TestNodeHostsTracksTheNodeList(t *testing.T) {
 		t.Fatal("a removed node's address stayed dialable")
 	}
 }
+
+func TestNodeHostsGroupsAddressesByNode(t *testing.T) {
+	var h NodeHosts
+	h.SetNodes([]*corev1.Node{
+		nodeWith("a", nil,
+			corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.0.1"},
+			corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "fec0::1"}),
+		nodeWith("b", nil, corev1.NodeAddress{Type: corev1.NodeInternalIP, Address: "10.0.0.2"}),
+	})
+	got := h.Nodes()
+	if len(got) != 2 || len(got[0]) != 2 || got[1][0] != "10.0.0.2" {
+		t.Fatalf("Nodes() = %v, want [[10.0.0.1 fec0::1] [10.0.0.2]]", got)
+	}
+}

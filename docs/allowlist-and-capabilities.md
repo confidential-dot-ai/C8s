@@ -540,6 +540,28 @@ journal over the same verified CDS proxy as `/allowlist`:
 publication that keeps every source entry replaces a single-policy bound; any
 other publication widens it.
 
+A widened bound shrinks again through a `drained` event, once every node
+acknowledges the enforced policy. When the NRI plugin applies a pulled
+allowlist, it re-checks every running container. With
+`policy.enforce_existing` (the default), it stops a container that the new
+policy no longer admits, as at startup; exempt namespaces and audit mode
+behave as in the startup check. The plugin then acknowledges the policy on
+its CDS-facing endpoint (`GET /policy` on `:1019`, see
+[`ratls.md`](ratls.md)): the digest it applied, and whether every checked
+container it denies has stopped.
+
+While the bound holds more than one policy and no update is pending, CDS asks
+every node for its acknowledgement every 10 seconds. The nodes are those the
+cluster's node objects name, plus every node that vouched for a sandbox whose
+certificate may still be valid. A node counts once, on whichever of its
+addresses answers. With `--sandbox-inventory-cidr` there are no node objects
+to name nodes, so only nodes that vouched for a sandbox are asked. Once each
+one acknowledges the enforced policy with nothing denied left running, CDS appends a `drained` event whose
+`target` is that policy, and `bound` collapses to it. An unreachable node, a
+node in audit mode or with `enforce_existing` off that still runs a denied
+container, or a deployment without the sandbox inventory keeps the bound
+widened.
+
 The signature is ASN.1 ECDSA, by the mesh CA key that `/ca` certifies, over
 SHA-384 of a context string, a zero byte, and the exact `state` bytes. The
 context is `c8s/rollout-state/v1` for `GET /.well-known/c8s/state` and

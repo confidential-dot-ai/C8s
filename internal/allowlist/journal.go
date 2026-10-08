@@ -52,6 +52,8 @@ type Event struct {
 	Source        string `json:"source,omitempty"`
 	Target        string `json:"target"`
 	DrainRequired bool   `json:"drain_required,omitempty"`
+	// Nodes lists the nodes whose acknowledgements a drained event rests on.
+	Nodes []string `json:"nodes,omitempty"`
 }
 
 // State is the unsigned rollout state CDS signs.
@@ -71,7 +73,7 @@ func objectDigest(b []byte) string {
 func (s *Store) StartJournal(authority string, lease time.Duration) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.authority, s.lease, s.started = authority, lease, time.Now()
+	s.authority, s.lease, s.started = authority, lease, s.clock()
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -92,6 +94,22 @@ func (s *Store) StartJournal(authority string, lease time.Duration) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetClock replaces time.Now for the journal's own timestamps (start and
+// publication). For tests.
+func (s *Store) SetClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
+}
+
+// clock is the journal's time source: time.Now unless a test sets s.now.
+func (s *Store) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // journalTx runs before every mutation commits. It refuses the write while an
@@ -128,7 +146,7 @@ func (s *Store) journalTx(tx *sql.Tx) error {
 	if err := setVersionTx(tx, sourceHead.Version); err != nil {
 		return err
 	}
-	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, time.Now().UnixMilli())
+	_, err = tx.Exec("INSERT INTO journal_pending (target, published_ms) VALUES (?, ?)", head.Target, s.clock().UnixMilli())
 	return err
 }
 
@@ -184,6 +202,55 @@ func (s *Store) Activate(now time.Time) (bool, error) {
 		return false, err
 	}
 	if _, err := tx.Exec("DELETE FROM journal_pending"); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	s.gen++
+	return true, nil
+}
+
+// Drain appends a drained event that collapses the bound to target and
+// records nodes, and reports whether it did. CDS calls it once every node in
+// nodes has acknowledged target, the enforced policy, with no running
+// container it denies. It does nothing while an update is pending, once
+// target is no longer the enforced policy, or when the bound already holds
+// target alone.
+func (s *Store) Drain(target string, nodes []string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	st, err := replayTx(tx, s.authority, s.lease)
+	if err != nil {
+		return false, err
+	}
+	if st.Pending != "" || st.Policy != target || slices.Equal(st.Bound, []string{target}) {
+		return false, nil
+	}
+	head, headDigest, err := headTx(tx)
+	if err != nil {
+		return false, err
+	}
+	ev := Event{
+		Protocol: 1, Authority: s.authority, Position: head.Position + 1, Parent: headDigest,
+		Type: EventDrained, Version: head.Version, Target: target, Nodes: slices.Sorted(slices.Values(nodes)),
+	}
+	evBytes, err := json.Marshal(ev)
+	if err != nil {
+		return false, err
+	}
+	evDigest := objectDigest(evBytes)
+	if _, err := tx.Exec("INSERT OR IGNORE INTO journal_object (digest, body) VALUES (?, ?)", evDigest, evBytes); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec("INSERT INTO journal_event (position, digest) VALUES (?, ?)", ev.Position, evDigest); err != nil {
 		return false, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -336,7 +403,15 @@ func (s *Store) State() (State, error) {
 		return State{}, err
 	}
 	defer tx.Rollback()
+	st, err := replayTx(tx, s.authority, s.lease)
+	if err != nil {
+		return State{}, err
+	}
+	s.state, s.stateGen = &st, s.gen
+	return st, nil
+}
 
+func replayTx(tx *sql.Tx, authority string, lease time.Duration) (State, error) {
 	rows, err := tx.Query(`SELECT e.digest, o.body FROM journal_event e
 		JOIN journal_object o ON o.digest = e.digest ORDER BY e.position`)
 	if err != nil {
@@ -344,7 +419,7 @@ func (s *Store) State() (State, error) {
 	}
 	defer rows.Close()
 
-	st := State{Protocol: 1, Authority: s.authority, Lease: int64(s.lease / time.Second)}
+	st := State{Protocol: 1, Authority: authority, Lease: int64(lease / time.Second)}
 	for rows.Next() {
 		var d string
 		var body []byte
@@ -379,6 +454,5 @@ func (s *Store) State() (State, error) {
 	if err := tx.QueryRow("SELECT target FROM journal_pending").Scan(&st.Pending); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return State{}, err
 	}
-	s.state, s.stateGen = &st, s.gen
 	return st, nil
 }

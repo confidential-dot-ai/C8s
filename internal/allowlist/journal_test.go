@@ -224,3 +224,85 @@ func TestJournalReplayRefusesBrokenChain(t *testing.T) {
 		})
 	}
 }
+
+func headEvent(t *testing.T, store *Store, st State) Event {
+	t.Helper()
+	body, ok, err := store.Object(st.Head)
+	if err != nil || !ok {
+		t.Fatalf("head object: ok=%v err=%v", ok, err)
+	}
+	var ev Event
+	if err := json.Unmarshal(body, &ev); err != nil {
+		t.Fatal(err)
+	}
+	return ev
+}
+
+// A narrowing widens the bound; Drain on the enforced policy appends a
+// drained event and collapses it, and only then.
+func TestJournalDrain(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Activate(time.Now().Add(11 * time.Second)); !ok || err != nil {
+		t.Fatalf("activate addition = %v, %v", ok, err)
+	}
+	if _, err := store.DeleteWorkload("a"); err != nil {
+		t.Fatal(err)
+	}
+	widened, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(widened.Bound) != 2 || widened.Pending != widened.Policy {
+		t.Fatalf("state after a narrowing = %+v, want a 2-entry bound and a pending target", widened)
+	}
+	if ok, err := store.Drain(widened.Policy, []string{"10.0.0.1"}); ok || err != nil {
+		t.Fatalf("Drain while the narrowing is pending = %v, %v; want false", ok, err)
+	}
+	if ok, err := store.Activate(time.Now().Add(30 * time.Second)); !ok || err != nil {
+		t.Fatalf("activate narrowing = %v, %v", ok, err)
+	}
+	if ok, err := store.Drain(widened.Bound[0], nil); ok || err != nil {
+		t.Fatalf("Drain on a policy that is not enforced = %v, %v; want false", ok, err)
+	}
+	if ok, err := store.Drain(widened.Policy, []string{"10.0.0.1"}); !ok || err != nil {
+		t.Fatalf("Drain on the enforced policy = %v, %v; want true", ok, err)
+	}
+	st, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(st.Bound, []string{widened.Policy}) || st.Position != widened.Position+1 {
+		t.Fatalf("drained state = %+v, want bound [%s] at position %d", st, widened.Policy, widened.Position+1)
+	}
+	ev := headEvent(t, &store, st)
+	if ev.Type != EventDrained || ev.Parent != widened.Head || ev.Target != widened.Policy || ev.Authority != "sha256:auth" || !slices.Equal(ev.Nodes, []string{"10.0.0.1"}) {
+		t.Fatalf("drained event = %+v, want a drained event on %s chained to %s", ev, widened.Policy, widened.Head)
+	}
+	if ok, err := store.Drain(widened.Policy, []string{"10.0.0.1"}); ok || err != nil {
+		t.Fatalf("second Drain = %v, %v; want false (already drained)", ok, err)
+	}
+
+	// The next narrowing widens the drained bound again.
+	if err := store.PutWorkload("b", oneContainerWorkload(mustParseDigest(t, digestB))); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.Activate(time.Now().Add(time.Hour)); !ok || err != nil {
+		t.Fatalf("activate = %v, %v", ok, err)
+	}
+	if _, err := store.DeleteWorkload("b"); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := store.State(); len(st.Bound) != 2 {
+		t.Fatalf("bound after a narrowing over a drained bound = %v, want 2 entries", st.Bound)
+	}
+}

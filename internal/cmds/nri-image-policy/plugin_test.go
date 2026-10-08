@@ -1625,6 +1625,7 @@ func TestConfigure_SetsCreateContainerMask(t *testing.T) {
 	want.Set(api.Event_CREATE_CONTAINER)
 	want.Set(api.Event_START_CONTAINER)
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	want.Set(api.Event_REMOVE_CONTAINER)
 	if mask != want {
 		t.Fatalf("mask = %v, want %v", mask, want)
 	}

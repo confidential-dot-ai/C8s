@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -16,6 +17,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/rolloutstate"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // wellKnown prefixes the public rollout-journal routes.
@@ -108,10 +110,90 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// activationLoop enforces a pending allowlist update once its lease has run.
-func activationLoop(ctx context.Context, store *allowlist.Store) {
-	ticker := time.NewTicker(time.Second)
+// startJournal starts the allowlist journal with cfg's lease, and activates
+// an update an earlier run staged once its lease has run.
+func startJournal(store *allowlist.Store, authority string, cfg config) error {
+	if err := store.StartJournal(authority, cfg.activationLease); err != nil {
+		return fmt.Errorf("start allowlist journal: %w", err)
+	}
+	// Without a lease, an update staged by an earlier run activates now
+	// rather than blocking writes forever.
+	if _, err := store.Activate(time.Now()); err != nil {
+		return fmt.Errorf("activate pending allowlist update: %w", err)
+	}
+	return nil
+}
+
+// policyAcker asks one node's inventory for its policy acknowledgement.
+type policyAcker interface {
+	PolicyAck(ctx context.Context, host string) (workloadclaims.PolicyAck, error)
+}
+
+// nodeAcks decides when the rollout bound may drain: every node that may run
+// a workload must acknowledge the enforced policy clean. nodes lists those
+// nodes, each as the addresses it may answer on; an empty list never drains,
+// since nothing vouches that no node runs an earlier policy.
+type nodeAcks struct {
+	client policyAcker
+	nodes  func() [][]string
+	// every spaces the node polls; zero means drainCheckInterval.
+	every time.Duration
+}
+
+func (a nodeAcks) interval() time.Duration {
+	if a.every > 0 {
+		return a.every
+	}
+	return drainCheckInterval
+}
+
+// acked reports whether every node acknowledges policy clean on one of its
+// addresses. It returns the addresses that did, or else the addresses of the
+// first node that did not and why.
+func (a nodeAcks) acked(ctx context.Context, policy string) (bool, []string, string) {
+	nodes := a.nodes()
+	if len(nodes) == 0 {
+		return false, nil, "no nodes known"
+	}
+	var acked []string
+	for _, addrs := range nodes {
+		why := "no address"
+		for _, host := range addrs {
+			ack, err := a.client.PolicyAck(ctx, host)
+			switch {
+			case err != nil:
+				why = err.Error()
+			case ack.Policy != policy:
+				why = "acknowledges " + ack.Policy
+			case !ack.Clean:
+				why = "still runs a container the policy denies"
+			default:
+				why = ""
+			}
+			if why == "" {
+				acked = append(acked, host)
+				break
+			}
+		}
+		if why != "" {
+			return false, addrs, why
+		}
+	}
+	return true, acked, ""
+}
+
+// drainCheckInterval spaces the node polls while the bound holds more than
+// one policy, by default.
+const drainCheckInterval = 10 * time.Second
+
+// journalLoop enforces a pending allowlist update once its lease has run, and
+// drains a widened bound once every node acknowledges the enforced policy.
+// acks nil never drains.
+func journalLoop(ctx context.Context, store *allowlist.Store, tick time.Duration, acks *nodeAcks) {
+	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
+	var lastCheck time.Time
+	var lastWait string
 	for {
 		select {
 		case <-ctx.Done():
@@ -121,6 +203,31 @@ func activationLoop(ctx context.Context, store *allowlist.Store) {
 				slog.Error("allowlist activation failed", "error", err)
 			} else if ok {
 				slog.Info("allowlist update activated")
+			}
+			if acks == nil || now.Sub(lastCheck) < acks.interval() {
+				continue
+			}
+			st, err := store.State()
+			if err != nil || len(st.Bound) < 2 || st.Pending != "" {
+				continue
+			}
+			lastCheck = now
+			checkCtx, cancel := context.WithTimeout(ctx, acks.interval())
+			ok, nodes, why := acks.acked(checkCtx, st.Policy)
+			cancel()
+			if !ok {
+				// Logged once per change: a drain can wait for hours.
+				if wait := fmt.Sprintf("%q %q %q", st.Policy, nodes, why); wait != lastWait {
+					lastWait = wait
+					slog.Info("allowlist bound not drained yet", "policy", st.Policy, "nodes", nodes, "reason", why)
+				}
+				continue
+			}
+			lastWait = ""
+			if ok, err := store.Drain(st.Policy, nodes); err != nil {
+				slog.Error("allowlist drain failed", "error", err)
+			} else if ok {
+				slog.Info("allowlist bound drained: every node acknowledged the enforced policy", "policy", st.Policy)
 			}
 		}
 	}

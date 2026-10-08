@@ -33,6 +33,8 @@ type Store struct {
 	authority string
 	lease     time.Duration
 	started   time.Time
+	// now overrides time.Now for the journal's timestamps (tests only).
+	now func() time.Time
 	// state memoizes State until the next committed mutation.
 	state    *State
 	stateGen uint64

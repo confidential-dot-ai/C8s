@@ -474,3 +474,49 @@ func TestFetchSandboxReadsALargeBody(t *testing.T) {
 		}
 	}
 }
+
+type ackingResolver struct {
+	erroringResolver
+	ack PolicyAck
+}
+
+func (r ackingResolver) PolicyAck() PolicyAck { return r.ack }
+
+// serveDigestsOver runs ServeDigests on a TLS listener the returned client
+// trusts, and points the client's dial port at it.
+func serveDigestsOver(t *testing.T, resolver SandboxResolver) (*DigestsClient, string) {
+	t.Helper()
+	certSrv := httptest.NewTLSServer(http.NotFoundHandler())
+	tlsCfg, client := certSrv.TLS, certSrv.Client()
+	certSrv.Close()
+	ip := routableLocalIP(t)
+	l, err := tls.Listen("tcp", net.JoinHostPort(ip.String(), "0"), tlsCfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go ServeDigests(ctx, l, resolver, []byte("id"))
+	_, portStr, _ := net.SplitHostPort(l.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	prev := dialPort
+	dialPort = port
+	t.Cleanup(func() { dialPort = prev })
+	// The test certificate names loopback; the listener sits on a routable IP.
+	client.Transport.(*http.Transport).TLSClientConfig.ServerName = "127.0.0.1"
+	client.Timeout = 5 * time.Second
+	return &DigestsClient{http: client}, ip.String()
+}
+
+func TestPolicyAckRoute(t *testing.T) {
+	want := PolicyAck{Policy: "sha256:q", Clean: true}
+	client, host := serveDigestsOver(t, ackingResolver{ack: want})
+	if got, err := client.PolicyAck(context.Background(), host); err != nil || got != want {
+		t.Fatalf("PolicyAck = %+v, %v; want %+v", got, err, want)
+	}
+
+	client, host = serveDigestsOver(t, erroringResolver{})
+	if got, err := client.PolicyAck(context.Background(), host); err == nil {
+		t.Fatalf("PolicyAck from an inventory that does not ack = %+v, want an error", got)
+	}
+}
