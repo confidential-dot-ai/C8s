@@ -4,14 +4,18 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -76,7 +80,78 @@ func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout ti
 	if servingLeaf == nil {
 		return nil, fmt.Errorf("attest-lb needs a TLS target: no serving certificate was observed")
 	}
-	return evidenceFromAttestLBJSON(data, nonce, servingLeaf, fmt.Sprintf("attest-lb endpoint %s", u.Redacted()))
+	ev, err := evidenceFromAttestLBJSON(data, nonce, servingLeaf, fmt.Sprintf("attest-lb endpoint %s", u.Redacted()))
+	if err != nil {
+		return nil, err
+	}
+	ev.servingLeafSHA256 = servingLeafDigest(servingLeaf)
+	return ev, nil
+}
+
+// gatherFromAttestLBFile verifies a saved attest-lb receipt against the
+// challenge the client sent and the serving leaf it observed on the same
+// connection. The verdict is not fresh: it proves what the connection was,
+// not what the front door serves now.
+func gatherFromAttestLBFile(data []byte, nonceB64, certPath, source string) (*evidence, error) {
+	nonce, err := parseAttestationNonce(nonceB64)
+	if err != nil {
+		return nil, err
+	}
+	certData, err := os.ReadFile(certPath)
+	if err != nil {
+		return nil, fmt.Errorf("--observed-serving-cert: %w", err)
+	}
+	servingLeaf, err := parseObservedServingCert(certData)
+	if err != nil {
+		return nil, fmt.Errorf("--observed-serving-cert: %w", err)
+	}
+	ev, err := evidenceFromAttestLBJSON(data, nonce, servingLeaf, source)
+	if err != nil {
+		return nil, err
+	}
+	ev.fresh = false
+	ev.servingLeafSHA256 = servingLeafDigest(servingLeaf)
+	return ev, nil
+}
+
+// parseAttestationNonce decodes the canonical unpadded base64url form of the
+// 32-byte challenge, the form the attest-lb query and response carry it in.
+func parseAttestationNonce(value string) ([]byte, error) {
+	nonce, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return nil, fmt.Errorf("--attestation-nonce must be unpadded base64url: %w", err)
+	}
+	if len(nonce) != nonceSize {
+		return nil, fmt.Errorf("--attestation-nonce must decode to %d bytes, got %d", nonceSize, len(nonce))
+	}
+	if base64.RawURLEncoding.EncodeToString(nonce) != value {
+		return nil, fmt.Errorf("--attestation-nonce must be canonical unpadded base64url")
+	}
+	return nonce, nil
+}
+
+// parseObservedServingCert accepts one certificate as PEM or DER and returns
+// its DER, the form the transcript binds.
+func parseObservedServingCert(data []byte) ([]byte, error) {
+	der := data
+	if block, rest := pem.Decode(bytes.TrimSpace(data)); block != nil {
+		if block.Type != "CERTIFICATE" {
+			return nil, fmt.Errorf("PEM block is %q, want CERTIFICATE", block.Type)
+		}
+		if len(bytes.TrimSpace(rest)) != 0 {
+			return nil, fmt.Errorf("file must hold exactly one certificate")
+		}
+		der = block.Bytes
+	}
+	if _, err := x509.ParseCertificate(der); err != nil {
+		return nil, fmt.Errorf("parse certificate: %w", err)
+	}
+	return der, nil
+}
+
+func servingLeafDigest(der []byte) string {
+	sum := sha256.Sum256(der)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 // evidenceFromAttestLBJSON verifies an attest-lb bundle against the nonce

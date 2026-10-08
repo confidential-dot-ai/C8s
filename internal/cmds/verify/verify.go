@@ -99,13 +99,18 @@ type Defaults struct {
 }
 
 type config struct {
-	url           string
-	kind          string
-	mode          string
-	server        string
-	timeout       time.Duration
-	fromFile      string
-	discoveryPath string
+	url      string
+	kind     string
+	mode     string
+	server   string
+	timeout  time.Duration
+	fromFile string
+	// observedServingCert and attestationNonce complete a saved attest-lb
+	// receipt (--from-file --mode attest-lb): the leaf the client saw on the
+	// same connection and the challenge it sent.
+	observedServingCert string
+	attestationNonce    string
+	discoveryPath       string
 
 	measurements       []string
 	measurementsFile   string
@@ -170,6 +175,8 @@ Evidence sources:
                          fetched from AMD KDS). Default mode: cds → armtls-cert,
                          lb → discovery, auto → discovery then serving cert.
   --from-file FILE       verify a saved PEM cert or attestation-response JSON.
+                         With --mode attest-lb, also pass --attestation-nonce
+                         and --observed-serving-cert from the same connection.
 
   c8s cds verify https://cds.example.com:8443 --measurements <sha384-hex>
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex>
@@ -200,6 +207,8 @@ responder chose).`,
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
 	f.StringVar(&cfg.fromFile, "from-file", "", "verify evidence from a saved PEM certificate or attestation-response JSON instead of dialing")
+	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "with --from-file --mode attest-lb: the serving leaf (PEM or DER) observed on the HTTPS connection that returned the receipt")
+	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "with --from-file --mode attest-lb: the 32-byte challenge sent with the receipt request, as canonical unpadded base64url")
 
 	f.StringSliceVar(&cfg.measurements, "measurements", nil, "allowed SHA-384 hex launch measurement(s) (repeatable / comma-separated); empty = no pinning (UNSAFE). On TDX this pins MRTD only, which covers just the TDVF firmware — use --image-manifest to pin the whole guest image instead (the two are mutually exclusive: the manifest already pins MRTD exactly)")
 	f.StringVar(&cfg.measurementsFile, "measurements-file", "", "text file of allowed launch measurements, one hex digest per line; use --image-policy-file for complete JSON policies; excludes --image-manifest")
@@ -248,6 +257,10 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 		return exitUsage
 	}
 
+	if err := validateReceiptFlags(cfg); err != nil {
+		fmt.Fprintf(errOut, "error: %v\n", err)
+		return exitUsage
+	}
 	plan, err := buildPolicy(cfg)
 	if err != nil {
 		fmt.Fprintf(errOut, "error: %v\n", err)
@@ -367,6 +380,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		return exitNoEvidence
 	}
 	oc := newOutcome(cfg, ev, result, verr, plan)
+	oc.ServingLeafSHA256 = ev.servingLeafSHA256
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
@@ -929,6 +943,9 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		if err != nil {
 			return nil, err
 		}
+		if resolveMode(cfg) == "attest-lb" {
+			return gatherFromAttestLBFile(data, cfg.attestationNonce, cfg.observedServingCert, "file "+cfg.fromFile)
+		}
 		return gatherFromFile(data, overrideERD, "file "+cfg.fromFile, trust)
 	}
 	if cfg.url == "" {
@@ -1107,6 +1124,23 @@ type Outcome struct {
 	WorkloadAllowlistVersion string `json:"workload_allowlist_version,omitempty"`
 	WorkloadAllowlistDigest  string `json:"workload_allowlist_digest,omitempty"`
 	WorkloadNote             string `json:"workload_note,omitempty"`
+	// ServingLeafSHA256 is the unpadded base64url SHA-256 of the serving leaf
+	// an attest-lb transcript bound, so a client can match it to the
+	// certificate it saw.
+	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+}
+
+// validateReceiptFlags ties --observed-serving-cert and --attestation-nonce
+// to a saved attest-lb receipt: that mode needs both, no other mode takes them.
+func validateReceiptFlags(cfg config) error {
+	receipt := cfg.fromFile != "" && resolveMode(cfg) == "attest-lb"
+	if receipt && (cfg.observedServingCert == "" || cfg.attestationNonce == "") {
+		return fmt.Errorf("--from-file with --mode attest-lb needs --observed-serving-cert and --attestation-nonce from the same connection")
+	}
+	if !receipt && (cfg.observedServingCert != "" || cfg.attestationNonce != "") {
+		return fmt.Errorf("--observed-serving-cert and --attestation-nonce apply only with --from-file and --mode attest-lb")
+	}
+	return nil
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /

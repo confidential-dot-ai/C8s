@@ -977,6 +977,25 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
 
+### Verify a saved attest-lb receipt
+
+A client that saved an `attest-lb` response can verify it later. Keep the
+32-byte challenge the client sent and the serving certificate it saw on the
+same HTTPS connection; a certificate fetched over another connection proves
+nothing about that receipt.
+
+```bash
+c8s verify --kind workload --mode attest-lb --from-file receipt.json \
+  --attestation-nonce "$NONCE" --observed-serving-cert serving-leaf.pem \
+  --mesh-ca mesh-ca.pem --workload "$ROUTER_WORKLOAD" -o json
+```
+
+`NONCE` is the challenge as unpadded base64url. The verdict checks the
+challenge, the serving certificate, the mesh identity proof and the hardware
+report, and reports `serving_leaf_sha256` so the client can match it to the
+certificate it saw. It is never `fresh`: it says what that connection was, not
+what the front door serves now.
+
 ## router upstream
 
 ### Built-in allowlist route

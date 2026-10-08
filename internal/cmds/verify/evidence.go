@@ -92,6 +92,9 @@ type evidence struct {
 	// frontDoorCertSHA256 is the hex SHA-256 of the leaf the live handshake
 	// presented ("" when no handshake was observed).
 	frontDoorCertSHA256 string
+	// servingLeafSHA256 is the unpadded base64url SHA-256 of the serving leaf
+	// an attest-lb transcript was verified against ("" for other gathers).
+	servingLeafSHA256 string
 	// leafKeyProven is true when a live TLS handshake with the leaf completed,
 	// which proves the presenter holds the attested private key. A forged body
 	// carrying someone else's attested SubjectPublicKeyInfo cannot complete
