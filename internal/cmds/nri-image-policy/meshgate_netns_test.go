@@ -122,7 +122,7 @@ func TestVerifyRejectsAReplacedNamespaceInTheNamespace(t *testing.T) {
 		path: sandboxNetNSPath(other),
 		id:   proven.id,
 	}
-	err = verifyPodRuleset(replaced, *meshRoles())
+	err = verifyPodRuleset(replaced, *meshRoles(), "default")
 	if err == nil || !strings.Contains(err.Error(), "was replaced") {
 		t.Fatalf("error = %v, want the replaced-namespace refusal", err)
 	}
@@ -185,7 +185,7 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 
 	// A second install into the same namespace is refused, so the pod's
 	// protection cannot be replaced under a running container.
-	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pid)}, *gate.policy); !errors.Is(err, ruleset.ErrForeignRules) {
+	if err := installPodRuleset(podNamespace{path: sandboxNetNSPath(pid)}, *gate.policy, "default"); !errors.Is(err, ruleset.ErrForeignRules) {
 		t.Fatalf("second install = %v, want ErrForeignRules", err)
 	}
 

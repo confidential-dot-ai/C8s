@@ -58,3 +58,15 @@ func TestNodeImageBootConfigRequiresCredentialBinding(t *testing.T) {
 		t.Fatalf("boot config with a staged credential binding: %v", err)
 	}
 }
+
+func TestMeshRoleBindingsIncludeCompiledRoles(t *testing.T) {
+	for role := range meshRoles().reservedIdentities() {
+		t.Run(role, func(t *testing.T) {
+			cfg := meshConfigForLoad(t)
+			cfg.Allowlist.Base = roleBase(t, pushDigestB, role, []string{"/usr/local/bin/c8s"})
+			if _, err := loadMeshConfigDocument(t, cfg); err != nil {
+				t.Fatalf("role %s refused at load: %v", role, err)
+			}
+		})
+	}
+}

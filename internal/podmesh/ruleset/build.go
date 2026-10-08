@@ -4,6 +4,7 @@ package ruleset
 
 import (
 	"fmt"
+	"net"
 	"net/netip"
 	"slices"
 
@@ -57,13 +58,15 @@ func build(p Policy) []chain {
 }
 
 // captureInbound redirects application TCP arriving at the pod to the inbound
-// listener; loopback and the health port stay uncaptured.
+// listener; loopback, the health port and the ports a server role answers on
+// itself stay uncaptured.
 func captureInbound(p Policy) chain {
 	rules := []rule{
 		{"loopback", withVerdict(matchInputLoopback(), expr.VerdictReturn)},
 		{"health-port", withVerdict(matchTCPPort(p.Capture.Health), expr.VerdictReturn)},
-		{"redirect-to-inbound-listener", redirectTCP(p.Capture.Inbound)},
 	}
+	rules = append(rules, serverListenerRules(p, expr.VerdictReturn)...)
+	rules = append(rules, rule{"redirect-to-inbound-listener", redirectTCP(p.Capture.Inbound)})
 	return captureChain("capture-inbound", *nftables.ChainHookPrerouting, rules)
 }
 
@@ -82,18 +85,22 @@ func captureOutbound(p Policy) chain {
 	}
 	resolverTCP := fmt.Sprintf("resolver-%s-tcp", p.Resolver)
 	rules = append(rules, rule{resolverTCP, withVerdict(matchResolver(p.Resolver, unix.IPPROTO_TCP), expr.VerdictReturn)})
+	rules = append(rules, serverClusterCaptureRules(p)...)
+	rules = append(rules, serverEgressRules(p, expr.VerdictReturn)...)
 	rules = append(rules, rule{"redirect-to-outbound-listener", redirectTCP(p.Capture.Outbound)})
 	return captureChain("capture-outbound", *nftables.ChainHookOutput, rules)
 }
 
 // filterInput denies traffic entering the pod unless it is a reply, loopback,
-// neighbour discovery, or addressed to a mesh listener.
+// neighbour discovery, or addressed to a mesh listener or to a port the pod's
+// server role answers on itself.
 func filterInput(p Policy) chain {
 	rules := slices.Concat(replyAndControlRules(), []rule{
 		{"loopback", withVerdict(matchInputLoopback(), expr.VerdictAccept)},
 		{"inbound-listener", withVerdict(matchTCPPort(p.Capture.Inbound), expr.VerdictAccept)},
 		{"health-port", withVerdict(matchTCPPort(p.Capture.Health), expr.VerdictAccept)},
 	})
+	rules = append(rules, serverListenerRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-input", *nftables.ChainHookInput, rules)
 }
 
@@ -116,6 +123,8 @@ func filterOutput(p Policy) chain {
 	for _, role := range p.Roles {
 		rules = append(rules, roleDestinationRules(role)...)
 	}
+	rules = append(rules, serverClusterDropRules(p)...)
+	rules = append(rules, serverEgressRules(p, expr.VerdictAccept)...)
 	return denyChain("filter-output", *nftables.ChainHookOutput, rules)
 }
 
@@ -155,6 +164,67 @@ func denyChain(name string, hook nftables.ChainHook, rules []rule) chain {
 		policy:   nftables.ChainPolicyDrop,
 		rules:    rules,
 	}
+}
+
+// serverListenerRules match the ports this pod's server role answers on
+// itself.
+func serverListenerRules(p Policy, kind expr.VerdictKind) []rule {
+	rules := make([]rule, 0, len(p.Server.Listeners))
+	for _, port := range p.Server.Listeners {
+		name := fmt.Sprintf("server-listener-%d", port)
+		rules = append(rules, rule{name, withVerdict(matchTCPPort(port), kind)})
+	}
+	return rules
+}
+
+// serverClusterCaptureRules redirect the egress identity's traffic to an
+// egress port inside the cluster into the pod's outbound listener. They
+// precede the egress exception, so a connection to a member rides the mesh
+// like any other application connection.
+func serverClusterCaptureRules(p Policy) []rule {
+	var rules []rule
+	for _, port := range p.Server.Egress.Ports {
+		for _, in := range p.Server.ClusterRanges {
+			exprs := slices.Concat(serverClusterMatch(p, port, in), redirectTo(p.Capture.Outbound))
+			rules = append(rules, rule{serverClusterRuleName(port, in), exprs})
+		}
+	}
+	return rules
+}
+
+// serverClusterDropRules state the same bound where the permissions are, so
+// neither chain alone carries plaintext from this pod to a member.
+func serverClusterDropRules(p Policy) []rule {
+	var rules []rule
+	for _, port := range p.Server.Egress.Ports {
+		for _, in := range p.Server.ClusterRanges {
+			exprs := withVerdict(serverClusterMatch(p, port, in), expr.VerdictDrop)
+			rules = append(rules, rule{serverClusterRuleName(port, in), exprs})
+		}
+	}
+	return rules
+}
+
+func serverClusterMatch(p Policy, port uint16, in netip.Prefix) []expr.Any {
+	return slices.Concat(matchSocketUID(p.Server.Egress.UID), matchDestinationRange(in), matchTCPPort(port))
+}
+
+func serverClusterRuleName(port uint16, in netip.Prefix) string {
+	return fmt.Sprintf("server-egress-%d-in-cluster-%s", port, in)
+}
+
+// serverEgressRules match the egress identity's traffic to its egress ports
+// outside the cluster: the one traffic of a member pod that leaves it in the
+// clear. The identity that forwards application traffic is not that one, so a
+// forwarded connection is captured wherever its destination resolves.
+func serverEgressRules(p Policy, kind expr.VerdictKind) []rule {
+	var rules []rule
+	for _, port := range p.Server.Egress.Ports {
+		exprs := slices.Concat(matchSocketUID(p.Server.Egress.UID), matchTCPPort(port))
+		name := fmt.Sprintf("server-egress-%d", port)
+		rules = append(rules, rule{name, withVerdict(exprs, kind)})
+	}
+	return rules
 }
 
 // roleDestinationRules permit a role's sockets the services trusted policy
@@ -211,6 +281,31 @@ func matchLocalDestination() []expr.Any {
 
 func matchResolver(addr netip.Addr, proto uint8) []expr.Any {
 	return slices.Concat(matchDestination(addr), matchProtocol(proto), matchTransportDestinationPort(resolverPort))
+}
+
+// matchDestinationRange pins a range to its family and compares the masked
+// destination, so one rule covers a whole pod or Service range.
+func matchDestinationRange(in netip.Prefix) []expr.Any {
+	family := uint8(unix.NFPROTO_IPV4)
+	offset := uint32(16)
+	if in.Addr().Is6() {
+		family = unix.NFPROTO_IPV6
+		offset = 24
+	}
+	raw := in.Masked().Addr().AsSlice()
+	mask := net.CIDRMask(in.Bits(), len(raw)*8)
+	return []expr.Any{
+		meta(expr.MetaKeyNFPROTO), compare([]byte{family}),
+		loadHeader(expr.PayloadBaseNetworkHeader, offset, uint32(len(raw))),
+		&expr.Bitwise{
+			SourceRegister: compareRegister,
+			DestRegister:   compareRegister,
+			Len:            uint32(len(raw)),
+			Mask:           mask,
+			Xor:            make([]byte, len(raw)),
+		},
+		compare(raw),
+	}
 }
 
 // matchDestination pins an address to its family, so an IPv4 rule cannot
@@ -279,10 +374,16 @@ func matchICMPv6Type(messageType uint8) []expr.Any {
 		[]expr.Any{loadHeader(expr.PayloadBaseTransportHeader, 0, 1), compare([]byte{messageType})})
 }
 
-// redirectTCP sends a connection to a mesh listener of the pod, leaving its
-// original destination in the namespace's conntrack entry.
+// redirectTCP sends a TCP connection to a mesh listener of the pod, leaving
+// its original destination in the namespace's conntrack entry.
 func redirectTCP(port uint16) []expr.Any {
-	return append(matchProtocol(unix.IPPROTO_TCP),
+	return slices.Concat(matchProtocol(unix.IPPROTO_TCP), redirectTo(port))
+}
+
+// redirectTo is that redirection alone, for a rule that matched the protocol
+// itself.
+func redirectTo(port uint16) []expr.Any {
+	return []expr.Any{
 		&expr.Immediate{
 			Register: compareRegister,
 			Data:     networkU16(port),
@@ -292,7 +393,7 @@ func redirectTCP(port uint16) []expr.Any {
 			RegisterProtoMax: compareRegister,
 			Flags:            unix.NF_NAT_RANGE_PROTO_SPECIFIED,
 		},
-	)
+	}
 }
 
 func meta(key expr.MetaKey) expr.Any {
