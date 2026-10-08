@@ -5,6 +5,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha512"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -80,5 +81,29 @@ func TestJournalRoutes(t *testing.T) {
 	}
 	if code := get(t, r, http.MethodPost, wellKnown+"/state/challenge"); code != http.StatusBadRequest {
 		t.Errorf("POST state/challenge without nonce = %d, want 400", code)
+	}
+}
+
+// The journal's policy digest is the one leaf stamps carry, so a client can
+// compare a stamp against the rollout bound.
+func TestJournalPolicyMatchesSnapshotDigest(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.StartJournal("sha256:auth", 0); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := loadPolicySnapshot(&store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.State()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "sha256:" + hex.EncodeToString(snapshot.Digest); st.Policy != want {
+		t.Fatalf("journal policy = %s, want snapshot digest %s", st.Policy, want)
 	}
 }
