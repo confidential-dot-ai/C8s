@@ -74,7 +74,8 @@ const AnnotationInjected = "confidential.ai/c8s-injected"
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the
-// NRI plugin bind-mounts the directory into exactly these containers.
+// NRI plugin bind-mounts the directory into these containers and into an
+// application's own cds-attest sidecar (IsSocketConsumer).
 const (
 	CertContainerName   = "c8s-cert"
 	SecretContainerName = "c8s-secret"
@@ -89,6 +90,19 @@ const CertWaitContainerName = "c8s-cert-wait"
 // receive the inventory socket-directory mount.
 func IsSidecarContainer(name string) bool {
 	return name == CertContainerName || name == SecretContainerName || name == VolumeContainerName
+}
+
+// AttestContainerName is the cds-attest sidecar an application may run itself
+// to serve per-pod attestation receipts. The webhook does not inject it, so it
+// is not an injected container name; it only receives the socket mount.
+const AttestContainerName = "cds-attest"
+
+// IsSocketConsumer reports whether name receives the read-only inventory
+// socket-directory mount: the injected sidecars and an application's
+// cds-attest. The name is not a boundary; every socket in the directory binds
+// its caller by peer credentials.
+func IsSocketConsumer(name string) bool {
+	return IsSidecarContainer(name) || name == AttestContainerName
 }
 
 // IsInjectedContainerName reports whether name is one the admission webhook
