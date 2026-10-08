@@ -5,13 +5,16 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -76,12 +79,35 @@ func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout ti
 	if servingLeaf == nil {
 		return nil, fmt.Errorf("attest-lb needs a TLS target: no serving certificate was observed")
 	}
-	return evidenceFromAttestLBJSON(data, nonce, servingLeaf, fmt.Sprintf("attest-lb endpoint %s", u.Redacted()))
+	return evidenceFromAttestLBJSON(data, nonce, servingLeaf, true, fmt.Sprintf("attest-lb endpoint %s", u.Redacted()))
+}
+
+// gatherAttestLBFromFile verifies a saved attest-lb receipt against the
+// challenge and serving leaf the caller recorded when fetching it. The
+// caller chose the nonce, so nothing proves the receipt is current.
+func gatherAttestLBFromFile(data []byte, servingCertPath, nonceB64, source string) (*evidence, error) {
+	nonce, err := base64.RawURLEncoding.DecodeString(nonceB64)
+	if err != nil || len(nonce) != nonceSize {
+		return nil, fmt.Errorf("--attestation-nonce must be %d bytes of unpadded base64url", nonceSize)
+	}
+	pemData, err := os.ReadFile(servingCertPath)
+	if err != nil {
+		return nil, fmt.Errorf("read --observed-serving-cert: %w", err)
+	}
+	block, _ := pem.Decode(pemData)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("--observed-serving-cert %s holds no PEM certificate", servingCertPath)
+	}
+	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+		return nil, fmt.Errorf("parse --observed-serving-cert: %w", err)
+	}
+	return evidenceFromAttestLBJSON(data, nonce, block.Bytes, false, source)
 }
 
 // evidenceFromAttestLBJSON verifies an attest-lb bundle against the nonce
-// sent and the serving leaf observed on the same connection.
-func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, source string) (*evidence, error) {
+// sent and the serving leaf observed on the same connection. fresh reports
+// whether this process generated the nonce.
+func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, source string) (*evidence, error) {
 	var r attestationResponse
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("parse attestation response: %w", err)
@@ -117,7 +143,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, source string) (*
 		platform:         platformOrDefault(r.Platform),
 		rawEvidence:      r.Evidence,
 		erd:              erd,
-		fresh:            true,
+		fresh:            fresh,
 		source:           source,
 		bindingNote:      "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + the serving leaf this connection presented + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
 		leaf:             leaf,
