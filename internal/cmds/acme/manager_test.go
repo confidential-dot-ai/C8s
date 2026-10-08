@@ -584,6 +584,24 @@ func TestIndependentHostnameIssuanceAndExpansion(t *testing.T) {
 	if !sameDomainSet(leaf.DNSNames, testDomains) || installs != 3 {
 		t.Fatalf("expanded SANs = %v, installs = %d", leaf.DNSNames, installs)
 	}
+	// A due certificate keeps a name the probe misses until 5/6 of its lifetime.
+	productionReady.Store(false)
+	key, chain = backdatedCert(t, ca, testDomains, -9*time.Hour, 3*time.Hour)
+	writeCertPair(t, mgr, key, chain)
+	mgr.ensure(ctx)
+	if installs != 3 {
+		t.Fatal("renewal dropped a name the certificate still covers")
+	}
+	key, chain = backdatedCert(t, ca, testDomains, -11*time.Hour, time.Hour)
+	writeCertPair(t, mgr, key, chain)
+	mgr.ensure(ctx)
+	leaf, err = mgr.diskLeaf()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(leaf.DNSNames, testDomains[1:]) || installs != 4 {
+		t.Fatalf("shrunk SANs = %v, installs = %d", leaf.DNSNames, installs)
+	}
 	if len(mgr.tokens) != 0 {
 		t.Fatal("probe tokens remain")
 	}

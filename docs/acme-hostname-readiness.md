@@ -21,7 +21,9 @@ A name that is not in the signed launch file is not eligible for issuance.
 
 The router keeps a valid certificate if it already covers the reachable names.
 A failed readiness check does not remove that certificate. At renewal, issuance
-can only cover names whose HTTP challenge paths reach this router. Keep those
-paths available for the names that still serve traffic.
+can only cover names whose HTTP challenge paths reach this router. If a covered
+name fails the check, the router keeps the current certificate and checks again
+every minute. It drops that name only in the last sixth of the certificate's
+lifetime. Keep those paths available for the names that still serve traffic.
 
 This change does not add DNS-01 or live hostname updates.
