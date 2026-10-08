@@ -239,7 +239,11 @@ spec:
             {{- if not (and $renderAllowlistProxy $attestUsesHTTPSUpstream) }}
             {{- fail "router.attest.pinnedAllowlist requires router.allowlist.enabled and router.upstream.protocol=https" }}
             {{- end }}
+            {{- if .Values.router.routes }}
+            {{- fail "router.attest.pinnedAllowlist forwards only to router.upstream; remove router.routes" }}
+            {{- end }}
             - --cds-state-url=http://127.0.0.1:{{ .Values.router.allowlist.proxyPort }}
+            - --lb-forward-port={{ .Values.router.attest.forwardPort }}
             {{- end }}
             # The identity-bound PQ flow must use the TEE-held mesh
             # credential, never the optional publicTLS Secret: report_data

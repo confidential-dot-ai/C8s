@@ -160,9 +160,9 @@ type Config struct {
 	// SessionMaxAge is the absolute session lifetime from establishment,
 	// enforced regardless of activity. Defaults to defaultSessionMaxAge.
 	SessionMaxAge time.Duration
-	// CDSStateURL is the allowlist-proxy base URL. Set, attest-pq binds each
-	// session to CDS's nonce-bound rollout state and fences it (rollout.go).
-	CDSStateURL string
+	// Rollout, when set, binds attestation bundles to CDS's nonce-bound
+	// rollout state and fences sessions on it (rollout.go).
+	Rollout *rollout
 }
 
 type establishedSession struct {
@@ -216,12 +216,8 @@ func NewServer(cfg Config) *Server {
 	if backend == nil {
 		backend = EchoBackend{}
 	}
-	var fence *rollout
-	if cfg.CDSStateURL != "" {
-		fence = newRollout(cfg.CDSStateURL, cfg.MeshIdentityCAFile)
-	}
 	return &Server{
-		rollout:          fence,
+		rollout:          cfg.Rollout,
 		cfg:              cfg,
 		log:              cfg.Logger,
 		backend:          backend,
@@ -576,6 +572,14 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, types.ErrorCodeAttestationUnavailable, "could not obtain attestation evidence")
 		return
 	}
+	var state *types.SignedRolloutState
+	if s.rollout != nil {
+		if state, _, err = s.rollout.challenge(r.Context(), nonce); err != nil {
+			s.log.Error("CDS rollout state unavailable", "error", err)
+			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeAttestationUnavailable, "could not obtain the CDS rollout state")
+			return
+		}
+	}
 
 	servingLeafHash := sha256.Sum256(servingLeafDER)
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
@@ -588,6 +592,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		FrontDoorMode:     s.cfg.FrontDoorMode,
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
+		CDSState:          state,
 	})
 }
 
