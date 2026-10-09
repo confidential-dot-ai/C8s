@@ -54,7 +54,7 @@ jobs:
         with:
           # A full major.minor.patch is resolved in-process; anything less is
           # looked up over the network before the linter runs.
-          version: v2.13.2
+          version: v2.14.0
 
   test:
     name: Build & Test
