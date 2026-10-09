@@ -626,6 +626,12 @@ and the baked floor stands alone there.
 
 Always on: the chart wires the NRI inventory socket and the operator flag,
 and the plugin NRI-mounts the socket directory into the injected sidecars.
+An application that runs the `c8s cds-attest` sidecar itself, to serve
+per-pod attestation receipts, names that container `cds-attest`: the plugin
+mounts the directory into it too, so it reaches the node's attestation
+service at `unix:///run/c8s/workload-claims/attestation-api.sock`. The pod
+must carry the injection annotation. The container name is not a boundary;
+every socket in the directory binds its caller by peer credentials.
 get-cert is fail-closed on an inventory error, so a broken inventory blocks
 workload cert issuance — by design.
 
