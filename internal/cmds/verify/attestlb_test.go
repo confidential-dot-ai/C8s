@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,9 @@ func TestGatherAttestLBFromFile(t *testing.T) {
 	}
 	if want := servingLeafDigest(ts.Certificate().Raw); ev.servingLeafSHA256 != want {
 		t.Errorf("servingLeafSHA256 = %q, want %q (the observed leaf)", ev.servingLeafSHA256, want)
+	}
+	if !strings.Contains(ev.bindingNote, "--observed-serving-cert") {
+		t.Errorf("bindingNote = %q, want it to name the caller-supplied serving leaf", ev.bindingNote)
 	}
 
 	var object map[string]any

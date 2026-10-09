@@ -142,6 +142,10 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 		return nil, &securityError{err: err}
 	}
 
+	servingLeafNote := "the serving leaf this connection presented"
+	if !fresh {
+		servingLeafNote = "the serving leaf recorded when the receipt was fetched (--observed-serving-cert)"
+	}
 	sandboxID, sandboxErr := armtls.SandboxIDFromCert(leaf)
 	workload, workloadErr := armtls.MatchedWorkloadFromCert(leaf)
 	return &evidence{
@@ -150,7 +154,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 		erd:               erd,
 		fresh:             fresh,
 		source:            source,
-		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + the serving leaf this connection presented + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
+		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
 		leaf:              leaf,
 		leafChainDerived:  true,
 		frontDoor:         frontDoorAttested,

@@ -1425,8 +1425,11 @@ func TestRenderTextSections(t *testing.T) {
 
 	t.Run("non-fresh and unpinned verdicts carry their warnings", func(t *testing.T) {
 		got := renderOut(Outcome{Verified: true})
-		if !strings.Contains(got, "freshness NOT proven") {
+		if !strings.Contains(got, "freshness NOT proven (no per-request nonce bound)") {
 			t.Errorf("missing the non-freshness note:\n%s", got)
+		}
+		if got := renderOut(Outcome{Verified: true, ServingLeafSHA256: "x"}); !strings.Contains(got, "nonce was caller-chosen") {
+			t.Errorf("saved attest-lb receipt: missing the caller-chosen nonce note:\n%s", got)
 		}
 		if !strings.Contains(got, "no --measurements pinned") {
 			t.Errorf("missing the unpinned warning:\n%s", got)

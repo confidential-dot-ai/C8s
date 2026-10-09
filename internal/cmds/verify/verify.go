@@ -1712,7 +1712,13 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	} else if oc.OperatorKeysNote != "" {
 		fmt.Fprintf(out, "  operator keys: %s\n", oc.OperatorKeysNote)
 	}
-	if !oc.Fresh {
+	switch {
+	case oc.Fresh:
+	case oc.ServingLeafSHA256 != "":
+		// A non-fresh attest-lb verdict comes from a saved receipt: the nonce is
+		// bound, but the caller chose it.
+		fmt.Fprintf(out, "  note:         freshness NOT proven (nonce was caller-chosen, not verifier-generated; the receipt may be stale)\n")
+	default:
 		fmt.Fprintf(out, "  note:         freshness NOT proven (no per-request nonce bound)\n")
 	}
 	if !oc.Pinned {
