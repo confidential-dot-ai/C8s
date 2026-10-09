@@ -49,6 +49,28 @@ served_allowlist() {
     curl -sSfk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist"
 }
 
+# Signed with the harness's operator key, as its own allowlist checks are.
+allowlist_put() {
+    local code
+    code="$(cds_write PUT "/allowlist/workloads/$1" "$2")"
+    [ "$code" = 204 ] || { echo "backend: PUT /allowlist/workloads/$1: HTTP $code" >&2; return 1; }
+}
+
+allowlist_delete() {
+    local code
+    code="$(cds_write DELETE "/allowlist/workloads/$1" /dev/null)"
+    case "$code" in
+        204|404) ;;
+        *) echo "backend: DELETE /allowlist/workloads/$1: HTTP $code" >&2; return 1 ;;
+    esac
+}
+
+# The installer renders the base allowlist into the plugin's config directory
+# on the node; a digest is a string that appears nowhere else in it.
+base_declares() {
+    if node_exec grep -rqF "$2" /etc/nri/conf.d; then echo yes; else echo no; fi
+}
+
 enforcer_ready() {
     kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=120s >/dev/null &&
         node_exec test -S /var/run/nri-image-policy/workload-claims.sock

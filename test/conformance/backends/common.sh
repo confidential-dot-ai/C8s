@@ -16,12 +16,17 @@
 #   image_digest <ref>               the digest the enforcer compares for ref
 #   image_alias <ref> <name>         make the node resolve name to ref's bytes
 #   served_allowlist                 the allowlist document CDS serves, as JSON
+#   allowlist_put <name> <file>      write the entry in file under name, signed
+#   allowlist_delete <name>          delete the entry; absent is not an error
+#   base_declares <node> <digest>    yes/no: the node's base allowlist names digest
+#   pull_interval                    how often the enforcer pulls, as a Go duration
 #   enforcer_ready <node>            the node's policy enforcer is enforcing
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
 #   pod_manifest <name> <ns> <node> <image> <command...>
 #                                    a pod manifest pinned to node
-# node_name, image_ref, image_digest and served_allowlist answer the same for
-# a whole run; callers may cache them.
+# node_name, image_ref and image_digest answer the same for a whole run;
+# callers may cache them. The allowlist is state: served_allowlist answers
+# for the moment of the call.
 set -o pipefail
 
 C8S_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -35,13 +40,26 @@ kubeconfig() { echo "$KUBECONFIG"; }
 
 # "rogue" is the harness's curl image, deliberately off the install-time floor;
 # "nginx" is its workload image, on the floor (kind) or put there by setup (metal).
+# The rest are public images no floor and no base allowlist names, for the
+# scenarios that write their own entries; each has its own digest.
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/$WORKLOAD_IMAGE" ;;
+        tenant-app) echo "docker.io/library/busybox:1.36.1" ;;
+        job-runner) echo "docker.io/library/alpine:3.20" ;;
+        model-server) echo "docker.io/library/debian:bookworm-slim" ;;
+        model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         *) return $UNSUPPORTED ;;
     esac
 }
+
+# The enforcer's pull interval: the chart's nriImagePolicy.refresh.interval,
+# which the node image bakes as the equal value (node-guest-image/c8s/
+# image-policy.yaml.in, allowlist.pull.interval). The enforcer exposes
+# nothing about the version it holds, and containerd discards its log, so
+# the steps wait this out rather than observe it.
+pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node.
 pod_manifest() {
