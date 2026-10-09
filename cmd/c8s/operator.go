@@ -36,6 +36,7 @@ by this command.`,
 			DisableStatusMirror:       !statusMirrorEnabled,
 			GetCertImage:              getCertImage,
 			CDSURL:                    cdsURL,
+			CDSSecretsURL:             cdsSecretsURL,
 			AttestationApiURL:         attestationApiURL,
 			CDSMeasurements:           cdsMeasurements,
 			CDSRTMRs:                  cdsRTMRs,
@@ -62,6 +63,7 @@ var (
 	statusMirrorEnabled     bool
 	getCertImage            string
 	cdsURL                  string
+	cdsSecretsURL           string
 	attestationApiURL       string
 	cdsMeasurements         []string
 	cdsMeasurementsConfig   string
@@ -87,6 +89,7 @@ func init() {
 	operatorCmd.Flags().BoolVar(&statusMirrorEnabled, "status-mirror-enabled", true, "enable CRD-backed ConfidentialWorkload status mirror controller")
 	operatorCmd.Flags().StringVar(&getCertImage, "get-cert-image", "", "image reference the admission webhook injects for get-cert containers (empty = webhook disabled)")
 	operatorCmd.Flags().StringVar(&cdsURL, "cds-url", "", "CDS Service URL the injected get-cert containers POST to")
+	operatorCmd.Flags().StringVar(&cdsSecretsURL, "cds-secrets-url", "", "CDS Service URL of the secret routes, which require the pod's mesh leaf as a client certificate; the injected secret and volume fetchers read from it")
 	operatorCmd.Flags().StringVar(&attestationApiURL, "attestation-api-url", "", "attestation-api endpoint (empty = no verification)")
 	operatorCmd.Flags().StringSliceVar(&cdsMeasurements, "cds-measurements", nil, "SHA-384 hex launch measurement(s) the injected secret fetcher requires CDS to present (repeatable; empty pins none)")
 	cmdsutil.BindImagePolicyFlags(operatorCmd.Flags(), &cdsMeasurementsConfig, nil, "", "propagates the complete CDS identity policy to injected sidecars; excludes --cds-measurements and --cds-rtmrs")

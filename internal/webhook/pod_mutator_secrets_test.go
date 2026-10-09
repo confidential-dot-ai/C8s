@@ -13,6 +13,7 @@ func secretsConfig() Config {
 	return Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		CDSURL:            "https://cds.c8s-system.svc:8443",
+		CDSSecretsURL:     "https://cds.c8s-system.svc:8444",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 		CertDir:           "/etc/c8s/certs",
 	}
@@ -94,7 +95,8 @@ func TestFetcherArgs(t *testing.T) {
 	args := strings.Join(containerNamed(pod, reservedSecretContainerName).Args, " ")
 	for _, want := range []string{
 		"get-secret",
-		"--cds-url=https://cds.c8s-system.svc:8443",
+		// The secret routes are on their own listener.
+		"--cds-secrets-url=https://cds.c8s-system.svc:8444",
 		"--secret=DB=/api/db",
 		"--secret=HF=/api/hf",
 		"--out-dir=" + defaultSecretDir,

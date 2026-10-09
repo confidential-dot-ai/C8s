@@ -57,7 +57,7 @@ func write(t *testing.T, path string, b []byte) {
 
 func testConfig(url string) Config {
 	return Config{
-		CDSURL:            url,
+		SecretsURL:        url,
 		AttestationApiURL: "http://127.0.0.1:8080",
 		Attempts:          3,
 		RetryInterval:     time.Millisecond,

@@ -46,7 +46,7 @@ func TestParseVolumeSpecAcceptsTheLongestServableName(t *testing.T) {
 
 func validConfig() config {
 	return config{
-		CDSURL:            "https://cds.example",
+		SecretsURL:        "https://cds.example",
 		AttestationApiURL: "http://127.0.0.1:8400",
 		Attempts:          60,
 		RetryInterval:     5 * time.Second,
@@ -64,8 +64,8 @@ func TestValidate(t *testing.T) {
 	}
 
 	for name, mutate := range map[string]func(*config){
-		"cds url":           func(c *config) { c.CDSURL = "" },
-		"plaintext cds url": func(c *config) { c.CDSURL = "http://cds.example" },
+		"cds url":           func(c *config) { c.SecretsURL = "" },
+		"plaintext cds url": func(c *config) { c.SecretsURL = "http://cds.example" },
 		"attestation api":   func(c *config) { c.AttestationApiURL = "" },
 		"no volumes":        func(c *config) { c.Volumes = nil },
 		"socket dir":        func(c *config) { c.SocketDir = "" },
@@ -87,18 +87,18 @@ func TestValidate(t *testing.T) {
 
 func TestValidateTrimsURL(t *testing.T) {
 	cfg := validConfig()
-	cfg.CDSURL = "https://cds.example/"
+	cfg.SecretsURL = "https://cds.example/"
 	if err := validate(&cfg); err != nil {
 		t.Fatalf("validate: %v", err)
 	}
-	if cfg.CDSURL != "https://cds.example" {
-		t.Fatalf("CDSURL = %q, want the trailing slash gone", cfg.CDSURL)
+	if cfg.SecretsURL != "https://cds.example" {
+		t.Fatalf("SecretsURL = %q, want the trailing slash gone", cfg.SecretsURL)
 	}
 }
 
 func TestNewCmdHasTheSidecarFlags(t *testing.T) {
 	cmd := NewCmd()
-	for _, flag := range []string{"cds-url", "attestation-api-url", "cert", "key", "volume", "socket-dir", "attempts"} {
+	for _, flag := range []string{"cds-secrets-url", "attestation-api-url", "cert", "key", "volume", "socket-dir", "attempts"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing --%s", flag)
 		}

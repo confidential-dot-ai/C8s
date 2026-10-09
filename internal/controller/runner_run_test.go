@@ -53,6 +53,7 @@ func fullWiringOptions(t *testing.T) Options {
 	return Options{
 		GetCertImage:       "ghcr.io/c8s/c8s:latest",
 		CDSURL:             "https://cds.c8s-system.svc",
+		CDSSecretsURL:      "https://cds.c8s-system.svc:8444",
 		WebhookConfigName:  "c8s-mutating",
 		WebhookServiceName: "c8s-webhook",
 		LeaderElectionNS:   "c8s-system",

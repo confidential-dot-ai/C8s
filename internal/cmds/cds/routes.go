@@ -30,22 +30,13 @@ type dependencies struct {
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
 }
 
-func newRouter(deps dependencies) http.Handler {
-	if deps.MaxRequestSize <= 0 {
-		panic("cds: dependencies.MaxRequestSize must be positive")
-	}
-	if deps.RateLimiter == nil {
-		panic("cds: dependencies.RateLimiter must be set")
-	}
-	if deps.ChallengeLimiter == nil {
-		panic("cds: dependencies.ChallengeLimiter must be set")
-	}
-	if deps.ChallengeLimiter == deps.RateLimiter {
-		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
-	}
-	// One CA for the whole router: the handler signs with the certificate
-	// /ca publishes.
-	deps.AttestHandler.MeshCA = deps.MeshCA
+// newIssuanceRouter serves the routes that authorize no caller by
+// certificate: the challenge and attest exchanges, the public documents, and
+// the operator-token writes.
+func newIssuanceRouter(deps dependencies) http.Handler {
+	validateIssuanceDeps(deps)
+	attest := deps.AttestHandler
+	attest.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -55,8 +46,8 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/readyz", attestation.HandleReadyz(deps.ReadyFn))
 	r.Method(http.MethodGet, "/metrics", promhttp.Handler())
 
-	r.Method(http.MethodPost, "/authenticate", deps.challengeProtected(attestation.HandleAuthenticate(deps.AttestHandler.Challenges)))
-	r.Method(http.MethodPost, "/attest", deps.protected(http.HandlerFunc(deps.AttestHandler.HandleAttest)))
+	r.Method(http.MethodPost, "/authenticate", deps.challengeProtected(attestation.HandleAuthenticate(attest.Challenges)))
+	r.Method(http.MethodPost, "/attest", deps.protected(http.HandlerFunc(attest.HandleAttest)))
 
 	// GET is unauthenticated (armTLS integrity only); every mutation goes
 	// through allowlistWrite (operator-JWT auth in the handler + rate limit +
@@ -66,16 +57,9 @@ func newRouter(deps dependencies) http.Handler {
 	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
 	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
 
-	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
-	// token. PUT is the operator's, on allowlistWrite so it carries the same
-	// body-bound operator token an allowlist mutation does.
+	// The operator's half of the secret routes: a body-bound operator token
+	// authorizes these, the same one an allowlist mutation carries.
 	if deps.SecretsHandler != nil {
-		if deps.SecretsOperator == nil || deps.SecretsExplain == nil {
-			panic("cds: dependencies.SecretsOperator and SecretsExplain must be set alongside SecretsHandler")
-		}
-		r.Method(http.MethodPost, secrets.ChallengeRoute, deps.perSandbox(attestation.HandleAuthenticate(deps.SecretsChallenges)))
-		r.Method(http.MethodGet, secrets.Route, deps.perSandbox(deps.SecretsHandler))
-		r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
 		r.Method(http.MethodPut, secrets.Route, deps.allowlistWrite(deps.SecretsOperator))
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
@@ -85,6 +69,58 @@ func newRouter(deps dependencies) http.Handler {
 	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
 
 	return r
+}
+
+// newSecretsRouter serves the workload's half of the secret routes, whose
+// listener requires the pod's mesh leaf. See docs/secrets.md.
+func newSecretsRouter(deps dependencies) http.Handler {
+	validateSecretsDeps(deps)
+	r := chi.NewRouter()
+	r.Use(server.RequestLogger)
+
+	r.Method(http.MethodPost, secrets.ChallengeRoute, deps.perSandbox(attestation.HandleAuthenticate(deps.SecretsChallenges)))
+	r.Method(http.MethodGet, secrets.Route, deps.perSandbox(deps.SecretsHandler))
+	r.Method(http.MethodPost, secrets.Route, deps.perSandbox(deps.SecretsHandler))
+
+	return r
+}
+
+// validateIssuanceDeps refuses a wiring no route-level test would catch.
+func validateIssuanceDeps(deps dependencies) {
+	validateSharedDeps(deps)
+	if deps.ChallengeLimiter == nil {
+		panic("cds: dependencies.ChallengeLimiter must be set")
+	}
+	if deps.ChallengeLimiter == deps.RateLimiter {
+		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
+	}
+	if deps.SecretsHandler != nil && (deps.SecretsOperator == nil || deps.SecretsExplain == nil) {
+		panic("cds: dependencies.SecretsOperator and SecretsExplain must be set alongside SecretsHandler")
+	}
+}
+
+// validateSecretsDeps refuses a secrets listener that could answer without the
+// handler and challenge pool its routes authenticate against.
+func validateSecretsDeps(deps dependencies) {
+	validateSharedDeps(deps)
+	if deps.SecretsHandler == nil {
+		panic("cds: dependencies.SecretsHandler must be set to serve the secret routes")
+	}
+	if deps.SecretsChallenges == nil {
+		panic("cds: dependencies.SecretsChallenges must be set alongside SecretsHandler")
+	}
+}
+
+func validateSharedDeps(deps dependencies) {
+	if deps.MaxRequestSize <= 0 {
+		panic("cds: dependencies.MaxRequestSize must be positive")
+	}
+	if deps.RateLimiter == nil {
+		panic("cds: dependencies.RateLimiter must be set")
+	}
+	if deps.MeshCA == nil {
+		panic("cds: dependencies.MeshCA must be set")
+	}
 }
 
 // allowlistWriteBodyCap bounds an allowlist mutation body. A workload document
