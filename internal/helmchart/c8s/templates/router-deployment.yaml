@@ -208,6 +208,11 @@ spec:
             - name: discovery
               mountPath: {{ include "router.discoveryDir" . }}
               readOnly: true
+            {{- /* Mounted on both lanes, so one measured mount set covers
+            them; --routes-file is what makes the front door read it. */}}
+            - name: router-routes
+              mountPath: {{ include "router.routesDir" . }}
+              readOnly: true
             - name: nginx-cache
               mountPath: /var/cache/nginx
             {{- /* The entrypoint renders the configuration here, and nginx
@@ -411,6 +416,13 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        {{- /* Projected, so the kubelet stages it on tmpfs: the memory-backed
+        storage the measured base requires of a data mount. */}}
+        - name: router-routes
+          projected:
+            sources:
+              - configMap:
+                  name: {{ include "router.fullname" . }}-routes
         - name: nginx-cache
           emptyDir:
             medium: Memory

@@ -133,6 +133,7 @@
 {{- $attestRules = append $attestRules (dict "destination" (include "router.publicTLSDir" $root) "kind" "data" "source" "public-tls") -}}
 {{- end -}}
 {{- $frontDoorRules = append $frontDoorRules (dict "destination" (include "router.discoveryDir" $root) "kind" "emptyDir" "source" "discovery") -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" (include "router.routesDir" $root) "kind" "data" "source" "router-routes") -}}
 {{- $frontDoorRules = append $frontDoorRules (dict "destination" "/var/cache/nginx" "kind" "emptyDir" "source" "nginx-cache") -}}
 {{- $frontDoorRules = append $frontDoorRules (dict "destination" "/tmp" "kind" "emptyDir" "source" "nginx-tmp") -}}
 {{- $frontDoorMounts := dict "policy" "exact" "rules" $frontDoorRules -}}

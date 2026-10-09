@@ -58,7 +58,7 @@ func superviseWith(ctx context.Context, t *testing.T, dir string, watched []stri
 	t.Helper()
 	done := make(chan error, 1)
 	go func() {
-		done <- supervise(ctx, filepath.Join(dir, "nginx"), "/dev/null", watched, testTick)
+		done <- supervise(ctx, filepath.Join(dir, "nginx"), frontDoor{conf: "/dev/null", credentials: watched}, testTick)
 	}()
 	return done
 }
@@ -174,7 +174,7 @@ func TestSuperviseRefusesAConfigurationNginxWillNotLoad(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "refuse"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err := supervise(context.Background(), filepath.Join(dir, "nginx"), "/dev/null", credentials(t), testTick)
+	err := supervise(context.Background(), filepath.Join(dir, "nginx"), frontDoor{conf: "/dev/null", credentials: credentials(t)}, testTick)
 	if err == nil || !strings.Contains(err.Error(), "nginx -t") {
 		t.Fatalf("supervise returned %v, want the nginx -t failure", err)
 	}
@@ -189,4 +189,60 @@ func waitFor(t *testing.T, message string, done func() bool) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+// The route data is not a credential: a ConfigMap that goes away, or arrives
+// empty, leaves the front door serving the configuration it has, and a file
+// the renderer refuses is read again on the next change rather than marked
+// seen.
+func TestSuperviseKeepsServingThroughBadRouteData(t *testing.T) {
+	dir, hups := fakeNginx(t)
+	watched := credentials(t)
+	conf := filepath.Join(t.TempDir(), "nginx.conf")
+	routes := writeRoutes(t, validRoutes)
+	front := frontDoor{
+		cfg:         validConfig(),
+		routesFile:  routes,
+		conf:        conf,
+		credentials: watched,
+	}
+	if err := front.rerender(context.Background(), filepath.Join(dir, "nginx")); err != nil {
+		t.Fatalf("the first render: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- supervise(ctx, filepath.Join(dir, "nginx"), front, testTick)
+	}()
+
+	for _, body := range []string{"", `{"routes": [{"path": "/x"}]}`} {
+		if err := os.WriteFile(routes, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(200 * time.Millisecond)
+		if hups() != 0 {
+			t.Fatalf("nginx was reloaded onto route data the renderer refuses (%q)", body)
+		}
+	}
+	if err := os.Remove(routes); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(200 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Fatalf("the front door exited on withdrawn route data: %v", err)
+	default:
+	}
+
+	// The same file, corrected, is picked up: the refusals left the last
+	// served bytes on record.
+	if err := os.WriteFile(routes, []byte(validRoutes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "a corrected routes file was never read again", func() bool {
+		return hups() > 0
+	})
+	cancel()
+	<-done
 }

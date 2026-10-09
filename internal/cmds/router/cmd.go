@@ -34,6 +34,7 @@ const (
 func NewCmd() *cobra.Command {
 	var cfg Config
 	var routes []string
+	var routesFile string
 	cmd := &cobra.Command{
 		Use:   "router",
 		Short: "Run the confidential front door (renders the nginx configuration and supervises nginx)",
@@ -60,7 +61,10 @@ process exits so the front door stops serving a certificate C8s took back.`,
 			if err := requireOriginsForCORS(cmd); err != nil {
 				return err
 			}
-			return run(cmd.Context(), cfg)
+			if err := requireOneRouteSource(cmd); err != nil {
+				return err
+			}
+			return run(cmd.Context(), cfg, routesFile)
 		},
 	}
 	f := cmd.Flags()
@@ -94,6 +98,7 @@ process exits so the front door stops serving a certificate C8s took back.`,
 	f.StringSliceVar(&cfg.CORS.ExposeHeaders, "cors-expose-header", nil, "response header browsers may read, repeatable")
 	f.BoolVar(&cfg.CORS.AllowCredentials, "cors-allow-credentials", false, "allow credentialed cross-origin requests")
 	f.IntVar(&cfg.CORS.MaxAge, "cors-max-age", 600, "seconds browsers may cache a preflight response")
+	f.StringVar(&routesFile, "routes-file", "", "file of typed route data the front door reads and re-reads at runtime, instead of --backend and --route")
 	f.BoolVar(&cfg.ACME, "acme", false, "publish the :80 server whose HTTP-01 location reaches the acme sidecar")
 
 	for _, required := range []string{"cert", "key", "mesh-ca"} {
@@ -180,8 +185,23 @@ func requireOriginsForCORS(cmd *cobra.Command) error {
 	return nil
 }
 
-func run(ctx context.Context, cfg Config) error {
-	validated, err := cfg.Validate()
+// requireOneRouteSource keeps the two sources of route data apart: the flags
+// are the install lane's, the file is the baked lane's, and a front door that
+// took both could serve a backend neither of them names.
+func requireOneRouteSource(cmd *cobra.Command) error {
+	if !cmd.Flags().Changed("routes-file") {
+		return nil
+	}
+	for _, flag := range []string{"backend", "route"} {
+		if cmd.Flags().Changed(flag) {
+			return fmt.Errorf("--routes-file carries the backend and the routes, so --%s must not be set as well", flag)
+		}
+	}
+	return nil
+}
+
+func run(ctx context.Context, cfg Config, routesFile string) error {
+	validated, err := validatedConfig(cfg, routesFile)
 	if err != nil {
 		return err
 	}
@@ -194,5 +214,21 @@ func run(ctx context.Context, cfg Config) error {
 	}
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	return supervise(ctx, nginxBinary, configPath, validated.WatchedFiles(), reloadInterval)
+	front := frontDoor{
+		cfg:         cfg,
+		routesFile:  routesFile,
+		conf:        configPath,
+		credentials: validated.WatchedFiles(),
+	}
+	return supervise(ctx, nginxBinary, front, reloadInterval)
+}
+
+// validatedConfig is the configuration the front door starts on: the flags'
+// on the install lane, and the mounted route data in place of them where a
+// file carries it.
+func validatedConfig(cfg Config, routesFile string) (Config, error) {
+	if routesFile == "" {
+		return cfg.Validate()
+	}
+	return readRoutesFile(cfg, routesFile)
 }

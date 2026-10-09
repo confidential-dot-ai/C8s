@@ -337,6 +337,7 @@ var nodeImageResourceNamespaces = map[string]string{
 	routerWorkloadKey:                  workloadclaims.RouterNamespace,
 	"Service/c8s-router":               workloadclaims.RouterNamespace,
 	"NetworkPolicy/c8s-router-ingress": workloadclaims.RouterNamespace,
+	"ConfigMap/c8s-router-routes":      workloadclaims.RouterNamespace,
 }
 
 // requireNodeImageNamespace rejects a namespaced resource the chart placed

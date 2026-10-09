@@ -22,16 +22,86 @@ var errWithdrawn = errors.New("the generation was withdrawn")
 // fingerprint identifies the bytes of every watched file together.
 type fingerprint [sha256.Size]byte
 
+// frontDoor is what the supervisor keeps serving: the credentials nginx
+// loads, and the route data it renders its configuration from.
+type frontDoor struct {
+	cfg Config
+	// routesFile is empty on the install lane, where the flags carry the
+	// routes and nothing is re-read.
+	routesFile  string
+	conf        string
+	credentials []string
+}
+
+// served identifies the bytes the running configuration was rendered and
+// loaded from. The two halves are separate because only one of them is a
+// credential: a credential that disappears is a withdrawal, route data that
+// does is a document to keep ignoring.
+type served struct {
+	credentials fingerprint
+	routes      fingerprint
+}
+
+// routesFingerprint identifies the route data as it reads now. A file that is
+// gone, empty or unreadable leaves the running configuration in place, like
+// one the renderer refuses: the route data is not a credential.
+func (f frontDoor) routesFingerprint() (fingerprint, error) {
+	if f.routesFile == "" {
+		return fingerprint{}, nil
+	}
+	content, err := os.ReadFile(f.routesFile)
+	if err != nil {
+		return fingerprint{}, err
+	}
+	return fingerprint(sha256.Sum256(content)), nil
+}
+
+// rerender renders the configuration the current route data describes, tests
+// it as nginx will read it, and moves it over the live file only then: a
+// refused render leaves the configuration nginx is serving on disk, so a
+// restart comes up on it too.
+func (f frontDoor) rerender(ctx context.Context, binary string) error {
+	if f.routesFile == "" {
+		return nil
+	}
+	cfg, err := readRoutesFile(f.cfg, f.routesFile)
+	if err != nil {
+		return err
+	}
+	conf, err := Render(cfg)
+	if err != nil {
+		return err
+	}
+	staged := f.conf + ".next"
+	if err := os.WriteFile(staged, []byte(conf), 0o600); err != nil {
+		return err
+	}
+	if err := nginxTest(ctx, binary, staged); err != nil {
+		return errors.Join(err, os.Remove(staged))
+	}
+	return os.Rename(staged, f.conf)
+}
+
 // supervise runs binary as this process's child and keeps it serving the
-// current credentials, re-reading them every tick. It returns when nginx
-// exits, when ctx ends, or when a watched file is withdrawn.
-func supervise(ctx context.Context, binary, conf string, watched []string, tick time.Duration) error {
+// current credentials and route data, re-reading them every tick. It returns
+// when nginx exits, when ctx ends, or when a watched credential is withdrawn.
+func supervise(ctx context.Context, binary string, front frontDoor, tick time.Duration) error {
+	conf := front.conf
+	watched := front.credentials
 	if err := nginxTest(ctx, binary, conf); err != nil {
 		return err
 	}
-	previous, err := fileFingerprint(watched)
+	credentials, err := fileFingerprint(watched)
 	if err != nil {
 		return err
+	}
+	routes, err := front.routesFingerprint()
+	if err != nil {
+		return err
+	}
+	previous := served{
+		credentials: credentials,
+		routes:      routes,
 	}
 	nginx := exec.Command(binary, "-c", conf, "-g", "daemon off;")
 	nginx.Stdout = os.Stdout
@@ -53,7 +123,7 @@ func supervise(ctx context.Context, binary, conf string, watched []string, tick 
 		case err := <-exited:
 			return err
 		case <-ticker.C:
-			current, err := fileFingerprint(watched)
+			credentials, err := fileFingerprint(watched)
 			if err != nil {
 				if !errors.Is(err, errWithdrawn) {
 					return err
@@ -67,18 +137,33 @@ func supervise(ctx context.Context, binary, conf string, watched []string, tick 
 				slog.Error("front door withdrawn", "error", withdrawn, "nginx", stopped)
 				return withdrawn
 			}
+			routes, err := front.routesFingerprint()
+			if err != nil {
+				slog.Warn("keeping the running configuration: the route data is unreadable", "error", err)
+				continue
+			}
+			current := served{
+				credentials: credentials,
+				routes:      routes,
+			}
 			if current == previous {
 				continue
 			}
+			// A refusal leaves the last served bytes on record, so the next
+			// tick reads the file again and a corrected one is picked up.
+			if err := front.rerender(ctx, binary); err != nil {
+				slog.Warn("keeping the running configuration: the route data is refused", "error", err)
+				continue
+			}
 			if err := nginxTest(ctx, binary, conf); err != nil {
-				slog.Warn("keeping the running configuration", "error", err)
+				slog.Warn("keeping the running configuration: nginx refuses it", "error", err)
 				continue
 			}
 			if err := signalNginx(nginx, syscall.SIGHUP); err != nil {
 				return err
 			}
 			previous = current
-			slog.Info("reloaded nginx on a credential change")
+			slog.Info("reloaded nginx", "routes", front.routesFile != "")
 		}
 	}
 }

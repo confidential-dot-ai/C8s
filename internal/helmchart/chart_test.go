@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/router"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -2324,9 +2325,9 @@ func TestRouterGlobalCORSCoversEveryLocation(t *testing.T) {
 		"--key=/etc/c8s/certs/tls.key",
 		"--mesh-ca=/etc/c8s/certs/ca.crt",
 		"--resolver=kube-dns.kube-system.svc.cluster.local",
+		"--backend-read-timeout=3600s",
 		"--backend=vllm:8000",
 		"--backend-protocol=https",
-		"--backend-read-timeout=3600s",
 		"--attest-port=8800",
 		"--allowlist-proxy-port=8801",
 		"--allowlist-write-rate=1",
@@ -2571,6 +2572,66 @@ func TestRouterRejectsUnsecuredRoute(t *testing.T) {
 	}
 	if got := parseValidationErrorKind(out); got != "router_unsecured_route" {
 		t.Fatalf("validation kind = %q, want router_unsecured_route\n%s", got, out)
+	}
+}
+
+// A baked node's arguments are fixed at image build, so its route data
+// arrives as a mounted file of typed JSON instead, and the flags that would
+// carry the same values are not passed beside it. The image's own decoder
+// reads the rendered document here, so a key name the two sides disagree on
+// fails in CI rather than at startup on a node.
+func TestChartBakedRouterReadsItsRoutesFromTheMountedFile(t *testing.T) {
+	baked := []string{
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+	}
+	out, err := helmTemplate(t, baked...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertRouterArgs(t, out,
+		"--routes-file=/mnt/c8s-data/router-routes/routes.json",
+		// The read timeout crosses on this lane too, where no --backend does.
+		"--backend-read-timeout=3600s",
+	)
+	args := routerNginxArgs(t, out)
+	assertContainerNoArgPrefix(t, "nginx", args, "--backend=")
+	assertContainerNoArgPrefix(t, "nginx", args, "--route=")
+
+	routes := renderedConfigMap(t, out, "c8s-router-routes").Data["routes.json"]
+	file, err := router.ParseRoutesFile([]byte(routes))
+	if err != nil {
+		t.Fatalf("the image refuses the route data the chart writes: %v\n%s", err, routes)
+	}
+	if file.Backend.Address != "c8s-infer.c8s-system.svc.cluster.local:8000" || file.Backend.Protocol != "http" {
+		t.Errorf("the routes file carries the backend %+v", file.Backend)
+	}
+
+	// The same mount is there whatever the lane, so one measured mount set
+	// covers both.
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	mount, ok := containerVolumeMount(nginx, "router-routes")
+	if !ok || mount.MountPath != "/mnt/c8s-data/router-routes" || !mount.ReadOnly {
+		t.Fatalf("the front door mounts its route data as (%+v, %v)", mount, ok)
+	}
+
+	// Built with no backend at all, the front door still names the resolver,
+	// so a backend the routes file gains at runtime resolves.
+	out, err = helmTemplate(t, append(slices.Clone(baked), "--set-string", "router.upstream.address=")...)
+	if err != nil {
+		t.Fatalf("helm template without an upstream: %v\n%s", err, out)
+	}
+	assertRouterArgs(t, out, "--resolver=kube-dns.kube-system.svc.cluster.local")
+	empty := renderedConfigMap(t, out, "c8s-router-routes").Data["routes.json"]
+	file, err = router.ParseRoutesFile([]byte(empty))
+	if err != nil {
+		t.Fatalf("the image refuses the empty route data the chart writes: %v\n%s", err, empty)
+	}
+	if file.Backend.Address != "" || len(file.Routes) != 0 {
+		t.Errorf("a router built with no backend carries the route data %+v", file)
 	}
 }
 
@@ -3839,9 +3900,9 @@ func Example_routerArgs() {
 	// --key=/etc/c8s/certs/tls.key
 	// --mesh-ca=/etc/c8s/certs/ca.crt
 	// --resolver=kube-dns.kube-system.svc.cluster.local
+	// --backend-read-timeout=3600s
 	// --backend=vllm.c8s-system.svc:8000
 	// --backend-protocol=https
-	// --backend-read-timeout=3600s
 	// --route=path=/models,backend=c8s-cds.c8s-system.svc:8443,match=exact,protocol=https
 	// --route=path=/tenant/,backend=tenant-router.c8s-system.svc:8080,match=prefix,protocol=https
 	// --allowlist-proxy-port=8801
@@ -5756,9 +5817,9 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 				"--key=/etc/c8s/certs/tls.key",
 				"--mesh-ca=/etc/c8s/certs/ca.crt",
 				"--resolver=kube-dns.kube-system.svc.cluster.local",
+				"--backend-read-timeout=3600s",
 				"--backend=c8s-infer.c8s-system.svc.cluster.local:8000",
 				"--backend-protocol=http",
-				"--backend-read-timeout=3600s",
 				"--attest-port=8800",
 				"--allowlist-proxy-port=8801",
 				"--allowlist-write-rate=1",
@@ -5962,9 +6023,10 @@ func observedLaunch(pod corev1.PodSpec, container corev1.Container) pkgallowlist
 }
 
 // observedMount is one mount as the node classifies it: a hostPath carries
-// the digest of its source path, a Secret arrives under the kubelet's own
-// plugin directory as operator-supplied data, and a kubelet volume's host
-// source ends in the pod volume's name, which is what an exact rule binds.
+// the digest of its source path, a Secret or ConfigMap arrives under the
+// kubelet's own plugin directory as operator-supplied data, and a kubelet
+// volume's host source ends in the pod volume's name, which an exact rule
+// binds.
 func observedMount(pod corev1.PodSpec, mount corev1.VolumeMount) pkgallowlist.ObservedMount {
 	volume, _ := podVolume(pod, mount.Name)
 	if volume.HostPath != nil {
@@ -5982,7 +6044,18 @@ func observedMount(pod corev1.PodSpec, mount corev1.VolumeMount) pkgallowlist.Ob
 		}
 	}
 	class := pkgallowlist.MountEmptyDir
+	storage := pkgallowlist.MountMemory
 	if volume.Secret != nil {
+		class = pkgallowlist.MountData
+	}
+	if volume.ConfigMap != nil {
+		// A ConfigMap volume rests in the kubelet's own directory, which on a
+		// node of this contract is the encrypted scratch.
+		class = pkgallowlist.MountData
+		storage = pkgallowlist.MountEncrypted
+	}
+	if volume.Projected != nil {
+		// The kubelet stages a projected volume on tmpfs, whatever the node.
 		class = pkgallowlist.MountData
 	}
 	return pkgallowlist.ObservedMount{
@@ -5990,7 +6063,7 @@ func observedMount(pod corev1.PodSpec, mount corev1.VolumeMount) pkgallowlist.Ob
 		Source:      podVolumeSource(mount.Name),
 		Volume:      mount.Name,
 		Class:       class,
-		Storage:     pkgallowlist.MountMemory,
+		Storage:     storage,
 	}
 }
 

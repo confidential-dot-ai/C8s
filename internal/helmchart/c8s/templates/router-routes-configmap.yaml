@@ -1,0 +1,16 @@
+{{- if .Values.router.enabled }}
+{{- /* The front door's route data, as typed JSON it validates itself: no
+       field is an nginx directive, and a file it refuses leaves the
+       configuration it is serving in place. The baked lane reads it; the
+       install lane carries the same values as flags. */}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "router.fullname" . }}-routes
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+    {{- include "router.labels" . | nindent 4 }}
+data:
+  routes.json: |
+    {{- include "router.routesJSON" . | nindent 4 }}
+{{- end }}
