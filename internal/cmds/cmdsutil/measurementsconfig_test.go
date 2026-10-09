@@ -278,20 +278,20 @@ func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	policy, source, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{})
+	policy, fromNode, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{})
 	if err != nil {
 		t.Fatalf("ResolveCDSPins: %v", err)
 	}
 	if len(policy.Images) == 0 {
 		t.Fatal("node policy loaded no images")
 	}
-	if source != path {
-		t.Fatalf("source = %q, want the node policy path", source)
+	if !fromNode {
+		t.Fatal("the node policy did not decide")
 	}
 
 	// One exact message, so the client is told which argument to drop.
 	_, _, err = ResolveCDSPins(path, ImagePolicySource{File: "/tmp/other.json"}, MeasurementPins{})
-	want := "this node pins CDS in " + path + "; remove --image-policy-file"
+	want := "this node provides " + path + "; remove --image-policy-file"
 	if err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
@@ -320,15 +320,15 @@ func TestResolveCDSPinsFallsBackToArguments(t *testing.T) {
 	digest := strings.Repeat("ab", 48)
 	path := filepath.Join(t.TempDir(), "absent.json")
 
-	policy, source, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{Measurements: []string{digest}, Prefix: "cds-"})
+	policy, fromNode, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{Measurements: []string{digest}, Prefix: "cds-"})
 	if err != nil {
 		t.Fatalf("ResolveCDSPins: %v", err)
 	}
 	if len(policy.Measurements) != 1 {
 		t.Fatalf("policy measurements = %v, want the supplied digest", policy.Measurements)
 	}
-	if source != "arguments" {
-		t.Fatalf("source = %q, want the arguments", source)
+	if fromNode {
+		t.Fatal("a node that mounts no policy decided")
 	}
 }
 
@@ -401,7 +401,7 @@ func TestResolveCDSPinsFailsOnAnUnreadablePolicy(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
 	}
-	if !strings.Contains(err.Error(), "node CDS policy") {
+	if !strings.Contains(err.Error(), "node policy") {
 		t.Fatalf("error = %v, want it to name the node policy", err)
 	}
 }

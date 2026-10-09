@@ -62,6 +62,10 @@ type workloadClaimsConfig struct {
 	// writes from its own status.hostIP — the plugin is a host process and has
 	// no downward API of its own.
 	AdvertiseHost string `yaml:"advertise_host"`
+	// CDSNodePort is the port an injected credential client reaches CDS on, at
+	// this node's own address. A measured mesh policy binds that endpoint
+	// itself, so only an install sets this (cdsaddress.go).
+	CDSNodePort uint16 `yaml:"cds_node_port"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -211,13 +215,21 @@ const NodeIPFile = "node-ip"
 // policy the node's runtime wrapper reads (internal/cmds/c8srunc).
 const DefaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
-// loadConfig loads configuration from a YAML file.
+// loadConfig loads configuration from a YAML file, and completes the one
+// binding a launched node makes itself (cdsaddress.go).
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
-	return parseConfig(data)
+	cfg, err := parseConfig(data)
+	if err != nil {
+		return nil, err
+	}
+	if err := bindCredentialRole(cfg); err != nil {
+		return nil, fmt.Errorf("bind the %s role to the CDS this node reaches: %w", CredentialRole, err)
+	}
+	return cfg, nil
 }
 
 // parseConfig decodes and validates a config document. set-cds-pins reads the
@@ -294,6 +306,13 @@ func (c *config) NormalizedPlatform() string {
 		return c.Platform
 	}
 	return family.String()
+}
+
+// injectsCredentialClients reports whether a pod of this node carries the
+// webhook's credential clients: the inventory directory is what the plugin
+// mounts into them, and without it no pod of this node is injected.
+func (c *config) injectsCredentialClients() bool {
+	return c.WorkloadClaims.SocketDir != ""
 }
 
 // PullEnabled reports whether the plugin should poll a remote CDS.

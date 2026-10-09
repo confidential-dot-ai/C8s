@@ -26,6 +26,7 @@ import (
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // bindDeadResolver points the plugin at a real *ctrdresolver.Resolver on a socket
@@ -281,6 +282,13 @@ logging:
 func TestRun_WorkloadClaimsListenFailureSurfaces(t *testing.T) {
 	t.Setenv("NRI_PLUGIN_NAME", "")
 	dir := t.TempDir()
+	// A directory where the socket belongs: the node can still hand an
+	// injected client its endpoint, and only the listen fails.
+	if err := os.WriteFile(filepath.Join(dir, NodeIPFile), []byte("10.0.0.7\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	occupySocketPath(t, dir)
+	renderInTempDir(t)
 	cfgYAML := fmt.Sprintf(`
 plugin:
   health_addr: unix://%s/health.sock
@@ -301,13 +309,23 @@ policy:
   mode: fail-closed
   enforce_existing: false
 workload_claims:
-  socket_dir: %s/absent/deeper
+  socket_dir: %s
+  cds_node_port: 30808
 logging:
   level: error
 `, dir, dir, pushDigestA, dir)
 	err := runWithDeadline(t, 10*time.Second, []string{"-config", writeConfigYAML(t, cfgYAML)})
 	if err == nil || !strings.Contains(err.Error(), "start admission inventory") {
 		t.Fatalf("err = %v, want an admission-inventory start failure", err)
+	}
+}
+
+// occupySocketPath puts a directory where the inventory's socket belongs, so
+// the listen fails and nothing else does.
+func occupySocketPath(t *testing.T, socketDir string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(socketDir, workloadclaims.SocketName), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

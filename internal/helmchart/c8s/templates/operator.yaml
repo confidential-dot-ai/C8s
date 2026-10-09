@@ -46,7 +46,6 @@ spec:
             - --leader-election-namespace={{ .Release.Namespace }}
             - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
             - --get-cert-image={{ include "c8s.image" . }}
-            - --cds-url={{ include "c8s.trustRootURL" . }}
             - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
             - --webhook-service-name={{ include "c8s.operatorName" . }}
             - --webhook-service-namespace={{ .Release.Namespace }}

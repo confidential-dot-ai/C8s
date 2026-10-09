@@ -7,6 +7,8 @@ import (
 	"slices"
 
 	"github.com/containerd/nri/pkg/api"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The platform roles the enforcer acts on itself: the mesh endpoint, whose
@@ -100,6 +102,12 @@ func (p meshPolicy) validate() error {
 	for _, role := range p.Roles {
 		if role.Name != meshRole && len(role.Destinations) == 0 {
 			return fmt.Errorf("mesh.roles %s reaches nothing: give it a destination or drop it", role.Name)
+		}
+		if role.Name == CredentialRole && len(role.Destinations) != 1 {
+			return fmt.Errorf("mesh.roles %s needs exactly one destination, the CDS its clients dial", CredentialRole)
+		}
+		if role.Name != CredentialRole && role.UID == workloadclaims.CredentialsUID {
+			return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, CredentialRole)
 		}
 		if owner, taken := uids[role.UID]; taken {
 			return fmt.Errorf("mesh.roles %s and %s share uid %d", owner, role.Name, role.UID)

@@ -32,7 +32,6 @@ are injected.`,
 			DisableStatusMirror:         !statusMirrorEnabled,
 			GetCertImage:                getCertImage,
 			MeshImage:                   meshImage,
-			CDSURL:                      cdsURL,
 			AttestationApiURL:           attestationApiURL,
 			ExcludeNamespaces:           excludeNamespaces,
 			WebhookConfigName:           webhookConfigName,
@@ -58,7 +57,6 @@ var (
 	statusMirrorEnabled     bool
 	getCertImage            string
 	meshImage               string
-	cdsURL                  string
 	attestationApiURL       string
 	webhookConfigName       string
 	webhookServiceName      string
@@ -83,7 +81,6 @@ func init() {
 	operatorCmd.Flags().BoolVar(&statusMirrorEnabled, "status-mirror-enabled", true, "enable CRD-backed ConfidentialWorkload status mirror controller")
 	operatorCmd.Flags().StringVar(&getCertImage, "get-cert-image", "", "image reference the admission webhook injects for get-cert containers (empty = webhook disabled)")
 	operatorCmd.Flags().StringVar(&meshImage, "mesh-image", "", "armtls-mesh image the webhook injects as the pod mesh endpoint (empty = the node DaemonSet is the mesh and injection stays opt-in)")
-	operatorCmd.Flags().StringVar(&cdsURL, "cds-url", "", "CDS Service URL the injected get-cert containers POST to")
 	operatorCmd.Flags().StringVar(&attestationApiURL, "attestation-api-url", "", "attestation-api endpoint (empty = no verification)")
 	operatorCmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespaces", nil, "extra namespaces the startup reinject sweep skips (mirrors webhook.extraExcluded)")
 	operatorCmd.Flags().StringVar(&webhookConfigName, "webhook-config-name", "", "MutatingWebhookConfiguration to patch caBundle; the pod validator's configuration is named beside it (empty = skip)")

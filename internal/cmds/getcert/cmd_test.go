@@ -13,7 +13,7 @@ func TestNewCmdFlagDefaultsAndRequired(t *testing.T) {
 	flags := cmd.Flags()
 	// All three published files are required: a generation is atomic only if
 	// one pointer covers the leaf, the key and the CA.
-	for _, name := range []string{"cds-url", "attestation-api-url", "cert-path", "key-path", "ca-path"} {
+	for _, name := range []string{"attestation-api-url", "cert-path", "key-path", "ca-path"} {
 		flag := flags.Lookup(name)
 		if flag == nil {
 			t.Fatalf("flag %q not registered", name)
@@ -31,11 +31,9 @@ func TestNewCmdFlagDefaultsAndRequired(t *testing.T) {
 		{"san-file", ""},
 		{"no-san", "false"},
 		{"discovery-public-tls-mode", "cds"},
-		{"reload-watch-interval", "1m0s"},
 		{"ca-watch-interval", "0s"},
 		{"initial-retry-timeout", "2m0s"},
 		{"initial-retry-interval", "2s"},
-		{"reload-nginx", "true"},
 		{"workload-claims-timeout", "5s"},
 	}
 	for _, tt := range tests {

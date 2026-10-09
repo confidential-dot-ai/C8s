@@ -209,16 +209,17 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts) []string
 // credential sidecar, each at its own destination (sidecarAdjustment). An
 // empty source means the plugin mounts nothing there.
 type nodeMounts struct {
-	socketDir string
-	cdsPins   string
+	socketDir  string
+	cdsPins    string
+	cdsAddress string
 }
 
 // isInjectedNodeMount reports whether m is one of the mounts sidecarAdjustment
 // adds: read-only, from this plugin's own source, at that source's
 // destination, in a sidecar of an injected pod. Anything else at those
-// destinations is a host bind like any other — a foreign source would feed the
-// client another node's pins, and a writable one would let the container
-// replace the sockets or the pins it was given.
+// destinations is a host bind like any other — a foreign source would point the
+// client at another node's CDS, and a writable one would let the container
+// replace the sockets, the pins or the address it was given.
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
 	source := ""
 	switch m.GetDestination() {
@@ -226,6 +227,8 @@ func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, 
 		source = own.socketDir
 	case workloadclaims.CDSPinsPath:
 		source = own.cdsPins
+	case workloadclaims.CDSAddressPath:
+		source = own.cdsAddress
 	}
 	return source != "" && m.GetSource() == source &&
 		slices.Contains(m.GetOptions(), "ro") &&

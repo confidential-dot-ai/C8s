@@ -127,7 +127,10 @@ func Run(args []string) error {
 	if err := plugin.prepareCDSPins(); err != nil {
 		return fmt.Errorf("prepare the CDS pins handed to injected clients: %w", err)
 	}
-	logger.Info("CDS pins for injected clients", "path", plugin.cdsPins)
+	if err := plugin.prepareCDSAddress(); err != nil {
+		return fmt.Errorf("prepare the CDS address handed to injected clients: %w", err)
+	}
+	logger.Info("CDS policy for injected clients", "pins", plugin.cdsPins, "address", plugin.cdsAddress)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -466,17 +469,10 @@ func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.Sandb
 // usually wrong here — the chart points the plugin at the CDS NodePort on
 // loopback, whose route source is loopback.
 func digestsAdvertiseHost(cfg *config) (string, error) {
-	// Config first, then the file the chart's installer writes, then the
-	// environment — the node image bakes the plugin without an installer, so
-	// nri-node-ip.service writes it there. None of these needs to be trustworthy: a
-	// wrong host makes CDS fetch a key the token signature fails under, so it
-	// can only fail closed, never redirect.
-	host := cfg.WorkloadClaims.AdvertiseHost
-	if host == "" {
-		if b, err := os.ReadFile(filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)); err == nil {
-			host = strings.TrimSpace(string(b))
-		}
-	}
+	// This node's configured address, then the environment. None of these
+	// needs to be trustworthy: a wrong host makes CDS fetch a key the token
+	// signature fails under, so it can only fail closed, never redirect.
+	host := nodeConfiguredHost(cfg)
 	if host == "" {
 		host = strings.TrimSpace(os.Getenv("C8S_SANDBOX_DIGESTS_ADVERTISE_HOST"))
 	}

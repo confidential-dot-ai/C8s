@@ -71,10 +71,6 @@ const (
 	AnnotationCAFile     = "confidential.ai/c8s-ca-file"
 
 	AnnotationRenewInterval          = "confidential.ai/c8s-renew-interval"
-	AnnotationReloadNginx            = "confidential.ai/c8s-reload-nginx"
-	AnnotationReloadWatchPaths       = "confidential.ai/c8s-reload-watch-paths"
-	AnnotationReloadWatchVolume      = "confidential.ai/c8s-reload-watch-volume"
-	AnnotationReloadWatchMountPath   = "confidential.ai/c8s-reload-watch-mount-path"
 	AnnotationDiscoveryVolume        = "confidential.ai/c8s-discovery-volume"
 	AnnotationDiscoveryMountPath     = "confidential.ai/c8s-discovery-mount-path"
 	AnnotationDiscoveryOut           = "confidential.ai/c8s-discovery-out"
@@ -177,9 +173,6 @@ type Config struct {
 	// it makes the per-pod endpoint this cluster's mesh (see podMesh).
 	MeshImage string
 
-	// CDSURL points at the CDS Service in-cluster.
-	CDSURL string
-
 	// AttestationApiURL points at the node-local attestation-api.
 	AttestationApiURL string
 
@@ -261,7 +254,6 @@ type injection struct {
 	// pod namespace (see workloadSAN), falling back to the id verbatim.
 	SAN       string
 	Cert      certSpec
-	Reload    reloadSpec
 	Discovery discoverySpec
 	Security  getCertSecuritySpec
 	Secrets   secretsSpec
@@ -285,13 +277,6 @@ type volumesSpec struct {
 
 type certSpec struct {
 	RenewInterval time.Duration
-}
-
-type reloadSpec struct {
-	Nginx          bool
-	WatchPaths     []string
-	WatchVolume    string
-	WatchMountPath string
 }
 
 type discoverySpec struct {
@@ -321,10 +306,6 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 	inj := &injection{
 		WorkloadID: id,
 		SAN:        selectSAN(annotations, id, namespace),
-		Reload: reloadSpec{
-			WatchVolume:    annotations[AnnotationReloadWatchVolume],
-			WatchMountPath: annotations[AnnotationReloadWatchMountPath],
-		},
 		Secrets: secretsSpec{
 			Specs: listAnnotation(annotations, AnnotationSecrets),
 			Dir:   strings.TrimSpace(annotations[AnnotationSecretDir]),
@@ -345,12 +326,6 @@ func parseAnnotations(pod *corev1.Pod, namespace string) (*injection, error) {
 	var err error
 	if inj.Cert.RenewInterval, err = durationAnnotation(annotations, AnnotationRenewInterval); err != nil {
 		return nil, err
-	}
-	if inj.Reload.Nginx, err = boolAnnotation(annotations, AnnotationReloadNginx); err != nil {
-		return nil, err
-	}
-	if inj.Reload.WatchPaths = listAnnotation(annotations, AnnotationReloadWatchPaths); len(inj.Reload.WatchPaths) > 0 {
-		inj.Reload.Nginx = true
 	}
 	if inj.Security.RunAsUser, err = int64Annotation(annotations, AnnotationGetCertRunAsUser); err != nil {
 		return nil, err
@@ -448,10 +423,6 @@ func listAnnotation(annotations map[string]string, name string) []string {
 func hasInjectionDetailAnnotations(annotations map[string]string) bool {
 	for _, name := range []string{
 		AnnotationRenewInterval,
-		AnnotationReloadNginx,
-		AnnotationReloadWatchPaths,
-		AnnotationReloadWatchVolume,
-		AnnotationReloadWatchMountPath,
 		AnnotationDiscoveryVolume,
 		AnnotationDiscoveryMountPath,
 		AnnotationDiscoveryOut,
@@ -487,9 +458,6 @@ func (inj *injection) validate() error {
 	}
 	if inj.Cert.RenewInterval < 0 {
 		return fmt.Errorf("%w: %s must not be negative", errInvalidInjectionAnnotation, AnnotationRenewInterval)
-	}
-	if err := inj.Reload.validate(); err != nil {
-		return err
 	}
 	if err := inj.Discovery.validate(); err != nil {
 		return err
@@ -562,22 +530,6 @@ func (v volumesSpec) validate() error {
 	}
 	if v.Dir != "" && !strings.HasPrefix(v.Dir, "/") {
 		return fmt.Errorf("%w: %s must be an absolute path", errInvalidInjectionAnnotation, AnnotationVolumeDir)
-	}
-	return nil
-}
-
-func (r reloadSpec) validate() error {
-	if len(r.WatchPaths) == 0 {
-		if r.WatchVolume != "" || r.WatchMountPath != "" {
-			return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchVolume, AnnotationReloadWatchPaths)
-		}
-		return nil
-	}
-	if r.WatchVolume == "" {
-		return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchPaths, AnnotationReloadWatchVolume)
-	}
-	if r.WatchMountPath == "" {
-		return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchPaths, AnnotationReloadWatchMountPath)
 	}
 	return nil
 }
@@ -727,9 +679,6 @@ func rejectReservedResources(pod *corev1.Pod, inj *injection, cfg Config) error 
 	if err := rejectCredentialMounts(pod, certVolumeName); err != nil {
 		return err
 	}
-	if err := rejectNginxReload(inj); err != nil {
-		return err
-	}
 	if err := rejectUnforwardableProbes(pod); err != nil {
 		return err
 	}
@@ -753,17 +702,6 @@ func rejectCredentialPathAnnotations(pod *corev1.Pod) error {
 		}
 	}
 	return nil
-}
-
-// rejectNginxReload refuses the reload a pod cannot have under the per-pod
-// mesh: signalling nginx needs the shared PID namespace that would expose the
-// platform containers' credentials.
-func rejectNginxReload(inj *injection) error {
-	if !inj.Reload.Nginx {
-		return nil
-	}
-	return fmt.Errorf("%w: %s needs a shared PID namespace, which would expose the platform containers' credentials",
-		errInvalidInjectionAnnotation, AnnotationReloadNginx)
 }
 
 // rejectSharedNamespaces refuses a pod whose containers share a namespace with
@@ -928,10 +866,6 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 		})
 	}
 
-	if effective.Reload.Nginx {
-		pod.Spec.ShareProcessNamespace = new(true)
-	}
-
 	var probes []string
 	if cfg.podMesh() {
 		probes = rewriteWorkloadProbes(pod)
@@ -1086,14 +1020,12 @@ func meshProbe(path string, period, failureThreshold int32) *corev1.Probe {
 }
 
 // certContainer is the workload's mesh-cert sidecar. It publishes the pod's
-// credential generation on startup and keeps it fresh on a --renew-interval,
-// SIGHUP-ing nginx after each renewal when --reload-nginx is on.
+// credential generation on startup and keeps it fresh on a --renew-interval.
 //
 // Native sidecar (restartPolicy: Always) so it stays resident.
 func certContainer(inj *injection, cfg Config) corev1.Container {
 	args := []string{
 		"get-cert",
-		"--cds-url=" + cfg.CDSURL,
 		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
 		sanArg(inj.SAN),
 		"--cert-path=" + certPath(certFile),
@@ -1107,11 +1039,7 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		// A CA renewed or replaced under CDS mid-interval is picked up here
 		// rather than at the next scheduled renewal.
 		"--ca-watch-interval=" + caWatchInterval.String(),
-		"--reload-nginx=" + strconv.FormatBool(inj.Reload.Nginx),
 		"--continue-on-initial-error",
-	}
-	for _, path := range inj.Reload.WatchPaths {
-		args = append(args, "--reload-watch="+path)
 	}
 	args = append(args, discoveryArgs(inj.Discovery)...)
 	if inj.Verbose {
@@ -1126,7 +1054,7 @@ func certContainer(inj *injection, cfg Config) corev1.Container {
 		RestartPolicy:   &always,
 		Args:            args,
 		Env:             getCertEnv(inj),
-		VolumeMounts:    getCertVolumeMounts(inj, true),
+		VolumeMounts:    getCertVolumeMounts(inj),
 		SecurityContext: getCertSecurityContext(inj),
 		// The workload is gated on the initial cert by the c8s-cert-wait
 		// init container (certWaitContainer), not a startupProbe here: a
@@ -1173,7 +1101,7 @@ func certWaitContainer(inj *injection, cfg Config) corev1.Container {
 			"--timeout=" + certWaitTimeout.String(),
 			certPath(certFile),
 		},
-		VolumeMounts:    getCertVolumeMounts(inj, false),
+		VolumeMounts:    getCertVolumeMounts(inj),
 		SecurityContext: getCertSecurityContext(inj),
 	}
 }
@@ -1199,7 +1127,7 @@ func discoveryArgs(discovery discoverySpec) []string {
 	return args
 }
 
-func getCertVolumeMounts(inj *injection, includeReloadWatch bool) []corev1.VolumeMount {
+func getCertVolumeMounts(inj *injection) []corev1.VolumeMount {
 	mounts := []corev1.VolumeMount{
 		{Name: certVolumeName, MountPath: certDir},
 	}
@@ -1207,13 +1135,6 @@ func getCertVolumeMounts(inj *injection, includeReloadWatch bool) []corev1.Volum
 		mounts = append(mounts, corev1.VolumeMount{
 			Name:      inj.Discovery.Volume,
 			MountPath: inj.Discovery.MountPath,
-		})
-	}
-	if includeReloadWatch && inj.Reload.WatchVolume != "" && inj.Reload.WatchMountPath != "" {
-		mounts = append(mounts, corev1.VolumeMount{
-			Name:      inj.Reload.WatchVolume,
-			MountPath: inj.Reload.WatchMountPath,
-			ReadOnly:  true,
 		})
 	}
 	return mounts
@@ -1497,7 +1418,6 @@ func mediumName(m corev1.StorageMedium) string {
 func volumeContainer(inj *injection, cfg Config) corev1.Container {
 	args := []string{
 		"get-volume",
-		"--cds-url=" + cfg.CDSURL,
 		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
 		"--cert=" + certPath(certFile),
 		"--key=" + certPath(keyFile),
@@ -1516,7 +1436,7 @@ func volumeContainer(inj *injection, cfg Config) corev1.Container {
 		Env:             getCertEnv(inj),
 		// It reads the leaf and talks to the node agent's socket; the volumes
 		// themselves are mounted into the workload, not into this.
-		VolumeMounts:    getCertVolumeMounts(inj, false),
+		VolumeMounts:    getCertVolumeMounts(inj),
 		SecurityContext: getCertSecurityContext(inj),
 	}
 }
@@ -1531,7 +1451,6 @@ func volumeContainer(inj *injection, cfg Config) corev1.Container {
 func secretContainer(inj *injection, cfg Config) corev1.Container {
 	args := []string{
 		"get-secret",
-		"--cds-url=" + cfg.CDSURL,
 		"--attestation-api-url=" + cfg.sidecarAttestationApiURL(),
 		"--cert=" + certPath(certFile),
 		"--key=" + certPath(keyFile),
@@ -1552,7 +1471,7 @@ func secretContainer(inj *injection, cfg Config) corev1.Container {
 		// The only container with write access: the shared directory is
 		// readable pod-wide by design, but a workload able to write it could
 		// replace a value another container has yet to read.
-		VolumeMounts: append(getCertVolumeMounts(inj, false), corev1.VolumeMount{
+		VolumeMounts: append(getCertVolumeMounts(inj), corev1.VolumeMount{
 			Name:      secretsVolumeName,
 			MountPath: inj.Secrets.Dir,
 		}),

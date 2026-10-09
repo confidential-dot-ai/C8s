@@ -22,7 +22,6 @@
     # CrashLoopBackOff; still fails closed once the timeout elapses.
     - --initial-retry-timeout={{ $root.Values.certProvisioning.initialRetryTimeout }}
     - --renew-interval={{ .renewInterval }}
-    - --reload-nginx={{ default "false" .reloadNginx }}
     - --continue-on-initial-error
     {{- range .extraArgs }}
     - {{ . }}

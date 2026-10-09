@@ -33,7 +33,6 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		SAN:        "api",
 	}, Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:            "http://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 	})
 
@@ -55,13 +54,11 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		t.Fatalf("init container[0] name = %q, want c8s-cert", cert.Name)
 	}
 	for _, want := range []string{
-		"--cds-url=http://cds.c8s-system.svc:8443",
 		"--san=api",
 		"--cert-path=/etc/c8s/certs/tls.crt",
 		"--key-path=/etc/c8s/certs/tls.key",
 		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=2h0m0s",
-		"--reload-nginx=false",
 		"--continue-on-initial-error",
 	} {
 		if !hasArg(cert.Args, want) {
@@ -130,7 +127,6 @@ func TestMutatePodCertSidecarCarriesHostIPEnv(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:      "image",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://$(HOST_IP):8400",
 	})
 
@@ -164,7 +160,6 @@ func TestMutatePodPreservesExistingFSGroup(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:      "image",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
 	})
 
@@ -183,7 +178,6 @@ func TestMutatePodUsesConfiguredCertAndInitSecurity(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:        "image",
-		CDSURL:              "http://cds",
 		AttestationApiURL:   "http://attestation-api",
 		CertFSGroup:         new(int64(4242)),
 		CertRenewInterval:   time.Hour,
@@ -218,10 +212,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		Annotations: map[string]string{
 			AnnotationWorkload:               "c8s-router.c8s-system.svc",
 			AnnotationRenewInterval:          "1h",
-			AnnotationReloadNginx:            "true",
-			AnnotationReloadWatchVolume:      "public-tls",
-			AnnotationReloadWatchMountPath:   "/edge-tls",
-			AnnotationReloadWatchPaths:       "/edge-tls/public.crt,/edge-tls/public.key",
 			AnnotationDiscoveryVolume:        "discovery",
 			AnnotationDiscoveryMountPath:     "/discovery",
 			AnnotationDiscoveryOut:           "/discovery/discovery.json",
@@ -250,12 +240,13 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	}
 	mutatePod(pod, inj, Config{
 		GetCertImage:      "image",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
 	})
 
-	if pod.Spec.ShareProcessNamespace == nil || !*pod.Spec.ShareProcessNamespace {
-		t.Fatalf("shareProcessNamespace = %v, want true", pod.Spec.ShareProcessNamespace)
+	// No injected container signals nginx, so the injector leaves the
+	// process namespace alone.
+	if pod.Spec.ShareProcessNamespace != nil {
+		t.Fatalf("shareProcessNamespace = %v, want it unset", *pod.Spec.ShareProcessNamespace)
 	}
 	if len(pod.Spec.Volumes) != 3 {
 		t.Fatalf("volumes = %#v, want the router's own plus the injected cert volume", pod.Spec.Volumes)
@@ -269,9 +260,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		"--key-path=/etc/c8s/certs/tls.key",
 		"--ca-path=/etc/c8s/certs/ca.crt",
 		"--renew-interval=1h0m0s",
-		"--reload-nginx=true",
-		"--reload-watch=/edge-tls/public.crt",
-		"--reload-watch=/edge-tls/public.key",
 		"--discovery-out=/discovery/discovery.json",
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
@@ -288,9 +276,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	if !hasMount(cert.VolumeMounts, certVolumeName, certDir, false) {
 		t.Fatalf("c8s-cert mounts %v missing the writable cert volume", cert.VolumeMounts)
 	}
-	if !hasMount(cert.VolumeMounts, "public-tls", "/edge-tls", true) {
-		t.Fatalf("c8s-cert mounts %v missing read-only public-tls", cert.VolumeMounts)
-	}
 	if !hasMount(cert.VolumeMounts, "discovery", "/discovery", false) {
 		t.Fatalf("c8s-cert mounts %v missing writable discovery", cert.VolumeMounts)
 	}
@@ -306,7 +291,6 @@ func TestMutatePodStampsWorkloadLabel(t *testing.T) {
 
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:       "http://cds.c8s-system.svc:8443",
 	})
 
 	if got := pod.Labels[LabelWorkload]; got != "api" {
@@ -372,18 +356,6 @@ func TestParseAnnotationsRejectsInjectionDetailsWithoutWorkloadAnnotation(t *tes
 	_, err := parseAnnotations(&corev1.Pod{
 		Annotations: map[string]string{
 			AnnotationRenewInterval: "1h",
-		},
-	}, "")
-	if !errors.Is(err, errInvalidInjectionAnnotation) {
-		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
-	}
-}
-
-func TestParseAnnotationsRejectsReloadWatchWithoutMount(t *testing.T) {
-	_, err := parseAnnotations(&corev1.Pod{
-		Annotations: map[string]string{
-			AnnotationWorkload:         "api",
-			AnnotationReloadWatchPaths: "/public-tls/tls.crt",
 		},
 	}, "")
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
@@ -465,7 +437,6 @@ func TestHandleDerivesServiceSAN(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:            "http://cds.c8s-system.svc:8443",
 			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 		},
 	}
@@ -506,7 +477,6 @@ func TestHandleRejectsCWHostNetwork(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
 		},
 	}
 	pod := &corev1.Pod{
@@ -598,7 +568,6 @@ func TestHandleSANOverrideWinsOverDerivation(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:            "http://cds.c8s-system.svc:8443",
 			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 		},
 	}
@@ -653,7 +622,6 @@ func TestMutatePodReplacesPreexistingCertContainer(t *testing.T) {
 		SAN:        "api",
 	}, Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:            "http://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 	})
 
@@ -673,7 +641,7 @@ func TestMutatePodReplacesPreexistingCertContainer(t *testing.T) {
 	if got.Image != "ghcr.io/confidential-dot-ai/c8s-operator:test" {
 		t.Fatalf("c8s-cert image = %q, want the operator get-cert image (decoy survived)", got.Image)
 	}
-	if !hasArg(got.Args, "--cds-url=http://cds.c8s-system.svc:8443") {
+	if !hasArg(got.Args, "--renew-interval=2h0m0s") {
 		t.Fatalf("c8s-cert args %v are not operator-built (decoy survived)", got.Args)
 	}
 	if got.RestartPolicy == nil || *got.RestartPolicy != corev1.ContainerRestartPolicyAlways {
@@ -691,7 +659,6 @@ func TestMutatePodInjectionIsIdempotent(t *testing.T) {
 	}
 	cfg := Config{
 		GetCertImage:      "img",
-		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
 	}
 	mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
@@ -734,7 +701,6 @@ func TestHandleRejectsReservedCertContainerName(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
 		},
 	}
 	pod := &corev1.Pod{
@@ -768,7 +734,6 @@ func TestHandleRejectsReservedCertVolumeCollision(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
 		},
 	}
 	// The default reserved cert volume name (see withDefaults / certsVolume).
@@ -833,7 +798,6 @@ func TestHandleInjectsDespitePresetInjectedMarker(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:            "http://cds.c8s-system.svc:8443",
 			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 		},
 	}
@@ -857,42 +821,6 @@ func TestHandleInjectsDespitePresetInjectedMarker(t *testing.T) {
 	inits := initContainersPatch(t, resp)
 	if len(inits) != 2 || inits[0].Name != "c8s-cert" || inits[1].Name != "c8s-cert-wait" {
 		t.Fatalf("initContainers patch = %+v, want injected c8s-cert + c8s-cert-wait despite the preset marker", inits)
-	}
-}
-
-func TestParseAnnotationsWatchPathsImplyNginxReload(t *testing.T) {
-	tests := []struct {
-		name        string
-		annotations map[string]string
-		wantNginx   bool
-	}{
-		{
-			name: "watch paths turn the reload on",
-			annotations: map[string]string{
-				AnnotationWorkload:             "api",
-				AnnotationReloadWatchPaths:     "/etc/nginx/certs/upstream.crt",
-				AnnotationReloadWatchVolume:    "upstream-certs",
-				AnnotationReloadWatchMountPath: "/etc/nginx/certs",
-			},
-			wantNginx: true,
-		},
-		{
-			name:        "plain opt-in leaves the reload off",
-			annotations: map[string]string{AnnotationWorkload: "api"},
-			wantNginx:   false,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := &corev1.Pod{Annotations: tc.annotations}
-			inj, err := parseAnnotations(pod, "")
-			if err != nil {
-				t.Fatalf("parseAnnotations: %v", err)
-			}
-			if inj.Reload.Nginx != tc.wantNginx {
-				t.Fatalf("Reload.Nginx = %v, want %v", inj.Reload.Nginx, tc.wantNginx)
-			}
-		})
 	}
 }
 
@@ -923,7 +851,6 @@ func TestHandleGetCertOnlyLeavesRuntimeClassUnset(t *testing.T) {
 		decoder: admission.NewDecoder(scheme),
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
-			CDSURL:       "http://cds.c8s-system.svc:8443",
 		}.withDefaults(),
 	}
 	pod := &corev1.Pod{
@@ -1271,7 +1198,7 @@ func evaluateRestricted(t *testing.T, pod *corev1.Pod) psapolicy.AggregateCheckR
 
 // The acceptance bar for hardened clusters: a restricted-compliant cw pod must
 // STAY restricted-admissible after the full node-CVM mutation (cert, wait,
-// secret and volume fetchers, nginx reload). The socket directory reaches the
+// secret and volume fetchers). The socket directory reaches the
 // sidecars by NRI mount, so nothing the webhook adds may name a hostPath.
 // Default injection shape only: a pod overriding c8s-get-cert-run-as-* to root
 // fails restricted by its own choice.
@@ -1313,7 +1240,6 @@ func TestMutatePodStaysRestrictedAdmissible(t *testing.T) {
 	cfg.AttestationApiURL = "unix:///var/run/nri-image-policy/attestation-api.sock"
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
-		Reload:     reloadSpec{Nginx: true},
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
 		Volumes:    volumesSpec{Specs: []string{"weights=/tenant-a/volumes/weights"}},
 	}, cfg)

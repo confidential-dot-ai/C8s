@@ -82,6 +82,13 @@ const CDSPinsPath = "/run/c8s/cds-pins.json"
 // the node pins reaches no other one (see cmdsutil.RequireNodeVerifier).
 const AttestationAPISocket = SidecarSocketDir + "/attestation-api.sock"
 
+// CDSAddressPath is where an injected credential client reads the CDS endpoint
+// it dials, as <addr>:<port>. Compiled for the same reason as the pins: the
+// node writes the address its pod ruleset admits for the credential role, so a
+// client reaches the one CDS it is permitted to reach and never an address the
+// control plane names (see cmdsutil.ResolveCDSEndpoint).
+const CDSAddressPath = "/run/c8s/cds-address"
+
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under
 // it.
@@ -165,9 +172,8 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 }
 
 // CredentialsUID is the reserved identity of the injected credential clients.
-// The injector runs them as it, the node binds it to the CDS address, and the
-// enforcer refuses it in any other container, so a pod cannot reach the CDS
-// with a socket of its own.
+// The node binds it to the CDS address, and the enforcer refuses it in any
+// other container, so a pod cannot reach the CDS with a socket of its own.
 const CredentialsUID uint32 = 1338
 
 // CertWaitContainerName is the run-once init container injected beside

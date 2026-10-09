@@ -187,7 +187,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		"--cert-path=/tls/cert.pem",
 		"--key-path=/tls/key.pem",
 		"--renew-interval=1h",
-		"--reload-nginx=true",
 		"--continue-on-initial-error",
 		// The CA watch keeps the served mesh CA tracking the live CDS CA: a
 		// CDS restart regenerates the mesh CA in-memory, and without the watch
@@ -213,7 +212,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	args := renderedOperatorArgs(t, out)
 	for _, want := range []string{
 		"--get-cert-image=ghcr.io/confidential-dot-ai/c8s-operator:dev",
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
 		"--get-cert-renew-interval=2h",
 	} {
 		if !slices.Contains(args, want) {
@@ -1507,19 +1505,19 @@ func tolerates(tols []corev1.Toleration, key, value string) bool {
 	return false
 }
 
-// TestChartOperatorDialsTrustRootOverHTTPS proves the operator injects get-cert
-// with --cds-url over https://, not http://. A regression to http:// would
-// silently turn off the bootstrap-channel MITM defence (H1).
-func TestChartOperatorDialsTrustRootOverHTTPS(t *testing.T) {
+// TestChartLeavesTheInjectedCDSEndpointToTheNode proves the chart hands the
+// injected credential clients no CDS URL: the node's plugin does, from the CDS
+// node port rendered here and its own address, which is the one endpoint the
+// pod ruleset admits.
+func TestChartLeavesTheInjectedCDSEndpointToTheNode(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	const wantURL = "https://c8s-cds.c8s-system.svc:8443"
-
-	operatorArgs := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-url="+wantURL)
-	assertContainerNoArgPrefix(t, "operator", operatorArgs, "--cds-url=http://")
+	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--cds-url=")
+	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").WorkloadClaims.CDSNodePort; got != 30808 {
+		t.Fatalf("workload_claims.cds_node_port = %d, want the chart's CDS node port 30808", got)
+	}
 }
 
 // TestChartArmtlsMeshCDSMeasurementsFlagsThrough confirms the single
@@ -1915,7 +1913,6 @@ func TestChartWebhookRendersSecurityKnobs(t *testing.T) {
 	}
 	args := renderedOperatorArgs(t, out)
 	for _, want := range []string{
-		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
 		"--cert-fs-group=4242",
 		"--get-cert-renew-interval=3h",
 		"--get-cert-run-as-user=0",
@@ -2332,16 +2329,16 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
-		"--reload-watch=/edge-tls/public.crt",
-		"--reload-watch=/edge-tls/public.key",
 	)
 	// A WebPKI-secret front door is attest-pq-only: its host-visible serving
 	// key cannot support attest-lb's transport binding.
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	assertContainerArgs(t, attest, "--front-door-mode=webpki")
+	// nginx reloads itself from its own entrypoint, so the pod shares no
+	// process namespace (router_reload_test.go).
 	deployment := renderedDeployment(t, out, "c8s-router")
-	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got == nil || !*got {
-		t.Fatalf("router shareProcessNamespace = %v, want true", got)
+	if got := deployment.Spec.Template.Spec.ShareProcessNamespace; got != nil && *got {
+		t.Fatalf("router shareProcessNamespace = %v, want it unset", *got)
 	}
 }
 
@@ -4735,18 +4732,15 @@ func TestChartCDSIsInMemorySingleton(t *testing.T) {
 	}
 }
 
-// TestChartPointsClientsAtCDS proves the operator-injected get-cert and the
-// armtls-mesh daemonset both resolve their single --cds-url to the cds Service,
-// and the mesh runs in cds cert-mode — this locks that wiring.
+// TestChartPointsClientsAtCDS proves the armtls-mesh daemonset resolves its
+// single --cds-url to the cds Service, and the mesh runs in cds cert-mode —
+// this locks that wiring.
 func TestChartPointsClientsAtCDS(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	const wantURL = "https://c8s-cds.c8s-system.svc:8443"
-
-	operatorArgs := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", operatorArgs, "--cds-url="+wantURL)
 
 	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
 	if got, ok := containerArgValue(meshArgs, "--cds-url"); !ok || got != wantURL {
@@ -6031,6 +6025,9 @@ func TestChartAllowlistsContainerdPrepOnRke2(t *testing.T) {
 // (internal/cmds/nri-image-policy/config.go, which is unexported) needed by the
 // chart tests, so assertions are against typed fields rather than substrings.
 type installerBootConfig struct {
+	WorkloadClaims struct {
+		CDSNodePort int `yaml:"cds_node_port"`
+	} `yaml:"workload_claims"`
 	Allowlist struct {
 		Base pkgallowlist.Allowlist `yaml:"base"`
 		Pull struct {

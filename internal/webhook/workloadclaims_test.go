@@ -33,7 +33,6 @@ func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 	pod := newInjectablePod()
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:          "img",
-		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})
@@ -60,7 +59,6 @@ func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {
 	pod.Spec.InitContainers = []corev1.Container{{Name: "setup"}, {Name: "migrate"}}
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:          "img",
-		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})
@@ -81,7 +79,6 @@ func TestWorkloadClaims_NoHostDirNoInventory(t *testing.T) {
 	pod := newInjectablePod()
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:      "img",
-		CDSURL:            "http://cds:8443",
 		AttestationApiURL: "http://as:8400",
 	})
 	if findVolume(pod, "c8s-workload-claims") != nil {
@@ -103,7 +100,6 @@ func TestWorkloadClaims_InjectsInventorySupplementalGroup(t *testing.T) {
 	pod := newInjectablePod()
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
 		GetCertImage:          "img",
-		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})

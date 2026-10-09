@@ -30,6 +30,9 @@ to ask is the one that defines the value. The value is generated inside CDS and
 does not survive a CDS restart; nothing durable may be keyed on it.`,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			if err := cfg.ResolveCDSEndpoint(); err != nil {
+				return err
+			}
 			for _, spec := range specs {
 				s, err := parseSecretSpec(spec)
 				if err != nil {

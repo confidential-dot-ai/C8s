@@ -2,8 +2,8 @@
 // public-TLS issuer for the acme front-door mode. It obtains one multi-SAN
 // WebPKI certificate for --domains via ACME HTTP-01 (nginx's :80 server
 // proxies /.well-known/acme-challenge/ to the loopback challenge listener),
-// writes key + chain under --cert-dir, renews at 2/3 lifetime, and reloads
-// nginx via SIGHUP after each install. Under a confidential runtime the
+// writes key + chain under --cert-dir and renews at 2/3 lifetime; nginx's own
+// entrypoint re-reads the files it serves. Under a confidential runtime the
 // cert-dir is a Memory-medium emptyDir, so the serving key is TEE-held and
 // re-issued on pod recreation.
 package acme
@@ -55,8 +55,8 @@ Unavailable domains do not block issuance for reachable domains. They are
 added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
 /.well-known/acme-challenge/ to the loopback challenge listener. The
-certificate is renewed at 2/3 of its lifetime, and nginx is reloaded via
-SIGHUP after each install (shareProcessNamespace: true). On start, a
+certificate is renewed at 2/3 of its lifetime, and nginx's own entrypoint
+reloads it after each install. On start, a
 self-signed placeholder is written when no certificate exists, so nginx —
 whose config names both files — can start and serve the challenge proxy the
 first issuance needs.
@@ -79,7 +79,7 @@ CA's duplicate-certificate limits.`,
 	f.IntVar(&cfg.httpPort, "http-port", 8080, "loopback port of nginx's :80 server, probed round-trip before each order so no validation is sent at a listener that is still starting")
 	f.IntVar(&cfg.readyPort, "ready-port", 0, "port serving GET /healthz, and GET /readyz, 200 once cert.pem and key.pem exist (0 disables it). nginx's startup probe uses it: a locked node image denies exec probes")
 	f.StringVar(&cfg.certDir, "cert-dir", "/etc/c8s-acme-tls", "directory for cert.pem, key.pem, and the ACME account key")
-	f.BoolVar(&cfg.reloadNginx, "reload-nginx", true, "SIGHUP nginx after a certificate install")
+	f.BoolVar(&cfg.reloadNginx, "reload-nginx", false, "SIGHUP nginx after a certificate install; the router's own entrypoint reloads it instead")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
 	_ = cmd.MarkFlagRequired("domains")

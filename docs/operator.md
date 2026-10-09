@@ -683,10 +683,16 @@ File and inline inputs use the same JSON format:
 | `--measurements-file digests.txt` | Text file containing one launch digest per line; no per-image register or key bindings. Supported by `verify`, `allowlist`, and `secrets`. |
 
 In an injected pod the enforcer bind-mounts the node's own policy at
-`/run/c8s/cds-pins.json`, and `get-cert`, `get-secret` and `get-volume` read it
-from there: while that mount is present it is the one source, and a policy or
-pin passed as an argument is refused rather than silently ignored. A
-chart-rendered client has no such mount and keeps its own flag.
+`/run/c8s/cds-pins.json` and the CDS endpoint it admits at
+`/run/c8s/cds-address`, and `get-cert`, `get-secret` and `get-volume` read both
+from there: while those mounts are present they are the one source, and a
+policy, a pin or a `--cds-url` passed as an argument is refused rather than
+silently ignored. On a baked node the pins and the address come from the signed
+launch configuration; on an install they come from the chart. The address is
+the one destination the pod's packet rules admit for the credential role: the
+staged server address on a baked node, the node's own address and
+`cds.service.nodePort` on an install. A chart-rendered client has no such mount
+and keeps its own flags.
 
 Choose one complete policy source. A complete policy cannot be combined with
 independent digest or register inputs such as `--measurements`,
@@ -916,14 +922,12 @@ The sidecar runs:
 
 ```bash
 get-cert \
-  --cds-url=https://<release>-cds.<namespace>.svc:8443 \
   --attestation-api-url=<release-attestation-api-url> \
   --san=<derived from confidential.ai/cw, e.g. c8s-api.default.svc> \
   --cert-path=/etc/c8s/certs/tls.crt \
   --key-path=/etc/c8s/certs/tls.key \
   --ca-path=/etc/c8s/certs/ca.crt \
   --renew-interval=<webhook.getCert.renewInterval> \
-  --reload-nginx=<from annotation> \
   --continue-on-initial-error
 ```
 
@@ -950,17 +954,15 @@ The `c8s-cert-wait` init container (`/c8s probe-file --wait /etc/c8s/certs/tls.c
 gates the application containers on the initial cert being written: it blocks
 until the cert exists, then exits, and normal init-completion ordering holds the
 workload until then — fail-closed. Renewals publish a new generation;
-application-level TLS reload remains the workload's responsibility unless the
-pod opts into one of the C8s reload annotations.
+application-level TLS reload is the workload's responsibility.
 
 Platform-owned workloads can specialize the same webhook behavior with typed
-C8s annotations for the renewal interval, nginx reload, Secret watch paths,
-discovery output, and get-cert UID/GID.
-(router, living in the webhook-excluded release namespace, renders equivalent
-get-cert containers directly from the chart's templates instead.) The
-webhook rejects incomplete reload-watch or discovery annotation sets during pod
-admission instead of admitting a pod that cannot serve its configured
-certificate/discovery path.
+C8s annotations for the renewal interval, discovery output, and get-cert
+UID/GID. (router, living in the
+webhook-excluded release namespace, renders equivalent get-cert containers
+directly from the chart's templates instead.) The webhook rejects an
+incomplete discovery annotation set during pod admission instead of admitting
+a pod that cannot serve its configured discovery path.
 
 ## router public TLS modes
 
@@ -980,10 +982,10 @@ front door:
   in a Memory-medium emptyDir — TEE-held under a confidential runtime (which
   this mode requires), lost with the pod and re-issued on recreation (point
   the sidecar at an ACME staging directory in tests to stay clear of the CA's
-  duplicate-certificate limits). Renewal fires at 2/3 lifetime; each install
-  SIGHUPs nginx. On start the sidecar writes a self-signed placeholder so
-  nginx, whose config names the cert files, can start before the first
-  issuance.
+  duplicate-certificate limits). Renewal fires at 2/3 lifetime; nginx's own
+  entrypoint re-reads the files it serves and reloads on each install. On
+  start the sidecar writes a self-signed placeholder so nginx, whose config
+  names the cert files, can start before the first issuance.
 
 The mode is a trust statement, not plumbing: the attestation sidecar commits
 it into the attest-pq and attest-lb report_data transcripts and echoes it as
@@ -1325,7 +1327,6 @@ allowlist writes.
 The rendered manifests should include:
 
 - a CDS Deployment, Service, and ServiceAccount;
-- the operator arg `--cds-url=https://c8s-cds.c8s-system.svc:8443`;
 - no CDS admin-password Secret and no attestation-api API-key Secret;
 - `confidential.ai/trust-root-mode: inMemory` annotations on the chart-managed
   CDS resources.

@@ -35,8 +35,8 @@ virtual host. The token-bearing launch directory is never mounted into pods.
 Missing policy files fail startup. Workload sidecars retain NRI socket injection.
 Cluster administrators remain trusted to manage the rendered Kubernetes objects.
 
-`c8s.cdsURL` builds the in-cluster CDS Service URL; `c8s.trustRootURL` delegates
-to it. `c8s.nriCDSURL` uses `nriImagePolicy.cds.url` when supplied, otherwise
+`c8s.cdsURL` builds the in-cluster CDS Service URL. `c8s.nriCDSURL` uses
+`nriImagePolicy.cds.url` when supplied, otherwise
 `https://127.0.0.1:<cds.service.nodePort>` for the host plugin.
 
 `c8s.router.resolver` honors `router.nginx.resolver`. Otherwise `nriImagePolicy.distro=rke2`
