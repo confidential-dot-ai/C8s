@@ -1306,6 +1306,35 @@ func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 	}
 }
 
+// The operator's mesh-egress reconciler must be told the same outbound port
+// and excluded source namespaces the mesh DaemonSet runs with, or its
+// companion policies open the wrong port or appear in namespaces the mesh
+// never intercepts. Disabling the value removes both flags, which turns the
+// reconciler off.
+func TestChartMeshEgressCompanionFlagsMirrorTheMesh(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "armtlsMesh.ports.outbound=15101",
+		"--set", "armtlsMesh.iptablesSync.excludeSourceNamespaces={kube-system,monitoring}")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	args := renderedOperatorArgs(t, out)
+	assertContainerHasArg(t, "operator", args, "--mesh-outbound-port=15101")
+	for _, ns := range []string{"kube-system", "monitoring"} {
+		assertContainerHasArg(t, "operator", args, "--mesh-exclude-source-namespaces="+ns)
+	}
+
+	for _, disable := range []string{"armtlsMesh.egressCompanionPolicy.enabled=false", "armtlsMesh.enabled=false"} {
+		out, err := helmTemplate(t, "--set", disable)
+		if err != nil {
+			t.Fatalf("helm template (%s): %v\n%s", disable, err, out)
+		}
+		args := renderedOperatorArgs(t, out)
+		assertContainerNoArgPrefix(t, "operator", args, "--mesh-outbound-port=")
+		assertContainerNoArgPrefix(t, "operator", args, "--mesh-exclude-source-namespaces=")
+	}
+}
+
 // TestChartWebhookOptsOutOfAKSAdmissionsEnforcer proves the AKS workaround:
 // with attestationApi.cvmMode=aks (what `c8s install --cvm-mode aks` sets) the
 // pod-injector MutatingWebhookConfiguration carries
@@ -4056,6 +4085,11 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 	}
 	if got := operatorVerbsFor(role, "", "services"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
 		t.Fatalf("operator services verbs = %v", got)
+	}
+	// The mesh-egress reconciler watches every NetworkPolicy and owns the
+	// companions it creates beside egress-isolating ones.
+	if got := operatorVerbsFor(role, "networking.k8s.io", "networkpolicies"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
+		t.Fatalf("operator networkpolicies verbs = %v", got)
 	}
 	// No rendered Role/ClusterRole may grant any of these resources at all.
 	// nodes is granted — but only to CDS's node-reader, which keeps the

@@ -16,6 +16,7 @@ import (
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -124,6 +125,33 @@ func TestSetupManagerRegistersWorkloadServiceReconcilers(t *testing.T) {
 	err := setupManager(context.Background(), newTestManagerNameChecked(t), nil, opts, logr.Discard())
 	if err == nil || !strings.Contains(err.Error(), "setup workload-service reconciler") {
 		t.Fatalf("err = %v, want the workload-service registration to be attempted and collide", err)
+	}
+}
+
+// Registration of the mesh-egress reconciler is gated on a non-zero mesh
+// outbound port and is independent of get-cert injection, observed through
+// the same controller-name collision as above.
+func TestSetupManagerRegistersMeshEgressReconciler(t *testing.T) {
+	claim := ctrl.NewControllerManagedBy(newTestManagerNameChecked(t)).
+		For(&networkingv1.NetworkPolicy{}).
+		Named(meshEgressControllerName).
+		Complete(crreconcile.Func(func(context.Context, crreconcile.Request) (crreconcile.Result, error) {
+			return crreconcile.Result{}, nil
+		}))
+	if claim != nil && !strings.Contains(claim.Error(), "already exists") {
+		t.Fatalf("claim controller name: %v", claim)
+	}
+
+	opts := Options{DisableStatusMirror: true, MeshOutboundPort: 15001}
+	err := setupManager(context.Background(), newTestManagerNameChecked(t), nil, opts, logr.Discard())
+	if err == nil || !strings.Contains(err.Error(), "setup mesh-egress reconciler") {
+		t.Fatalf("err = %v, want the mesh-egress registration to be attempted and collide", err)
+	}
+
+	// Port zero: nothing is registered, so the claimed name does not collide.
+	opts = Options{DisableStatusMirror: true}
+	if err := setupManager(context.Background(), newTestManagerNameChecked(t), nil, opts, logr.Discard()); err != nil {
+		t.Fatalf("setupManager with the reconciler off: %v", err)
 	}
 }
 

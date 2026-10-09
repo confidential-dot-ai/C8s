@@ -100,7 +100,16 @@ func excludedNamespaceSet(releaseNS string, extra []string) map[string]struct{} 
 	for _, ns := range systemExcludedNamespaces {
 		out[ns] = struct{}{}
 	}
-	for _, ns := range extra {
+	for ns := range namespaceSet(extra) {
+		out[ns] = struct{}{}
+	}
+	return out
+}
+
+// namespaceSet turns a flag's namespace list into a set, dropping blanks.
+func namespaceSet(names []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(names))
+	for _, ns := range names {
 		if ns = strings.TrimSpace(ns); ns != "" {
 			out[ns] = struct{}{}
 		}
