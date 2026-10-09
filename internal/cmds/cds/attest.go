@@ -24,7 +24,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -38,8 +37,7 @@ import (
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
-	CA                *issuer.CA
-	CAChainPEM        []byte
+	MeshCA            *issuer.MeshCA
 	CertTTL           time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
@@ -290,7 +288,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
-	certPEM, serial, err := h.CA.SignCSR(issuer.SignCSRParams{
+	// One read: the certificate that signs the leaf is the chain returned with it.
+	signing := h.MeshCA.Current()
+	certPEM, serial, err := signing.CA.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
@@ -300,12 +300,6 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Error("in-process sign failed", "error", err)
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, err.Error())
-		return
-	}
-	caChainPEM := h.caChainPEM()
-	if len(caChainPEM) == 0 {
-		slog.Error("in-process sign failed: CA chain unavailable")
-		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, "CA chain unavailable")
 		return
 	}
 
@@ -338,7 +332,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	}
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
-	w.Write(slices.Concat(certPEM, caChainPEM))
+	w.Write(slices.Concat(certPEM, signing.CertPEM))
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,
@@ -561,16 +555,6 @@ func (h AttestHandler) recordSandboxBinding(sandbox workloadclaims.VerifiedSandb
 		slog.Warn("sandbox is already bound to a different inventory; issuing anyway, but secrets will refuse it",
 			"sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost)
 	}
-}
-
-func (h AttestHandler) caChainPEM() []byte {
-	if len(h.CAChainPEM) > 0 {
-		return h.CAChainPEM
-	}
-	if h.CA == nil || h.CA.Cert == nil {
-		return nil
-	}
-	return certutil.EncodeCertPEM(h.CA.Cert.Raw)
 }
 
 // classifyVerifyError maps a VerifyEnforced error to (HTTP status, error code,
