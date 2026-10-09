@@ -308,8 +308,9 @@ operator's `c8s-node-operator` ClusterRole (`cred-release-rbac.yaml`) has
 no admission or cluster-scoped RBAC writes, and the `confos-operator-scope`
 policy (`operator-scope-policy.yaml`) denies them in admission for every
 `c8s:` group regardless of RBAC, together with every write in the
-privileged namespaces (`kube-system`, `local-path-storage` and the baked
-operator's `c8s-system`) and the kubelet-proxy subresources. The
+privileged namespaces (`kube-system`, `local-path-storage`, the baked
+operator's `c8s-system` and the router role's `c8s-router`) and the
+kubelet-proxy subresources. The
 `psa-ready.sh` gate proves that deny path before cred-release serves.
 
 `kubectl exec`, `attach`, `port-forward` and ephemeral containers are closed
@@ -630,7 +631,7 @@ Inspect the core workloads with the attested kubeconfig:
 
 ```sh
 kubectl -n c8s-system get pods -o wide
-kubectl -n c8s-system describe deployment/c8s-router
+kubectl -n c8s-router describe deployment/c8s-router
 ```
 
 `kubectl logs` works on every image. The locked image denies `kubectl exec`,

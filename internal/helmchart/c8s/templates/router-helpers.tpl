@@ -14,7 +14,7 @@ Create a default fully qualified app name.
 
 {{/*
 The router.san list, defaulted. Empty -> the chart-managed Service DNS name
-(<release>-router.<namespace>.svc) as a single entry. The first entry is the
+(<release>-router.c8s-router.svc) as a single entry. The first entry is the
 CDS mesh-cert identity (see router.san); the whole list is joined into nginx
 server_name by router-configmap.yaml. Fails if san is set but not a list.
 */}}
@@ -26,7 +26,7 @@ server_name by router-configmap.yaml. Fails if san is set but not a list.
 {{- if $san -}}
 {{- toJson $san -}}
 {{- else -}}
-{{- toJson (list (printf "%s.%s.svc" (include "router.fullname" .) .Release.Namespace)) -}}
+{{- toJson (list (printf "%s.%s.svc" (include "router.fullname" .) (include "c8s.routerMeshNamespace" .))) -}}
 {{- end -}}
 {{- end -}}
 
@@ -131,8 +131,8 @@ Render nginx proxy TLS directives for an HTTPS backend.
 {{- if eq .protocol "https" -}}
 {{- $tls := default dict .tls -}}
 {{- if (default false $tls.useCDSClientCert) }}
-proxy_ssl_certificate {{ .tlsMountPath }}/cert.pem;
-proxy_ssl_certificate_key {{ .tlsMountPath }}/key.pem;
+proxy_ssl_certificate {{ .certFile }};
+proxy_ssl_certificate_key {{ .keyFile }};
 {{- end }}
 proxy_ssl_server_name on;
 proxy_ssl_name {{ .serverName }};
@@ -491,7 +491,7 @@ nginx :80 server, and the cert-path helpers below.
 {{/*
 Path to the public-TLS certificate nginx serves: the publicTLS Secret
 (webpki), the sidecar-issued ACME leaf (acme), or the CDS-issued cert under
-tlsMountPath (cds).
+the member credential volume (cds).
 */}}
 {{- define "router.publicCertPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
@@ -500,7 +500,7 @@ tlsMountPath (cds).
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
 {{- else -}}
-{{- printf "%s/cert.pem" .Values.router.tlsMountPath -}}
+{{- include "c8s.certFile" . -}}
 {{- end -}}
 {{- end -}}
 
@@ -511,7 +511,7 @@ tlsMountPath (cds).
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
 {{- else -}}
-{{- printf "%s/key.pem" .Values.router.tlsMountPath -}}
+{{- include "c8s.keyFile" . -}}
 {{- end -}}
 {{- end -}}
 
@@ -543,7 +543,10 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 
 {{/*
 "true" when the router pod must mount the node inventory's socket directory:
-the readiness gate is on and this is the node-CVM shape.
+the node runs an admission inventory for get-cert to redeem a sandbox token at.
+The pod's own mesh endpoint adopts only a leaf that names a workload instance
+(internal/cmds/armtlsmesh), so a router whose get-cert redeems no token has no
+endpoint and carries no traffic.
 
 The condition mirrors the operator's own inventory condition
 (operator.yaml): the directory exists only where an installer put it, and a
@@ -552,8 +555,23 @@ ContainerCreating. validations.yaml (kind=require_host_image_policy) makes that
 condition true in every renderable shape today; the condition is spelled out
 anyway so the two consumers of the socket stay on one rule.
 */}}
+{{/*
+router.credentialsVerifierURL — the attestation-api a credentials-role
+container of this pod verifies CDS through. A node running the admission
+inventory this pod mounts at the compiled path serves its own attestation-api
+in that directory, and that socket is the only verifier its clients accept
+(cmdsutil.RequireNodeVerifier); elsewhere the cluster's own endpoint stands.
+*/}}
+{{- define "router.credentialsVerifierURL" -}}
+{{- if eq (include "router.mountInventorySocket" .) "true" -}}
+unix:///run/c8s/workload-claims/attestation-api.sock
+{{- else -}}
+{{ include "c8s.attestationApiURL" . }}
+{{- end -}}
+{{- end -}}
+
 {{- define "router.mountInventorySocket" -}}
-{{- if and .Values.router.attest.expectedWorkload (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal") -}}
 true
 {{- end -}}
 {{- end -}}
@@ -569,14 +587,13 @@ list.
 {{- if .Values.router.discovery.enabled -}}
 {{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" .Values.router.discovery.mountPath) -}}
 {{- end -}}
-{{- if include "c8s.attestationApiSocketPresent" . -}}
+{{- if and (include "c8s.attestationApiSocketPresent" .) (ne (include "router.mountInventorySocket" .) "true") -}}
 {{- $mounts = append $mounts (printf "- name: attestation-api-socket\n  mountPath: %s\n  readOnly: true" .Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}
 {{- $extraArgs := include "router.getCertCommonArgs" . | fromYamlArray -}}
 {{- $sanFile := "" -}}
 {{- if .Values.node.baked -}}
 {{- $mounts = append $mounts (include "c8s.nodeConfigMount" . | trim) -}}
-{{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
 {{- if eq (include "router.mountInventorySocket" .) "true" -}}
@@ -598,17 +615,10 @@ list.
 {{- end -}}
 {{- include "c8s.getCertContainers" (dict
   "root" .
+  "attestationApiURL" (include "router.credentialsVerifierURL" .)
   "san" (include "router.san" .)
   "sanFile" $sanFile
-  "certOut" (printf "%s/cert.pem" .Values.router.tlsMountPath)
-  "keyOut" (printf "%s/key.pem" .Values.router.tlsMountPath)
-  "caOut" (printf "%s/ca.pem" .Values.router.tlsMountPath)
-  "volume" "tls-certs"
-  "mountPath" .Values.router.tlsMountPath
   "renewInterval" .Values.router.certProvisioning.renewInterval
-  "runAsUser" .Values.router.nginx.runAsUser
-  "runAsGroup" .Values.router.nginx.runAsGroup
-  "runAsNonRoot" .Values.router.nginx.runAsNonRoot
   "extraArgs" $extraArgs
   "extraMounts" (join "\n" $mounts)
 ) -}}
@@ -637,7 +647,7 @@ certificate and key of whichever TLS mode serves the front door. One
 space-separated list, read by reload.sh.
 */}}
 {{- define "router.filesNginxLoads" -}}
-{{- $paths := list (printf "%s/cert.pem" .Values.router.tlsMountPath) (printf "%s/key.pem" .Values.router.tlsMountPath) (printf "%s/ca.pem" .Values.router.tlsMountPath) -}}
+{{- $paths := list (include "c8s.certFile" .) (include "c8s.keyFile" .) (include "c8s.caFile" .) -}}
 {{- if eq (include "router.publicTLSMode" .) "webpki" -}}
 {{- $paths = append $paths (include "router.publicCertPath" .) -}}
 {{- $paths = append $paths (include "router.publicKeyPath" .) -}}

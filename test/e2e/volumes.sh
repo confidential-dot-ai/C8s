@@ -124,10 +124,10 @@ curl_poll() {
 MESH_CA=${E2E_MESH_CA:-}
 if [ -z "$MESH_CA" ]; then
   MESH_CA=$(mktemp)
-  # The router get-cert sidecar writes the live mesh CA onto its cert volume
-  # (values tlsMountPath /tls); the same bytes back every workload leaf.
-  kubectl -n c8s-system exec deploy/c8s-router -c nginx -- cat /tls/ca.pem >"$MESH_CA" \
-    || fail "could not read the mesh CA from the router pod"
+  # Read it from CDS over the attested connection: the router's pod is a mesh
+  # member, and a member admits no exec.
+  c8s_conn cds ca --out "$MESH_CA" >/dev/null \
+    || fail "could not read the mesh CA from CDS over armTLS"
 fi
 
 c8s_conn secrets put "$IMM_PATH" --from-file "$E2E_VOL_IMM_ESCROW" \

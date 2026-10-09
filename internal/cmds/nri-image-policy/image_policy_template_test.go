@@ -26,6 +26,8 @@ const (
 	meshImageDigest     = "sha256:" + "11111111111111111111111111111111111111111111111111111111111111ab"
 	operatorImageRepo   = "ghcr.io/confidential-dot-ai/c8s-operator"
 	operatorImageDigest = "sha256:" + "22222222222222222222222222222222222222222222222222222222222222cd"
+	routerImageRepo     = "docker.io/nginxinc/nginx-unprivileged"
+	routerImageDigest   = "sha256:" + "33333333333333333333333333333333333333333333333333333333333333ef"
 )
 
 func renderNodeImagePolicy(t *testing.T) string {
@@ -41,6 +43,8 @@ func renderNodeImagePolicy(t *testing.T) string {
 		"@MESH_DIGEST@":     meshImageDigest,
 		"@OPERATOR_REPO@":   operatorImageRepo,
 		"@OPERATOR_DIGEST@": operatorImageDigest,
+		"@ROUTER_REPO@":     routerImageRepo,
+		"@ROUTER_DIGEST@":   routerImageDigest,
 	} {
 		out = strings.ReplaceAll(out, placeholder, value)
 	}
@@ -117,24 +121,53 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		}
 	}
 
-	// The template contains the generated system set plus the two role
-	// entries. Boot preparation adds the separately rendered chart component
-	// seed before containerd starts. The exact count catches an entry a regen
-	// adds or drops.
-	if want := len(systemImages) + 2; len(cfg.Allowlist.Base.Workloads) != want {
-		t.Errorf("baked base allowlist has %d entries, want %d (%d system images plus the role entries)",
-			len(cfg.Allowlist.Base.Workloads), want, len(systemImages))
+	// Every entry is either one of the generated system images or one of the
+	// role entries, so an entry a regen adds or drops fails here. Boot
+	// preparation adds the separately rendered chart component seed before
+	// containerd starts.
+	entries := roleEntries()
+	for name, w := range cfg.Allowlist.Base.Workloads {
+		if _, holdsRole := entries[name]; holdsRole {
+			continue
+		}
+		for _, d := range w.Digests() {
+			if _, generated := systemImages[d.String()]; !generated {
+				t.Errorf("base entry %q is neither a generated system image nor a role entry", name)
+			}
+		}
 	}
 
-	// A platform role is granted from the node's own measured base, so the
-	// endpoint and the credential clients must be role-tagged there.
+	// A platform role is granted from the node's own measured base, where one
+	// entry per role-holding component pins the argv that component is
+	// launched with. That the pins are the injector's own is held in
+	// internal/webhook (TestMeasuredBaseAdmitsTheInjectedArgv); here the
+	// pinned launch must resolve to exactly one role, which RoleOf reports
+	// only while no second entry claims the same launch for another role.
 	roles := newPolicyStore(cfg.Allowlist.Base)
-	for digest, want := range map[string]string{
-		meshImageDigest:     meshRole,
-		operatorImageDigest: CredentialRole,
+	for name, want := range entries {
+		entry, ok := cfg.Allowlist.Base.Workloads[name]
+		if !ok {
+			t.Errorf("the baked base carries no %q entry, so that component holds no role", name)
+			continue
+		}
+		if got := roles.base.RoleOf(entryLaunch(entry)); got != want {
+			t.Errorf("the base grants the %q launch the role %q, want %q", name, got, want)
+		}
+	}
+
+	// Only a pinned launch holds a role: the endpoint's entrypoint without the
+	// arguments it is pinned with, the other image's subcommand, and a pinned
+	// launch carrying a pod-chosen credential path all hold none.
+	for _, launch := range []launchEvidence{
+		{meshImageDigest, []string{"/app/c8s", "armtls-mesh"}},
+		{meshImageDigest, []string{"/app/c8s", "armtls-mesh", "--cert-path=/pod/tls.crt"}},
+		{meshImageDigest, []string{"/c8s", "get-cert"}},
+		{operatorImageDigest, []string{"/c8s", "operator"}},
+		{operatorImageDigest, []string{"/c8s", "cds"}},
+		{operatorImageDigest, []string{"/c8s", "probe-file", "--wait", "--timeout=3m0s", "/pod/tls.crt"}},
 	} {
-		if got := roles.base.RoleOf(allowlist.RunningContainer{Digest: digest}); got != want {
-			t.Errorf("the base grants %s the role %q, want %q", digest, got, want)
+		if got := roles.base.RoleOf(launch.container()); got != "" {
+			t.Errorf("%s running %v took the %q role, want none", launch.digest, launch.argv, got)
 		}
 	}
 	for digest := range baseEntries {
@@ -181,15 +214,83 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		t.Errorf("mesh.cluster_ranges = %v, want the baked cluster-cidr and service-cidr %v", got, wantRanges)
 	}
 
-	// System images must remain admitted with their host mounts at final admission.
+	// Every base entry must still admit the launch it describes at final
+	// admission: a system image with its host mounts, a role entry with the
+	// argv and mounts it pins.
 	store := newPolicyStore(cfg.Allowlist.Base)
-	for d := range baseEntries {
-		if !store.baseAdmits(allowlist.RunningContainer{Digest: d, Mounts: []allowlist.ObservedMount{
-			{Destination: "/host", Class: allowlist.MountHost, Storage: allowlist.MountUnknown},
-		}}, launchFinal) {
-			t.Errorf("base entry %q is not admitted by digest alone", d)
+	for name, w := range cfg.Allowlist.Base.Workloads {
+		if !store.baseAdmits(entryLaunch(w), launchFinal) {
+			t.Errorf("base entry %q does not admit the launch it describes", name)
 		}
 	}
+}
+
+// roleEntries is the role each base entry grants the component it pins.
+func roleEntries() map[string]string {
+	return map[string]string{
+		"c8s-mesh-endpoint":   meshRole,
+		"c8s-get-cert":        CredentialRole,
+		"c8s-probe-file":      CredentialRole,
+		"c8s-get-secret":      CredentialRole,
+		"c8s-get-volume":      CredentialRole,
+		"c8s-allowlist-proxy": CredentialRole,
+		"c8s-router-nginx":    routerRole,
+		"c8s-acme":            acmeRole,
+		"c8s-cds-attest":      routerRole,
+	}
+}
+
+// launchEvidence is the launch evidence the enforcer resolves a role from: the
+// bytes and the argv they ran with.
+type launchEvidence struct {
+	digest string
+	argv   []string
+}
+
+// container carries the mounts the injected containers receive, so the argv is
+// the only reason a role is refused.
+func (l launchEvidence) container() allowlist.RunningContainer {
+	return allowlist.RunningContainer{
+		Digest: l.digest,
+		Argv:   l.argv,
+		Mounts: []allowlist.ObservedMount{{
+			Destination: "/etc/c8s/certs",
+			Class:       allowlist.MountEmptyDir,
+			Storage:     allowlist.MountMemory,
+		}},
+	}
+}
+
+// entryLaunch is the launch an entry describes: the argv it pins, and the
+// mounts it pins where it pins any.
+func entryLaunch(w allowlist.Workload) allowlist.RunningContainer {
+	c := w.Containers[0]
+	return allowlist.RunningContainer{
+		Digest: c.Digest.String(),
+		Argv:   append(slices.Clone(c.Command.Argv), c.Args.Argv...),
+		Mounts: entryMounts(c.Mounts),
+	}
+}
+
+// entryMounts is mount evidence the policy admits: the mounts it pins, or a
+// host mount where it pins none.
+func entryMounts(p allowlist.MountPolicy) []allowlist.ObservedMount {
+	if p.Policy != allowlist.PolicyExact {
+		return []allowlist.ObservedMount{{
+			Destination: "/host",
+			Class:       allowlist.MountHost,
+			Storage:     allowlist.MountUnknown,
+		}}
+	}
+	mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
+	for _, rule := range p.Rules {
+		mounts = append(mounts, allowlist.ObservedMount{
+			Destination: rule.Destination,
+			Class:       rule.Kind,
+			Storage:     allowlist.MountMemory,
+		})
+	}
+	return mounts
 }
 
 // prefixStrings renders the ranges as the config writes them.

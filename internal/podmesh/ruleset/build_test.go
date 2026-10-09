@@ -135,6 +135,14 @@ func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
 	if !slices.Equal(added, want) {
 		t.Fatalf("the server role adds\n%s\nwant\n%s", strings.Join(added, "\n"), strings.Join(want, "\n"))
 	}
+	// No other identity in the pod holds them: every added rule naming a uid
+	// names the egress identity's, and the listener rules name none, because
+	// an inbound accept cannot match a socket uid.
+	for _, rule := range added {
+		if strings.Contains(rule, "skuid") && !strings.Contains(rule, "skuid 1340") {
+			t.Errorf("a rule of the server role binds another identity: %s", rule)
+		}
+	}
 }
 
 // addedRules are the rules the second ruleset carries and the first does not,

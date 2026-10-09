@@ -245,16 +245,25 @@ echo "c8s sync: ref ${C8S_REF} -> binary ${NRI_DIGEST}, operator ${OPERATOR_DIGE
 # Render the system floor. Boot preparation merges the chart's measured
 # component seed into this base before RKE2/containerd starts, so CDS and
 # its clients can start before the live allowlist becomes available.
-render_nri_base() {
+# The router's own image is pinned by the embedded chart alone, so the base is
+# rendered after the node integration that reports it.
+render_nri_base() {  # <front-door-image>: repository@digest
     local tmpl="$SRCDIR/mkosi.profiles/c8s/image-policy.yaml.in"
     local dst="$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
+    local router_image="$1"
     [ -f "$tmpl" ] || { echo "c8s sync: FATAL base-allowlist template $tmpl missing" >&2; exit 1; }
+    case "$router_image" in
+        *@sha256:*) ;;
+        *) echo "c8s sync: FATAL front-door image '$router_image' is not repository@sha256:..." >&2; exit 1 ;;
+    esac
     mkdir -p "$(dirname "$dst")"
     sed -e "s|@PLATFORM@|${PLATFORM}|g" \
         -e "s|@MESH_REPO@|${MESH_REPO}|g" \
         -e "s|@MESH_DIGEST@|${MESH_DIGEST}|g" \
         -e "s|@OPERATOR_REPO@|${OPERATOR_REPO}|g" \
-        -e "s|@OPERATOR_DIGEST@|${OPERATOR_DIGEST}|g" "$tmpl" > "$dst"
+        -e "s|@OPERATOR_DIGEST@|${OPERATOR_DIGEST}|g" \
+        -e "s|@ROUTER_REPO@|${router_image%@*}|g" \
+        -e "s|@ROUTER_DIGEST@|${router_image##*@}|g" "$tmpl" > "$dst"
     echo "c8s sync: NRI system base allowlist rendered"
 }
 
@@ -262,7 +271,7 @@ render_nri_base() {
 # This command runs only in the mkosi tools tree; no Helm binary, chart archive,
 # install Job or HelmChartConfig is needed by the guest boot path.
 render_node_integration() {
-    local out="$TMP/node-integration" helm_dir="$TMP/helm"
+    local out="$NODE_INTEGRATION_DIR" helm_dir="$TMP/helm"
     local helm_archive="$CACHE_DIR/helm-${HELM_VERSION}-linux-amd64.tar.gz"
     fetch "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz" \
         "$helm_archive" "$HELM_LINUX_AMD64_SHA256"
@@ -380,6 +389,7 @@ RUNC_WRAPPER_TARGET="$STAGE_DIR/usr/local/bin/c8s-runc"
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+NODE_INTEGRATION_DIR="$TMP/node-integration"
 
 # Extract the plugin binary from the pinned nri-image-policy image into
 # PLUGIN_CACHE.
@@ -456,7 +466,9 @@ else
 fi
 install -D -m 0755 "$C8S_TARGET" "$RUNC_WRAPPER_TARGET"
 
-render_nri_base
 render_node_integration
+ROUTER_IMAGE_FILE="$NODE_INTEGRATION_DIR/router-image.txt"
+[ -s "$ROUTER_IMAGE_FILE" ] || { echo "c8s sync: FATAL ${C8S_REF} reported no front-door image at ${ROUTER_IMAGE_FILE#"$TMP"/}" >&2; exit 1; }
+render_nri_base "$(cat "$ROUTER_IMAGE_FILE")"
 
 echo "c8s sync: staged rke2 ${RKE2_VERSION} + airgap bundles + measured c8s Kubernetes workloads"

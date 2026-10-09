@@ -40,6 +40,9 @@ const (
 	accountKeyFile  = "account.key"
 	certFile        = "cert.pem"
 	keyFile         = "key.pem"
+	// keyMode is group-readable because the front door that serves this key
+	// runs as another identity; the volume's group is the pod's own.
+	keyMode = 0o640
 )
 
 // manager issues and renews one certificate for the configured domains whose
@@ -192,7 +195,7 @@ func (m *manager) bootstrap() error {
 	if err := os.MkdirAll(m.dir, 0o700); err != nil {
 		return err
 	}
-	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, 0o600); err != nil {
+	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, keyMode); err != nil {
 		return fmt.Errorf("write bootstrap key: %w", err)
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
@@ -375,7 +378,7 @@ func (m *manager) issueDomains(ctx context.Context, domains []string) error {
 	}
 	// Key before cert: nginx is reloaded on the cert file, so a visible cert
 	// must always have its key beside it.
-	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, 0o600); err != nil {
+	if err := fileutil.WriteAtomic(m.keyPath(), keyPEM, keyMode); err != nil {
 		return fmt.Errorf("write key: %w", err)
 	}
 	if err := fileutil.WriteAtomic(m.certPath(), chainPEM, 0o644); err != nil {

@@ -682,17 +682,17 @@ File and inline inputs use the same JSON format:
 | `--image-policy-json '{...}'` | The JSON document itself; supported by workload helpers such as `get-cert` and `get-secret` when they run outside an injected pod. |
 | `--measurements-file digests.txt` | Text file containing one launch digest per line; no per-image register or key bindings. Supported by `verify`, `allowlist`, and `secrets`. |
 
-In an injected pod the enforcer bind-mounts the node's own policy at
-`/run/c8s/cds-pins.json` and the CDS endpoint it admits at
-`/run/c8s/cds-address`, and `get-cert`, `get-secret` and `get-volume` read both
-from there: while those mounts are present they are the one source, and a
-policy, a pin or a `--cds-url` passed as an argument is refused rather than
-silently ignored. On a baked node the pins and the address come from the signed
-launch configuration; on an install they come from the chart. The address is
-the one destination the pod's packet rules admit for the credential role: the
-staged server address on a baked node, the node's own address and
-`cds.service.nodePort` on an install. A chart-rendered client has no such mount
-and keeps its own flags.
+The enforcer bind-mounts the node's own policy at `/run/c8s/cds-pins.json`
+and the CDS endpoint it admits at `/run/c8s/cds-address` for every container
+holding the credentials role — the injected `get-cert`, `get-secret` and
+`get-volume`, and the router's `get-cert` and `allowlist-proxy`, which the
+chart renders — and each of them reads both from there: while those mounts are
+present they are the one source, and a policy, a pin or a `--cds-url` passed as
+an argument is refused rather than silently ignored. On a baked node the pins
+and the address come from the signed launch configuration; on an install they
+come from the chart. The address is the one destination the pod's packet rules
+admit for the credential role: the staged server address on a baked node, the
+node's own address and `cds.service.nodePort` on an install.
 
 Choose one complete policy source. A complete policy cannot be combined with
 independent digest or register inputs such as `--measurements`,
@@ -882,9 +882,10 @@ workload set to it.
 
 The webhook only reads pod metadata. A `ConfidentialWorkload` CR is not
 required for injection. The single webhook entry (`pods.c8s.confidential.ai`)
-excludes the release namespace via its namespaceSelector, so the chart's own
-pods never hit the webhook during bootstrap; router's get-cert containers are
-rendered directly into its pod template by the chart instead of injected.
+excludes the release namespace and the router's via its namespaceSelector, so
+the chart's own pods never hit the webhook during bootstrap; router's get-cert
+containers are rendered directly into its pod template by the chart instead of
+injected.
 
 Opt a pod template in with:
 
@@ -958,8 +959,9 @@ application-level TLS reload is the workload's responsibility.
 Platform-owned workloads can specialize the same webhook behavior with typed
 C8s annotations for the renewal interval, discovery output, and get-cert
 UID/GID. (router, living in the
-webhook-excluded release namespace, renders equivalent get-cert containers
-directly from the chart's templates instead.) The webhook rejects an
+webhook-excluded `c8s-router` namespace, renders the whole member shape —
+endpoint, get-cert containers and the credential paths above — from the
+chart's templates instead.) The webhook rejects an
 incomplete discovery annotation set during pod admission instead of admitting
 a pod that cannot serve its configured discovery path.
 
@@ -1170,11 +1172,10 @@ it:
 | `c8s-cds-ingress` | cds | `cds.port` (armTLS; also the NodePort route) |
 | `c8s-operator-ingress` | operator | 9443 webhook, 8081 probes, 8080 metrics |
 | `c8s-volumed-ingress` | volumed | nothing (it serves a node-local Unix socket) |
-| `c8s-router-ingress` | router | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
+| `c8s-router-ingress` | router (in `c8s-router`) | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
 
-They are ingress-only. `armtls-mesh-tcp-only-egress` already selects every pod in
-the namespace and allows all TCP, and NetworkPolicies union, so an egress rule
-on one component would be allowed by that policy regardless.
+They are ingress-only. NetworkPolicies union, and what bounds a member pod's
+reach is its own packet ruleset.
 
 **None of them restricts the source of a connection** — no rule carries a
 `from`, so each one narrows which port answers, not who may connect. router is

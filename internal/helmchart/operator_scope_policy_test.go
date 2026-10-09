@@ -133,6 +133,8 @@ func TestOperatorScopePolicyExpression(t *testing.T) {
 		{"operator pod in c8s-system", scopeRequest{op, "c8s-system", "", "pods", ""}, false},
 		{"operator token secret in c8s-system", scopeRequest{op, "c8s-system", "", "secrets", ""}, false},
 		{"operator delete c8s-system namespace", scopeRequest{op, "c8s-system", "", "namespaces", ""}, false},
+		{"operator pod in c8s-router", scopeRequest{op, "c8s-router", "", "pods", ""}, false},
+		{"operator edit the router deployment", scopeRequest{op, "c8s-router", "apps", "deployments", ""}, false},
 		{"operator crd", scopeRequest{op, "", "apiextensions.k8s.io", "customresourcedefinitions", ""}, false},
 		{"operator secret in kube-system", scopeRequest{op, "kube-system", "", "secrets", ""}, false},
 		{"operator token in kube-system", scopeRequest{op, "kube-system", "", "serviceaccounts", "token"}, false},

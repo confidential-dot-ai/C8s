@@ -12,6 +12,9 @@ CLUSTER="${C8S_IT_CLUSTER:-c8s-it}"
 NODE_IMAGE="${C8S_IT_NODE_IMAGE:-kindest/node:v1.34.11@sha256:44e222ee2132dab25ff87301682f89eb82c7880ea3a1bf543bfe9708fd08d67d}"
 IMAGE_TAG=it
 NS=c8s-system
+# The namespace whose pods serve the router's own ports. A fixed name: the
+# measured mesh policy carries it (internal/helmchart.RouterNamespace).
+ROUTER_NS=c8s-router
 CDS_LOCAL_PORT=18443
 # The mock attestation-api's synthetic launch digest (all zero). Pinned into
 # cds.measurements so every armTLS hop is verified
@@ -28,6 +31,13 @@ pod_fixture() {
     local mode="$1" name="$2" ns="$3"
     shift 3
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"
+}
+
+# front_door_pod <name> <namespace> <ca-configmap> <url>: a curl Pod that
+# verifies the front door against the mesh CA in that ConfigMap.
+front_door_pod() {
+    python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" front-door "$1" "$2" "$CURL_IMAGE" \
+        --ca-configmap "$3" -- curl -sS --cacert /ca/ca.pem "$4"
 }
 
 NODE="${NODE:-}"  # kind node container name, resolved after cluster creation

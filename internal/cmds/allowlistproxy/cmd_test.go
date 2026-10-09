@@ -9,13 +9,32 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 )
+
+// No test runs on a node, so the compiled mount paths name an empty directory
+// until mountedByTheNode points them at a test's own files.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "allowlistproxy")
+	if err != nil {
+		panic(err)
+	}
+	nodeAddressPath = filepath.Join(dir, "cds-address")
+	nodePinsPath = filepath.Join(dir, "cds-pins.json")
+	nodeVerifier = filepath.Join(dir, "attestation-api.sock")
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
 
 func TestProxyPreservesAuthorizedRequests(t *testing.T) {
 	type observedRequest struct {
@@ -197,6 +216,142 @@ func TestListenAddressRequiresLoopback(t *testing.T) {
 				t.Fatalf("error = %v, want %q", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// mountedByTheNode points the compiled node mount paths at a test's own files.
+func mountedByTheNode(t *testing.T, address, pins, verifier string) {
+	t.Helper()
+	previousAddress := nodeAddressPath
+	previousPins := nodePinsPath
+	previousVerifier := nodeVerifier
+	nodeAddressPath = address
+	nodePinsPath = pins
+	nodeVerifier = verifier
+	t.Cleanup(func() {
+		nodeAddressPath = previousAddress
+		nodePinsPath = previousPins
+		nodeVerifier = previousVerifier
+	})
+}
+
+// nodeCDSFiles writes the endpoint and the pins a node mounts for a
+// credentials-role container, and names a verifier socket it does not serve.
+func nodeCDSFiles(t *testing.T) (address, pins, verifier string) {
+	t.Helper()
+	dir := t.TempDir()
+	address = filepath.Join(dir, "cds-address")
+	if err := os.WriteFile(address, cmdsutil.FormatCDSAddress(netip.MustParseAddrPort("10.0.0.1:30808")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pins = filepath.Join(dir, "cds-pins.json")
+	policy := `{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"cds","measurement":"` + strings.Repeat("ab", 48) + `"}]}`
+	if err := os.WriteFile(pins, []byte(policy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return address, pins, filepath.Join(dir, "attestation-api.sock")
+}
+
+// The node addresses this proxy's CDS (workloadclaims.CDSAddressPath). Where
+// no node does, --cds-url is the only remaining source, and its absence is a
+// refusal.
+func TestNewHandlerRequiresCDSURLWithoutNodeEndpoint(t *testing.T) {
+	_, err := newHandler(config{
+		attestationAPIURL: "http://attestation-api:8400",
+		requestTimeout:    time.Second,
+	}, slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "--cds-url is required") {
+		t.Fatalf("error = %v, want one naming the missing CDS endpoint", err)
+	}
+}
+
+// The node is the only source while it mounts either file: an endpoint it
+// names, with pins it does not, reaches a CDS no measurement binds. Both
+// halves must come from the same place, and a flag beside the node's mount is
+// refused outright.
+func TestNewHandlerRefusesMixedCDSSources(t *testing.T) {
+	address, pins, verifier := nodeCDSFiles(t)
+	absent := filepath.Join(t.TempDir(), "absent")
+	node := config{
+		attestationAPIURL: "http://attestation-api:8400",
+		requestTimeout:    time.Second,
+	}
+	mountedByTheNode(t, address, pins, verifier)
+	if _, err := newHandler(node, slog.Default()); err != nil {
+		t.Fatalf("the node's own endpoint and pins were refused: %v", err)
+	}
+
+	for name, tc := range map[string]struct {
+		address string
+		pins    string
+		cfg     config
+		want    string
+	}{
+		"endpoint without pins": {
+			address: address,
+			pins:    absent,
+			cfg:     node,
+			want:    "must come from one source",
+		},
+		"pins without an endpoint": {
+			address: absent,
+			pins:    pins,
+			cfg:     node,
+			want:    "must come from one source",
+		},
+		"flag beside the node's endpoint": {
+			address: address,
+			pins:    pins,
+			cfg: config{
+				attestationAPIURL: node.attestationAPIURL,
+				requestTimeout:    time.Second,
+				cdsURL:            "https://cds.example:8443",
+			},
+			want: "remove --cds-url",
+		},
+		"flag beside the node's pins": {
+			address: address,
+			pins:    pins,
+			cfg: config{
+				attestationAPIURL:  node.attestationAPIURL,
+				requestTimeout:     time.Second,
+				measurementsConfig: pins,
+			},
+			want: "remove --image-policy-file",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			mountedByTheNode(t, tc.address, tc.pins, verifier)
+			_, err := newHandler(tc.cfg, slog.Default())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %v, want one saying %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The verifier decides whether the CDS the node names satisfies the pins it
+// mounts, so while the node serves its own attestation-api this proxy reaches
+// that socket and nothing the chart or the control plane names instead.
+func TestNewHandlerRefusesANamedVerifier(t *testing.T) {
+	address, pins, verifier := nodeCDSFiles(t)
+	if err := os.WriteFile(verifier, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mountedByTheNode(t, address, pins, verifier)
+	node := config{
+		attestationAPIURL: "unix://" + verifier,
+		requestTimeout:    time.Second,
+	}
+	if _, err := newHandler(node, slog.Default()); err != nil {
+		t.Fatalf("the node's own attestation-api was refused: %v", err)
+	}
+
+	named := node
+	named.attestationAPIURL = "http://10.53.0.10:53"
+	_, err := newHandler(named, slog.Default())
+	if err == nil || !strings.Contains(err.Error(), "unix://"+verifier) {
+		t.Fatalf("error = %v, want one naming the node's verifier", err)
 	}
 }
 
