@@ -9,12 +9,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -198,7 +200,7 @@ func TestCredentialVolumeForRejects(t *testing.T) {
 		"a key in another directory": {path("tls.crt"), filepath.Join(t.TempDir(), "tls.key"), path("ca.crt")},
 		"one name for two files":     {path("tls.crt"), path("tls.key"), path("tls.crt")},
 		"the pointer name":           {path("current"), path("tls.key"), path("ca.crt")},
-		"the generations directory":  {path("tls.crt"), path("generations"), path("ca.crt")},
+		"the issuer record name":     {path("tls.crt"), path("issuer"), path("ca.crt")},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := credentialVolumeFor(paths[0], paths[1], paths[2]); err == nil {
@@ -241,7 +243,7 @@ func TestVerifyGenerationRejects(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := verifyGeneration(g, testInstanceID, time.Now()); err == nil {
+			if _, err := verifyGeneration(g, testInstanceID, time.Now()); err == nil {
 				t.Fatal("accepted an unusable generation")
 			}
 		})
@@ -259,6 +261,29 @@ func TestIssuedGenerationRefusesTwoCAs(t *testing.T) {
 	}
 }
 
+// The pod keeps the issuer of its first published leaf, which is the CA key and
+// not the CA certificate, so a same-key renewal validates and a replacement key
+// does not.
+func TestValidateGenerationFollowsTheBoundKey(t *testing.T) {
+	ca := newTestCA(t)
+	key, keyPEM := testKey(t)
+	bound, err := issuerKeyIDOf(ca.cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	renewed := testGeneration(t, ca.issueSelf(t, 48*time.Hour), key, keyPEM, testInstanceID, time.Hour)
+	if err := validateGeneration(renewed, testInstanceID, bound, time.Now()); err != nil {
+		t.Fatalf("same-key CA renewal rejected: %v", err)
+	}
+	replaced := testGeneration(t, newTestCA(t), key, keyPEM, testInstanceID, time.Hour)
+	if err := validateGeneration(replaced, testInstanceID, bound, time.Now()); !errors.Is(err, errUnboundIssuer) {
+		t.Fatalf("replacement CA key: err = %v, want errUnboundIssuer", err)
+	}
+}
+
+// A reader following the stable paths sees one whole generation, both before
+// and after a flip, and never a partial set.
 func TestPublishGenerationFlipsOneWholeSet(t *testing.T) {
 	v := testVolume(t)
 	ca := newTestCA(t)
@@ -387,6 +412,207 @@ func TestStoredGenerationNeverMixesTwoGenerations(t *testing.T) {
 	}
 }
 
+// Withdrawal leaves no readable credential, and the issuer binding outlives it.
+func TestWithdrawGenerationKeepsTheIssuerRecord(t *testing.T) {
+	v := testVolume(t)
+	ca := newTestCA(t)
+	key, keyPEM := testKey(t)
+	creds := &credentials{
+		volume:     v,
+		instanceID: testInstanceID,
+	}
+	if err := creds.publish(testGeneration(t, ca, key, keyPEM, testInstanceID, time.Hour), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := withdrawGeneration(v); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range v.names() {
+		if _, err := os.ReadFile(filepath.Join(v.dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("%s is still readable after withdrawal: %v", name, err)
+		}
+	}
+	if _, err := storedGeneration(v); !errors.Is(err, errNoGeneration) {
+		t.Fatalf("storedGeneration after withdrawal = %v, want errNoGeneration", err)
+	}
+	record, err := loadIssuerRecord(v)
+	if err != nil || record != creds.issuer {
+		t.Fatalf("issuer record = %q, %v; want the bound key %q", record, err, creds.issuer)
+	}
+}
+
+// What a restart may adopt: only a volume holding a record and a generation
+// that still validates under it carries a pod on, and a volume holding neither
+// is the pod's first start.
+func TestLoadCredentialsFailsClosedOnIncompleteState(t *testing.T) {
+	ca := newTestCA(t)
+
+	t.Run("neither record nor generation bootstraps", func(t *testing.T) {
+		creds, err := loadCredentials(testVolume(t), testInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if creds.issuer != "" || creds.current != nil {
+			t.Fatal("a first start must hold no binding and no generation")
+		}
+	})
+
+	t.Run("a record and a published generation resumes with its key", func(t *testing.T) {
+		v, published, key := publishedVolume(t, ca)
+		creds, err := loadCredentials(v, testInstanceID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if creds.current == nil || !creds.current.Leaf.Equal(published.Leaf) {
+			t.Fatal("the published generation was not resumed")
+		}
+		if !creds.current.Key.Equal(key) {
+			t.Fatal("the resumed generation does not carry the key it was published with")
+		}
+	})
+
+	t.Run("a record with no generation fails closed", func(t *testing.T) {
+		v, _, _ := publishedVolume(t, ca)
+		if err := withdrawGeneration(v); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCredentials(v, testInstanceID); !errors.Is(err, errFailClosed) {
+			t.Fatalf("err = %v, want errFailClosed", err)
+		}
+	})
+
+	t.Run("a generation with no record fails closed", func(t *testing.T) {
+		v, _, _ := publishedVolume(t, ca)
+		if err := os.Remove(v.issuerPath()); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCredentials(v, testInstanceID); !errors.Is(err, errFailClosed) {
+			t.Fatalf("err = %v, want errFailClosed", err)
+		}
+	})
+
+	t.Run("a partial generation fails closed", func(t *testing.T) {
+		v, _, _ := publishedVolume(t, ca)
+		target, err := os.Readlink(v.pointerPath())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Remove(filepath.Join(v.dir, target, v.caName)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCredentials(v, testInstanceID); !errors.Is(err, errFailClosed) {
+			t.Fatalf("err = %v, want errFailClosed", err)
+		}
+	})
+
+	t.Run("a damaged issuer record fails closed", func(t *testing.T) {
+		v, _, _ := publishedVolume(t, ca)
+		if err := os.WriteFile(v.issuerPath(), []byte("not-a-fingerprint\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := loadCredentials(v, testInstanceID); !errors.Is(err, errFailClosed) {
+			t.Fatalf("err = %v, want errFailClosed", err)
+		}
+	})
+}
+
+// A restart that cannot revalidate its generation withdraws it and stays
+// fail-closed, so the pod cannot be moved onto another CA key.
+func TestAdoptStoredGenerationWithdrawsAnInvalidOne(t *testing.T) {
+	v, _, _ := publishedVolume(t, newTestCA(t))
+	creds, err := loadCredentials(v, "d4e9b1760c3a8f52")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := creds.adoptStoredGeneration(time.Now()); !errors.Is(err, errFailClosed) {
+		t.Fatalf("err = %v, want errFailClosed", err)
+	}
+	if _, err := storedGeneration(v); !errors.Is(err, errNoGeneration) {
+		t.Fatal("the generation of another instance was left published")
+	}
+	if _, err := loadIssuerRecord(v); err != nil {
+		t.Fatalf("the binding did not survive withdrawal: %v", err)
+	}
+}
+
+// A generation stops being usable when its own leaf or CA expires, and the
+// pod withdraws it rather than leaving it readable.
+func TestWithdrawUnusableAtExpiry(t *testing.T) {
+	v := testVolume(t)
+	ca := newTestCA(t)
+	key, keyPEM := testKey(t)
+	creds := &credentials{
+		volume:     v,
+		instanceID: testInstanceID,
+	}
+	generation := testGeneration(t, ca, key, keyPEM, testInstanceID, time.Hour)
+	if err := creds.publish(generation, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := creds.withdrawUnusable(time.Now()); err != nil || creds.current == nil {
+		t.Fatalf("a valid generation was withdrawn: %v", err)
+	}
+	if err := creds.withdrawUnusable(generationExpiry(generation).Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if creds.current != nil {
+		t.Fatal("an expired generation stayed published")
+	}
+	if _, err := os.Readlink(v.pointerPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("the pointer survived withdrawal")
+	}
+}
+
+// A running pod publishes nothing under a replacement CA key, and keeps the
+// generation it has.
+func TestPublishRefusesAReplacementCAKey(t *testing.T) {
+	v := testVolume(t)
+	key, keyPEM := testKey(t)
+	creds := &credentials{
+		volume:     v,
+		instanceID: testInstanceID,
+	}
+	bound := testGeneration(t, newTestCA(t), key, keyPEM, testInstanceID, time.Hour)
+	if err := creds.publish(bound, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := testGeneration(t, newTestCA(t), key, keyPEM, testInstanceID, time.Hour)
+	if err := creds.publish(replacement, time.Now()); !errors.Is(err, errUnboundIssuer) {
+		t.Fatalf("err = %v, want errUnboundIssuer", err)
+	}
+	if !creds.current.Leaf.Equal(bound.Leaf) {
+		t.Fatal("the bound generation was replaced")
+	}
+	assertReaderPaths(t, v, bound)
+}
+
+func TestIssuerRecordRoundTrip(t *testing.T) {
+	v := testVolume(t)
+	if _, err := loadIssuerRecord(v); !errors.Is(err, errNoIssuerRecord) {
+		t.Fatalf("err = %v, want errNoIssuerRecord", err)
+	}
+	id, err := issuerKeyIDOf(newTestCA(t).cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeIssuerRecord(v, id); err != nil {
+		t.Fatal(err)
+	}
+	got, err := loadIssuerRecord(v)
+	if err != nil || got != id {
+		t.Fatalf("record = %q, %v; want %q", got, err, id)
+	}
+	if len(strings.TrimSpace(string(got))) != 64 {
+		t.Fatalf("issuer key id %q is not a SHA-256 fingerprint", got)
+	}
+}
+
+// publishedVolume is a volume in the state a restart finds: one published
+// generation and the issuer record it was bound under.
 func publishedVolume(t *testing.T, ca *testCA) (credentialVolume, *generation, *ecdsa.PrivateKey) {
 	t.Helper()
 	v := testVolume(t)
@@ -479,61 +705,59 @@ func signTokenFor(t *testing.T, w http.ResponseWriter, r *http.Request, instance
 	_ = json.NewEncoder(w).Encode(token)
 }
 
-// What a restart resumes: the generation on its volume, with the key that
-// generation was published with, or nothing when the pod has published nothing
-// yet.
-func TestLoadCredentialsResumesWhatTheVolumeHolds(t *testing.T) {
-	t.Run("a published generation resumes with its own key", func(t *testing.T) {
-		v, published, key := publishedVolume(t, newTestCA(t))
-		creds, err := loadCredentials(v, testInstanceID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if creds.current == nil || !creds.current.Leaf.Equal(published.Leaf) {
-			t.Fatal("the published generation was not resumed")
-		}
-		if !creds.current.Key.Equal(key) {
-			t.Fatal("the resumed generation does not carry the key it was published with")
-		}
-		if err := creds.adoptStoredGeneration(time.Now()); err != nil {
-			t.Fatalf("a valid generation was not adopted: %v", err)
-		}
-	})
-
-	t.Run("an empty volume bootstraps", func(t *testing.T) {
-		creds, err := loadCredentials(testVolume(t), testInstanceID)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if creds.current != nil {
-			t.Fatal("a first start must hold no generation")
-		}
-	})
-
-	t.Run("a partial generation is refused", func(t *testing.T) {
-		v, _, _ := publishedVolume(t, newTestCA(t))
-		target, err := os.Readlink(v.pointerPath())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Remove(filepath.Join(v.dir, target, v.caName)); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := loadCredentials(v, testInstanceID); err == nil {
-			t.Fatal("a partial generation was resumed")
-		}
-	})
-}
-
-// A generation naming another workload instance is never resumed, however
-// intact it is.
-func TestAdoptStoredGenerationRefusesAnotherInstance(t *testing.T) {
-	v, _, _ := publishedVolume(t, newTestCA(t))
-	creds, err := loadCredentials(v, "d4e9b1760c3a8f52")
+// An expired set is the ordinary end of a generation's life, and says so: a
+// validation failure that is not expiry means the set does not hold together.
+func TestExpiryIsItsOwnFailure(t *testing.T) {
+	ca := newTestCA(t)
+	key, keyPEM := testKey(t)
+	bound, err := issuerKeyIDOf(ca.cert)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := creds.adoptStoredGeneration(time.Now()); err == nil {
-		t.Fatal("adopted the generation of another workload instance")
+	expired := testGeneration(t, ca, key, keyPEM, testInstanceID, -time.Minute)
+	if err := validateGeneration(expired, testInstanceID, bound, time.Now()); !errors.Is(err, errGenerationExpired) {
+		t.Fatalf("err = %v, want errGenerationExpired", err)
 	}
+	live := testGeneration(t, ca, key, keyPEM, testInstanceID, time.Hour)
+	if err := validateGeneration(live, "a7c2d41e8b96f035", bound, time.Now()); errors.Is(err, errGenerationExpired) {
+		t.Fatalf("a foreign instance reported as expiry: %v", err)
+	}
+}
+
+// A recreated pod starts on a fresh volume, so it binds to whichever CA key CDS
+// holds now — including a replacement one — and publishes under it.
+func TestRecreatedPodBindsToTheReplacementCAKey(t *testing.T) {
+	retired := newTestCA(t)
+	replacement := newTestCA(t)
+
+	// The pod this one replaces, bound to the retired key.
+	previous, _, _ := publishedVolume(t, retired)
+	retiredKey, err := loadIssuerRecord(previous)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	creds, err := loadCredentials(testVolume(t), testInstanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, err := issueFor(replacement, creds, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := creds.publish(generation, time.Now()); err != nil {
+		t.Fatalf("a recreated pod could not publish under the replacement key: %v", err)
+	}
+	record, err := loadIssuerRecord(creds.volume)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := issuerKeyIDOf(replacement.cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record != want || record == retiredKey {
+		t.Fatalf("recreated pod bound to %q, want the replacement key %q", record, want)
+	}
+	assertReaderPaths(t, creds.volume, generation)
 }
