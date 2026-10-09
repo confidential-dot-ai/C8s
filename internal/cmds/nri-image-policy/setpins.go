@@ -36,7 +36,7 @@ const (
 // build resolves — so the chart can patch that file but never re-render it.
 func runSetCDSPins(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+setCDSPinsVerb, flag.ContinueOnError)
-	path := fs.String("config", defaultConfigPath, "plugin config to patch in place")
+	path := fs.String("config", DefaultConfigPath, "plugin config to patch in place")
 	rawMeasurements := fs.String("cds-measurements", "", "comma-separated SHA-384 hex CDS launch measurements; empty clears the pins")
 	rawRTMRs := fs.String("cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex>; empty clears the pins")
 	if err := cmdsutil.ParseFlags(fs, args); err != nil {
