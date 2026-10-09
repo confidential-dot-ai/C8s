@@ -24,6 +24,22 @@ sentences needs no change in this repo.
 godog's own flags are bound under `--godog.`: `--godog.format=cucumber:report.json`
 writes the report the runner records, `--godog.tags=@area:enforcement` selects.
 
+## Running
+
+[`run.sh`](run.sh) is what the suite's judge runs as its test command. It sets
+the backend up, runs `TestFeatures` with a Cucumber report, and tears the
+backend down, reading:
+
+| Variable | Meaning |
+|---|---|
+| `CONFORMANCE_BACKEND` | the backend, `kind` or `metal`, plus whatever that backend requires |
+| `CONFORMANCE_FEATURES` | the directory of `.feature` files to run |
+| `CONFORMANCE_REPORT` | where to write the Cucumber JSON report |
+| `GODOG_TAGS` | optional tag expression, such as `@area:enforcement` |
+
+It exits with godog's status, so a failed step fails the command; undefined
+and pending steps are the judge's backlog and do not.
+
 ## Backends
 
 A backend answers a fixed set of questions about one running environment so
@@ -48,14 +64,14 @@ rejects unknown names.
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
 change with c8s. A change to any of those updates the backend in the same PR.
-`shellcheck` runs over them in the node-guest-image lint workflow.
+`shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
 
 ## What is a coordinated change
 
-The suite calls `TestFeatures` and the backends by name. Renaming a backend
-function, changing its arguments or output, or changing the variables
-`TestFeatures` reads is a coordinated change with the suite's runner. Adding a
-step or a backend function is not.
+The suite calls `run.sh` and the backends by name. Renaming a backend
+function, changing its arguments or output, or changing the variables `run.sh`
+and `TestFeatures` read is a coordinated change with the suite's judge
+configuration. Adding a step or a backend function is not.
 
 Nothing here runs a scenario in this repo's CI: `make test` compiles the steps
 and `TestFeatures` skips. The suite's own CI runs the steps on kind and on both
