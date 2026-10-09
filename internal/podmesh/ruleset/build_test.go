@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"slices"
@@ -37,6 +38,26 @@ func testPolicy() Policy {
 			Destinations: []Destination{{netip.MustParseAddr("10.43.0.2"), 8443}},
 		}},
 	}
+}
+
+// serverPolicy is the same policy for a pod that serves a platform role's own
+// ports: the router answers external listeners, and a second identity of that
+// pod reaches the egress port outside the cluster.
+func serverPolicy() Policy {
+	policy := testPolicy()
+	policy.Server = ServerRole{
+		UID:       1339,
+		Listeners: []uint16{8443, 8080},
+		Egress: ServerEgress{
+			UID:   1340,
+			Ports: []uint16{443},
+		},
+		ClusterRanges: []netip.Prefix{
+			netip.MustParsePrefix("10.52.0.0/16"),
+			netip.MustParsePrefix("10.53.0.0/16"),
+		},
+	}
+	return policy
 }
 
 // The golden file pins the whole ruleset in nft's own syntax: a reviewer reads
@@ -90,6 +111,46 @@ func TestFilterOutputReservesTheMeshListeners(t *testing.T) {
 			t.Errorf("the mesh endpoint may not answer on port %d before rule %d", port, at)
 		}
 	}
+}
+
+// A pod serving a role's own ports carries the member ruleset and exactly the
+// rules of that role: its listeners, the capture of the egress port inside the
+// cluster, and that port outside it for the egress identity alone. The
+// identity that answers and forwards holds no rule that leaves the cluster,
+// so a forwarded request is captured wherever its name resolves.
+func TestServerRoleAddsOnlyItsOwnRules(t *testing.T) {
+	added := addedRules(renderRuleset(build(testPolicy())), renderRuleset(build(serverPolicy())))
+	want := []string{
+		"meta l4proto tcp th dport 8443 return # server-listener-8443",
+		"meta l4proto tcp th dport 8080 return # server-listener-8080",
+		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.52.0.0/16",
+		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 redirect to :15001 # server-egress-443-in-cluster-10.53.0.0/16",
+		"skuid 1340 meta l4proto tcp th dport 443 return # server-egress-443",
+		"meta l4proto tcp th dport 8443 accept # server-listener-8443",
+		"meta l4proto tcp th dport 8080 accept # server-listener-8080",
+		"skuid 1340 meta nfproto ipv4 ip daddr 10.52.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.52.0.0/16",
+		"skuid 1340 meta nfproto ipv4 ip daddr 10.53.0.0 & 255.255.0.0 meta l4proto tcp th dport 443 drop # server-egress-443-in-cluster-10.53.0.0/16",
+		"skuid 1340 meta l4proto tcp th dport 443 accept # server-egress-443",
+	}
+	if !slices.Equal(added, want) {
+		t.Fatalf("the server role adds\n%s\nwant\n%s", strings.Join(added, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// addedRules are the rules the second ruleset carries and the first does not,
+// in the order they are installed.
+func addedRules(member, server string) []string {
+	had := map[string]bool{}
+	for _, line := range strings.Split(member, "\n") {
+		had[strings.TrimSpace(line)] = true
+	}
+	var added []string
+	for _, line := range strings.Split(server, "\n") {
+		if trimmed := strings.TrimSpace(line); !had[trimmed] {
+			added = append(added, trimmed)
+		}
+	}
+	return added
 }
 
 // A ruleset that cannot be built is never installed.
@@ -151,6 +212,18 @@ type nftRender struct {
 	port    uint16
 }
 
+// masked records the mask the comparison that follows applies: over conntrack
+// it selects the state bit, over an address it is the prefix nft prints beside
+// it.
+func (r *nftRender) masked(mask []byte) {
+	if r.subject == "ct state" {
+		r.value = func([]byte) string { return ctStateNames[binary.NativeEndian.Uint32(mask)] }
+		return
+	}
+	address := r.value
+	r.value = func(raw []byte) string { return address(raw) + " & " + net.IP(mask).String() }
+}
+
 func (r *nftRender) add(e expr.Any) {
 	switch typed := e.(type) {
 	case *expr.Meta:
@@ -160,7 +233,7 @@ func (r *nftRender) add(e expr.Any) {
 	case *expr.Ct:
 		r.expect("ct state", hexValue)
 	case *expr.Bitwise:
-		r.value = func([]byte) string { return ctStateNames[binary.NativeEndian.Uint32(typed.Mask)] }
+		r.masked(typed.Mask)
 	case *expr.Fib:
 		r.expect("fib daddr type", func(raw []byte) string { return addressTypes[binary.NativeEndian.Uint32(raw)] })
 	case *expr.Cmp:

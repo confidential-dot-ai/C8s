@@ -176,6 +176,25 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 // other container, so a pod cannot reach the CDS with a socket of its own.
 const CredentialsUID uint32 = 1338
 
+// RouterNamespace is the fixed namespace whose pods answer the cluster's
+// external traffic. The chart renders that pod itself and the enforcer gives
+// a pod of this namespace the router's listener and egress rules, so the name
+// is compiled rather than chosen per cluster.
+const RouterNamespace = "c8s-router"
+
+// RouterUID is the reserved identity of the router role: the one role that
+// answers ports of its own, in RouterNamespace. The node binds its external
+// listener ports to this number, and the enforcer refuses it in any other
+// container.
+const RouterUID uint32 = 1339
+
+// AcmeUID is the reserved identity of the role that proves control of the
+// front door's public names. The node binds the one port a member pod may
+// reach outside the cluster in the clear to this number, which the role that
+// forwards application traffic never holds, and the enforcer refuses it in
+// any other container.
+const AcmeUID uint32 = 1340
+
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.
 const CertWaitContainerName = "c8s-cert-wait"

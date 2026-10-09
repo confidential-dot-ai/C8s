@@ -381,9 +381,9 @@ mesh:
   roles:
     - name: mesh
       uid: 1337
-    - name: router
-      uid: 1339
-      destinations: ["10.43.0.5:8443"]
+  server:
+    namespace: c8s-router
+    listeners: [8443]
 `
 	}
 	path := filepath.Join(t.TempDir(), "image-policy.yaml")
