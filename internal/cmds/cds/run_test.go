@@ -2,6 +2,7 @@ package cds
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -586,5 +587,77 @@ func TestMeasurementDigests(t *testing.T) {
 	empty, err := measurementDigests(nil)
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("empty allowlist: got %v, %v", empty, err)
+	}
+}
+
+// pastHalfLife is the renewal trigger: half the certificate's lifetime,
+// leaving the rest of it for renewal to keep retrying in.
+func TestPastHalfLife(t *testing.T) {
+	now := time.Now()
+	window := func(start, end time.Duration) *x509.Certificate {
+		return &x509.Certificate{
+			NotBefore: now.Add(start),
+			NotAfter:  now.Add(end),
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		cert *x509.Certificate
+		want bool
+	}{
+		{"fresh certificate", window(-time.Minute, time.Hour), false},
+		{"just before half its lifetime", window(-29*time.Minute, 31*time.Minute), false},
+		{"past half its lifetime", window(-31*time.Minute, 29*time.Minute), true},
+		{"expired", window(-2*time.Hour, -time.Hour), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pastHalfLife(tc.cert, now); got != tc.want {
+				t.Errorf("pastHalfLife() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A due renewal replaces the published certificate, which is what /ca and
+// every issuance then answer with.
+func TestRenewMeshCAWhenDueRepublishesTheCertificate(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	first := mesh.Current().CA.Cert
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for mesh.Current().CA.Cert.Equal(first) {
+		if time.Now().After(deadline) {
+			t.Fatal("renewal did not replace the published certificate")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// Cancelling the context stops the loop.
+func TestRenewMeshCAWhenDueStopsOnContextCancel(t *testing.T) {
+	mesh, err := issuer.NewMeshCA("test ca", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("mesh ca: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		renewMeshCAWhenDue(ctx, mesh, time.Millisecond, nil)
+		close(stopped)
+	}()
+
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("renewal loop outlived its context")
 	}
 }
