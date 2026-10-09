@@ -316,29 +316,23 @@ a whole certificate lifetime — worse than what it prevents. The sandbox is
 instead unusable for secrets, which costs one workload rather than every pod on
 the node.
 
-### The injected drop set
+### The platform drop set
 
 C8s injects its own containers into every confidential pod. They are not part of
 a workload's declared set, so they are removed before matching — an entry never
-has to enumerate C8s's own sidecars.
+has to enumerate C8s's own containers.
 
-A container is dropped when its digest is admitted by some entry under an
-**unconstrained argv policy** (`command` and `args` both `any`) *and* its
-entrypoint is one C8s injects (`get-cert`, `get-secret`, `get-volume`, `/c8s`).
-Both halves are load-bearing. Admission alone would let a pod add any
-any-argv component image with its entrypoint overridden — and have it ignored.
+A container is dropped when the node that admitted it reports a **platform
+role** for it: the mesh endpoint, the credential clients and the front door each
+run on a reserved identity that only the node's measured base allowlist grants
+(`role:` on a base entry). The role travels per container on the digests
+channel, which is a mutually attested connection to that node's inventory.
 
-The seeded component entries are the source: the injected image is among them,
-since it could not run otherwise, and an image bump seeds the new digest's entry
-beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#bootstrap)).
-
-What this rests on, in both directions: no image admitted under an unconstrained
-argv other than C8s's has an executable at one of those entrypoints, and the
-injected image's own entry stays unconstrained — an operator who narrows it
-(`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected sidecar
-into a foreign container and every release in the cluster is refused. Allowlist
-contents are operator-controlled and auditable, but that is a property of the
-deployment rather than something enforced here.
+What this rests on: a role is a local fact of the node's boot configuration.
+`role:` is YAML-only, so the document CDS serves cannot carry one, and no pod
+spec, annotation or container name can claim one. A container the base names no
+role for is a workload container, whatever image it runs and whatever its
+command line looks like.
 
 ## The grant
 
@@ -389,24 +383,22 @@ kept for operator-authored input, where an unknown field is a typo.
 ## The mount policy
 
 Every container in the entry also needs a `mounts` policy admitting what the
-webhook injects: the cert volume, and the secret directory. An absent policy is
-`deny`, which admits platform mounts alone and so refuses the pod at container
-creation.
+webhook injects: the secret directory. An absent policy is `deny`, which
+admits platform mounts alone and so refuses the pod at container creation.
 
-Both are memory-backed `emptyDir`s, so an `exact` policy names them by
+It is a memory-backed `emptyDir`, so an `exact` policy names it by
 destination:
 
 ```json
 "mounts": {"policy": "exact", "rules": [
-  {"destination": "/etc/c8s/certs", "kind": "emptyDir"},
   {"destination": "/run/c8s/secrets", "kind": "emptyDir"}
 ]}
 ```
 
-The destinations are the injector's cert directory and
-`confidential.ai/c8s-secret-dir` where the pod sets it. `exact` is set
-equality, so the rules also cover every other non-platform mount the pod
-declares; a configMap, projected or PVC source classes as `data`, whose
+The destination is `confidential.ai/c8s-secret-dir` where the pod sets it. The
+credential volume is mounted into the injected containers alone, which this
+entry does not describe. `exact` is set equality, so the rules also cover every
+other non-platform mount the pod declares; a configMap, projected or PVC source classes as `data`, whose
 destination sits below `/mnt/c8s-data/`.
 
 `{"policy": "any"}` admits any mount table, leaving the host free to add one.

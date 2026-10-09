@@ -8,9 +8,10 @@
 # CNI: Canal (flannel VXLAN + Calico's Felix for NetworkPolicy). Overrides
 # live in var/lib/rancher/rke2/server/manifests/{rke2-canal,canal-felix}-config.yaml.
 #
-# INVARIANT: kube-proxy runs in iptables mode. armtls-mesh's cw inbound guard
-# needs Service DNAT to happen in nat PREROUTING before filter FORWARD (see
-# cmd/armtls-mesh/README.md, "Confidential-workload inbound guard").
+# INVARIANT: kube-proxy runs in iptables mode, in the node's own network
+# namespace. A member pod's traffic is captured by the nftables ruleset the
+# enforcer installs in that pod's namespace, which Service DNAT never reaches
+# (internal/podmesh/ruleset).
 cni: canal
 disable-kube-proxy: false
 kube-proxy-arg:

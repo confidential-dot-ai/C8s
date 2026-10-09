@@ -375,13 +375,21 @@ func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Conta
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
-// effective OCI process.args, the same value the checks read.
+// effective OCI process.args, the same value the checks read, and the role is
+// the one the measured base binds to that whole launch.
 func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	if p.inventory == nil {
 		return
 	}
 	env := containerEnv(ctr)
-	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
+	launch := allowlist.RunningContainer{
+		Digest: digest,
+		Argv:   ctr.GetArgs(),
+		Env:    env,
+		Mounts: mounts,
+	}
+	role := p.roleOf(launch)
+	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, role, ctr.GetArgs(), env, mounts)
 }
 
 func observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {

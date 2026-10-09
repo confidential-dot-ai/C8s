@@ -60,7 +60,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
 	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated; ignored when CDS presents SNP evidence (empty pins no registers)")
-	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence")
 	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to CDS")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultReadHeaderTimeout, "HTTP request-header timeout")

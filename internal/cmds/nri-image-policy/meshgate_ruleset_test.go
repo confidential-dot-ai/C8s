@@ -3,9 +3,11 @@
 package nriimagepolicy
 
 import (
+	"net/netip"
 	"slices"
 	"testing"
 
+	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -44,5 +46,32 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	}
 	if !slices.Equal(uids, []uint32{testCertUID}) {
 		t.Fatalf("member role uids = %v, want the dialing role alone", uids)
+	}
+}
+
+// The injected credential clients verify CDS evidence through the
+// attestation-api on their own node, so the ruleset admits that port at the
+// address their CDS is on and the clients' identity alone reaches it.
+func TestPodRulesetAdmitsTheCredentialAttestationPort(t *testing.T) {
+	policy := meshRoles()
+	policy.CredentialAttestationPort = 8400
+	policy.Roles = append(policy.Roles, roleBinding{
+		Name:         CredentialRole,
+		UID:          workloadclaims.CredentialsUID,
+		Destinations: []netip.AddrPort{netip.MustParseAddrPort("172.18.0.2:30808")},
+	})
+
+	var credentials ruleset.Role
+	for _, role := range policy.podRuleset("default").Roles {
+		if role.UID == workloadclaims.CredentialsUID {
+			credentials = role
+		}
+	}
+	want := []ruleset.Destination{
+		{Addr: netip.MustParseAddr("172.18.0.2"), Port: 30808},
+		{Addr: netip.MustParseAddr("172.18.0.2"), Port: 8400},
+	}
+	if !slices.Equal(credentials.Destinations, want) {
+		t.Fatalf("credential destinations = %+v, want %+v", credentials.Destinations, want)
 	}
 }

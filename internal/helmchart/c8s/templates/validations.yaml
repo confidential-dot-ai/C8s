@@ -88,7 +88,7 @@
 {{- /*
   The mirror of require_host_image_policy for evidence: off bare-metal mode,
   the host attestation-api DaemonSet is the only evidence source for
-  get-cert, armtls-mesh, and CDS. Disabling it there renders a cluster whose
+  get-cert, the mesh endpoint, and CDS. Disabling it there renders a cluster whose
   attestation consumers all point at a socket nothing serves.
 */ -}}
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
@@ -100,11 +100,11 @@
   an upstream IS set, it must be either:
    - an operator-managed headless Service (c8s-<id>.<ns>.svc.cluster.local:<port>,
      which `c8s install --upstream` derives): the app-layer hop is plaintext
-     http, the node mesh intercepts the pod-IP hop and wraps it in attested mTLS.
-     The shape match below is ADVISORY — it can't prove the Service is headless
-     (a ClusterIP Service of the same name would be a VIP the mesh skips), so the
-     real boundary is armtlsMesh.cwInboundEnforcement, which drops VIP/FORWARD-path
-     hops to cw pods at runtime. This guard only catches accidental plaintext.
+     http, and each pod's own endpoint wraps the pod-IP hop in attested mTLS.
+     The shape match below is ADVISORY — it can't prove the Service is headless,
+     so the real boundary is the pod ruleset the node enforcer installs, which
+     carries no plaintext off a member pod. This guard only catches accidental
+     plaintext.
      An https protocol on this shape can only fail at runtime, so reject it.
    - a manual address that terminates and verifies TLS itself (app-TLS): must
      be https with tls.verify=true. A silently plaintext manual address would

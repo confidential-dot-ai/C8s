@@ -27,6 +27,7 @@ import (
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // helmFailMessage extracts the user-visible message from a `helm template`
@@ -50,83 +51,6 @@ func assertHelmFailMessage(t *testing.T, out, want string) {
 	}
 }
 
-// preStopBoundFailure captures the structured shape of the daemonset
-// preStop fail-checks so tests can assert on typed fields instead of
-// substring-matching the rendered error.
-type preStopBoundFailure struct {
-	Cmp   string // "le" for "≤", "ge" for "≥"
-	Bound int
-	Got   int
-}
-
-var preStopBoundRE = regexp.MustCompile(`iptablesCleanup\.preStopSleepSeconds must be ([≤≥]) (-?\d+).*got (-?\d+)`)
-
-func parsePreStopBoundFailure(t *testing.T, out string) preStopBoundFailure {
-	t.Helper()
-	msg := helmFailMessage(t, out)
-	m := preStopBoundRE.FindStringSubmatch(msg)
-	if len(m) != 4 {
-		t.Fatalf("preStop bound regex did not match %q", msg)
-	}
-	cmp := "ge"
-	if m[1] == "≤" {
-		cmp = "le"
-	}
-	bound, err := strconv.Atoi(m[2])
-	if err != nil {
-		t.Fatalf("bound %q is not an int: %v", m[2], err)
-	}
-	got, err := strconv.Atoi(m[3])
-	if err != nil {
-		t.Fatalf("got %q is not an int: %v", m[3], err)
-	}
-	return preStopBoundFailure{Cmp: cmp, Bound: bound, Got: got}
-}
-
-// gracePeriodBudgetFailure: the durations the chart says don't leave a
-// preStop window.
-type gracePeriodBudgetFailure struct {
-	GracePeriod string
-	Drain       string
-}
-
-var gracePeriodBudgetRE = regexp.MustCompile(`terminationGracePeriod \(([^)]+)\) must exceed drainTimeout \(([^)]+)\)`)
-
-func parseGracePeriodBudgetFailure(t *testing.T, out string) gracePeriodBudgetFailure {
-	t.Helper()
-	msg := helmFailMessage(t, out)
-	m := gracePeriodBudgetRE.FindStringSubmatch(msg)
-	if len(m) != 3 {
-		t.Fatalf("grace-period budget regex did not match %q", msg)
-	}
-	return gracePeriodBudgetFailure{GracePeriod: m[1], Drain: m[2]}
-}
-
-// durationFormatFailure classifies the two distinct rejection paths in the
-// duration helper so a future refactor that conflates them flags here.
-type durationFormatFailure struct {
-	Value  string
-	Reason string // "no-unit" | "non-integer"
-}
-
-var (
-	durationNoUnitRE     = regexp.MustCompile(`duration "([^"]+)" must end with h, m, or s`)
-	durationNonIntegerRE = regexp.MustCompile(`duration "([^"]+)" must be a positive integer`)
-)
-
-func parseDurationFormatFailure(t *testing.T, out string) durationFormatFailure {
-	t.Helper()
-	msg := helmFailMessage(t, out)
-	if m := durationNoUnitRE.FindStringSubmatch(msg); len(m) == 2 {
-		return durationFormatFailure{Value: m[1], Reason: "no-unit"}
-	}
-	if m := durationNonIntegerRE.FindStringSubmatch(msg); len(m) == 2 {
-		return durationFormatFailure{Value: m[1], Reason: "non-integer"}
-	}
-	t.Fatalf("duration-format regex did not match %q", msg)
-	return durationFormatFailure{}
-}
-
 // containerArgs returns the args of the named container, searching main and
 // init containers. Fails the test if no such container exists.
 func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
@@ -145,17 +69,6 @@ func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
 	return nil
 }
 
-// containerArgValue returns (value, true) for `--flag value`, or ("", false)
-// if the flag isn't present.
-func containerArgValue(args []string, flag string) (string, bool) {
-	for i, a := range args {
-		if a == flag && i+1 < len(args) {
-			return args[i+1], true
-		}
-	}
-	return "", false
-}
-
 func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	// gke keeps the host-side attestation-api enabled, reachable only via the
 	// on-node Unix socket (node disables it and points components at the baked
@@ -169,7 +82,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	}
 	for _, label := range [][2]string{
 		{"app.kubernetes.io/component", "cds"},
-		{"app.kubernetes.io/name", "armtls-mesh"},
 		{"app.kubernetes.io/name", "nri-image-policy"},
 		{"app.kubernetes.io/name", "router"},
 	} {
@@ -220,166 +132,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	}
 }
 
-func TestChartRendersARMTLSHostRoutingDefaults(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-
-	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
-	}
-	for _, pair := range [][2]string{
-		{"--node-ip", "$(NODE_IP)"},
-		{"--resync-period", "30s"},
-		{"--watchdog-period", "2s"},
-		{"--ipset-maxelem", "262144"},
-		{"--ready-file", "/tmp/armtls-iptables-ready"},
-		{"--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json"},
-		// The release namespace must NOT be excluded: router egress to
-		// workload pod IPs (headless-Service dials) needs mesh interception.
-		{"--exclude-source-namespaces", "kube-system"},
-	} {
-		if !argvContainsFlagValue(sync.Command, pair[0], pair[1]) {
-			t.Errorf("iptables-sync command missing %s %s; command=%q", pair[0], pair[1], sync.Command)
-		}
-	}
-	if slices.Contains(sync.Command, "--pod-cidrs") {
-		t.Errorf("iptables-sync must not require static --pod-cidrs; command=%q", sync.Command)
-	}
-	// The cw inbound guard is always on; its posture is the passthrough
-	// allowlist, defaulting to DNS replies so get-cert can resolve.
-	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=udp:53,tcp:53") {
-		t.Errorf("iptables-sync command missing --cw-inbound-passthrough=udp:53,tcp:53; command=%q", sync.Command)
-	}
-
-	mesh, ok := findContainer(ds.Spec.Template.Spec.Containers, "armtls-mesh")
-	if !ok {
-		t.Fatalf("armtls-mesh container missing; have %v", containerNames(ds.Spec.Template.Spec.Containers))
-	}
-	if !argvContainsFlagValue(mesh.Args, "--iptables-metrics-file", "/tmp/armtls-iptables-metrics.json") {
-		t.Errorf("armtls-mesh args missing the shared iptables metrics file flag; args=%q", mesh.Args)
-	}
-	// --platform is the armTLS TEE type; an empty value (the old missing
-	// default) trips the binary's "--platform is required" check, so the mesh
-	// pod never starts. Pin the non-empty default.
-	if !argvContainsFlagValue(mesh.Args, "--platform", "sev-snp") {
-		t.Errorf("armtls-mesh args must default --platform to sev-snp; args=%q", mesh.Args)
-	}
-	if hp, ok := containerHostPort(mesh, "inbound"); !ok || hp != 15006 {
-		t.Errorf("armtls-mesh inbound port must publish hostPort 15006; got %d (found=%v)", hp, ok)
-	}
-	for _, banned := range []int32{15001, 15021} {
-		if containers := containersExposingHostPort(ds, banned); len(containers) > 0 {
-			t.Errorf("hostPort %d must not be exposed; exposed by %v", banned, containers)
-		}
-	}
-
-	for _, c := range allContainers(ds) {
-		for name := range c.Resources.Requests {
-			if strings.Contains(string(name), "confidential.ai/tpm") {
-				t.Errorf("container %q requests local TPM resource %q by default", c.Name, name)
-			}
-		}
-		for name := range c.Resources.Limits {
-			if strings.Contains(string(name), "confidential.ai/tpm") {
-				t.Errorf("container %q limits local TPM resource %q by default", c.Name, name)
-			}
-		}
-	}
-
-	// The attestation-api policy must remain; nothing may select the hostNetwork
-	// mesh pods. volumed's is absent here because volumed is off by default.
-	wantPolicies := []string{
-		"c8s-attestation-api",
-		"armtls-mesh-tcp-only-egress",
-		"c8s-cds-ingress",
-		"c8s-operator-ingress",
-		"c8s-router-ingress",
-	}
-	kinds := renderedKinds(t, out)
-	if kinds["NetworkPolicy"] != len(wantPolicies) {
-		t.Errorf("default render NetworkPolicy count = %d, want %d", kinds["NetworkPolicy"], len(wantPolicies))
-	}
-	for _, name := range wantPolicies {
-		if !renderedManifestHasNamedKind(t, out, "NetworkPolicy", name) {
-			t.Errorf("default render is missing NetworkPolicy %q", name)
-		}
-	}
-}
-
-func TestChartCWInboundPassthrough(t *testing.T) {
-	// An empty passthrough renders the strict fail-closed posture (no
-	// exemptions), and the flag is present-but-empty so the manifest still
-	// self-documents that the guard is on.
-	out, err := helmTemplate(t, "--set", "armtlsMesh.cwInboundEnforcement.passthrough=[]")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
-	}
-	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=") {
-		t.Errorf("iptables-sync command missing empty --cw-inbound-passthrough=; command=%q", sync.Command)
-	}
-
-	// A custom passthrough list renders in order as proto:port,proto:port.
-	out, err = helmTemplate(t,
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[0].protocol=udp",
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[0].sourcePort=53",
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[1].protocol=tcp",
-		"--set", "armtlsMesh.cwInboundEnforcement.passthrough[1].sourcePort=8443",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds = findARMTLSMeshDaemonSet(t, out)
-	sync, _ = findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !slices.Contains(sync.Command, "--cw-inbound-passthrough=udp:53,tcp:8443") {
-		t.Errorf("iptables-sync command missing --cw-inbound-passthrough=udp:53,tcp:8443; command=%q", sync.Command)
-	}
-
-	// A wrong-typed value (e.g. --set-string) fails loudly instead of silently
-	// rendering strict drop-all, which would reproduce the DNS-resolution
-	// outage this guard exists to prevent.
-	out, err = helmTemplate(t, "--set-string", "armtlsMesh.cwInboundEnforcement.passthrough=udp:53")
-	if err == nil {
-		t.Fatalf("helm template succeeded on a string passthrough, want a fail\n%s", out)
-	}
-	if !strings.Contains(out, "must be a list") {
-		t.Errorf("passthrough type error should name the fix; got %s", out)
-	}
-
-	// A malformed entry fails at render, not at daemon startup — a rendered
-	// "udp:<nil>" would crash-loop the init container. The key prefix is elided
-	// to pt for readability.
-	const pt = "armtlsMesh.cwInboundEnforcement.passthrough"
-	for _, bad := range [][]string{
-		{"--set", pt + "[0].protocol=udp"},                                       // missing sourcePort
-		{"--set", pt + "[0].protocol=icmp", "--set", pt + "[0].sourcePort=53"},   // bad protocol
-		{"--set", pt + "[0].protocol=udp", "--set", pt + "[0].sourcePort=70000"}, // out-of-range port
-	} {
-		if out, err := helmTemplate(t, bad...); err == nil {
-			t.Errorf("helm template succeeded on malformed passthrough entry %v, want a fail\n%s", bad, out)
-		}
-	}
-}
-
-// argvContainsFlagValue reports whether argv has `flag` immediately followed
-// by `value`.
-func argvContainsFlagValue(argv []string, flag, value string) bool {
-	for i, a := range argv {
-		if a == flag && i+1 < len(argv) && argv[i+1] == value {
-			return true
-		}
-	}
-	return false
-}
-
 func namedContainerPort(c corev1.Container, portName string) (corev1.ContainerPort, bool) {
 	for _, p := range c.Ports {
 		if p.Name == portName {
@@ -392,19 +144,6 @@ func namedContainerPort(c corev1.Container, portName string) (corev1.ContainerPo
 func containerHostPort(c corev1.Container, portName string) (int32, bool) {
 	p, ok := namedContainerPort(c, portName)
 	return p.HostPort, ok
-}
-
-func containersExposingHostPort(ds *appsv1.DaemonSet, port int32) []string {
-	var hits []string
-	for _, c := range allContainers(ds) {
-		for _, p := range c.Ports {
-			if p.HostPort == port {
-				hits = append(hits, c.Name)
-				break
-			}
-		}
-	}
-	return hits
 }
 
 func allContainers(ds *appsv1.DaemonSet) []corev1.Container {
@@ -458,102 +197,6 @@ func renderedKinds(t *testing.T, helmOut string) map[string]int {
 		return false
 	})
 	return out
-}
-
-// Two silent-break risks in a daemonset.yaml refactor:
-//  1. iptables-{cleanup,sync} must stay native sidecars (restartPolicy:
-//     Always); dropping that demotes them to one-shot init containers and
-//     the cleanup preStop never fires, leaking rules across restarts.
-//  2. iptables-cleanup must be the FIRST initContainer; native sidecars
-//     terminate in reverse-init order, so a swap with iptables-sync stops
-//     cleanup before sync loses its chains.
-func TestChartARMTLSNativeSidecarShape(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-
-	// hostNetwork + dnsPolicy are part of the routing contract: iptables-sync
-	// must run in the host netns to see pre-DNAT pod traffic, and the
-	// matching dnsPolicy keeps in-cluster service DNS working from that
-	// netns. A refactor that templated either to a value and accidentally
-	// toggled it via overlay defaults would still match the substring check
-	// in TestChartRendersARMTLSHostRoutingDefaults; assert against the typed
-	// PodSpec so the contract is unambiguous.
-	if !ds.Spec.Template.Spec.HostNetwork {
-		t.Errorf("armtls-mesh DaemonSet must set hostNetwork: true; got %v", ds.Spec.Template.Spec.HostNetwork)
-	}
-	if got := ds.Spec.Template.Spec.DNSPolicy; got != corev1.DNSClusterFirstWithHostNet {
-		t.Errorf("armtls-mesh DaemonSet must set dnsPolicy: ClusterFirstWithHostNet (paired with hostNetwork); got %q", got)
-	}
-
-	init := ds.Spec.Template.Spec.InitContainers
-	if len(init) < 2 {
-		t.Fatalf("expected at least 2 initContainers (iptables-cleanup, iptables-sync); got %d", len(init))
-	}
-	if init[0].Name != "iptables-cleanup" {
-		t.Fatalf("first init container must be iptables-cleanup so its preStop fires last on shutdown; got %q", init[0].Name)
-	}
-
-	for _, name := range []string{"iptables-cleanup", "iptables-sync"} {
-		c, ok := findContainer(init, name)
-		if !ok {
-			t.Fatalf("init container %q not found in %v", name, containerNames(init))
-		}
-		if c.RestartPolicy == nil || *c.RestartPolicy != corev1.ContainerRestartPolicyAlways {
-			t.Errorf("init container %q must declare restartPolicy: Always (native sidecar contract); got %v", name, c.RestartPolicy)
-		}
-		if !hasCapability(c, "NET_ADMIN") {
-			t.Errorf("init container %q must hold NET_ADMIN to manage iptables/ipset; caps=%+v", name, c.SecurityContext)
-		}
-		// NET_RAW is required for the xt_set match's socket to ip_set on the
-		// nf_tables-compat path; without it `iptables -m set` fails with
-		// "Can't open socket to ipset" despite NET_ADMIN.
-		if !hasCapability(c, "NET_RAW") {
-			t.Errorf("init container %q must hold NET_RAW for the iptables xt_set match; caps=%+v", name, c.SecurityContext)
-		}
-		// The sidecars run as root for iptables/ipset but are bounded by
-		// allowPrivilegeEscalation: false and the runtime-default seccomp
-		// profile. Both are easy to omit silently in a refactor and turn the
-		// containers into a full-root attack surface; pin them.
-		sc := c.SecurityContext
-		if sc == nil || sc.AllowPrivilegeEscalation == nil || *sc.AllowPrivilegeEscalation {
-			t.Errorf("init container %q must set allowPrivilegeEscalation: false; got %+v", name, sc)
-		}
-		if sc == nil || sc.SeccompProfile == nil || sc.SeccompProfile.Type != corev1.SeccompProfileTypeRuntimeDefault {
-			t.Errorf("init container %q must set seccompProfile.type: RuntimeDefault; got %+v", name, sc.SeccompProfile)
-		}
-	}
-
-	sync, ok := findContainer(init, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; initContainers=%v", containerNames(init))
-	}
-	// HTTP because a locked node image denies every runc exec, so an exec
-	// probe would never pass there.
-	if sync.StartupProbe == nil || sync.StartupProbe.HTTPGet == nil {
-		t.Fatalf("iptables-sync must expose an HTTP startupProbe so the main proxy waits for interception; got %+v", sync.StartupProbe)
-	}
-	if got := sync.StartupProbe.HTTPGet; got.Path != "/readyz" || got.Host != "127.0.0.1" {
-		t.Errorf("iptables-sync startupProbe = %+v, want GET /readyz on node loopback", got)
-	}
-
-	// The entire teardown contract hinges on the iptables-cleanup container
-	// cleaning up last in the reverse-init-order stop sequence. A future
-	// refactor that drops --on-shutdown or renames the subcommand would
-	// silently leak iptables rules and ipsets across pod restarts — catch
-	// that here instead of in production.
-	cleanup := init[0]
-	if cleanup.Lifecycle != nil {
-		t.Errorf("iptables-cleanup must clean up on SIGTERM, not through a lifecycle hook; got %+v", cleanup.Lifecycle)
-	}
-	command := strings.Join(cleanup.Command, " ")
-	for _, want := range []string{"armtls-mesh iptables-cleanup", "--on-shutdown"} {
-		if !strings.Contains(command, want) {
-			t.Errorf("iptables-cleanup command %q must contain %q", command, want)
-		}
-	}
 }
 
 // TestChartARMTLSKubeVersionPinned guards the chart's Kubernetes base
@@ -734,112 +377,6 @@ func TestChartHostSecurityPoliciesSplitPodAndEphemeral(t *testing.T) {
 	}
 }
 
-// The UID admission policy must cover spec.ephemeralContainers (value check)
-// and the pods/ephemeralcontainers subresource (match) so a debug exec can't
-// run as the proxy UID and escape the mesh.
-// The pods/ephemeralcontainers subresource has a different object shape
-// (spec.ephemeralContainers only) than a pod. The UID policy is therefore
-// split: the pod policy validates pod/container/init shapes, and a separate
-// policy validates the ephemeral subresource so a kubectl debug is not
-// denied by pod-only expressions failing their type-check.
-func TestChartUIDAdmissionPolicySplitsPodAndEphemeral(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var podPolicy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid", &podPolicy) {
-		t.Fatal("missing deny-armtls-mesh-uid ValidatingAdmissionPolicy")
-	}
-	var ephemeralPolicy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid-ephemeral", &ephemeralPolicy) {
-		t.Fatal("missing deny-armtls-mesh-uid-ephemeral ValidatingAdmissionPolicy")
-	}
-
-	resources := func(p admissionregv1.ValidatingAdmissionPolicy) []string {
-		var outResources []string
-		for _, r := range p.Spec.MatchConstraints.ResourceRules {
-			outResources = append(outResources, r.Resources...)
-		}
-		return outResources
-	}
-	if !slices.Contains(resources(podPolicy), "pods") {
-		t.Error("pod policy does not match pods")
-	}
-	if slices.Contains(resources(podPolicy), "pods/ephemeralcontainers") {
-		t.Error("pod policy must not match pods/ephemeralcontainers (different object shape)")
-	}
-	if !slices.Contains(resources(ephemeralPolicy), "pods/ephemeralcontainers") {
-		t.Error("ephemeral policy does not match pods/ephemeralcontainers")
-	}
-
-	// The ephemeral policy's expressions must reference only the subresource
-	// shape (spec.ephemeralContainers), not pod-only fields.
-	for _, v := range ephemeralPolicy.Spec.Validations {
-		if strings.Contains(v.Expression, "spec.containers") {
-			t.Errorf("ephemeral policy expression references pod-only spec.containers: %s", v.Expression)
-		}
-		if !strings.Contains(v.Expression, "spec.ephemeralContainers") {
-			t.Errorf("ephemeral policy expression does not reference spec.ephemeralContainers: %s", v.Expression)
-		}
-	}
-}
-
-// tcpEgressPolicy is default-on and must render a policy even when the
-// operator opts out of the per-namespace list ([] falls back to the release
-// namespace). The rendered policy must allow mesh-protected TCP egress plus
-// DNS/53 to kube-system and deny everything else by default.
-func TestChartTCPEgressPolicyDefaultOnRendersNoNamespaces(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var np networkingv1.NetworkPolicy
-	if !findDoc(t, out, "NetworkPolicy", "armtls-mesh-tcp-only-egress", &np) {
-		t.Fatal("default render missing armtls-mesh-tcp-only-egress NetworkPolicy")
-	}
-	if !slices.Contains(np.Spec.PolicyTypes, networkingv1.PolicyTypeEgress) {
-		t.Errorf("policyTypes = %v, want Egress (default-deny)", np.Spec.PolicyTypes)
-	}
-	// podSelector: {} (empty label selector) selects every pod in the
-	// namespace — that's the "applies to all non-excluded pods" posture.
-	if len(np.Spec.PodSelector.MatchLabels) != 0 || len(np.Spec.PodSelector.MatchExpressions) != 0 {
-		t.Errorf("podSelector = %v, want empty (select all pods)", np.Spec.PodSelector)
-	}
-	// First egress rule allows TCP egress (mesh-protected); second allows
-	// DNS UDP/53 to kube-system. Anything else is denied by default.
-	if len(np.Spec.Egress) != 2 {
-		t.Fatalf("egress rules = %d, want 2 (TCP + DNS to kube-system)", len(np.Spec.Egress))
-	}
-	if np.Spec.Egress[0].Ports == nil || len(np.Spec.Egress[0].Ports) != 1 || np.Spec.Egress[0].Ports[0].Protocol == nil || *np.Spec.Egress[0].Ports[0].Protocol != corev1.ProtocolTCP {
-		t.Errorf("first egress rule must allow TCP egress; got %+v", np.Spec.Egress[0])
-	}
-
-	// Default values in values.yaml must be enabled:true / namespaces:[].
-	const valuesPath = "c8s/values.yaml"
-	raw, err := os.ReadFile(valuesPath)
-	if err != nil {
-		t.Fatalf("read %s: %v", valuesPath, err)
-	}
-	var vals struct {
-		ArmtlsMesh struct {
-			TCPEgressPolicy struct {
-				Enabled    bool     `yaml:"enabled"`
-				Namespaces []string `yaml:"namespaces"`
-			} `yaml:"tcpEgressPolicy"`
-		} `json:"armtlsMesh"`
-	}
-	if err := sigsyaml.Unmarshal(raw, &vals); err != nil {
-		t.Fatalf("decode values.yaml: %v", err)
-	}
-	if !vals.ArmtlsMesh.TCPEgressPolicy.Enabled {
-		t.Error("tcpEgressPolicy must default to enabled:true")
-	}
-	if len(vals.ArmtlsMesh.TCPEgressPolicy.Namespaces) != 0 {
-		t.Errorf("tcpEgressPolicy must default to namespaces:[] (got %v)", vals.ArmtlsMesh.TCPEgressPolicy.Namespaces)
-	}
-}
-
 // The claims socket directory reaches CW pods as an NRI mount, not a pod-spec
 // volume, so the deny-host-namespaces VAP denies hostPath outright: any
 // carve-out would let a tenant reach the node filesystem.
@@ -900,34 +437,6 @@ func TestChartCDSDeploymentHasNoNodeSelectorUnderEmptySelector(t *testing.T) {
 	}
 }
 
-func findARMTLSMeshDaemonSet(t *testing.T, helmOut string) *appsv1.DaemonSet {
-	t.Helper()
-	var ds *appsv1.DaemonSet
-	iterateManifests(t, helmOut, func(doc []byte) bool {
-		var head struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-		}
-		if err := sigsyaml.Unmarshal(doc, &head); err != nil ||
-			head.Kind != "DaemonSet" ||
-			!strings.Contains(head.Metadata.Name, "armtls-mesh") {
-			return false
-		}
-		var decoded appsv1.DaemonSet
-		if err := sigsyaml.Unmarshal(doc, &decoded); err != nil {
-			t.Fatalf("decode armtls-mesh DaemonSet: %v\n%s", err, doc)
-		}
-		ds = &decoded
-		return true
-	})
-	if ds == nil {
-		t.Fatalf("armtls-mesh DaemonSet not found in helm template output\n%s", helmOut)
-	}
-	return ds
-}
-
 // findContainer mirrors findEnv in internal/webhook/pod_mutator_test.go:
 // return (value, ok) so callers decide how to report the miss.
 func findContainer(containers []corev1.Container, name string) (corev1.Container, bool) {
@@ -967,131 +476,6 @@ func assertContainerArgs(t *testing.T, c corev1.Container, want ...string) {
 	}
 }
 
-func hasCapability(c corev1.Container, want corev1.Capability) bool {
-	if c.SecurityContext == nil || c.SecurityContext.Capabilities == nil {
-		return false
-	}
-	return slices.Contains(c.SecurityContext.Capabilities.Add, want)
-}
-
-// PrometheusRule's types live in a separate go module (prometheus-operator)
-// the chart does not otherwise depend on; decoding into a local typed shim
-// is enough to assert the rule contract without pulling that dep in just
-// for tests.
-type prometheusRule struct {
-	Spec struct {
-		Groups []struct {
-			Name  string `json:"name"`
-			Rules []struct {
-				Alert       string            `json:"alert"`
-				Expr        string            `json:"expr"`
-				For         string            `json:"for"`
-				Labels      map[string]string `json:"labels"`
-				Annotations map[string]string `json:"annotations"`
-			} `json:"rules"`
-		} `json:"groups"`
-	} `json:"spec"`
-}
-
-func findARMTLSMeshPrometheusRule(t *testing.T, helmOut string) prometheusRule {
-	t.Helper()
-	var found prometheusRule
-	var ok bool
-	iterateManifests(t, helmOut, func(doc []byte) bool {
-		var head struct {
-			Kind     string `json:"kind"`
-			Metadata struct {
-				Name string `json:"name"`
-			} `json:"metadata"`
-		}
-		if err := sigsyaml.Unmarshal(doc, &head); err != nil ||
-			head.Kind != "PrometheusRule" ||
-			!strings.Contains(head.Metadata.Name, "armtls-mesh") {
-			return false
-		}
-		var rule prometheusRule
-		if err := sigsyaml.Unmarshal(doc, &rule); err != nil {
-			t.Fatalf("decode armtls-mesh PrometheusRule: %v\n%s", err, doc)
-		}
-		found = rule
-		ok = true
-		return true
-	})
-	if !ok {
-		t.Fatalf("armtls-mesh PrometheusRule not found in helm template output\n%s", helmOut)
-	}
-	return found
-}
-
-// TestChartARMTLSRoutingAlerts pins routing-path alerts that fire on signals
-// downstream consumers should not have to reconstruct by hand: a wedged
-// iptables-sync sidecar (its in-process counters stop publishing), unavailable
-// local CIDR route cross-checking, and direct dials to :15001 outside the
-// REDIRECT path. Drop any alert and a refactor of
-// prometheus-rules.yaml could silently lose the corresponding production
-// signal.
-func TestChartARMTLSRoutingAlerts(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "armtlsMesh.prometheusRules.enabled=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	rule := findARMTLSMeshPrometheusRule(t, out)
-
-	want := map[string]string{
-		"ARMTLSMeshIptablesSyncWedged":             "armtls_mesh_iptables_metrics_file_updated_at_seconds",
-		"ARMTLSMeshLocalCIDRRouteCheckUnavailable": "armtls_mesh_resolver_local_cidrs == 0",
-		"ARMTLSMeshOutboundDirectDial":             `reason="host_addr"`,
-		"ARMTLSMeshIptablesIPSetOverflow":          "armtls_mesh_iptables_ipset_overflow_total",
-		"ARMTLSMeshJumpPositionViolations":         "armtls_mesh_iptables_jump_position_violations_total",
-	}
-	got := make(map[string]string)
-	for _, g := range rule.Spec.Groups {
-		for _, r := range g.Rules {
-			if _, ok := want[r.Alert]; ok {
-				got[r.Alert] = r.Expr
-			}
-		}
-	}
-	for alert, exprSubstr := range want {
-		expr, ok := got[alert]
-		if !ok {
-			t.Errorf("alert %q missing from rendered PrometheusRule", alert)
-			continue
-		}
-		if !strings.Contains(expr, exprSubstr) {
-			t.Errorf("alert %q expr does not reference %q: got %q", alert, exprSubstr, expr)
-		}
-	}
-}
-
-// terminationGracePeriod minus drainTimeout (both Go-style durations) is the
-// budget left for the iptables-cleanup preStop sleep. A higher value is
-// silently truncated at runtime by SIGKILL, leaking managed chains/ipsets
-// across the pod restart. The chart fails the install instead of letting
-// that misconfig ship. The bound is derived, not hardcoded, so changes to
-// either underlying value reshape it automatically.
-func TestChartRejectsExcessivePreStopSleep(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=30")
-	if err == nil {
-		t.Fatalf("helm template succeeded, want preStopSleepSeconds upper-bound failure\n%s", out)
-	}
-	failure := parsePreStopBoundFailure(t, out)
-	if want := (preStopBoundFailure{Cmp: "le", Bound: 15, Got: 30}); failure != want {
-		t.Fatalf("preStop upper-bound failure = %+v, want %+v", failure, want)
-	}
-}
-
-func TestChartRejectsNegativePreStopSleep(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=-1")
-	if err == nil {
-		t.Fatalf("helm template succeeded, want preStopSleepSeconds lower-bound failure\n%s", out)
-	}
-	failure := parsePreStopBoundFailure(t, out)
-	if want := (preStopBoundFailure{Cmp: "ge", Bound: 0, Got: -1}); failure != want {
-		t.Fatalf("preStop lower-bound failure = %+v, want %+v", failure, want)
-	}
-}
-
 // TestChartRejectsOperatorKeysPath pins the path-vs-content guard: a
 // cds.operatorKeys value that is a filesystem path (or any non-PEM string)
 // must fail the render with an instructive message, not ship a ConfigMap CDS
@@ -1117,134 +501,6 @@ func TestChartRendersOperatorKeysPEM(t *testing.T) {
 	cm := renderedConfigMap(t, out, "c8s-cds-operator-keys")
 	if got := cm.Data["keys.pem"]; got != pemText {
 		t.Fatalf("operator-keys ConfigMap keys.pem = %q, want the PEM content %q", got, pemText)
-	}
-}
-
-func TestChartAcceptsPreStopSleepAtBoundary(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=15")
-	if err != nil {
-		t.Fatalf("helm template at boundary should succeed: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	cleanup, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-cleanup")
-	if !ok {
-		t.Fatalf("iptables-cleanup init container missing")
-	}
-	command := strings.Join(cleanup.Command, " ")
-	if !strings.Contains(command, "--settle-delay=15s") {
-		t.Fatalf("iptables-cleanup did not render the boundary settle delay: %q", command)
-	}
-}
-
-// Tuning terminationGracePeriod or drainTimeout must reshape the preStop
-// bound automatically — otherwise the bound goes stale silently once an
-// operator changes either knob. Exercising mixed unit forms (h, m, s) also
-// pins that the durationSeconds helper handles each correctly.
-func TestChartPreStopBoundFollowsGracePeriodAndDrain(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.terminationGracePeriod=2m",
-		"--set-string", "armtlsMesh.drainTimeout=60s",
-		"--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=45",
-	)
-	if err != nil {
-		t.Fatalf("helm template at (tgp=2m, drain=60s, sleep=45) should succeed: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	if ds.Spec.Template.Spec.TerminationGracePeriodSeconds == nil {
-		t.Fatalf("DaemonSet.terminationGracePeriodSeconds is nil")
-	}
-	if got := *ds.Spec.Template.Spec.TerminationGracePeriodSeconds; got != 120 {
-		t.Errorf("terminationGracePeriodSeconds = %d, want 120 (from 2m)", got)
-	}
-	args := containerArgs(t, ds, "armtls-mesh")
-	if got, ok := containerArgValue(args, "--drain-timeout"); !ok || got != "60s" {
-		t.Errorf("--drain-timeout = (%q, %v), want (\"60s\", true)", got, ok)
-	}
-
-	// Same knobs, sleep one above the derived bound — must fail.
-	out, err = helmTemplate(t,
-		"--set-string", "armtlsMesh.terminationGracePeriod=2m",
-		"--set-string", "armtlsMesh.drainTimeout=60s",
-		"--set", "armtlsMesh.iptablesCleanup.preStopSleepSeconds=61",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded above derived bound, want failure\n%s", out)
-	}
-	failure := parsePreStopBoundFailure(t, out)
-	if want := (preStopBoundFailure{Cmp: "le", Bound: 60, Got: 61}); failure != want {
-		t.Fatalf("derived-bound failure = %+v, want %+v", failure, want)
-	}
-}
-
-// drainTimeout ≥ terminationGracePeriod leaves zero preStop budget — even a
-// 0-second sleep can race shutdown. Fail rather than render a useless
-// DaemonSet.
-func TestChartRejectsZeroPreStopBudget(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.terminationGracePeriod=30s",
-		"--set-string", "armtlsMesh.drainTimeout=30s",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded with zero preStop budget, want failure\n%s", out)
-	}
-	failure := parseGracePeriodBudgetFailure(t, out)
-	if want := (gracePeriodBudgetFailure{GracePeriod: "30s", Drain: "30s"}); failure != want {
-		t.Fatalf("zero-budget failure = %+v, want %+v", failure, want)
-	}
-}
-
-// Reject duration formats the helper intentionally doesn't support so a
-// typo doesn't silently degrade the bound arithmetic via sprig's lenient
-// int parsing (which would otherwise read "1m30s" as 1 second).
-func TestChartRejectsCompoundDurations(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.drainTimeout=1m30s",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded for compound duration, want failure\n%s", out)
-	}
-	failure := parseDurationFormatFailure(t, out)
-	if want := (durationFormatFailure{Value: "1m30s", Reason: "non-integer"}); failure != want {
-		t.Fatalf("compound-duration failure = %+v, want %+v", failure, want)
-	}
-}
-
-// Pin the suffix-only rejection separately so a future refactor of the
-// helper can't remove the unit check without flagging in tests.
-func TestChartRejectsUnitlessDuration(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set-string", "armtlsMesh.drainTimeout=30",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded for unitless duration, want failure\n%s", out)
-	}
-	failure := parseDurationFormatFailure(t, out)
-	if want := (durationFormatFailure{Value: "30", Reason: "no-unit"}); failure != want {
-		t.Fatalf("unitless-duration failure = %+v, want %+v", failure, want)
-	}
-}
-
-func TestChartRendersARMTLSCustomOutboundPortConsistently(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "armtlsMesh.ports.outbound=16001")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	sync, ok := findContainer(ds.Spec.Template.Spec.InitContainers, "iptables-sync")
-	if !ok {
-		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
-	}
-	if !argvContainsFlagValue(sync.Command, "--outbound-port", "16001") {
-		t.Fatalf("iptables-sync missing --outbound-port 16001; command=%q", sync.Command)
-	}
-	meshArgs := containerArgs(t, ds, "armtls-mesh")
-	if got, ok := containerArgValue(meshArgs, "--outbound-port"); !ok || got != "16001" {
-		t.Fatalf("armtls-mesh --outbound-port = (%q, %v), want (\"16001\", true)", got, ok)
-	}
-	for _, c := range allContainers(ds) {
-		if argvContainsFlagValue(c.Command, "--outbound-port", "15001") || argvContainsFlagValue(c.Args, "--outbound-port", "15001") {
-			t.Fatalf("container %q rendered the default outbound port despite override", c.Name)
-		}
 	}
 }
 
@@ -1301,35 +557,6 @@ func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 		if !slices.Contains(args, "--exclude-namespaces="+ns) {
 			t.Fatalf("operator args missing --exclude-namespaces=%s\n%v", ns, args)
 		}
-	}
-}
-
-// The operator's mesh-egress reconciler must be told the same outbound port
-// and excluded source namespaces the mesh DaemonSet runs with, or its
-// companion policies open the wrong port or appear in namespaces the mesh
-// never intercepts. Disabling the value removes both flags, which turns the
-// reconciler off.
-func TestChartMeshEgressCompanionFlagsMirrorTheMesh(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set", "armtlsMesh.ports.outbound=15101",
-		"--set", "armtlsMesh.iptablesSync.excludeSourceNamespaces={kube-system,monitoring}")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", args, "--mesh-outbound-port=15101")
-	for _, ns := range []string{"kube-system", "monitoring"} {
-		assertContainerHasArg(t, "operator", args, "--mesh-exclude-source-namespaces="+ns)
-	}
-
-	for _, disable := range []string{"armtlsMesh.egressCompanionPolicy.enabled=false", "armtlsMesh.enabled=false"} {
-		out, err := helmTemplate(t, "--set", disable)
-		if err != nil {
-			t.Fatalf("helm template (%s): %v\n%s", disable, err, out)
-		}
-		args := renderedOperatorArgs(t, out)
-		assertContainerNoArgPrefix(t, "operator", args, "--mesh-outbound-port=")
-		assertContainerNoArgPrefix(t, "operator", args, "--mesh-exclude-source-namespaces=")
 	}
 }
 
@@ -1517,29 +744,6 @@ func TestChartLeavesTheInjectedCDSEndpointToTheNode(t *testing.T) {
 	assertContainerNoArgPrefix(t, "operator", renderedOperatorArgs(t, out), "--cds-url=")
 	if got := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").WorkloadClaims.CDSNodePort; got != 30808 {
 		t.Fatalf("workload_claims.cds_node_port = %d, want the chart's CDS node port 30808", got)
-	}
-}
-
-// TestChartArmtlsMeshCDSMeasurementsFlagsThrough confirms the single
-// cds.measurements reaches the daemonset's --cds-measurements flag — without
-// this the armTLS handshake accepts any measurement and the H1 defence
-// collapses to "trust the cluster network". armtls-mesh reads the parent's
-// cds.measurements directly, so there is no mirror to drift.
-func TestChartArmtlsMeshCDSMeasurementsFlagsThrough(t *testing.T) {
-	const measurement = "abc1230000000000000000000000000000000000000000000000000000000000000000000000000000000000000000ff"
-	out, err := helmTemplate(t,
-		"--set", "cds.measurements[0]="+measurement,
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	args := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	i := slices.Index(args, "--cds-measurements")
-	if i < 0 || i+1 >= len(args) {
-		t.Fatalf("armtls-mesh container missing --cds-measurements <value>\nargs: %v", args)
-	}
-	if got := args[i+1]; got != measurement {
-		t.Fatalf("--cds-measurements = %q, want %q", got, measurement)
 	}
 }
 
@@ -1915,9 +1119,6 @@ func TestChartWebhookRendersSecurityKnobs(t *testing.T) {
 	for _, want := range []string{
 		"--cert-fs-group=4242",
 		"--get-cert-renew-interval=3h",
-		"--get-cert-run-as-user=0",
-		"--get-cert-run-as-group=0",
-		"--get-cert-run-as-non-root=false",
 	} {
 		if !slices.Contains(args, want) {
 			t.Fatalf("operator args missing %q\n%v", want, args)
@@ -1934,9 +1135,8 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	dir := t.TempDir()
 	vals := filepath.Join(dir, "vals.yaml")
 	if err := os.WriteFile(vals, []byte(
-		"armtlsMesh:\n  uid: 7000000\n"+
-			"router:\n  nginx:\n    runAsUser: 7000000\n    runAsGroup: 7000000\n"+
-			"webhook:\n  certVolume:\n    fsGroup: 1500000\n  getCert:\n    runAsUser: 2000000000\n",
+		"router:\n  nginx:\n    runAsUser: 7000000\n    runAsGroup: 7000000\n"+
+			"webhook:\n  certVolume:\n    fsGroup: 1500000\n",
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -1946,30 +1146,13 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 	}
 	// Each affected field is asserted through its decoded typed value; a
 	// scientific-notation render (7e+06) fails the int decode loudly.
-	args := renderedOperatorArgs(t, out)
-	assertContainerHasArg(t, "operator", args, "--cert-fs-group=1500000")
-	assertContainerHasArg(t, "operator", args, "--get-cert-run-as-user=2000000000")
+	assertContainerHasArg(t, "operator", renderedOperatorArgs(t, out), "--cert-fs-group=1500000")
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
 	if got := nginx.SecurityContext.RunAsUser; got == nil || *got != 7000000 {
 		t.Errorf("nginx runAsUser = %v, want 7000000", got)
 	}
 	if got := nginx.SecurityContext.RunAsGroup; got == nil || *got != 7000000 {
 		t.Errorf("nginx runAsGroup = %v, want 7000000", got)
-	}
-	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-	if got := mesh.SecurityContext.RunAsUser; got == nil || *got != 7000000 {
-		t.Errorf("armtls-mesh runAsUser = %v, want 7000000", got)
-	}
-	// The CEL admission policy, where int != double would be an uninstallable
-	// compile error.
-	var policy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "deny-armtls-mesh-uid", &policy) {
-		t.Fatalf("missing deny-armtls-mesh-uid ValidatingAdmissionPolicy\n%s", out)
-	}
-	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
-		return strings.Contains(v.Expression, "runAsUser != 7000000")
-	}) {
-		t.Errorf("uid policy expression missing the plain-integer comparison: %+v", policy.Spec.Validations)
 	}
 }
 
@@ -1979,12 +1162,12 @@ func TestChartIntValuesFromValuesFileRenderPlain(t *testing.T) {
 func TestChartIntValueRejectsNonInteger(t *testing.T) {
 	dir := t.TempDir()
 	vals := filepath.Join(dir, "vals.yaml")
-	if err := os.WriteFile(vals, []byte("webhook:\n  getCert:\n    runAsUser: notanumber\n"), 0o600); err != nil {
+	if err := os.WriteFile(vals, []byte("webhook:\n  certVolume:\n    fsGroup: notanumber\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	out, err := helmTemplate(t, "-f", vals)
 	if err == nil {
-		t.Fatalf("expected render to fail on a non-integer runAsUser, got success:\n%s", out)
+		t.Fatalf("expected render to fail on a non-integer fsGroup, got success:\n%s", out)
 	}
 	if !strings.Contains(out, "expected an integer") {
 		t.Errorf("want 'expected an integer' error, got: %s", out)
@@ -2127,15 +1310,6 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 		t.Errorf("router allowlist-proxy missing HOST_IP downward-API env; have %+v", allowlistProxy.Env)
 	}
 
-	// armtls-mesh: hostNetwork, so $(HOST_IP) is its own node IP. Two-arg form.
-	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-	if !slices.Contains(mesh.Args, "http://$(HOST_IP):8400") {
-		t.Errorf("armtls-mesh missing http://$(HOST_IP):8400 arg; have %v", mesh.Args)
-	}
-	if !hasHostIPEnv(mesh) {
-		t.Errorf("armtls-mesh missing HOST_IP downward-API env; have %+v", mesh.Env)
-	}
-
 	// operator: forwards the string verbatim; the placeholder must NOT be
 	// expanded here, so the container must NOT define HOST_IP.
 	if !slices.Contains(renderedOperatorArgs(t, out), hostIPURL) {
@@ -2184,14 +1358,6 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 				t.Errorf("container %s carries the socket URL but no attestation-api-socket mount; mounts %+v", c.Name, c.VolumeMounts)
 			}
 			assertHasSocketMount(cds)
-			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-			if !slices.Contains(mesh.Args, "unix:///var/run/nri-image-policy/attestation-api.sock") {
-				t.Errorf("armtls-mesh missing the socket URL arg; have %v", mesh.Args)
-			}
-			assertHasSocketMount(mesh)
-			if sc := renderedDaemonSet(t, out, "c8s-armtls-mesh").Spec.Template.Spec.SecurityContext; sc == nil || !slices.Contains(sc.SupplementalGroups, int64(65532)) {
-				t.Errorf("armtls-mesh pod must carry supplementalGroups [65532] to connect to the socket; got %+v", sc)
-			}
 			assertHasSocketMount(routerGetCertContainer(t, out, "c8s-cert"))
 			assertHasSocketMount(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"))
 			assertHasSocketMount(renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy"))
@@ -2243,10 +1409,10 @@ func TestChartGlobalImagePullSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	// The global reaches a non-overriding component (armtls-mesh).
-	rm := renderedDaemonSet(t, out, "c8s-armtls-mesh")
-	if !hasPullSecret(rm.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
-		t.Errorf("armtls-mesh missing global pull secret: %v", rm.Spec.Template.Spec.ImagePullSecrets)
+	// The global reaches a non-overriding component (the plugin installer).
+	installer := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	if !hasPullSecret(installer.Spec.Template.Spec.ImagePullSecrets, "ghcr-pull") {
+		t.Errorf("nri-image-policy installer missing global pull secret: %v", installer.Spec.Template.Spec.ImagePullSecrets)
 	}
 	// router's own value overrides the global.
 	lb := renderedDeployment(t, out, "c8s-router")
@@ -2487,6 +1653,13 @@ func TestChartRouterACMEMode(t *testing.T) {
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
 	if m, ok := containerVolumeMount(nginx, "acme-tls"); !ok || !m.ReadOnly {
 		t.Fatalf("nginx must mount acme-tls read-only, got (%+v, %v)", m, ok)
+	}
+
+	// The identity that leaves the cluster in the clear is the sidecar that
+	// proves the public names, never the nginx that forwards application
+	// requests.
+	if got := nginx.SecurityContext.RunAsUser; got == nil || *got == int64(workloadclaims.AcmeUID) {
+		t.Errorf("nginx runAsUser = %v: the identity that forwards application requests holds no egress exception", got)
 	}
 	httpPort, ok := findContainerPort(nginx, "http")
 	if !ok || httpPort.ContainerPort != 8080 || httpPort.HostPort != 80 {
@@ -4095,11 +3268,6 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 	if got := operatorVerbsFor(role, "", "services"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
 		t.Fatalf("operator services verbs = %v", got)
 	}
-	// The mesh-egress reconciler watches every NetworkPolicy and owns the
-	// companions it creates beside egress-isolating ones.
-	if got := operatorVerbsFor(role, "networking.k8s.io", "networkpolicies"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
-		t.Fatalf("operator networkpolicies verbs = %v", got)
-	}
 	// No rendered Role/ClusterRole may grant any of these resources at all.
 	// nodes is granted — but only to CDS's node-reader, which keeps the
 	// sandbox-digests bound current from the live node list.
@@ -4220,64 +3388,6 @@ func TestChartRollsAttestationApiOnConfigChange(t *testing.T) {
 	changedChecksum := renderedDaemonSet(t, changedOut, "c8s-attestation-api").Spec.Template.Annotations["checksum/config"]
 	if changedChecksum == defaultChecksum {
 		t.Fatalf("checksum/config did not change after changing platforms: %s", defaultChecksum)
-	}
-}
-
-// TestChartCwLabelIntegrityPolicyRendersByDefault: the cw-label
-// ValidatingAdmissionPolicy guards Service-membership identity and must ship
-// on by default, with the immutability (oldObject) check present and the
-// webhook's namespace exclusions mirrored.
-func TestChartCwLabelIntegrityPolicyRendersByDefault(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "webhook.extraExcluded[0]=skip-me")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	var policy admissionregv1.ValidatingAdmissionPolicy
-	if !findDoc(t, out, "ValidatingAdmissionPolicy", "c8s-cw-label-integrity", &policy) {
-		t.Fatalf("missing cw-label-integrity ValidatingAdmissionPolicy\n%s", out)
-	}
-	ops := policy.Spec.MatchConstraints.ResourceRules[0].Operations
-	if !slices.Contains(ops, admissionregv1.Update) {
-		t.Fatalf("policy operations = %v, must include UPDATE (post-create label mutation is the attack)", ops)
-	}
-	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
-		return strings.Contains(v.Expression, "oldObject")
-	}) {
-		t.Fatalf("policy has no oldObject immutability validation: %+v", policy.Spec.Validations)
-	}
-	// The cw label must not exist without the injected c8s-cert sidecar, or a
-	// pod could keep workload identity while shedding attestation-bound
-	// injection (webhook pod_mutator.go, injectInitContainers / VAP backstop).
-	if !slices.ContainsFunc(policy.Spec.Variables, func(v admissionregv1.Variable) bool {
-		return v.Name == "hasCertSidecar" && strings.Contains(v.Expression, "initContainers")
-	}) {
-		t.Fatalf("policy missing hasCertSidecar variable: %+v", policy.Spec.Variables)
-	}
-	if !slices.ContainsFunc(policy.Spec.Validations, func(v admissionregv1.Validation) bool {
-		return strings.Contains(v.Expression, "hasCertSidecar")
-	}) {
-		t.Fatalf("policy has no c8s-cert sidecar-presence validation: %+v", policy.Spec.Validations)
-	}
-	var binding admissionregv1.ValidatingAdmissionPolicyBinding
-	if !findDoc(t, out, "ValidatingAdmissionPolicyBinding", "c8s-cw-label-integrity", &binding) {
-		t.Fatalf("missing cw-label-integrity ValidatingAdmissionPolicyBinding\n%s", out)
-	}
-	excluded := selectorExpressionValues(binding.Spec.MatchResources.NamespaceSelector,
-		"kubernetes.io/metadata.name", metav1.LabelSelectorOpNotIn)
-	for _, ns := range []string{"c8s-system", "kube-system", "kube-public", "kube-node-lease", "skip-me"} {
-		if !slices.Contains(excluded, ns) {
-			t.Fatalf("binding namespace exclusions %v missing %s (must mirror the webhook)", excluded, ns)
-		}
-	}
-}
-
-func TestChartCwLabelIntegrityPolicyDisabled(t *testing.T) {
-	out, err := helmTemplate(t, "--set", "webhook.cwLabelPolicy.enabled=false")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if renderedManifestHasNamedKind(t, out, "ValidatingAdmissionPolicy", "c8s-cw-label-integrity") {
-		t.Fatalf("cw-label-integrity policy rendered while disabled\n%s", out)
 	}
 }
 
@@ -4490,6 +3600,10 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 		// enables it; set the tag here so those tests need not repeat it (its
 		// own image requires a tag or digest, like every component).
 		"--set", "volumed.image.tag=dev",
+		// A mesh policy needs the resolver a member pod may reach and this
+		// cluster's own ranges; both are required values.
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		// router has no default upstream (a silently-plaintext VIP was
 		// removed); a c8s-<id> headless-Service address (what `c8s install
 		// --upstream` derives) is the representative mesh-wrapped baseline, and
@@ -4729,25 +3843,6 @@ func TestChartCDSIsInMemorySingleton(t *testing.T) {
 	}
 	if got := *dep.Spec.Replicas; got != 1 {
 		t.Fatalf("cds replicas = %d, want 1 (in-memory CA singleton)", got)
-	}
-}
-
-// TestChartPointsClientsAtCDS proves the armtls-mesh daemonset resolves its
-// single --cds-url to the cds Service, and the mesh runs in cds cert-mode —
-// this locks that wiring.
-func TestChartPointsClientsAtCDS(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	const wantURL = "https://c8s-cds.c8s-system.svc:8443"
-
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	if got, ok := containerArgValue(meshArgs, "--cds-url"); !ok || got != wantURL {
-		t.Fatalf("armtls-mesh --cds-url = (%q, %v), want %q\nargs: %v", got, ok, wantURL, meshArgs)
-	}
-	if got, ok := containerArgValue(meshArgs, "--cert-mode"); !ok || got != "cds" {
-		t.Fatalf("armtls-mesh --cert-mode = (%q, %v), want cds\nargs: %v", got, ok, meshArgs)
 	}
 }
 
@@ -5118,6 +4213,20 @@ type nriRuntimeConfig struct {
 			PersistPath string `yaml:"persist_path"`
 		} `yaml:"push"`
 	} `yaml:"allowlist"`
+	Mesh *struct {
+		ExemptNamespaces []string `yaml:"exempt_namespaces"`
+		Resolver         string   `yaml:"resolver"`
+		Capture          struct {
+			Outbound uint16 `yaml:"outbound"`
+			Inbound  uint16 `yaml:"inbound"`
+			Health   uint16 `yaml:"health"`
+		} `yaml:"capture"`
+		Roles []struct {
+			Name string `yaml:"name"`
+			UID  uint32 `yaml:"uid"`
+		} `yaml:"roles"`
+		ClusterRanges []string `yaml:"cluster_ranges"`
+	} `yaml:"mesh"`
 }
 
 func renderedNRIBootConfig(t *testing.T, manifest, daemonSetName string) nriRuntimeConfig {
@@ -5213,7 +4322,9 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "armtlsMesh.enabled=false",
+		"--set", "armtlsMesh.image.tag=dev",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest so the render is valid
 		// (the seed admits it argv-pinned). Output is scoped to the router
@@ -6107,21 +5218,18 @@ func TestChartBootConfigParsesAsPluginYAML(t *testing.T) {
 }
 
 // By default the rendered worker boot config admits by the digest base alone:
-// no exempt_namespaces key. Mirrors the node-image lockstep pin in
-// image_policy_template_test.go. The opt-in render is covered below.
-func TestChartBootConfigHasNoExemptNamespaces(t *testing.T) {
+// policy.exempt_namespaces is empty, and so is the snapshot path that comes
+// with it. The mesh policy's own exempt list is a different key, so this reads
+// the decoded values. The opt-in render is covered below.
+func TestChartBootConfigExemptsNoNamespaceFromImageAdmission(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
-	script := strings.Join(containerArgs(t, &ds, "install"), "\n")
-	m := bootConfigHeredocRE.FindStringSubmatch(script)
-	if m == nil {
-		t.Fatalf("install script has no IMAGE_POLICY_EOF heredoc\n%s", script)
-	}
-	if strings.Contains(m[1], "exempt_namespaces") {
-		t.Errorf("worker boot config still renders exempt_namespaces:\n%s", m[1])
+	cfg := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker")
+	if len(cfg.Policy.ExemptNamespaces) != 0 || cfg.Policy.ExemptSnapshotPath != "" {
+		t.Errorf("worker boot config exempts %v from image admission, with snapshot %q",
+			cfg.Policy.ExemptNamespaces, cfg.Policy.ExemptSnapshotPath)
 	}
 }
 
@@ -6315,7 +5423,9 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
-		"--set", "armtlsMesh.enabled=false",
+		"--set", "armtlsMesh.image.tag=dev",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest (the seed admits it
 		// argv-pinned). The render is scoped to the router ConfigMap, so nri
@@ -6478,11 +5588,11 @@ func TestChartImagePullSecretDedupsExplicitReference(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	names := pullSecretNames(ds.Spec.Template.Spec.ImagePullSecrets)
+	installer := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	names := pullSecretNames(installer.Spec.Template.Spec.ImagePullSecrets)
 	want := []string{"ghcr-secret"}
 	if !reflect.DeepEqual(names, want) {
-		t.Errorf("armtls-mesh imagePullSecrets = %v, want %v (no duplicate)", names, want)
+		t.Errorf("nri-image-policy installer imagePullSecrets = %v, want %v (no duplicate)", names, want)
 	}
 }
 
@@ -7016,61 +6126,6 @@ func TestChartVolumedAndWebhookAgreeOnTheSocketDir(t *testing.T) {
 	}
 }
 
-// The shutdown cleanup must run `iptables-cleanup --keep-guard` so a
-// terminating mesh keeps the fail-closed guard while workloads are still
-// running. A regression dropping the flag would pass every rule-shape test but
-// silently downgrade running workloads to plaintext on restart.
-func TestChartDaemonSetShutdownCleanupKeepsGuard(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	var found int
-	for _, c := range allContainers(ds) {
-		command := strings.Join(c.Command, " ")
-		if !strings.Contains(command, "iptables-cleanup") {
-			continue
-		}
-		found++
-		for _, want := range []string{"--keep-guard", "--on-shutdown"} {
-			if !strings.Contains(command, want) {
-				t.Errorf("cleanup command %q does not carry %s", command, want)
-			}
-		}
-	}
-	if found == 0 {
-		t.Fatal("no iptables-cleanup container found in the armtls-mesh DaemonSet")
-	}
-}
-
-// The fail-closed egress guards carve out UDP/53 to any destination, so the
-// daemonset names no resolver address. A reintroduced --cluster-dns-ip would
-// scope the carve-out to one address again and silently drop every cw DNS
-// query on a cluster whose resolver sits elsewhere.
-func TestChartIptablesSyncNamesNoClusterDNS(t *testing.T) {
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	ds := findARMTLSMeshDaemonSet(t, out)
-	var flags []string
-	for _, c := range allContainers(ds) {
-		if c.Name != "iptables-sync" {
-			continue
-		}
-		flags = c.Command
-	}
-	if len(flags) == 0 {
-		t.Fatal("iptables-sync container command not found")
-	}
-	for _, f := range flags {
-		if f == "--cluster-dns-ip" {
-			t.Errorf("iptables-sync carries --cluster-dns-ip; the carve-out must name no address: %v", flags)
-		}
-	}
-}
-
 // schemaCoveredPaths are the values subtrees values.schema.json seals: the
 // component blocks the docs tell operators to write by hand.
 var schemaCoveredPaths = []string{"cds", "nriImagePolicy", "router", "volumed"}
@@ -7562,7 +6617,6 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 		"--set", "cds.measurements[0]="+measurement,
 		"--set", "cds.rtmrs[0]="+rtmr1,
 		"--set", "cds.rtmrs[1]="+rtmr2,
-		"--set", "armtlsMesh.rtmrs[0]="+rtmr1,
 	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -7571,14 +6625,6 @@ func TestChartRTMRPinsFlagThrough(t *testing.T) {
 
 	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	assertContainerHasArg(t, "cds", cdsArgs, "--rtmrs="+joined)
-
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	if i := slices.Index(meshArgs, "--cds-rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != joined {
-		t.Fatalf("armtls-mesh missing --cds-rtmrs %q\nargs: %v", joined, meshArgs)
-	}
-	if i := slices.Index(meshArgs, "--rtmrs"); i < 0 || i+1 >= len(meshArgs) || meshArgs[i+1] != rtmr1 {
-		t.Fatalf("armtls-mesh missing --rtmrs %q\nargs: %v", rtmr1, meshArgs)
-	}
 
 	workerCfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
 	if want := []string{rtmr1, rtmr2}; !slices.Equal(workerCfg.Allowlist.Pull.CDSRTMRs, want) {
@@ -7598,10 +6644,6 @@ func TestChartNoRTMRPinsRendersNoFlags(t *testing.T) {
 	}
 	cdsArgs := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	assertContainerNoArgPrefix(t, "cds", cdsArgs, "--rtmrs")
-	meshArgs := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh").Args
-	if slices.Contains(meshArgs, "--rtmrs") || slices.Contains(meshArgs, "--cds-rtmrs") {
-		t.Fatalf("unpinned render emitted RTMR flags\nargs: %v", meshArgs)
-	}
 }
 
 func TestChartRejectsImagePolicyOffOnManagedNodes(t *testing.T) {
@@ -7743,11 +6785,9 @@ func TestChartRendersPodValidatorFailClosed(t *testing.T) {
 	if !slices.Contains(args, "--webhook-config-name=c8s-pod-injector") {
 		t.Errorf("operator args missing --webhook-config-name=c8s-pod-injector\n%v", args)
 	}
-	// The node DaemonSet stays this lane's mesh, so no endpoint is injected.
-	for _, arg := range args {
-		if strings.HasPrefix(arg, "--mesh-image=") {
-			t.Errorf("operator is configured to inject a pod mesh endpoint: %q", arg)
-		}
+	// Every covered pod gets an endpoint, so the operator must know its image.
+	if !slices.ContainsFunc(args, func(arg string) bool { return strings.HasPrefix(arg, "--mesh-image=") }) {
+		t.Errorf("operator args carry no --mesh-image, so no pod would get an endpoint\n%v", args)
 	}
 
 	// The operator's own namespace and the system namespaces are out of the
@@ -7761,5 +6801,69 @@ func TestChartRendersPodValidatorFailClosed(t *testing.T) {
 	}
 	if wh.MatchPolicy == nil || *wh.MatchPolicy != admissionregv1.Equivalent {
 		t.Errorf("matchPolicy = %v, want Equivalent", wh.MatchPolicy)
+	}
+}
+
+// The install lane renders the mesh policy in the same shape the node image
+// measures, so the enforcer it installs hosts member pods there too (the lane
+// is for test clusters, decision 5).
+func TestChartBootConfigRendersTheMeshPolicy(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
+
+	if cfg.Mesh == nil {
+		t.Fatal("the install lane renders no mesh policy, so its enforcer hosts no member pods")
+	}
+	for _, ns := range []string{"c8s-system", "kube-system"} {
+		if !slices.Contains(cfg.Mesh.ExemptNamespaces, ns) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt", cfg.Mesh.ExemptNamespaces, ns)
+		}
+	}
+	if cfg.Mesh.Capture.Outbound != 15001 || cfg.Mesh.Capture.Inbound != 15006 || cfg.Mesh.Capture.Health != 15021 {
+		t.Errorf("mesh.capture = %+v, want the ports the injected endpoint binds", cfg.Mesh.Capture)
+	}
+	roles := map[string]uint32{}
+	for _, role := range cfg.Mesh.Roles {
+		roles[role.Name] = role.UID
+	}
+	// The credential role is bound by the plugin, from the node's own address
+	// and the CDS node port, so the rendered policy names the mesh role alone.
+	if len(roles) != 1 || roles["mesh"] != 1337 {
+		t.Errorf("mesh.roles = %+v, want the reserved mesh id alone", cfg.Mesh.Roles)
+	}
+	// The router's namespace, listeners and egress ports are compiled into the
+	// enforcer, so the cluster's own ranges are the one router input the
+	// rendered policy carries: the acme egress exception excludes them.
+	if !slices.Equal(cfg.Mesh.ClusterRanges, []string{"10.42.0.0/16"}) {
+		t.Errorf("mesh.cluster_ranges = %v, want the configured cluster ranges", cfg.Mesh.ClusterRanges)
+	}
+}
+
+// The chart's mesh identity and ports must be the constants the injector
+// builds the containers from and the enforcer matches on; a drift would seal a
+// pod against its own endpoint.
+func TestChartMeshPolicyMatchesTheSharedConstants(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
+	if cfg.Mesh == nil {
+		t.Fatal("no mesh policy rendered")
+	}
+	if cfg.Mesh.Capture.Outbound != uint16(workloadclaims.MeshOutboundPort) ||
+		cfg.Mesh.Capture.Inbound != uint16(workloadclaims.MeshInboundPort) ||
+		cfg.Mesh.Capture.Health != uint16(workloadclaims.MeshHealthPort) {
+		t.Errorf("mesh.capture = %+v, want the workloadclaims ports", cfg.Mesh.Capture)
+	}
+	ids := map[string]uint32{}
+	for _, role := range cfg.Mesh.Roles {
+		ids[role.Name] = role.UID
+	}
+	if ids["mesh"] != workloadclaims.MeshUID {
+		t.Errorf("mesh role uid = %d, want %d", ids["mesh"], workloadclaims.MeshUID)
 	}
 }

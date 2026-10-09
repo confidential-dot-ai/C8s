@@ -333,8 +333,9 @@ both credential bindings, and proves, through server-side dry-runs as a syntheti
 that a restricted namespace is admitted and a privileged one is denied by
 `confos-psa-level`. No externally released operator credential can enter the
 first-boot reconciliation window. The same gate waits until the live
-FelixConfigurations make Canal append its iptables hooks behind armtls-mesh's
-cw guard, which Felix only learns after the chart installs its CRDs.
+FelixConfigurations make Canal append its iptables hooks rather than insert
+them at a chain head, which Felix only learns after the chart installs its
+CRDs.
 
 The floor also covers namespaces hosting confidential workloads. In bare-metal mode,
 `nri-image-policy` mounts the inventory socket directory read-only into credential

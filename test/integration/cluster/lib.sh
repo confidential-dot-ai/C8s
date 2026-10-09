@@ -14,7 +14,7 @@ IMAGE_TAG=it
 NS=c8s-system
 CDS_LOCAL_PORT=18443
 # The mock attestation-api's synthetic launch digest (all zero). Pinned into
-# cds.measurements / armtlsMesh.measurements so every armTLS hop is verified
+# cds.measurements so every armTLS hop is verified
 # against it, exactly as a pinned production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
 # Test-client and workload images. The workload image joins the install-time
@@ -44,29 +44,6 @@ diagnostics() {
     if [ -n "$NODE" ]; then
         node_exec journalctl -u containerd --no-pager -n 100 2>&1 || true
     fi
-    mesh_diagnostics
-}
-
-# The mesh assertions are counter and membership claims, and neither survives
-# into the log otherwise: a failed one leaves no way to tell a stale ipset from
-# a rule that never fired from a workload reached in plaintext.
-mesh_pod() { kubectl -n "$NS" get pod -l app=c8s-armtls-mesh -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true; }
-
-mesh_diagnostics() {
-    local pod
-    pod="$(mesh_pod)"
-    [ -n "$pod" ] || return 0
-    echo "--- armtls-mesh counters ---"
-    kubectl -n "$NS" exec "$pod" -c iptables-sync -- \
-        sh -c 'cat /tmp/armtls-iptables-metrics.json' 2>&1 || true
-    echo "--- cw guard chains and ipsets ---"
-    for chain in ARMTLS-MESH-CW ARMTLS-MESH-CW-EGRESS; do
-        kubectl -n "$NS" exec "$pod" -c iptables-sync -- iptables -L "$chain" -n -v -x 2>&1 || true
-    done
-    kubectl -n "$NS" exec "$pod" -c iptables-sync -- iptables -L FORWARD -n --line-numbers 2>&1 | head -12 || true
-    for set in ARMTLS-MESH-CW-PODS ARMTLS-MESH-PODS ARMTLS-MESH-LOCAL-PODS; do
-        kubectl -n "$NS" exec "$pod" -c iptables-sync -- ipset list "$set" 2>&1 | head -20 || true
-    done
 }
 
 fail() {
@@ -153,39 +130,3 @@ run_pod() {
     kubectl delete pod "$name" -n "$ns" --ignore-not-found >/dev/null 2>&1 || true
 }
 
-# mesh_metric <pattern>: sum the matching series of the node's armtls-mesh
-# /metrics (hostNetwork). A missing series reads as 0.
-mesh_metric() {
-    run_pod default it-mesh-metrics "curl -sf --max-time 10 http://$NODE_IP:15021/metrics" \
-        | awk -v pat="$1" '$0 ~ pat {sum += $NF} END {print sum+0}'
-}
-
-# await_metric_above <pattern> <baseline> <what>
-await_metric_above() {
-    local pattern="$1" baseline="$2" what="$3" v
-    for _ in $(seq 1 18); do
-        v="$(mesh_metric "$pattern")"
-        [ "${v:-0}" -gt "$baseline" ] && return 0
-        sleep 5
-    done
-    fail "$what: no increase above baseline $baseline within 90s"
-}
-
-# await_ipset <set> <ip>: the mesh syncs pod IPs into its ipsets on a ~30s
-# tick; dialing before the client pod lands in ARMTLS-MESH-LOCAL-PODS bypasses
-# interception entirely, so gate every mesh assertion on membership. The kind
-# node has no ipset CLI; the mesh's iptables-sync container does and shares
-# the node's network namespace.
-MESH_POD=""
-await_ipset() {
-    local set="$1" ip="$2"
-    if [ -z "$MESH_POD" ]; then
-        MESH_POD="$(mesh_pod)"
-        [ -n "$MESH_POD" ] || fail "armtls-mesh pod not found"
-    fi
-    for _ in $(seq 1 18); do
-        kubectl -n "$NS" exec "$MESH_POD" -c iptables-sync -- ipset test "$set" "$ip" 2>/dev/null && return 0
-        sleep 5
-    done
-    fail "$ip never appeared in ipset $set"
-}

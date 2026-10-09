@@ -55,7 +55,7 @@ func (c Config) Endpoint() string {
 // shape also moves the volume daemon onto guest loopback) overrides the
 // affected flag's Usage via f.Lookup after this call.
 func BindFlags(f *pflag.FlagSet, cfg *Config) {
-	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --measurements and --rtmrs")
+	cmdsutil.BindImagePolicyFlags(f, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "pins the CDS endpoint; excludes --measurements and --rtmrs")
 	f.StringVar(&cfg.CDSURL, "cds-url", "", "https base URL of CDS; refused in an injected sidecar, which dials the endpoint the node mounts")
 	f.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate")
 	f.StringSliceVar(&cfg.Measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable; empty pins none, UNSAFE)")

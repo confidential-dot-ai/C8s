@@ -4,7 +4,8 @@ kind: FelixConfiguration
 metadata:
   name: default
 spec:
-  # INVARIANT: armtls-mesh's jump blocks stay at the head of filter FORWARD
-  # and nat PREROUTING/OUTPUT; Felix appends its hooks behind them.
+  # INVARIANT: Felix appends its hooks, so the node's own chain order is the
+  # one the measured image set. A member pod's rules are in its own network
+  # namespace, where the enforcer installs and verifies them.
   chainInsertMode: Append
   nftablesMode: Disabled

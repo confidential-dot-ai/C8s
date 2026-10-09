@@ -60,9 +60,9 @@ Because it lives in the chart, this runs for both `c8s install` and GitOps
 | VWC `pod-validator` | Cluster resource, tracked by the release |
 | CDS (verify + mesh CA + leaf signing) | Ordinary pod inside the node CVM |
 | attestation API | Baked service in `bare-metal` mode; chart DaemonSet in `gke`/`aks` |
-| armtls-mesh | Node DaemonSet |
+| mesh endpoint | Injected into every covered pod |
 | nri-image-policy | Node process launched by containerd; baked binary in `bare-metal` mode |
-| get-cert injection (`confidential.ai/cw` pods) | Webhook at admission time |
+| platform-container injection (every covered pod) | Webhook at admission time |
 | router | Ordinary pod inside the node CVM |
 
 ---
@@ -78,8 +78,8 @@ any other pod on it can reach.
 ```
  HOST (trusted in this mode)
  ┌─────────┐ ┌────────┐ ┌────────────┐ ┌───────────────────┐
- │operator │ │  CDS   │ │armtls-mesh  │ │attestation-service│
- │+webhook │ │ (runc) │ │nri-img-pol │ │   (host DaemonSet) │
+ │operator │ │  CDS   │ │nri-img-pol │ │attestation-service│
+ │+webhooks│ │ (runc) │ │  (plugin)  │ │   (host DaemonSet) │
  └─────────┘ └────────┘ └────────────┘ └───────────────────┘
 ```
 

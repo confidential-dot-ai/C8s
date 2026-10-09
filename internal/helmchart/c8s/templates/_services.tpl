@@ -71,6 +71,13 @@ http://$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
 {{- end -}}
 
+{{/* The fixed namespace whose pods serve the router's own ports, as the
+     enforcer compiles it (pkg/workloadclaims.RouterNamespace). Not the release
+     namespace, whose pods the mesh policy exempts. */}}
+{{- define "c8s.routerMeshNamespace" -}}
+c8s-router
+{{- end -}}
+
 {{- define "c8s.cdsURL" -}}
 https://{{ include "c8s.cdsName" . }}.{{ .Release.Namespace }}.svc:{{ .Values.cds.port }}
 {{- end -}}

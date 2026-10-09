@@ -14,7 +14,7 @@ ns=c8s-system
 if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
   : "${C8S_MEASUREMENTS_CONFIG:?node-image checks require the full server policy}"
   : "${C8S_ALLOWLIST_URL:?node-image checks require the measured CDS front door}"
-  workloads=(deployment/c8s-operator deployment/c8s-cds deployment/c8s-router daemonset/c8s-armtls-mesh)
+  workloads=(deployment/c8s-operator deployment/c8s-cds deployment/c8s-router)
   # The authenticated credential listener can become available before RKE2
   # has applied the complete AddOn. Require every core workload to exist.
   kubectl -n "$ns" wait --for=create "${workloads[@]}" --timeout=8m
@@ -36,12 +36,9 @@ if [ "${C8S_NODE_IMAGE:-}" = 1 ]; then
             .name == $container and ((.args // []) | index($flag)) != null and
             any(.volumeMounts[]?;
               .name == "node-config" and .mountPath == "/run/c8s-node" and .readOnly == true))));
-    policy("c8s-operator"; "operator"; "--image-policy-file=/run/c8s-node/cds.json") and
     policy("c8s-cds"; "cds"; "--image-policy-file=/run/c8s-node/peers.json") and
     policy("c8s-router"; "c8s-cert"; "--image-policy-file=/run/c8s-node/cds.json") and
     policy("c8s-router"; "allowlist-proxy"; "--image-policy-file=/run/c8s-node/cds.json") and
-    policy("c8s-armtls-mesh"; "armtls-mesh"; "--image-policy-file=/run/c8s-node/peers.json") and
-    policy("c8s-armtls-mesh"; "armtls-mesh"; "--cds-image-policy-file=/run/c8s-node/cds.json") and
     all(.items[].spec.template.spec.volumes[]?;
       ((.hostPath.path // "") | startswith("/run/confos")) | not)
   ' >/dev/null || fail "baked workloads lost their required public identity policies or mount private launch data"

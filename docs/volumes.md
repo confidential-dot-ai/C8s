@@ -330,8 +330,8 @@ grant says nothing about whether a workload may see the plaintext.
 
 Every container in the entry also needs a `mounts` policy admitting what the
 webhook injects, exactly as in
-[`secrets.md`](secrets.md#the-mount-policy) — for a volume consumer that is the
-cert volume plus each opened volume at `<volume-dir>/<NAME>`:
+[`secrets.md`](secrets.md#the-mount-policy) — for a volume consumer that is
+each opened volume at `<volume-dir>/<NAME>`:
 
 ```json
 "mounts": {"policy": "any"}
@@ -339,9 +339,8 @@ cert volume plus each opened volume at `<volume-dir>/<NAME>`:
 
 An opened volume classes as a `data` mount, whose `exact` rules sit below
 `/mnt/c8s-data/`, so pinning one means putting the volume dir there with
-`confidential.ai/c8s-volume-dir`. Its rule,
-`{"destination": "/mnt/c8s-data/<NAME>", "kind": "data"}`, joins the cert
-volume's in the same `exact` policy.
+`confidential.ai/c8s-volume-dir`. Its rule is
+`{"destination": "/mnt/c8s-data/<NAME>", "kind": "data"}`.
 
 ## Consuming a volume
 

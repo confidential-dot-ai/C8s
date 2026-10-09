@@ -942,13 +942,10 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
 		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
-		// propagates the CPU TEE to the components that name their armTLS
-		// platform, or CDS parses the TDX quote as an SNP report.
+		// propagates the CPU TEE to CDS, which names its armTLS platform, or
+		// CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
-			out = append(out,
-				"--set-string", "cds.armtlsPlatform=tdx",
-				"--set-string", "armtlsMesh.platform=tdx",
-			)
+			out = append(out, "--set-string", "cds.armtlsPlatform=tdx")
 		}
 		// The attest sidecar's platform names the evidence shape the sidecar
 		// requests from the attestation-api: az-snp/az-tdx under aks (Azure
@@ -976,7 +973,6 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 		// node: the node image bakes attestation-api + nri-image-policy, so the
 		// attestation-api copy is skipped and the NRI installer switches to its
 		// baked form — the only path that reaches the baked plugin's CDS pins.
-		// armtlsMesh is not baked, stays on.
 		if mode == "bare-metal" {
 			out = append(out,
 				"--set", "attestationApi.enabled=false",
@@ -1033,18 +1029,16 @@ func TestAppendCvmModeInstallArgsMeasurements(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.measurements[0]=" + m0, "armtlsMesh.measurements[0]=" + m0,
-		"cds.measurements[1]=" + m1, "armtlsMesh.measurements[1]=" + m1,
+		"cds.measurements[0]=" + m0,
+		"cds.measurements[1]=" + m1,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)
 		}
 	}
 	// The blank must not produce an empty index-2 pin.
-	for _, bad := range []string{"cds.measurements[2]=", "armtlsMesh.measurements[2]="} {
-		if slices.Contains(got, bad) {
-			t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
-		}
+	if bad := "cds.measurements[2]="; slices.Contains(got, bad) {
+		t.Errorf("blank entry leaked an empty pin %q; got %v", bad, got)
 	}
 }
 
@@ -1077,7 +1071,6 @@ func TestAppendCvmModeInstallArgsAcceptsAksWithTdx(t *testing.T) {
 		"attestationApi.teeDevices.tpm=true",
 		"attestationApi.teeDevices.tdxGuest=false",
 		"cds.armtlsPlatform=tdx",
-		"armtlsMesh.platform=tdx",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("aks+tdx args missing %q; got %v", want, got)
@@ -1904,8 +1897,8 @@ func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	for _, want := range []string{
-		"cds.rtmrs[0]=1=" + r1, "armtlsMesh.rtmrs[0]=1=" + r1,
-		"cds.rtmrs[1]=2=" + r2, "armtlsMesh.rtmrs[1]=2=" + r2,
+		"cds.rtmrs[0]=1=" + r1,
+		"cds.rtmrs[1]=2=" + r2,
 	} {
 		if !slices.Contains(got, want) {
 			t.Errorf("args missing %q; got %v", want, got)

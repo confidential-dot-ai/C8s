@@ -53,7 +53,7 @@ func BindFlags(pf *pflag.FlagSet, o *Options) {
 	pf.StringVar(&o.URL, "url", "", "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound")
 	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; empty trusts any attested build (UNSAFE)")
 	pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted endpoint SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
-	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "", "pins the endpoint; excludes --measurements and --measurements-file")
+	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "pins the endpoint; excludes --measurements and --measurements-file")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
 	pf.StringVar(&o.OperatorKey, "operator-key", "", "operator EC private key PEM file, whose public key is pinned on CDS via --operator-keys (env "+EnvOperatorKey+"); required for writes")
 	pf.BoolVar(&o.Insecure, "insecure", false, "dev/test only: allow a plaintext http:// CDS URL, skipping armTLS attestation of CDS")

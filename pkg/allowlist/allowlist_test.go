@@ -108,29 +108,6 @@ func TestParseJSON_RejectsBadDigest(t *testing.T) {
 	}
 }
 
-func TestAdmitsAnyArgv(t *testing.T) {
-	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{
-		"open":{"containers":[{"digest":"`+digestA+`","command":{"policy":"any"},"args":{"policy":"any"}}]},
-		"pinned":{"containers":[
-			{"digest":"`+digestA+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}},
-			{"digest":"`+digestB+`","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]}}]}}}`)
-	if !al.AdmitsAnyArgv(digestA) {
-		t.Fatal("a digest with an any/any entry must report AdmitsAnyArgv")
-	}
-	if al.AdmitsAnyArgv(digestB) {
-		t.Fatal("command any with args exact is not unconstrained")
-	}
-	if al.AdmitsAnyArgv(digestC) {
-		t.Fatal("an unlisted digest must not report AdmitsAnyArgv")
-	}
-	if !al.AdmitsAnyArgv(digestA[:7] + strings.ToUpper(digestA[7:])) {
-		t.Fatal("digests are compared canonically")
-	}
-	if al.AdmitsAnyArgv("not-a-digest") {
-		t.Fatal("a malformed digest must not report AdmitsAnyArgv")
-	}
-}
-
 func TestParseJSON_AbsentPolicyDefaultsToDeny(t *testing.T) {
 	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"`+digestA+`"}]}}}`)
 	c := al.Workloads["w"].Containers[0]

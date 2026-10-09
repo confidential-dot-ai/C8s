@@ -26,7 +26,7 @@ func newIdleEndpoint(t *testing.T, volume credentialVolume, own podAddresses, or
 		own:     own,
 		origDst: origDst,
 		logger:  discardLogger(),
-		bufPool: newBufPool(0),
+		bufPool: newBufPool(),
 	}
 	e.credentials.reload(time.Now())
 	return e

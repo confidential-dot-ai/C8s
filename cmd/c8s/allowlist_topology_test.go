@@ -5,11 +5,13 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -58,7 +60,10 @@ func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
 
 func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist {
 	t.Helper()
-	args := []string{"template", "c8s", filepath.Join("..", "..", "internal", "helmchart", "c8s"), "--skip-tests", "--kube-version", "v1.34.5", "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	args := []string{"template", "c8s", filepath.Join("..", "..", "internal", "helmchart", "c8s"), "--skip-tests", "--kube-version", "v1.34.5",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
+		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10"}
 	for i, path := range []string{"image", "cds.image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {
 		args = append(args, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", path, i+1))
 	}
@@ -71,6 +76,30 @@ func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist
 		t.Fatalf("helm template: %v\n%s", err, rendered)
 	}
 	desired := pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{}}
+	// The chart's seed carries the images no pod template names, which is
+	// every image the admission webhook injects.
+	documents := nodeImageDocuments(t, rendered)
+	raw, seeded := documents["ConfigMap/c8s-cds-allowlist-seed"]
+	if !seeded {
+		t.Fatalf("the chart rendered no allowlist seed ConfigMap: %v", slices.Sorted(maps.Keys(documents)))
+	}
+	var seed struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := yaml.Unmarshal(raw, &seed); err != nil {
+		t.Fatal(err)
+	}
+	document, present := seed.Data["allowlist-seed.json"]
+	if !present {
+		t.Fatalf("the chart's allowlist seed ConfigMap holds no allowlist-seed.json: %v", seed.Data)
+	}
+	parsed, err := pkgallowlist.ParseJSON([]byte(document))
+	if err != nil {
+		t.Fatalf("chart allowlist seed: %v", err)
+	}
+	for entry, workload := range parsed.Workloads {
+		desired.Workloads[entry] = workload
+	}
 	for name, raw := range nodeImageDocuments(t, rendered) {
 		if !strings.HasPrefix(name, "Deployment/") && !strings.HasPrefix(name, "DaemonSet/") {
 			continue

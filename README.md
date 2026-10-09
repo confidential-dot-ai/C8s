@@ -59,11 +59,10 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
   CDS accepted and the pod's sandbox ID, so a relying party can ask *which*
   workload is behind a key, not just whether it is a genuine TEE.
 
-- **armTLS mesh.** A transparent L4 proxy wraps traffic between workloads in
-  attestation-rooted mutual TLS. Bootstrap peers verify embedded evidence;
-  CDS-issued certificates use mesh-CA chain verification. Final-hop plaintext
-  confinement depends on [local-route validation](cmd/armtls-mesh/DESIGN.md#local-cidr-discovery);
-  its HostIP fallback trusts Kubernetes placement metadata.
+- **armTLS mesh.** Every covered pod runs an injected endpoint that wraps its
+  traffic in attestation-rooted mutual TLS against the CDS mesh CA. The node
+  enforcer installs that pod's packet rules before any of its containers runs,
+  so plaintext stays inside the pod ([`cmd/armtls-mesh/README.md`](cmd/armtls-mesh/README.md)).
 
 - **Node-as-CVM.** Run the whole node as one confidential VM. Supported modes
   are `bare-metal`, `gke`, and `aks`. See [Architecture](#architecture).

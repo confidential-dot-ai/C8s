@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
@@ -40,17 +39,6 @@ const (
 	AuthScheme      = "SandboxToken "
 	ChallengeHeader = "X-C8s-Challenge"
 )
-
-// InjectedEntrypoints are the argv[0] values the admission webhook injects the
-// C8s image with: get-cert for the cert sidecar, /c8s for the probe-file gate,
-// get-secret for the fetcher, and get-volume for the volume fetcher. A
-// container must be running one of these, on an injected digest, to be excluded
-// from workload matching — see WorkloadContainers.
-//
-// An entrypoint added here widens the assumption in docs/secrets.md that no
-// image admitted with an unconstrained argv other than C8s's carries an
-// executable at one of these names.
-var InjectedEntrypoints = []string{"get-cert", "get-secret", "get-volume", "/c8s"}
 
 // RateKey charges a request to the sandbox its client certificate names, so a
 // rate limit bounds one workload rather than one address.
@@ -334,7 +322,7 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 	if err != nil {
 		return grant{}, fmt.Errorf("load allowlist: %w", err)
 	}
-	containers, err := h.workloadContainers(ctx, al, host, sandboxID)
+	containers, err := h.workloadContainers(ctx, host, sandboxID)
 	if err != nil {
 		return grant{}, deny("%v", err)
 	}
@@ -427,9 +415,9 @@ func (h Handler) verifyToken(ctx context.Context, token *workloadclaims.SignedSa
 }
 
 // workloadContainers asks the bound inventory what the sandbox has run and
-// removes the platform's own injected containers, so a workload entry never has
-// to enumerate C8s's sidecars.
-func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowlist, host, sandboxID string) ([]pkgallowlist.RunningContainer, error) {
+// removes the platform's own containers, so a workload entry never has to
+// enumerate C8s's own.
+func (h Handler) workloadContainers(ctx context.Context, host, sandboxID string) ([]pkgallowlist.RunningContainer, error) {
 	resp, err := h.Inventory.FetchSandbox(ctx, host, sandboxID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve sandbox containers: %w", err)
@@ -438,7 +426,7 @@ func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowl
 	if err != nil {
 		return nil, err
 	}
-	out := WorkloadContainers(al, reported)
+	out := WorkloadContainers(reported)
 	if len(out) == 0 {
 		return nil, fmt.Errorf("sandbox %s reports no workload containers", sandboxID)
 	}
@@ -446,35 +434,23 @@ func (h Handler) workloadContainers(ctx context.Context, al *pkgallowlist.Allowl
 }
 
 // WorkloadContainers converts an inventory's reported container set to the
-// candidate set workload matching runs on, dropping the platform's own injected
-// containers so a workload entry never has to enumerate C8s's sidecars. It is a
-// pure function of the allowlist and the report — the one drop-set
-// implementation shared by secrets release, the release diagnostic, and CDS
-// certificate issuance. pkg/allowlist stays ignorant of injection by design
-// (its doc: "the caller converts").
-func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
+// candidate set workload matching runs on, dropping every container the
+// reporting node's measured base binds a platform role to, so a workload entry
+// never has to enumerate C8s's own containers. It is a pure function of the
+// report — the one drop-set implementation shared by secrets release, the
+// release diagnostic, and CDS certificate issuance. pkg/allowlist stays
+// ignorant of injection by design (its doc: "the caller converts").
+//
+// The role is the enforcer's reading of its own boot config, which the digests
+// channel carries from an attested inventory (docs/secrets.md).
+func WorkloadContainers(reported []workloadclaims.SandboxContainer) []pkgallowlist.RunningContainer {
 	out := make([]pkgallowlist.RunningContainer, 0, len(reported))
 	for _, c := range reported {
-		if isInjected(al, c) {
+		if c.Role != "" {
 			continue
 		}
 		r := pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts}
 		out = append(out, r)
 	}
 	return out
-}
-
-// isInjected reports whether a reported container is one C8s injected: its
-// image is admitted under an unconstrained argv AND its entrypoint is one C8s
-// injects. Both halves are required — an unconstrained image running a shell is
-// not injected. Rests on no unconstrained image other than C8s's carrying an
-// executable at one of InjectedEntrypoints (docs/secrets.md).
-func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) bool {
-	if len(c.Argv) == 0 {
-		return false
-	}
-	if !al.AdmitsAnyArgv(c.Digest) {
-		return false
-	}
-	return slices.Contains(InjectedEntrypoints, c.Argv[0])
 }

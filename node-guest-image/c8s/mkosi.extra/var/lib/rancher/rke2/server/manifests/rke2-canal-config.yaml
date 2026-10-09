@@ -15,9 +15,11 @@ spec:
       # the outer path. Use 8473 for the inner flannel VXLAN.
       backendPort: 8473
     calico:
-      # armtls-mesh's iptables-nft, so both share one ruleset and chain order.
+      # One backend for the node's rules, so there is a single ruleset and
+      # chain order to read.
       felixIptablesBackend: nft
-      # armtls-mesh redirects meshed pod egress to a host listener (INPUT).
+      # A pod reaches node-local services (the resolver, the node's own
+      # listeners) through its own ruleset's exceptions.
       felixDefaultEndpointToHostAction: ACCEPT
       # Felix would serve metrics on every interface, the host-facing NIC included.
       felixPrometheusMetricsEnabled: false

@@ -7,7 +7,7 @@ import json
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("mode", choices=("client", "bad-label", "bad-hostnet", "front-door", "pvc"))
+    parser.add_argument("mode", choices=("client", "bad-label", "bad-hostnet", "pvc"))
     parser.add_argument("name")
     parser.add_argument("namespace")
     parser.add_argument("image")
@@ -47,9 +47,6 @@ def main():
         pod["metadata"]["labels"] = {"confidential.ai/cw": "rogue"}
     elif args.mode == "bad-hostnet":
         pod["spec"]["hostNetwork"] = True
-    elif args.mode == "front-door":
-        container["volumeMounts"] = [{"name": "ca", "mountPath": "/ca", "readOnly": True}]
-        pod["spec"]["volumes"] = [{"name": "ca", "configMap": {"name": "it-mesh-ca"}}]
     elif args.mode == "pvc":
         container["volumeMounts"] = [{"name": "data", "mountPath": "/data"}]
         pod["spec"]["volumes"] = [

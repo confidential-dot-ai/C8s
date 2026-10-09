@@ -64,14 +64,12 @@ func TestNodeImageRender(t *testing.T) {
 			docs := nodeImageDocuments(t, raw)
 			for _, key := range []string{
 				"Namespace/c8s-system", "CustomResourceDefinition/confidentialworkloads.confidential.ai",
-				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh",
+				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
 				"ConfigMap/c8s-router-nginx", "ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
-				"ValidatingAdmissionPolicy/c8s-cw-label-integrity", "ValidatingAdmissionPolicyBinding/c8s-cw-label-integrity",
+				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
-				"ValidatingAdmissionPolicy/deny-armtls-mesh-uid", "ValidatingAdmissionPolicyBinding/deny-armtls-mesh-uid",
-				"ValidatingAdmissionPolicy/deny-armtls-mesh-uid-ephemeral", "ValidatingAdmissionPolicyBinding/deny-armtls-mesh-uid-ephemeral",
-				"NetworkPolicy/armtls-mesh-tcp-only-egress", "NetworkPolicy/c8s-operator-ingress",
+				"NetworkPolicy/c8s-operator-ingress",
 			} {
 				if docs[key] == nil {
 					t.Errorf("missing %s", key)
@@ -141,7 +139,7 @@ func TestNodeImageRender(t *testing.T) {
 			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
-			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh"} {
+			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router"} {
 				var workload appsv1.Deployment // Deployment and DaemonSet share spec.template.
 				if err := yaml.Unmarshal(docs[key], &workload); err != nil {
 					t.Fatal(err)
@@ -301,6 +299,9 @@ spec:
       containers:
         - name: operator
           image: registry.example.com/operator@CORE_DIGEST
+          args:
+            - operator
+            - --mesh-image=registry.example.com/armtls-mesh@MESH_DIGEST
       initContainers:
         - name: native-sidecar
           restartPolicy: Always
@@ -326,17 +327,6 @@ spec:
     spec:
       containers:
         - name: router
-          image: registry.example.com/operator@CORE_DIGEST
----
-apiVersion: apps/v1
-kind: DaemonSet
-metadata:
-  name: c8s-armtls-mesh
-spec:
-  template:
-    spec:
-      containers:
-        - name: mesh
           image: registry.example.com/operator@CORE_DIGEST
 ---
 apiVersion: apiextensions.k8s.io/v1
@@ -385,13 +375,41 @@ kind: ConfigMap
 metadata:
   name: c8s-cds-allowlist-seed
 data:
-  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
+  allowlist-seed.json: '{"schema":"c8s.allowlist/v1","workloads":{"core":{"containers":[{"digest":"CORE_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init":{"containers":[{"digest":"INIT_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"mesh":{"containers":[{"digest":"MESH_DIGEST","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}}}'
 ---
 # An empty trailing document is harmless.
 `
 
 func nodeImageCollectFixture() string {
-	return strings.NewReplacer("CORE_DIGEST", testDigest, "INIT_DIGEST", nodeImageTestCDSDigest).Replace(nodeImageCollectFixtureTemplate)
+	return strings.NewReplacer(
+		"CORE_DIGEST", testDigest,
+		"INIT_DIGEST", nodeImageTestCDSDigest,
+		"MESH_DIGEST", nodeImageTestMeshDigest,
+	).Replace(nodeImageCollectFixtureTemplate)
+}
+
+// The flag names the image every covered pod runs, so the node preloads it. A
+// flag carrying no image is named without one: the caller then refuses the
+// manifest rather than preloading nothing.
+func TestMeshImageArg(t *testing.T) {
+	image := "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest
+	for _, tc := range []struct {
+		name  string
+		args  []string
+		image string
+		named bool
+	}{
+		{name: "no flag", args: []string{"operator", "--get-cert-image=x"}},
+		{name: "named", args: []string{"--mesh-image=" + image}, image: image, named: true},
+		{name: "named without an image", args: []string{"--mesh-image="}, named: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, named := meshImageArg(tc.args)
+			if named != tc.named || got != tc.image {
+				t.Fatalf("meshImageArg = (%q, %v), want (%q, %v)", got, named, tc.image, tc.named)
+			}
+		})
+	}
 }
 
 func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
@@ -426,7 +444,13 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	if string(artifacts.seed) != cm.Data["allowlist-seed.json"] {
 		t.Fatal("bootstrap seed differs from the complete manifest")
 	}
-	wantImages := []string{"registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/operator@" + testDigest}
+	// The injected endpoint is in the inventory too: the node preloads what
+	// its webhook will add to every pod.
+	wantImages := []string{
+		"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+		"registry.example.com/init@" + nodeImageTestCDSDigest,
+		"registry.example.com/operator@" + testDigest,
+	}
 	if !slices.Equal(artifacts.images, wantImages) {
 		t.Fatalf("image inventory lost init image or duplicated common image: got %v, want %v", artifacts.images, wantImages)
 	}
@@ -455,8 +479,9 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 	for _, tc := range []struct{ name, old, replacement string }{
 		{"mutable container tag", "registry.example.com/operator@" + testDigest, "registry.example.com/operator:latest"},
 		{"mutable init tag", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init:latest"},
-		{"unseeded container", "registry.example.com/operator@" + testDigest, "registry.example.com/operator@" + nodeImageTestMeshDigest},
-		{"unseeded init", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init@" + nodeImageTestMeshDigest},
+		{"unseeded container", "registry.example.com/operator@" + testDigest, "registry.example.com/operator@" + nodeImageTestRouterDigest},
+		{"unseeded init", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init@" + nodeImageTestRouterDigest},
+		{"unpinned injected image", "registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest, "registry.example.com/armtls-mesh:latest"},
 		{"missing core workload", "name: c8s-cds", "name: other-cds"},
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
 		{"unexpected namespace", "name: c8s-cds", "name: c8s-cds\n  namespace: outside"},

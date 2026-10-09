@@ -62,11 +62,8 @@ type Options struct {
 	WebhookServiceName      string
 	WebhookServiceNamespace string
 
-	CertFSGroup         int64
-	CertRenewInterval   time.Duration
-	GetCertRunAsUser    int64
-	GetCertRunAsGroup   int64
-	GetCertRunAsNonRoot bool
+	CertFSGroup       int64
+	CertRenewInterval time.Duration
 
 	// ExcludeNamespaces are namespaces the startup reinject sweep and the
 	// workload-service reconciler skip, on top of the release namespace and
@@ -78,11 +75,6 @@ type Options struct {
 	// socket directory: that plugin NRI-mounts it into c8s-cert and the webhook
 	// injects the get-cert workload-digest claim (docs/armtls.md). See webhook.Config.
 	WorkloadClaimsHostDir string
-
-	// MeshOutboundPort enables the MeshEgressReconciler when non-zero and is
-	// its Port; MeshExcludeSourceNamespaces is its Excluded set.
-	MeshOutboundPort            int32
-	MeshExcludeSourceNamespaces []string
 }
 
 var scheme = runtime.NewScheme()
@@ -166,9 +158,7 @@ func managerOptions(opts Options) ctrl.Options {
 			// labeled itself; don't cache every Service in the cluster. A
 			// foreign Service is invisible through this cache — CreateOrUpdate
 			// then tries Create and the reconciler maps AlreadyExists to its
-			// not-adopting skip. NetworkPolicies are deliberately not scoped
-			// the same way: the mesh-egress reconciler's sources are user
-			// objects, so it has to see every policy.
+			// not-adopting skip.
 			ByObject: map[client.Object]cache.ByObject{
 				&corev1.Service{}: {
 					Label: labels.SelectorFromSet(labels.Set{managedByLabel: managedByValue}),
@@ -221,26 +211,15 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 		}
 	}
 
-	// Mesh egress companions. Not gated on injection: the mesh intercepts
-	// every pod's egress, not only injected pods'.
-	if opts.MeshOutboundPort != 0 {
-		if err := (&MeshEgressReconciler{
-			Client:   mgr.GetClient(),
-			Scheme:   mgr.GetScheme(),
-			Recorder: mgr.GetEventRecorder("c8s-operator"),
-			Port:     opts.MeshOutboundPort,
-			Excluded: namespaceSet(opts.MeshExcludeSourceNamespaces),
-		}).SetupWithManager(mgr); err != nil {
-			return fmt.Errorf("setup mesh-egress reconciler: %w", err)
-		}
-	}
-
 	// Admission webhooks — the platform containers a pod gets, and the shape
-	// it is admitted with.
-	if opts.MeshImage != "" && opts.GetCertImage == "" {
-		return fmt.Errorf("--mesh-image needs --get-cert-image: the mesh endpoint is injected with the credential containers it reads from")
+	// it is admitted with. Both images or neither: the mesh endpoint and the
+	// credential containers are one shape.
+	if opts.MeshImage == "" && opts.GetCertImage != "" {
+		return fmt.Errorf("--get-cert-image needs --mesh-image: a pod's credential containers and its endpoint are one injected shape")
 	}
-
+	if opts.GetCertImage == "" && opts.MeshImage != "" {
+		return fmt.Errorf("--mesh-image needs --get-cert-image: a pod's endpoint and its credential containers are one injected shape")
+	}
 	if opts.GetCertImage != "" {
 		if err := bootstrapWebhookPKI(ctx, mgr, opts); err != nil {
 			return fmt.Errorf("bootstrap webhook PKI: %w", err)
@@ -251,9 +230,6 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 			AttestationApiURL:     opts.AttestationApiURL,
 			CertFSGroup:           new(opts.CertFSGroup),
 			CertRenewInterval:     opts.CertRenewInterval,
-			GetCertRunAsUser:      new(opts.GetCertRunAsUser),
-			GetCertRunAsGroup:     new(opts.GetCertRunAsGroup),
-			GetCertRunAsNonRoot:   new(opts.GetCertRunAsNonRoot),
 			WorkloadClaimsHostDir: opts.WorkloadClaimsHostDir,
 		}); err != nil {
 			return fmt.Errorf("register webhook: %w", err)

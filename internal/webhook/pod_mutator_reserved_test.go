@@ -11,44 +11,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 )
 
-// TestPreDeclaredReservedMountIsForcedReadOnly covers a pod that declares its
-// own mount of a reserved volume with readOnly omitted (defaulting to false).
-// Matching on the name and skipping would leave that writable mount in place,
-// handing the workload write access to the shared secrets directory and to the
-// sidecar-managed leaf key — the invariant secretContainer depends on.
-func TestPreDeclaredReservedMountIsForcedReadOnly(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		volume string
-	}{
-		{"secrets", secretsVolumeName},
-		{"certs", certVolumeName},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			pod := podWithApp()
-			pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
-				Name:      tc.volume,
-				MountPath: "/attacker/chosen/path",
-			}}
-			pod.Spec.Volumes = []corev1.Volume{{
-				Name:     tc.volume,
-				EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
-			}}
+// A pod that declares its own mount of the secrets volume with readOnly
+// omitted (defaulting to false) keeps the mount path and loses the write bit:
+// the fetcher is the only writer of that directory. The credential volume is
+// not in this list — no workload container may mount it at all
+// (rejectCredentialMounts).
+func TestPreDeclaredSecretsMountIsForcedReadOnly(t *testing.T) {
+	pod := podWithApp()
+	pod.Spec.Containers[0].VolumeMounts = []corev1.VolumeMount{{
+		Name:      secretsVolumeName,
+		MountPath: "/attacker/chosen/path",
+	}}
+	pod.Spec.Volumes = []corev1.Volume{{
+		Name:     secretsVolumeName,
+		EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
+	}}
 
-			mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
 
-			m := containerMount(&pod.Spec.Containers[0], tc.volume)
-			if m == nil {
-				t.Fatalf("workload container lost its %q mount", tc.volume)
-			}
-			if !m.ReadOnly {
-				t.Fatalf("pre-declared %q mount stayed writable: %+v", tc.volume, *m)
-			}
-			// Only the write bit is coerced; the pod keeps its mount path.
-			if m.MountPath != "/attacker/chosen/path" {
-				t.Fatalf("MountPath = %q, want the pod's own path", m.MountPath)
-			}
-		})
+	m := containerMount(&pod.Spec.Containers[0], secretsVolumeName)
+	if m == nil {
+		t.Fatalf("workload container lost its %q mount", secretsVolumeName)
+	}
+	if !m.ReadOnly {
+		t.Fatalf("pre-declared %q mount stayed writable: %+v", secretsVolumeName, *m)
+	}
+	if m.MountPath != "/attacker/chosen/path" {
+		t.Fatalf("MountPath = %q, want the pod's own path", m.MountPath)
 	}
 }
 
