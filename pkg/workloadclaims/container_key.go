@@ -2,6 +2,7 @@ package workloadclaims
 
 import (
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -17,7 +18,8 @@ func (c SandboxContainer) Key() string {
 	if c.Env == nil {
 		key.WriteString("nil")
 	} else {
-		fmt.Fprintf(&key, "{%q %q}", c.Env.Format, c.Env.Digest)
+		encoded, _ := json.Marshal(c.Env)
+		key.Write(encoded)
 	}
 	key.WriteString(" mounts=")
 	if c.Mounts == nil {

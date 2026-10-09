@@ -1008,6 +1008,45 @@ func TestSecretReleaseEnforcesEnvEvidence(t *testing.T) {
 	}
 }
 
+func TestSecretReleaseEnforcesMixedEnvironmentMatchers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		env    []string
+		legacy bool
+		want   int
+	}{
+		{"matches", []string{"MODE=production", "GPU_SERIAL=one"}, false, http.StatusCreated},
+		{"changed present", []string{"MODE=production", "GPU_SERIAL=two"}, false, http.StatusCreated},
+		{"empty present", []string{"MODE=production", "GPU_SERIAL="}, false, http.StatusCreated},
+		{"changed exact", []string{"MODE=unsafe", "GPU_SERIAL=one"}, false, http.StatusForbidden},
+		{"missing", []string{"MODE=production"}, false, http.StatusForbidden},
+		{"extra", []string{"MODE=production", "GPU_SERIAL=one", "LD_PRELOAD=unsafe"}, false, http.StatusForbidden},
+		{"old evidence", []string{"MODE=production", "GPU_SERIAL=one"}, true, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hn := newHarness(t)
+			al := hn.h.Policy.(fakePolicy).al
+			var policy pkgallowlist.EnvPolicy
+			if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"exact":"production"},"GPU_SERIAL":{"present":true}}}`), &policy); err != nil {
+				t.Fatal(err)
+			}
+			al.Workloads["api"].Containers[0].Env = policy
+			observation, err := pkgallowlist.ObserveEnv(tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.legacy {
+				observation.VariableDigests = nil
+			}
+			hn.inv.containers[0].Env = observation
+			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
+			if w.Code != tc.want {
+				t.Fatalf("status=%d body=%s, want %d", w.Code, w.Body, tc.want)
+			}
+		})
+	}
+}
+
 func TestSecretReleaseEnforcesMountEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

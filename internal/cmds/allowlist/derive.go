@@ -133,9 +133,10 @@ a container with a command and no args needs an args policy of "deny", because
 "exact" requires a non-empty argv.
 
 Environment policy must be supplied using --env=any|deny or --env-file, a JSON
-map of container names to env policies. Exact values describe the complete OCI
-launch environment, including image/runtime additions. Pod env/envFrom alone
-cannot establish it.
+map of container names to env policies. Exact and match policies describe the
+complete OCI launch environment, including image/runtime additions. Match permits
+individual variables to require an exact value or presence. Pod env/envFrom alone
+cannot establish the complete environment.
 
 Mount policy comes from --mounts=any|deny or --mounts-file, a JSON map of
 container names to mount policies covering every derived init and main
@@ -205,7 +206,7 @@ derives the same entry as the manifest it was admitted from.`,
 					return err
 				}
 			} else if envMode != allowlist.PolicyAny && envMode != allowlist.PolicyDeny {
-				return fmt.Errorf("--env must be any or deny; use --env-file for exact values")
+				return fmt.Errorf("--env must be any or deny; use --env-file for exact or match policies")
 			}
 			used := map[string]bool{}
 			usedMounts := map[string]bool{}
@@ -267,7 +268,7 @@ derives the same entry as the manifest it was admitted from.`,
 	cmd.Flags().StringArrayVar(&secrets, "secret-read", nil,
 		"grant read on this secret path (repeatable); omit for no secrets block")
 	cmd.Flags().StringVar(&envMode, "env", "", "environment policy for every container: any or deny")
-	cmd.Flags().StringVar(&envFile, "env-file", "", "JSON map of container names to explicit env policies (including exact values)")
+	cmd.Flags().StringVar(&envFile, "env-file", "", "JSON map of container names to explicit env policies (including exact and match)")
 	cmd.Flags().StringVar(&mountsMode, "mounts", "", "mount policy for every container: any or deny (default deny)")
 	cmd.Flags().StringVar(&mountsFile, "mounts-file", "", "JSON map of container names to explicit mount policies")
 	cmd.Flags().StringVar(&label, "label", "", "optional entry label")

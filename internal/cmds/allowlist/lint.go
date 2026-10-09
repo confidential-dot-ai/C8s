@@ -282,11 +282,12 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		for _, c := range allContainers(al.Workloads[name]) {
-			if c.Env.Policy != pkgallowlist.PolicyExact || c.Mounts.Policy != pkgallowlist.PolicyExact {
+			if c.Mounts.Policy != pkgallowlist.PolicyExact {
 				continue
 			}
+			pinnedValues := c.Env.ExactValues()
 			for _, variable := range []string{"PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "NODE_PATH"} {
-				value, set := c.Env.Values[variable]
+				value, set := pinnedValues[variable]
 				if !set {
 					continue
 				}

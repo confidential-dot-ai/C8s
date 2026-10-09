@@ -454,23 +454,28 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 		{"application data variable", "DATA_PATH", "/mnt/c8s-data/tools", "data", false},
 		{"emptyDir is not operator data", "PATH", "/mnt/c8s-data/tools", "emptyDir", false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
-				`"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/tools","kind":"` + tc.kind + `"}]},` +
-				`"env":{"policy":"exact","values":{"` + tc.variable + `":"` + tc.value + `"}}}`
-			// Use an init container as well as a main to exercise both lists.
-			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"initContainers":[`+container+`],"containers":[`+ctrJSON(digB, "/main")+`]}}}`)
-			for _, flags := range [][]string{nil, {"--cvm-mode=pod"}, {"--cvm-mode=node"}} {
-				args := append([]string{"lint", "--strict", file}, flags...)
-				out, _, err := runCmd(args...)
-				if (err != nil) != tc.refused {
-					t.Fatalf("lint %v error = %v, want refusal %v; output: %s", flags, err, tc.refused, out)
+		for _, policy := range []struct{ name, env string }{
+			{"exact", `"env":{"policy":"exact","values":{"` + tc.variable + `":"` + tc.value + `"}}`},
+			{"match", `"env":{"policy":"match","variables":{"` + tc.variable + `":{"exact":"` + tc.value + `"},"GPU_SERIAL":{"present":true}}}`},
+		} {
+			t.Run(tc.name+"/"+policy.name, func(t *testing.T) {
+				container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+					`"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/tools","kind":"` + tc.kind + `"}]},` +
+					policy.env + `}`
+				// Use an init container as well as a main to exercise both lists.
+				file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"initContainers":[`+container+`],"containers":[`+ctrJSON(digB, "/main")+`]}}}`)
+				for _, flags := range [][]string{nil, {"--cvm-mode=pod"}, {"--cvm-mode=node"}} {
+					args := append([]string{"lint", "--strict", file}, flags...)
+					out, _, err := runCmd(args...)
+					if (err != nil) != tc.refused {
+						t.Fatalf("lint %v error = %v, want refusal %v; output: %s", flags, err, tc.refused, out)
+					}
+					if tc.refused && !strings.Contains(out, "overlapping data mount") {
+						t.Fatalf("lint did not explain the search-path conflict: %s", out)
+					}
 				}
-				if tc.refused && !strings.Contains(out, "overlapping data mount") {
-					t.Fatalf("lint did not explain the search-path conflict: %s", out)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 
