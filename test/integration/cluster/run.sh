@@ -67,6 +67,7 @@ docker build -q -f cmd/c8s/Dockerfile               -t "ghcr.io/confidential-dot
 docker build -q -f cmd/cds/Dockerfile               -t "ghcr.io/confidential-dot-ai/cds:$IMAGE_TAG"              . >/dev/null
 docker build -q -f cmd/nri-image-policy/Dockerfile  -t "ghcr.io/confidential-dot-ai/nri-image-policy:$IMAGE_TAG" . >/dev/null
 docker build -q -f cmd/armtls-mesh/Dockerfile        -t "ghcr.io/confidential-dot-ai/armtls-mesh:$IMAGE_TAG"       . >/dev/null
+docker build -q -f cmd/c8s-router/Dockerfile        -t "ghcr.io/confidential-dot-ai/c8s-router:$IMAGE_TAG"      . >/dev/null
 docker build -q -f test/mock-attestation/Dockerfile -t "ghcr.io/confidential-dot-ai/mock-attestation:$IMAGE_TAG" . >/dev/null
 
 log "Building the c8s binary"
@@ -87,7 +88,7 @@ NODE_IP="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="I
 
 log "Loading images into the cluster"
 # One at a time: the podman provider crosses images loaded in a single call.
-for img in c8s-operator cds nri-image-policy armtls-mesh mock-attestation; do
+for img in c8s-operator cds nri-image-policy armtls-mesh c8s-router mock-attestation; do
     kind load docker-image "ghcr.io/confidential-dot-ai/$img:$IMAGE_TAG" --name "$CLUSTER" >/dev/null
 done
 
@@ -99,20 +100,6 @@ node_exec ctr -n k8s.io images pull "docker.io/$CURL_IMAGE" >/dev/null \
     || fail "could not pull $CURL_IMAGE into the node (registry rate limit?)"
 node_exec ctr -n k8s.io images pull "docker.io/$WORKLOAD_IMAGE" >/dev/null \
     || fail "could not pull $WORKLOAD_IMAGE into the node (registry rate limit?)"
-# router's nginx is pulled at install time — after the floor scan — so its
-# chart-pinned digest is pulled by reference and seeded up front; otherwise
-# the plugin's enforce-existing check kills the front door's own container.
-ROUTER_NGINX_REF="$(helm show values internal/helmchart/c8s | python3 -c '
-import sys, yaml
-img = yaml.safe_load(sys.stdin)["router"]["nginx"]["image"]
-repo = img["repository"]
-# Bare docker-hub names (nginxinc/foo) need the registry made explicit for ctr.
-if "/" not in repo or ("." not in repo.split("/")[0] and ":" not in repo.split("/")[0] and repo.split("/")[0] != "localhost"):
-    repo = "docker.io/" + repo
-print(repo + "@" + img["digest"])')"
-node_exec ctr -n k8s.io images pull "$ROUTER_NGINX_REF" >/dev/null \
-    || fail "could not pull $ROUTER_NGINX_REF into the node"
-
 log "Writing the allowlist floor"
 # Every image in the node's store (kind system images, the loaded C8s images,
 # the pre-pulled fixtures) goes into the install-time floor: with
@@ -201,6 +188,7 @@ helm template c8s internal/helmchart/c8s -n "$NS" \
     --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
     --set volumed.enabled=false \
     --set-string armtlsMesh.image.tag="$IMAGE_TAG" \
+    --set-string router.nginx.image.tag="$IMAGE_TAG" \
     --set-string nriImagePolicy.mesh.resolver=10.96.0.10 \
     --set-string "nriImagePolicy.mesh.clusterRanges[0]=10.244.0.0/16" \
     --set-string "nriImagePolicy.mesh.clusterRanges[1]=10.96.0.0/16" \

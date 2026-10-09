@@ -110,10 +110,7 @@ func TestChartBaseGrantsInjectedRoles(t *testing.T) {
 }
 
 // The router pod's own containers hold the same roles, and the chart renders
-// that pod itself. Its nginx comes from Docker Hub, which an image reference
-// may name explicitly, so the lane's floor labels the front door's digest
-// docker.io/<repository>@<digest> while the component value names the bare
-// repository.
+// that pod itself.
 const roleNginxDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000e3"
 
 // routerPodRoles is the role every container of the rendered router pod takes.
@@ -141,14 +138,14 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 		"--set-string", "router.publicTLS.mode=acme",
 		"--set", "router.san={lb.example.com}",
 	}
-	// Tag-referenced C8s images and a registry-qualified front door, as the
-	// lane's containerd store lists what it loaded and pulled.
+	// Tag-referenced C8s images, as the lane's containerd store lists what it
+	// loaded and pulled.
 	floorArgs := append(
 		anyArgvEntryArgs("mesh-floor", roleMeshDigest, "ghcr.io/confidential-dot-ai/armtls-mesh:it"),
 		anyArgvEntryArgs("operator-floor", roleOperatorDigest, "ghcr.io/confidential-dot-ai/c8s-operator:it")...,
 	)
 	floorArgs = append(floorArgs,
-		anyArgvEntryArgs("nginx-floor", roleNginxDigest, "docker.io/nginxinc/nginx-unprivileged@"+roleNginxDigest)...,
+		anyArgvEntryArgs("nginx-floor", roleNginxDigest, "ghcr.io/confidential-dot-ai/c8s-router:it")...,
 	)
 	cases := map[string][]string{
 		"derived component digests": append(digestArgs, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"),
@@ -169,7 +166,7 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 					t.Errorf("router container %q holds no platform role, so the enforcer refuses the pod", container.Name)
 					continue
 				}
-				if got := base.RoleOf(observedLaunch(container)); got != want {
+				if got := base.RoleOf(observedLaunch(pod, container)); got != want {
 					t.Errorf("the base grants %s the role %q, want %q", container.Name, got, want)
 				}
 			}

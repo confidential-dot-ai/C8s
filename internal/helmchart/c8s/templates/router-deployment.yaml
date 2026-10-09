@@ -23,11 +23,9 @@ withheld. */ -}}
 {{- end -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
-{{- $defaultMeshCAPath := include "c8s.caFile" . -}}
-{{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
 {{- $attestUsesHTTPSUpstream := and .Values.router.attest.enabled (eq .Values.router.upstream.protocol "https") -}}
 {{- $upstreamAddress := .Values.router.upstream.address -}}
-{{- $attestUpstreamServerName := default (include "router.serverNameFromAddress" $upstreamAddress) .Values.router.upstream.tls.serverName -}}
+{{- $attestUpstreamServerName := default (include "router.serverNameFromAddress" $upstreamAddress) .Values.router.upstream.serverName -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -62,8 +60,6 @@ spec:
     metadata:
       labels:
         {{- include "router.selectorLabels" . | nindent 8 }}
-      annotations:
-        checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
     spec:
       {{- /* Same control-plane pin as CDS: a baked image boots one server,
              and only servers carry this RKE2 role label. */}}
@@ -90,8 +86,10 @@ spec:
         {{- if eq $publicTLSMode "acme" }}
         # Native sidecar (restartPolicy: Always): issues one multi-SAN ACME
         # leaf for the sanList domains, answers HTTP-01 on loopback behind the
-        # :80 server and renews at 2/3 lifetime. nginx's own entrypoint
-        # reloads on the install (router-configmap.yaml).
+        # :80 server and renews at 2/3 lifetime. The front door's own
+        # entrypoint reloads nginx on the install. Its challenge and :80 ports
+        # are the sidecar's defaults, which are the front door image's
+        # constants.
         - name: acme
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
@@ -105,8 +103,6 @@ spec:
             {{- with .Values.router.acme.directoryURL }}
             - --acme-directory-url={{ . }}
             {{- end }}
-            - --challenge-port={{ include "router.acmeChallengePort" . }}
-            - --http-port={{ include "router.acmeHTTPPort" . }}
             - --cert-dir={{ include "router.acmeCertDir" . }}
             - --ready-port={{ include "router.acmeReadyPort" . }}
           # nginx's config names the acme cert files, so nginx must not start
@@ -137,12 +133,15 @@ spec:
         - name: nginx
           image: {{ include "c8s-common.image" .Values.router.nginx.image }}
           imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
-          # nginx runs as the entrypoint's child, which reloads it when the
-          # certificates change (router-configmap.yaml).
-          command: ["/bin/sh", "/etc/nginx/reload.sh"]
+          # The image's entrypoint renders the nginx configuration from these
+          # arguments, runs nginx as its child and reloads it when the
+          # certificates change (internal/cmds/router).
+          command: ["/c8s", "router"]
+          args:
+            {{- include "router.nginxArgs" . | nindent 12 }}
           ports:
             - name: https
-              containerPort: {{ .Values.router.nginx.httpsPort }}
+              containerPort: {{ include "router.httpsPort" . }}
               {{- if .Values.router.hostPort.enabled }}
               hostPort: {{ .Values.router.hostPort.https | default 443 }}
               {{- end }}
@@ -151,7 +150,7 @@ spec:
             {{- /* HTTP-01 arrives on public :80; hostPort follows the same
             gating as :443. */}}
             - name: http
-              containerPort: {{ include "router.acmeHTTPPort" . }}
+              containerPort: {{ include "router.httpPort" . }}
               {{- if .Values.router.hostPort.enabled }}
               hostPort: 80
               {{- end }}
@@ -188,7 +187,7 @@ spec:
               readOnly: true
             {{- if eq $publicTLSMode "webpki" }}
             - name: public-tls
-              mountPath: {{ .Values.router.publicTLS.mountPath }}
+              mountPath: {{ include "router.publicTLSDir" . }}
               readOnly: true
             {{- end }}
             {{- if eq $publicTLSMode "acme" }}
@@ -196,21 +195,16 @@ spec:
               mountPath: {{ include "router.acmeCertDir" . }}
               readOnly: true
             {{- end }}
-            {{- if .Values.router.discovery.enabled }}
+            {{- /* Mounted whichever way router.discovery.enabled is set, so
+            one measured mount set covers both; the flag is what publishes the
+            discovery locations. */}}
             - name: discovery
-              mountPath: {{ .Values.router.discovery.mountPath }}
-              readOnly: true
-            {{- end }}
-            - name: nginx-config
-              mountPath: /etc/nginx/nginx.conf
-              subPath: nginx.conf
-              readOnly: true
-            - name: nginx-config
-              mountPath: /etc/nginx/reload.sh
-              subPath: reload.sh
+              mountPath: {{ include "router.discoveryDir" . }}
               readOnly: true
             - name: nginx-cache
               mountPath: /var/cache/nginx
+            {{- /* The entrypoint renders the configuration here, and nginx
+            keeps its pid and temporary files beside it. */}}
             - name: nginx-tmp
               mountPath: /tmp
           {{- with .Values.router.nginx.resources }}
@@ -264,11 +258,9 @@ spec:
             {{- if $upstreamAddress }}
             - --upstream={{ .Values.router.upstream.protocol }}://{{ $upstreamAddress }}
             {{- if $attestUsesHTTPSUpstream }}
-            - --upstream-ca={{ $upstreamTrustedCAPath }}
-            {{- if .Values.router.upstream.tls.useCDSClientCert }}
+            - --upstream-ca={{ include "c8s.caFile" . }}
             - --upstream-cert={{ include "c8s.certFile" . }}
             - --upstream-key={{ include "c8s.keyFile" . }}
-            {{- end }}
             - --upstream-server-name={{ $attestUpstreamServerName }}
             {{- end }}
             {{- end }}
@@ -308,7 +300,7 @@ spec:
             # cds-attest reads the same public leaf nginx serves
             # (--serving-cert-file).
             - name: public-tls
-              mountPath: {{ .Values.router.publicTLS.mountPath }}
+              mountPath: {{ include "router.publicTLSDir" . }}
               readOnly: true
             {{- end }}
             {{- if eq $publicTLSMode "acme" }}
@@ -403,12 +395,10 @@ spec:
             medium: Memory
             sizeLimit: 1Mi
         {{- end }}
-        {{- if .Values.router.discovery.enabled }}
         - name: discovery
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
-        {{- end }}
         - name: nginx-cache
           emptyDir:
             medium: Memory
@@ -417,9 +407,6 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 16Mi
-        - name: nginx-config
-          configMap:
-            name: {{ include "router.fullname" . }}-nginx
         {{- if eq (include "router.mountInventorySocket" .) "true" }}
         # The readiness gate needs a stamped mesh leaf, so get-cert redeems a
         # sandbox token over the node inventory's Unix socket (see

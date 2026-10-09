@@ -50,11 +50,12 @@ func TestNodeImageRender(t *testing.T) {
 				"--image-digest", testDigest, "--image-repository", "registry.example.com/c8s-operator",
 				"--cds-image-digest", nodeImageTestCDSDigest, "--cds-image-repository", "registry.example.com/cds",
 				"--armtls-mesh-image-digest", nodeImageTestMeshDigest, "--armtls-mesh-image-repository", "registry.example.com/armtls-mesh",
+				"--router-image-digest", nodeImageTestRouterDigest,
+				"--router-image-repository", "registry.example.com/c8s-router",
 				"--output-dir", out,
 			}
 			if platform == "sev-snp" {
-				args = append(args, "--chart-dir", filepath.Join("..", "..", "internal", "helmchart", "c8s"),
-					"--router-image-digest", nodeImageTestRouterDigest, "--router-image-repository", "registry.example.com/nginx")
+				args = append(args, "--chart-dir", filepath.Join("..", "..", "internal", "helmchart", "c8s"))
 			}
 			cmd.SetArgs(args)
 			if err := cmd.Execute(); err != nil {
@@ -69,7 +70,7 @@ func TestNodeImageRender(t *testing.T) {
 				"Namespace/c8s-system", "Namespace/" + workloadclaims.RouterNamespace,
 				"CustomResourceDefinition/confidentialworkloads.confidential.ai",
 				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
-				"ConfigMap/c8s-router-nginx", "ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
+				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
@@ -144,7 +145,7 @@ func TestNodeImageRender(t *testing.T) {
 					t.Errorf("inventory missing overridden image %s", image)
 				}
 			}
-			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/nginx@"+nodeImageTestRouterDigest) {
+			if platform == "sev-snp" && !slices.Contains(images, "registry.example.com/c8s-router@"+nodeImageTestRouterDigest) {
 				t.Error("inventory lost the router image override")
 			}
 			for _, key := range []string{"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router"} {
@@ -163,17 +164,22 @@ func TestNodeImageRender(t *testing.T) {
 					}
 				}
 			}
-			var nginx corev1.ConfigMap
-			if err := yaml.Unmarshal(docs["ConfigMap/c8s-router-nginx"], &nginx); err != nil {
+			// The baked front door renders its own configuration from the
+			// typed arguments the chart passes it.
+			var router appsv1.Deployment
+			if err := yaml.Unmarshal(docs["Deployment/c8s-router"], &router); err != nil {
 				t.Fatal(err)
 			}
-			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "location /healthz"} {
-				if !strings.Contains(nginx.Data["nginx.conf"], directive) {
-					t.Errorf("nginx missing %q", directive)
+			var frontDoorArgs []string
+			for _, container := range router.Spec.Template.Spec.Containers {
+				if container.Name == "nginx" {
+					frontDoorArgs = container.Args
 				}
 			}
-			if _, err := os.Stat(filepath.Join(out, "nginx.conf.in")); !os.IsNotExist(err) {
-				t.Fatalf("unexpected standalone nginx configuration: %v", err)
+			for _, arg := range []string{"--allowlist-proxy-port=8801", "--attest-port=8800", "--discovery-path=/v1/discovery"} {
+				if !slices.Contains(frontDoorArgs, arg) {
+					t.Errorf("front door missing argument %q, got %v", arg, frontDoorArgs)
+				}
 			}
 			seed, err := os.ReadFile(filepath.Join(out, "allowlist-seed.json"))
 			if err != nil {
@@ -261,10 +267,11 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		{"missing digest", func(c *nodeImageRenderConfig) { c.imageDigest = "" }},
 		{"missing CDS digest", func(c *nodeImageRenderConfig) { c.cdsImageDigest = "" }},
 		{"missing mesh digest", func(c *nodeImageRenderConfig) { c.armtlsMeshImageDigest = "" }},
+		{"missing router digest", func(c *nodeImageRenderConfig) { c.routerImageDigest = "" }},
 		{"invalid router digest", func(c *nodeImageRenderConfig) { c.routerImageDigest = "latest" }},
 		{"tagged CDS repository", func(c *nodeImageRenderConfig) { c.cdsImageRepository = "example.com/cds:main" }},
 		{"invalid mesh repository", func(c *nodeImageRenderConfig) { c.armtlsMeshImageRepository = "invalid repo" }},
-		{"digested router repository", func(c *nodeImageRenderConfig) { c.routerImageRepository = "example.com/nginx@" + testDigest }},
+		{"digested router repository", func(c *nodeImageRenderConfig) { c.routerImageRepository = "example.com/c8s-router@" + testDigest }},
 		{"tag as digest", func(c *nodeImageRenderConfig) { c.imageDigest = "main" }},
 		{"tagged repository", func(c *nodeImageRenderConfig) { c.imageRepository += ":main" }},
 		{"missing output", func(c *nodeImageRenderConfig) { c.outputDir = "" }},
@@ -272,7 +279,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFakeBin(t)
 			f.tool(t, "helm", "exit 99")
-			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, cdsImageDigest: nodeImageTestCDSDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
+			cfg := nodeImageRenderConfig{platform: "tdx", kubeVersion: "v1.34.5", imageDigest: testDigest, cdsImageDigest: nodeImageTestCDSDigest, armtlsMeshImageDigest: nodeImageTestMeshDigest, routerImageDigest: nodeImageTestRouterDigest, imageRepository: "ghcr.io/confidential-dot-ai/c8s-operator", outputDir: t.TempDir()}
 			tc.change(&cfg)
 			if err := renderNodeImage(context.Background(), cfg); err == nil {
 				t.Fatal("accepted invalid build inputs")
@@ -292,10 +299,8 @@ func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
 	}
 }
 
-// Each resource belongs to one namespace, and the front door's image is what
-// the measured base pins for the router role. A render that moves a resource,
-// renames the router's namespace, or names no front-door image is one this
-// build cannot boot.
+// Each resource belongs to one namespace. A render that moves a resource or
+// renames the router's namespace is one this build cannot boot.
 func TestNodeImageCollectRequiresEachResourceWhereItBelongs(t *testing.T) {
 	for _, tc := range []struct{ name, old, replacement, want string }{
 		{
@@ -305,18 +310,13 @@ func TestNodeImageCollectRequiresEachResourceWhereItBelongs(t *testing.T) {
 		},
 		{
 			"router resource in the release namespace",
-			"name: c8s-router-nginx\n  namespace: c8s-router", "name: c8s-router-nginx\n  namespace: c8s-system",
-			`ConfigMap/c8s-router-nginx has namespace "c8s-system", want "c8s-router"`,
+			"name: c8s-router\n  namespace: c8s-router", "name: c8s-router\n  namespace: c8s-system",
+			`Deployment/c8s-router has namespace "c8s-system", want "c8s-router"`,
 		},
 		{
 			"release resource in the router's namespace",
 			"name: c8s-cds\n  namespace: c8s-system", "name: c8s-cds\n  namespace: c8s-router",
 			`Deployment/c8s-cds has namespace "c8s-router", want "c8s-system"`,
-		},
-		{
-			"front door without an image",
-			"- name: nginx\n          image: registry.example.com/nginx@" + nodeImageTestRouterDigest, "- name: sidecar\n          image: registry.example.com/nginx@" + nodeImageTestRouterDigest,
-			`runs no "nginx" container`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -380,7 +380,7 @@ spec:
     spec:
       containers:
         - name: nginx
-          image: registry.example.com/nginx@ROUTER_DIGEST
+          image: registry.example.com/c8s-router@ROUTER_DIGEST
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -412,17 +412,6 @@ spec:
         policy detail
         ---
         still one message
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: c8s-router-nginx
-  namespace: c8s-router
-data:
-  nginx.conf: |
-    # a document-looking line remains nginx content
-    ---
-    events {}
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -501,8 +490,8 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	// its webhook will add to every pod.
 	wantImages := []string{
 		"registry.example.com/armtls-mesh@" + nodeImageTestMeshDigest,
+		"registry.example.com/c8s-router@" + nodeImageTestRouterDigest,
 		"registry.example.com/init@" + nodeImageTestCDSDigest,
-		"registry.example.com/nginx@" + nodeImageTestRouterDigest,
 		"registry.example.com/operator@" + testDigest,
 	}
 	if !slices.Equal(artifacts.images, wantImages) {
@@ -514,7 +503,6 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 	for _, tc := range []struct{ name, resource string }{
 		{"workload", "apiVersion: batch/v1\nkind: Job\nmetadata: {name: unexpected}\n"},
 		{"duplicate operator", "apiVersion: apps/v1\nkind: Deployment\nmetadata: {name: c8s-operator}\n"},
-		{"duplicate nginx", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c8s-router-nginx}\ndata: {nginx.conf: duplicate}\n"},
 		{"duplicate seed", "apiVersion: v1\nkind: ConfigMap\nmetadata: {name: c8s-cds-allowlist-seed}\ndata: {allowlist-seed.json: duplicate}\n"},
 		{"unnamed resource", "apiVersion: v1\nkind: Service\nmetadata: {}\n"},
 		{"missing kind", "apiVersion: v1\nmetadata: {name: ignored-before}\n"},

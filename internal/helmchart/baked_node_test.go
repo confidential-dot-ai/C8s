@@ -107,10 +107,9 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	if !ok || port.ContainerPort != 8443 || port.HostPort != 443 {
 		t.Error("router must expose host 443 through unprivileged container port 8443")
 	}
-	config := renderedConfigMap(t, out, "c8s-router-nginx")
-	if config.Namespace != workloadclaims.RouterNamespace || !strings.Contains(config.Data["nginx.conf"], "server_name _;") {
-		t.Error("baked router must retain its namespaced nginx config with a default virtual host")
-	}
+	// The baked front door answers the launch-signed SAN its certificate
+	// sidecar reads at runtime, so its only virtual host accepts any name.
+	assertContainerHasArg(t, "nginx", nginx.Args, "--san=_")
 }
 
 // The router's credential clients hold the measured credentials role, so the
