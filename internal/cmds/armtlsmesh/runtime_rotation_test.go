@@ -33,7 +33,7 @@ func TestMeshRuntimeRotationFailuresIdentifyCertificateRole(t *testing.T) {
 			AttestFunc: func(context.Context, string) (string, error) {
 				return "", errors.New("attestation unavailable")
 			},
-		}, testLogger(), 0)
+		}, testLogger())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,10 +63,12 @@ func TestMeshRuntimeRotatesBothCertificatesWithoutBidirectionalTraffic(t *testin
 				r, err := newMeshRuntime(&armtls.ServerConfig{
 					Platform: "sev-snp", CertTTL: ttl, RotationTimeout: time.Second,
 					AttestFunc: func(context.Context, string) (string, error) {
-						return "test evidence", nil
+						// The provider reads the evidence shape to derive the
+						// TEE type, so the stub returns a report-sized payload.
+						return string(make([]byte, armtls.SNPReportSize)), nil
 					},
 					ClientPolicy: &armtls.VerifyPolicy{},
-				}, testLogger(), 0)
+				}, testLogger())
 				if err != nil {
 					t.Fatal(err)
 				}

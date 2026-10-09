@@ -681,7 +681,7 @@ func TestVerifyCertBareSNPUsesAttestationApi(t *testing.T) {
 	})
 }
 
-func TestPublicKeyFromCertCurves(t *testing.T) {
+func TestCheckPeerKeyTypeCurves(t *testing.T) {
 	makeCert := func(t *testing.T, curve elliptic.Curve) *x509.Certificate {
 		t.Helper()
 		key, err := ecdsa.GenerateKey(curve, rand.Reader)
@@ -711,9 +711,9 @@ func TestPublicKeyFromCertCurves(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := publicKeyFromCert(makeCert(t, tt.curve))
+			err := checkPeerKeyType(makeCert(t, tt.curve))
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("publicKeyFromCert err = %v, wantErr %v", err, tt.wantErr)
+				t.Fatalf("checkPeerKeyType err = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
