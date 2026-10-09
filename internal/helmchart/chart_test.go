@@ -1486,8 +1486,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	)
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	if _, ok := podVolume(spec, "tls-certs"); !ok {
-		t.Fatalf("router missing tls-certs volume; volumes=%v", spec.Volumes)
+	if _, ok := podVolume(spec, "c8s-certs"); !ok {
+		t.Fatalf("router missing c8s-certs volume; volumes=%v", spec.Volumes)
 	}
 	pub, ok := podVolume(spec, "public-tls")
 	if !ok || pub.Secret == nil || pub.Secret.SecretName != "router-public-tls" {
@@ -1649,6 +1649,7 @@ func TestChartRouterACMEMode(t *testing.T) {
 		"--acme-email=ops@example.com",
 		"--acme-directory-url=https://acme-staging-v02.api.letsencrypt.org/directory",
 		"--cert-dir=/etc/c8s-acme-tls",
+		"--key-dir=/etc/c8s-acme-key",
 	)
 	if acme.RestartPolicy == nil || *acme.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("acme must be a native sidecar (restartPolicy Always), got %v", acme.RestartPolicy)
@@ -1659,19 +1660,39 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if got := acme.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.AcmeUID) {
 		t.Fatalf("acme runAsUser = %v, want the acme role's uid %d", got, workloadclaims.AcmeUID)
 	}
-	if m, ok := containerVolumeMount(acme, "acme-tls"); !ok || m.MountPath != "/etc/c8s-acme-tls" || m.ReadOnly {
-		t.Fatalf("acme must mount acme-tls read-write at /etc/c8s-acme-tls, got (%+v, %v)", m, ok)
+	for _, want := range []struct {
+		volume string
+		path   string
+	}{
+		{
+			volume: "acme-tls",
+			path:   "/etc/c8s-acme-tls",
+		},
+		{
+			volume: "acme-key",
+			path:   "/etc/c8s-acme-key",
+		},
+	} {
+		if m, ok := containerVolumeMount(acme, want.volume); !ok || m.MountPath != want.path || m.ReadOnly {
+			t.Fatalf("acme must mount %s read-write at %s, got (%+v, %v)", want.volume, want.path, m, ok)
+		}
 	}
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	vol, ok := podVolume(spec, "acme-tls")
-	if !ok || vol.EmptyDir == nil || vol.EmptyDir.Medium != corev1.StorageMediumMemory {
-		t.Fatalf("acme-tls must be a Memory-medium emptyDir, got %+v", vol)
+	for _, name := range []string{"acme-tls", "acme-key"} {
+		vol, ok := podVolume(spec, name)
+		if !ok || vol.EmptyDir == nil || vol.EmptyDir.Medium != corev1.StorageMediumMemory {
+			t.Fatalf("%s must be a Memory-medium emptyDir, got %+v", name, vol)
+		}
 	}
 
+	// The front door serves the pair, so it is the one container holding
+	// both; everything else that reads this credential takes the chain only.
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
-	if m, ok := containerVolumeMount(nginx, "acme-tls"); !ok || !m.ReadOnly {
-		t.Fatalf("nginx must mount acme-tls read-only, got (%+v, %v)", m, ok)
+	for _, name := range []string{"acme-tls", "acme-key"} {
+		if m, ok := containerVolumeMount(nginx, name); !ok || !m.ReadOnly {
+			t.Fatalf("nginx must mount %s read-only, got (%+v, %v)", name, m, ok)
+		}
 	}
 
 	// The identity that leaves the cluster in the clear is the sidecar that
@@ -1693,6 +1714,11 @@ func TestChartRouterACMEMode(t *testing.T) {
 	if m, ok := containerVolumeMount(attest, "acme-tls"); !ok || !m.ReadOnly {
 		t.Fatalf("cds-attest must mount acme-tls read-only, got (%+v, %v)", m, ok)
 	}
+	// It binds the leaf the front door presents; the key is not its to read,
+	// and it runs as the same identity, so only the mount keeps it out.
+	if m, ok := containerVolumeMount(attest, "acme-key"); ok {
+		t.Fatalf("cds-attest mounts the front door's serving key at %s", m.MountPath)
+	}
 
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--discovery-public-tls-mode=acme")
@@ -1704,11 +1730,12 @@ func TestChartRouterACMEMode(t *testing.T) {
 	}
 
 	// The front door serves the sidecar's leaf and publishes the :80 server
-	// the challenge arrives on.
+	// the challenge arrives on. The key comes from its own directory, which
+	// the front door alone mounts.
 	assertRouterArgs(t, out,
 		"--acme",
 		"--public-cert=/etc/c8s-acme-tls/cert.pem",
-		"--public-key=/etc/c8s-acme-tls/key.pem",
+		"--public-key=/etc/c8s-acme-key/key.pem",
 		"--san=lb.example.com",
 		"--san=api.lb.example.com",
 	)
@@ -2638,7 +2665,7 @@ func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
 
 // TestRouterGetCertWritesMeshCABundle pins the mechanism that replaced the
 // c8s-cds-mesh-ca ConfigMap mount: the c8s-cert sidecar writes the mesh CA
-// bundle to /etc/c8s/certs/ca.crt (the tls-certs volume that already holds the leaf).
+// bundle to /etc/c8s/certs/ca.crt (the c8s-certs volume that already holds the leaf).
 func TestRouterGetCertWritesMeshCABundle(t *testing.T) {
 	out, err := helmTemplateRouter(t)
 	if err != nil {
@@ -5753,10 +5780,67 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 			case "acme front door":
 				want[0] = "--san=lb.example.com"
 				want[1] = "--public-cert=/etc/c8s-acme-tls/cert.pem"
-				want[2] = "--public-key=/etc/c8s-acme-tls/key.pem"
+				want[2] = "--public-key=/etc/c8s-acme-key/key.pem"
 				want = append(want, "--acme")
 			}
 			assertRouterArgList(t, out, want...)
+		})
+	}
+}
+
+// Every container of the router pod runs under a measured declaration that
+// pins its mount set, which is what the enforcer requires of a role container
+// in that namespace (internal/cmds/nri-image-policy, requireRoleOnlyPod): the
+// credentials of this pod are separated by mount set alone, so a sibling whose
+// mounts were left to the host could be given another role's volume.
+func TestChartRouterPodRunsOnPinnedMeasuredMounts(t *testing.T) {
+	const (
+		meshDigest     = "sha256:" + "aa00000000000000000000000000000000000000000000000000000000000011"
+		operatorDigest = "sha256:" + "bb00000000000000000000000000000000000000000000000000000000000012"
+		nginxDigest    = "sha256:" + "cc00000000000000000000000000000000000000000000000000000000000013"
+	)
+	measured := measuredBaseAllowlist(t, map[string]string{
+		"@MESH_DIGEST@":     meshDigest,
+		"@OPERATOR_DIGEST@": operatorDigest,
+		"@ROUTER_DIGEST@":   nginxDigest,
+	}).BuildIndex()
+	// The baked lane, which is the install a measured node runs, in each
+	// front-door shape.
+	baked := []string{
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set-string", "armtlsMesh.image.digest=" + meshDigest,
+		"--set-string", "image.digest=" + operatorDigest,
+		"--set-string", "cds.image.digest=" + operatorDigest,
+		"--set-string", "router.nginx.image.digest=" + nginxDigest,
+		"--set", "router.attest.enabled=true",
+	}
+	for name, mode := range map[string][]string{
+		"cds front door":    nil,
+		"webpki front door": {"--set-string", "router.publicTLS.mode=webpki", "--set-string", "router.publicTLS.secretName=router-public-tls"},
+		"acme front door":   {"--set-string", "router.publicTLS.mode=acme", "--set", "attestationApi.cvmMode=bare-metal"},
+		"no discovery":      {"--set", "router.discovery.enabled=false"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(baked), mode...)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+			for _, container := range append(slices.Clone(pod.InitContainers), pod.Containers...) {
+				launch := observedLaunch(pod, container)
+				role := measured.RoleOf(launch)
+				if role == "" {
+					t.Errorf("the measured base grants %s no role", container.Name)
+					continue
+				}
+				if !measured.BindsRoleMounts(launch, role) {
+					t.Errorf("%s holds the %s role under no declaration that pins its mounts: %v", container.Name, role, container.VolumeMounts)
+				}
+			}
 		})
 	}
 }
@@ -5877,19 +5961,42 @@ func observedLaunch(pod corev1.PodSpec, container corev1.Container) pkgallowlist
 	return launch
 }
 
-// observedMount is one mount as the node classifies it: the kubelet puts a
-// Secret volume under its own plugin directory, which the node reads as
-// operator-supplied data.
+// observedMount is one mount as the node classifies it: a hostPath carries
+// the digest of its source path, a Secret arrives under the kubelet's own
+// plugin directory as operator-supplied data, and a kubelet volume's host
+// source ends in the pod volume's name, which is what an exact rule binds.
 func observedMount(pod corev1.PodSpec, mount corev1.VolumeMount) pkgallowlist.ObservedMount {
+	volume, _ := podVolume(pod, mount.Name)
+	if volume.HostPath != nil {
+		digest, err := pkgallowlist.HostSourceDigest(volume.HostPath.Path)
+		if err != nil {
+			digest = ""
+		}
+		return pkgallowlist.ObservedMount{
+			Destination:      mount.MountPath,
+			Source:           volume.HostPath.Path,
+			Class:            pkgallowlist.MountHost,
+			Storage:          pkgallowlist.MountUnknown,
+			HostSourceDigest: digest,
+			ReadOnly:         mount.ReadOnly,
+		}
+	}
 	class := pkgallowlist.MountEmptyDir
-	if volume, ok := podVolume(pod, mount.Name); ok && volume.Secret != nil {
+	if volume.Secret != nil {
 		class = pkgallowlist.MountData
 	}
 	return pkgallowlist.ObservedMount{
 		Destination: mount.MountPath,
+		Source:      podVolumeSource(mount.Name),
+		Volume:      mount.Name,
 		Class:       class,
 		Storage:     pkgallowlist.MountMemory,
 	}
+}
+
+// podVolumeSource is the host source the kubelet gives a pod volume.
+func podVolumeSource(volume string) string {
+	return "/var/lib/kubelet/pods/5a1d-pod/volumes/kubernetes.io~empty-dir/" + volume
 }
 
 // imageEntrypoints are the C8s images' baked entrypoints (cmd/c8s/Dockerfile,

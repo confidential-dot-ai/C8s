@@ -181,6 +181,9 @@ cert-path helpers below. The ports the sidecar answers on are the front door
 image's own (internal/cmds/router).
 */}}
 {{- define "router.acmeCertDir" -}}/etc/c8s-acme-tls{{- end -}}
+{{/* The serving key and the ACME account key, which the front door alone
+     mounts: every other reader of this credential takes the chain above. */}}
+{{- define "router.acmeKeyDir" -}}/etc/c8s-acme-key{{- end -}}
 {{- define "router.acmeReadyPort" -}}8403{{- end -}}
 
 {{/*
@@ -211,7 +214,7 @@ the member credential volume (cds).
 {{- if eq $mode "webpki" -}}
 {{- printf "%s/%s" (include "router.publicTLSDir" .) .Values.router.publicTLS.keyKey -}}
 {{- else if eq $mode "acme" -}}
-{{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
+{{- printf "%s/key.pem" (include "router.acmeKeyDir" .) -}}
 {{- else -}}
 {{- include "c8s.keyFile" . -}}
 {{- end -}}
@@ -292,10 +295,9 @@ this sidecar signals nothing. Caller nindents into the Pod spec's initContainers
 list.
 */}}
 {{- define "router.getCertContainers" -}}
-{{- $mounts := list -}}
-{{- if .Values.router.discovery.enabled -}}
-{{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" (include "router.discoveryDir" .)) -}}
-{{- end -}}
+{{- /* Mounted whichever way router.discovery.enabled is set, like the front
+       door's own mount, so one measured mount set covers both. */ -}}
+{{- $mounts := list (printf "- name: discovery\n  mountPath: %s" (include "router.discoveryDir" .)) -}}
 {{- if and (include "c8s.attestationApiSocketPresent" .) (ne (include "router.mountInventorySocket" .) "true") -}}
 {{- $mounts = append $mounts (printf "- name: attestation-api-socket\n  mountPath: %s\n  readOnly: true" .Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}

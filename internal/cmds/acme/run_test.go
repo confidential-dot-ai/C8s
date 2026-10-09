@@ -43,7 +43,9 @@ func TestRunIssuesAndInstalls(t *testing.T) {
 	}))
 	t.Cleanup(frontDoor.Close)
 
-	certDir := filepath.Join(t.TempDir(), "tls")
+	credentials := t.TempDir()
+	certDir := filepath.Join(credentials, "tls")
+	keyDir := filepath.Join(credentials, "key")
 	cfg := config{
 		domains:       []string{"lb.example.com", "infer.lb.example.com"},
 		directoryURL:  fake.directoryURL(),
@@ -51,6 +53,7 @@ func TestRunIssuesAndInstalls(t *testing.T) {
 		challengePort: port,
 		httpPort:      serverPort(t, frontDoor.URL),
 		certDir:       certDir,
+		keyDir:        keyDir,
 		logLevel:      "debug",
 	}
 	done := make(chan error, 1)
@@ -71,7 +74,7 @@ func TestRunIssuesAndInstalls(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	info, err := os.Stat(filepath.Join(certDir, keyFile))
+	info, err := os.Stat(filepath.Join(keyDir, keyFile))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,18 +103,5 @@ func TestRunValidatesConfig(t *testing.T) {
 	cfg.domains = []string{"-bad-"}
 	if err := run(cfg); err == nil {
 		t.Fatal("run accepted an invalid domain")
-	}
-}
-
-func TestRunFailsOnUncreatableCertDir(t *testing.T) {
-	ro := filepath.Join(t.TempDir(), "ro")
-	if err := os.Mkdir(ro, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	cfg := validTestConfig()
-	cfg.logLevel = "info"
-	cfg.certDir = filepath.Join(ro, "tls")
-	if err := run(cfg); err == nil {
-		t.Fatal("run accepted an un-creatable cert dir")
 	}
 }

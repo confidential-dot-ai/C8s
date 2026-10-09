@@ -149,6 +149,27 @@ func (i *Index) RoleOf(r RunningContainer) string {
 	return roles[0]
 }
 
+// BindsRoleMounts reports whether a declaration that grants this launch the
+// role also pins its mount set. A namespace whose pods separate credentials by
+// mount set admits a role container only under such a declaration, so an entry
+// leaving mounts to the host carries no role there.
+func (i *Index) BindsRoleMounts(r RunningContainer, role string) bool {
+	if i == nil || role == noRole {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Role == role && c.Mounts.pinned() && c.admits(r) {
+			return true
+		}
+	}
+	return false
+}
+
 // AdmitsProcess is the preliminary NRI create-time check. It deliberately checks
 // only digest/argv; a successful result MUST be followed by AdmitsContainer on
 // the finalized OCI spec before start, and must never authorize secret release.

@@ -979,9 +979,12 @@ front door:
   `/.well-known/acme-challenge/` to the sidecar's loopback challenge listener
   and 301s everything else to https. The CA's validation fetch arrives on that
   port, so the mode needs :80 reachable from the internet, not just from the
-  cluster. Key, chain, and ACME account state live
-  in a Memory-medium emptyDir — TEE-held under a confidential runtime (which
-  this mode requires), lost with the pod and re-issued on recreation (point
+  cluster. The chain lives in one Memory-medium emptyDir and the serving key
+  with the ACME account state in another, so the front door mounts both while
+  the attestation sidecar — which runs as the same identity and only needs the
+  leaf it binds — mounts the chain alone. Both are TEE-held under a
+  confidential runtime (which this mode requires), lost with the pod and
+  re-issued on recreation (point
   the sidecar at an ACME staging directory in tests to stay clear of the CA's
   duplicate-certificate limits). Renewal fires at 2/3 lifetime; nginx's own
   entrypoint re-reads the files it serves and reloads on each install. On

@@ -17,6 +17,16 @@ import (
 // enforcer's own record, which decides before any ruleset is read.
 const testNetNS = "/run/netns/cni-test"
 
+// gateCtr is a container as the gate sees one: its name, the identity it runs
+// as, and the pid namespace of its own every container of a member pod holds.
+func gateCtr(name string, uid uint32) *api.Container {
+	return &api.Container{
+		Name:  name,
+		User:  &api.User{Uid: uid},
+		Linux: &api.LinuxContainer{Namespaces: []*api.LinuxNamespace{{Type: pidNamespace}}},
+	}
+}
+
 // meshPod is a pod with its own network namespace, as containerd reports one.
 func meshPod(namespace, name, netnsPath string) *api.PodSandbox {
 	pod := makePod(namespace, name)
@@ -87,10 +97,7 @@ func TestMeshGateHostsOnlyOwnNamespacePods(t *testing.T) {
 // refused sandbox, a namespace that moved, a container out of role order, a
 // reserved identity and a namespace-moving adjustment are each a refusal.
 func TestMeshGateRefusals(t *testing.T) {
-	workload := &api.Container{
-		Name: "app",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	workload := gateCtr("app", testWorkloadUID)
 	for _, tc := range []struct {
 		name    string
 		arrange func(*meshGate, *protectedPod, *api.PodSandbox)
@@ -129,7 +136,7 @@ func TestMeshGateRefusals(t *testing.T) {
 		},
 		{
 			name:   "role after a workload",
-			ctr:    &api.Container{Name: "c8s-cert", User: &api.User{Uid: testCertUID}},
+			ctr:    gateCtr("c8s-cert", testCertUID),
 			launch: gatedContainer{role: testCertRole},
 			wants:  "after a container outside every platform role",
 			arrange: func(_ *meshGate, s *protectedPod, _ *api.PodSandbox) {
@@ -139,7 +146,7 @@ func TestMeshGateRefusals(t *testing.T) {
 		},
 		{
 			name:  "workload claiming a reserved identity",
-			ctr:   &api.Container{Name: "app", User: &api.User{Uid: testMeshUID}},
+			ctr:   gateCtr("app", testMeshUID),
 			wants: "reserved for the mesh role",
 			arrange: func(_ *meshGate, s *protectedPod, _ *api.PodSandbox) {
 				s.meshStarted = true
@@ -187,10 +194,7 @@ func TestMeshGateRefusals(t *testing.T) {
 func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate, state := gateWithPod(pod)
-	mesh := &api.Container{
-		Name: "c8s-mesh",
-		User: &api.User{Uid: testMeshUID},
-	}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
 	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
 		t.Fatalf("the mesh endpoint was refused before its own start: %v", err)
 	}
@@ -199,10 +203,7 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 	}
 
 	gate.noteMeshStarted(pod.GetId())
-	workload := &api.Container{
-		Name: "app",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	workload := gateCtr("app", testWorkloadUID)
 	launch := gatedContainer{}
 	if _, _, err := gate.admissible(pod, workload, launch); err != nil {
 		t.Fatalf("a workload was refused behind a running mesh endpoint: %v", err)
@@ -219,10 +220,7 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 
 	// The pod's own containers are created after its mesh endpoint holds an
 	// identity, so a name the record has never seen still joins.
-	joiner := &api.Container{
-		Name: "sidecar",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	joiner := gateCtr("sidecar", testWorkloadUID)
 	if _, _, err := gate.admissible(pod, joiner, gatedContainer{}); err != nil {
 		t.Fatalf("a container joining a pod that holds an identity was refused: %v", err)
 	}
@@ -239,10 +237,7 @@ func TestMeshGateAdmitsThePodInOrder(t *testing.T) {
 func TestMeshGateAdmitsAnAdmittedRoleLaunchAgain(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
 	gate, state := gateWithPod(pod)
-	cert := &api.Container{
-		Name: "c8s-cert",
-		User: &api.User{Uid: testCertUID},
-	}
+	cert := gateCtr("c8s-cert", testCertUID)
 	launch := gatedContainer{
 		role:   testCertRole,
 		digest: pushDigestA,
@@ -314,25 +309,35 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 		kubeNamespace: pod.GetNamespace(),
 	}
 
-	router := &api.Container{
-		Name: "nginx",
-		User: &api.User{Uid: testRouterUID},
+	router := gateCtr("nginx", testRouterUID)
+	launch := gatedContainer{
+		role:         routerRole,
+		mountsPinned: true,
 	}
-	launch := gatedContainer{role: routerRole}
 	if _, _, err := gate.admissible(pod, router, launch); err != nil {
 		t.Fatalf("the router role was refused in its own pod: %v", err)
 	}
 	gate.noteLaunched(pod.GetId(), launch)
-	workload := &api.Container{
-		Name: "app",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	workload := gateCtr("app", testWorkloadUID)
 	_, _, err := gate.admissible(pod, workload, gatedContainer{})
 	if err == nil {
 		t.Fatal("a workload joined a pod that serves the router's own ports")
 	}
 	if !strings.Contains(err.Error(), "only its platform roles may run here") {
 		t.Fatalf("error = %v, want the role-only rule", err)
+	}
+
+	// The credentials of this pod are separated by mount set, so a role
+	// container the base admits with its mounts left to the host — the shape
+	// that would compose a second reader of the front door's key — is refused
+	// here.
+	composed := gatedContainer{role: testCertRole}
+	_, _, err = gate.admissible(pod, gateCtr("c8s-cert", testCertUID), composed)
+	if err == nil {
+		t.Fatal("a role container with unpinned mounts joined the router's pod")
+	}
+	if !strings.Contains(err.Error(), "pins its mounts") {
+		t.Fatalf("error = %v, want the pinned-mounts rule", err)
 	}
 
 	// A pod of any other namespace keeps running workloads.
@@ -344,6 +349,40 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 	}
 }
 
+// A member pod's container runs in a pid namespace of its own. With a shared
+// one every process of the pod is in one /proc, where a container reads
+// another's credential volume at /proc/<pid>/root whatever the mount sets
+// pin; containerd points the namespace at a process only when the pod shares
+// it, and leaves the entry out when the pod uses the node's.
+func TestMeshGateRefusesASharedPIDNamespace(t *testing.T) {
+	pod := meshPod(routerNamespace, "router", testNetNS)
+	for name, namespaces := range map[string][]*api.LinuxNamespace{
+		"the pod's own, shared": {{
+			Type: pidNamespace,
+			Path: "/proc/4242/ns/pid",
+		}},
+		"the node's": {{Type: "ipc"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			gate, state := gateWithPod(pod)
+			state.meshStarted = true
+			shared := gateCtr("nginx", testRouterUID)
+			shared.Linux = &api.LinuxContainer{Namespaces: namespaces}
+			launch := gatedContainer{
+				role:         routerRole,
+				mountsPinned: true,
+			}
+			_, _, err := gate.admissible(pod, shared, launch)
+			if err == nil {
+				t.Fatal("a member pod's container was admitted outside a pid namespace of its own")
+			}
+			if !strings.Contains(err.Error(), "pid namespace") {
+				t.Fatalf("error = %v, want the pid-namespace rule", err)
+			}
+		})
+	}
+}
+
 // A sandbox that was running before this enforcer connected is refused for its
 // life: its containers ran unchecked by it. Its record also stands, so a later
 // sandbox event cannot replace it with a fresh one.
@@ -352,10 +391,7 @@ func TestMeshGateRefusesSandboxesItDidNotProtect(t *testing.T) {
 	gate := newMeshGate(meshRoles(), discardLogger())
 	gate.refuseExisting([]*api.PodSandbox{pod, makePod("default", "host-network")})
 
-	workload := &api.Container{
-		Name: "app",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	workload := gateCtr("app", testWorkloadUID)
 	_, _, err := gate.admissible(pod, workload, gatedContainer{})
 	if err == nil || !strings.Contains(err.Error(), "before this enforcer connected") {
 		t.Fatalf("error = %v, want the pre-existing sandbox refusal", err)
@@ -508,6 +544,83 @@ func TestValidateContainerAdjustmentGatesOnProtection(t *testing.T) {
 	}
 }
 
+// A declaration pins the mount set the pod asks for: the bind this enforcer
+// adds itself leaves it standing, while a mount of the pod's own at the same
+// destination counts and does not match the declaration.
+func TestValidateContainerAdjustmentPinsThePodsOwnMounts(t *testing.T) {
+	const enforcerAddress = "/run/c8s-enforcer/cds-address"
+	base := roleBase(t, pushDigestB, testCertRole, []string{"/c8s", "get-cert"})
+	base.Workloads["pinned-entry"] = allowlist.Workload{Containers: []allowlist.Container{{
+		Digest: mustDigest(t, pushDigestB),
+		Role:   testCertRole,
+		Command: allowlist.ArgvPolicy{
+			Policy: allowlist.PolicyExact,
+			Argv:   []string{"/c8s", "get-cert"},
+		},
+		Args: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+		Mounts: allowlist.MountPolicy{
+			Policy: allowlist.PolicyExact,
+			Rules: []allowlist.MountRule{{
+				Destination: "/run/c8s-node",
+				Kind:        allowlist.MountHost,
+				Source:      "/run/c8s-node",
+				ReadOnly:    true,
+			}},
+		},
+	}}}
+	for _, tc := range []struct {
+		name     string
+		declared []*api.Mount
+		adjust   []*api.Mount
+		pinned   bool
+	}{
+		{
+			name:   "the enforcer's own bind",
+			adjust: []*api.Mount{readOnlyBind(enforcerAddress, workloadclaims.CDSAddressPath)},
+			pinned: true,
+		},
+		{
+			name:     "a mount of the pod's own at that destination",
+			declared: []*api.Mount{readOnlyBind("/run/c8s-elsewhere", workloadclaims.CDSAddressPath)},
+			pinned:   false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, _ := newCachedPlugin(&config{
+				Allowlist: allowlistConfig{
+					Base:    base,
+					NodeTCB: true,
+				},
+				Policy: policyConfig{Mode: ModeAudit},
+			}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
+			p.cdsAddress = enforcerAddress
+			pod := meshPod(routerNamespace, "c8s-router", testNetNS)
+			gate, state := gateWithPod(pod)
+			state.meshStarted = true
+			p.mesh = gate
+			p.SetReady()
+
+			ctr := gateCtr("c8s-cert", testCertUID)
+			ctr.PodSandboxId = pod.GetId()
+			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
+			ctr.Args = []string{"/c8s", "get-cert", "--san=c8s-router.c8s-router.svc"}
+			ctr.Mounts = append([]*api.Mount{readOnlyBind("/run/c8s-node", "/run/c8s-node")}, tc.declared...)
+			req := &api.ValidateContainerAdjustmentRequest{
+				Pod:       pod,
+				Container: ctr,
+				Adjust:    &api.ContainerAdjustment{Mounts: tc.adjust},
+			}
+			err := p.ValidateContainerAdjustment(context.Background(), req)
+			if err == nil {
+				t.Fatal("the gate admitted a container without reading the pod's ruleset")
+			}
+			if strings.Contains(err.Error(), "pins its mounts") == tc.pinned {
+				t.Fatalf("error = %v, pinned mount set = %t", err, tc.pinned)
+			}
+		})
+	}
+}
+
 // A protected pod's containers cannot be changed once it runs.
 func TestUpdateContainerRefusedForProtectedPods(t *testing.T) {
 	pod := meshPod("default", "pod", testNetNS)
@@ -652,10 +765,7 @@ func TestMeshEndpointStartOpensTheGateWhileInitializing(t *testing.T) {
 		t.Fatal("the mesh endpoint started without opening the gate for the rest of the pod")
 	}
 
-	cert := &api.Container{
-		Name: "c8s-cert",
-		User: &api.User{Uid: testCertUID},
-	}
+	cert := gateCtr("c8s-cert", testCertUID)
 	if _, _, err := gate.admissible(pod, cert, gatedContainer{role: testCertRole}); err != nil {
 		t.Fatalf("a role container was refused behind a started mesh endpoint: %v", err)
 	}

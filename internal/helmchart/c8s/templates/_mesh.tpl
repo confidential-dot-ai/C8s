@@ -21,7 +21,7 @@ of the pod on this container's start. Caller nindents into initContainers.
     - --key-path={{ include "c8s.keyFile" . }}
     - --ca-path={{ include "c8s.caFile" . }}
   volumeMounts:
-    - name: tls-certs
+    - name: c8s-certs
       mountPath: {{ include "c8s.certDir" . }}
       readOnly: true
   securityContext:

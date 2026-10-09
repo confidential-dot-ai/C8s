@@ -175,10 +175,39 @@ func parseJSON(data []byte, strict bool) (*Allowlist, error) {
 	if err := dec.Decode(&a); err != nil {
 		return nil, fmt.Errorf("decode allowlist: %w", err)
 	}
+	if err := a.refuseVolumeBindings(); err != nil {
+		return nil, err
+	}
 	if err := a.normalize(strict); err != nil {
 		return nil, err
 	}
 	return &a, nil
+}
+
+// refuseVolumeBindings refuses a document that names a pod volume on an
+// emptyDir or data rule. The binding belongs to a measured boot config, which
+// is YAML: nothing that arrives as JSON names a volume, so a served or
+// authored document carrying one is refused rather than read as a narrower
+// policy than the format defines.
+func (a *Allowlist) refuseVolumeBindings() error {
+	for name, w := range a.Workloads {
+		if err := w.refuseVolumeBindings(); err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func (w Workload) refuseVolumeBindings() error {
+	for _, c := range w.containers() {
+		for _, rule := range c.Mounts.Rules {
+			if rule.Source == "" || !rule.bindsVolume() {
+				continue
+			}
+			return fmt.Errorf("mount kind %q at %s names a volume, which only a measured base binds", rule.Kind, rule.Destination)
+		}
+	}
+	return nil
 }
 
 // Normalize validates and canonicalizes a document decoded outside ParseJSON
@@ -199,6 +228,9 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	var w Workload
 	if err := dec.Decode(&w); err != nil {
 		return nil, fmt.Errorf("decode workload: %w", err)
+	}
+	if err := w.refuseVolumeBindings(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
 	}
 	if err := normalizeContainers("entry", "initContainers", w.InitContainers); err != nil {
 		return nil, err

@@ -93,6 +93,9 @@ func TestMeasuredMeshEntryPinsTheInjectedMounts(t *testing.T) {
 		want = append(want, allowlist.MountRule{
 			Destination: mount.MountPath,
 			Kind:        allowlist.MountEmptyDir,
+			// The rule binds the pod volume behind the destination, so it
+			// names the volume the injector adds.
+			Source: mount.Name,
 		})
 	}
 	if entry.Mounts.Policy != allowlist.PolicyExact || !slices.Equal(entry.Mounts.Rules, want) {

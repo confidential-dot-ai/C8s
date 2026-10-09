@@ -30,19 +30,35 @@ func (r MountRule) behavior() mountRuleBehavior {
 	}
 }
 
+// bindsVolume reports whether this rule's source names a pod volume rather
+// than a host path: the kinds the kubelet stages from the pod's own volumes.
+func (r MountRule) bindsVolume() bool {
+	return r.Kind == MountEmptyDir || r.Kind == MountData
+}
+
 type emptyDirRule struct {
 	MountRule
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly {
-		return fmt.Errorf("mount kind %q does not support source or readOnly", r.Kind)
+	if r.ReadOnly {
+		return fmt.Errorf("mount kind %q does not support readOnly", r.Kind)
+	}
+	if r.Source != "" && (strings.Contains(r.Source, "/") || r.Source == "." || r.Source == "..") {
+		return fmt.Errorf("mount kind %q source %q must be a volume name, not a path", r.Kind, r.Source)
 	}
 	return nil
 }
 
-func (emptyDirRule) admits(m ObservedMount) bool {
-	return m.Storage == MountMemory || m.Storage == MountEncrypted
+// admits also binds the pod volume behind the mount when the rule names one,
+// so two destinations of one container cannot be fed from each other's
+// volume. The node names that volume (internal/cmds/nri-image-policy); a
+// mount it read out of no pod volume names none and is refused.
+func (r emptyDirRule) admits(m ObservedMount) bool {
+	if m.Storage != MountMemory && m.Storage != MountEncrypted {
+		return false
+	}
+	return r.Source == "" || m.Volume == r.Source
 }
 
 func (emptyDirRule) hostIndependent() bool {

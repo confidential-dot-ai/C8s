@@ -33,6 +33,10 @@ const (
 // (internal/cri/opts/spec_opts.go, WithPodNamespaces).
 var sandboxNamespaces = []string{"ipc", "network", "pid", "uts"}
 
+// pidNamespace is the namespace type a member pod's container must hold on
+// its own (requirePrivatePIDNamespace).
+const pidNamespace = "pid"
+
 // cgroupNamespace is present on every container containerd creates under
 // unified cgroups and omitted for a privileged one
 // (internal/cri/server/container_create.go). NRI carries no privileged flag, so

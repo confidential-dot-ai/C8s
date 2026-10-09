@@ -104,6 +104,7 @@ spec:
             - --acme-directory-url={{ . }}
             {{- end }}
             - --cert-dir={{ include "router.acmeCertDir" . }}
+            - --key-dir={{ include "router.acmeKeyDir" . }}
             - --ready-port={{ include "router.acmeReadyPort" . }}
           # nginx's config names the acme cert files, so nginx must not start
           # before the bootstrap placeholder exists; regular containers wait
@@ -123,6 +124,8 @@ spec:
           volumeMounts:
             - name: acme-tls
               mountPath: {{ include "router.acmeCertDir" . }}
+            - name: acme-key
+              mountPath: {{ include "router.acmeKeyDir" . }}
           securityContext:
             {{- include "c8s.getCertSecurityContext" (dict
               "runAsUser" (include "c8s.acmeUID" .)
@@ -182,7 +185,7 @@ spec:
             periodSeconds: 30
 
           volumeMounts:
-            - name: tls-certs
+            - name: c8s-certs
               mountPath: {{ include "c8s.certDir" . }}
               readOnly: true
             {{- if eq $publicTLSMode "webpki" }}
@@ -193,6 +196,10 @@ spec:
             {{- if eq $publicTLSMode "acme" }}
             - name: acme-tls
               mountPath: {{ include "router.acmeCertDir" . }}
+              readOnly: true
+            {{- /* The front door is the only reader of the serving key. */}}
+            - name: acme-key
+              mountPath: {{ include "router.acmeKeyDir" . }}
               readOnly: true
             {{- end }}
             {{- /* Mounted whichever way router.discovery.enabled is set, so
@@ -292,7 +299,7 @@ spec:
             periodSeconds: 10
           {{- end }}
           volumeMounts:
-            - name: tls-certs
+            - name: c8s-certs
               mountPath: {{ include "c8s.certDir" . }}
               readOnly: true
             {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
@@ -372,7 +379,7 @@ spec:
         {{- end }}
       volumes:
         {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
-        - name: tls-certs
+        - name: c8s-certs
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
@@ -387,10 +394,15 @@ spec:
                 path: {{ .Values.router.publicTLS.keyKey }}
         {{- end }}
         {{- if eq $publicTLSMode "acme" }}
-        # ACME key, cert, and account state. Memory-medium: TEE-protected and
-        # lost on pod recreation, so the sidecar re-issues (LE duplicate-cert
-        # limits apply; use the staging directoryURL for tests).
+        # The issued chain, and separately the serving key with the ACME
+        # account state. Memory-medium: TEE-protected and lost on pod
+        # recreation, so the sidecar re-issues (LE duplicate-cert limits
+        # apply; use the staging directoryURL for tests).
         - name: acme-tls
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: acme-key
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi

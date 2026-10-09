@@ -49,6 +49,27 @@ func TestMountObserverClassifiesOnlyCurrentPodEmptyDir(t *testing.T) {
 	}
 }
 
+// An exact rule binds a mount to the volume the node names, so that name is
+// the volume the kubelet staged it from and not the last segment of the
+// source: a mount of a directory inside another volume names that other
+// volume, whatever its path ends in.
+func TestMountObserverNamesTheVolumeBehindAMount(t *testing.T) {
+	pod := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
+	ctr := &api.Container{Name: "app", PodSandboxId: pod.Id, Mounts: []*api.Mount{
+		{Source: kubeletRoot + "/pods/pod-a/volumes/" + emptyDirPlugin + "/acme-tls", Destination: "/etc/c8s-acme-tls"},
+		{Source: kubeletRoot + "/pods/pod-a/volumes/" + emptyDirPlugin + "/acme-key/acme-tls", Destination: "/etc/c8s-acme-tls"},
+		{Source: kubeletRoot + "/pods/pod-a/volumes/kubernetes.io~secret/public-tls", Destination: "/mnt/c8s-data/public-tls"},
+		{Source: kubeletRoot + "/pods/pod-a/volume-subpaths/cache/app/0", Destination: "/sub"},
+	}}
+	got := newMountObserver(fixedStorage(allowlist.MountMemory)).Observe(pod, ctr)
+	want := []string{"acme-tls", "acme-key", "public-tls", "cache"}
+	for i := range want {
+		if got[i].Volume != want[i] {
+			t.Errorf("mount %d (%s) names the volume %q, want %q", i, got[i].Destination, got[i].Volume, want[i])
+		}
+	}
+}
+
 func TestMountObserverClassifiesVolumePlaceholdersAsData(t *testing.T) {
 	pod := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
 	for _, storage := range []allowlist.MountStorage{allowlist.MountMemory, allowlist.MountEncrypted, allowlist.MountUnknown} {
