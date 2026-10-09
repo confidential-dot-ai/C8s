@@ -18,16 +18,103 @@ http {
     sendfile on;
     keepalive_timeout 65;
 
+{{- if .DialsABackend }}
+
     # Every backend is dialed through a variable, so nginx re-resolves it
     # instead of pinning the addresses seen at startup. valid= caps how long an
     # answer is reused, whatever TTL the cluster DNS attaches to it.
     resolver {{ .Resolver }} valid=5s;
+{{- end }}
 {{- if .Backend.Address }}
 
     map $http_upgrade $connection_upgrade {
         default upgrade;
         "" close;
     }
+{{- end }}
+{{- if .CORSEnabled }}
+
+    map $http_origin $cors_origin {
+{{- if .WildcardOrigin }}
+        default "*";
+{{- else }}
+        default "";
+{{- range $origin := .CORS.AllowOrigins }}
+        "{{ $origin }}" "{{ $origin }}";
+{{- end }}
+{{- end }}
+    }
+
+    # A backend that answers with its own Access-Control-Allow-Origin owns the
+    # CORS header set for that response, so a browser never sees two of them.
+    map $upstream_http_access_control_allow_origin $cors_passthrough {
+        default "0";
+        "~.+"   "1";
+    }
+
+    map $cors_passthrough $cors_out_origin {
+        "0" $cors_origin;
+        "1" $upstream_http_access_control_allow_origin;
+    }
+
+    map $cors_passthrough $cors_out_methods {
+        "0" "{{ join .CORS.AllowMethods }}";
+        "1" $upstream_http_access_control_allow_methods;
+    }
+
+    map $cors_passthrough $cors_out_headers {
+        "0" "{{ join .CORS.AllowHeaders }}";
+        "1" $upstream_http_access_control_allow_headers;
+    }
+
+    map $cors_passthrough $cors_out_credentials {
+        "0" "{{ if .CORS.AllowCredentials }}true{{ end }}";
+        "1" $upstream_http_access_control_allow_credentials;
+    }
+{{- if .CORS.ExposeHeaders }}
+
+    # The configured expose list is always advertised, merged in front of the
+    # backend's own value.
+    map $upstream_http_access_control_expose_headers $cors_upstream_expose_suffix {
+        default "";
+        "~.+"   ", $upstream_http_access_control_expose_headers";
+    }
+
+    map $cors_passthrough $cors_out_expose {
+        "0" "{{ join .CORS.ExposeHeaders }}";
+        "1" "{{ join .CORS.ExposeHeaders }}$cors_upstream_expose_suffix";
+    }
+{{- else }}
+
+    map $cors_passthrough $cors_out_expose {
+        "0" "";
+        "1" $upstream_http_access_control_expose_headers;
+    }
+{{- end }}
+{{- end }}
+{{- if .Allowlist.ProxyPort }}
+
+    # Each key is empty for the methods its zone does not cover, and limit_req
+    # does not account an empty key: mutations count per client and in
+    # aggregate, reads per client, OPTIONS never.
+    map $request_method $allowlist_write_key_or_empty {
+        default $binary_remote_addr;
+        GET "";
+        HEAD "";
+        OPTIONS "";
+    }
+    map $allowlist_write_key_or_empty $allowlist_write_total_key_or_empty {
+        "" "";
+        default "all";
+    }
+    map $request_method $allowlist_read_key_or_empty {
+        default "";
+        GET $binary_remote_addr;
+        HEAD $binary_remote_addr;
+    }
+    limit_req_zone $allowlist_write_key_or_empty zone=allowlist_write_per_client:10m rate={{ .Allowlist.WriteRate }}r/s;
+    limit_req_zone $allowlist_write_total_key_or_empty zone=allowlist_write_total:1m rate={{ .Allowlist.WriteTotalRate }}r/s;
+    limit_req_zone $allowlist_read_key_or_empty zone=allowlist_read_per_client:10m rate={{ .Allowlist.ReadRate }}r/s;
 {{- end }}
 
     server {
@@ -47,9 +134,74 @@ http {
 
         proxy_buffer_size 16k;
         proxy_buffers 4 16k;
+{{- if .Allowlist.ProxyPort }}
+{{- range $location := allowlistLocations }}
+
+        location {{ $location }} {
+{{- template "ownedCORS" $ }}
+            limit_req zone=allowlist_write_per_client burst={{ $.Allowlist.WriteBurst }} nodelay;
+            limit_req zone=allowlist_write_total burst={{ $.Allowlist.WriteTotalBurst }} nodelay;
+            limit_req zone=allowlist_read_per_client burst={{ $.Allowlist.ReadBurst }} nodelay;
+            limit_req_status 429;
+            # $request_uri unchanged: operator authorization signs the method,
+            # the exact path, and the body.
+            proxy_pass http://127.0.0.1:{{ $.Allowlist.ProxyPort }}$request_uri;
+            proxy_set_header Authorization $http_authorization;
+{{- template "forwardedHeaders" }}
+        }
+{{- end }}
+{{- end }}
+{{- range $route := .Routes }}
+
+        location {{ $route.LocationKey }} {
+{{- if $route.CORSOn $ }}
+{{- template "corsLocation" $.CORS }}
+{{- end }}
+            proxy_ssl_certificate {{ $.CertFile }};
+            proxy_ssl_certificate_key {{ $.KeyFile }};
+            proxy_ssl_server_name on;
+            proxy_ssl_name {{ $route.Backend.ServerName }};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 2;
+            proxy_ssl_trusted_certificate {{ $.MeshCAFile }};
+            set $backend_addr {{ $route.Backend.Address }};
+            proxy_pass https://$backend_addr;
+{{- template "forwardedHeaders" }}
+        }
+{{- end }}
+{{- range $file := .StaticFiles }}
+
+        location = {{ $file.Path }} {
+{{- template "ownedCORS" $ }}
+            access_log off;
+            default_type {{ $file.ContentType }};
+            add_header Cache-Control "no-store" always;
+            alias {{ $file.File }};
+        }
+{{- end }}
+{{- if .AttestPort }}
+
+        # cds-attest listens on loopback, so its readiness gate rides the
+        # front door ahead of any catch-all.
+        location = /readyz {
+            access_log off;
+            proxy_pass http://127.0.0.1:{{ .AttestPort }};
+{{- template "forwardedHeaders" }}
+        }
+
+        # X-Real-IP is the address cds-attest meters each client by.
+        location /.well-known/c8s/ {
+{{- template "ownedCORS" . }}
+            proxy_pass http://127.0.0.1:{{ .AttestPort }};
+{{- template "forwardedHeaders" }}
+        }
+{{- end }}
 {{- if .Backend.Address }}
 
         location / {
+{{- if .CORSEnabled }}
+{{- template "corsLocation" .CORS }}
+{{- end }}
 {{- if eq .Backend.Protocol "https" }}
             proxy_ssl_certificate {{ .CertFile }};
             proxy_ssl_certificate_key {{ .KeyFile }};
@@ -104,4 +256,49 @@ http {
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+{{- end }}
+{{- define "corsLocation" }}
+            proxy_hide_header Access-Control-Allow-Origin;
+            proxy_hide_header Access-Control-Allow-Methods;
+            proxy_hide_header Access-Control-Allow-Headers;
+            proxy_hide_header Access-Control-Allow-Credentials;
+            proxy_hide_header Access-Control-Expose-Headers;
+            if ($request_method = 'OPTIONS') {
+                add_header Access-Control-Allow-Origin  $cors_origin always;
+                add_header Access-Control-Allow-Methods "{{ join .AllowMethods }}" always;
+                add_header Access-Control-Allow-Headers "{{ join .AllowHeaders }}" always;
+{{- if .AllowCredentials }}
+                add_header Access-Control-Allow-Credentials "true" always;
+{{- end }}
+                add_header Access-Control-Max-Age       "{{ .MaxAge }}" always;
+                add_header Vary                         Origin always;
+                add_header Content-Length 0;
+                return 204;
+            }
+            add_header Access-Control-Allow-Origin      $cors_out_origin always;
+            add_header Access-Control-Allow-Methods     $cors_out_methods always;
+            add_header Access-Control-Allow-Headers     $cors_out_headers always;
+            add_header Access-Control-Allow-Credentials $cors_out_credentials always;
+            add_header Access-Control-Expose-Headers    $cors_out_expose always;
+            add_header Vary                             Origin always;
+{{- end }}
+{{- define "ownedCORS" }}
+{{- if .CORSEnabled }}
+{{- template "corsLocation" .CORS }}
+{{- else }}
+            proxy_hide_header Access-Control-Allow-Origin;
+            proxy_hide_header Access-Control-Allow-Methods;
+            proxy_hide_header Access-Control-Allow-Headers;
+            proxy_hide_header Access-Control-Allow-Credentials;
+            proxy_hide_header Access-Control-Expose-Headers;
+            if ($request_method = 'OPTIONS') {
+                add_header Access-Control-Allow-Origin  "*" always;
+                add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+                add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
+                add_header Access-Control-Max-Age       "{{ .CORS.MaxAge }}" always;
+                add_header Content-Length 0;
+                return 204;
+            }
+            add_header Access-Control-Allow-Origin "*" always;
+{{- end }}
 {{- end }}
