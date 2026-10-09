@@ -139,7 +139,7 @@ func TestMatchedWorkload_UnmarshalRejectsBoundaries(t *testing.T) {
 
 // selfSignedWithExts mints a self-signed certificate carrying the given
 // extensions, for parser tests. Nothing here vouches for the extensions —
-// which is exactly what CheckWorkloadPin's chain requirement is about.
+// which is exactly why a stamp is read off a chain-verified leaf alone.
 func selfSignedWithExts(t *testing.T, exts ...pkix.Extension) *x509.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -201,33 +201,6 @@ func TestMatchedWorkloadFromCert(t *testing.T) {
 			t.Fatal("malformed extension accepted")
 		}
 	})
-}
-
-func TestCheckWorkloadPin(t *testing.T) {
-	ext, err := MarshalMatchedWorkloadExtension(testMatchedWorkload())
-	if err != nil {
-		t.Fatal(err)
-	}
-	stamped := selfSignedWithExts(t, ext)
-	unstamped := selfSignedWithExts(t)
-
-	if err := CheckWorkloadPin(stamped, ""); err != nil {
-		t.Fatalf("empty pin must be a no-op: %v", err)
-	}
-	if err := CheckWorkloadPin(stamped, "api"); err != nil {
-		t.Fatalf("matching pin failed: %v", err)
-	}
-	if err := CheckWorkloadPin(stamped, "other"); err == nil {
-		t.Fatal("mismatched pin accepted")
-	}
-	if err := CheckWorkloadPin(unstamped, "api"); err == nil {
-		t.Fatal("pin against an unstamped leaf accepted")
-	}
-	bad := ext
-	bad.Value = ext.Value[:4]
-	if err := CheckWorkloadPin(selfSignedWithExts(t, bad), "api"); err == nil {
-		t.Fatal("pin against a malformed stamp accepted")
-	}
 }
 
 func TestPeerMatchedWorkload(t *testing.T) {
