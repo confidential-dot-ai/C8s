@@ -107,6 +107,11 @@ type config struct {
 	fromFile      string
 	discoveryPath string
 
+	// observedServingCert and attestationNonce are what a saved attest-lb
+	// receipt binds besides itself.
+	observedServingCert string
+	attestationNonce    string
+
 	measurements       []string
 	measurementsFile   string
 	imageManifest      string
@@ -170,6 +175,9 @@ Evidence sources:
                          fetched from AMD KDS). Default mode: cds → armtls-cert,
                          lb → discovery, auto → discovery then serving cert.
   --from-file FILE       verify a saved PEM cert or attestation-response JSON.
+                         With --mode attest-lb, also pass the
+                         --observed-serving-cert and --attestation-nonce the
+                         receipt was fetched with.
 
   c8s cds verify https://cds.example.com:8443 --measurements <sha384-hex>
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex>
@@ -200,6 +208,8 @@ responder chose).`,
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
 	f.StringVar(&cfg.fromFile, "from-file", "", "verify evidence from a saved PEM certificate or attestation-response JSON instead of dialing")
+	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "with --mode attest-lb --from-file: PEM serving leaf observed on the connection that fetched the receipt")
+	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "with --mode attest-lb --from-file: unpadded base64url nonce sent to fetch the receipt")
 
 	f.StringSliceVar(&cfg.measurements, "measurements", nil, "allowed SHA-384 hex launch measurement(s) (repeatable / comma-separated); empty = no pinning (UNSAFE). On TDX this pins MRTD only, which covers just the TDVF firmware — use --image-manifest to pin the whole guest image instead (the two are mutually exclusive: the manifest already pins MRTD exactly)")
 	f.StringVar(&cfg.measurementsFile, "measurements-file", "", "text file of allowed launch measurements, one hex digest per line; use --image-policy-file for complete JSON policies; excludes --image-manifest")
@@ -261,6 +271,11 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 
 	if cfg.url == "" && cfg.fromFile == "" {
 		fmt.Fprintf(errOut, "error: no target: pass a component's discovery URL / host:port (or --from-file)\n")
+		return exitUsage
+	}
+	offlineLB := cfg.mode == "attest-lb" && cfg.fromFile != ""
+	if offlineLB != (cfg.observedServingCert != "") || offlineLB != (cfg.attestationNonce != "") {
+		fmt.Fprintf(errOut, "error: --mode attest-lb --from-file requires --observed-serving-cert and --attestation-nonce, which apply to nothing else\n")
 		return exitUsage
 	}
 
@@ -928,6 +943,9 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		data, err := os.ReadFile(cfg.fromFile)
 		if err != nil {
 			return nil, err
+		}
+		if cfg.mode == "attest-lb" {
+			return gatherAttestLBFromFile(data, cfg.observedServingCert, cfg.attestationNonce, "file "+cfg.fromFile)
 		}
 		return gatherFromFile(data, overrideERD, "file "+cfg.fromFile, trust)
 	}
