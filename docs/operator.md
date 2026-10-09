@@ -23,16 +23,18 @@ The operator tree is built around these pieces:
 The operator does not inject the armTLS mesh sidecar. Pod-to-pod mTLS remains
 the responsibility of node-level `armtls-mesh`, deployed as a DaemonSet by
 the chart or as systemd services by the measured node image. The chart-managed
-mesh excludes `kube-system` and its own release namespace as local traffic
-sources, so C8s control-plane agents (and, on kind/kubeadm-style clusters where
-the API server runs as a `kube-system` pod, in-cluster webhook callers) do not
-get captured by the pod-to-pod mesh path. The exclusion is one-sided: it
+mesh excludes the namespaces in `armtlsMesh.iptablesSync.excludeSourceNamespaces`
+(default `kube-system`) as local traffic sources, so on kind/kubeadm-style
+clusters where the API server runs as a `kube-system` pod, in-cluster webhook
+callers do not get captured by the pod-to-pod mesh path. The release namespace
+is deliberately not excluded: router's egress to workload pod IPs must be
+intercepted to get attested mTLS, and the control plane's own traffic dials
+Service VIPs, which the mesh never intercepts. The exclusion is one-sided: it
 removes those pods as PREROUTING sources but keeps their IPs in the destination
-ipset, so a workload that connects to a `kube-system` or release-namespace pod
-by pod IP — bypassing the Service VIP — will still be DNATed into the mesh and
-fail mTLS against a peer with no armtls sidecar. In-cluster Service-VIP traffic
-to those namespaces is unaffected because kube-proxy DNATs the VIP before the
-mesh chain matches.
+ipset, so a workload that connects to a `kube-system` pod by pod IP — bypassing
+the Service VIP — will still be DNATed into the mesh and fail mTLS against a
+peer with no armtls sidecar. In-cluster Service-VIP traffic to those namespaces
+is unaffected because kube-proxy DNATs the VIP before the mesh chain matches.
 
 Confidential-workload pods (label `confidential.ai/cw`) get a stricter
 inbound posture from the always-on cw guard: the mesh drops FORWARD-path
