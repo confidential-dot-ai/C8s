@@ -122,6 +122,11 @@ func (h *healthServer) serve(ctx context.Context, addr string, ln net.Listener) 
 			return err
 		}
 	}
+	return serveHTTP(ctx, srv, ln)
+}
+
+// serveHTTP serves srv on ln until ctx is cancelled.
+func serveHTTP(ctx context.Context, srv *http.Server, ln net.Listener) error {
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -27,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,6 +81,73 @@ const (
 	SecretContainerName = "c8s-secret"
 	VolumeContainerName = "c8s-volume"
 )
+
+// The mesh endpoint's reserved identity and ports, shared by every component
+// that has to agree on them: the endpoint binds the ports, the injector builds
+// its container on MeshUID and probes it on MeshHealthPort, and the node
+// enforcer matches the pod's packet rules on MeshUID. MeshHealthPort carries
+// the probes and no application traffic.
+const (
+	MeshUID          int64 = 1337
+	MeshOutboundPort int32 = 15001
+	MeshInboundPort  int32 = 15006
+	MeshHealthPort   int32 = 15021
+)
+
+// MeshProbePrefix is where the endpoint answers an application probe the
+// injector moved onto MeshHealthPort. The rendered path names the port and the
+// path the probe reaches inside the pod, so the injector and the endpoint
+// derive the same target from the pod spec alone.
+const MeshProbePrefix = "/probe/"
+
+// MeshProbesEnv is where the injector names a member pod's rewritten probes to
+// its endpoint: MeshProbePath values separated by commas. Not an argument and
+// not a mount, both of which a node's measured policy pins alike for every
+// member pod's endpoint.
+const MeshProbesEnv = "C8S_MESH_PROBES"
+
+// JoinMeshProbePaths renders the MeshProbesEnv value carrying paths.
+func JoinMeshProbePaths(paths []string) string {
+	return strings.Join(paths, ",")
+}
+
+// SplitMeshProbePaths recovers the paths a MeshProbesEnv value carries.
+func SplitMeshProbePaths(value string) []string {
+	var paths []string
+	for _, path := range strings.Split(value, ",") {
+		trimmed := strings.TrimSpace(path)
+		if trimmed != "" {
+			paths = append(paths, trimmed)
+		}
+	}
+	return paths
+}
+
+// MeshProbePath renders the health-port path of one application probe target.
+// path is the probe's own path and must be absolute.
+func MeshProbePath(port int32, path string) string {
+	return fmt.Sprintf("%s%d%s", MeshProbePrefix, port, path)
+}
+
+// ParseMeshProbePath recovers the port and the path MeshProbePath rendered.
+func ParseMeshProbePath(rendered string) (int32, string, error) {
+	target, ok := strings.CutPrefix(rendered, MeshProbePrefix)
+	if !ok {
+		return 0, "", fmt.Errorf("probe path %q does not begin with %s", rendered, MeshProbePrefix)
+	}
+	digits, path, ok := strings.Cut(target, "/")
+	if !ok {
+		return 0, "", fmt.Errorf("probe path %q names no application path", rendered)
+	}
+	port, err := strconv.Atoi(digits)
+	if err != nil {
+		return 0, "", fmt.Errorf("probe path %q names no port: %w", rendered, err)
+	}
+	if port < 1 || port > 65535 {
+		return 0, "", fmt.Errorf("probe path %q names port %d", rendered, port)
+	}
+	return int32(port), "/" + path, nil
+}
 
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.

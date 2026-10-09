@@ -191,7 +191,7 @@ func TestPipe(t *testing.T) {
 			return
 		}
 		defer back.Close()
-		(&Proxy{}).pipe(front, back)
+		pipeConns(newBufPool(0), front, back)
 	}()
 
 	// Client sends a message through the pipe and reads it back.
@@ -224,6 +224,7 @@ func TestInboundHandler(t *testing.T) {
 		resolver:    &staticResolver{nodeIP: "127.0.0.1"},
 		logger:      testLogger(),
 		metrics:     testMetrics(),
+		bufPool:     newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -292,6 +293,7 @@ func TestOutboundLocal(t *testing.T) {
 		origDstFunc: func(_ net.Conn) (string, error) { return backend, nil },
 		logger:      testLogger(),
 		metrics:     testMetrics(),
+		bufPool:     newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -359,7 +361,7 @@ func TestEndToEnd(t *testing.T) {
 	node2TLSLn := tls.NewListener(node2Ln, serverTLS)
 	_, node2PortStr, _ := net.SplitHostPort(node2Ln.Addr().String())
 
-	node2 := &Proxy{logger: testLogger(), metrics: testMetrics(), resolver: &staticResolver{nodeIP: "127.0.0.1"}}
+	node2 := &Proxy{logger: testLogger(), metrics: testMetrics(), resolver: &staticResolver{nodeIP: "127.0.0.1"}, bufPool: newBufPool(0)}
 	ctx := t.Context()
 
 	go func() {
@@ -384,6 +386,7 @@ func TestEndToEnd(t *testing.T) {
 		origDstFunc: func(_ net.Conn) (string, error) { return backend, nil },
 		logger:      testLogger(),
 		metrics:     testMetrics(),
+		bufPool:     newBufPool(0),
 	}
 
 	// The resolver returns node2's listener host for the remote pod. The
@@ -436,7 +439,7 @@ func TestConcurrentConnections(t *testing.T) {
 	defer inboundLn.Close()
 	tlsLn := tls.NewListener(inboundLn, serverTLS)
 
-	p := &Proxy{logger: testLogger(), metrics: testMetrics(), resolver: &staticResolver{nodeIP: "127.0.0.1"}}
+	p := &Proxy{logger: testLogger(), metrics: testMetrics(), resolver: &staticResolver{nodeIP: "127.0.0.1"}, bufPool: newBufPool(0)}
 	ctx := t.Context()
 
 	go func() {
@@ -499,6 +502,7 @@ func TestDestHeaderTimeout(t *testing.T) {
 		resolver:          &staticResolver{nodeIP: "127.0.0.1"},
 		logger:            testLogger(),
 		metrics:           testMetrics(),
+		bufPool:           newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -546,6 +550,7 @@ func TestInvalidDestination(t *testing.T) {
 		resolver:          &staticResolver{nodeIP: "127.0.0.1"},
 		logger:            testLogger(),
 		metrics:           testMetrics(),
+		bufPool:           newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -595,6 +600,7 @@ func TestGracefulDrain(t *testing.T) {
 		resolver:     &staticResolver{nodeIP: "127.0.0.1"},
 		logger:       testLogger(),
 		metrics:      testMetrics(),
+		bufPool:      newBufPool(0),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -694,6 +700,7 @@ func TestIPv6RemoteAddr(t *testing.T) {
 		},
 		logger:  testLogger(),
 		metrics: testMetrics(),
+		bufPool: newBufPool(0),
 	}
 
 	// The staticResolver returns podIP as nodeIP for remote. With an IPv6
@@ -723,6 +730,7 @@ func TestConnectionLimit(t *testing.T) {
 		logger:     testLogger(),
 		metrics:    m,
 		inboundSem: make(chan struct{}, 1), // limit to 1 concurrent
+		bufPool:    newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -839,6 +847,7 @@ func TestRouteErrorMetrics(t *testing.T) {
 		},
 		logger:  testLogger(),
 		metrics: m,
+		bufPool: newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -881,6 +890,7 @@ func TestOutboundRejectsNonPodOriginalDestination(t *testing.T) {
 		},
 		logger:  testLogger(),
 		metrics: m,
+		bufPool: newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -932,6 +942,7 @@ func TestDestHeaderReadErrorMetrics(t *testing.T) {
 		resolver:          &staticResolver{nodeIP: "127.0.0.1"},
 		logger:            testLogger(),
 		metrics:           m,
+		bufPool:           newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -979,6 +990,7 @@ func TestReadinessOnShutdown(t *testing.T) {
 		metrics:      m,
 		onReady:      func() { health.ready.Store(true) },
 		onShutdown:   func() { health.ready.Store(false) },
+		bufPool:      newBufPool(0),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1009,6 +1021,7 @@ func TestRunReturnsListenError(t *testing.T) {
 		logger:       testLogger(),
 		metrics:      testMetrics(),
 		drainTimeout: time.Millisecond,
+		bufPool:      newBufPool(0),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1036,6 +1049,7 @@ func TestMetricsAccounting(t *testing.T) {
 		resolver:  &staticResolver{nodeIP: "127.0.0.1"},
 		logger:    testLogger(),
 		metrics:   m,
+		bufPool:   newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -1086,6 +1100,7 @@ func TestInboundDialFailureMetrics(t *testing.T) {
 		dialTimeout: 100 * time.Millisecond,
 		logger:      testLogger(),
 		metrics:     m,
+		bufPool:     newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -1138,6 +1153,7 @@ func TestARMTLSDialFailureMetrics(t *testing.T) {
 		tlsDialTimeout: 100 * time.Millisecond,
 		logger:         testLogger(),
 		metrics:        m,
+		bufPool:        newBufPool(0),
 	}
 
 	ctx := t.Context()
@@ -1183,6 +1199,7 @@ func TestAcceptLoopBackoff(t *testing.T) {
 		metrics:      m,
 		onReady:      func() { close(ready) },
 		onShutdown:   func() {},
+		bufPool:      newBufPool(0),
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1232,6 +1249,7 @@ func TestInboundDestRejected(t *testing.T) {
 		resolver:          &rejectResolver{},
 		logger:            testLogger(),
 		metrics:           m,
+		bufPool:           newBufPool(0),
 	}
 
 	ctx := t.Context()
