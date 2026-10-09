@@ -129,6 +129,9 @@ func run(cfg config) error {
 		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
 	)
 	caChainPEM := certutil.EncodeCertPEM(mesh.Cert.Raw)
+	if err := allowlistStore.StartJournal(authorityFingerprint(mesh.Cert.RawSubjectPublicKeyInfo)); err != nil {
+		return fmt.Errorf("start allowlist journal: %w", err)
+	}
 
 	measurements := parseReferenceDigests(cfg.measurements)
 	if len(measurements) == 0 {
@@ -312,6 +315,7 @@ func run(cfg config) error {
 		SecretsChallenges: &secretsChallenges,
 		SecretsOperator:   secretsOperator,
 		SecretsExplain:    secretsExplain,
+		StateKey:          mesh.Key,
 	}
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)

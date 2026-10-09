@@ -166,6 +166,10 @@ func newRouter(proxy http.Handler) http.Handler {
 	})
 	mux.Handle("/allowlist", proxy)
 	mux.Handle("/allowlist/", proxy)
+	mux.Handle("/.well-known/c8s/objects/", proxy)
+	mux.Handle("/.well-known/c8s/allowlist/latest", proxy)
+	mux.Handle("/.well-known/c8s/state", proxy)
+	mux.Handle("/.well-known/c8s/state/challenge", proxy)
 	return mux
 }
 

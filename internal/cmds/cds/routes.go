@@ -1,6 +1,7 @@
 package cds
 
 import (
+	"crypto/ecdsa"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -28,6 +29,7 @@ type dependencies struct {
 	SecretsChallenges *attestation.ChallengeStore
 	SecretsOperator   *secrets.OperatorHandler // operator-supplied values; routed with SecretsHandler
 	SecretsExplain    *secrets.ExplainHandler  // release diagnostic; routed with SecretsHandler
+	StateKey          *ecdsa.PrivateKey        // signs /.well-known/c8s/state; the mesh CA key
 }
 
 func newRouter(deps dependencies) http.Handler {
@@ -62,6 +64,12 @@ func newRouter(deps dependencies) http.Handler {
 	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
 	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
 	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
+
+	store := deps.AllowlistHandler.Store
+	r.Get(wellKnown+"/objects/sha256/{hex}", handleObject(store))
+	r.Get(wellKnown+"/allowlist/latest", handleLatest(store))
+	r.Get(wellKnown+"/state", handleState(store, deps.StateKey, false))
+	r.Method(http.MethodPost, wellKnown+"/state/challenge", deps.protected(handleState(store, deps.StateKey, true)))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
 	// token. PUT is the operator's, on allowlistWrite so it carries the same
