@@ -395,10 +395,8 @@
             "allowHeaders": {},
             "allowMethods": {},
             "allowOrigins": {},
-            "enabled": {},
             "exposeHeaders": {},
-            "maxAge": {},
-            "protocolEndpoints": {}
+            "maxAge": {}
           }
         },
         "discovery": {
@@ -412,7 +410,6 @@
             "enabled": {},
             "fileName": {},
             "meshCAPath": {},
-            "mountPath": {},
             "path": {}
           }
         },
@@ -447,7 +444,6 @@
           ],
           "additionalProperties": false,
           "properties": {
-            "httpsPort": {},
             "image": {
               "type": [
                 "object",
@@ -476,7 +472,6 @@
             "certKey": {},
             "keyKey": {},
             "mode": {},
-            "mountPath": {},
             "secretName": {}
           }
         },
@@ -506,20 +501,7 @@
             "address": {},
             "protocol": {},
             "readTimeout": {},
-            "tls": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "serverName": {},
-                "trustedCAPath": {},
-                "useCDSClientCert": {},
-                "verify": {},
-                "verifyDepth": {}
-              }
-            }
+            "serverName": {}
           }
         }
       }

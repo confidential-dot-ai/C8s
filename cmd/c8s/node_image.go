@@ -73,8 +73,8 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.cdsImageRepository, "cds-image-repository", "", "CDS container repository; empty uses the chart default")
 	f.StringVar(&cfg.armtlsMeshImageDigest, "armtls-mesh-image-digest", "", "digest of the armTLS mesh container image (sha256:..., required)")
 	f.StringVar(&cfg.armtlsMeshImageRepository, "armtls-mesh-image-repository", "", "armTLS mesh container repository; empty uses the chart default")
-	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
-	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
+	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the front-door container image (sha256:..., required)")
+	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "front-door container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json and images.txt (required)")
 	cmd.AddCommand(render)
@@ -126,7 +126,7 @@ func (cfg nodeImageRenderConfig) images() []nodeImageInput {
 		{flag: "image", valuePath: "image", repository: cfg.imageRepository, digest: cfg.imageDigest, required: true},
 		{flag: "cds-image", valuePath: "cds.image", repository: cfg.cdsImageRepository, digest: cfg.cdsImageDigest, required: true},
 		{flag: "armtls-mesh-image", valuePath: "armtlsMesh.image", repository: cfg.armtlsMeshImageRepository, digest: cfg.armtlsMeshImageDigest, required: true},
-		{flag: "router-image", valuePath: "router.nginx.image", repository: cfg.routerImageRepository, digest: cfg.routerImageDigest},
+		{flag: "router-image", valuePath: "router.nginx.image", repository: cfg.routerImageRepository, digest: cfg.routerImageDigest, required: true},
 	}
 }
 
@@ -189,7 +189,6 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"c8s-integration.yaml", artifacts.integration},
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
-		{"router-image.txt", []byte(artifacts.routerImage + "\n")},
 	} {
 		if err := os.WriteFile(filepath.Join(cfg.outputDir, artifact.name), artifact.body, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", artifact.name, err)
@@ -202,9 +201,6 @@ type nodeImageArtifacts struct {
 	integration []byte
 	seed        []byte
 	images      []string
-	// routerImage is the front door's own image, which the measured base
-	// pins for the router role. Only the chart carries that digest.
-	routerImage string
 }
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
@@ -237,7 +233,6 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		// The namespace the measured mesh policy names for the router role.
 		"Namespace/" + workloadclaims.RouterNamespace:                    false,
 		"CustomResourceDefinition/confidentialworkloads.confidential.ai": false,
-		"ConfigMap/c8s-router-nginx":                                     false,
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,
 	}
 	seen := make(map[string]bool)
@@ -277,15 +272,8 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 			if err := collectWorkloadImages(object, key, images, injected); err != nil {
 				return nil, err
 			}
-			if key == routerWorkloadKey {
-				image, err := frontDoorImage(object)
-				if err != nil {
-					return nil, err
-				}
-				artifacts.routerImage = image
-			}
 		case "ConfigMap":
-			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
+			if err := collectAllowlistSeed(object, key, name, &artifacts); err != nil {
 				return nil, err
 			}
 		case "Namespace", "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
@@ -306,9 +294,6 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		if !found {
 			return nil, fmt.Errorf("rendered chart lacks required node-image resource %s", key)
 		}
-	}
-	if artifacts.routerImage == "" {
-		return nil, fmt.Errorf("rendered chart names no front-door image for %s, which the measured base pins", routerWorkloadKey)
 	}
 	seed, err := pkgallowlist.ParseJSON(artifacts.seed)
 	if err != nil {
@@ -351,7 +336,6 @@ var nodeImageResourceNamespaces = map[string]string{
 	"ConfigMap/c8s-cds-allowlist-seed": nodeImageNamespace,
 	routerWorkloadKey:                  workloadclaims.RouterNamespace,
 	"Service/c8s-router":               workloadclaims.RouterNamespace,
-	"ConfigMap/c8s-router-nginx":       workloadclaims.RouterNamespace,
 	"NetworkPolicy/c8s-router-ingress": workloadclaims.RouterNamespace,
 }
 
@@ -388,38 +372,6 @@ func namespacedNodeImageKind(kind string) bool {
 // routerWorkloadKey is the workload whose front-door container the measured
 // base pins (node-guest-image/c8s/image-policy.yaml.in).
 const routerWorkloadKey = "Deployment/c8s-router"
-
-// frontDoorImage is the image the router's nginx container runs. The node
-// image measures that digest for the router role, and the chart is the only
-// place it is pinned (values.yaml router.nginx.image).
-func frontDoorImage(object unstructured.Unstructured) (string, error) {
-	containers, found, err := unstructured.NestedSlice(object.Object, "spec", "template", "spec", "containers")
-	if err != nil {
-		return "", fmt.Errorf("node-image workload %s containers: %w", routerWorkloadKey, err)
-	}
-	if !found {
-		return "", fmt.Errorf("node-image workload %s declares no containers", routerWorkloadKey)
-	}
-	for _, entry := range containers {
-		container, isMap := entry.(map[string]any)
-		if !isMap {
-			return "", fmt.Errorf("node-image workload %s declares a container that is not an object", routerWorkloadKey)
-		}
-		if name, _ := container["name"].(string); name != frontDoorContainerName {
-			continue
-		}
-		image, _ := container["image"].(string)
-		if image == "" {
-			return "", fmt.Errorf("node-image workload %s container %q runs no pinned image", routerWorkloadKey, frontDoorContainerName)
-		}
-		return image, nil
-	}
-	return "", fmt.Errorf("node-image workload %s runs no %q container", routerWorkloadKey, frontDoorContainerName)
-}
-
-// frontDoorContainerName is the router container that answers external
-// traffic, as the chart names it (templates/router-deployment.yaml).
-const frontDoorContainerName = "nginx"
 
 // collectWorkloadImages records every container image a baked workload runs,
 // keyed by reference. The rootfs preloads exactly these, so an unpinned or
@@ -497,21 +449,19 @@ func recordPinnedImage(image, key, name string, images map[string]string) (strin
 	return pinned.Digest().String(), nil
 }
 
-// collectConfigMapArtifact lifts the two ConfigMaps the build consumes as
-// files: the CDS bootstrap seed, which is written beside the manifests, and
-// the router's nginx.conf, which is only checked for being non-empty.
-func collectConfigMapArtifact(object unstructured.Unstructured, key, name string, artifacts *nodeImageArtifacts) error {
-	if key != "ConfigMap/c8s-cds-allowlist-seed" && key != "ConfigMap/c8s-router-nginx" {
+// collectAllowlistSeed lifts the one ConfigMap key the build consumes as a
+// file: the CDS bootstrap seed, written beside the manifests.
+func collectAllowlistSeed(object unstructured.Unstructured, key, name string, artifacts *nodeImageArtifacts) error {
+	if key != "ConfigMap/c8s-cds-allowlist-seed" {
 		return nil
 	}
-	var cm corev1.ConfigMap
-	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(object.Object, &cm); err != nil {
-		return fmt.Errorf("decode chart ConfigMap %q: %w", name, err)
+	seed, found, err := unstructured.NestedString(object.Object, "data", "allowlist-seed.json")
+	if err != nil {
+		return fmt.Errorf("chart ConfigMap %q: %w", name, err)
 	}
-	if name == "c8s-cds-allowlist-seed" {
-		artifacts.seed = []byte(cm.Data["allowlist-seed.json"])
-	} else if cm.Data["nginx.conf"] == "" {
-		return fmt.Errorf("rendered nginx ConfigMap has no nginx.conf")
+	if !found {
+		return fmt.Errorf("chart ConfigMap %q carries no allowlist-seed.json", name)
 	}
+	artifacts.seed = []byte(seed)
 	return nil
 }

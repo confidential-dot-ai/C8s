@@ -258,14 +258,68 @@ allowlist:
       # reaches outside the cluster in the clear; the credentials role
       # reaches the node's CDS.
       c8s-router-nginx:
-        label: "nginx reload"
+        label: "c8s router"
         containers:
           - digest: "@ROUTER_DIGEST@"
             image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
             role: "router"
-            command: {policy: exact, argv: ["/bin/sh", "/etc/nginx/reload.sh"]}
-            args: {policy: deny}
-            mounts: {policy: any}
+            command: {policy: exact, argv: ["/c8s", "router"]}
+            # Per cluster: where it proxies and what it exposes.
+            args: {policy: any}
+            # The credentials it serves and the scratch it renders its own
+            # configuration on. A front door mounting anything else is refused,
+            # so the configuration cannot arrive from outside the image.
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                - destination: "/discovery"
+                  kind: "emptyDir"
+                - destination: "/var/cache/nginx"
+                  kind: "emptyDir"
+                - destination: "/tmp"
+                  kind: "emptyDir"
+          # The webpki front door serves an operator-supplied Secret, which
+          # the kubelet presents as data, so its destination sits below the
+          # reserved data prefix.
+          - digest: "@ROUTER_DIGEST@"
+            image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
+            role: "router"
+            command: {policy: exact, argv: ["/c8s", "router"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                - destination: "/mnt/c8s-data/public-tls"
+                  kind: "data"
+                - destination: "/discovery"
+                  kind: "emptyDir"
+                - destination: "/var/cache/nginx"
+                  kind: "emptyDir"
+                - destination: "/tmp"
+                  kind: "emptyDir"
+          # The acme front door reads the leaf its sidecar mints as well.
+          - digest: "@ROUTER_DIGEST@"
+            image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
+            role: "router"
+            command: {policy: exact, argv: ["/c8s", "router"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                - destination: "/etc/c8s-acme-tls"
+                  kind: "emptyDir"
+                - destination: "/discovery"
+                  kind: "emptyDir"
+                - destination: "/var/cache/nginx"
+                  kind: "emptyDir"
+                - destination: "/tmp"
+                  kind: "emptyDir"
       c8s-acme:
         label: "c8s acme"
         containers:

@@ -23,6 +23,9 @@ const (
 	// configPath is where nginx reads the rendered configuration, on the
 	// pod's scratch volume: the image root filesystem is read-only.
 	configPath = "/tmp/nginx.conf"
+	// publicTLSDir is where the operator-supplied public-TLS Secret is
+	// mounted, below the prefix the enforcer reserves for such data.
+	publicTLSDir = "/mnt/c8s-data/public-tls"
 	// A renewal reaches the front door within one tick.
 	reloadInterval = 5 * time.Second
 )
@@ -62,8 +65,8 @@ process exits so the front door stops serving a certificate C8s took back.`,
 	}
 	f := cmd.Flags()
 	f.StringSliceVar(&cfg.SANs, "san", nil, "public hostname the front door answers on, repeatable (empty accepts any name)")
-	f.StringVar(&cfg.PublicCertFile, "public-cert", "", "certificate presented to internet clients")
-	f.StringVar(&cfg.PublicKeyFile, "public-key", "", "private key for --public-cert")
+	f.StringVar(&cfg.PublicCertFile, "public-cert", publicTLSDir+"/tls.crt", "certificate presented to internet clients")
+	f.StringVar(&cfg.PublicKeyFile, "public-key", publicTLSDir+"/tls.key", "private key for --public-cert")
 	f.StringVar(&cfg.CertFile, "cert", "", "member certificate served at the discovery certificate path and presented to https backends")
 	f.StringVar(&cfg.KeyFile, "key", "", "private key for --cert")
 	f.StringVar(&cfg.MeshCAFile, "mesh-ca", "", "CA bundle https backends are verified against, and served at --discovery-mesh-ca-path")
@@ -93,7 +96,7 @@ process exits so the front door stops serving a certificate C8s took back.`,
 	f.IntVar(&cfg.CORS.MaxAge, "cors-max-age", 600, "seconds browsers may cache a preflight response")
 	f.BoolVar(&cfg.ACME, "acme", false, "publish the :80 server whose HTTP-01 location reaches the acme sidecar")
 
-	for _, required := range []string{"public-cert", "public-key", "cert", "key", "mesh-ca"} {
+	for _, required := range []string{"cert", "key", "mesh-ca"} {
 		if err := cmd.MarkFlagRequired(required); err != nil {
 			panic(err)
 		}

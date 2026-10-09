@@ -26,7 +26,7 @@ const (
 	meshImageDigest     = "sha256:" + "11111111111111111111111111111111111111111111111111111111111111ab"
 	operatorImageRepo   = "ghcr.io/confidential-dot-ai/c8s-operator"
 	operatorImageDigest = "sha256:" + "22222222222222222222222222222222222222222222222222222222222222cd"
-	routerImageRepo     = "docker.io/nginxinc/nginx-unprivileged"
+	routerImageRepo     = "ghcr.io/confidential-dot-ai/c8s-router"
 	routerImageDigest   = "sha256:" + "33333333333333333333333333333333333333333333333333333333333333ef"
 )
 
@@ -223,6 +223,48 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 			t.Errorf("base entry %q does not admit the launch it describes", name)
 		}
 	}
+}
+
+// The front door is pinned by one entry per front-door shape: the cds one,
+// the webpki one that adds the operator's Secret, and the acme one that adds
+// the leaf its sidecar mints. The enforcer resolves a role from whichever
+// entry admits the launch, so each shape must hold the router role on its own.
+func TestNodeImageBaseGrantsEveryFrontDoorShape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image-policy.yaml")
+	if err := os.WriteFile(path, []byte(renderNodeImagePolicy(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not load: %v", err)
+	}
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-router-nginx"]
+	if !ok {
+		t.Fatal("the baked base carries no front-door entry")
+	}
+	if len(entry.Containers) != 3 {
+		t.Fatalf("the front door is pinned by %d entries, want one per front-door shape", len(entry.Containers))
+	}
+	roles := newPolicyStore(cfg.Allowlist.Base)
+	for _, container := range entry.Containers {
+		launch := allowlist.RunningContainer{
+			Digest: container.Digest.String(),
+			Argv:   append(slices.Clone(container.Command.Argv), "--cert=/etc/c8s/certs/tls.crt"),
+			Mounts: entryMounts(container.Mounts),
+		}
+		if got := roles.base.RoleOf(launch); got != routerRole {
+			t.Errorf("a front door mounting %v holds the role %q, want %q", mountDestinations(container.Mounts), got, routerRole)
+		}
+	}
+}
+
+// mountDestinations names the mount set an entry pins, for a failure message.
+func mountDestinations(p allowlist.MountPolicy) []string {
+	destinations := make([]string, 0, len(p.Rules))
+	for _, rule := range p.Rules {
+		destinations = append(destinations, rule.Destination)
+	}
+	return destinations
 }
 
 // roleEntries is the role each base entry grants the component it pins.

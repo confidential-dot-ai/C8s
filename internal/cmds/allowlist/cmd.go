@@ -29,7 +29,7 @@ var defaultRequiredComponents = []string{
 	"armtls-mesh",
 	"nri-image-policy",
 	"attestation-api",
-	"nginx",
+	"c8s-router",
 }
 
 // options holds the flags shared by every subcommand.

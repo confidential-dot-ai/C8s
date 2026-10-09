@@ -25,5 +25,6 @@ build_core_image() {
 build_core_image c8s-operator cmd/c8s/Dockerfile
 build_core_image cds cmd/cds/Dockerfile
 build_core_image armtls-mesh cmd/armtls-mesh/Dockerfile
+build_core_image c8s-router cmd/c8s-router/Dockerfile
 
 tar -cf "$output" -C "$work/layouts" .

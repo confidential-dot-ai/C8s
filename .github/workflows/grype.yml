@@ -17,6 +17,7 @@ on:
       - "go.work"
       - "go.work.sum"
       - "internal/helmchart/c8s/values.yaml"
+      - "cmd/c8s-router/Dockerfile"
       - ".github/workflows/grype.yml"
       - ".grype.yaml"
 
@@ -56,8 +57,9 @@ jobs:
           echo '```'
         } >> $GITHUB_STEP_SUMMARY
 
-  # The router nginx image is a third-party pin (chart values router.nginx.image)
-  # that never goes through the scans of our own images.
+  # The front door's base image is a third-party pin (the FROM of
+  # cmd/c8s-router/Dockerfile) that never goes through the scans of our own
+  # images.
   router-image:
     runs-on: ubuntu-latest
     steps:
@@ -67,12 +69,15 @@ jobs:
       id: image
       run: |
         set -euo pipefail
-        repo=$(yq -r '.router.nginx.image.repository' internal/helmchart/c8s/values.yaml)
-        digest=$(yq -r '.router.nginx.image.digest' internal/helmchart/c8s/values.yaml)
-        if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
-          echo "::error file=internal/helmchart/c8s/values.yaml::router.nginx.image.digest must be a sha256 pin, got '$digest'"; exit 1
+        froms=$(grep -c '^FROM ' cmd/c8s-router/Dockerfile || true)
+        if [[ "$froms" != 1 ]]; then
+          echo "::error file=cmd/c8s-router/Dockerfile::the front door must build from exactly one base image, found $froms"; exit 1
         fi
-        echo "ref=${repo}@${digest}" >> "$GITHUB_OUTPUT"
+        line=$(grep '^FROM ' cmd/c8s-router/Dockerfile)
+        if [[ ! "$line" =~ ^FROM\ [^[:space:]]+@sha256:[0-9a-f]{64}$ ]]; then
+          echo "::error file=cmd/c8s-router/Dockerfile::the base image must be a bare digest-pinned reference, got '$line'"; exit 1
+        fi
+        echo "ref=${line#FROM }" >> "$GITHUB_OUTPUT"
 
     - name: Scan for High/Critical vulnerabilities
       id: scan
@@ -87,7 +92,7 @@ jobs:
       if: always()
       run: |
         {
-          echo "## router nginx image: ${{ steps.image.outputs.ref }}"
+          echo "## front door base image: ${{ steps.image.outputs.ref }}"
           echo '```'
           cat "${{ steps.scan.outputs.table }}" 2>/dev/null || echo "(no report)"
           echo '```'

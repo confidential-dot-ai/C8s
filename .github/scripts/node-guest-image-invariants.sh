@@ -414,12 +414,20 @@ for token in '"$C8S_TARGET" node-image render' '--image-digest "$OPERATOR_DIGEST
              '--kube-version "${RKE2_VERSION%%+*}"' \
              'c8s-integration.yaml' '/usr/lib/c8s/allowlist-seed.json' \
              '--cds-image-digest "$CDS_DIGEST"' '--armtls-mesh-image-digest "$MESH_DIGEST"' \
+             '--router-image-digest "$ROUTER_DIGEST"' \
              'c8s/airgap-images.sh' '"$out/images.txt"'; do
   if ! grep -qF -- "$token" "$sync"; then
     echo "::error::$sync must stage the measured node integration (missing: $token)"
     exit 1
   fi
 done
+# The front door's digest is resolved here like every other component image,
+# so nothing may fall back to a digest the build reports back from the chart.
+# --exclude keeps this gate from matching its own text.
+if grep -rn --exclude="$(basename "$0")" 'router-image\.txt' "$ngi" .github/scripts 2>/dev/null; then
+  echo "::error::the front-door image is resolved from C8S_REF; drop the router-image.txt consumer above"
+  exit 1
+fi
 for stale in "$ngi/c8s/c8s-chart.tdx.yaml.in" "$ngi/c8s/c8s-chart.snp.yaml.in" \
              "$ngi/c8s/mkosi.extra/etc/systemd/system/c8s-chart-values.service" \
              "$ngi/c8s/mkosi.extra/usr/local/bin/c8s-chart-values.sh" \

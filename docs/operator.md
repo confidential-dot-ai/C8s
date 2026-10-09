@@ -1080,8 +1080,8 @@ c8s install --namespace c8s-system \
 Without `--upstream`, `router.upstream.address` is used as-is: an upstream that
 is not a C8s-managed workload (an existing Service, an external address). The
 chart cannot verify a manual address resolves to pod IPs the mesh intercepts,
-so it must be `protocol: https` with `tls.verify: true`: an upstream that
-terminates and authenticates TLS itself (app-TLS). There is no
+so it must be `protocol: https`: an upstream that terminates TLS itself
+(app-TLS), which the front door verifies against the mesh CA. There is no
 plaintext-to-unattested escape hatch and no default upstream.
 
 Leaving the upstream unset is legal: router installs and serves its cert,
@@ -1096,8 +1096,9 @@ chart tests assert on):
 
 - `router_unsecured_upstream`: a `router.upstream.address` that is not a
   `c8s-<id>.<ns>.svc.cluster.local` headless-Service address is a plaintext http
-  backend, or https without `tls.verify=true`. Only a verified-https (app-TLS)
-  manual address is admitted; there is no acknowledgment to override this. To
+  backend. Only an https (app-TLS) manual address is admitted, which the front
+  door verifies against the mesh CA; there is no acknowledgment to override
+  this. To
   reach a confidential workload, adopt it with `--workload-ref` and pass
   `--upstream`: pointing a manual address at a Service VIP fronting cw pods is
   unmeshed, and the always-on cw guard drops it, so the hop fails closed rather
@@ -1108,9 +1109,9 @@ chart tests assert on):
   protocol could only fail at runtime; use http for a mesh-wrapped upstream.
 
 The same secured-backend rule applies to every `router.routes[].backend`: it
-must use `protocol: https` with `tls.verify: true` (app-TLS). A plaintext http
-or unverified-https route backend fails the render (`router_unsecured_route`);
-there is no acknowledgment to override it. Routes have no default backend, so
+must use `protocol: https` (app-TLS). A plaintext http route backend fails the
+render (`router_unsecured_route`); there is no acknowledgment to override it.
+Routes have no default backend, so
 this only affects routes you configure. A confidential workload is reached via
 `router.upstream` (the `--upstream` flow), not a route.
 
@@ -1172,7 +1173,7 @@ it:
 | `c8s-cds-ingress` | cds | `cds.port` (armTLS; also the NodePort route) |
 | `c8s-operator-ingress` | operator | 9443 webhook, 8081 probes, 8080 metrics |
 | `c8s-volumed-ingress` | volumed | nothing (it serves a node-local Unix socket) |
-| `c8s-router-ingress` | router (in `c8s-router`) | `router.nginx.httpsPort`, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
+| `c8s-router-ingress` | router (in `c8s-router`) | the front door's TLS listener, plus the :80 HTTP-01/redirect server in `publicTLS.mode=acme` |
 
 They are ingress-only. NetworkPolicies union, and what bounds a member pod's
 reach is its own packet ruleset.

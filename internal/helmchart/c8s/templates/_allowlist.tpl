@@ -38,19 +38,6 @@
 {{- if $cdsImg.digest -}}
 {{- $_ := set $digests $cdsImg.digest (printf "%s@%s" $cdsImg.repository $cdsImg.digest) -}}
 {{- end -}}
-{{- /* router nginx self-entry: a chart-deployed non-c8s system image. It is
-       independently versioned and digest-pinned, so it is not in the
-       tag-locked c8sComponents derive set (the resolver would `crane digest
-       nginx:<c8s-tag>`). Seed it from its pinned digest whenever router is
-       enabled — like the CDS self-entry above, independent of deriveComponents
-       — so a default install admits the nginx it ships without the operator
-       hand-writing an entry for it. */}}
-{{- if .Values.router.enabled -}}
-{{- $lbImg := .Values.router.nginx.image -}}
-{{- if $lbImg.digest -}}
-{{- $_ := set $digests $lbImg.digest (printf "%s@%s" $lbImg.repository $lbImg.digest) -}}
-{{- end -}}
-{{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
 
@@ -128,7 +115,7 @@
   (dict "name" "c8s-cert-wait" "role" "credentials" "argv" (list "/c8s" "probe-file") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-get-secret" "role" "credentials" "argv" (list "/c8s" "get-secret") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-get-volume" "role" "credentials" "argv" (list "/c8s" "get-volume") "images" $credentials "label" $root.Values.image.repository)
-  (dict "name" "c8s-router-nginx" "role" "router" "argv" (list "/bin/sh" "/etc/nginx/reload.sh") "images" $nginx "label" $root.Values.router.nginx.image.repository)
+  (dict "name" "c8s-router-nginx" "role" "router" "argv" (list "/c8s" "router") "images" $nginx "label" $root.Values.router.nginx.image.repository)
   (dict "name" "c8s-acme" "role" "acme" "argv" (list "/c8s" "acme") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-cds-attest" "role" "router" "argv" (list "/c8s" "cds-attest") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-allowlist-proxy" "role" "credentials" "argv" (list "/c8s" "allowlist-proxy") "images" $credentials "label" $root.Values.image.repository) -}}

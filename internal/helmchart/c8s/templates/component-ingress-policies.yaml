@@ -105,10 +105,10 @@ spec:
     # nginx — unreachable if one ever rebinds.
     - ports:
         - protocol: TCP
-          port: {{ .Values.router.nginx.httpsPort }}
+          port: {{ include "router.httpsPort" . }}
         {{- if eq (include "router.publicTLSMode" .) "acme" }}
         # The :80 HTTP-01/redirect server.
         - protocol: TCP
-          port: {{ include "router.acmeHTTPPort" . }}
+          port: {{ include "router.httpPort" . }}
         {{- end }}
 {{- end }}

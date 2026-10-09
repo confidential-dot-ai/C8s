@@ -179,26 +179,25 @@ func TestMissingComponents(t *testing.T) {
 
 // TestMissingComponentsMatchesRealChartImages pins the defaultRequiredComponents
 // substring needles against the actual chart image repositories, so a rename
-// (notably the router "nginxinc/nginx-unprivileged" image, which only matches
-// the "nginx" needle as a substring) can't silently defeat the upload guard.
+// can't silently defeat the upload guard.
 func TestMissingComponentsMatchesRealChartImages(t *testing.T) {
 	chartImages := map[string]string{
 		"a": "ghcr.io/confidential-dot-ai/cds@sha256:1",
 		"b": "ghcr.io/confidential-dot-ai/armtls-mesh@sha256:2",
 		"c": "ghcr.io/confidential-dot-ai/nri-image-policy@sha256:3",
 		"d": "ghcr.io/confidential-dot-ai/attestation-api@sha256:4",
-		"e": "nginxinc/nginx-unprivileged@sha256:5",
+		"e": "ghcr.io/confidential-dot-ai/c8s-router@sha256:5",
 	}
 	if got := missingComponents(chartImages, defaultRequiredComponents); len(got) != 0 {
 		t.Fatalf("real chart images should satisfy every required component, missing: %v", got)
 	}
 
-	// Sanity: dropping the router image reports exactly "nginx" — proving that
-	// entry is really carried by nginxinc/nginx-unprivileged and nothing else.
+	// Sanity: dropping the front door reports exactly "c8s-router" — proving
+	// that entry is carried by the router image and nothing else.
 	delete(chartImages, "e")
 	got := missingComponents(chartImages, defaultRequiredComponents)
-	if len(got) != 1 || got[0] != "nginx" {
-		t.Fatalf("dropping the nginx image should report exactly [nginx], got %v", got)
+	if len(got) != 1 || got[0] != "c8s-router" {
+		t.Fatalf("dropping the front door should report exactly [c8s-router], got %v", got)
 	}
 }
 

@@ -49,25 +49,6 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Validate that san contains only safe characters for use in nginx config.
-Allows DNS hostnames and wildcards (e.g. *.example.com).
-*/}}
-{{- define "router.validateSan" -}}
-{{- if regexMatch `[^a-zA-Z0-9.*-]` . -}}
-{{- fail (printf "san contains invalid characters: %s - only alphanumeric, dots, hyphens, and wildcards are allowed" .) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Validate that the protocol used for an upstream is only http or https
-*/}}
-{{- define "router.validateProtocol" -}}
-{{- if not (or (eq . "http") (eq . "https")) -}}
-{{- fail (printf "upstream.protocol must be 'http' or 'https', got: %s" .) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
 Derive an SNI/verification name from a host:port upstream address.
 */}}
 {{- define "router.serverNameFromAddress" -}}
@@ -76,77 +57,21 @@ Derive an SNI/verification name from a host:port upstream address.
 {{- end -}}
 
 {{/*
-Validate the proxy TLS settings for an HTTPS backend (the default upstream or a
-route backend). Fails the render on values that would be silently ignored or
-break out of the generated nginx directives. Args: protocol, tls (dict),
-serverName, trustedCAPath, label.
-*/}}
-{{- define "router.validateProxyTLS" -}}
-{{- $tls := default dict .tls -}}
-{{- range $k := list "verify" "useCDSClientCert" -}}
-{{- if and (hasKey $tls $k) (not (kindIs "bool" (index $tls $k))) -}}
-{{- fail (printf "%s.tls.%s must be a boolean; do not set it via --set-string, got: %v" $.label $k (index $tls $k)) -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $tls "verifyDepth" -}}
-{{- if not (regexMatch `^[0-9]+$` (printf "%v" $tls.verifyDepth)) -}}
-{{- fail (printf "%s.tls.verifyDepth must be a non-negative integer, got: %v" $.label $tls.verifyDepth) -}}
-{{- end -}}
-{{- end -}}
-{{- if eq $.protocol "https" -}}
-{{- if not (regexMatch `^[^[:space:]{};/#]+$` $.serverName) -}}
-{{- fail (printf "%s.tls.serverName must not contain whitespace, semicolons, braces, slashes, or '#', got: %s" $.label $.serverName) -}}
-{{- end -}}
-{{- if (default false $tls.verify) -}}
-{{- if not (regexMatch `^/[^[:space:]{};]+$` $.trustedCAPath) -}}
-{{- fail (printf "%s.tls.trustedCAPath must be an absolute path without whitespace, semicolons, or braces, got: %s" $.label $.trustedCAPath) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
 router.requireSecuredBackend fails the render on a proxied backend hop that is
-not authenticated: plaintext http, or https without tls.verify. A confidential
-platform has exactly two safe paths to a backend and this helper admits only
-them: an adopted workload (a mesh-wrapped headless Service, validated separately),
-or an https backend that terminates and verifies TLS itself (app-TLS). There is
-no plaintext-to-unattested escape hatch. Shared by the catch-all upstream and
-every route backend so the invariant lives in one place.
-Args: protocol, tls (dict), address, label, kind, suggest (leading hint prose,
-may be "").
+not authenticated: plaintext http. A confidential platform has exactly two
+safe paths to a backend and this helper admits only them: an adopted workload
+(a mesh-wrapped headless Service, validated separately), or an https backend
+that terminates TLS itself and is verified against the mesh CA (app-TLS).
+There is no plaintext-to-unattested escape hatch. Shared by the catch-all
+upstream and every route backend so the invariant lives in one place.
+Args: protocol, address, label, kind, suggest (leading hint prose, may be "").
 */}}
 {{- define "router.requireSecuredBackend" -}}
-{{- $tls := default dict .tls -}}
-{{- $secured := and (eq .protocol "https") (default false $tls.verify) -}}
-{{- if not $secured -}}
-{{- fail (printf "VALIDATION_ERROR kind=%s: %s.address=%q is a plaintext http or unverified-https hop the chart cannot confirm the node mesh wraps. %sUse https with tls.verify=true so the backend authenticates itself (app-TLS)" .kind .label .address .suggest) -}}
+{{- if ne .protocol "https" -}}
+{{- fail (printf "VALIDATION_ERROR kind=%s: %s.address=%q is a plaintext http hop the chart cannot confirm the node mesh wraps. %sUse https so the backend authenticates itself (app-TLS)" .kind .label .address .suggest) -}}
 {{- end -}}
 {{- end -}}
 
-{{/*
-Render nginx proxy TLS directives for an HTTPS backend.
-*/}}
-{{- define "router.proxySSLDirectives" -}}
-{{- if eq .protocol "https" -}}
-{{- $tls := default dict .tls -}}
-{{- if (default false $tls.useCDSClientCert) }}
-proxy_ssl_certificate {{ .certFile }};
-proxy_ssl_certificate_key {{ .keyFile }};
-{{- end }}
-proxy_ssl_server_name on;
-proxy_ssl_name {{ .serverName }};
-{{- if (default false $tls.verify) }}
-{{- $verifyDepth := 2 }}
-{{- if hasKey $tls "verifyDepth" }}{{- $verifyDepth = $tls.verifyDepth }}{{- end }}
-proxy_ssl_verify on;
-proxy_ssl_verify_depth {{ $verifyDepth }};
-proxy_ssl_trusted_certificate {{ .trustedCAPath }};
-{{- else }}
-proxy_ssl_verify off;
-{{- end }}
-{{- end -}}
-{{- end -}}
 
 {{/*
 Return true when the built-in /allowlist route renders: allowlist.enabled is a
@@ -177,86 +102,6 @@ both the built-in nginx locations and their loopback proxy sidecar.
 {{- end -}}
 
 {{/*
-Render one half of the built-in CDS allowlist route. The caller emits an exact
-/allowlist location and a /allowlist/ prefix location so unrelated paths such
-as /allowlisted never reach the loopback proxy. proxy_pass includes $request_uri
-explicitly: operator authorization signs the HTTP method, exact path, and body,
-so nginx must not normalize or replace the path before CDS verifies the token.
-
-The loopback proxy verifies CDS's armTLS evidence. Stock nginx cannot verify
-the attestation extension itself, so it must never dial CDS directly here.
-
-Args: root, exact (bool), path, proxyPort, writeBurst, writeTotalBurst,
-readBurst — the numeric args arrive pre-validated by the configmap prologue.
-*/}}
-{{- define "router.allowlistLocation" -}}
-{{- $root := .root -}}
-location{{ if .exact }} ={{ end }} {{ .path }} {
-    {{- if default false $root.Values.router.cors.enabled }}
-    {{- include "router.corsLocationDirectives" $root.Values.router.cors | nindent 4 }}
-    {{- else if eq (include "router.protocolCorsEnabled" $root) "true" }}
-    {{- include "router.protocolCorsLocationDirectives" $root | nindent 4 }}
-    {{- end }}
-    # These run before nginx collapses callers onto the loopback proxy source.
-    # Each zone's map key is empty for the methods it does not cover, so
-    # mutations count per client and in aggregate, reads per client only.
-    limit_req zone=allowlist_write_per_client burst={{ .writeBurst }} nodelay;
-    limit_req zone=allowlist_write_total burst={{ .writeTotalBurst }} nodelay;
-    limit_req zone=allowlist_read_per_client burst={{ .readBurst }} nodelay;
-    limit_req_status 429;
-    proxy_pass http://127.0.0.1:{{ .proxyPort }}$request_uri;
-    proxy_set_header Host $host;
-    proxy_set_header Authorization $http_authorization;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-{{- end -}}
-
-{{/*
-Validate the global CORS configuration. Skips when disabled.
-*/}}
-{{- define "router.validateCORS" -}}
-{{- $cors := default dict . -}}
-{{- if hasKey $cors "enabled" -}}
-{{- if not (kindIs "bool" $cors.enabled) -}}
-{{- fail (printf "router.cors.enabled must be a boolean; do not set it via --set-string, got: %v" $cors.enabled) -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $cors "protocolEndpoints" -}}
-{{- if not (kindIs "bool" $cors.protocolEndpoints) -}}
-{{- fail (printf "router.cors.protocolEndpoints must be a boolean; do not set it via --set-string, got: %v" $cors.protocolEndpoints) -}}
-{{- end -}}
-{{- end -}}
-{{- if default false $cors.enabled -}}
-{{- $origins := default (list) $cors.allowOrigins -}}
-{{- if not $origins -}}
-{{- fail "router.cors.enabled=true requires router.cors.allowOrigins to be non-empty" -}}
-{{- end -}}
-{{- range $o := $origins -}}
-{{- if not (or (eq $o "*") (regexMatch `^https?://[A-Za-z0-9.-]+(?::[0-9]+)?$` $o)) -}}
-{{- fail (printf "router.cors.allowOrigins entry %q must be \"*\" or a scheme://host[:port] URL" $o) -}}
-{{- end -}}
-{{- end -}}
-{{- if and (default false $cors.allowCredentials) (has "*" $origins) -}}
-{{- fail "router.cors.allowCredentials=true is incompatible with allowOrigins containing \"*\" (browsers reject this combination)" -}}
-{{- end -}}
-{{- range $field := list "allowMethods" "allowHeaders" "exposeHeaders" -}}
-{{- range $v := default (list) (index $cors $field) -}}
-{{- if regexMatch `[\r\n";{}\\]` $v -}}
-{{- fail (printf "router.cors.%s entry %q must not contain CR, LF, quotes, semicolons, braces, or backslashes" $field $v) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $cors "maxAge" -}}
-{{- if not (regexMatch `^[0-9]+$` (printf "%v" $cors.maxAge)) -}}
-{{- fail (printf "router.cors.maxAge must be a non-negative integer, got: %v" $cors.maxAge) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
 Validate a per-route CORS override. Only the `enabled` field is honored;
 shared knobs live on router.cors. Args: dict { "cors": route.cors, "label": ... }.
 */}}
@@ -274,167 +119,6 @@ shared knobs live on router.cors. Args: dict { "cors": route.cors, "label": ... 
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- end -}}
-
-{{/*
-Render the http-level CORS maps. `$cors_origin` echoes a matching request
-Origin from router.cors.allowOrigins. The remaining maps implement
-upstream-pass-through: when the upstream emits Access-Control-Allow-Origin
-we adopt its full CORS header set verbatim (so browsers never see duplicate
-headers); otherwise we fall back to router's configured values.
-
-Access-Control-Expose-Headers is the one exception: router's configured
-exposeHeaders are ALWAYS advertised (and merged in front of upstream's
-value when in pass-through mode), so browsers can read custom response
-headers the upstream does not know to advertise.
-
-Emitted only when CORS is enabled. Caller nindents into the nginx `http {}`
-context.
-*/}}
-{{- define "router.corsMap" -}}
-{{- $cors := default dict .Values.router.cors -}}
-{{- if default false $cors.enabled -}}
-{{- $origins := default (list) $cors.allowOrigins -}}
-{{- $methods := join ", " (default (list "GET" "POST" "OPTIONS") $cors.allowMethods) -}}
-{{- $headers := join ", " (default (list "Authorization" "Content-Type" "X-C8s-Session") $cors.allowHeaders) -}}
-{{- $exposeHeaders := default (list) $cors.exposeHeaders -}}
-{{- $credentials := ternary "true" "" (default false $cors.allowCredentials) }}
-map $http_origin $cors_origin {
-{{- if has "*" $origins }}
-    default "*";
-{{- else }}
-    default "";
-{{- range $o := $origins }}
-    "{{ $o }}" "{{ $o }}";
-{{- end }}
-{{- end }}
-}
-
-map $upstream_http_access_control_allow_origin $cors_passthrough {
-    default "0";
-    "~.+"   "1";
-}
-
-map $cors_passthrough $cors_out_origin {
-    "0" $cors_origin;
-    "1" $upstream_http_access_control_allow_origin;
-}
-
-map $cors_passthrough $cors_out_methods {
-    "0" "{{ $methods }}";
-    "1" $upstream_http_access_control_allow_methods;
-}
-
-map $cors_passthrough $cors_out_headers {
-    "0" "{{ $headers }}";
-    "1" $upstream_http_access_control_allow_headers;
-}
-
-map $cors_passthrough $cors_out_credentials {
-    "0" "{{ $credentials }}";
-    "1" $upstream_http_access_control_allow_credentials;
-}
-
-{{- if $exposeHeaders }}
-map $upstream_http_access_control_expose_headers $cors_upstream_expose_suffix {
-    default "";
-    "~.+"   ", $upstream_http_access_control_expose_headers";
-}
-
-map $cors_passthrough $cors_out_expose {
-    "0" "{{ join ", " $exposeHeaders }}";
-    "1" "{{ join ", " $exposeHeaders }}$cors_upstream_expose_suffix";
-}
-{{- else }}
-map $cors_passthrough $cors_out_expose {
-    "0" "";
-    "1" $upstream_http_access_control_expose_headers;
-}
-{{- end }}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Render per-location CORS directives. Non-preflight responses go through
-$cors_out_* — either the upstream's CORS headers (passed through unchanged)
-or router's configured ones, never both. proxy_hide_header drops the
-upstream copies so the maps' re-emitted version is the only one on the
-wire. Preflight OPTIONS short-circuits at nginx with router's configured
-policy. Caller passes the effective CORS dict and guarantees CORS is
-enabled. Caller nindents into a `location {}` block.
-*/}}
-{{- define "router.corsLocationDirectives" -}}
-{{- $cors := default dict . -}}
-{{- $methods := join ", " (default (list "GET" "POST" "OPTIONS") $cors.allowMethods) -}}
-{{- $headers := join ", " (default (list "Authorization" "Content-Type" "X-C8s-Session") $cors.allowHeaders) -}}
-{{- $maxAge := default 600 $cors.maxAge }}
-proxy_hide_header Access-Control-Allow-Origin;
-proxy_hide_header Access-Control-Allow-Methods;
-proxy_hide_header Access-Control-Allow-Headers;
-proxy_hide_header Access-Control-Allow-Credentials;
-proxy_hide_header Access-Control-Expose-Headers;
-if ($request_method = 'OPTIONS') {
-    add_header Access-Control-Allow-Origin  $cors_origin always;
-    add_header Access-Control-Allow-Methods "{{ $methods }}" always;
-    add_header Access-Control-Allow-Headers "{{ $headers }}" always;
-{{- if default false $cors.allowCredentials }}
-    add_header Access-Control-Allow-Credentials "true" always;
-{{- end }}
-    add_header Access-Control-Max-Age       "{{ $maxAge }}" always;
-    add_header Content-Length 0;
-    return 204;
-}
-add_header Access-Control-Allow-Origin      $cors_out_origin always;
-add_header Access-Control-Allow-Methods     $cors_out_methods always;
-add_header Access-Control-Allow-Headers     $cors_out_headers always;
-add_header Access-Control-Allow-Credentials $cors_out_credentials always;
-add_header Access-Control-Expose-Headers    $cors_out_expose always;
-{{- end -}}
-
-{{/*
-Whether the C8s protocol-owned locations get the built-in wide-open CORS
-block: router.cors.protocolEndpoints (default true), unless the operator's
-global CORS block is enabled — an explicit policy already covers every
-location, so the built-in one steps aside. hasKey instead of `default`
-because sprig's default treats an explicit false as unset.
-*/}}
-{{- define "router.protocolCorsEnabled" -}}
-{{- $cors := default dict .Values.router.cors -}}
-{{- $pe := true -}}
-{{- if hasKey $cors "protocolEndpoints" -}}{{- $pe = $cors.protocolEndpoints -}}{{- end -}}
-{{- and $pe (not (default false $cors.enabled)) -}}
-{{- end -}}
-
-{{/*
-Render wide-open CORS directives for a C8s protocol-owned location (the
-attestation/tunnel namespace, the discovery document and
-certificate endpoints, the built-in allowlist route). These endpoints exist
-to be verified by any browser anywhere: every response is either
-self-authenticating (hardware evidence, CDS-signed certificates, sealed
-tunnel records) or public by design, and no request relies on ambient
-browser credentials (allowlist mutations are operator-signed over method,
-path, and body). An origin allowlist here cannot protect anything and only
-breaks third-party verifiers, so the policy is a constant: any origin, no
-credentials. Self-contained on purpose — no http-level maps and no
-upstream pass-through; these endpoints are C8s-owned end to end, so router
-states their CORS policy itself. Caller nindents into a `location {}`
-block.
-*/}}
-{{- define "router.protocolCorsLocationDirectives" -}}
-proxy_hide_header Access-Control-Allow-Origin;
-proxy_hide_header Access-Control-Allow-Methods;
-proxy_hide_header Access-Control-Allow-Headers;
-proxy_hide_header Access-Control-Allow-Credentials;
-proxy_hide_header Access-Control-Expose-Headers;
-if ($request_method = 'OPTIONS') {
-    add_header Access-Control-Allow-Origin  "*" always;
-    add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
-    add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
-    add_header Access-Control-Max-Age       "600" always;
-    add_header Content-Length 0;
-    return 204;
-}
-add_header Access-Control-Allow-Origin "*" always;
 {{- end -}}
 
 {{/*
@@ -480,13 +164,31 @@ challenge, and HTTP-01-issuable sanList entries.
 {{- end -}}
 
 {{/*
-ACME constants shared by the acme sidecar args, the deployment mounts, the
-nginx :80 server, and the cert-path helpers below.
+The ports the front door image binds (internal/cmds/router): the TLS listener,
+and the :80 server the HTTP-01 challenge arrives on in acme mode. Every chart
+site that names a port includes these.
+
+INVARIANT: equal to the listeners the enforcer compiles for the router role
+(internal/cmds/nri-image-policy routerListeners), together with the acme
+sidecar's readiness port below.
+*/}}
+{{- define "router.httpsPort" -}}8443{{- end -}}
+{{- define "router.httpPort" -}}8080{{- end -}}
+
+{{/*
+ACME constants shared by the acme sidecar args, the deployment mounts, and the
+cert-path helpers below. The ports the sidecar answers on are the front door
+image's own (internal/cmds/router).
 */}}
 {{- define "router.acmeCertDir" -}}/etc/c8s-acme-tls{{- end -}}
-{{- define "router.acmeChallengePort" -}}8402{{- end -}}
-{{- define "router.acmeHTTPPort" -}}8080{{- end -}}
 {{- define "router.acmeReadyPort" -}}8403{{- end -}}
+
+{{/*
+The directory the publicTLS Secret is mounted on (webpki). A Secret arrives as
+operator-supplied data, whose destination the enforcer requires below
+/mnt/c8s-data (pkg/allowlist), and the measured base pins this one.
+*/}}
+{{- define "router.publicTLSDir" -}}/mnt/c8s-data/public-tls{{- end -}}
 
 {{/*
 Path to the public-TLS certificate nginx serves: the publicTLS Secret
@@ -496,7 +198,7 @@ the member credential volume (cds).
 {{- define "router.publicCertPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
 {{- if eq $mode "webpki" -}}
-{{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.certKey -}}
+{{- printf "%s/%s" (include "router.publicTLSDir" .) .Values.router.publicTLS.certKey -}}
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/cert.pem" (include "router.acmeCertDir" .) -}}
 {{- else -}}
@@ -507,7 +209,7 @@ the member credential volume (cds).
 {{- define "router.publicKeyPath" -}}
 {{- $mode := include "router.publicTLSMode" . -}}
 {{- if eq $mode "webpki" -}}
-{{- printf "%s/%s" .Values.router.publicTLS.mountPath .Values.router.publicTLS.keyKey -}}
+{{- printf "%s/%s" (include "router.publicTLSDir" .) .Values.router.publicTLS.keyKey -}}
 {{- else if eq $mode "acme" -}}
 {{- printf "%s/key.pem" (include "router.acmeCertDir" .) -}}
 {{- else -}}
@@ -515,8 +217,15 @@ the member credential volume (cds).
 {{- end -}}
 {{- end -}}
 
+{{/*
+The volume the certificate sidecar writes the discovery document to and the
+front door serves it from. Both lanes mount it at this constant, which the
+measured base pins.
+*/}}
+{{- define "router.discoveryDir" -}}/discovery{{- end -}}
+
 {{- define "router.discoveryFilePath" -}}
-{{- printf "%s/%s" .Values.router.discovery.mountPath .Values.router.discovery.fileName -}}
+{{- printf "%s/%s" (include "router.discoveryDir" .) .Values.router.discovery.fileName -}}
 {{- end -}}
 
 {{/*
@@ -585,7 +294,7 @@ list.
 {{- define "router.getCertContainers" -}}
 {{- $mounts := list -}}
 {{- if .Values.router.discovery.enabled -}}
-{{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" .Values.router.discovery.mountPath) -}}
+{{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" (include "router.discoveryDir" .)) -}}
 {{- end -}}
 {{- if and (include "c8s.attestationApiSocketPresent" .) (ne (include "router.mountInventorySocket" .) "true") -}}
 {{- $mounts = append $mounts (printf "- name: attestation-api-socket\n  mountPath: %s\n  readOnly: true" .Values.nriImagePolicy.hostPaths.runtimeDir) -}}
@@ -611,7 +320,7 @@ list.
 {{- $extraArgs = append $extraArgs "--no-workload-claims" -}}
 {{- end -}}
 {{- if eq (include "router.publicTLSMode" .) "webpki" -}}
-{{- $mounts = append $mounts (printf "- name: public-tls\n  mountPath: %s\n  readOnly: true" .Values.router.publicTLS.mountPath) -}}
+{{- $mounts = append $mounts (printf "- name: public-tls\n  mountPath: %s\n  readOnly: true" (include "router.publicTLSDir" .)) -}}
 {{- end -}}
 {{- include "c8s.getCertContainers" (dict
   "root" .
@@ -641,20 +350,117 @@ true
 {{- end -}}
 
 {{/*
-router.filesNginxLoads — every file an nginx directive loads: the leaf and key
-get-cert publishes, the mesh CA it proxies upstream with, and the public
-certificate and key of whichever TLS mode serves the front door. One
-space-separated list, read by reload.sh.
+router.nginxArgs — the typed inputs the front door image renders its nginx
+configuration from, as a YAML list (internal/cmds/router). Nothing here is an
+nginx directive: the image validates every value and owns the template.
+Caller nindents into the nginx container's args.
 */}}
-{{- define "router.filesNginxLoads" -}}
-{{- $paths := list (include "c8s.certFile" .) (include "c8s.keyFile" .) (include "c8s.caFile" .) -}}
-{{- if eq (include "router.publicTLSMode" .) "webpki" -}}
-{{- $paths = append $paths (include "router.publicCertPath" .) -}}
-{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
+{{- define "router.nginxArgs" -}}
+{{- $upstreamAddress := .Values.router.upstream.address | trim -}}
+{{- $cors := .Values.router.cors -}}
+{{- if .Values.node.baked }}
+{{- /* The sole virtual host accepts the launch-signed SAN, which the
+       certificate sidecar reads from the verified host file at runtime. */}}
+- --san=_
+{{- else }}
+{{- range $san := (include "router.sanList" . | fromJsonArray) }}
+- --san={{ $san }}
+{{- end }}
+{{- end }}
+- --public-cert={{ include "router.publicCertPath" . }}
+- --public-key={{ include "router.publicKeyPath" . }}
+- --cert={{ include "c8s.certFile" . }}
+- --key={{ include "c8s.keyFile" . }}
+- --mesh-ca={{ include "c8s.caFile" . }}
+{{- if or $upstreamAddress .Values.router.routes }}
+- --resolver={{ include "c8s.router.resolver" . }}
+{{- end }}
+{{- if $upstreamAddress }}
+{{- $readTimeout := toString (required "router.upstream.readTimeout is required" .Values.router.upstream.readTimeout) }}
+{{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) }}
+{{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) }}
+{{- end }}
+- --backend={{ $upstreamAddress }}
+- --backend-protocol={{ .Values.router.upstream.protocol }}
+- --backend-read-timeout={{ $readTimeout }}
+{{- with .Values.router.upstream.serverName }}
+- --backend-server-name={{ . }}
+{{- end }}
+{{- end }}
+{{- range $i, $route := .Values.router.routes }}
+- --route={{ include "router.routeFields" (dict "route" $route "index" $i) }}
+{{- end }}
+{{- if .Values.router.attest.enabled }}
+- --attest-port={{ .Values.router.attest.port }}
+{{- end }}
+{{- if eq (include "router.renderAllowlistRoute" .) "true" }}
+{{- $allowlist := .Values.router.allowlist }}
+- --allowlist-proxy-port={{ include "c8s.int" $allowlist.proxyPort }}
+- --allowlist-write-rate={{ include "c8s.int" $allowlist.rateLimit.requestsPerSecond }}
+- --allowlist-write-burst={{ include "c8s.int" $allowlist.rateLimit.burst }}
+- --allowlist-write-total-rate={{ include "c8s.int" $allowlist.rateLimit.totalRequestsPerSecond }}
+- --allowlist-write-total-burst={{ include "c8s.int" $allowlist.rateLimit.totalBurst }}
+- --allowlist-read-rate={{ include "c8s.int" $allowlist.readRateLimit.requestsPerSecond }}
+- --allowlist-read-burst={{ include "c8s.int" $allowlist.readRateLimit.burst }}
+{{- end }}
+{{- if .Values.router.discovery.enabled }}
+- --discovery-path={{ .Values.router.discovery.path }}
+- --discovery-file={{ include "router.discoveryFilePath" . }}
+- --discovery-cds-cert-path={{ .Values.router.discovery.cdsCertPath }}
+{{- if .Values.router.meshCA.expose }}
+- --discovery-mesh-ca-path={{ .Values.router.discovery.meshCAPath }}
+{{- end }}
+{{- end }}
+{{- if $cors.allowOrigins }}
+{{- range $origin := $cors.allowOrigins }}
+- --cors-allow-origin={{ $origin }}
+{{- end }}
+{{- range $method := $cors.allowMethods }}
+- --cors-allow-method={{ $method }}
+{{- end }}
+{{- range $header := $cors.allowHeaders }}
+- --cors-allow-header={{ $header }}
+{{- end }}
+{{- range $header := $cors.exposeHeaders }}
+- --cors-expose-header={{ $header }}
+{{- end }}
+{{- if $cors.allowCredentials }}
+- --cors-allow-credentials
+{{- end }}
+- --cors-max-age={{ include "c8s.int" $cors.maxAge }}
+{{- end }}
+{{- if eq (include "router.publicTLSMode" .) "acme" }}
+- --acme
+{{- end }}
 {{- end -}}
-{{- if eq (include "router.publicTLSMode" .) "acme" -}}
-{{- $paths = append $paths (include "router.publicCertPath" .) -}}
-{{- $paths = append $paths (include "router.publicKeyPath" .) -}}
+
+{{/*
+router.routeFields — one router.routes entry as the image's --route field
+list. A comma separates the fields and an equals sign separates a field's name
+from its value, so a value carrying either could add a field: the render fails
+on both, and the image refuses a repeated field as well.
+Args: route, index (for the failure message).
+*/}}
+{{- define "router.routeFields" -}}
+{{- $route := .route -}}
+{{- /* validations.yaml names a missing path, backend or address. */ -}}
+{{- $backend := default dict $route.backend -}}
+{{- $address := default "" $backend.address -}}
+{{- $path := default "" $route.path -}}
+{{- $values := dict "path" $path "backend" $address "match" (default "prefix" $route.match) "protocol" (default "http" $backend.protocol) "server-name" (default "" $backend.serverName) -}}
+{{- range $field, $value := $values -}}
+{{- if regexMatch `[,=]` (toString $value) -}}
+{{- fail (printf "VALIDATION_ERROR kind=router_route_field: router.routes[%d] %s=%q must not contain ',' or '=': each route crosses to the front door as one comma-separated field list" $.index $field $value) -}}
 {{- end -}}
-{{ join " " $paths }}
+{{- end -}}
+{{- $fields := list (printf "path=%s" $path) (printf "backend=%s" $address) -}}
+{{- $fields = append $fields (printf "match=%s" (default "prefix" $route.match)) -}}
+{{- $fields = append $fields (printf "protocol=%s" (default "http" $backend.protocol)) -}}
+{{- with $backend.serverName -}}
+{{- $fields = append $fields (printf "server-name=%s" .) -}}
+{{- end -}}
+{{- if and (hasKey $route "cors") (hasKey (default dict $route.cors) "enabled") -}}
+{{- $fields = append $fields (printf "cors=%v" $route.cors.enabled) -}}
+{{- end -}}
+{{- join "," $fields -}}
 {{- end -}}

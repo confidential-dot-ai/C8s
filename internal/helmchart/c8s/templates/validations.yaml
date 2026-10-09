@@ -106,9 +106,10 @@
      carries no plaintext off a member pod. This guard only catches accidental
      plaintext.
      An https protocol on this shape can only fail at runtime, so reject it.
-   - a manual address that terminates and verifies TLS itself (app-TLS): must
-     be https with tls.verify=true. A silently plaintext manual address would
-     leave the hop unprotected. There is no plaintext-to-unattested escape hatch.
+   - a manual address that terminates TLS itself (app-TLS): must be https, and
+     the front door verifies it against the mesh CA. A silently plaintext
+     manual address would leave the hop unprotected. There is no
+     plaintext-to-unattested escape hatch.
 */ -}}
 {{- if and $router.enabled $router.upstream.address -}}
 {{- if eq (include "router.meshWrappedUpstream" $router.upstream.address) "true" -}}
@@ -116,18 +117,49 @@
 {{- fail "VALIDATION_ERROR kind=workload_https_upstream: a c8s-<id> headless-Service upstream is plaintext http at the app layer (the mesh wraps the hop in attested mTLS), but router.upstream.protocol=https; use protocol http for a mesh-wrapped upstream" -}}
 {{- end -}}
 {{- else -}}
-{{- include "router.requireSecuredBackend" (dict "protocol" $router.upstream.protocol "tls" $router.upstream.tls "address" $router.upstream.address "label" "router.upstream" "kind" "router_unsecured_upstream" "suggest" "To reach a confidential workload adopt it with --workload-ref <id>=<ns>/<kind>/<name>:<port> and pass --upstream <id> (the mesh wraps that plaintext hop in attested mTLS); ") -}}
+{{- include "router.requireSecuredBackend" (dict "protocol" $router.upstream.protocol "address" $router.upstream.address "label" "router.upstream" "kind" "router_unsecured_upstream" "suggest" "To reach a confidential workload adopt it with --workload-ref <id>=<ns>/<kind>/<name>:<port> and pass --upstream <id> (the mesh wraps that plaintext hop in attested mTLS); ") -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  Every explicit route is a manual address, so it must terminate TLS itself:
+  the adopted workload's plaintext hop belongs to the catch-all upstream
+  alone. The front door refuses the same shapes at startup; this names them at
+  install time instead.
+*/ -}}
+{{- if $router.enabled -}}
+{{- range $i, $route := $router.routes -}}
+{{- /* The required-field messages live here, the one file every render
+       evaluates, so router.routeFields can take the values as given. */ -}}
+{{- $backend := required (printf "router.routes[%d].backend is required" $i) $route.backend -}}
+{{- $address := required (printf "router.routes[%d].backend.address is required" $i) $backend.address -}}
+{{- $_ := required (printf "router.routes[%d].path is required" $i) $route.path -}}
+{{- include "router.requireSecuredBackend" (dict "protocol" (default "http" $backend.protocol) "address" $address "label" (printf "router.routes[%d].backend" $i) "kind" "router_unsecured_route" "suggest" "") -}}
+{{- include "router.validateRouteCORS" (dict "cors" $route.cors "label" (printf "router.routes[%d]" $i)) -}}
 {{- end -}}
 {{- end -}}
 {{- /*
   Rate budget for the built-in /allowlist route. CDS rate-limits per source
   IP and sees every front-door request as the one router pod IP, so the nginx
   aggregate write bound must undercut the CDS bucket signed operator writes
-  share, and each per-client bound must fit inside the aggregate. Positivity
-  parsing lives with the zone rendering in router-configmap.yaml (same
-  c8s.positiveInt, so either template failing first reports the same message).
+  share, and each per-client bound must fit inside the aggregate. The front
+  door refuses a non-positive rate itself; this is the comparison only it can
+  make, against the CDS bucket.
+
+  The loopback proxy port is checked here too: the front door sees no chart
+  value, so a port that collides with the attestation sidecar's or with a
+  listener is a conflict only the chart can name.
 */ -}}
 {{- if and $router.enabled (eq (include "router.renderAllowlistRoute" .) "true") -}}
+{{- $proxyPort := int (include "c8s.int" $router.allowlist.proxyPort) -}}
+{{- if or (lt $proxyPort 1) (gt $proxyPort 65535) -}}
+{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_port_conflict: router.allowlist.proxyPort must be between 1 and 65535, got: %d" $proxyPort) -}}
+{{- end -}}
+{{- if and $router.attest.enabled (eq $proxyPort (int $router.attest.port)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_port_conflict: router.allowlist.proxyPort must differ from router.attest.port, got: %d" $proxyPort) -}}
+{{- end -}}
+{{- if eq $proxyPort (int (include "router.httpsPort" .)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=router_allowlist_port_conflict: router.allowlist.proxyPort must differ from the front door's TLS listener, got: %d" $proxyPort) -}}
+{{- end -}}
 {{- $writeRate := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.requestsPerSecond "label" "router.allowlist.rateLimit.requestsPerSecond")) -}}
 {{- $writeBurst := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.burst "label" "router.allowlist.rateLimit.burst")) -}}
 {{- $writeTotalRate := int (include "c8s.positiveInt" (dict "value" $router.allowlist.rateLimit.totalRequestsPerSecond "label" "router.allowlist.rateLimit.totalRequestsPerSecond")) -}}

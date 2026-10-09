@@ -82,6 +82,7 @@ NRI_REPO="${C8S_REGISTRY}/nri-image-policy"
 OPERATOR_REPO="${C8S_REGISTRY}/c8s-operator"
 CDS_REPO="${C8S_REGISTRY}/cds"
 MESH_REPO="${C8S_REGISTRY}/armtls-mesh"
+ROUTER_REPO="${C8S_REGISTRY}/c8s-router"
 # The image's TEE platform, from build's --sync-input. Required: the NRI
 # base allowlist types the armTLS identity CDS checks against attestation
 # evidence,
@@ -189,8 +190,7 @@ if [ "$C8S_PRESTAGED" = 1 ]; then
 else
     echo "c8s sync: resolving c8s binary + core images at c8s ref ${C8S_REF}"
 fi
-# Resolve each C8s image from the same source ref. The nginx digest remains
-# pinned by the embedded chart rather than duplicated in this script.
+# Resolve each C8s image from the same source ref, the front door among them.
 DIGEST_TMPDIR=$(mktemp -d)
 trap 'rm -rf "$DIGEST_TMPDIR"' EXIT
 resolve_digest_bg() {  # <repo> <ref> <out-file> -> writes sha256:... or FATALs
@@ -215,6 +215,8 @@ resolve_digest_bg "$CDS_REPO" "$C8S_REF" "$DIGEST_TMPDIR/cds" &
 cds_pid=$!
 resolve_digest_bg "$MESH_REPO" "$C8S_REF" "$DIGEST_TMPDIR/mesh" &
 mesh_pid=$!
+resolve_digest_bg "$ROUTER_REPO" "$C8S_REF" "$DIGEST_TMPDIR/router" &
+router_pid=$!
 # Wait on every job regardless of individual exit status (a bare `wait $pid`
 # chain under set -e would abort on the first failure and leave the rest
 # running as orphans) — resolve_digest_bg already printed a FATAL for
@@ -224,6 +226,7 @@ mesh_pid=$!
 wait "$operator_pid" || true
 wait "$cds_pid" || true
 wait "$mesh_pid" || true
+wait "$router_pid" || true
 
 read_digest() {  # <name> <out-file> -> prints sha256:... or FATALs on a bad/missing result
     local d
@@ -237,6 +240,7 @@ NRI_DIGEST=$(read_digest nri "$DIGEST_TMPDIR/nri")
 OPERATOR_DIGEST=$(read_digest operator "$DIGEST_TMPDIR/operator")
 CDS_DIGEST=$(read_digest cds "$DIGEST_TMPDIR/cds")
 MESH_DIGEST=$(read_digest mesh "$DIGEST_TMPDIR/mesh")
+ROUTER_DIGEST=$(read_digest router "$DIGEST_TMPDIR/router")
 rm -rf "$DIGEST_TMPDIR"
 trap - EXIT
 NRI_IMAGE="${NRI_REPO}@${NRI_DIGEST}"
@@ -245,25 +249,18 @@ echo "c8s sync: ref ${C8S_REF} -> binary ${NRI_DIGEST}, operator ${OPERATOR_DIGE
 # Render the system floor. Boot preparation merges the chart's measured
 # component seed into this base before RKE2/containerd starts, so CDS and
 # its clients can start before the live allowlist becomes available.
-# The router's own image is pinned by the embedded chart alone, so the base is
-# rendered after the node integration that reports it.
-render_nri_base() {  # <front-door-image>: repository@digest
+render_nri_base() {
     local tmpl="$SRCDIR/mkosi.profiles/c8s/image-policy.yaml.in"
     local dst="$STAGE_DIR/usr/lib/c8s/image-policy.yaml"
-    local router_image="$1"
     [ -f "$tmpl" ] || { echo "c8s sync: FATAL base-allowlist template $tmpl missing" >&2; exit 1; }
-    case "$router_image" in
-        *@sha256:*) ;;
-        *) echo "c8s sync: FATAL front-door image '$router_image' is not repository@sha256:..." >&2; exit 1 ;;
-    esac
     mkdir -p "$(dirname "$dst")"
     sed -e "s|@PLATFORM@|${PLATFORM}|g" \
         -e "s|@MESH_REPO@|${MESH_REPO}|g" \
         -e "s|@MESH_DIGEST@|${MESH_DIGEST}|g" \
         -e "s|@OPERATOR_REPO@|${OPERATOR_REPO}|g" \
         -e "s|@OPERATOR_DIGEST@|${OPERATOR_DIGEST}|g" \
-        -e "s|@ROUTER_REPO@|${router_image%@*}|g" \
-        -e "s|@ROUTER_DIGEST@|${router_image##*@}|g" "$tmpl" > "$dst"
+        -e "s|@ROUTER_REPO@|${ROUTER_REPO}|g" \
+        -e "s|@ROUTER_DIGEST@|${ROUTER_DIGEST}|g" "$tmpl" > "$dst"
     echo "c8s sync: NRI system base allowlist rendered"
 }
 
@@ -287,6 +284,8 @@ render_node_integration() {
         --cds-image-digest "$CDS_DIGEST" \
         --armtls-mesh-image-repository "$MESH_REPO" \
         --armtls-mesh-image-digest "$MESH_DIGEST" \
+        --router-image-repository "$ROUTER_REPO" \
+        --router-image-digest "$ROUTER_DIGEST" \
         --output-dir "$out"; then
         echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image render'; publish this branch's images and select that C8S_REF" >&2
         exit 1
@@ -467,8 +466,6 @@ fi
 install -D -m 0755 "$C8S_TARGET" "$RUNC_WRAPPER_TARGET"
 
 render_node_integration
-ROUTER_IMAGE_FILE="$NODE_INTEGRATION_DIR/router-image.txt"
-[ -s "$ROUTER_IMAGE_FILE" ] || { echo "c8s sync: FATAL ${C8S_REF} reported no front-door image at ${ROUTER_IMAGE_FILE#"$TMP"/}" >&2; exit 1; }
-render_nri_base "$(cat "$ROUTER_IMAGE_FILE")"
+render_nri_base
 
 echo "c8s sync: staged rke2 ${RKE2_VERSION} + airgap bundles + measured c8s Kubernetes workloads"

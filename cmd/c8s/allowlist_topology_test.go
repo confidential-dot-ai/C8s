@@ -64,7 +64,7 @@ func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", "nriImagePolicy.mesh.clusterRanges[0]=10.42.0.0/16",
 		"--set-string", "nriImagePolicy.mesh.resolver=10.43.0.10"}
-	for i, path := range []string{"image", "cds.image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {
+	for i, path := range []string{"image", "cds.image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image", "router.nginx.image"} {
 		args = append(args, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", path, i+1))
 	}
 	args, err := appendCvmModeInstallArgs(args, mode, "sev-snp")

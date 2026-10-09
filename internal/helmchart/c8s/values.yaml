@@ -48,6 +48,10 @@ c8sComponents:
   - valuePath: volumed.image
     enabledPath: volumed.enabled
     cdsExempt: false
+    ## The front door, whose entrypoint is the c8s binary.
+  - valuePath: router.nginx.image
+    enabledPath: router.enabled
+    cdsExempt: false
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -745,16 +749,17 @@ router:
   # fills in here from the ref's :<port>) so the pod-IP hop is wrapped in the
   # node mesh's attested mTLS (this is how a confidential workload like vllm is
   # reached, over plaintext http the mesh secures); otherwise a manual address
-  # must be https with tls.verify=true, an upstream that terminates and
-  # authenticates TLS itself (app-TLS). A plaintext http or unverified-https
-  # manual address fails the render (kind=router_unsecured_upstream): the chart
-  # cannot confirm it resolves to pod IPs the mesh intercepts and there is no
-  # acknowledgment to override that.
+  # must be https, an upstream that terminates and authenticates TLS itself
+  # (app-TLS). A plaintext http manual address fails the render
+  # (kind=router_unsecured_upstream): the chart cannot confirm it resolves to
+  # pod IPs the mesh intercepts and there is no acknowledgment to override
+  # that. An https upstream is always verified against the mesh CA, with the
+  # CDS-issued certificate presented as the client credential.
   upstream:
     # -- Host and port of the upstream service. A c8s-<id>.<ns>.svc.cluster.local
     # headless-Service address (what `c8s install --upstream` derives) is
-    # recognized as mesh-wrapped and may be plaintext http; any other address
-    # must be https + verify. See validations.yaml.
+    # recognized as mesh-wrapped and is reached over plaintext http; any other
+    # address must be https. See validations.yaml.
     address: ""
     # -- Protocol for the upstream connection (http or https).
     protocol: http
@@ -762,24 +767,9 @@ router:
     # catch-all route, as an nginx time. A non-streaming completion sends
     # nothing until it is done, so this must outlive the longest generation.
     readTimeout: 3600s
-    tls:
-      # -- Present the CDS-issued certificate to HTTPS upstreams.
-      useCDSClientCert: true
-      # -- Verify the HTTPS upstream's certificate chain against trustedCAPath.
-      verify: true
-      # -- Maximum upstream server certificate chain depth nginx will verify when
-      # upstream.tls.verify=true. Increase for private PKI chains with more
-      # intermediates between the upstream leaf and trusted CA bundle.
-      verifyDepth: 2
-      # -- SNI/verification name for the HTTPS upstream. Must match the upstream
-      # cert SAN. Empty defaults to the address host.
-      serverName: ""
-      # -- CA file nginx verifies the upstream against. Empty defaults to the
-      # get-cert output on the member credential volume, which CDS returns as
-      # leaf+CA chain, so CDS-issued upstream certs verify out of the box. Set
-      # to <meshCA.mountPath>/<meshCA.key> (and provide that ConfigMap) or
-      # another path for a different upstream.
-      trustedCAPath: ""
+    # -- SNI/verification name for the HTTPS upstream. Must match the upstream
+    # cert SAN. Empty defaults to the address host.
+    serverName: ""
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the
@@ -820,63 +810,47 @@ router:
   # Useful for preserving control-plane endpoints while the catch-all route
   # points at an inference backend.
   routes: []
-    # - path: /allowlist
+    # - path: /models
     #   match: exact  # exact | prefix (default)
     #   backend:
-    #     # A route backend must be https with tls.verify: true (app-TLS): the
-    #     # chart cannot confirm a plaintext http or unverified-https address
-    #     # resolves to pod IPs the node mesh wraps, so it fails the render
-    #     # (kind=router_unsecured_route). A confidential workload is reached via
-    #     # router.upstream (the --upstream flow), not a route.
+    #     # A route backend must be https (app-TLS): the chart cannot confirm a
+    #     # plaintext http address resolves to pod IPs the node mesh wraps, so
+    #     # it fails the render (kind=router_unsecured_route). A confidential
+    #     # workload is reached via router.upstream (the --upstream flow), not a
+    #     # route. The backend is verified against the mesh CA, with the
+    #     # CDS-issued certificate presented as the client credential.
     #     address: cds.default.svc.cluster.local:8443
     #     protocol: https
-    #     tls:
-    #       useCDSClientCert: true
-    #       verify: true
-    #       verifyDepth: 2
-    #       serverName: cds.default.svc.cluster.local
-    #       trustedCAPath: ""
+    #     serverName: cds.default.svc.cluster.local
     #   cors:
     #     enabled: false  # opt this route out of the global CORS block
 
   # -- CORS headers added to every proxied location (the catch-all upstream and
   # each entry in `routes`) and to the discovery endpoints (`discovery.path`,
   # `discovery.cdsCertPath`, `discovery.meshCAPath`) so browser clients can
-  # bootstrap the attested TLS handshake. The internal /healthz endpoint is
-  # never affected. Upstream pass-through: if the upstream emits
-  # Access-Control-Allow-Origin on a non-preflight response, router forwards
-  # the upstream's CORS header set verbatim and suppresses its own — browsers
-  # never see duplicate headers. If the upstream emits no CORS headers,
-  # router injects the configured ones below. Preflight `OPTIONS` requests
-  # are short-circuited at nginx with a 204 response using router's policy
-  # (they never reach the upstream). Per-route opt-out: set
-  # `routes[i].cors.enabled: false` to disable CORS on that route while
-  # leaving the global block enabled. Only the `enabled` key is honored on a
-  # per-route cors block.
+  # bootstrap the attested TLS handshake. A non-empty allowOrigins is what
+  # turns the policy on; the internal /healthz endpoint is never affected. The
+  # configured policy is the only one on the wire: an upstream's own
+  # Access-Control-* headers are dropped, so browsers never see duplicates and
+  # a backend cannot widen the origin set. Preflight `OPTIONS` requests are
+  # short-circuited at nginx with a 204 response (they never reach the
+  # upstream). Per-route opt-out: set `routes[i].cors.enabled: false` to
+  # disable CORS on that route while leaving the global policy on. Only the
+  # `enabled` key is honored on a per-route cors block.
   #
-  # Independent of this block, the C8s protocol-owned endpoints
-  # (/.well-known/c8s/*, the discovery document and certificate endpoints,
-  # and the built-in /allowlist route) serve wide-open CORS by default —
-  # see `protocolEndpoints` below.
+  # Without a policy here, the C8s protocol-owned endpoints
+  # (/.well-known/c8s/*, the discovery document and certificate endpoints, and
+  # the built-in /allowlist route) answer any origin with no credentials: they
+  # exist to be verified by any browser anywhere, every response is
+  # self-authenticating (hardware evidence, CDS-signed certificates, sealed
+  # tunnel records) or public by design, and no request relies on ambient
+  # browser credentials. A policy here covers those endpoints too.
   cors:
-    enabled: false
-    # -- Wide-open CORS (Access-Control-Allow-Origin "*", no credentials) on
-    # the C8s protocol-owned endpoints only: /.well-known/c8s/*, the
-    # discovery document and certificate endpoints, and the built-in
-    # /allowlist route. On by default because those endpoints exist to be
-    # verified by any browser anywhere: responses are self-authenticating
-    # (hardware evidence, CDS-signed certificates, sealed tunnel records) or
-    # public by design, and no request relies on ambient browser credentials
-    # (allowlist mutations are operator-signed). An origin allowlist there
-    # cannot protect anything and only breaks third-party verifiers. Workload
-    # locations (`routes` and the catch-all upstream) are never affected by
-    # this flag. Ignored while `enabled` is true — the operator policy below
-    # then covers every location, protocol endpoints included.
-    protocolEndpoints: true
-    # -- Allowed Origin values. Use ["*"] to allow any origin (cannot be
-    # combined with allowCredentials: true; browsers reject that pairing).
-    # Otherwise list exact origins; the request Origin header is echoed back
-    # only when it matches an entry in this list.
+    # -- Allowed Origin values, and the switch for this whole block: empty
+    # states no policy. Use ["*"] to allow any origin (cannot be combined with
+    # allowCredentials: true; browsers reject that pairing). Otherwise list
+    # exact origins; the request Origin header is echoed back only when it
+    # matches an entry in this list.
     allowOrigins: []
     # -- Methods advertised in Access-Control-Allow-Methods.
     allowMethods: ["GET", "POST", "OPTIONS"]
@@ -884,10 +858,8 @@ router:
     # sent by browser clients on the /tunnel request, so it must be allowed for
     # the over-encrypted channel to work cross-origin.
     allowHeaders: ["Authorization", "Content-Type", "X-C8s-Session"]
-    # -- Headers advertised in Access-Control-Expose-Headers. Always emitted
-    # by router (and merged in front of the upstream's value in pass-through
-    # mode) so browsers can read these headers from JS regardless of what
-    # the upstream advertises.
+    # -- Headers advertised in Access-Control-Expose-Headers, so browsers can
+    # read them from JS regardless of what the upstream advertises.
     exposeHeaders: []
     # -- Sets Access-Control-Allow-Credentials: true when enabled.
     allowCredentials: false
@@ -900,13 +872,13 @@ router:
   # attest-pq only); acme has the in-pod `c8s acme` sidecar
   # issue a multi-SAN leaf for the san list (TEE-held key — requires
   # attestationApi.cvmMode=bare-metal).
-  # secretName/certKey/keyKey/mountPath apply to webpki only.
+  # secretName/certKey/keyKey apply to webpki only: they name the Secret and
+  # the two keys in it the front door serves.
   publicTLS:
     mode: cds
     secretName: ""
     certKey: tls.crt
     keyKey: tls.key
-    mountPath: "/public-tls"
 
   # -- ACME issuance (publicTLS.mode=acme). The sidecar answers HTTP-01 behind
   # nginx's :80 server and SIGHUPs nginx on install. Empty directoryURL is
@@ -930,7 +902,6 @@ router:
   discovery:
     enabled: true
     path: "/v1/discovery"
-    mountPath: "/discovery"
     fileName: "discovery.json"
     cdsCertPath: "/.well-known/cds-cert.pem"
     meshCAPath: "/.well-known/mesh-ca.pem"
@@ -1006,26 +977,20 @@ router:
     resources: {}
 
   nginx:
+    ## The front door image: nginx with the c8s binary as its entrypoint, which
+    ## renders the nginx configuration from typed arguments inside the image
+    ## (internal/cmds/router). `tag` and `digest` are consumer-supplied, as for
+    ## every other C8s image.
     image:
-      repository: nginxinc/nginx-unprivileged
-      # Resolve nginxinc/nginx-unprivileged:1.30.5-alpine-slim to bump this digest.
-      digest: "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+      repository: ghcr.io/confidential-dot-ai/c8s-router
       tag: ""
+      digest: ""
       pullPolicy: IfNotPresent
     # -- Number of nginx replicas.
     replicas: 1
-    # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs
-    #    non-root with a dropped-capability securityContext and cannot bind a
-    #    privileged port. The Service presents 443 and forwards to this port
-    #    (targetPort references the named `https` port), so public 443 is
-    #    unaffected; front it with a LoadBalancer for external ingress.
-    httpsPort: 8443
-    # -- DNS server nginx queries to re-resolve a mesh-wrapped catch-all
-    #    upstream at request time (per record TTL). Only the adopted-workload
-    #    headless Service is dialed that way: its pod IPs change on pod churn,
-    #    so a static upstream block would pin the IPs seen at startup and 502
-    #    until the next config reload. Every other upstream address is static
-    #    and this value is unused (no resolver directive is rendered at all).
+    # -- DNS server nginx queries to re-resolve every backend at request time
+    #    (per record TTL), so a Service whose pod IPs change on pod churn is
+    #    never pinned to the addresses seen at startup.
     #    The name itself is resolved once at nginx startup through the pod's
     #    /etc/resolv.conf, and nginx exits (crash-loops) if it does not
     #    resolve. Empty derives from the distro values
