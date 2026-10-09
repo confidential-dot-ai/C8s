@@ -18,6 +18,7 @@ updates:
   - package-ecosystem: gomod
     directories:
       - /
+      - /test/conformance/steps
       - /test/mock-attestation
       - /test/mock-cds
     schedule:
