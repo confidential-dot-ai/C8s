@@ -76,6 +76,12 @@ spec:
             {{- range .Values.webhook.extraExcluded }}
             - --exclude-namespaces={{ . }}
             {{- end }}
+            {{- if and .Values.armtlsMesh.enabled .Values.armtlsMesh.egressCompanionPolicy.enabled }}
+            - --mesh-outbound-port={{ include "c8s.int" .Values.armtlsMesh.ports.outbound }}
+            {{- range .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces }}
+            - --mesh-exclude-source-namespaces={{ . }}
+            {{- end }}
+            {{- end }}
             - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
             - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
             - --get-cert-run-as-user={{ include "c8s.int" .Values.webhook.getCert.runAsUser }}

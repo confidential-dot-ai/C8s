@@ -573,9 +573,19 @@ armtlsMesh:
   # (drop); this NetworkPolicy is the defence-in-depth layer. namespaces is a
   # per-namespace opt-in list; when empty the policy renders into the release
   # namespace only, and the guard covers every managed namespace regardless.
+  # It imposes isolation; egressCompanionPolicy below relaxes a user's own
+  # isolation for the mesh port. The two are independent.
   tcpEgressPolicy:
     enabled: true
     namespaces: []
+
+  # Mesh egress companions: the operator keeps a companion NetworkPolicy
+  # beside every policy of yours that isolates egress in an intercepted
+  # namespace, allowing the selected pods TCP to ports.outbound, which is
+  # where the mesh sends every pod-to-pod connection. Additive only; see
+  # docs/operator.md, "Workload namespaces with default-deny egress".
+  egressCompanionPolicy:
+    enabled: true
 
   # ValidatingAdmissionPolicy to prevent pods from running as mesh UID
   uidAdmissionPolicy:
