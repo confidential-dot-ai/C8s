@@ -81,14 +81,14 @@ type sandboxObservation struct {
 // the runtime did not fill reads as absent, which violations() treats as a
 // violation rather than as consent.
 //
-// ownSocketDir is the inventory socket directory this plugin bind-mounts into
-// injected sidecars itself (socketDirAdjustment); it is the one host bind the
-// policy does not hold against a container, because the policy put it there.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) sandboxObservation {
+// own names the binds this plugin adds itself (sidecarAdjustment); they are
+// the host binds the policy does not hold against a container, because the
+// policy put them there.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, own nodeMounts) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, ownSocketDir),
+		HostBinds:        hostBinds(pod, ctr, own),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks()),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -178,7 +178,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, own nodeMounts) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -197,7 +197,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 		if cleanAbsolute(src) && slices.ContainsFunc(owned, func(dir string) bool { return strings.HasPrefix(src, dir) }) {
 			continue
 		}
-		if ownSocketDir != "" && src == ownSocketDir && isInjectedSocketMount(pod, ctr, m) {
+		if isInjectedNodeMount(pod, ctr, m, own) {
 			continue
 		}
 		out = append(out, src)
@@ -205,13 +205,29 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 	return out
 }
 
-// isInjectedSocketMount reports whether m is the mount socketDirAdjustment
-// adds: read-only, at the sidecar socket directory, in a sidecar of an injected
-// pod. A pod-spec hostPath at the same source and destination is a host bind
-// like any other — writable, it would let the container replace the node's
-// inventory sockets.
-func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount) bool {
-	return m.GetDestination() == workloadclaims.SidecarSocketDir &&
+// nodeMounts are the sources this plugin bind-mounts into an injected
+// credential sidecar, each at its own destination (sidecarAdjustment). An
+// empty source means the plugin mounts nothing there.
+type nodeMounts struct {
+	socketDir string
+	cdsPins   string
+}
+
+// isInjectedNodeMount reports whether m is one of the mounts sidecarAdjustment
+// adds: read-only, from this plugin's own source, at that source's
+// destination, in a sidecar of an injected pod. Anything else at those
+// destinations is a host bind like any other — a foreign source would feed the
+// client another node's pins, and a writable one would let the container
+// replace the sockets or the pins it was given.
+func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
+	source := ""
+	switch m.GetDestination() {
+	case workloadclaims.SidecarSocketDir:
+		source = own.socketDir
+	case workloadclaims.CDSPinsPath:
+		source = own.cdsPins
+	}
+	return source != "" && m.GetSource() == source &&
 		slices.Contains(m.GetOptions(), "ro") &&
 		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
 		workloadclaims.IsSidecarContainer(ctr.GetName())

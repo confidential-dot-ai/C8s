@@ -7,6 +7,8 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 func TestChartBakedNodeLaunchContract(t *testing.T) {
@@ -29,7 +31,6 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	}
 	wantPolicies := map[string]string{
 		"c8s-cds/cds":                 "peers.json",
-		"c8s-operator/operator":       "cds.json",
 		"c8s-router/c8s-cert":         "cds.json",
 		"c8s-router/allowlist-proxy":  "cds.json",
 		"c8s-armtls-mesh/armtls-mesh": "peers.json",
@@ -127,5 +128,87 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	config := renderedConfigMap(t, out, "c8s-router-nginx")
 	if config.Namespace != "c8s-system" || !strings.Contains(config.Data["nginx.conf"], "server_name _;") {
 		t.Error("baked router must retain its namespaced nginx config with a default virtual host")
+	}
+}
+
+// The enforcer's policy mount has a destination of its own, so a
+// chart-rendered client on a baked node keeps reading the node config it
+// mounts itself: its own --image-policy-file is not refused as a pod-supplied
+// pin (see cmdsutil.ResolveCDSPins).
+func TestChartRouterKeepsItsOwnPolicyFlagOnBakedNodes(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "image.digest=sha256:"+strings.Repeat("1", 64),
+		"--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64),
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	nodePolicy := "/run/c8s-node/cds.json"
+	var args []string
+	for _, workload := range renderedPodSpecs(t, out) {
+		if workload.name != "c8s-router" {
+			continue
+		}
+		for _, c := range append(workload.spec.Containers, workload.spec.InitContainers...) {
+			if c.Name == "c8s-cert" {
+				args = c.Args
+			}
+		}
+	}
+	if args == nil {
+		t.Fatal("the baked router renders no c8s-cert container")
+	}
+	assertContainerHasArg(t, "router/c8s-cert", args, "--image-policy-file="+nodePolicy)
+	if workloadclaims.CDSPinsPath == nodePolicy {
+		t.Fatal("the enforcer mounts its policy over the node config path a chart-rendered client reads")
+	}
+}
+
+// On a baked node the mesh's exempt namespaces are measured into the image, so
+// the render refuses a release whose injection scope could diverge from them.
+func TestChartBakedNodeHoldsInjectionScopeToTheMeasuredExemptSet(t *testing.T) {
+	baked := []string{
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "image.digest=sha256:" + strings.Repeat("1", 64),
+		"--set", "armtlsMesh.image.digest=sha256:" + strings.Repeat("2", 64),
+	}
+	if out, err := helmTemplate(t, baked...); err != nil {
+		t.Fatalf("the baked default must render: %v\n%s", err, out)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		kind string
+	}{
+		{
+			name: "another release namespace",
+			args: []string{"--namespace", "tenant-platform"},
+			kind: "kind=baked_release_namespace",
+		},
+		{
+			name: "an exclusion only the webhooks know",
+			args: []string{"--set", "webhook.extraExcluded={tenant-a}"},
+			kind: "kind=baked_webhook_exclusions",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(baked, tc.args...)...)
+			if err == nil {
+				t.Fatalf("the render accepted %s: %s", tc.name, out)
+			}
+			if !strings.Contains(out, tc.kind) {
+				t.Fatalf("render failed for another reason, want %s:\n%s", tc.kind, out)
+			}
+		})
 	}
 }

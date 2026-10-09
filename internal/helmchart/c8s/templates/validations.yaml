@@ -170,3 +170,20 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{- /*
+  On a baked node the mesh's exempt namespaces are measured into the image
+  (node-guest-image/c8s/image-policy.yaml.in): kube-system and c8s-system host
+  no member pods. The webhooks' scope is this release's namespaceSelector, so a
+  release namespace the measured set does not name, or an extra exclusion it
+  does not know, would inject pods the node refuses to protect — or leave a
+  namespace uninjected that the node would have.
+*/ -}}
+{{- if .Values.node.baked -}}
+{{- if ne .Release.Namespace "c8s-system" -}}
+{{- fail (printf "VALIDATION_ERROR kind=baked_release_namespace: node.baked=true requires the release namespace c8s-system (got %q). The node image measures that name into the mesh policy's exempt set, so another namespace would put this release's own components inside the mesh." .Release.Namespace) -}}
+{{- end -}}
+{{- if .Values.webhook.extraExcluded -}}
+{{- fail (printf "VALIDATION_ERROR kind=baked_webhook_exclusions: node.baked=true leaves webhook.extraExcluded empty (got %v). The measured mesh policy names the namespaces that host no member pods; an exclusion only the webhooks know would leave a pod uninjected in a namespace the node protects." .Values.webhook.extraExcluded) -}}
+{{- end -}}
+{{- end -}}

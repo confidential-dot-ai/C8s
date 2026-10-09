@@ -4,10 +4,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // The node image's baked boot config is the plugin's other config schema
@@ -17,13 +19,30 @@ import (
 // node boot.
 const nodeImagePolicyTemplate = "../../../node-guest-image/c8s/image-policy.yaml.in"
 
+// The platform images mkosi.sync substitutes, as this test's stand-ins.
+const (
+	meshImageRepo       = "ghcr.io/confidential-dot-ai/armtls-mesh"
+	meshImageDigest     = "sha256:" + "11111111111111111111111111111111111111111111111111111111111111ab"
+	operatorImageRepo   = "ghcr.io/confidential-dot-ai/c8s-operator"
+	operatorImageDigest = "sha256:" + "22222222222222222222222222222222222222222222222222222222222222cd"
+)
+
 func renderNodeImagePolicy(t *testing.T) string {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Clean(nodeImagePolicyTemplate))
 	if err != nil {
 		t.Fatalf("read node-image policy template: %v", err)
 	}
-	out := strings.ReplaceAll(string(body), "@PLATFORM@", "snp")
+	out := string(body)
+	for placeholder, value := range map[string]string{
+		"@PLATFORM@":        "snp",
+		"@MESH_REPO@":       meshImageRepo,
+		"@MESH_DIGEST@":     meshImageDigest,
+		"@OPERATOR_REPO@":   operatorImageRepo,
+		"@OPERATOR_DIGEST@": operatorImageDigest,
+	} {
+		out = strings.ReplaceAll(out, placeholder, value)
+	}
 	if ph := regexp.MustCompile(`@[A-Z_]+@`).FindString(out); ph != "" {
 		t.Fatalf("unsubstituted placeholder %s left in rendered template", ph)
 	}
@@ -32,8 +51,11 @@ func renderNodeImagePolicy(t *testing.T) string {
 
 func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 	rendered := renderNodeImagePolicy(t)
-	if strings.Contains(rendered, "exempt_namespaces") {
-		t.Fatal("exempt_namespaces must not return: admission keys on the base allowlist alone")
+	// policy.exempt_namespaces, not mesh.exempt_namespaces: image admission
+	// keys on the base allowlist alone, while the mesh policy names the
+	// namespaces that host no member pods.
+	if strings.Contains(rendered, "exempt_snapshot_path") {
+		t.Fatal("policy.exempt_namespaces must not return: admission keys on the base allowlist alone")
 	}
 
 	path := filepath.Join(t.TempDir(), "image-policy.yaml")
@@ -94,17 +116,61 @@ func TestNodeImageBootConfig_LoadsAndAdmitsSystemImages(t *testing.T) {
 		}
 	}
 
-	// The template contains the generated system set. Boot preparation adds
-	// the separately rendered chart component seed before containerd starts.
-	// The exact count catches an entry a regen adds or drops.
-	if want := len(systemImages); len(cfg.Allowlist.Base.Workloads) != want {
-		t.Errorf("baked base allowlist has %d entries, want %d (%d system images)",
+	// The template contains the generated system set plus the two role
+	// entries. Boot preparation adds the separately rendered chart component
+	// seed before containerd starts. The exact count catches an entry a regen
+	// adds or drops.
+	if want := len(systemImages) + 2; len(cfg.Allowlist.Base.Workloads) != want {
+		t.Errorf("baked base allowlist has %d entries, want %d (%d system images plus the role entries)",
 			len(cfg.Allowlist.Base.Workloads), want, len(systemImages))
+	}
+
+	// A platform role is granted from the node's own measured base, so the
+	// endpoint and the credential clients must be role-tagged there.
+	roles := newPolicyStore(cfg.Allowlist.Base)
+	for digest, want := range map[string]string{
+		meshImageDigest:     meshRole,
+		operatorImageDigest: CredentialRole,
+	} {
+		if got := roles.base.RoleOf(allowlist.RunningContainer{Digest: digest}); got != want {
+			t.Errorf("the base grants %s the role %q, want %q", digest, got, want)
+		}
 	}
 	for digest := range baseEntries {
 		if strings.Contains(baseEntries[digest], "busybox") {
 			t.Errorf("busybox %s must not return to the permissive base allowlist; it is seeded argv-pinned", digest)
 		}
+	}
+
+	// The measured mesh policy is what lets a baked node host member pods.
+	// The capture ports and the mesh identity are shared with the injector, so
+	// a drift here would seal pods against their own endpoint.
+	mesh := cfg.Mesh
+	if mesh == nil {
+		t.Fatal("the baked config carries no mesh policy, so the node hosts no member pods")
+	}
+	if !cfg.requiresTrustedMeshEnforcement() {
+		t.Error("the baked config does not require trusted mesh enforcement; its members would rest on policy the cluster admin writes")
+	}
+	for _, ns := range []string{"kube-system", "c8s-system"} {
+		if !slices.Contains(mesh.ExemptNamespaces, ns) {
+			t.Errorf("mesh.exempt_namespaces = %v, want %s exempt: it runs the node's own components", mesh.ExemptNamespaces, ns)
+		}
+	}
+	if got, want := mesh.Resolver.String(), "10.53.0.10"; got != want {
+		t.Errorf("mesh.resolver = %s, want the baked cluster-dns %s", got, want)
+	}
+	wantCapture := capturePorts{
+		Outbound: uint16(workloadclaims.MeshOutboundPort),
+		Inbound:  uint16(workloadclaims.MeshInboundPort),
+		Health:   uint16(workloadclaims.MeshHealthPort),
+	}
+	if mesh.Capture != wantCapture {
+		t.Errorf("mesh.capture = %+v, want the ports the injected endpoint binds %+v", mesh.Capture, wantCapture)
+	}
+	bound, ok := mesh.role(meshRole)
+	if !ok || bound.UID != workloadclaims.MeshUID {
+		t.Errorf("mesh role = %+v, want the reserved uid %d", bound, workloadclaims.MeshUID)
 	}
 
 	// System images must remain admitted with their host mounts at final admission.

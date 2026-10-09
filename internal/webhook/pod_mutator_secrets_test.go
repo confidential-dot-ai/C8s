@@ -83,12 +83,10 @@ func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {
 
 func TestFetcherArgs(t *testing.T) {
 	pod := podWithApp()
-	cfg := secretsConfig()
-	cfg.CDSMeasurements = []string{"aa", "bb"}
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db", "HF=/api/hf"}},
-	}, cfg)
+	}, secretsConfig())
 
 	args := strings.Join(containerNamed(pod, reservedSecretContainerName).Args, " ")
 	for _, want := range []string{
@@ -97,8 +95,6 @@ func TestFetcherArgs(t *testing.T) {
 		"--secret=DB=/api/db",
 		"--secret=HF=/api/hf",
 		"--out-dir=" + defaultSecretDir,
-		"--measurements=aa",
-		"--measurements=bb",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("args %q missing %q", args, want)

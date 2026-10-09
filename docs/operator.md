@@ -679,8 +679,14 @@ File and inline inputs use the same JSON format:
 | Input | Contents |
 |---|---|
 | `--image-policy-file policy.json` | Path to a complete JSON image policy. |
-| `--image-policy-json '{...}'` | The JSON document itself; supported by workload helpers such as `get-cert` and `get-secret`. |
+| `--image-policy-json '{...}'` | The JSON document itself; supported by workload helpers such as `get-cert` and `get-secret` when they run outside an injected pod. |
 | `--measurements-file digests.txt` | Text file containing one launch digest per line; no per-image register or key bindings. Supported by `verify`, `allowlist`, and `secrets`. |
+
+In an injected pod the enforcer bind-mounts the node's own policy at
+`/run/c8s/cds-pins.json`, and `get-cert`, `get-secret` and `get-volume` read it
+from there: while that mount is present it is the one source, and a policy or
+pin passed as an argument is refused rather than silently ignored. A
+chart-rendered client has no such mount and keeps its own flag.
 
 Choose one complete policy source. A complete policy cannot be combined with
 independent digest or register inputs such as `--measurements`,

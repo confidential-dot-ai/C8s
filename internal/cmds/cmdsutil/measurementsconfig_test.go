@@ -2,6 +2,7 @@ package cmdsutil
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -10,6 +11,9 @@ import (
 	"testing"
 
 	"github.com/spf13/pflag"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
 )
 
 const identityPolicyFile = "../../../internal/testdata/node-identities.json"
@@ -258,5 +262,236 @@ func TestLoadImagePolicyValuesKeepsPerImageRTMRs(t *testing.T) {
 	}
 	if len(values.Images) != 2 || len(values.Images[0].Registers) != 1 || len(values.Images[1].Registers) != 1 || bytes.Equal(values.Images[0].Registers[1], values.Images[1].Registers[1]) {
 		t.Fatalf("per-image register tuples were lost: %+v", values.Images)
+	}
+}
+
+// An injected client holds its CDS to the node's policy, not to anything its
+// pod or the control plane passes: while the mount is there the arguments are
+// refused, so a weaker pin cannot replace a measured one silently.
+func TestResolveCDSPinsPrefersTheNodePolicy(t *testing.T) {
+	document, err := os.ReadFile(identityPolicyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "cds-pins.json")
+	if err := os.WriteFile(path, document, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	policy, source, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{})
+	if err != nil {
+		t.Fatalf("ResolveCDSPins: %v", err)
+	}
+	if len(policy.Images) == 0 {
+		t.Fatal("node policy loaded no images")
+	}
+	if source != path {
+		t.Fatalf("source = %q, want the node policy path", source)
+	}
+
+	// One exact message, so the client is told which argument to drop.
+	_, _, err = ResolveCDSPins(path, ImagePolicySource{File: "/tmp/other.json"}, MeasurementPins{})
+	want := "this node pins CDS in " + path + "; remove --image-policy-file"
+	if err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		source ImagePolicySource
+		pins   MeasurementPins
+		want   string
+	}{
+		{"inline policy", ImagePolicySource{JSON: "{}"}, MeasurementPins{}, "--image-policy-json"},
+		{"launch digests", ImagePolicySource{}, MeasurementPins{Measurements: []string{strings.Repeat("ab", 48)}, Prefix: "cds-"}, "--cds-measurements"},
+		{"register pins", ImagePolicySource{}, MeasurementPins{Registers: []string{"1=" + strings.Repeat("cd", 48)}}, "--rtmrs"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, _, err := ResolveCDSPins(path, tc.source, tc.pins); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to name %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// Without the mount the caller's own inputs apply: a chart-rendered platform
+// client and the CLI have no enforcer to read.
+func TestResolveCDSPinsFallsBackToArguments(t *testing.T) {
+	digest := strings.Repeat("ab", 48)
+	path := filepath.Join(t.TempDir(), "absent.json")
+
+	policy, source, err := ResolveCDSPins(path, ImagePolicySource{}, MeasurementPins{Measurements: []string{digest}, Prefix: "cds-"})
+	if err != nil {
+		t.Fatalf("ResolveCDSPins: %v", err)
+	}
+	if len(policy.Measurements) != 1 {
+		t.Fatalf("policy measurements = %v, want the supplied digest", policy.Measurements)
+	}
+	if source != "arguments" {
+		t.Fatalf("source = %q, want the arguments", source)
+	}
+}
+
+// The verifier decides whether the CDS a client dials satisfies the node's
+// pins, so a pod that named its own verifier would hold CDS to nothing. While
+// the node pins CDS and serves its own attestation-api, that socket is the
+// only verifier.
+func TestRequireNodeVerifierRefusesANamedVerifier(t *testing.T) {
+	dir := t.TempDir()
+	policy := filepath.Join(dir, "cds-pins.json")
+	socket := filepath.Join(dir, "attestation-api.sock")
+	for _, path := range []string{policy, socket} {
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := RequireNodeVerifier(policy, socket, "unix://"+socket); err != nil {
+		t.Fatalf("the node's own attestation-api was refused: %v", err)
+	}
+
+	for _, verifier := range []string{
+		"http://10.53.0.10:53",
+		"http://127.0.0.1:8400",
+		"unix://" + filepath.Join(dir, "rogue.sock"),
+		"",
+	} {
+		err := RequireNodeVerifier(policy, socket, verifier)
+		if err == nil {
+			t.Fatalf("verifier %q was accepted while the node pins CDS", verifier)
+		}
+		if !strings.Contains(err.Error(), "unix://"+socket) {
+			t.Fatalf("error %q should name the verifier to use", err)
+		}
+	}
+}
+
+// Without both mounts the caller's own argument applies: a chart-rendered
+// platform client reaches its node's attestation-api over the network, and a
+// node serving no attestation-api of its own hands out no verifier.
+func TestRequireNodeVerifierFallsBackToTheArgument(t *testing.T) {
+	dir := t.TempDir()
+	policy := filepath.Join(dir, "cds-pins.json")
+	socket := filepath.Join(dir, "attestation-api.sock")
+	if err := os.WriteFile(policy, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RequireNodeVerifier(policy, socket, "http://$(HOST_IP):8400"); err != nil {
+		t.Fatalf("a node serving no attestation-api must leave the argument: %v", err)
+	}
+	if err := RequireNodeVerifier(filepath.Join(dir, "absent.json"), socket, "http://$(HOST_IP):8400"); err != nil {
+		t.Fatalf("a node pinning no CDS must leave the argument: %v", err)
+	}
+}
+
+// A path that exists but cannot be read is not an absent policy: falling back
+// to the arguments there would let a broken mount unpin a pod.
+func TestResolveCDSPinsFailsOnAnUnreadablePolicy(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "sealed")
+	if err := os.Mkdir(dir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if os.Geteuid() == 0 {
+		t.Skip("root reads through a 0000 directory")
+	}
+
+	_, _, err := ResolveCDSPins(filepath.Join(dir, "cds-pins.json"), ImagePolicySource{}, MeasurementPins{})
+	if err == nil {
+		t.Fatal("ResolveCDSPins accepted an unreadable policy path")
+	}
+	if !strings.Contains(err.Error(), "node CDS policy") {
+		t.Fatalf("error = %v, want it to name the node policy", err)
+	}
+}
+
+// Independent digests and register pins become one set on the configured
+// platform's family: each digest carries the registers, which is what the
+// independent form meant.
+func TestLoadImagePolicySetFromIndependentPins(t *testing.T) {
+	digest := strings.Repeat("ab", 48)
+	register := strings.Repeat("cd", 48)
+	cfg := ImagePolicyValuesConfig{
+		Pins: MeasurementPins{
+			Measurements: []string{digest},
+			Registers:    []string{"1=" + register},
+			Prefix:       "cds-",
+		},
+		Platform: "tdx",
+	}
+
+	set, err := LoadImagePolicySet(cfg)
+	if err != nil {
+		t.Fatalf("LoadImagePolicySet: %v", err)
+	}
+	if set.Family != teetypes.FamilyTDX {
+		t.Fatalf("family = %q, want the configured platform", set.Family)
+	}
+	if len(set.Images) != 1 || hex.EncodeToString(set.Images[0].Digest) != digest {
+		t.Fatalf("images = %+v, want one per configured digest", set.Images)
+	}
+	if hex.EncodeToString(set.Images[0].Registers[1]) != register {
+		t.Fatalf("image registers = %v, want the configured register pin", set.Images[0].Registers)
+	}
+
+	// Whether a family carries registers at all is refvalues' answer, given
+	// when the set is rendered.
+	cfg.Platform = teetypes.FamilySNP.String()
+	snp, err := LoadImagePolicySet(cfg)
+	if err != nil {
+		t.Fatalf("LoadImagePolicySet: %v", err)
+	}
+	if _, err := refvalues.Format(snp); err == nil {
+		t.Fatal("a register pin was rendered for a family whose evidence carries none")
+	}
+}
+
+// A register pin matches nothing without a launch digest to pin it to, so it
+// is refused rather than dropped from the set.
+func TestLoadImagePolicySetRefusesRegistersWithoutADigest(t *testing.T) {
+	_, err := LoadImagePolicySet(ImagePolicyValuesConfig{
+		Pins: MeasurementPins{
+			Registers: []string{"1=" + strings.Repeat("cd", 48)},
+			Prefix:    "cds-",
+		},
+		Platform: "tdx",
+	})
+	if err == nil || !strings.Contains(err.Error(), "--cds-rtmrs") {
+		t.Fatalf("error = %v, want it to name the register pins", err)
+	}
+}
+
+// A complete document is the same set, loaded whole: the platform check and
+// the per-image tuples are those of LoadImagePolicyValues.
+func TestLoadImagePolicySetFromADocument(t *testing.T) {
+	cfg := ImagePolicyValuesConfig{
+		Source:       ImagePolicySource{File: identityPolicyFile},
+		Platform:     "tdx",
+		PlatformFlag: "platform",
+	}
+
+	set, err := LoadImagePolicySet(cfg)
+	if err != nil {
+		t.Fatalf("LoadImagePolicySet: %v", err)
+	}
+	if len(set.Images) != 2 || len(set.Images[0].Anchor) == 0 || len(set.Images[0].Registers) != 2 {
+		t.Fatalf("the document's image tuples were lost: %+v", set.Images)
+	}
+	cfg.Platform = teetypes.FamilySNP.String()
+	if _, err := LoadImagePolicySet(cfg); err == nil {
+		t.Fatal("a document for another family was accepted")
+	}
+}
+
+// Nothing configured pins nothing, which a caller reports rather than
+// mistaking for a policy.
+func TestLoadImagePolicySetWithoutInputs(t *testing.T) {
+	set, err := LoadImagePolicySet(ImagePolicyValuesConfig{Platform: "tdx"})
+	if err != nil {
+		t.Fatalf("LoadImagePolicySet: %v", err)
+	}
+	if !set.Empty() {
+		t.Fatalf("set = %+v, want it to pin nothing", set)
 	}
 }

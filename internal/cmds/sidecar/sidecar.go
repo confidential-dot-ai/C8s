@@ -84,6 +84,9 @@ func (c *Config) Validate() error {
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", c.AttestationApiURL); err != nil {
 		return err
 	}
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, c.AttestationApiURL); err != nil {
+		return err
+	}
 	if c.Attempts <= 0 {
 		return fmt.Errorf("--attempts must be positive")
 	}
@@ -93,13 +96,19 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// ParsePins decodes --measurements and --rtmrs, warning when measurements are unpinned.
+// ParsePins resolves the pins this sidecar holds its CDS to: the node's policy
+// where the enforcer mounts it, otherwise --measurements and --rtmrs.
 func (c *Config) ParsePins() (armtls.Pins, error) {
-	policy, err := (cmdsutil.ImagePolicySource{File: c.MeasurementsConfig, JSON: c.MeasurementsConfigJSON}).Load(
+	policy, source, err := cmdsutil.ResolveCDSPins(workloadclaims.CDSPinsPath,
+		cmdsutil.ImagePolicySource{
+			File: c.MeasurementsConfig,
+			JSON: c.MeasurementsConfigJSON,
+		},
 		cmdsutil.MeasurementPins{Measurements: c.Measurements, Registers: c.RTMRs})
 	if err != nil {
 		return armtls.Pins{}, err
 	}
+	slog.Info("CDS pins resolved", "source", source)
 	cmdsutil.WarnIfCDSUnpinned(len(policy.Measurements)+len(policy.Images),
 		"--measurements empty: the CDS this sidecar hands its sandbox token to is not pinned to a launch measurement. UNSAFE outside development.")
 	return armtls.Pins(policy), nil

@@ -15,6 +15,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -90,16 +91,39 @@ type pullConfig struct {
 	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when URL is set
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
-	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
+	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
 }
 
-// validatePolicyInputs rejects competing CDS identity policy sources before I/O.
-func (c pullConfig) validatePolicyInputs() error {
+// checkPolicySources rejects competing CDS identity policy sources, before any
+// I/O: config validation runs where the configured document need not exist yet.
+func (c pullConfig) checkPolicySources() error {
 	if c.CDSMeasurementsConfig != "" && (len(c.CDSMeasurements) != 0 || len(c.CDSRTMRs) != 0) {
 		return fmt.Errorf("allowlist.pull.cds_measurements_config cannot be combined with cds_measurements or cds_rtmrs")
 	}
 	return nil
+}
+
+// policySet is the CDS identity set this node's own clients and its injected
+// credential clients are held to, whichever form the config names it in.
+func (c pullConfig) policySet(platform string) (refvalues.ReferenceValues, error) {
+	if err := c.checkPolicySources(); err != nil {
+		return refvalues.ReferenceValues{}, err
+	}
+	set, err := cmdsutil.LoadImagePolicySet(cmdsutil.ImagePolicyValuesConfig{
+		Source: cmdsutil.ImagePolicySource{File: c.CDSMeasurementsConfig},
+		Pins: cmdsutil.MeasurementPins{
+			Measurements: c.CDSMeasurements,
+			Registers:    c.CDSRTMRs,
+			Prefix:       "cds-",
+		},
+		Platform:     platform,
+		PlatformFlag: "platform",
+	})
+	if err != nil {
+		return refvalues.ReferenceValues{}, fmt.Errorf("allowlist.pull: %w", err)
+	}
+	return set, nil
 }
 
 // containerdConfig contains containerd connection settings for tag-to-digest resolution.
@@ -325,7 +349,7 @@ func (c *config) Validate() error {
 		return fmt.Errorf("allowlist.base must carry at least one workload when pull is configured (cold-boot baseline)")
 	}
 	if c.PullEnabled() {
-		if err := c.Allowlist.Pull.validatePolicyInputs(); err != nil {
+		if err := c.Allowlist.Pull.checkPolicySources(); err != nil {
 			return err
 		}
 		if c.Allowlist.Pull.Timeout <= 0 {
@@ -384,19 +408,19 @@ func (c *config) Validate() error {
 	return validateLabelRules(c.Policy.LabelRules)
 }
 
-// validateMesh refuses a mesh policy this node cannot enforce: a role is
-// granted from the node's own measured base, and a member pod needs trusted
-// enforcement from node startup.
+// validateMesh refuses a mesh policy this node cannot enforce. What the policy
+// must come with depends on the lane, decided once by meshLane.
 func (c *config) validateMesh() error {
 	if c.Mesh == nil {
 		return nil
 	}
-	switch {
-	case !meshSupported:
+	if !meshSupported {
 		return errors.New("mesh is only implemented on linux: the pod ruleset is nftables in a network namespace")
-	case !c.Allowlist.NodeTCB:
-		return errors.New("mesh requires allowlist.node_tcb: a platform role is granted from the node's own measured policy")
-	case c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting:
+	}
+	if err := c.Mesh.validate(); err != nil {
+		return err
+	}
+	if c.requiresTrustedMeshEnforcement() && (c.Policy.Mode != ModeFailClosed || !c.Policy.FatalExisting) {
 		return fmt.Errorf("mesh requires policy.mode %q and policy.fatal_existing: a member pod needs trusted enforcement from node startup", ModeFailClosed)
 	}
 	// A namespace the admission carve-out keeps running across an enforcer
@@ -406,7 +430,17 @@ func (c *config) validateMesh() error {
 			return fmt.Errorf("policy.exempt_namespaces %q must also be in mesh.exempt_namespaces: the gate refuses a pod that was running before this enforcer connected", namespace)
 		}
 	}
-	return c.Mesh.validate()
+	return nil
+}
+
+// requiresTrustedMeshEnforcement reports whether this node's mesh policy is
+// one the cluster admin could not write. A config claiming the node TCB is
+// measured with a baked image, and its members' protection rests on
+// fail-closed admission and the boot gate; a chart-rendered config is an
+// install, where the mesh runs for test clusters and the admin who wrote the
+// policy could undo the enforcement anyway.
+func (c *config) requiresTrustedMeshEnforcement() bool {
+	return c.Allowlist.NodeTCB
 }
 
 // validateLabelRules checks label rules for errors.

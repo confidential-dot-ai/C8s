@@ -17,6 +17,10 @@ import (
 const (
 	meshRole   = "mesh"
 	routerRole = "router"
+	// CredentialRole is the role of the injected credential clients. A node's
+	// boot preparation binds it to that cluster's CDS address, so the name is
+	// shared rather than written twice.
+	CredentialRole = "credentials"
 )
 
 // meshPolicy is the trusted mesh policy: the pod ruleset's inputs and the

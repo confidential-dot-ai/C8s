@@ -22,16 +22,9 @@ spec:
         app.kubernetes.io/name: c8s-operator
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: operator
-      {{- if or .Values.operator.podAnnotations .Values.cds.measurementsConfig }}
+      {{- with .Values.operator.podAnnotations }}
       annotations:
-        {{- if .Values.cds.measurementsConfig }}
-        # A ConfigMap edit alone does not change the pod template, so without
-        # this a tightened pin would not roll the operator.
-        checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
-        {{- end }}
-        {{- with .Values.operator.podAnnotations }}
 {{ toYaml . | indent 8 }}
-        {{- end }}
       {{- end }}
     spec:
       serviceAccountName: {{ include "c8s.operatorName" . }}
@@ -58,21 +51,6 @@ spec:
             - --webhook-service-name={{ include "c8s.operatorName" . }}
             - --webhook-service-namespace={{ .Release.Namespace }}
             - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-            {{- /* The same measurements CDS is pinned to elsewhere: the
-                   injected secret fetcher verifies CDS before handing it a
-                   sandbox token and taking a value back. */}}
-            {{- if .Values.node.baked }}
-            - --image-policy-file=/run/c8s-node/cds.json
-            {{- else if .Values.cds.measurementsConfig }}
-            - --image-policy-file=/etc/c8s-measurements/cds.json
-            {{- else }}
-            {{- range .Values.cds.measurements }}
-            - --cds-measurements={{ . }}
-            {{- end }}
-            {{- range .Values.cds.rtmrs }}
-            - --cds-rtmrs={{ . }}
-            {{- end }}
-            {{- end }}
             {{- range .Values.webhook.extraExcluded }}
             - --exclude-namespaces={{ . }}
             {{- end }}
@@ -119,20 +97,10 @@ spec:
             - name: tmp
               mountPath: /tmp
             {{- include "c8s.nodeConfigMount" . | nindent 12 }}
-            {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
-            - name: measurements-config
-              mountPath: /etc/c8s-measurements
-              readOnly: true
-            {{- end }}
       volumes:
         - name: tmp
           emptyDir: {}
         {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
-        {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
-        - name: measurements-config
-          configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-        {{- end }}
 ---
 apiVersion: v1
 kind: Service

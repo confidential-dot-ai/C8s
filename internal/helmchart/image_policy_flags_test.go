@@ -20,7 +20,9 @@ func TestChartImagePolicyUsesCanonicalFlags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	want := map[string]bool{"c8s-cds": false, "c8s-operator": false, "c8s-router": false, "c8s-armtls-mesh": false}
+	// The operator is absent on purpose: the injected clients read the node's
+	// policy from the enforcer's mount, so it passes no policy flag.
+	want := map[string]bool{"c8s-cds": false, "c8s-router": false, "c8s-armtls-mesh": false}
 	for _, workload := range renderedPodSpecs(t, out) {
 		containers := append(workload.spec.Containers, workload.spec.InitContainers...)
 		for _, container := range containers {

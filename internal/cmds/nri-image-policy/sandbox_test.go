@@ -71,8 +71,20 @@ func injectedPod(p *api.PodSandbox) {
 	p.Annotations = map[string]string{workloadclaims.AnnotationInjected: "true"}
 }
 
+// injectedPinsMount turns the container into a sidecar carrying the CDS policy
+// mount sidecarAdjustment adds.
+func injectedPinsMount(c *api.Container) {
+	c.Name = workloadclaims.CertContainerName
+	c.Mounts = append(c.Mounts, &api.Mount{
+		Destination: workloadclaims.CDSPinsPath,
+		Type:        "bind",
+		Source:      "/run/c8s-node/cds.json",
+		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
+	})
+}
+
 // injectedSocketMount turns the container into a sidecar carrying the mount
-// socketDirAdjustment adds.
+// sidecarAdjustment adds.
 func injectedSocketMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
 	c.Mounts = append(c.Mounts, &api.Mount{
@@ -89,6 +101,7 @@ func TestSandboxViolations(t *testing.T) {
 		pod       func(*api.PodSandbox)
 		ctr       func(*api.Container)
 		ownSocket string
+		ownPins   string
 		want      string // substring of the expected violation; empty means admitted
 	}{
 		{
@@ -99,6 +112,46 @@ func TestSandboxViolations(t *testing.T) {
 			pod:       injectedPod,
 			ctr:       injectedSocketMount,
 			ownSocket: "/var/run/nri-image-policy",
+		},
+		{
+			name:      "the node's own CDS policy mount",
+			pod:       injectedPod,
+			ctr:       injectedPinsMount,
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+		},
+		{
+			name: "a CDS policy mount from a source the plugin does not own",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedPinsMount(c)
+				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-pins.json"
+			},
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+			want:      "host path bind mount",
+		},
+		{
+			name: "a writable mount of the node's CDS policy",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedPinsMount(c)
+				c.Mounts[len(c.Mounts)-1].Options = []string{"rbind", "rw"}
+			},
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+			want:      "host path bind mount",
+		},
+		{
+			name: "the CDS policy mount in a container the webhook did not inject",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedPinsMount(c)
+				c.Name = "app"
+			},
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+			want:      "host path bind mount",
 		},
 		{
 			name: "a writable mount of the socket directory",
@@ -291,7 +344,11 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			got := observeSandbox(pod, ctr, tt.ownSocket).violations()
+			own := nodeMounts{
+				socketDir: tt.ownSocket,
+				cdsPins:   tt.ownPins,
+			}
+			got := observeSandbox(pod, ctr, own).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
