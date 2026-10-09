@@ -17,7 +17,7 @@
 #
 # Inputs (env), each "true"/"false" from the dorny/paths-filter step:
 #   SHARED             shared-core || shared-cmdsutil || shared-root
-#   C8S, CDS, GET_CERT, ARMTLS_MESH, NRI_IMAGE_POLICY, VOLUMED
+#   C8S, CDS, GET_CERT, ARMTLS_MESH, NRI_IMAGE_POLICY, VOLUMED, ROUTER
 #   GITHUB_EVENT_NAME  the triggering event; "workflow_dispatch" fans out to all
 #                      (paths-filter is skipped on dispatch, so the flags above
 #                      are empty and this is the only signal to build them)
@@ -49,6 +49,7 @@ maybe_add "$GET_CERT" get-cert ghcr.io/confidential-dot-ai/get-cert cmd/get-cert
 maybe_add "$ARMTLS_MESH" armtls-mesh ghcr.io/confidential-dot-ai/armtls-mesh cmd/armtls-mesh/Dockerfile
 maybe_add "$NRI_IMAGE_POLICY" nri-image-policy ghcr.io/confidential-dot-ai/nri-image-policy cmd/nri-image-policy/Dockerfile
 maybe_add "$VOLUMED" volumed ghcr.io/confidential-dot-ai/volumed cmd/volumed/Dockerfile
+maybe_add "${ROUTER:-false}" c8s-router ghcr.io/confidential-dot-ai/c8s-router cmd/c8s-router/Dockerfile
 
 if [[ ${#include[@]} -eq 0 ]]; then
   echo 'has_images=false' >> "$GITHUB_OUTPUT"

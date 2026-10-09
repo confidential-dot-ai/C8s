@@ -1,0 +1,107 @@
+worker_processes auto;
+error_log /dev/stderr warn;
+pid /tmp/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent"';
+    access_log /dev/stdout main;
+
+    sendfile on;
+    keepalive_timeout 65;
+
+    # Every backend is dialed through a variable, so nginx re-resolves it
+    # instead of pinning the addresses seen at startup. valid= caps how long an
+    # answer is reused, whatever TTL the cluster DNS attaches to it.
+    resolver {{ .Resolver }} valid=5s;
+{{- if .Backend.Address }}
+
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        "" close;
+    }
+{{- end }}
+
+    server {
+        # The listener set the enforcer compiles for the router role
+        # (internal/cmds/nri-image-policy routerListeners).
+        listen 8443 ssl;
+        server_name {{ .ServerNames }};
+
+        ssl_certificate     {{ .PublicCertFile }};
+        ssl_certificate_key {{ .PublicKeyFile }};
+
+        ssl_protocols TLSv1.2 TLSv1.3;
+        ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
+        ssl_prefer_server_ciphers on;
+        ssl_session_cache shared:SSL:10m;
+        ssl_session_timeout 1d;
+
+        proxy_buffer_size 16k;
+        proxy_buffers 4 16k;
+{{- if .Backend.Address }}
+
+        location / {
+{{- if eq .Backend.Protocol "https" }}
+            proxy_ssl_certificate {{ .CertFile }};
+            proxy_ssl_certificate_key {{ .KeyFile }};
+            proxy_ssl_server_name on;
+            proxy_ssl_name {{ .Backend.ServerName }};
+            proxy_ssl_verify on;
+            proxy_ssl_verify_depth 2;
+            proxy_ssl_trusted_certificate {{ .MeshCAFile }};
+{{- end }}
+            set $backend_addr {{ .Backend.Address }};
+            proxy_pass {{ .Backend.Protocol }}://$backend_addr;
+{{- template "forwardedHeaders" }}
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_connect_timeout 5s;
+            proxy_read_timeout {{ .ReadTimeout }};
+            proxy_send_timeout {{ .ReadTimeout }};
+            # Forward response bytes as they arrive, for token streaming.
+            proxy_buffering off;
+            proxy_http_version 1.1;
+        }
+{{- end }}
+
+        location /healthz {
+            access_log off;
+            default_type text/plain;
+            return 200 "ok\n";
+        }
+    }
+{{- if .ACME }}
+
+    server {
+        listen 8080;
+        # HTTP-01 arrives with the name being validated, which a wildcard SAN
+        # would not match.
+        server_name _;
+
+        location /.well-known/acme-challenge/ {
+            access_log off;
+            proxy_pass http://127.0.0.1:8402;
+            proxy_set_header Host $host;
+        }
+
+        location / {
+            return 301 https://$host$request_uri;
+        }
+    }
+{{- end }}
+}
+{{- define "forwardedHeaders" }}
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+{{- end }}

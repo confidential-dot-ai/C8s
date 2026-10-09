@@ -150,6 +150,9 @@ jobs:
               - '{cmd/nri-image-policy/**,internal/cmds/nri-image-policy/**}'
             volumed:
               - '{cmd/volumed/**,internal/cmds/volumed/**}'
+            router:
+              # The image ships the whole c8s binary, so every change to it rebuilds.
+              - '{go.mod,go.sum,cmd/**,internal/**,pkg/**}'
       - name: Build Docker matrix
         id: docker-matrix
         env:
@@ -162,6 +165,7 @@ jobs:
           ARMTLS_MESH: ${{ steps.filter.outputs['armtls-mesh'] }}
           NRI_IMAGE_POLICY: ${{ steps.filter.outputs['nri-image-policy'] }}
           VOLUMED: ${{ steps.filter.outputs.volumed }}
+          ROUTER: ${{ steps.filter.outputs.router }}
         run: .github/scripts/docker-build-matrix.sh
 
   go-modules:
