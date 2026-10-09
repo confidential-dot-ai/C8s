@@ -128,6 +128,22 @@ func TestGatherAttestLBFromFile(t *testing.T) {
 	if ev.fresh || !bytes.Equal(ev.leaf.Raw, id.leaf.Raw) {
 		t.Errorf("evidence = fresh %v; want a non-fresh verdict on the committed mesh leaf", ev.fresh)
 	}
+	if want := servingLeafDigest(ts.Certificate().Raw); ev.servingLeafSHA256 != want {
+		t.Errorf("servingLeafSHA256 = %q, want %q (the observed leaf)", ev.servingLeafSHA256, want)
+	}
+
+	var object map[string]any
+	if err := json.Unmarshal(receipt, &object); err != nil {
+		t.Fatal(err)
+	}
+	object["serving_leaf_sha256"] = servingLeafDigest(id.leaf.Raw)
+	mislabeled, err := json.Marshal(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gatherAttestLBFromFile(mislabeled, serving, nonce, "test"); !isSecurityError(err) {
+		t.Errorf("receipt whose serving_leaf_sha256 names another leaf = %v, want a security error", err)
+	}
 
 	other := writeCert("other.pem", id.leaf.Raw)
 	if _, err := gatherAttestLBFromFile(receipt, other, nonce, "test"); !isSecurityError(err) {

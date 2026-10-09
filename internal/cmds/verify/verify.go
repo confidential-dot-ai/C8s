@@ -1052,8 +1052,12 @@ type Outcome struct {
 	SMT        bool   `json:"smt"`
 	CurrentTCB string `json:"current_tcb,omitempty"`
 	CertSHA256 string `json:"cert_sha256,omitempty"`
-	Pinned     bool   `json:"measurement_pinned"`
-	Error      string `json:"error,omitempty"`
+	// ServingLeafSHA256 is the unpadded base64url digest of the serving leaf
+	// an attest-lb verdict was bound to, matching the receipt's
+	// serving_leaf_sha256; a client compares it with the leaf it observed.
+	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	Pinned            bool   `json:"measurement_pinned"`
+	Error             string `json:"error,omitempty"`
 
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
@@ -1308,13 +1312,14 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	// report itself as unpinned.
 	pinned := len(plan.policy.Policy.Measurements) > 0 || plan.pins.image != nil || !plan.refValues.Empty()
 	oc := Outcome{
-		Backend:    "attestation-go",
-		VerifiedAt: time.Now().UTC(),
-		Source:     ev.source,
-		Fresh:      ev.fresh,
-		Binding:    ev.bindingNote,
-		CertSHA256: ev.certSHA256,
-		Pinned:     pinned,
+		Backend:           "attestation-go",
+		VerifiedAt:        time.Now().UTC(),
+		Source:            ev.source,
+		Fresh:             ev.fresh,
+		Binding:           ev.bindingNote,
+		CertSHA256:        ev.certSHA256,
+		ServingLeafSHA256: ev.servingLeafSHA256,
+		Pinned:            pinned,
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)
@@ -1670,6 +1675,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	fmt.Fprintf(out, "  TCB:          %s   debug=%t smt=%t\n", oc.CurrentTCB, oc.Debug, oc.SMT)
 	if oc.CertSHA256 != "" {
 		fmt.Fprintf(out, "  cert sha256:  %s\n", oc.CertSHA256)
+	}
+	if oc.ServingLeafSHA256 != "" {
+		fmt.Fprintf(out, "  serving leaf: sha256 %s\n", oc.ServingLeafSHA256)
 	}
 	if oc.CertBody != "" {
 		fmt.Fprintf(out, "  cert body:    %s\n", oc.CertBody)
