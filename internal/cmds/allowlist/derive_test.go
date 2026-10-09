@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -339,5 +340,67 @@ func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unknown container "ghost"`) {
 		t.Errorf("error = %v, want it to name the unknown container", err)
+	}
+}
+
+func TestDeriveContainersResolvesImageArgv(t *testing.T) {
+	resolve := func(string) ([]string, []string, error) {
+		return []string{"/docker-entrypoint.sh"}, []string{"nginx", "-g", "daemon off;"}, nil
+	}
+	for _, tc := range []struct {
+		name          string
+		c             templateContainer
+		command, args []string
+	}{
+		{"image defaults", templateContainer{}, []string{"/docker-entrypoint.sh"}, []string{"nginx", "-g", "daemon off;"}},
+		{"args only", templateContainer{Args: []string{"-v"}}, []string{"/docker-entrypoint.sh"}, []string{"-v"}},
+		{"command only", templateContainer{Command: []string{"sh"}}, []string{"sh"}, nil},
+	} {
+		tc.c.Name, tc.c.Image = "app", testImage
+		got, err := deriveContainers([]templateContainer{tc.c}, resolve)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !equalArgv(got[0].Command.Argv, tc.command) || !equalArgv(got[0].Args.Argv, tc.args) {
+			t.Errorf("%s: command %v args %v, want %v %v", tc.name, got[0].Command.Argv, got[0].Args.Argv, tc.command, tc.args)
+		}
+	}
+}
+
+func TestDeriveContainersNamesUnresolvableImage(t *testing.T) {
+	resolve := func(string) ([]string, []string, error) { return nil, nil, errors.New("registry unreachable") }
+	_, err := deriveContainers([]templateContainer{{Name: "app", Image: testImage}}, resolve)
+	if err == nil || !strings.Contains(err.Error(), `container "app" sets no command`) || !strings.Contains(err.Error(), "registry unreachable") {
+		t.Fatalf("deriveContainers(unresolvable image) = %v, want the container and cause named", err)
+	}
+}
+
+// TestDeriveContainersAdmitsArgvOfImageWithoutEntrypoint checks the derived
+// entry against the matcher: an image with only a Cmd runs that Cmd (or the
+// pod's args) as its whole argv, and only that argv is admitted.
+func TestDeriveContainersAdmitsArgvOfImageWithoutEntrypoint(t *testing.T) {
+	resolve := func(string) ([]string, []string, error) { return nil, []string{"/bin/bash"}, nil }
+	for _, tc := range []struct {
+		name string
+		c    templateContainer
+		argv []string
+	}{
+		{"image defaults", templateContainer{}, []string{"/bin/bash"}},
+		{"args only", templateContainer{Args: []string{"python3", "-m", "http.server"}}, []string{"python3", "-m", "http.server"}},
+	} {
+		tc.c.Name, tc.c.Image = "app", testImage
+		got, err := deriveContainers([]templateContainer{tc.c}, resolve)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		idx := (&pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"w": {Containers: got}}}).BuildIndex()
+		digest := got[0].Digest.String()
+		if !idx.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: tc.argv}) {
+			t.Errorf("%s: entry %+v does not admit the argv %v the runtime runs", tc.name, got[0], tc.argv)
+		}
+		longer := append(append([]string{}, tc.argv...), "--extra")
+		if idx.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: longer}) {
+			t.Errorf("%s: entry admits an extended argv %v", tc.name, longer)
+		}
 	}
 }
