@@ -2,10 +2,10 @@
 // public-TLS issuer for the acme front-door mode. It obtains one multi-SAN
 // WebPKI certificate for --domains via ACME HTTP-01 (nginx's :80 server
 // proxies /.well-known/acme-challenge/ to the loopback challenge listener),
-// writes key + chain under --cert-dir and renews at 2/3 lifetime; nginx's own
-// entrypoint re-reads the files it serves. Under a confidential runtime the
-// cert-dir is a Memory-medium emptyDir, so the serving key is TEE-held and
-// re-issued on pod recreation.
+// writes the chain and its key to the two directories below and renews at 2/3
+// lifetime; nginx's own entrypoint re-reads the files it serves. Under a
+// confidential runtime both are Memory-medium emptyDirs, so the serving key is
+// TEE-held and re-issued on pod recreation.
 package acme
 
 import (
@@ -37,6 +37,7 @@ type config struct {
 	httpPort      int
 	readyPort     int
 	certDir       string
+	keyDir        string
 	logLevel      string
 
 	// Launch-driven inputs (node image): each file overrides its flag.
@@ -46,6 +47,14 @@ type config struct {
 	standbyCertDir   string
 }
 
+// The front door's issued credential, split so that a reader of the chain
+// never holds the key. The chart mounts these two paths and serves the pair
+// from them (internal/helmchart/c8s/templates/router-helpers.tpl).
+const (
+	certDir = "/etc/c8s-acme-tls"
+	keyDir  = "/etc/c8s-acme-key"
+)
+
 // NewCmd returns the acme subcommand.
 func NewCmd() *cobra.Command {
 	var cfg config
@@ -53,8 +62,10 @@ func NewCmd() *cobra.Command {
 		Use:   "acme",
 		Short: "Run the router in-guest ACME sidecar (acme front-door mode)",
 		Long: `acme runs beside nginx in the router pod and keeps one multi-SAN WebPKI
-certificate under --cert-dir: cert.pem (full chain) and key.pem. It includes
-configured domains whose public HTTP challenge paths reach this router.
+certificate: cert.pem (the full chain) in /etc/c8s-acme-tls and key.pem in
+/etc/c8s-acme-key. The front door mounts both; a program that needs only the
+leaf mounts the chain's directory alone. It includes configured domains whose
+public HTTP challenge paths reach this router.
 Unavailable domains do not block issuance for reachable domains. They are
 added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
@@ -65,7 +76,7 @@ self-signed placeholder is written when no certificate exists, so nginx —
 whose config names both files — can start and serve the challenge proxy the
 first issuance needs.
 
-The cert-dir also holds the ACME account key. On a Memory-medium emptyDir the
+The key's directory also holds the ACME account key. On a Memory-medium emptyDir the
 state is lost with the pod and re-issued on recreation; point
 --acme-directory-url at a staging directory when testing to stay clear of the
 CA's duplicate-certificate limits.
@@ -78,6 +89,8 @@ leaf exists.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg.certDir = certDir
+			cfg.keyDir = keyDir
 			return run(cfg)
 		},
 	}
@@ -87,8 +100,7 @@ leaf exists.`,
 	f.StringVar(&cfg.email, "acme-email", "", "contact email registered with the ACME account")
 	f.IntVar(&cfg.challengePort, "challenge-port", 8402, "loopback port answering ACME HTTP-01 challenges (nginx's :80 server proxies /.well-known/acme-challenge/ to it)")
 	f.IntVar(&cfg.httpPort, "http-port", 8080, "loopback port of nginx's :80 server, probed round-trip before each order so no validation is sent at a listener that is still starting")
-	f.IntVar(&cfg.readyPort, "ready-port", 0, "port serving GET /healthz, and GET /readyz, 200 once cert.pem and key.pem exist (0 disables it). nginx's startup probe uses it: a locked node image denies exec probes")
-	f.StringVar(&cfg.certDir, "cert-dir", "/etc/c8s-acme-tls", "directory for cert.pem, key.pem, and the ACME account key")
+	f.IntVar(&cfg.readyPort, "ready-port", 0, "port serving GET /healthz, and GET /readyz, 200 once the chain and its key are both written (0 disables it). nginx's startup probe uses it: a locked node image denies exec probes")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
@@ -221,9 +233,6 @@ func runWith(cfg config, probe *http.Client) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.certDir, 0o700); err != nil {
-		return err
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -234,7 +243,7 @@ func runWith(cfg config, probe *http.Client) error {
 	if err := validateConfig(&cfg); err != nil {
 		return err
 	}
-	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger)
+	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.keyDir, cfg.domains, logger)
 	mgr.httpPort = cfg.httpPort
 	if probe == nil {
 		probe = publicProbeClient()
@@ -252,7 +261,7 @@ func runWith(cfg config, probe *http.Client) error {
 		}
 	}
 
-	logger.Info("acme sidecar running", "domains", cfg.domains, "cert_dir", cfg.certDir)
+	logger.Info("acme sidecar running", "domains", cfg.domains, "cert_dir", cfg.certDir, "key_dir", cfg.keyDir)
 	mgr.run(ctx)
 	logger.Info("shutting down")
 	return nil

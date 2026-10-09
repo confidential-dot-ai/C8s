@@ -422,6 +422,6 @@ data:
     ssl_certificate_key {{ include "c8s.keyFile" . }};
   tls-acme.conf: |-
     ssl_certificate     {{ include "router.acmeCertDir" . }}/cert.pem;
-    ssl_certificate_key {{ include "router.acmeCertDir" . }}/key.pem;
+    ssl_certificate_key {{ include "router.acmeKeyDir" . }}/key.pem;
   {{- end }}
 {{- end }}

@@ -34,6 +34,10 @@ const (
 // (internal/cri/opts/spec_opts.go, WithPodNamespaces).
 var sandboxNamespaces = []string{"ipc", "network", "pid", "uts"}
 
+// pidNamespace is the namespace type a member pod's container must hold on
+// its own (requirePrivatePIDNamespace).
+const pidNamespace = "pid"
+
 // cgroupNamespace is present on every container containerd creates under
 // unified cgroups and omitted for a privileged one
 // (internal/cri/server/container_create.go). NRI carries no privileged flag, so
@@ -228,36 +232,28 @@ func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, 
 	return found
 }
 
-// nodeMounts are the sources this plugin bind-mounts into an injected
-// credential sidecar, each at its own destination (sidecarAdjustment). An
-// empty source means the plugin mounts nothing there.
+// nodeMounts names the sources credentialMounts binds into node credential clients.
 type nodeMounts struct {
 	socketDir  string
 	cdsPins    string
 	cdsAddress string
 }
 
-// isInjectedNodeMount reports whether m is one of the mounts sidecarAdjustment
-// adds: read-only, from this plugin's own source, at that source's
-// destination, in a sidecar of an injected pod. Anything else at those
-// destinations is a host bind like any other — a foreign source would point the
-// client at another node's CDS, and a writable one would let the container
-// replace the sockets, the pins or the address it was given.
+// isInjectedNodeMount requires a credential client's read-only bind from the node's own source.
 func isInjectedNodeMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount, own nodeMounts) bool {
 	source := ""
+	eligible := injectedCredentialSidecar(pod, ctr)
 	switch m.GetDestination() {
 	case workloadclaims.SidecarSocketDir:
 		source = own.socketDir
 	case workloadclaims.CDSPinsPath:
 		source = own.cdsPins
+		eligible = eligible || holdsCredentialsIdentity(ctr)
 	case workloadclaims.CDSAddressPath:
 		source = own.cdsAddress
+		eligible = eligible || holdsCredentialsIdentity(ctr) || fetchesRouteManifest(pod, ctr)
 	}
-	return source != "" && m.GetSource() == source &&
-		endsReadOnly(m) &&
-
-		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
-		workloadclaims.IsSocketConsumer(ctr.GetName())
+	return eligible && source != "" && m.GetSource() == source && endsReadOnly(m)
 }
 
 // endsReadOnly reports whether m is read-only once runc has applied its

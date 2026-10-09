@@ -86,7 +86,7 @@ func TestChartRouterReloadWatchesTheServedCertificates(t *testing.T) {
 		{
 			name: "acme certificate and key",
 			args: []string{"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}", "--set-string", "router.acme.email=ops@example.com"},
-			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-tls/key.pem"`,
+			line: `watched="/etc/c8s/certs/tls.crt /etc/c8s/certs/tls.key /etc/c8s/certs/ca.crt /etc/c8s-acme-tls/cert.pem /etc/c8s-acme-key/key.pem"`,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

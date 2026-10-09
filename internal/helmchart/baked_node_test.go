@@ -173,7 +173,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{
 		"tls-cds.conf":  "ssl_certificate     /etc/c8s/certs/tls.crt;\nssl_certificate_key /etc/c8s/certs/tls.key;",
-		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem;\nssl_certificate_key /etc/c8s-acme-tls/key.pem;",
+		"tls-acme.conf": "ssl_certificate     /etc/c8s-acme-tls/cert.pem;\nssl_certificate_key /etc/c8s-acme-key/key.pem;",
 	} {
 		if snippets[key] != want {
 			t.Errorf("%s = %q, want %q", key, snippets[key], want)
@@ -193,13 +193,13 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 		"--acme-email-file=/run/c8s-node/router/acme-email",
 		"--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
 		"--standby-cert-dir=/etc/c8s/certs",
-		"--cert-dir=/etc/c8s-acme-tls",
 	} {
 		assertContainerHasArg(t, "acme", acme.Args, arg)
 	}
+	assertAcmeArgsParse(t, acme.Args)
 	assertContainerNoArgPrefix(t, "acme", acme.Args, "--domains=")
 	assertContainerMount(t, acme, "node-config", "/run/c8s-node")
-	assertContainerMount(t, acme, "tls-certs", "/etc/c8s/certs")
+	assertContainerMount(t, acme, "c8s-certs", "/etc/c8s/certs")
 
 	// Discovery must report the mode the front door serves, never a
 	// build-time cds while the launch file selects acme.

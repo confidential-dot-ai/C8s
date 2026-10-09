@@ -140,14 +140,16 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 		if !ok {
 			t.Fatalf("container %s mounts undeclared volume %q", c.Name, m.Name)
 		}
-		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
+		// The kubelet's host source for a pod volume ends in the volume's
+		// name, which is what an exact rule binds (pkg/allowlist).
+		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Source: podVolumeSource(m.Name), Volume: m.Name, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
 		switch {
 		case v.HostPath != nil:
 			digest, err := pkgallowlist.HostSourceDigest(v.HostPath.Path)
 			if err != nil {
 				t.Fatalf("container %s volume %q: %v", c.Name, m.Name, err)
 			}
-			mount = pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown, HostSourceDigest: digest, ReadOnly: m.ReadOnly}
+			mount = pkgallowlist.ObservedMount{Destination: m.MountPath, Source: v.HostPath.Path, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown, HostSourceDigest: digest, ReadOnly: m.ReadOnly}
 		case v.EmptyDir != nil:
 			mount.Class = pkgallowlist.MountEmptyDir
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {

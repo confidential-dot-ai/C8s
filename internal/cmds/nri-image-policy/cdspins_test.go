@@ -265,8 +265,16 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 					Policy: allowlist.PolicyExact,
 					Argv:   []string{"/c8s", "allowlist-proxy"},
 				},
-				Args:   allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
-				Mounts: allowlist.MountPolicy{Policy: allowlist.PolicyAny},
+				Args: allowlist.ArgvPolicy{Policy: allowlist.PolicyAny},
+				Mounts: allowlist.MountPolicy{
+					Policy: allowlist.PolicyExact,
+					Rules: []allowlist.MountRule{{
+						Destination: workloadclaims.SidecarSocketDir,
+						Kind:        allowlist.MountHost,
+						Source:      dir,
+						ReadOnly:    true,
+					}},
+				},
 			}}},
 		},
 	}
@@ -284,12 +292,19 @@ func TestSidecarAdjustmentFollowsTheMeasuredCredentialsRole(t *testing.T) {
 		Uid:       "uid",
 		Namespace: "c8s-router",
 	}
+	// The pod's own mount set, as the router pod renders it, beside the
+	// kubelet's own /etc/hosts: a declaration that pins the mount set is
+	// matched against the same classification the final check uses.
 	proxy := &api.Container{
 		Name:         "allowlist-proxy",
 		PodSandboxId: "sandbox",
 		Annotations:  map[string]string{annotationImageName: "registry/c8s@" + pushDigestA},
 		Args:         []string{"/c8s", "allowlist-proxy", "--port=8801"},
 		User:         &api.User{Uid: workloadclaims.CredentialsUID},
+		Mounts: []*api.Mount{
+			readOnlyBind(dir, workloadclaims.SidecarSocketDir),
+			readOnlyBind("/var/lib/kubelet/pods/uid/etc-hosts", "/etc/hosts"),
+		},
 	}
 	if mountTo(mustCredentialMounts(t, p, pod, proxy), workloadclaims.CDSPinsPath) == nil {
 		t.Error("a credentials-role container was handed no CDS policy, so it would dial an unpinned CDS")

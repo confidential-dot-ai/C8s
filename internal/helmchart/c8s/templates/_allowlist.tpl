@@ -629,24 +629,51 @@ null
 {{- $repository := include "c8s.imageRepository" $image -}}
 {{- $argvs := list -}}
 {{- if eq $repository (include "c8s.imageRepository" $root.Values.armtlsMesh.image.repository) -}}
-{{- $argvs = list (dict "role" "mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
+{{- $argvs = list (dict "role" "mesh" "container" "c8s-mesh" "argv" (list "/app/c8s" "armtls-mesh")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.image.repository) -}}
 {{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy" -}}
-{{- $argvs = append $argvs (dict "role" "credentials" "argv" (list "/c8s" $mode)) -}}
+{{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait" "allowlist-proxy" "allowlist-proxy") $mode | default "") "argv" (list "/c8s" $mode)) -}}
 {{- end -}}
-{{- $argvs = append $argvs (dict "role" "router" "argv" (list "/c8s" "cds-attest")) -}}
-{{- $argvs = append $argvs (dict "role" "acme" "argv" (list "/c8s" "acme")) -}}
+{{- $argvs = append $argvs (dict "role" "router" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
+{{- $argvs = append $argvs (dict "role" "acme" "container" "acme" "argv" (list "/c8s" "acme")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.router.nginx.image.repository) -}}
-{{- $argvs = list (dict "role" "router" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
+{{- $argvs = list (dict "role" "router" "container" "nginx" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}
 {{- end -}}
 {{- range $a := $argvs -}}
 {{- $containers := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
 {{- $name := printf "c8s-role-%s-%s" (last (get $a "argv") | base) (trimPrefix "sha256:" $digest | lower | trunc 12) -}}
 {{- $_ := set $entries $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- /* A pod of the router's namespace runs a role container only under a
+       declaration that pins its mounts, so the rendered pod's own mount set
+       is named beside the open floor entry. */ -}}
+{{- with include "c8s.routerContainerMounts" (dict "root" $root "container" (get $a "container")) -}}
+{{- $pinned := list (dict "digest" $digest "image" $image "role" (get $a "role") "command" (dict "policy" "exact" "argv" (get $a "argv")) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" (. | fromJsonArray))) -}}
+{{- $_ := set $entries (printf "%s-pinned" $name) (dict "label" $image "initContainers" list "containers" $pinned) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{ $entries | toJson }}
+{{- end -}}
+
+{{/* The exact mount rules of one container of the rendered router pod, as
+     JSON, or "" where the router renders no such container. Takes root and
+     the container name. */ -}}
+{{- define "c8s.routerContainerMounts" -}}
+{{- $root := .root -}}
+{{- $name := .container -}}
+{{- if and $name $root.Values.router.enabled -}}
+{{- $spec := include "router.podSpec" $root | fromYaml -}}
+{{- $volumes := dict -}}
+{{- range $v := (default list $spec.volumes) -}}
+{{- $_ := set $volumes (toString $v.name) $v -}}
+{{- end -}}
+{{- range $c := concat (default list $spec.initContainers) (default list $spec.containers) -}}
+{{- if eq (toString $c.name) $name -}}
+{{- include "c8s.mountRules" (dict "mounts" (default list $c.volumeMounts) "volumes" $volumes "where" (printf "router container %s" $name)) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 
 {{/* The repository an image reference names, as one canonical string: no tag,

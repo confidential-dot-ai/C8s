@@ -19,6 +19,8 @@ const (
 	roleOperatorDigest = "sha256:00000000000000000000000000000000000000000000000000000000000000e2"
 )
 
+// injectedRoleLaunches is one launch per injected container that runs on a
+// reserved uid, with the per-pod arguments the webhook appends
 // platformInvocations is one invocation per injected container that runs on a
 // reserved uid, with the role the base must grant it
 // (internal/webhook/pod_mutator.go).
@@ -165,9 +167,23 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 	floorArgs = append(floorArgs,
 		anyArgvEntryArgs("nginx-tenant-floor", roleTenantNginxDigest, "docker.io/nginxinc/nginx-unprivileged@"+roleTenantNginxDigest)...,
 	)
+	// The webpki front door and its attestation sidecar mount the operator's
+	// Secret, which the base pins as data below the reserved prefix.
+	webpkiArgs := append(slices.Clone(digestArgs),
+		"--set-string", "router.publicTLS.mode=webpki",
+		"--set-string", "router.publicTLS.secretName=router-public-tls",
+	)
+	// Pinned operator keys put one more data mount on cds-attest, so the base
+	// the same values render must name it.
+	operatorKeysArgs := append(slices.Clone(digestArgs),
+		"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n",
+	)
+	operatorKeysArgs = append(operatorKeysArgs, floorArgs...)
 	cases := map[string][]string{
 		"derived component digests": append(digestArgs, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"),
 		"bootstrap floor digests":   append(digestArgs, floorArgs...),
+		"webpki front door":         append(webpkiArgs, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"),
+		"pinned operator keys":      operatorKeysArgs,
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -188,6 +204,12 @@ func TestChartBaseGrantsTheRouterPodItsRoles(t *testing.T) {
 				launch := renderedLaunch(t, pod, container, pins[digestOf(container.Image)])
 				if got := base.RoleOf(launch); got != want {
 					t.Errorf("the base grants %s the role %q, want %q", container.Name, got, want)
+				}
+				// A role container of this namespace runs only under an entry
+				// that pins its mounts (internal/cmds/nri-image-policy,
+				// requireRoleOnlyPod).
+				if !base.BindsRoleMounts(launch, want) {
+					t.Errorf("the base grants %s the %s role under no entry that pins its mounts", container.Name, want)
 				}
 			}
 		})
