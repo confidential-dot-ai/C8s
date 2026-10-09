@@ -37,8 +37,8 @@ const (
 func runSetCDSPins(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("nri-image-policy "+setCDSPinsVerb, flag.ContinueOnError)
 	path := fs.String("config", defaultConfigPath, "plugin config to patch in place")
-	rawMeasurements := fs.String("cds-measurements", "", "comma-separated SHA-384 hex CDS launch measurements; empty clears the pins")
-	rawRTMRs := fs.String("cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex>; empty clears the pins")
+	rawMeasurements := fs.String("cds-measurements", "", "comma-separated SHA-384 hex CDS launch measurements; required")
+	rawRTMRs := fs.String("cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex>; empty clears the register pins")
 	if err := cmdsutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -46,6 +46,9 @@ func runSetCDSPins(stdout io.Writer, args []string) error {
 	measurements, err := refvalues.ParseHexMeasurements(*rawMeasurements)
 	if err != nil {
 		return fmt.Errorf("--cds-measurements: %w", err)
+	}
+	if len(measurements) == 0 {
+		return fmt.Errorf("--cds-measurements is required: an empty set pins no CDS guest identity")
 	}
 	rtmrs, err := refvalues.ParseRegisterPinsString(*rawRTMRs)
 	if err != nil {

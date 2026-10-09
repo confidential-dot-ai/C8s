@@ -182,6 +182,8 @@ const NodeIPFile = "node-ip"
 // resolves for this plugin, and the file set-cds-pins patches.
 const defaultConfigPath = "/etc/nri/conf.d/image-policy.yaml"
 
+const cdsPinKeys = "allowlist.pull.cds_measurements or cds_measurements_config"
+
 // loadConfig loads configuration from a YAML file.
 func loadConfig(path string) (*config, error) {
 	data, err := os.ReadFile(path)

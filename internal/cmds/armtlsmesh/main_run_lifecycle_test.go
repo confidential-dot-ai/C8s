@@ -142,6 +142,27 @@ func TestRunProxyMeasurementLengthMessage(t *testing.T) {
 	}
 }
 
+// In CDS mode the sidecar takes its mesh identity from CDS, so an unpinned CDS
+// would make the whole node's identity a matter of who answered first.
+func TestRunProxyCDSModeRefusesAnUnpinnedCDS(t *testing.T) {
+	t.Setenv("NODE_IP", "")
+	stubKubeClientset(t, k8sfake.NewSimpleClientset(), nil)
+	cfg := defaultTestProxyConfig(t)
+	bindProxyPorts(t, cfg)
+	cfg.logLevel = "error"
+	cfg.localCIDRBootTimeout = time.Millisecond
+	cfg.platform = "sev-snp"
+	cfg.nodeIP = "127.0.0.1"
+	cfg.attestationApiURL = "http://127.0.0.1:1"
+	cfg.certMode = "cds"
+	cfg.cdsURL = "https://127.0.0.1:1"
+	cfg.cdsMeasurements = ""
+	err := runProxy(context.Background(), cfg)
+	if err == nil || !strings.Contains(err.Error(), "no pinned guest identity") {
+		t.Fatalf("err = %v, want a refusal naming the missing CDS pins", err)
+	}
+}
+
 // Self-signed mode with a working attestation endpoint: certificates warm up
 // eagerly, readiness opens, expiry gauges are published for both roles, and
 // the accept path enforces attestation and destination validation.
@@ -294,7 +315,7 @@ func TestRunProxyCDSModeDegraded(t *testing.T) {
 	bindProxyPorts(t, cfg)
 	cfg.certMode = "cds"
 	cfg.cdsURL = cds.URL
-	cfg.cdsMeasurements = "" // deliberately unset: must warn
+	cfg.cdsMeasurements = strings.Repeat("ab", 48)
 	cfg.certPipelineProbeURL = probe.URL + "/readyz"
 	cfg.certPipelineProbeInterval = 20 * time.Millisecond
 	cfg.certPipelineProbeTimeout = time.Second
@@ -338,8 +359,7 @@ func TestRunProxyCDSModeDegraded(t *testing.T) {
 
 	// Startup posture logs.
 	assertEventually(t, 10*time.Second, func() bool {
-		return capture.hasMsg("--cds-measurements not set; the armTLS handshake will accept any CDS measurement. Set this to the chart-distributed launch digest of CDS to close bootstrap MITM.") &&
-			capture.hasMsg("CA bundle refresh enabled")
+		return capture.hasMsg("CA bundle refresh enabled")
 	}, "cds-mode startup logs missing")
 
 	// Healthy probe: metric 1 and the transition logged exactly from the

@@ -43,6 +43,12 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.ChallengeLimiter == deps.RateLimiter {
 		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
 	}
+	if deps.AttestHandler.Platforms == nil {
+		panic("cds: dependencies.AttestHandler.Platforms must name the platforms whose evidence can carry a guest identity")
+	}
+	if !deps.AttestHandler.Pins.ConstrainsGuestIdentity() {
+		panic("cds: dependencies.AttestHandler.Pins must name at least one guest")
+	}
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 

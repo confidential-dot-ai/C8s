@@ -51,6 +51,7 @@ func TestCDSHTTPClientUsesARMTLSForHTTPS(t *testing.T) {
 	client, err := cdsHTTPClient(config{
 		CDSURL:            "https://cds:8443",
 		AttestationApiURL: "http://attestation-api:8400",
+		CDSMeasurements:   strings.Repeat("ab", 48),
 	})
 	if err != nil {
 		t.Fatalf("cdsHTTPClient: %v", err)

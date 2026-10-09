@@ -90,6 +90,7 @@ func unreachableRenewalConfig() config {
 	return config{
 		CDSURL:                 "https://127.0.0.1:1",
 		AttestationApiURL:      "http://127.0.0.1:1",
+		CDSMeasurements:        strings.Repeat("ab", 48),
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
 		ContinueOnInitialError: true,
@@ -180,29 +181,20 @@ func presentAsNginxMaster(t *testing.T, root string) {
 	}
 }
 
-func TestCDSHTTPClientWarnsOnlyWithoutMeasurements(t *testing.T) {
+func TestCDSHTTPClientRequiresMeasurements(t *testing.T) {
 	base := config{CDSURL: "https://cds:8443", AttestationApiURL: "http://attestation-api:8400"}
-	const warnMsg = "--cds-measurements not set; get-cert accepts any armTLS-attested CDS measurement"
 
-	t.Run("unpinned warns", func(t *testing.T) {
-		c := captureDefaultLogger(t)
-		if _, err := cdsHTTPClient(base); err != nil {
-			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); !ok {
-			t.Fatal("no warning logged for an unpinned CDS measurement set")
+	t.Run("unpinned refuses", func(t *testing.T) {
+		if _, err := cdsHTTPClient(base); err == nil {
+			t.Fatal("client built against an unpinned CDS")
 		}
 	})
 
-	t.Run("pinned does not warn", func(t *testing.T) {
-		c := captureDefaultLogger(t)
+	t.Run("pinned connects", func(t *testing.T) {
 		cfg := base
 		cfg.CDSMeasurements = strings.Repeat("ab", 48)
 		if _, err := cdsHTTPClient(cfg); err != nil {
 			t.Fatalf("cdsHTTPClient: %v", err)
-		}
-		if _, ok := c.find(warnMsg); ok {
-			t.Fatal("warning logged despite pinned measurements")
 		}
 	})
 }
@@ -461,6 +453,7 @@ func TestRunRenewalModeFailsOnBadWatchSnapshot(t *testing.T) {
 	err := run(config{
 		CDSURL:                 "https://127.0.0.1:1",
 		AttestationApiURL:      "http://127.0.0.1:1",
+		CDSMeasurements:        strings.Repeat("ab", 48),
 		SAN:                    "host.example.com",
 		InitialRetryTimeout:    0,
 		ContinueOnInitialError: true,

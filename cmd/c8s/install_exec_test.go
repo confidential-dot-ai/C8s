@@ -672,27 +672,22 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 }
 
 func TestPrintAttestVerifyHint(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
-
 	var buf bytes.Buffer
-	installMeasurements = nil
-	printAttestVerifyHint(&buf, false)
+	printAttestVerifyHint(&buf, false, nil)
 	if buf.Len() != 0 {
 		t.Errorf("--attest=false must print nothing, got %q", buf.String())
 	}
 
 	buf.Reset()
-	printAttestVerifyHint(&buf, true)
-	if !strings.Contains(buf.String(), "UNPINNED") {
-		t.Errorf("no measurements: want the UNPINNED warning, got %q", buf.String())
+	printAttestVerifyHint(&buf, true, nil)
+	if !strings.Contains(buf.String(), "refuses issuance") {
+		t.Errorf("no measurements: want the refusal warning, got %q", buf.String())
 	}
 
 	buf.Reset()
-	installMeasurements = []string{strings.Repeat("aa", 48)}
-	printAttestVerifyHint(&buf, true)
+	printAttestVerifyHint(&buf, true, []string{strings.Repeat("aa", 48)})
 	out := buf.String()
-	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "UNPINNED") {
+	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "refuses issuance") {
 		t.Errorf("with measurements: want the pinned hint only, got %q", out)
 	}
 }

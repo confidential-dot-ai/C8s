@@ -27,6 +27,8 @@ import (
 const (
 	defaultRequestTimeout    = 30 * time.Second
 	defaultReadHeaderTimeout = 5 * time.Second
+
+	cdsPinFlags = "--cds-measurements or --cds-image-policy-file"
 )
 
 type config struct {
@@ -58,7 +60,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.host, "host", "127.0.0.1", "listen host (loopback; nginx is the public listener)")
 	f.IntVarP(&cfg.port, "port", "p", 8801, "listen port")
 	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (must use https/armTLS)")
-	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
+	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; required, unless --cds-image-policy-file names the images")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated; ignored when CDS presents SNP evidence (empty pins no registers)")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence")
@@ -129,15 +131,18 @@ func newHandler(cfg config, logger *slog.Logger) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.measurementsConfig}).Load(
-		cmdsutil.MeasurementPins{Measurements: cfg.cdsMeasurements, Registers: cfg.cdsRTMRs, Prefix: "cds-"})
+	pins, err := cmdsutil.ResolveCDSPins(
+		cmdsutil.ImagePolicySource{File: cfg.measurementsConfig},
+		cmdsutil.MeasurementPins{
+			Measurements: cfg.cdsMeasurements,
+			Registers:    cfg.cdsRTMRs,
+			Prefix:       "cds-",
+		},
+		cdsPinFlags)
 	if err != nil {
 		return nil, err
 	}
-	if len(policy.Measurements) == 0 && len(policy.Images) == 0 {
-		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS (unsafe outside development)")
-	}
-	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL)
+	httpClient, err := armtls.NewVerifyingHTTPClient(pins, cfg.attestationAPIURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
 	}

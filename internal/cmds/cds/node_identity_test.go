@@ -10,6 +10,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestAttestKeepsNodeOperatorBoundToImage(t *testing.T) {
@@ -17,8 +18,9 @@ func TestAttestKeepsNodeOperatorBoundToImage(t *testing.T) {
 	digest[0] = 0xaa
 	server, agent := []byte("server key"), []byte("agent key")
 	stub := newStubAttestationApi(t, hex.EncodeToString(digest))
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Images = []remote.ImagePin{{Name: "server", Digest: digest, Anchor: server}}
+	h := newPinnedAttestHandler(t, stub.URL(), armtls.Pins{
+		Images: []remote.ImagePin{{Name: "server", Digest: digest, Anchor: server}},
+	})
 	csr, _ := generateCSR(t)
 	for _, tc := range []struct {
 		name   string

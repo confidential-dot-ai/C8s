@@ -215,13 +215,19 @@ func TestNewHandlerRejectsBadMeasurement(t *testing.T) {
 	}
 }
 
+// An unpinned proxy would forward the router's allowlist reads to whatever
+// attested endpoint answered the CDS URL, so it refuses to be built.
+func TestNewHandlerRefusesAnUnpinnedCDS(t *testing.T) {
+	cfg := validConfig()
+	cfg.cdsMeasurements = nil
+	if _, err := newHandler(cfg, slog.Default()); err == nil {
+		t.Fatal("handler built against an unpinned CDS")
+	}
+}
+
 func TestNewHandlerServesHealthWithoutDialingCDS(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	handler, err := newHandler(config{
-		cdsURL:            "https://c8s-cds.c8s-system.svc:8443",
-		attestationAPIURL: "http://attestation-api.c8s-system.svc:8400",
-		requestTimeout:    time.Second,
-	}, logger)
+	handler, err := newHandler(validConfig(), logger)
 	if err != nil {
 		t.Fatalf("newHandler: %v", err)
 	}
@@ -343,6 +349,7 @@ func validConfig() config {
 		host:              "127.0.0.1",
 		port:              8801,
 		cdsURL:            "https://c8s-cds.c8s-system.svc:8443",
+		cdsMeasurements:   []string{strings.Repeat("ab", 48)},
 		attestationAPIURL: "http://attestation-api.c8s-system.svc:8400",
 		requestTimeout:    time.Second,
 		readHeaderTimeout: time.Second,

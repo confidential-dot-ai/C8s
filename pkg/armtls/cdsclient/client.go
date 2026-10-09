@@ -70,8 +70,7 @@ type Config struct {
 	// CDSMeasurements, when non-empty, restricts the CDS server's
 	// accepted launch digests during the armTLS handshake to this set.
 	// Each entry is a 48-byte SEV-SNP measurement. Empty means "any
-	// measurement" — UNSAFE outside development; the chart should always
-	// populate this from `cds.measurements` in values.yaml.
+	// measurement".
 	CDSMeasurements [][]byte
 
 	// CDSRTMRs, when non-empty, additionally pins CDS's TDX runtime

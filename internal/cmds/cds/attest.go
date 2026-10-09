@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -32,9 +33,8 @@ import (
 // AttestHandler serves POST /attest by verifying TEE evidence and signing the
 // requester's CSR in-process.
 //
-// THREAT MODEL: the measurement check is the only thing standing between an
-// attacker who controls a TEE workload and a CA-signed leaf for any subject
-// they choose. Empty Measurements skips this check (UNSAFE outside dev).
+// THREAT MODEL: the pin check is the only thing standing between an attacker
+// who controls a TEE workload and a CA-signed leaf for any subject they choose.
 type AttestHandler struct {
 	Challenges        *attestation.ChallengeStore
 	AttestationClient remote.Client
@@ -46,20 +46,15 @@ type AttestHandler struct {
 	// verification + signing. Zero = no timeout.
 	RequestTimeout time.Duration
 
-	// Measurements is the flat set of SHA-384 launch digests permitted
-	// to obtain a signed leaf. Empty = no measurement pinning.
-	Measurements map[string]bool
+	// Pins is the guest identity a requester must attest to before it can
+	// obtain a leaf: whole images, or the flat launch digests and TDX
+	// registers an operator supplied. The debug rule and any TCB floor it
+	// carries are requested of the attestation-api on every call.
+	Pins armtls.Pins
 
-	// RTMRs pins TDX runtime measurement registers on issuance: on TDX the
-	// launch digest (MRTD) covers the TDVF firmware alone, so without these a
-	// host can boot the pinned firmware with a substituted kernel and rootfs
-	// and still be issued a leaf. Enforced only against TDX-shaped evidence;
-	// SNP evidence is unaffected (kernel-hashes folds the guest image into
-	// its launch digest). Empty = no RTMR pinning.
-	RTMRs map[int][]byte
-
-	// Images binds each node image to an authorized launch key.
-	Images []remote.ImagePin
+	// Platforms decides whose evidence can carry a guest identity at all.
+	// newRouter requires it.
+	Platforms platformAdmission
 
 	// Policy enforces SAN/CN constraints on the CSR before signing. Without
 	// this, an attestation-passing workload could mint a leaf for any
@@ -191,6 +186,8 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 
 	verifyReq := remote.NewVerifyRequest(req.Evidence, &remote.VerifyParams{
 		ExpectedReportData: expectedReportData[:sha512.Size384],
+		AllowDebug:         teetypes.Ptr(h.Pins.AllowDebug),
+		MinTcb:             h.Pins.MinTcb,
 	}, false)
 	verifyResp, err := h.AttestationClient.VerifyEnforced(ctx, verifyReq)
 	if err != nil {
@@ -200,31 +197,12 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Read outside the pinning branch: with h.Measurements empty every
-	// measurement is admitted, so the digest a leaf was issued against is the
-	// only record of what actually attested.
+	// launchDigest records what attested for the leaf, admitted or refused.
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
-	if len(h.Images) > 0 {
-		if err := remote.EnforceImages(verifyResp, h.Images, req.Evidence.Platform); err != nil {
-			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
-			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
-			return
-		}
-	} else {
-		if len(h.Measurements) > 0 {
-			if !h.Measurements[launchDigest] {
-				slog.Warn("measurement does not match any reference value", "launch_digest", launchDigest, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "launch measurement not allowed")
-				return
-			}
-		}
-		if req.Evidence.Platform.HasRegisters() {
-			if err := remote.EnforceRTMRs(verifyResp, h.RTMRs); err != nil {
-				slog.Warn("RTMR pin not satisfied", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
-				attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "TDX runtime measurement registers not allowed")
-				return
-			}
-		}
+	if err := h.admitGuest(verifyResp, req.Evidence); err != nil {
+		slog.Warn("guest identity does not match policy", "launch_digest", launchDigest, "error", err, "remote_addr", r.RemoteAddr)
+		attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "guest identity not allowed")
+		return
 	}
 
 	policy := h.Policy
@@ -339,6 +317,20 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	slog.Info("certificate issued (in-process)", issued...)
 	w.Header().Set("Content-Type", "application/x-pem-file")
 	w.Write(slices.Concat(certPEM, caChainPEM))
+}
+
+// admitGuest decides whether verified evidence names a guest this CDS issues
+// for: Platforms settles the platform, the matcher every C8s verifier shares
+// settles the pins.
+func (h AttestHandler) admitGuest(resp remote.VerifyResponse, evidence teetypes.AttestationEvidence) error {
+	platform, err := verifiedPlatform(resp)
+	if err != nil {
+		return err
+	}
+	if err := h.Platforms.admit(platform); err != nil {
+		return err
+	}
+	return remote.EnforcePins(resp, remote.Policy(h.Pins), evidence)
 }
 
 // serialHex renders a certificate serial the way `openssl x509 -serial` does,

@@ -266,17 +266,23 @@ cds:
   ##   1. CDS admits these to call /attest.
   ##   2. The armtls-mesh daemonset and nri-image-policy plugin pin CDS's armTLS
   ##      serving cert against it when they dial CDS.
-  ## Empty = no pinning (UNSAFE outside dev).
+  ## Empty refuses issuance on CDS and refuses to start every component that
+  ## dials it: nothing then names the guest those decisions rest on.
   measurements: []
   ## TDX RTMR pins, each "<index>=<sha384-hex>", completing `measurements` on
   ## TDX: the launch digest (MRTD) covers TDVF firmware only, while RTMR[1]
   ## pins the guest kernel and RTMR[2] the command line carrying the dm-verity
   ## root hash. Used the same two ways as `measurements`: CDS requires them of
   ## TDX callers on /attest, and every component dialing CDS
-  ## pins CDS's armTLS cert against them. Ignored for SNP evidence. Empty = no
-  ## RTMR pinning (on TDX the measurement pin then confers no guest-code
-  ## identity, UNSAFE).
+  ## pins CDS's armTLS cert against them. SEV-SNP evidence carries no registers,
+  ## so a register pin refuses it on either path. On TDX these are required:
+  ## CDS refuses to start while its pins stop at the MRTD.
   rtmrs: []
+  ## Admit Azure SEV-SNP evidence on /attest. There the launch measurement
+  ## covers Azure's firmware layer and the paravisor owns HOSTDATA, so no pin
+  ## reaches the guest image: set it only for a test cluster on those VMs, and
+  ## never together with node.baked.
+  admitAzureSnp: false
   ## PEM bundle of operator EC public keys (public material, not a secret).
   ## When set, CDS accepts POST/PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
