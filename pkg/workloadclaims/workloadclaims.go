@@ -153,6 +153,11 @@ func ParseMeshProbePath(rendered string) (int32, string, error) {
 // c8s-cert to hold the workload until the first certificate lands.
 const CertWaitContainerName = "c8s-cert-wait"
 
+// MeshContainerName is the webhook-injected per-pod mesh endpoint. It reads the
+// credentials c8s-cert publishes and dials no inventory socket, so it is not a
+// SidecarContainer.
+const MeshContainerName = "c8s-mesh"
+
 // IsSidecarContainer reports whether name is one of the injected sidecars that
 // receive the inventory socket-directory mount.
 func IsSidecarContainer(name string) bool {
@@ -163,7 +168,7 @@ func IsSidecarContainer(name string) bool {
 // injects. Names are host-written, so it holds only over authored input;
 // runtime matching goes by digest and entrypoint (internal/secrets.WorkloadContainers).
 func IsInjectedContainerName(name string) bool {
-	return IsSidecarContainer(name) || name == CertWaitContainerName
+	return IsSidecarContainer(name) || name == CertWaitContainerName || name == MeshContainerName
 }
 
 // InventoryEndpoint is get-cert's compiled inventory endpoint on node-CVM: the
