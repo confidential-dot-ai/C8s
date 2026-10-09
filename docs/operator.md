@@ -1193,6 +1193,61 @@ spec:
 
 These are inert on a cluster whose CNI does not enforce NetworkPolicy.
 
+### Workload namespaces with default-deny egress
+
+The node mesh DNATs every TCP connection from one pod to another to the
+node's outbound listener, `nodeIP:15001` (`armtlsMesh.ports.outbound`),
+including connections between pods on the same node. The CNI applies the
+source pod's egress policy after that rewrite, so what it must allow is
+egress to port 15001, not the destination pod's port. A namespace that
+isolates egress and allows only its intended peers therefore drops every
+intercepted connection before the mesh sees it, and nothing logs the drop:
+`armtls_mesh_connections_total` stays at zero.
+
+The operator closes this for you. Beside every NetworkPolicy whose
+`policyTypes` include `Egress`, in a namespace the mesh intercepts, it keeps
+a companion named `<policy>-mesh-egress` that selects the same pods and
+allows egress to TCP 15001 and nothing else:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-mesh-egress
+  namespace: my-app
+  labels:
+    app.kubernetes.io/managed-by: c8s-operator
+    c8s.confidential.ai/mesh-egress-companion: "true"
+  ownerReferences: [<the default-deny policy>]
+spec:
+  podSelector: <copied from default-deny>
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 15001
+```
+
+The companion is additive and never isolates a pod on its own: it exists
+only where a policy of yours already isolates egress, and it copies that
+policy's `podSelector`. It follows the source: a selector change is
+mirrored, dropping `Egress` from the source's `policyTypes` deletes the
+companion, and deleting the source garbage-collects it. The rule names no
+peer because the rewritten destination is the node's own address, which
+CNIs classify as the host rather than as a CIDR peer. Namespaces in
+`armtlsMesh.iptablesSync.excludeSourceNamespaces` are not intercepted and
+get no companions. A policy whose own rules already admit TCP to the port
+for every destination, such as an allow-all or all-TCP rule, or the chart's
+`armtls-mesh-tcp-only-egress`, gets none either. Turn the mechanism off
+with `armtlsMesh.egressCompanionPolicy.enabled=false` and add the rule above
+to your own policies instead.
+
+The same rewrite means the CNI cannot enforce egress rules that name
+specific pod peers between confidential pods: every intercepted connection
+reaches it as a connection to the node, and the mesh's own guards decide
+what reaches a confidential pod. Service-VIP dials to confidential pods are
+dropped by the cw guard described in the [Overview](#overview).
+
 ## Validation
 
 Run the full Go suite:
