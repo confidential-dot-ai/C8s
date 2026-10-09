@@ -30,6 +30,15 @@ stamped and diffed like the rest, and the same digest may also appear
 elsewhere under a narrower policy — see [union
 semantics](#a-digest-may-run-many-ways).
 
+### Platform roles (`role`)
+
+A container of the NRI plugin's measured base allowlist may carry `role` —
+`mesh`, `get-cert`, `get-secret`, `get-volume` or `router` — which the enforcer
+grants to a container whose verified identity matches that declaration. The
+field is YAML-only, so no served document can claim a role. The node's `mesh`
+policy binds each role to its reserved UID and destinations. See
+`docs/armtls.md`.
+
 ### Document shape
 
 ```json

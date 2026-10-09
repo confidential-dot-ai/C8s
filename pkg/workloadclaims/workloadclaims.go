@@ -211,9 +211,10 @@ type SandboxContainer struct {
 // node-CVM resolver binds peer.PID() to a pod and rechecks peer.IsAlive()
 // after its /proc read to reject PID reuse.
 type SandboxResolver interface {
-	// SandboxForPeer returns the pod sandbox ID of the calling process,
-	// bound by kernel peer credentials exactly like ContainersForPeer.
-	SandboxForPeer(peer Peer) (string, error)
+	// SandboxForPeer returns the calling process's pod sandbox, bound by
+	// kernel peer credentials exactly like ContainersForPeer, with the
+	// enforcer's verification of that sandbox's packet protection.
+	SandboxForPeer(peer Peer) (CallerSandbox, error)
 	// DigestsForSandbox returns every container ever admitted in the named
 	// sandbox — deduplicated digests for issuance, and the per-container
 	// (digest, argv) detail for secret release. Admitted means the container
@@ -221,6 +222,15 @@ type SandboxResolver interface {
 	// sandbox (a 404 on the wire); a known sandbox with no containers returns
 	// empty slices.
 	DigestsForSandbox(sandboxID string) (digests []string, containers []SandboxContainer, known bool, err error)
+}
+
+// CallerSandbox is what an inventory establishes about a token caller: the pod
+// sandbox the kernel-bound caller runs in, and why no assertion may be signed
+// for it. A nil Refusal states that the enforcer verifies that sandbox as a
+// protected mesh member, or that the node hosts no member pods.
+type CallerSandbox struct {
+	SandboxID string
+	Refusal   error
 }
 
 // connKey carries the accepted net.Conn through the request context so the
@@ -279,12 +289,21 @@ func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, 
 		}
 		peer := peerFromRequest(r)
 		defer peer.Close()
-		id, err := resolver.SandboxForPeer(peer)
+		caller, err := resolver.SandboxForPeer(peer)
 		if err != nil {
 			http.Error(w, fmt.Sprintf("resolve caller sandbox: %v", err), http.StatusInternalServerError)
 			return
 		}
-		token, err := signer.Sign(id, keyDigest, req.Nonce)
+		// Required for every nonce and consumer, so it is checked here.
+		if caller.Refusal != nil {
+			http.Error(w, fmt.Sprintf("no assertion for this caller: %v", caller.Refusal), http.StatusForbidden)
+			return
+		}
+		token, err := signForLiveCaller(signer, peer, caller.SandboxID, keyDigest, req.Nonce)
+		if errors.Is(err, errCallerExited) {
+			http.Error(w, err.Error(), http.StatusForbidden)
+			return
+		}
 		if err != nil {
 			http.Error(w, fmt.Sprintf("sign sandbox token: %v", err), http.StatusInternalServerError)
 			return
@@ -293,6 +312,22 @@ func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, 
 		_ = json.NewEncoder(w).Encode(token)
 	})
 	return serveUntil(ctx, l, mux)
+}
+
+// errCallerExited reports a caller that stopped being the live process.
+var errCallerExited = errors.New("the caller exited before its assertion was signed")
+
+// signForLiveCaller withholds the assertion unless the caller is still that
+// process, so an exit transfers no identity to whatever inherits the socket.
+func signForLiveCaller(signer *SandboxTokenSigner, peer Peer, sandboxID string, keyDigest, nonce []byte) (*SignedSandboxToken, error) {
+	token, err := signer.Sign(sandboxID, keyDigest, nonce)
+	if err != nil {
+		return nil, err
+	}
+	if !peer.IsAlive() {
+		return nil, errCallerExited
+	}
+	return token, nil
 }
 
 // ServeDigests runs the CDS-facing digests endpoint on l until ctx is done. It

@@ -29,6 +29,7 @@ func newTestPlugin(cfg *config) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, slog.Default()),
 	}
 }
 
@@ -302,6 +303,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 		logger:     slog.Default(),
 		policy:     newPolicyStore(nil),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	p.SetReady()
 
@@ -707,6 +709,7 @@ func newCachedPlugin(cfg *config, wl *allowlist.Allowlist) (*plugin, *policyStor
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	return p, store
 }
@@ -1235,6 +1238,7 @@ func basePlugin(t *testing.T) *plugin {
 		audit:      audit.NewLogger(),
 		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
 		containerd: &fakeContainerd{},
+		mesh:       newMeshGate(nil, discardLogger()),
 	}
 	p.inventory = newAdmissionInventory("/proc")
 	return p
