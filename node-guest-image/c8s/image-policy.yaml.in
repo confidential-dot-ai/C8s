@@ -349,6 +349,12 @@ allowlist:
                 - destination: "/discovery"
                   kind: "emptyDir"
                   source: "discovery"
+                # The route data, which the front door validates itself: a
+                # ConfigMap is operator-supplied data, so it is pinned by
+                # volume name below the reserved data prefix.
+                - destination: "/mnt/c8s-data/router-routes"
+                  kind: "data"
+                  source: "router-routes"
                 - destination: "/var/cache/nginx"
                   kind: "emptyDir"
                   source: "nginx-cache"
@@ -375,6 +381,9 @@ allowlist:
                 - destination: "/discovery"
                   kind: "emptyDir"
                   source: "discovery"
+                - destination: "/mnt/c8s-data/router-routes"
+                  kind: "data"
+                  source: "router-routes"
                 - destination: "/var/cache/nginx"
                   kind: "emptyDir"
                   source: "nginx-cache"
@@ -403,6 +412,12 @@ allowlist:
                 - destination: "/discovery"
                   kind: "emptyDir"
                   source: "discovery"
+                # The route data, which the front door validates itself: a
+                # ConfigMap is operator-supplied data, so it is pinned by
+                # volume name below the reserved data prefix.
+                - destination: "/mnt/c8s-data/router-routes"
+                  kind: "data"
+                  source: "router-routes"
                 - destination: "/var/cache/nginx"
                   kind: "emptyDir"
                   source: "nginx-cache"

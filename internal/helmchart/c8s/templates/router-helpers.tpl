@@ -364,6 +364,9 @@ Caller nindents into the nginx container's args.
 {{- /* The sole virtual host accepts the launch-signed SAN, which the
        certificate sidecar reads from the verified host file at runtime. */}}
 - --san=_
+{{- /* A baked node's arguments are fixed at image build, so its route data
+       comes from the mounted file instead. */}}
+- --routes-file={{ include "router.routesFile" . }}
 {{- else }}
 {{- range $san := (include "router.sanList" . | fromJsonArray) }}
 - --san={{ $san }}
@@ -374,23 +377,27 @@ Caller nindents into the nginx container's args.
 - --cert={{ include "c8s.certFile" . }}
 - --key={{ include "c8s.keyFile" . }}
 - --mesh-ca={{ include "c8s.caFile" . }}
-{{- if or $upstreamAddress .Values.router.routes }}
+{{- /* The baked lane always names the resolver: a backend its routes file
+       gains at runtime is a name the image was not built with. */}}
+{{- if or $upstreamAddress .Values.router.routes .Values.node.baked }}
 - --resolver={{ include "c8s.router.resolver" . }}
 {{- end }}
-{{- if $upstreamAddress }}
 {{- $readTimeout := toString (required "router.upstream.readTimeout is required" .Values.router.upstream.readTimeout) }}
 {{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) }}
 {{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) }}
 {{- end }}
+- --backend-read-timeout={{ $readTimeout }}
+{{- if and $upstreamAddress (not .Values.node.baked) }}
 - --backend={{ $upstreamAddress }}
 - --backend-protocol={{ .Values.router.upstream.protocol }}
-- --backend-read-timeout={{ $readTimeout }}
 {{- with .Values.router.upstream.serverName }}
 - --backend-server-name={{ . }}
 {{- end }}
 {{- end }}
+{{- if not .Values.node.baked }}
 {{- range $i, $route := .Values.router.routes }}
 - --route={{ include "router.routeFields" (dict "route" $route "index" $i) }}
+{{- end }}
 {{- end }}
 {{- if .Values.router.attest.enabled }}
 - --attest-port={{ .Values.router.attest.port }}
@@ -466,3 +473,45 @@ Args: route, index (for the failure message).
 {{- end -}}
 {{- join "," $fields -}}
 {{- end -}}
+
+{{/*
+The front door's route data as typed JSON, the same values router.nginxArgs
+passes as flags. The baked lane reads it from the mounted file instead, since
+a baked node's args cannot be edited after the image is built.
+*/}}
+{{- define "router.routesJSON" -}}
+{{- $backend := dict -}}
+{{- with .Values.router.upstream.address | trim -}}
+{{- $backend = dict "address" . "protocol" $.Values.router.upstream.protocol -}}
+{{- with $.Values.router.upstream.serverName -}}
+{{- $backend = merge $backend (dict "serverName" .) -}}
+{{- end -}}
+{{- end -}}
+{{- $routes := list -}}
+{{- range $i, $route := .Values.router.routes -}}
+{{- $r := dict "path" $route.path "match" (default "prefix" $route.match) -}}
+{{- $b := dict "address" $route.backend.address "protocol" (default "http" $route.backend.protocol) -}}
+{{- with $route.backend.serverName -}}
+{{- $b = merge $b (dict "serverName" .) -}}
+{{- end -}}
+{{- $r = merge $r (dict "backend" $b) -}}
+{{- if and (hasKey $route "cors") (hasKey (default dict $route.cors) "enabled") -}}
+{{- $r = merge $r (dict "cors" $route.cors.enabled) -}}
+{{- end -}}
+{{- $routes = append $routes $r -}}
+{{- end -}}
+{{- $file := dict "routes" $routes -}}
+{{- if $backend -}}
+{{- $file = merge $file (dict "backend" $backend) -}}
+{{- end -}}
+{{- $file | toPrettyJson -}}
+{{- end -}}
+
+{{/*
+The mount the front door reads its route data from. A ConfigMap is observed as
+operator-supplied data, so the destination is below the reserved data prefix
+(pkg/allowlist.DataMountPrefix) and the measured base pins it there by volume
+name.
+*/}}
+{{- define "router.routesDir" -}}/mnt/c8s-data/router-routes{{- end -}}
+{{- define "router.routesFile" -}}{{ include "router.routesDir" . }}/routes.json{{- end -}}
