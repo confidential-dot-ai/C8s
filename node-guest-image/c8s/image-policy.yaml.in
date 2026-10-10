@@ -211,6 +211,12 @@ allowlist:
               rules:
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
+                  source: "c8s-certs"
+      # The credential clients come in two shapes: the injected one, whose
+      # volumes are the pod's own business, and the router pod's, whose mount
+      # set is pinned because a pod of that namespace runs a role container
+      # only under a declaration that pins it (the credentials of that pod are
+      # separated by mount set alone).
       c8s-get-cert:
         label: "c8s get-cert"
         containers:
@@ -221,6 +227,58 @@ allowlist:
             # Per pod: the SAN it requests and the discovery files it writes.
             args: {policy: any}
             mounts: {policy: any}
+          # The router pod's certificate sidecar: the member credential it
+          # writes, the discovery file it publishes, the launch-signed SAN it
+          # reads and the node inventory it redeems its token at.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-cert"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/discovery"
+                  kind: "emptyDir"
+                  source: "discovery"
+                - destination: "/run/c8s-node"
+                  kind: "host"
+                  source: "/run/c8s-node"
+                  readOnly: true
+                - destination: "/run/c8s/workload-claims"
+                  kind: "host"
+                  source: "/var/run/nri-image-policy"
+                  readOnly: true
+          # The webpki front door's sidecar reads the Secret as well, which it
+          # reports in the discovery document.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "get-cert"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/discovery"
+                  kind: "emptyDir"
+                  source: "discovery"
+                - destination: "/mnt/c8s-data/public-tls"
+                  kind: "data"
+                  source: "public-tls"
+                - destination: "/run/c8s-node"
+                  kind: "host"
+                  source: "/run/c8s-node"
+                  readOnly: true
+                - destination: "/run/c8s/workload-claims"
+                  kind: "host"
+                  source: "/var/run/nri-image-policy"
+                  readOnly: true
       c8s-probe-file:
         label: "c8s probe-file"
         containers:
@@ -231,6 +289,19 @@ allowlist:
             args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
             # Per pod: the discovery volume get-cert writes.
             mounts: {policy: any}
+          # The router pod's gate waits on the member credential and holds
+          # nothing else.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "credentials"
+            command: {policy: exact, argv: ["/c8s", "probe-file"]}
+            args: {policy: exact, argv: ["--wait", "--timeout=3m0s", "/etc/c8s/certs/tls.crt"]}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
       c8s-get-secret:
         label: "c8s get-secret"
         containers:
@@ -274,12 +345,16 @@ allowlist:
               rules:
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
+                  source: "c8s-certs"
                 - destination: "/discovery"
                   kind: "emptyDir"
+                  source: "discovery"
                 - destination: "/var/cache/nginx"
                   kind: "emptyDir"
+                  source: "nginx-cache"
                 - destination: "/tmp"
                   kind: "emptyDir"
+                  source: "nginx-tmp"
           # The webpki front door serves an operator-supplied Secret, which
           # the kubelet presents as data, so its destination sits below the
           # reserved data prefix.
@@ -293,15 +368,21 @@ allowlist:
               rules:
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
+                  source: "c8s-certs"
                 - destination: "/mnt/c8s-data/public-tls"
                   kind: "data"
+                  source: "public-tls"
                 - destination: "/discovery"
                   kind: "emptyDir"
+                  source: "discovery"
                 - destination: "/var/cache/nginx"
                   kind: "emptyDir"
+                  source: "nginx-cache"
                 - destination: "/tmp"
                   kind: "emptyDir"
-          # The acme front door reads the leaf its sidecar mints as well.
+                  source: "nginx-tmp"
+          # The acme front door reads the leaf its sidecar mints, and is the
+          # only container that also mounts that leaf's key.
           - digest: "@ROUTER_DIGEST@"
             image: "@ROUTER_REPO@@@ROUTER_DIGEST@"
             role: "router"
@@ -312,14 +393,22 @@ allowlist:
               rules:
                 - destination: "/etc/c8s/certs"
                   kind: "emptyDir"
+                  source: "c8s-certs"
                 - destination: "/etc/c8s-acme-tls"
                   kind: "emptyDir"
+                  source: "acme-tls"
+                - destination: "/etc/c8s-acme-key"
+                  kind: "emptyDir"
+                  source: "acme-key"
                 - destination: "/discovery"
                   kind: "emptyDir"
+                  source: "discovery"
                 - destination: "/var/cache/nginx"
                   kind: "emptyDir"
+                  source: "nginx-cache"
                 - destination: "/tmp"
                   kind: "emptyDir"
+                  source: "nginx-tmp"
       c8s-acme:
         label: "c8s acme"
         containers:
@@ -330,13 +419,21 @@ allowlist:
             # Per cluster: the domains it proves, the ACME directory it uses
             # and the account it registers.
             args: {policy: any}
-            # Its own leaf's volume and nothing else: the ACME key is the one
-            # credential this role mints for itself.
+            # Its own leaf's volumes and nothing else: the ACME key is the
+            # one credential this role mints for itself, and it is written
+            # apart from the chain so a reader of the chain never holds it.
             mounts:
               policy: exact
               rules:
                 - destination: "/etc/c8s-acme-tls"
                   kind: "emptyDir"
+                  source: "acme-tls"
+                - destination: "/etc/c8s-acme-key"
+                  kind: "emptyDir"
+                  source: "acme-key"
+      # It binds the leaf the front door presents, so it mounts the chain and
+      # never the key beside it: it runs as the router identity too, and the
+      # mount set is the only thing that separates them.
       c8s-cds-attest:
         label: "c8s cds-attest"
         containers:
@@ -346,7 +443,55 @@ allowlist:
             command: {policy: exact, argv: ["/c8s", "cds-attest"]}
             # Per cluster: the upstream it fronts and the leaf it binds.
             args: {policy: any}
-            mounts: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/var/run/nri-image-policy"
+                  kind: "host"
+                  source: "/var/run/nri-image-policy"
+                  readOnly: true
+          # The webpki front door's attestation sidecar reads the Secret the
+          # front door serves.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "router"
+            command: {policy: exact, argv: ["/c8s", "cds-attest"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/mnt/c8s-data/public-tls"
+                  kind: "data"
+                  source: "public-tls"
+                - destination: "/var/run/nri-image-policy"
+                  kind: "host"
+                  source: "/var/run/nri-image-policy"
+                  readOnly: true
+          # The acme front door's attestation sidecar reads that leaf as well.
+          - digest: "@OPERATOR_DIGEST@"
+            image: "@OPERATOR_REPO@@@OPERATOR_DIGEST@"
+            role: "router"
+            command: {policy: exact, argv: ["/c8s", "cds-attest"]}
+            args: {policy: any}
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/etc/c8s/certs"
+                  kind: "emptyDir"
+                  source: "c8s-certs"
+                - destination: "/etc/c8s-acme-tls"
+                  kind: "emptyDir"
+                  source: "acme-tls"
+                - destination: "/var/run/nri-image-policy"
+                  kind: "host"
+                  source: "/var/run/nri-image-policy"
+                  readOnly: true
       c8s-allowlist-proxy:
         label: "c8s allowlist-proxy"
         containers:
@@ -356,7 +501,15 @@ allowlist:
             command: {policy: exact, argv: ["/c8s", "allowlist-proxy"]}
             # Per cluster: the port it listens on.
             args: {policy: any}
-            mounts: {policy: any}
+            # The node's own inventory socket directory, which is where it
+            # reaches the verifier it dials CDS through.
+            mounts:
+              policy: exact
+              rules:
+                - destination: "/run/c8s/workload-claims"
+                  kind: "host"
+                  source: "/var/run/nri-image-policy"
+                  readOnly: true
   pull:
     # Authenticated launch staging replaces this endpoint with the server's
     # CDS URL. The pull loop retries while the baked CDS service starts;

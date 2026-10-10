@@ -10,7 +10,7 @@ carries the key across container restarts.
 
 Both containers hold the credentials role, which the node's measured base
 grants to the pinned argv they run ([mesh endpoint helpers](../mesh/README.md)),
-so the credential paths, the `tls-certs` volume, the reserved identity and the
+so the credential paths, the `c8s-certs` volume, the reserved identity and the
 wait container's timeout are the injector's: `c8s.certDir`, `c8s.certFile`,
 `c8s.keyFile`, `c8s.caFile` and `c8s.credentialsUID` in
 [_helpers.tpl](../../templates/_helpers.tpl) are the single source for them.

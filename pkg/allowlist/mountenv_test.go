@@ -1,8 +1,11 @@
 package allowlist
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -300,5 +303,82 @@ func TestServedParseIgnoresUnknownFields(t *testing.T) {
 	}
 	if _, err := ParseJSON([]byte(doc)); err == nil {
 		t.Error("ParseJSON accepted an unknown field in an operator-authored document")
+	}
+}
+
+// The volume name behind an emptyDir or data rule is a property of the
+// measured boot config the node reads as YAML. Nothing on the wire names a pod
+// volume, so a document that arrives as JSON — served by CDS or authored by an
+// operator — is refused when it carries one, and served allowlists keep the
+// shape every consumer of this format agrees on.
+func TestJSONRefusesAVolumeBinding(t *testing.T) {
+	for _, kind := range []MountClass{MountEmptyDir, MountData} {
+		t.Run(string(kind), func(t *testing.T) {
+			entry := fmt.Sprintf(`{"containers":[{"digest":%q,"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/x","kind":%q,"source":"vol"}]}}]}`, digestA, kind)
+			document := fmt.Sprintf(`{"schema":"c8s.allowlist/v1","workloads":{"w":%s}}`, entry)
+			if _, err := ParseJSON([]byte(document)); err == nil || !strings.Contains(err.Error(), "names a volume") {
+				t.Errorf("ParseJSON error = %v, want the volume-binding refusal", err)
+			}
+			if _, err := ParseServedJSON([]byte(document)); err == nil || !strings.Contains(err.Error(), "names a volume") {
+				t.Errorf("ParseServedJSON error = %v, want the volume-binding refusal", err)
+			}
+			if _, err := ParseWorkloadJSON([]byte(entry)); err == nil || !strings.Contains(err.Error(), "names a volume") {
+				t.Errorf("ParseWorkloadJSON error = %v, want the volume-binding refusal", err)
+			}
+		})
+	}
+}
+
+// The same rule in a boot config binds the mount to the volume the node named,
+// which is the volume the kubelet staged it from — not the last segment of its
+// path, so a mount read out of another volume cannot satisfy it.
+func TestYAMLBindsTheVolumeTheNodeNamed(t *testing.T) {
+	document := fmt.Sprintf(`
+schema: c8s.allowlist/v1
+workloads:
+  w:
+    containers:
+      - digest: %q
+        command: {policy: any}
+        args: {policy: any}
+        mounts:
+          policy: exact
+          rules:
+            - destination: /etc/c8s-acme-key
+              kind: emptyDir
+              source: acme-key
+`, digestA)
+	var a Allowlist
+	if err := yaml.Unmarshal([]byte(document), &a); err != nil {
+		t.Fatalf("decode the boot config: %v", err)
+	}
+	if err := a.Normalize(); err != nil {
+		t.Fatalf("a boot config may bind a volume: %v", err)
+	}
+	c := a.Workloads["w"].Containers[0]
+	bound := RunningContainer{
+		Digest: digestA,
+		Mounts: []ObservedMount{{
+			Destination: "/etc/c8s-acme-key",
+			Volume:      "acme-key",
+			Class:       MountEmptyDir,
+			Storage:     MountMemory,
+		}},
+	}
+	if !c.admits(bound) {
+		t.Error("the bound volume was refused at its own destination")
+	}
+	fromAnotherVolume := RunningContainer{
+		Digest: digestA,
+		Mounts: []ObservedMount{{
+			Destination: "/etc/c8s-acme-key",
+			Source:      "/var/lib/kubelet/pods/pod/volumes/kubernetes.io~empty-dir/other/acme-key",
+			Volume:      "other",
+			Class:       MountEmptyDir,
+			Storage:     MountMemory,
+		}},
+	}
+	if c.admits(fromAnotherVolume) {
+		t.Error("a mount out of another volume satisfied the binding")
 	}
 }

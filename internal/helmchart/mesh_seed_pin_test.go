@@ -18,10 +18,13 @@ const (
 )
 
 // meshCertMount is the injected credential volume as the node classifies it: a
-// memory-backed emptyDir the pod's fsGroup owns.
-func meshCertMount(destination string) pkgallowlist.ObservedMount {
+// memory-backed emptyDir the pod's fsGroup owns, under the name the injector
+// gives it (internal/webhook/pod_mutator.go).
+func meshCertMount(destination, volume string) pkgallowlist.ObservedMount {
 	return pkgallowlist.ObservedMount{
 		Destination: destination,
+		Source:      podVolumeSource(volume),
+		Volume:      volume,
 		Class:       pkgallowlist.MountEmptyDir,
 		Storage:     pkgallowlist.MountMemory,
 	}
@@ -40,7 +43,7 @@ func injectedMeshLaunch() pkgallowlist.RunningContainer {
 			"--key-path=/etc/c8s/certs/tls.key",
 			"--ca-path=/etc/c8s/certs/ca.crt",
 		},
-		Mounts: []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs")},
+		Mounts: []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs", "c8s-certs")},
 	}
 }
 
@@ -94,17 +97,17 @@ func TestChartSeedPinsTheMeshEndpointLaunch(t *testing.T) {
 		},
 		{
 			name:     "another command line",
-			launch:   meshLaunchWith([]string{"/bin/sh", "-c", "cat /etc/c8s/certs/tls.key"}, []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs")}),
+			launch:   meshLaunchWith([]string{"/bin/sh", "-c", "cat /etc/c8s/certs/tls.key"}, []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs", "c8s-certs")}),
 			admitted: false,
 		},
 		{
 			name:     "another credential path",
-			launch:   meshLaunchWith([]string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"}, []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs")}),
+			launch:   meshLaunchWith([]string{"/app/c8s", "armtls-mesh", "--cert-path=/etc/c8s/certs/tls.crt"}, []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs", "c8s-certs")}),
 			admitted: false,
 		},
 		{
 			name:     "an extra mount",
-			launch:   meshLaunchWith(nil, []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs"), meshCertMount("/etc/c8s/elsewhere")}),
+			launch:   meshLaunchWith(nil, []pkgallowlist.ObservedMount{meshCertMount("/etc/c8s/certs", "c8s-certs"), meshCertMount("/etc/c8s/elsewhere", "elsewhere")}),
 			admitted: false,
 		},
 		{

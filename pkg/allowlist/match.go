@@ -18,9 +18,12 @@ type RunningContainer struct {
 
 // ObservedMount is a bind mount classified by the node. Source is diagnostic
 // node-local detail and is excluded from workload identity serialization.
+// Volume is the pod volume the node read the mount out of, where it is one of
+// the pod's own: the name an exact rule binds.
 type ObservedMount struct {
 	Destination      string       `json:"destination"`
 	Source           string       `json:"-"`
+	Volume           string       `json:"-"`
 	Class            MountClass   `json:"class"`
 	Storage          MountStorage `json:"storage"`
 	HostSourceDigest string       `json:"hostSourceDigest,omitempty"`
@@ -163,6 +166,12 @@ func (c Container) admitsProcess(r RunningContainer) bool {
 		return false
 	}
 	return (processConstraint{command: &c.Command, args: &c.Args}).admits(r)
+}
+
+// pinned reports whether the policy states the mount set itself: exact names
+// every non-platform mount, and deny and an absent policy admit none.
+func (p MountPolicy) pinned() bool {
+	return p.Policy != PolicyAny
 }
 
 // admits checks classified final mount evidence. Platform mounts are the

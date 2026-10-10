@@ -23,7 +23,7 @@ var testDomains = []string{"lb.example.com", "infer.lb.example.com"}
 // validation hits the manager's own challenge handler.
 func newTestManager(t *testing.T, ca *testCA, domains []string) *manager {
 	t.Helper()
-	mgr := newManager("", "ops@example.com", t.TempDir(), domains, slog.Default())
+	mgr := newManager("", "ops@example.com", t.TempDir(), t.TempDir(), domains, slog.Default())
 	challengeSrv := httptest.NewServer(mgr.handler())
 	t.Cleanup(challengeSrv.Close)
 	// The front-door probe hits the challenge listener directly.
@@ -102,7 +102,7 @@ func TestIssueHTTP01MultiSAN(t *testing.T) {
 
 func TestNeedsIssueAtTwoThirdsLifetime(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 
 	// A cert 3/4 through its lifetime must renew; install one backdated.
 	key, chain := backdatedCert(t, ca, testDomains, -9*time.Hour, 3*time.Hour)
@@ -125,7 +125,7 @@ func TestNeedsIssueOnDomainSetChange(t *testing.T) {
 		{"stale extra domain", testDomains, []string{"lb.example.com"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			mgr := newManager("", "", t.TempDir(), tc.configured, slog.Default())
+			mgr := newManager("", "", t.TempDir(), t.TempDir(), tc.configured, slog.Default())
 			key, chain := backdatedCert(t, ca, tc.certNames, -time.Hour, 24*time.Hour)
 			writeCertPair(t, mgr, key, chain)
 			if !mgr.needsIssue() {
@@ -140,7 +140,7 @@ func TestNeedsIssueOnDomainSetChange(t *testing.T) {
 // real certificate is installed.
 func TestBootstrapWritesSelfSignedPlaceholder(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	if err := mgr.bootstrap(); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestRunLoopIssuesAndStops(t *testing.T) {
 }
 
 func TestHandlerRejectsUnknownPaths(t *testing.T) {
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	mgr.tokens["known"] = "known.auth"
 	h := mgr.handler()
 	for path, want := range map[string]int{
@@ -233,7 +233,7 @@ func TestHandlerRejectsUnknownPaths(t *testing.T) {
 }
 
 func TestAccountKey(t *testing.T) {
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	key, err := mgr.accountKey()
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestAccountKey(t *testing.T) {
 	}
 
 	// A corrupted key fails closed, through acmeClient too.
-	path := filepath.Join(mgr.dir, accountKeyFile)
+	path := filepath.Join(mgr.keyDir, accountKeyFile)
 	if err := os.WriteFile(path, []byte("garbage"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -277,20 +277,20 @@ func TestAccountKeyStoreErrors(t *testing.T) {
 	if err := os.Mkdir(ro, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	mgr := newManager("", "", filepath.Join(ro, "acme"), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), filepath.Join(ro, "acme"), testDomains, slog.Default())
 	if _, err := mgr.accountKey(); err == nil {
 		t.Fatal("account key created under an un-creatable dir")
 	}
 
 	// Key store dir not writable.
-	mgr.dir = ro
+	mgr.keyDir = ro
 	if _, err := mgr.accountKey(); err == nil {
 		t.Fatal("account key written into a read-only dir")
 	}
 }
 
 func TestClientRegistrationFailure(t *testing.T) {
-	mgr := newManager("http://127.0.0.1:1/dir", "ops@example.com", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("http://127.0.0.1:1/dir", "ops@example.com", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	if _, err := mgr.acmeClient(context.Background()); err == nil {
 		t.Fatal("acmeClient succeeded against an unreachable directory")
 	}
@@ -320,16 +320,16 @@ func TestEnsureSkipsFreshCert(t *testing.T) {
 }
 
 func TestEnsureLogsIssuanceFailure(t *testing.T) {
-	mgr := newManager("http://127.0.0.1:1/dir", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("http://127.0.0.1:1/dir", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	mgr.ensure(context.Background())
 	if !mgr.needsIssue() {
 		t.Fatal("certificate exists after failed issuance")
 	}
 }
 
-func TestNeedsIssueRequiresKeyBesideCert(t *testing.T) {
+func TestNeedsIssueRequiresKeyWithCert(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	_, chain := backdatedCert(t, ca, testDomains, -time.Hour, 24*time.Hour)
 	if err := os.WriteFile(mgr.certPath(), chain, 0o644); err != nil {
 		t.Fatal(err)
@@ -352,7 +352,7 @@ func TestEnsureFailsClosedOnDirectoryErrors(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ca := newTestCA(t)
-			mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+			mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 			challengeSrv := httptest.NewServer(mgr.handler())
 			t.Cleanup(challengeSrv.Close)
 			f := newFakeACME(t, ca, challengeSrv.URL)
@@ -378,7 +378,7 @@ func TestRunLoopRetriesAfterFailure(t *testing.T) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
 	t.Cleanup(srv.Close)
-	mgr := newManager(srv.URL+"/dir", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager(srv.URL+"/dir", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	mgr.recheck = time.Hour
 	mgr.retry = 10 * time.Millisecond
 
@@ -404,7 +404,7 @@ func TestRunLoopRetriesAfterFailure(t *testing.T) {
 // unreachable) fails Accept, not the whole process.
 func TestEnsureFailsWhenChallengeUnreachable(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 	// No challenge listener: the fake CA's validation fetch fails.
 	f := newFakeACME(t, ca, "http://127.0.0.1:1")
 	mgr.directoryURL = f.directoryURL()
@@ -417,17 +417,17 @@ func TestEnsureFailsWhenChallengeUnreachable(t *testing.T) {
 	}
 }
 
-// A cert-dir that turns read-only fails the key install closed.
-func TestIssueFailsOnReadOnlyCertDir(t *testing.T) {
+// A key-dir that turns read-only fails the key install closed.
+func TestIssueFailsOnReadOnlyKeyDir(t *testing.T) {
 	ca := newTestCA(t)
 	mgr := newTestManager(t, ca, testDomains)
 	if _, err := mgr.accountKey(); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(mgr.dir, 0o555); err != nil {
+	if err := os.Chmod(mgr.keyDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(mgr.dir, 0o700) })
+	t.Cleanup(func() { _ = os.Chmod(mgr.keyDir, 0o700) })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -442,7 +442,7 @@ func TestBootstrapFailsOnUncreatableDir(t *testing.T) {
 	if err := os.Mkdir(ro, 0o555); err != nil {
 		t.Fatal(err)
 	}
-	mgr := newManager("", "", filepath.Join(ro, "tls"), testDomains, slog.Default())
+	mgr := newManager("", "", filepath.Join(ro, "tls"), filepath.Join(ro, "key"), testDomains, slog.Default())
 	if err := mgr.bootstrap(); err == nil {
 		t.Fatal("bootstrap wrote under an un-creatable dir")
 	}
@@ -450,7 +450,7 @@ func TestBootstrapFailsOnUncreatableDir(t *testing.T) {
 
 func TestFulfillAuthorizationSkipsValidAuthz(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "", t.TempDir(), []string{"lb.example.com"}, slog.Default())
+	mgr := newManager("", "", t.TempDir(), t.TempDir(), []string{"lb.example.com"}, slog.Default())
 	challengeSrv := httptest.NewServer(mgr.handler())
 	t.Cleanup(challengeSrv.Close)
 	f := newFakeACME(t, ca, challengeSrv.URL)
@@ -472,7 +472,8 @@ func TestFulfillAuthorizationSkipsValidAuthz(t *testing.T) {
 	}
 }
 
-// writeCertPair installs a key + chain under the manager's cert-dir.
+// writeCertPair installs the chain under the cert-dir and its key under the
+// key-dir.
 func writeCertPair(t *testing.T, mgr *manager, keyPEM, chainPEM []byte) {
 	t.Helper()
 	if err := os.WriteFile(mgr.keyPath(), keyPEM, 0o600); err != nil {
@@ -488,7 +489,7 @@ func writeCertPair(t *testing.T, mgr *manager, keyPEM, chainPEM []byte) {
 // failed validation per SAN on every fresh pod.
 func TestIssueWaitsForFrontDoor(t *testing.T) {
 	ca := newTestCA(t)
-	mgr := newManager("", "ops@example.com", t.TempDir(), testDomains, slog.Default())
+	mgr := newManager("", "ops@example.com", t.TempDir(), t.TempDir(), testDomains, slog.Default())
 
 	// Stub nginx: refuses the challenge path until "up" flips, like a
 	// container still waiting on its startup gate.

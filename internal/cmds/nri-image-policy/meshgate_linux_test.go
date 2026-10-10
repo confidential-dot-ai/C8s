@@ -11,8 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/containerd/nri/pkg/api"
-
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
 )
 
@@ -183,10 +181,7 @@ func TestProtectRefusesASandboxItCannotProve(t *testing.T) {
 	if gate.pods[pod.GetId()].refusal == nil {
 		t.Fatal("a sandbox whose install failed carries no refusal")
 	}
-	workload := &api.Container{
-		Name: "app",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	workload := gateCtr("app", testWorkloadUID)
 	if err := gate.admit(pod, workload, gatedContainer{}); err == nil {
 		t.Fatal("a container of an unprotected sandbox was admitted")
 	}
@@ -220,10 +215,7 @@ func TestAdmitAndVerifyReadTheLiveRuleset(t *testing.T) {
 		kubeNamespace: pod.GetNamespace(),
 	}
 
-	mesh := &api.Container{
-		Name: "c8s-mesh",
-		User: &api.User{Uid: testMeshUID},
-	}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
 	if _, _, err := gate.admissible(pod, mesh, gatedContainer{role: meshRole}); err != nil {
 		t.Fatalf("the enforcer's own record refused the mesh endpoint: %v", err)
 	}

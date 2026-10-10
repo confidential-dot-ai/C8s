@@ -36,7 +36,7 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 				mesh:      newMeshGate(nil, discardLogger()),
 			}
 			ctr := &api.Container{Id: "ctr", PodSandboxId: "pod", Args: []string{"/app"}}
-			p.recordDigest(ctr, digestApp, observedMounts(tc.pod, ctr))
+			p.recordDigest(ctr, digestApp, p.observedMounts(tc.pod, ctr))
 			_, reported, known, err := p.inventory.DigestsForSandbox("pod")
 			if err != nil || !known || len(reported) != 1 {
 				t.Fatalf("inventory = %+v, %v, %v", reported, known, err)

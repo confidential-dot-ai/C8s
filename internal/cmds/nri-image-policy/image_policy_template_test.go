@@ -258,6 +258,124 @@ func TestNodeImageBaseGrantsEveryFrontDoorShape(t *testing.T) {
 	}
 }
 
+// Every emptyDir rule of a role entry names the pod volume behind it, so two
+// destinations of one container cannot be fed from each other's volume.
+func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image-policy.yaml")
+	if err := os.WriteFile(path, []byte(renderNodeImagePolicy(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not load: %v", err)
+	}
+	for name := range roleEntries() {
+		entry, ok := cfg.Allowlist.Base.Workloads[name]
+		if !ok {
+			continue
+		}
+		for _, container := range entry.Containers {
+			for _, rule := range container.Mounts.Rules {
+				if rule.Kind != allowlist.MountEmptyDir {
+					continue
+				}
+				if rule.Source == "" {
+					t.Errorf("%s pins %s without naming its volume", name, rule.Destination)
+				}
+			}
+		}
+	}
+}
+
+// The front door's key directory may not be bound at the attestation
+// sidecar's chain destination: that swap would hand the serving key to the
+// one other container of the router role.
+func TestNodeImageBaseRefusesASwappedVolume(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image-policy.yaml")
+	if err := os.WriteFile(path, []byte(renderNodeImagePolicy(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not load: %v", err)
+	}
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-cds-attest"]
+	if !ok {
+		t.Fatal("the baked base carries no attestation sidecar entry")
+	}
+	store := newPolicyStore(cfg.Allowlist.Base)
+	for _, container := range entry.Containers {
+		launch := allowlist.RunningContainer{
+			Digest: container.Digest.String(),
+			Argv:   append(slices.Clone(container.Command.Argv), "--front-door-mode=acme"),
+			Mounts: entryMounts(container.Mounts),
+		}
+		if !store.baseAdmits(launch, launchFinal) {
+			t.Fatalf("the entry does not admit the launch it describes: %v", mountDestinations(container.Mounts))
+		}
+		swapped := slices.Clone(launch.Mounts)
+		for i := range swapped {
+			if swapped[i].Destination == "/etc/c8s-acme-tls" {
+				swapped[i].Source = podVolumeSource("acme-key")
+				swapped[i].Volume = "acme-key"
+			}
+		}
+		if slices.Equal(swapped, launch.Mounts) {
+			continue
+		}
+		launch.Mounts = swapped
+		if store.baseAdmits(launch, launchFinal) {
+			t.Error("the attestation sidecar was admitted with the key volume bound at its chain destination")
+		}
+	}
+}
+
+// A control plane that adds a credential-role container mounting the front
+// door's key directory to the router pod composes a second reader of the
+// serving key. The base grants that launch no declaration that pins its
+// mounts, and a role container of the router's namespace runs only under one
+// (requireRoleOnlyPod).
+func TestNodeImageBaseRefusesAComposedKeyReader(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image-policy.yaml")
+	if err := os.WriteFile(path, []byte(renderNodeImagePolicy(t)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("the rendered node-image boot config does not load: %v", err)
+	}
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-get-cert"]
+	if !ok {
+		t.Fatal("the baked base carries no certificate-sidecar entry")
+	}
+	i := slices.IndexFunc(entry.Containers, func(c allowlist.Container) bool {
+		return c.Mounts.Policy == allowlist.PolicyExact
+	})
+	if i < 0 {
+		t.Fatal("the baked base pins no mount set for the router pod's certificate sidecar")
+	}
+	declared := entry.Containers[i]
+	store := newPolicyStore(cfg.Allowlist.Base)
+	launch := allowlist.RunningContainer{
+		Digest: declared.Digest.String(),
+		Argv:   append(slices.Clone(declared.Command.Argv), "--san=c8s-router.c8s-router.svc"),
+		Mounts: entryMounts(declared.Mounts),
+	}
+	if !store.base.BindsRoleMounts(launch, CredentialRole) {
+		t.Fatalf("the entry does not admit the launch it describes: %v", mountDestinations(declared.Mounts))
+	}
+	launch.Mounts = append(launch.Mounts, allowlist.ObservedMount{
+		Destination: "/etc/c8s-acme-key",
+		Source:      podVolumeSource("acme-key"),
+		Volume:      "acme-key",
+		Class:       allowlist.MountEmptyDir,
+		Storage:     allowlist.MountMemory,
+	})
+	if store.base.BindsRoleMounts(launch, CredentialRole) {
+		t.Error("a credential client was pinned-mount admitted while mounting the front door's serving key")
+	}
+}
+
 // mountDestinations names the mount set an entry pins, for a failure message.
 func mountDestinations(p allowlist.MountPolicy) []string {
 	destinations := make([]string, 0, len(p.Rules))
@@ -297,6 +415,8 @@ func (l launchEvidence) container() allowlist.RunningContainer {
 		Argv:   l.argv,
 		Mounts: []allowlist.ObservedMount{{
 			Destination: "/etc/c8s/certs",
+			Source:      podVolumeSource("c8s-certs"),
+			Volume:      "c8s-certs",
 			Class:       allowlist.MountEmptyDir,
 			Storage:     allowlist.MountMemory,
 		}},
@@ -326,13 +446,42 @@ func entryMounts(p allowlist.MountPolicy) []allowlist.ObservedMount {
 	}
 	mounts := make([]allowlist.ObservedMount, 0, len(p.Rules))
 	for _, rule := range p.Rules {
-		mounts = append(mounts, allowlist.ObservedMount{
-			Destination: rule.Destination,
-			Class:       rule.Kind,
-			Storage:     allowlist.MountMemory,
-		})
+		mounts = append(mounts, ruleMount(rule))
 	}
 	return mounts
+}
+
+// ruleMount is the mount evidence a rule describes, as the node reports it: a
+// kubelet volume's source ends in the pod volume's name, and a host mount
+// carries the digest of its source path.
+func ruleMount(rule allowlist.MountRule) allowlist.ObservedMount {
+	if rule.Kind == allowlist.MountHost {
+		digest, err := allowlist.HostSourceDigest(rule.Source)
+		if err != nil {
+			digest = ""
+		}
+		return allowlist.ObservedMount{
+			Destination:      rule.Destination,
+			Source:           rule.Source,
+			Class:            rule.Kind,
+			Storage:          allowlist.MountUnknown,
+			HostSourceDigest: digest,
+			ReadOnly:         rule.ReadOnly,
+		}
+	}
+	return allowlist.ObservedMount{
+		Destination: rule.Destination,
+		Source:      podVolumeSource(rule.Source),
+		Volume:      rule.Source,
+		Class:       rule.Kind,
+		Storage:     allowlist.MountMemory,
+	}
+}
+
+// podVolumeSource is the host source the kubelet gives a pod volume, which is
+// what binds a mount to the volume behind it.
+func podVolumeSource(volume string) string {
+	return "/var/lib/kubelet/pods/5a1d-pod/volumes/kubernetes.io~empty-dir/" + volume
 }
 
 // prefixStrings renders the ranges as the config writes them.

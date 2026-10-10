@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/c8s/internal/podmesh/ruleset"
@@ -141,17 +140,11 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	if err := gate.protect(pod); err != nil {
 		t.Fatalf("protect: %v", err)
 	}
-	mesh := &api.Container{
-		Name: "c8s-mesh",
-		User: &api.User{Uid: testMeshUID},
-	}
+	mesh := gateCtr("c8s-mesh", testMeshUID)
 	if err := gate.admit(pod, mesh, gatedContainer{role: meshRole}); err != nil {
 		t.Fatalf("the mesh endpoint was refused in a protected pod: %v", err)
 	}
-	workload := &api.Container{
-		Name: "app",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	workload := gateCtr("app", testWorkloadUID)
 	if err := gate.admit(pod, workload, gatedContainer{}); err == nil {
 		t.Fatal("a workload started before the pod's mesh endpoint")
 	}
@@ -168,17 +161,11 @@ func TestProtectAndGateAPodInTheNamespace(t *testing.T) {
 	}
 	// The pod's own containers are created after its mesh endpoint holds an
 	// identity, so a later container is decided on its own terms.
-	later := &api.Container{
-		Name: "sidecar",
-		User: &api.User{Uid: testWorkloadUID},
-	}
+	later := gateCtr("sidecar", testWorkloadUID)
 	if err := gate.admit(pod, later, gatedContainer{}); err != nil {
 		t.Fatalf("a container joining a pod that holds an identity was refused: %v", err)
 	}
-	role := &api.Container{
-		Name: "c8s-cert",
-		User: &api.User{Uid: testCertUID},
-	}
+	role := gateCtr("c8s-cert", testCertUID)
 	if err := gate.admit(pod, role, gatedContainer{role: testCertRole}); err == nil {
 		t.Fatal("a platform role joined a pod behind its workload")
 	}

@@ -21,7 +21,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
 	ctr, env := adjustedLaunchContainer(req)
-	mounts := adjustedMounts(req, ctr)
+	mounts := p.adjustedMounts(req, ctr)
 	// The gate runs ahead of the admission check and independently of
 	// policy.mode: a protected pod's container runs only once it is verified.
 	if err := p.gateMesh(ctx, req, ctr, env, mounts); err != nil {
@@ -46,12 +46,19 @@ func (p *plugin) gateMesh(ctx context.Context, req *api.ValidateContainerAdjustm
 	}
 	launch := p.observedLaunch(ctx, ctr, ctr.GetAnnotations()[annotationImageName], env, mounts)
 	adjusted := req.GetAdjust().GetLinux()
+	// The role, and the mount set a declaration pins, are read from the mounts
+	// the pod itself asks for: a credential client of any pod also carries the
+	// binds this enforcer adds (credentialMounts), which no declaration names.
+	declared := launch
+	declared.Mounts = p.observedMounts(pod, req.GetContainer())
+	role := p.roleOf(declared)
 	return p.mesh.admit(pod, ctr, gatedContainer{
-		role:       p.roleOf(launch),
-		digest:     launch.Digest,
-		argv:       launch.Argv,
-		namespaces: adjusted.GetNamespaces(),
-		netDevices: adjusted.GetNetDevices(),
+		role:         role,
+		mountsPinned: p.bindsRoleMounts(declared, role),
+		digest:       launch.Digest,
+		argv:         launch.Argv,
+		namespaces:   adjusted.GetNamespaces(),
+		netDevices:   adjusted.GetNetDevices(),
 	})
 }
 
@@ -102,7 +109,7 @@ func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.
 }
 
 // adjustedMounts observes cumulative edits; deferred CDI leaves evidence unavailable.
-func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container) []allowlist.ObservedMount {
+func (p *plugin) adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container) []allowlist.ObservedMount {
 	if len(req.GetAdjust().GetCDIDevices()) > 0 {
 		return nil
 	}
@@ -118,5 +125,5 @@ func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Contai
 			ctr.Mounts = append(ctr.Mounts, proto.Clone(edit).(*api.Mount))
 		}
 	}
-	return newMountObserver(nil).Observe(req.GetPod(), ctr)
+	return p.observedMounts(req.GetPod(), ctr)
 }

@@ -108,20 +108,77 @@
 {{- $nginx = append $nginx (dict "digest" $digest "image" $image) -}}
 {{- end -}}
 {{- end -}}
+{{- /* The mount sets this release renders, as the measured base pins them
+       (node-guest-image/c8s/image-policy.yaml.in). An emptyDir rule names the
+       pod volume behind it, so no destination of a container can be fed from
+       another's volume. The publicTLS Secret is operator-supplied data, which
+       the enforcer takes below /mnt/c8s-data. */ -}}
+{{- $certsRule := dict "destination" (include "c8s.certDir" $root) "kind" "emptyDir" "source" "c8s-certs" -}}
+{{- $runtimeDir := $root.Values.nriImagePolicy.hostPaths.runtimeDir -}}
+{{- $attestSocketRule := dict "destination" $runtimeDir "kind" "host" "source" $runtimeDir "readOnly" true -}}
+{{- $proxySocketRule := dict "destination" "/run/c8s/workload-claims" "kind" "host" "source" $runtimeDir "readOnly" true -}}
+{{- if ne (include "router.mountInventorySocket" $root) "true" -}}
+{{- $proxySocketRule = $attestSocketRule -}}
+{{- end -}}
+{{- $mode := include "router.publicTLSMode" $root -}}
+{{- $frontDoorRules := list $certsRule -}}
+{{- $attestRules := list $certsRule -}}
+{{- if eq $mode "acme" -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" (include "router.acmeCertDir" $root) "kind" "emptyDir" "source" "acme-tls") -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" (include "router.acmeKeyDir" $root) "kind" "emptyDir" "source" "acme-key") -}}
+{{- $attestRules = append $attestRules (dict "destination" (include "router.acmeCertDir" $root) "kind" "emptyDir" "source" "acme-tls") -}}
+{{- end -}}
+{{- if eq $mode "webpki" -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" (include "router.publicTLSDir" $root) "kind" "data" "source" "public-tls") -}}
+{{- $attestRules = append $attestRules (dict "destination" (include "router.publicTLSDir" $root) "kind" "data" "source" "public-tls") -}}
+{{- end -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" (include "router.discoveryDir" $root) "kind" "emptyDir" "source" "discovery") -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" "/var/cache/nginx" "kind" "emptyDir" "source" "nginx-cache") -}}
+{{- $frontDoorRules = append $frontDoorRules (dict "destination" "/tmp" "kind" "emptyDir" "source" "nginx-tmp") -}}
+{{- $frontDoorMounts := dict "policy" "exact" "rules" $frontDoorRules -}}
+{{- if include "c8s.attestationApiSocketPresent" $root -}}
+{{- $attestRules = append $attestRules $attestSocketRule -}}
+{{- end -}}
+{{- $attestMounts := dict "policy" "exact" "rules" $attestRules -}}
+{{- /* The credential clients of the router pod, which take the same role as
+       the injected ones but mount this pod's volumes. The pod's own rule
+       (internal/cmds/nri-image-policy, requireRoleOnlyPod) admits a role
+       container of that namespace only under a declaration that pins its
+       mounts, so each of them is declared twice: once for the injected pods
+       of any namespace, once in the shape this pod renders. */ -}}
+{{- $certRules := list $certsRule (dict "destination" (include "router.discoveryDir" $root) "kind" "emptyDir" "source" "discovery") -}}
+{{- if eq $mode "webpki" -}}
+{{- $certRules = append $certRules (dict "destination" (include "router.publicTLSDir" $root) "kind" "data" "source" "public-tls") -}}
+{{- end -}}
+{{- if $root.Values.node.baked -}}
+{{- $certRules = append $certRules (dict "destination" "/run/c8s-node" "kind" "host" "source" "/run/c8s-node" "readOnly" true) -}}
+{{- end -}}
+{{- if eq (include "router.mountInventorySocket" $root) "true" -}}
+{{- $certRules = append $certRules $proxySocketRule -}}
+{{- else if include "c8s.attestationApiSocketPresent" $root -}}
+{{- $certRules = append $certRules $attestSocketRule -}}
+{{- end -}}
+{{- $anyMounts := list (dict "policy" "any") -}}
+{{- $certMounts := append $anyMounts (dict "policy" "exact" "rules" $certRules) -}}
+{{- $certWaitMounts := append $anyMounts (dict "policy" "exact" "rules" (list $certsRule)) -}}
 {{- $entries := dict -}}
 {{- range $role := list
-  (dict "name" "c8s-mesh-endpoint" "role" "mesh" "argv" (list "/app/c8s" "armtls-mesh") "images" $mesh "label" $root.Values.armtlsMesh.image.repository)
-  (dict "name" "c8s-get-cert" "role" "credentials" "argv" (list "/c8s" "get-cert") "images" $credentials "label" $root.Values.image.repository)
-  (dict "name" "c8s-cert-wait" "role" "credentials" "argv" (list "/c8s" "probe-file") "images" $credentials "label" $root.Values.image.repository)
+  (dict "name" "c8s-mesh-endpoint" "role" "mesh" "argv" (list "/app/c8s" "armtls-mesh") "images" $mesh "label" $root.Values.armtlsMesh.image.repository "mounts" (list (dict "policy" "exact" "rules" (list $certsRule))))
+  (dict "name" "c8s-get-cert" "role" "credentials" "argv" (list "/c8s" "get-cert") "images" $credentials "label" $root.Values.image.repository "mounts" $certMounts)
+  (dict "name" "c8s-cert-wait" "role" "credentials" "argv" (list "/c8s" "probe-file") "images" $credentials "label" $root.Values.image.repository "mounts" $certWaitMounts)
   (dict "name" "c8s-get-secret" "role" "credentials" "argv" (list "/c8s" "get-secret") "images" $credentials "label" $root.Values.image.repository)
   (dict "name" "c8s-get-volume" "role" "credentials" "argv" (list "/c8s" "get-volume") "images" $credentials "label" $root.Values.image.repository)
-  (dict "name" "c8s-router-nginx" "role" "router" "argv" (list "/c8s" "router") "images" $nginx "label" $root.Values.router.nginx.image.repository)
-  (dict "name" "c8s-acme" "role" "acme" "argv" (list "/c8s" "acme") "images" $credentials "label" $root.Values.image.repository)
-  (dict "name" "c8s-cds-attest" "role" "router" "argv" (list "/c8s" "cds-attest") "images" $credentials "label" $root.Values.image.repository)
-  (dict "name" "c8s-allowlist-proxy" "role" "credentials" "argv" (list "/c8s" "allowlist-proxy") "images" $credentials "label" $root.Values.image.repository) -}}
+  (dict "name" "c8s-router-nginx" "role" "router" "argv" (list "/c8s" "router") "images" $nginx "label" $root.Values.router.nginx.image.repository "mounts" (list $frontDoorMounts))
+  (dict "name" "c8s-acme" "role" "acme" "argv" (list "/c8s" "acme") "images" $credentials "label" $root.Values.image.repository "mounts" (list (dict "policy" "exact" "rules" (list
+    (dict "destination" (include "router.acmeCertDir" $root) "kind" "emptyDir" "source" "acme-tls")
+    (dict "destination" (include "router.acmeKeyDir" $root) "kind" "emptyDir" "source" "acme-key")))))
+  (dict "name" "c8s-cds-attest" "role" "router" "argv" (list "/c8s" "cds-attest") "images" $credentials "label" $root.Values.image.repository "mounts" (list $attestMounts))
+  (dict "name" "c8s-allowlist-proxy" "role" "credentials" "argv" (list "/c8s" "allowlist-proxy") "images" $credentials "label" $root.Values.image.repository "mounts" (list (dict "policy" "exact" "rules" (list $proxySocketRule)))) -}}
 {{- $containers := list -}}
 {{- range $image := $role.images -}}
-{{- $containers = append $containers (dict "digest" $image.digest "image" $image.image "role" $role.role "command" (dict "policy" "exact" "argv" $role.argv) "args" (dict "policy" "any") "mounts" (dict "policy" "any")) -}}
+{{- range $mounts := (get $role "mounts" | default $anyMounts) -}}
+{{- $containers = append $containers (dict "digest" $image.digest "image" $image.image "role" $role.role "command" (dict "policy" "exact" "argv" $role.argv) "args" (dict "policy" "any") "mounts" $mounts) -}}
+{{- end -}}
 {{- end -}}
 {{- if $containers -}}
 {{- $_ := set $entries $role.name (dict "label" $role.label "initContainers" list "containers" $containers) -}}

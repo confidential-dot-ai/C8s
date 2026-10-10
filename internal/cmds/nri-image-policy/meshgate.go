@@ -61,11 +61,15 @@ type fileID struct {
 // role, the bytes and arguments that role was read from, and the adjustments
 // that could move its packets.
 type gatedContainer struct {
-	role       string
-	digest     string
-	argv       []string
-	namespaces []*api.LinuxNamespace
-	netDevices map[string]*api.LinuxNetDevice
+	role string
+	// mountsPinned reports that the declaration granting the role pins the
+	// mount set too, which the router's namespace requires of every
+	// container (requireRoleOnlyPod).
+	mountsPinned bool
+	digest       string
+	argv         []string
+	namespaces   []*api.LinuxNamespace
+	netDevices   map[string]*api.LinuxNetDevice
 }
 
 func newMeshGate(policy *meshPolicy, logger *slog.Logger) *meshGate {
@@ -212,9 +216,10 @@ func (g *meshGate) admissible(pod *api.PodSandbox, ctr *api.Container, launch ga
 	}
 	for _, check := range []func() error{
 		func() error { return state.requireRoleOrder(launch) },
-		func() error { return state.requireRoleOnlyPod(launch.role) },
+		func() error { return state.requireRoleOnlyPod(launch) },
 		func() error { return g.policy.requireRoleIdentity(ctr, launch.role) },
 		func() error { return launch.requireNoNetworkChange() },
+		func() error { return requirePrivatePIDNamespace(ctr) },
 	} {
 		if err := check(); err != nil {
 			return podNamespace{}, "", err
@@ -314,11 +319,42 @@ func (c gatedContainer) identity() roleLaunch {
 // requireRoleOnlyPod requires a pod of the router's namespace to hold role
 // containers only, from its first container: an inbound accept cannot be tied
 // to a socket UID, so those listeners are open to anything that runs there.
-func (s *protectedPod) requireRoleOnlyPod(role string) error {
-	if role == "" && s.kubeNamespace == routerNamespace {
+// Each of them runs under a declaration that pins its mounts as well, because
+// the credentials of this pod are separated by mount set alone: a role
+// container whose mounts are left to the host could be given another role's
+// credential volume.
+func (s *protectedPod) requireRoleOnlyPod(launch gatedContainer) error {
+	if s.kubeNamespace != routerNamespace {
+		return nil
+	}
+	if launch.role == "" {
 		return fmt.Errorf("this pod serves the %s role's own ports, so only its platform roles may run here", routerRole)
 	}
+	if !launch.mountsPinned {
+		return fmt.Errorf("the %s role runs here only under a declaration that pins its mounts, which this launch has none of", launch.role)
+	}
 	return nil
+}
+
+// requirePrivatePIDNamespace requires a member pod's container to run in a pid
+// namespace of its own. In a shared one every process of the pod is visible
+// through one /proc, so a container reads another's credential volume at
+// /proc/<pid>/root whatever the mount sets say.
+//
+// containerd points the namespace at a process only when the pod shares it
+// (internal/cri/opts, WithPodNamespaces), and an absent entry is the node's
+// own; its own namespace is the entry with no path.
+func requirePrivatePIDNamespace(ctr *api.Container) error {
+	for _, ns := range ctr.GetLinux().GetNamespaces() {
+		if ns.GetType() != pidNamespace {
+			continue
+		}
+		if path := ns.GetPath(); path != "" {
+			return fmt.Errorf("the container joins the pid namespace at %s instead of running in its own", path)
+		}
+		return nil
+	}
+	return errors.New("the container declares no pid namespace of its own")
 }
 
 // requireNoNetworkChange refuses an adjustment that leaves the verified

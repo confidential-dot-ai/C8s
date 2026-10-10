@@ -16,7 +16,8 @@ func validTestConfig() config {
 		directoryURL:  letsEncryptDirectoryURL,
 		challengePort: 8402,
 		httpPort:      8080,
-		certDir:       "/etc/c8s-acme-tls",
+		certDir:       certDir,
+		keyDir:        keyDir,
 	}
 }
 

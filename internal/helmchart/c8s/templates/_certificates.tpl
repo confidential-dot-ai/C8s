@@ -40,7 +40,7 @@
     {{- . | nindent 4 }}
   {{- end }}
   volumeMounts:
-    - name: tls-certs
+    - name: c8s-certs
       mountPath: {{ include "c8s.certDir" $root }}
     {{- with .extraMounts }}
     {{- . | nindent 4 }}
@@ -68,7 +68,7 @@
     - --timeout=3m0s
     - {{ $certOut }}
   volumeMounts:
-    - name: tls-certs
+    - name: c8s-certs
       mountPath: {{ include "c8s.certDir" $root }}
   securityContext:
     {{- $security | nindent 4 }}

@@ -143,17 +143,21 @@ func (emptyDirMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.O
 		// data. Classify them before that mount propagates into the pod, too.
 		class = allowlist.MountData
 	}
-	return observed(m, class, ctx.Storage.Inspect(m.GetSource())), true
+	mount := observed(m, class, ctx.Storage.Inspect(m.GetSource()))
+	mount.Volume = volumeName(volumePath)
+	return mount, true
 }
 
 type kubeletDataMountHandler struct{}
 
 func (kubeletDataMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
-	plugin, _, ok := currentPodVolume(ctx, m)
+	plugin, volumePath, ok := currentPodVolume(ctx, m)
 	if !ok || plugin == emptyDirPlugin {
 		return allowlist.ObservedMount{}, false
 	}
-	return observed(m, allowlist.MountData, ctx.Storage.Inspect(m.GetSource())), true
+	mount := observed(m, allowlist.MountData, ctx.Storage.Inspect(m.GetSource()))
+	mount.Volume = volumeName(volumePath)
+	return mount, true
 }
 
 func currentPodVolume(ctx MountContext, m *api.Mount) (plugin, volumePath string, ok bool) {
@@ -167,6 +171,14 @@ func currentPodVolume(ctx MountContext, m *api.Mount) (plugin, volumePath string
 		return "", "", false
 	}
 	return cutTwoOrMore(rest)
+}
+
+// volumeName is the pod volume a kubelet path stages, which is its first
+// segment: the rest of the path is a directory inside that volume, so a
+// mount of a descendant still names the volume it came out of.
+func volumeName(volumePath string) string {
+	name, _, _ := strings.Cut(volumePath, "/")
+	return name
 }
 
 type kubeletSubpathHandler struct{}
@@ -185,7 +197,9 @@ func (kubeletSubpathHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.
 	if len(parts) != 3 || parts[0] == "" || parts[1] != ctx.Container.GetName() || parts[2] == "" {
 		return allowlist.ObservedMount{}, false
 	}
-	return observed(m, allowlist.MountData, ctx.Storage.Inspect(src)), true
+	mount := observed(m, allowlist.MountData, ctx.Storage.Inspect(src))
+	mount.Volume = parts[0]
+	return mount, true
 }
 
 func cutTwoOrMore(s string) (string, string, bool) {
