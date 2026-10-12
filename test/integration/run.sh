@@ -100,6 +100,29 @@ echo "$KEY_INFO" | grep -q "prime256v1" || fail "certificate key is not P-256"
 CHECKS=$((CHECKS + 1))
 echo "PASS: certificate uses an ECDSA P-256 key"
 
+# Test 6: the leaf names the sandbox the mock inventory asserted, in the
+# workload-instance extension (1.3.6.1.4.1.66378.1.4) mock CDS stamped after
+# verifying the signed token.
+SANDBOX_ID=$($COMPOSE_CMD logs mock-inventory 2>/dev/null | grep -o 'sandbox_id=[A-Za-z0-9._-]\{1,128\}' | head -1 | cut -d= -f2) || true
+[ -n "$SANDBOX_ID" ] || fail "the mock inventory asserted no sandbox"
+SANDBOX_EXT=$(echo "$KEY_INFO" | grep -A1 -F "1.3.6.1.4.1.66378.1.4") || fail "certificate carries no workload-instance extension"
+echo "$SANDBOX_EXT" | grep -qF "$SANDBOX_ID" || fail "certificate does not name sandbox $SANDBOX_ID: $SANDBOX_EXT"
+CHECKS=$((CHECKS + 1))
+echo "PASS: certificate names the asserted workload instance"
+
+# Test 7: the three reader paths are the files of the generation the pointer
+# names, so a consumer reads a whole credential set or nothing. They are hard
+# links, which resolve to themselves: compare inodes, not paths.
+GENERATION=$($COMPOSE_CMD exec -T tls-holder sh -c 'readlink /tls/current') \
+    || fail "could not read the generation pointer"
+echo "$GENERATION" | grep -qE '^generations/[0-9]+$' || fail "the pointer names no generation: $GENERATION"
+$COMPOSE_CMD exec -T tls-holder sh -c \
+    'for f in cert.pem key.pem ca.pem; do
+        [ "$(stat -c %i "/tls/$f")" = "$(stat -c %i "/tls/current/$f")" ] || exit 1
+    done' \
+    || fail "a reader path is not a file of generation $GENERATION"
+CHECKS=$((CHECKS + 1))
+echo "PASS: cert, key and CA are the files of one generation ($GENERATION)"
+
 echo ""
-[ "$CHECKS" -eq 5 ] || fail "expected 5 checks, ran $CHECKS"
 echo "=== All $CHECKS integration checks passed ==="

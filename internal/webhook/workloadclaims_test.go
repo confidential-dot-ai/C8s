@@ -25,10 +25,10 @@ func findVolume(pod *corev1.Pod, name string) *corev1.Volume {
 	return nil
 }
 
-// node-CVM (inventory + host dir): the webhook injects --workload-claims so
-// get-cert dials its compiled socket path; the socket directory itself arrives
-// as an NRI mount from the inventory plugin, so the pod spec must carry no
-// volume or mount for it (a hostPath would fail PodSecurity restricted).
+// node-CVM (inventory + host dir): get-cert dials its compiled socket path and
+// the socket directory arrives as an NRI mount from the inventory plugin, so
+// the pod spec must carry no volume or mount for it (a hostPath would fail
+// PodSecurity restricted).
 func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 	pod := newInjectablePod()
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
@@ -40,9 +40,6 @@ func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 	})
 
 	cert := pod.Spec.InitContainers[0]
-	if !hasArg(cert.Args, "--workload-claims") {
-		t.Fatalf("c8s-cert missing workload-claims flag: %v", cert.Args)
-	}
 	for _, v := range pod.Spec.Volumes {
 		if v.HostPath != nil {
 			t.Fatalf("mutated pod declares hostPath volume %q", v.Name)
@@ -80,8 +77,8 @@ func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {
 	}
 }
 
-// No host dir: the webhook injects neither the inventory flag nor a mount,
-// so get-cert issues claim-free.
+// No host dir: the webhook injects neither a volume nor the socket group, so
+// nothing in the pod spec claims to reach an inventory.
 func TestWorkloadClaims_NoHostDirNoInventory(t *testing.T) {
 	pod := newInjectablePod()
 	mutatePod(pod, &injection{WorkloadID: "api"}, Config{
@@ -90,17 +87,13 @@ func TestWorkloadClaims_NoHostDirNoInventory(t *testing.T) {
 		AttestationApiURL: "http://as:8400",
 		CertDir:           "/etc/c8s/certs",
 	})
-	cert := pod.Spec.InitContainers[0]
-	if hasArg(cert.Args, "--workload-claims") {
-		t.Fatalf("unexpected workload-claims flag: %v", cert.Args)
-	}
 	if findVolume(pod, "c8s-workload-claims") != nil {
 		t.Fatal("no inventory volume expected when disabled")
 	}
 	if pod.Spec.SecurityContext != nil {
 		for _, g := range pod.Spec.SecurityContext.SupplementalGroups {
 			if g == workloadclaims.InventorySocketGID {
-				t.Fatal("inventory supplemental group injected without workload-claims enabled")
+				t.Fatal("inventory supplemental group injected without an inventory host dir")
 			}
 		}
 	}

@@ -1132,7 +1132,7 @@ router:
   meshCA:
     # -- Serve and advertise the mesh CA PEM at the discovery meshCAPath when
     # discovery is enabled. The bundle is written by the injected get-cert
-    # (--ca-out) into the shared cert volume alongside the leaf, so no separate
+    # (--ca-path) into the shared cert volume alongside the leaf, so no separate
     # ConfigMap or mount is required.
     expose: true
 

@@ -15,11 +15,9 @@
     {{- else }}
     - --san={{ .san }}
     {{- end }}
-    - --out={{ .certOut }}
-    - --key-out={{ .keyOut }}
-    {{- with .caOut }}
-    - --ca-out={{ . }}
-    {{- end }}
+    - --cert-path={{ .certOut }}
+    - --key-path={{ .keyOut }}
+    - --ca-path={{ .caOut }}
     # Retry CDS in-process during a roll instead of exiting into kubelet
     # CrashLoopBackOff; still fails closed once the timeout elapses.
     - --initial-retry-timeout={{ $root.Values.certProvisioning.initialRetryTimeout }}

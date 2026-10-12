@@ -481,7 +481,7 @@ func TestInventoryAddrRejectsRequestForgeryTargets(t *testing.T) {
 // What gets dialed is rebuilt from the parsed IP and port, not passed through
 // from the caller's bytes.
 func TestParseInventoryHostNormalizes(t *testing.T) {
-	got, err := parseInventoryHost("2001:0db8:0000::1")
+	got, err := ParseInventoryHost("2001:0db8:0000::1")
 	if err != nil {
 		t.Fatal(err)
 	}

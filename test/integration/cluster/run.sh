@@ -355,8 +355,9 @@ for _ in $(seq 1 60); do
 done
 CERTLOG="$(kubectl -n demo logs "$POD" -c c8s-cert 2>/dev/null || true)"
 echo "$CERTLOG" | grep -q "certificate obtained" || fail "get-cert never obtained a certificate: $CERTLOG"
-echo "$CERTLOG" | grep -q "sandbox_token=true" || fail "get-cert issued without a sandbox token: $CERTLOG"
-pass "workload leaf issued with a sandbox-identity token (NRI inventory + CDS callback)"
+echo "$CERTLOG" | grep -q "workload instance asserted" || fail "get-cert issued without a sandbox assertion: $CERTLOG"
+echo "$CERTLOG" | grep -q "credential generation published" || fail "get-cert published no credential generation: $CERTLOG"
+pass "workload leaf issued with a sandbox-identity token and published as a generation"
 
 kubectl -n demo wait --for=condition=Ready "pod/$POD" --timeout=240s \
     || fail "workload pod never became Ready"

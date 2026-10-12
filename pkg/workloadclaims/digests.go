@@ -54,13 +54,13 @@ var (
 )
 
 // ValidateInventoryHost reports whether host is a usable inventory host.
-// See parseInventoryHost for the rules.
+// See ParseInventoryHost for the rules.
 func ValidateInventoryHost(host string) error {
-	_, err := parseInventoryHost(host)
+	_, err := ParseInventoryHost(host)
 	return err
 }
 
-// parseInventoryHost validates host and returns it re-serialized from the
+// ParseInventoryHost validates host and returns it re-serialized from the
 // parsed IP, so what gets dialed is derived from a checked value rather than
 // from the caller's bytes.
 //
@@ -71,7 +71,7 @@ func ValidateInventoryHost(host string) error {
 // decide the destination after the check), and global unicast only (no
 // loopback, link-local/IMDS, multicast, or unspecified). Callers additionally
 // constrain it to the operator's inventory CIDRs — see InventoryHosts.
-func parseInventoryHost(host string) (string, error) {
+func ParseInventoryHost(host string) (string, error) {
 	ip := net.ParseIP(host)
 	if ip == nil {
 		return "", fmt.Errorf("workloadclaims: inventory host %q must be an IP literal, not a name", host)
@@ -138,7 +138,7 @@ func ResolveAdvertiseHost(ctx context.Context, host, cdsEndpoint string) (string
 			return "", fmt.Errorf("workloadclaims: infer the inventory advertise host (set it explicitly): %w", err)
 		}
 	}
-	return parseInventoryHost(host)
+	return ParseInventoryHost(host)
 }
 
 // outboundHost reports the local IP the kernel would source from when talking
@@ -369,7 +369,7 @@ func (c *DigestsClient) InventoryKey(ctx context.Context, host string) (*ecdsa.P
 
 // get dials the inventory on host at DigestsPort and performs a GET.
 func (c *DigestsClient) get(ctx context.Context, host, route string) (*http.Response, error) {
-	dialHost, err := parseInventoryHost(host)
+	dialHost, err := ParseInventoryHost(host)
 	if err != nil {
 		return nil, err
 	}

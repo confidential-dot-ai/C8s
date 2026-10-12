@@ -8,9 +8,9 @@ Recreate, silently defeating the operator's opt-out. */ -}}
 {{- if .Values.router.attest.expectedWorkload -}}
 {{- if not .Values.router.attest.enabled -}}
 {{- /* The gate *is* the cds-attest sidecar's /readyz. Without the sidecar
-nothing renders it, yet the claims wiring it pulls in (get-cert's
---workload-claims, the inventory hostPath, the supplemental group) still would
-— cost and hostPath surface for a gate that does not exist. */ -}}
+nothing renders it, yet the claims wiring it pulls in (the inventory hostPath,
+the mount, the supplemental group) still would — cost and hostPath surface for
+a gate that does not exist. */ -}}
 {{- fail "router.attest.expectedWorkload gates the cds-attest sidecar's /readyz endpoint: set router.attest.enabled=true or clear expectedWorkload" -}}
 {{- end -}}
 {{- if .Values.router.hostPort.enabled -}}
