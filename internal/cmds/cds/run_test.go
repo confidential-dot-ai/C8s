@@ -191,6 +191,9 @@ func validRunConfig(t *testing.T, attestationURL string) config {
 		rateLimiterEvictInterval:   time.Minute,
 		rateLimiterIdleTimeout:     5 * time.Minute,
 		armtlsPlatform:             "",
+		// Startup refuses a CDS that pins no guest, so every run test carries
+		// a pin unless it is the test for that refusal.
+		measurements: []string{testLaunchDigest},
 	}
 }
 
@@ -279,6 +282,11 @@ func TestRun_ErrorPaths(t *testing.T) {
 			name:    "unsupported armtls platform",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.armtlsPlatform = "bogus-platform" },
 			wantSub: "unsupported TEE platform",
+		},
+		{
+			name:    "TDX pins stop at the MRTD",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.armtlsPlatform = "tdx" },
+			wantSub: "--rtmrs",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -428,8 +436,20 @@ func startRunServer(t *testing.T, cfg config) string {
 	return base
 }
 
+// A CDS that pins no guest would issue a leaf to any TEE that asked, so it
+// refuses to start rather than serving a mode whose only outcome is refusal.
+func TestRun_RefusesWithoutPins(t *testing.T) {
+	api := newHealthyAttestationApi(t)
+	cfg := validRunConfig(t, api.URL)
+	cfg.measurements = nil
+	err := run(cfg)
+	if err == nil || !strings.Contains(err.Error(), "--measurements") {
+		t.Fatalf("run() error = %v, want a refusal naming the pin inputs", err)
+	}
+}
+
 // TestRun_LogsMeasurementPinning: with --measurements set, startup must log the
-// pinning-enabled line, not the UNSAFE empty-allowlist warning. DNS validation
+// pinning-enabled line, not the empty-pin-set refusal. DNS validation
 // succeeds first; a bad CN pattern stops startup after the pinning log.
 func TestRun_LogsMeasurementPinning(t *testing.T) {
 	api := newHealthyAttestationApi(t)
@@ -458,11 +478,11 @@ func TestRun_LogsMeasurementPinning(t *testing.T) {
 	if runErr == nil || !strings.Contains(runErr.Error(), "--allowed-cn-pattern") {
 		t.Fatalf("run() error = %v, want --allowed-cn-pattern failure", runErr)
 	}
-	if !strings.Contains(string(logged), "measurement pinning enabled") {
+	if !strings.Contains(string(logged), "guest identity pinning enabled") {
 		t.Fatalf("startup log missing pinning-enabled line:\n%s", logged)
 	}
-	if strings.Contains(string(logged), "--measurements empty") {
-		t.Fatalf("startup log warned about empty measurements despite pinning:\n%s", logged)
+	if strings.Contains(string(logged), "refuses every request") {
+		t.Fatalf("startup log warned about empty pins despite pinning:\n%s", logged)
 	}
 }
 
@@ -562,29 +582,4 @@ func TestLoadOperatorKeys(t *testing.T) {
 			t.Fatal("expected error for bundle without EC public key")
 		}
 	})
-}
-
-// measurementDigests renders the /attest allowlist for the callback's pin. It
-// must not silently drop an entry: /attest compares the same allowlist as
-// strings, so a dropped entry would leave the callback unpinned while /attest
-// still enforced it — two derivations of one allowlist disagreeing in the
-// direction that weakens the callback.
-func TestMeasurementDigests(t *testing.T) {
-	valid := map[string]bool{"abcd": true, "ef01": true}
-	got, err := measurementDigests(valid)
-	if err != nil {
-		t.Fatalf("measurementDigests: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("got %d digests, want 2", len(got))
-	}
-
-	if _, err := measurementDigests(map[string]bool{"abcd": true, "0xnothex": true}); err == nil {
-		t.Fatal("a non-hex measurement was dropped instead of failing startup")
-	}
-
-	empty, err := measurementDigests(nil)
-	if err != nil || len(empty) != 0 {
-		t.Fatalf("empty allowlist: got %v, %v", empty, err)
-	}
 }

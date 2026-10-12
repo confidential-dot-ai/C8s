@@ -26,11 +26,15 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/internal/routerdiscovery"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // EnvOperatorKey supplies the operator private key when the flag is unset.
 const EnvOperatorKey = "C8S_OPERATOR_KEY"
+
+// endpointPinFlags names the flags that pin the endpoint an operator CLI talks to.
+const endpointPinFlags = "--measurements, --measurements-file or --image-policy-file"
 
 // Options are the connection and credential flags an operator CLI carries.
 // Embed it in a command's option struct and bind Flags to its persistent flags.
@@ -51,7 +55,7 @@ type Options struct {
 // persistent flag set, so every operator CLI spells them the same way.
 func BindFlags(pf *pflag.FlagSet, o *Options) {
 	pf.StringVar(&o.URL, "url", "", "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound")
-	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; empty trusts any attested build (UNSAFE)")
+	pf.StringSliceVar(&o.Measurements, "measurements", nil, "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; required for an https endpoint")
 	pf.StringVar(&o.MeasurementsFile, "measurements-file", "", "text file of trusted endpoint SHA-384 hex digests, one per line; use --image-policy-file for complete JSON policies")
 	cmdsutil.BindImagePolicyFlags(pf, &o.MeasurementsConfig, nil, "", "pins the endpoint; excludes --measurements and --measurements-file")
 	pf.DurationVar(&o.Timeout, "timeout", 15*time.Second, "per-request timeout")
@@ -92,8 +96,8 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		if pins.Empty() {
-			fmt.Fprintln(os.Stderr, "warning: no --measurements set; accepting any attested endpoint build (UNSAFE)")
+		if err := cmdsutil.RequireCDSPins(armtls.Pins(pins.Policy()), endpointPinFlags); err != nil {
+			return nil, err
 		}
 		hc, err := o.httpsClient(ctx, pins)
 		if err != nil {

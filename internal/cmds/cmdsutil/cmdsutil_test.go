@@ -1,7 +1,6 @@
 package cmdsutil
 
 import (
-	"bytes"
 	"context"
 	"flag"
 	"io"
@@ -13,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestRunMainSuccess(t *testing.T) {
@@ -204,17 +205,28 @@ func TestValidateAttestationAPIURL(t *testing.T) {
 	}
 }
 
-func TestWarnIfCDSUnpinned(t *testing.T) {
-	var logs bytes.Buffer
-	previous := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
-	t.Cleanup(func() { slog.SetDefault(previous) })
-	for _, count := range []int{0, 1, 2} {
-		logs.Reset()
-		WarnIfCDSUnpinned(count, "unpinned development configuration")
-		warned := strings.Contains(logs.String(), "unpinned development configuration")
-		if warned != (count == 0) {
-			t.Errorf("measurement count %d: warning=%t", count, warned)
-		}
+func TestRequireCDSPinsRefusesPinsThatNameNoGuest(t *testing.T) {
+	digest := make([]byte, 48)
+	cases := []struct {
+		name    string
+		pins    armtls.Pins
+		wantErr bool
+	}{
+		{"no pins", armtls.Pins{}, true},
+		{"registers only", armtls.Pins{Registers: map[int][]byte{1: digest}}, true},
+		{"vTPM PCRs only", armtls.Pins{PCRs: map[int][]byte{11: digest[:32]}}, true},
+		{"launch digest", armtls.Pins{Measurements: [][]byte{digest}}, false},
+		{"image", armtls.Pins{Images: []remote.ImagePin{{Name: "node", Digest: digest}}}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := RequireCDSPins(c.pins, "--measurements")
+			if (err != nil) != c.wantErr {
+				t.Fatalf("RequireCDSPins err = %v, wantErr = %t", err, c.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "--measurements") {
+				t.Errorf("error %q should name the input that sets the pins", err)
+			}
+		})
 	}
 }

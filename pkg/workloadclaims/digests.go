@@ -165,8 +165,7 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 // a TEE, and requires the caller to present a hardware-attested one too. With
 // cdsPins set the caller must satisfy them (launch measurement, and TDX RTMRs
 // when pinned), so the endpoint discloses what a node runs only to a CDS on an
-// expected measurement; zero pins accept any TEE on the network. UNSAFE
-// outside development; callers warn.
+// expected measurement; zero pins accept any TEE on the network.
 func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, certTTL time.Duration) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
@@ -235,8 +234,7 @@ type DigestsClient struct {
 // TDX RTMR pins) an inventory may present — the same allowlist CDS pins for
 // the inventory's armTLS certificate, so a sandbox token and the callback that
 // follows it are held to one standard. Zero pins accept any armTLS-attested
-// inventory, matching what an empty allowlist already means for the certificate:
-// UNSAFE outside development; callers warn.
+// inventory.
 //
 // It warms its own armTLS certificate before returning: provisioning costs an
 // attestation round-trip, and paying it lazily would put it inside the first

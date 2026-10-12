@@ -36,6 +36,8 @@ common_set=(
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
+  # The chart refuses to render a release that pins no CDS guest identity.
+  --set-string cds.measurements[0]=000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001
 )
 
 echo "::group::helm lint"

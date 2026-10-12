@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -348,52 +347,21 @@ func stubVerify(context.Context, string, json.RawMessage, localverify.Params) (*
 	return &teetypes.VerificationResult{}, nil
 }
 
-// captureStderr runs fn with os.Stderr redirected to a pipe and returns what
-// was written.
-func captureStderr(t *testing.T, fn func()) string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	old := os.Stderr
-	os.Stderr = w
-	fn()
-	os.Stderr = old
-	w.Close()
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return string(out)
-}
-
-func TestClientWarnsOnlyWithoutMeasurements(t *testing.T) {
-	const warning = "no --measurements set"
+func TestClientRefusesAnUnpinnedEndpoint(t *testing.T) {
 	base := options{Options: cdsconn.Options{URL: "https://127.0.0.1:1", Timeout: 2 * time.Second, Verifier: testutil.VerifierStub(stubVerify)}, output: "text"}
 
-	t.Run("unpinned warns", func(t *testing.T) {
+	t.Run("unpinned refuses", func(t *testing.T) {
 		o := base
-		out := captureStderr(t, func() {
-			if _, err := o.client(context.Background()); err != nil {
-				t.Errorf("client: %v", err)
-			}
-		})
-		if !strings.Contains(out, warning) {
-			t.Fatalf("stderr = %q, want the unpinned-measurements warning", out)
+		if _, err := o.client(context.Background()); err == nil {
+			t.Fatal("client built against an endpoint no measurement pins")
 		}
 	})
 
-	t.Run("pinned does not warn", func(t *testing.T) {
+	t.Run("pinned connects", func(t *testing.T) {
 		o := base
 		o.Measurements = []string{strings.Repeat("ab", 48)}
-		out := captureStderr(t, func() {
-			if _, err := o.client(context.Background()); err != nil {
-				t.Errorf("client: %v", err)
-			}
-		})
-		if strings.Contains(out, warning) {
-			t.Fatalf("stderr = %q, warned despite pinned measurements", out)
+		if _, err := o.client(context.Background()); err != nil {
+			t.Fatalf("client: %v", err)
 		}
 	})
 }
@@ -476,7 +444,7 @@ allowlist").`
 
 	wantFlags := map[string]string{
 		"url":          "CDS-issued-TLS router or direct CDS base URL (required); WebPKI router URLs are not attestation-bound",
-		"measurements": "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; empty trusts any attested build (UNSAFE)",
+		"measurements": "trusted endpoint build ID(s) (repeatable/comma-separated); use the router value for CDS-issued public TLS or the CDS value for a direct URL; required for an https endpoint",
 	}
 	for name, want := range wantFlags {
 		flag := cmd.PersistentFlags().Lookup(name)

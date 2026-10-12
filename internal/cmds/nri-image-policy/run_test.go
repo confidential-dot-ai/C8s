@@ -473,35 +473,15 @@ func TestAllowlistPullHTTPClient_ValidMeasurements(t *testing.T) {
 	}
 }
 
-// The accept-any-measurement warning is a security signal: it must fire
-// exactly when no measurement is pinned.
-func TestAllowlistPullHTTPClient_WarnsOnlyWithoutPins(t *testing.T) {
-	const warning = "accepts any armTLS-attested CDS measurement"
-	var buf bytes.Buffer
-	orig := slog.Default()
-	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
-	defer slog.SetDefault(orig)
-
-	if _, err := allowlistPullHTTPClient(pullConfig{
-		CDSMeasurements:   []string{strings.Repeat("ab", 48)},
-		AttestationApiURL: "http://127.0.0.1:30840",
-		Timeout:           time.Second,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(buf.String(), warning) {
-		t.Fatal("pinned measurements must not warn about accepting any measurement")
-	}
-
-	buf.Reset()
+// Without pins the plugin would pull its allowlist from, and answer digests to,
+// whatever attested endpoint held the CDS address — so it refuses to build the
+// client at all.
+func TestAllowlistPullHTTPClient_RefusesWithoutPins(t *testing.T) {
 	if _, err := allowlistPullHTTPClient(pullConfig{
 		AttestationApiURL: "http://127.0.0.1:30840",
 		Timeout:           time.Second,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), warning) {
-		t.Fatal("missing warning when no measurements are pinned")
+	}); err == nil {
+		t.Fatal("client built against an unpinned CDS")
 	}
 }
 

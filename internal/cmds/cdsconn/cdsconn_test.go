@@ -58,8 +58,9 @@ func TestHTTPClientRefusesPlaintextWithoutInsecure(t *testing.T) {
 // client rather than an error.
 func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	o := Options{
-		URL:     "https://" + closedAddr(t),
-		Timeout: time.Second,
+		URL:          "https://" + closedAddr(t),
+		Measurements: []string{strings.Repeat("ab", armtls.SNPMeasurementSize)},
+		Timeout:      time.Second,
 		Verifier: testutil.VerifierStub(func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
 			return nil, nil
 		}),
@@ -70,6 +71,20 @@ func TestHTTPClientFallsBackToARMTLS(t *testing.T) {
 	}
 	if hc.Timeout != time.Second {
 		t.Fatalf("Timeout = %s, want the --timeout value", hc.Timeout)
+	}
+}
+
+// An operator read reaches whatever answered the URL, so the CLI refuses an
+// https endpoint no measurement pins — armTLS proves only that something is a
+// TEE. Plaintext keeps its own refusal, which --insecure governs.
+func TestHTTPClientRefusesAnUnpinnedEndpoint(t *testing.T) {
+	o := Options{
+		URL:     "https://cds.example:8443",
+		Timeout: time.Second,
+	}
+	if _, err := o.HTTPClient(context.Background()); err == nil ||
+		!strings.Contains(err.Error(), "no pinned guest identity") {
+		t.Fatalf("err = %v, want a refusal naming the missing pins", err)
 	}
 }
 
@@ -240,7 +255,10 @@ func TestBindFlagsNamesEveryOption(t *testing.T) {
 func TestSignerRefusesAnUnpinnedEndpoint(t *testing.T) {
 	key := writeTestKey(t)
 
-	o := Options{URL: "https://cds.example:8443", OperatorKey: key}
+	o := Options{
+		URL:         "https://cds.example:8443",
+		OperatorKey: key,
+	}
 	_, err := o.Signer()
 	if err == nil || !strings.Contains(err.Error(), "unpinned CDS") {
 		t.Fatalf("err = %v, want a refusal naming the unpinned CDS", err)

@@ -1,10 +1,8 @@
 package cds
 
 import (
-	"encoding/hex"
-	"sort"
-
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // servedFamily names the platform the served document declares. The flat flags
@@ -16,15 +14,23 @@ func servedFamily(armtlsPlatform string) teetypes.Family {
 	return teetypes.FamilySNP
 }
 
-// measurementBytes decodes the flat allowlist back into digests for the
-// served document. Images that are not hex never reached a gate either.
-func measurementBytes(allowed map[string]bool) [][]byte {
-	out := make([][]byte, 0, len(allowed))
-	for m := range allowed {
-		if b, err := hex.DecodeString(m); err == nil {
-			out = append(out, b)
+// pinsGuestCode reports whether every guest these pins name also pins a
+// runtime measurement register. On TDX the launch measurement is the MRTD,
+// which covers TDVF firmware alone: the guest kernel measures into RTMR[1] and
+// the command line carrying the dm-verity root hash into RTMR[2]. A TDX pin set
+// naming no register therefore names firmware, and a host may boot the pinned
+// MRTD with substituted guest software.
+//
+// Image pins replace the flat register map at verification
+// (remote.EnforcePins), so each image answers for its own registers.
+func pinsGuestCode(pins armtls.Pins) bool {
+	if len(pins.Images) == 0 {
+		return len(pins.Registers) > 0
+	}
+	for _, image := range pins.Images {
+		if len(image.Registers) == 0 {
+			return false
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return string(out[i]) < string(out[j]) })
-	return out
+	return true
 }

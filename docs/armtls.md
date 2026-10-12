@@ -181,8 +181,10 @@ Step by step:
 5. **Measurement policy.** The verified launch digest returned by the
    attestation-api is compared against the caller's allowlist
    (`VerifyPolicy.Policy.Measurements`; SNP LAUNCH_DIGEST or TDX MRTD, 48 bytes). An
-   **empty allowlist accepts any genuine TEE** — deliberate bootstrap
-   ergonomics, loudly warned, and unsafe in production.
+   **empty allowlist accepts any genuine TEE**, so CDS and every component
+   that authenticates it refuse to start without one, and the chart refuses to
+   render such a release. A mesh peer policy (`armtlsMesh.measurements`) is
+   still accepted empty.
 6. **mTLS.** Servers configured with a `ClientPolicy` require a client
    certificate and verify it the same way (steps 3–5, roles swapped).
 
@@ -304,10 +306,11 @@ CDS's checks at issuance time, as described above.
 What it does **not** guarantee:
 
 - **Nothing, with an empty measurement allowlist.** Any genuine TEE — including
-  an attacker's own CVM on the pod network — is accepted. Both CDS and
-  armtls-mesh ship with empty pins, warn loudly, and export
-  `armtls_mesh_measurement_pinning=0` for alerting. Pinning is the operator's
-  explicit production step.
+  an attacker's own CVM on the pod network — is accepted. That is why CDS pins
+  are mandatory: the chart refuses to render a release without them, and CDS
+  and every component that authenticates it refuse to start. A mesh peer policy
+  left empty keeps warning loudly and exports
+  `armtls_mesh_measurement_pinning=0` for alerting.
 - **A trustworthy verdict from an untrusted verifier.** The attestation-api's
   `/verify` response is **unsigned**; whoever can impersonate the configured
   `AttestationApiURL` forges "valid". Every deployment therefore keeps the
@@ -321,8 +324,10 @@ What it does **not** guarantee:
   into RTMR[1] and the command line — carrying the dm-verity root hash — into
   RTMR[2]. In-cluster those registers are pinned by `cds.rtmrs` /
   `armtlsMesh.rtmrs` (`c8s install --rtmrs 1=<hex>,2=<hex>`): CDS requires
-  them of TDX callers on `/attest`, and every component
+  them of callers on `/attest`, and every component
   dialing CDS (and every mesh peer policy) enforces them on the handshake.
+  SEV-SNP evidence carries no registers, so a register pin refuses it on either
+  path rather than passing on the launch digest alone.
   Left empty — the default, warned on a TDX install — the in-cluster pins
   confer **no guest-code identity**: any TD booting the pinned firmware is
   accepted. The RTMR pin is one register set for the whole fleet, not a
@@ -565,13 +570,10 @@ bound must cover those addresses: `cds.sandboxInventoryCIDRs` (`c8s install
 --node-cidr`) when set, else one host route per node derived live from the node
 list — a node added later is covered without a CDS restart.
 
-An empty measurement allowlist does not disable any of this — it tracks the same
-posture `/attest` takes (see "What armTLS guarantees"): both ends still require
-a hardware-attested armTLS peer, they just pin no measurement, so any TEE can
-answer as the inventory and any TEE can read what a node runs. Both ends log it
-as UNSAFE outside development. The token verification and the issuance-time
-allowlist gate are unaffected. A `--measurements` entry that is not hex fails
-CDS startup rather than silently unpinning the callback.
+Both ends of the callback pin the same measurement allowlist `/attest` requires,
+and neither starts without one, so neither side can be answered by any TEE that
+happens to be on the network. A `--measurements` entry that is not hex fails CDS
+startup rather than silently unpinning the callback.
 
 What does disable the callback is a CDS with no `--armtls-platform`: it has no
 armTLS identity to present, so it makes no callback and **refuses** any request

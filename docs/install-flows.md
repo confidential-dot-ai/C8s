@@ -28,6 +28,17 @@ nodes for tenants that do not trust each other.
 
 `--hardware-platform` is also required: `sev-snp` or `tdx`.
 
+Every mode requires `--measurements` (or `--image-policy-file`): the chart
+refuses to render a release that pins no CDS guest identity. On `tdx` it also
+requires `--rtmrs`, because the launch measurement is the MRTD and covers
+firmware alone.
+
+The measured node image's launch measurement names the guest, so CDS admits only
+evidence that identifies one. `cds.admitAzureSnp=true` additionally admits Azure
+SEV-SNP, where the launch measurement covers Azure's firmware layer rather than
+the guest image. An `aks` test deployment sets it in a `-f` values file; a baked
+install is refused it.
+
 There is no distro flag: the host distro (`k8s` vs `rke2`), which picks the
 containerd config paths for nri-image-policy in every mode,
 is detected from the cluster's kubelet versions (`+rke2` build suffix →

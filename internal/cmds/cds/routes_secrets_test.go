@@ -33,7 +33,11 @@ func secretsRouter(t *testing.T, enabled bool) http.Handler {
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
 	deps := dependencies{
-		AttestHandler:    AttestHandler{Challenges: &cs},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		ReadyFn:          func() bool { return true },
 		RateLimiter:      limiter,
 		ChallengeLimiter: newTestRateLimiter(t),
@@ -102,7 +106,11 @@ func TestRouter_SecretsChallengePoolIsSeparate(t *testing.T) {
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
 	deps := dependencies{
-		AttestHandler:     AttestHandler{Challenges: &cs},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		ReadyFn:           func() bool { return true },
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
@@ -145,7 +153,11 @@ func TestRouter_SecretsPutUsesTheAllowlistWriteCap(t *testing.T) {
 	secretsCS := attestation.NewChallengeStore(time.Minute)
 	var seen int
 	deps := dependencies{
-		AttestHandler:     AttestHandler{Challenges: &cs},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		ReadyFn:           func() bool { return true },
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
@@ -234,7 +246,11 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
 	r := newRouter(dependencies{
-		AttestHandler:     AttestHandler{Challenges: &cs},
+		AttestHandler: AttestHandler{
+			Challenges: &cs,
+			Pins:       pinsForDigests(t, testLaunchDigest),
+			Platforms:  guestMeasuredOnly{},
+		},
 		ReadyFn:           func() bool { return true },
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),

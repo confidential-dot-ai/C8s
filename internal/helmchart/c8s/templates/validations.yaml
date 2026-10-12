@@ -145,6 +145,23 @@
 {{- fail (printf "VALIDATION_ERROR kind=router_allowlist_rate_budget: router.allowlist.rateLimit.totalBurst must be less than cds.rateBurst (%v), got: %d" .Values.cds.rateBurst $writeTotalBurst) -}}
 {{- end -}}
 {{- end -}}
+{{- /* A baked node image carries its pins in the measured launch config,
+       which the chart cannot see. */ -}}
+{{- if and (not .Values.node.baked) (not .Values.cds.measurementsConfig) (empty .Values.cds.measurements) -}}
+{{- fail "VALIDATION_ERROR kind=cds_pins_required: cds.measurements and cds.measurementsConfig are both empty, so nothing pins the guest identity of this cluster's CDS: CDS would refuse every issuance request and every component dialing it would refuse to start. Pass `c8s install --measurements <launch-digest>` (the node image's manifest.json value) or --image-policy-file <policy.json>." -}}
+{{- end -}}
+{{- /* A TDX launch measurement is the MRTD and covers firmware alone; the
+       guest kernel measures into RTMR[1] and the command line carrying the
+       dm-verity root hash into RTMR[2]. CDS refuses to start until a register
+       pin reaches the guest. A policy document carries its own registers. */ -}}
+{{- if and (not .Values.node.baked) (not .Values.cds.measurementsConfig) (contains "tdx" .Values.cds.armtlsPlatform) (empty .Values.cds.rtmrs) -}}
+{{- fail "VALIDATION_ERROR kind=cds_tdx_registers_required: cds.rtmrs is empty on TDX, so cds.measurements pins the TDVF firmware (MRTD) only and a host may boot it with a substituted guest kernel and rootfs. Pass `c8s install --rtmrs 1=<hex>,2=<hex>` (values read off a boot you trust) or --image-policy-file <policy.json>." -}}
+{{- end -}}
+{{- /* Azure SEV-SNP evidence names no guest image, so a measured node image's
+       CDS must never be handed it. */ -}}
+{{- if and .Values.cds.admitAzureSnp .Values.node.baked -}}
+{{- fail "VALIDATION_ERROR kind=cds_azure_snp_on_baked_node: cds.admitAzureSnp admits evidence that names no guest image, which would undo the measured node image's own identity. Unset it for a baked install." -}}
+{{- end -}}
 {{- /*
   CDS refuses to start unless the per-workload secret quota is strictly below
   the store ceiling, so the pair is refused here instead.

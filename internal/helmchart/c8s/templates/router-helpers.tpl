@@ -573,10 +573,25 @@ list.
 {{- end -}}
 {{- $extraArgs := include "router.getCertCommonArgs" . | fromYamlArray -}}
 {{- $sanFile := "" -}}
+{{- /* get-cert refuses to start unless a pin names the guest serving the CDS
+       endpoint it takes the mesh leaf from, so every shape carries one: the
+       baked node image its measured config, a cluster install the release's
+       pins. The allowlist-proxy sidecar (router-deployment.yaml) branches on
+       the same three inputs. */ -}}
 {{- if .Values.node.baked -}}
 {{- $mounts = append $mounts (include "c8s.nodeConfigMount" . | trim) -}}
 {{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
+{{- else if .Values.cds.measurementsConfig -}}
+{{- $mounts = append $mounts "- name: measurements-config\n  mountPath: /etc/c8s-measurements\n  readOnly: true" -}}
+{{- $extraArgs = append $extraArgs "--image-policy-file=/etc/c8s-measurements/cds.json" -}}
+{{- else -}}
+{{- with .Values.cds.measurements -}}
+{{- $extraArgs = append $extraArgs (printf "--cds-measurements=%s" (join "," .)) -}}
+{{- end -}}
+{{- with .Values.cds.rtmrs -}}
+{{- $extraArgs = append $extraArgs (printf "--cds-rtmrs=%s" (join "," .)) -}}
+{{- end -}}
 {{- end -}}
 {{- if .Values.router.attest.expectedWorkload -}}
 

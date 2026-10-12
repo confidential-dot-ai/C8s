@@ -66,6 +66,8 @@ func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The chart refuses to render a release that pins no CDS guest identity.
+	args = append(args, "--set", "cds.measurements[0]="+strings.Repeat("ab", 48))
 	rendered, err := exec.CommandContext(t.Context(), "helm", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, rendered)

@@ -45,6 +45,8 @@ func Run(args []string) error {
 	return cmd.ExecuteContext(ctx)
 }
 
+const cdsPinFlags = "--cds-measurements or --cds-image-policy-file"
+
 // inClusterConfig is a var so tests can exercise newKubeClientset off-cluster.
 var inClusterConfig = rest.InClusterConfig
 
@@ -176,7 +178,7 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.cdsURL, "cds-url", "", "CDS service URL for attestation and CA bundle retrieval (required for cds mode)")
 	fs.StringVar(&c.caCertPath, "ca-cert", "", "path to CA certificate file for peer verification")
 	fs.DurationVar(&c.caPollInterval, "ca-poll-interval", 5*time.Minute, "interval to poll CDS /ca for CA bundle updates")
-	fs.StringVar(&c.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements that CDS's armTLS peer cert must match. Empty = accept any (UNSAFE outside development).")
+	fs.StringVar(&c.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements that CDS's armTLS peer cert must match. Required with --cert-mode cds, unless --cds-image-policy-file names the images.")
 	fs.StringVar(&c.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> that CDS's armTLS peer cert must additionally satisfy. Ignored when CDS presents SNP evidence. Empty = launch-digest pinning only")
 	fs.IntVar(&c.sessionCacheSize, "session-cache-size", 64, "TLS session cache size per node (0 disables session resumption)")
 	fs.BoolVar(&c.accessLog, "access-log", true, "emit per-connection structured access log")
@@ -295,8 +297,15 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 	if err != nil {
 		return fmt.Errorf("--cds-rtmrs: %w", err)
 	}
-	if c.certMode == "cds" && len(cdsMeasurements) == 0 {
-		logger.Warn("--cds-measurements not set; the armTLS handshake will accept any CDS measurement. Set this to the chart-distributed launch digest of CDS to close bootstrap MITM.")
+	if c.certMode == "cds" {
+		cdsPins := armtls.Pins{
+			Measurements: cdsMeasurements,
+			Registers:    cdsRTMRs,
+			Images:       c.cdsPins.Images,
+		}
+		if err := cmdsutil.RequireCDSPins(cdsPins, cdsPinFlags); err != nil {
+			return err
+		}
 	}
 
 	// The self-signed boot cert carries no SAN: mesh peers authenticate it by

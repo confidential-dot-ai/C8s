@@ -21,7 +21,7 @@ func (r *recordingBinder) Record(sandboxID, inventoryHost string) bool {
 // so the secrets path later asks that same inventory rather than one a
 // requester names.
 func TestAttest_BindsSandboxToInventoryOnSuccess(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
@@ -46,7 +46,7 @@ func TestAttest_BindsSandboxToInventoryOnSuccess(t *testing.T) {
 // token-less retry, so denying here would let one pre-claim wedge a pod for a
 // whole certificate lifetime. The refusal lands on the secrets path instead.
 func TestAttest_ConflictingBindingStillIssues(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.SandboxBindings = &recordingBinder{refuse: true}
 	csrPEM, _ := generateCSR(t)
@@ -60,7 +60,7 @@ func TestAttest_ConflictingBindingStillIssues(t *testing.T) {
 // A request carrying no sandbox token gets no binding — there is no sandbox to
 // bind, and issuance is unchanged.
 func TestAttest_NoTokenBindsNothing(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, _ := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
@@ -77,13 +77,13 @@ func TestAttest_NoTokenBindsNothing(t *testing.T) {
 // A request that fails a later gate must not leave a binding behind: otherwise
 // a requester that never obtains a certificate could still claim a sandbox ID.
 func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
-	stub := newStubAttestationApi(t, "deadbeef")
+	stub := newStubAttestationApi(t, testLaunchDigest)
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
 	// Pin a measurement the stub does not report, so the request fails after
 	// the sandbox token has been verified.
-	h.Measurements = map[string]bool{"00": true}
+	h.Pins = pinsForDigests(t, testOtherDigest)
 	csrPEM, _ := generateCSR(t)
 
 	challenge := issueChallenge(t, h)

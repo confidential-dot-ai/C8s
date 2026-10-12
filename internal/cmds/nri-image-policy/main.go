@@ -247,9 +247,6 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
-		slog.Warn("allowlist.pull.cds_measurements not set; nri-image-policy accepts any armTLS-attested CDS measurement")
-	}
 	client, err := armtls.NewVerifyingHTTPClient(pins, cfg.AttestationApiURL)
 	if err != nil {
 		return nil, fmt.Errorf("CDS armTLS client: %w", err)
@@ -258,17 +255,23 @@ func allowlistPullHTTPClient(cfg pullConfig) (*http.Client, error) {
 	return client, nil
 }
 
-// cdsPins is shared by outbound pulls and the CDS-only inventory endpoint.
+// cdsPins is one set for both directions: the plugin dials CDS and answers it.
 func (cfg pullConfig) cdsPins() (armtls.Pins, error) {
 	if err := cfg.validatePolicyInputs(); err != nil {
 		return armtls.Pins{}, err
 	}
-	policy, err := (cmdsutil.ImagePolicySource{File: cfg.CDSMeasurementsConfig}).Load(
-		cmdsutil.MeasurementPins{Measurements: cfg.CDSMeasurements, Registers: cfg.CDSRTMRs, Prefix: "cds-"})
+	pins, err := cmdsutil.ResolveCDSPins(
+		cmdsutil.ImagePolicySource{File: cfg.CDSMeasurementsConfig},
+		cmdsutil.MeasurementPins{
+			Measurements: cfg.CDSMeasurements,
+			Registers:    cfg.CDSRTMRs,
+			Prefix:       "cds-",
+		},
+		cdsPinKeys)
 	if err != nil {
 		return armtls.Pins{}, fmt.Errorf("allowlist.pull: %w", err)
 	}
-	return armtls.Pins(policy), nil
+	return pins, nil
 }
 
 type pullArgs struct {
@@ -499,9 +502,6 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 	pins, err := cfg.Allowlist.Pull.cdsPins()
 	if err != nil {
 		return err
-	}
-	if len(pins.Measurements) == 0 && len(pins.Images) == 0 {
-		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
 	// The attest func is platform-agnostic despite its name (see its doc
