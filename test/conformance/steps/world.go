@@ -35,6 +35,9 @@ type world struct {
 	pendingValidity string
 	versionBefore   string
 	read            *reading
+	// undo is what the scenario changed in the cluster beyond the node and
+	// the allowlist, put back last in, first out before those are restored.
+	undo []func() error
 	// appliedVersion is the served version the plugin had applied when the
 	// scenario last waited for it.
 	appliedVersion string
@@ -91,9 +94,10 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			// Before may have failed before storing the world.
 			if w, ok := ctx.Value(worldKey{}).(*world); ok {
 				_, _ = kubectl(nil, "delete", "namespace", w.namespace, "--ignore-not-found", "--wait=false")
-				// The node first: the allowlist is restored through the CDS,
-				// which the scenario may have blocked or restarted.
-				return ctx, errors.Join(w.restoreNode(), w.restoreAllowlist())
+				// The undo list first, which brings the CDS back to its
+				// installed configuration; then the node, whose plugins pull
+				// from that CDS; then the allowlist, written through it.
+				return ctx, errors.Join(w.runUndo(), w.restoreNode(), w.restoreAllowlist())
 			}
 			return ctx, nil
 		})
@@ -102,6 +106,19 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerCDS(sc)
 		registerNode(sc)
 	}
+}
+
+// onUndo records what the After hook has to run to put the cluster back.
+func (w *world) onUndo(fn func() error) { w.undo = append(w.undo, fn) }
+
+// runUndo runs the recorded steps last in, first out, every one of them.
+func (w *world) runUndo() error {
+	var errs []error
+	for i := len(w.undo) - 1; i >= 0; i-- {
+		errs = append(errs, w.undo[i]())
+	}
+	w.undo = nil
+	return errors.Join(errs...)
 }
 
 // describe records a pod the scenario will deploy, one container per

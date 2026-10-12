@@ -95,12 +95,13 @@ cds_healthy() { curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null
 
 # cds_pf_start opens the CDS port-forward, or reuses the one this WORKDIR
 # opened (its pid file), so drivers running each helper in its own process
-# share one.
+# share one. It forwards to the Deployment's pod rather than the Service: a
+# CDS that is not ready has no Service endpoint, and some callers read one.
 cds_pf_start() {
     local pid
     pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cds_healthy && return 0
-    kubectl -n "$NS" port-forward svc/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
+    kubectl -n "$NS" port-forward deploy/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
     echo "$!" > "$WORKDIR/cds-pf.pid"
     for _ in $(seq 1 30); do
         cds_healthy && return 0
