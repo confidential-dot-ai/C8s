@@ -52,7 +52,7 @@ entry names to workload policies for these platform images:
 
 | Image/use | Included when | Pinned invocation |
 |---|---|---|
-| NRI installer | `nriImagePolicy.enabled` | Install script (pins script when baked), optional uninstall script, `sleep infinity`, and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
+| NRI installer | `nriImagePolicy.enabled` | Install script (pins script when baked), optional uninstall script, `sleep infinity`, the `plugin-ready` readiness endpoint (`nri-image-policy.pluginReadyScript`), and the `c8s uninstall` host-sweep script with its `/bin/sleep 2147483647` pause |
 | NRI containerd-prep | NRI enabled, RKE2, and not baked | Containerd-prep script |
 | Local-path helper | `attestationApi.cvmMode=bare-metal`, helper digest configured | `/bin/sh /script/setup` or `/bin/sh /script/teardown`; args accept per-PVC flags |
 
@@ -63,8 +63,10 @@ references are digest-pinned.
 Install, uninstall, containerd-prep, and local-path helper entries explicitly
 set `mounts: {policy: any}` because these platform scripts require host mounts,
 which exact workload mount rules do not support. Their command/args pins still
-apply. The pause container has no workload mounts and retains the default
-`deny` policy. Operator-supplied workload policies are preserved as authored.
+apply. The pause and `plugin-ready` containers have no workload mounts and
+retain the default `deny` policy. `plugin-ready` runs under `/bin/sh -c`
+because `c8s uninstall` takes the entry's one non-script shape as its sweep
+pause. Operator-supplied workload policies are preserved as authored.
 
 Names use `c8s.digestWorkloadName`. `c8s.allowlistSeedJSON` excludes these
 digests from its any-argv derivations, adds the pinned entries, then applies

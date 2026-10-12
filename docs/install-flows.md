@@ -49,6 +49,23 @@ paths follow the config schema version (`config-v3.toml.d` for schema v3).
 Because it lives in the chart, this runs for both `c8s install` and GitOps
 `HelmRelease` installs without manual containerd-template edits.
 
+The plugin is a host process, not a pod, and NRI does not respawn it: when a
+callback overruns containerd's `plugin_request_timeout`, NRI drops the plugin
+and it exits. The `c8s-nri-image-policy-worker` pod on that node then goes
+NotReady: its `plugin-ready` container answers the readiness probe only while
+containerd's child process launched from `nriImagePolicy.hostPaths.pluginDir`
+exists. Only a containerd restart brings the plugin back. On RKE2 that means
+restarting the whole `rke2-server` or `rke2-agent` unit, kubelet (and on a
+server, the API server) included. Deleting the pod reruns the installer, which
+does that restart when it finds no plugin process and the plugin's health
+socket does not answer either, at most once every 10 minutes per node. A
+rollout does the same, so a node whose plugin had already died does not hold
+it.
+
+The timeout defaults to `2s` and is set by `nriImagePolicy.requestTimeout`.
+The setting has no effect under `nriImagePolicy.baked` (which `bare-metal`
+mode sets), where the node image's containerd drop-in fixes it at `2s`.
+
 ---
 
 ## What runs where
