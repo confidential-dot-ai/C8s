@@ -86,7 +86,7 @@ var uninstallCmd = &cobra.Command{
 	Use:   "uninstall",
 	Short: "Uninstall the c8s Helm release and sweep host artifacts off the hosts",
 	Long: `Removes the release 'c8s install' deployed and sweeps the host-side
-NRI and mesh artifacts off every node.
+NRI, mesh and volume-attach artifacts off every node.
 
 'helm uninstall' already unwinds most of the install: the release resources
 (operator, CDS, attestation-api, armtls-mesh, router, webhook
@@ -117,6 +117,15 @@ install's containerd-prep uses — and removes, idempotently:
     survives every healthy uninstall too)
   - on RKE2: the c8s-managed containerd template (skipped on c8s node images,
     same baked-state rule) and the containerd-prep lock
+  - the LIO loopback disks 'c8s volume attach' built: only a backstore whose
+    unit serial is c8s-vol-<name> and the target attach derived for it, torn
+    down as 'c8s volume detach' does. A disk that has a holder (an open
+    dm-crypt mapping), is mounted in any mount namespace, or is swap is left
+    in place and named; detach it once released. A process holding the raw
+    device open with nothing else is not detected. The sweep replays the
+    script the release's chart pinned, so a release from a chart without this
+    step leaves these disks: run 'c8s volume detach <name>' for them (the
+    uninstall says so when it applies)
 
 Which host paths and distro layout to sweep is read from the release's
 computed values ('helm get values --all') before the release is deleted, so
@@ -429,8 +438,16 @@ func resolveSweepArgvs(ctx context.Context, namespace, release string, cfg hostU
 		return cfg.SweepArgv, cfg.PauseArgv
 	}
 	fmt.Fprintf(os.Stdout, "+ host sweep argv replayed from the release's allowlist seed\n")
+	if sweep := pinned[0]; len(sweep) == 0 || !strings.Contains(sweep[len(sweep)-1], hostSweepLIOMarker) {
+		fmt.Fprintf(os.Stdout, "! the release's pinned host sweep predates 'c8s volume attach' disk cleanup: run 'c8s volume detach <name>' on each node for every volume attached there\n")
+	}
 	return pinned[0], pinned[1]
 }
+
+// hostSweepLIOMarker is in every host-sweep.sh that detaches `c8s volume
+// attach` disks. A replayed older script lacks it, and its LIO disks outlive
+// the uninstall.
+const hostSweepLIOMarker = "lio_sweep_script"
 
 // seedPinnedSweepArgvs reads the release's allowlist seed ConfigMap (which
 // helm uninstall is about to delete) and returns the [sweep, pause] argv the
@@ -789,7 +806,7 @@ func init() {
 	uninstallCmd.Flags().StringVar(&uninstallNamespace, "namespace", "c8s-system", "namespace the release was installed into")
 	uninstallCmd.Flags().StringVar(&uninstallRelease, "release", "c8s", "Helm release name")
 	uninstallCmd.Flags().BoolVar(&uninstallWait, "wait", true, "wait for the release deletion to complete (helm --wait); the host sweep additionally waits for the host pods to be gone either way")
-	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, RKE2 prep template) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
+	uninstallCmd.Flags().BoolVar(&uninstallHostSweep, "host-sweep", true, "after the release is deleted, sweep c8s host artifacts (NRI image-policy plugin, armtls-mesh netfilter state, RKE2 prep template, idle 'c8s volume attach' LIO disks on releases whose chart carries that step) off every node via a short-lived privileged DaemonSet. Runs for every release shape — leftovers may come from a previous install's shape, not this release's")
 	uninstallCmd.Flags().BoolVar(&uninstallHostSweepOnly, "host-sweep-only", false, "skip the helm uninstall and only run the host sweep — for a cluster whose release is already gone (e.g. a previous bare 'helm uninstall') but whose nodes still carry c8s artifacts. Uses the chart defaults and the distro detected from the cluster when the release values are unavailable")
 	uninstallCmd.Flags().BoolVar(&uninstallForce, "force", false, "uninstall while pods hold c8s encrypted volumes (the pre-delete hook cannot close a mapping a live pod holds, and fails naming it)")
 	uninstallCmd.Flags().BoolVar(&uninstallDeleteCRDs, "delete-crds", false, "also delete the ConfidentialWorkload CRD — this deletes EVERY ConfidentialWorkload object in the cluster with it")
