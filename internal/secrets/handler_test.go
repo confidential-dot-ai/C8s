@@ -228,7 +228,7 @@ func newHarness(t *testing.T) *harness {
 		containers: []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
 			{Digest: testAppImg2, Argv: []string{"/metrics"}},
-			{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+			{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 		},
 	}
 	challenges := &fakeChallenges{used: map[string]bool{}}
@@ -277,7 +277,7 @@ func (hn *harness) declareBulkEntry(t *testing.T) *x509.Certificate {
 	}
 	hn.inv.bySandbox[testBulkSandbox] = []workloadclaims.SandboxContainer{
 		{Digest: testBulkImg, Argv: []string{"/bulk"}},
-		{Digest: testInjected, Argv: []string{"get-secret"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}},
 	}
 	leaf, _ := leafFor(t, testBulkSandbox)
 	return leaf
@@ -588,6 +588,65 @@ func TestInjectedImageWithForeignArgvIsNotDropped(t *testing.T) {
 	}
 }
 
+// The drop set holds exactly the invocations the webhook injects. The C8s
+// binary in any other mode — one a pod author added, or one with no mode at
+// all — is a declared container the entry must admit, never a sidecar to
+// ignore.
+func TestInjectedBinaryInUninjectedModeIsNotDropped(t *testing.T) {
+	for name, argv := range map[string][]string{
+		"operator mode": {"/c8s", "render-values"},
+		"attest mode":   {"/c8s", "cds-attest", "--listen=:8400"},
+		"no mode":       {"/c8s"},
+		"mode as argv0": {"get-cert", "--san=x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			hn.inv.containers = append(hn.inv.containers,
+				workloadclaims.SandboxContainer{Digest: testInjected, Argv: argv})
+			if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
+				t.Fatalf("%v = %d, want 403", argv, w.Code)
+			}
+		})
+	}
+}
+
+// A container in an injected mode is dropped only while every mount it holds is
+// confined to the node. With a mount the host can read, dropping it would
+// exempt from matching the one container able to fetch for the pod, so it is a
+// foreign container instead.
+func TestInjectedModeWithUnconfinedMountIsNotDropped(t *testing.T) {
+	memory := pkgallowlist.ObservedMount{Destination: "/run/c8s/secrets", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
+	for name, tc := range map[string]struct {
+		mounts []pkgallowlist.ObservedMount
+		legacy bool
+		want   int
+	}{
+		"memory volumes and a read-only host path": {mounts: []pkgallowlist.ObservedMount{
+			memory,
+			{Destination: "/mnt/c8s-data/cfg", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountEncrypted},
+			{Destination: "/run/c8s/workload-claims", Class: pkgallowlist.MountHost, ReadOnly: true},
+			{Destination: "/etc/hosts", Class: pkgallowlist.MountPlatform},
+		}, want: http.StatusCreated},
+		"writable host path":   {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountHost}}, want: http.StatusForbidden},
+		"disk-backed emptyDir": {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}, want: http.StatusForbidden},
+		"persistent volume":    {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}}, want: http.StatusForbidden},
+		"no mount evidence":    {legacy: true, want: http.StatusForbidden},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			hn.inv.legacyMounts = tc.legacy
+			hn.inv.containers = []workloadclaims.SandboxContainer{
+				{Digest: testAppImg, Argv: []string{"/serve"}, Mounts: []pkgallowlist.ObservedMount{}},
+				{Digest: testAppImg2, Argv: []string{"/metrics"}, Mounts: []pkgallowlist.ObservedMount{}},
+				{Digest: testInjected, Argv: []string{"/c8s", "get-secret", "--out-dir=/out"}, Mounts: tc.mounts},
+			}
+			if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.want, w.Body)
+			}
+		})
+	}
+}
+
 // An inventory too old to report per-container detail cannot support a
 // (digest, argv) decision, so it is refused rather than silently matched on
 // digests alone.
@@ -663,7 +722,7 @@ func TestReleaseRefusedUntilEveryMainIsRunning(t *testing.T) {
 	hn.seed(t, "/api/db", stored)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 	}
 	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
 	if w.Code != http.StatusForbidden {
@@ -750,7 +809,7 @@ func TestInjectedImageFromPreviousReleaseIsDropped(t *testing.T) {
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
 		{Digest: testAppImg2, Argv: []string{"/metrics"}},
-		{Digest: testInjectedOld, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjectedOld, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 	}
 	if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != http.StatusCreated {
 		t.Fatalf("pod running the previous injected image = %d, want 201", w.Code)

@@ -345,7 +345,7 @@ func TestExplainPrintsAResolvedGrant(t *testing.T) {
 		InventoryHost: "10.0.0.7",
 		Reported: []intsecrets.ReportedContainer{
 			{Digest: "sha256:app", Argv: []string{"/serve"}},
-			{Digest: "sha256:c8s", Argv: []string{"get-secret"}, Injected: true},
+			{Digest: "sha256:c8s", Argv: []string{"/c8s", "get-secret"}, Injected: true},
 		},
 		Candidates: []intsecrets.ReportedContainer{{Digest: "sha256:app", Argv: []string{"/serve"}}},
 		Entries:    []intsecrets.EntryVerdict{{Name: "api", Matches: true, HasGrant: true}},
