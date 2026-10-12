@@ -735,8 +735,10 @@ func validateConfig(cfg config) error {
 			return fmt.Errorf("%w: --renew-interval must be greater than 0 when --reload-watch is set", errReloadWatchRequiresRenewInterval)
 		}
 	}
-	if cfg.CAWatchInterval < 0 {
-		return fmt.Errorf("%w: --ca-watch-interval must be 0 (disabled) or positive, got %v", errInvalidCAWatchInterval, cfg.CAWatchInterval)
+	// Each tick is a CDS round-trip, so a sub-second watch is never what an
+	// operator means; 0 is the documented "disabled".
+	if cfg.CAWatchInterval != 0 && cfg.CAWatchInterval < time.Second {
+		return fmt.Errorf("%w: --ca-watch-interval must be 0 (disabled) or at least 1s, got %v", errInvalidCAWatchInterval, cfg.CAWatchInterval)
 	}
 	if cfg.CAWatchInterval > 0 {
 		if cfg.CAOutPath == "" {
@@ -746,8 +748,8 @@ func validateConfig(cfg config) error {
 			return fmt.Errorf("%w: --ca-watch-interval requires --renew-interval, the loop that re-issues on a CA change", errInvalidCAWatchInterval)
 		}
 	}
-	if cfg.PolicyWatchInterval < 0 {
-		return fmt.Errorf("%w: --policy-watch-interval must be 0 (disabled) or positive, got %v", errInvalidPolicyWatchInterval, cfg.PolicyWatchInterval)
+	if cfg.PolicyWatchInterval != 0 && cfg.PolicyWatchInterval < time.Second {
+		return fmt.Errorf("%w: --policy-watch-interval must be 0 (disabled) or at least 1s, got %v", errInvalidPolicyWatchInterval, cfg.PolicyWatchInterval)
 	}
 	if cfg.PolicyWatchInterval > 0 {
 		if !cfg.WorkloadClaims {
@@ -1012,9 +1014,13 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caOutPath st
 }
 
 // stampedPolicyStale reports whether the allowlist CDS serves differs from the
-// snapshot stamp names, and the served version. Strict clients compare both
-// version and digest, so either mismatch is stale. The fetch rides the
-// armTLS-verified client, like servedCAStale's.
+// snapshot stamp names, and the served version. The stamp names a snapshot as
+// (version, digest), and the external strict client compares that identity,
+// not only the bytes, so a version bump with identical bytes is stale too; one
+// renewal per allowlist write is a bounded cost. A 304 settles on CDS's version
+// counter alone, so content that diverges at an unchanged counter (a restored
+// database) is not seen here; the CA watch covers a CDS restart. The fetch
+// rides the armTLS-verified client, like servedCAStale's.
 func stampedPolicyStale(ctx context.Context, client attestclient.Client, stamp *armtls.MatchedWorkload) (string, bool, error) {
 	doc, changed, err := client.AllowlistIfChanged(ctx, stamp.AllowlistVersion)
 	if err != nil {

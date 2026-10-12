@@ -117,6 +117,26 @@ const (
 	policyWithBatch    = `{"workloads":[{"name":"batch"},{"name":"router"}]}`
 )
 
+// waitForRequests polls until the fake has served at least n /allowlist
+// requests.
+func (f *fakeAllowlist) waitForRequests(t *testing.T, n int64) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.requests.Load() < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("got %d /allowlist requests, want at least %d", f.requests.Load(), n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// waitForTicks waits until the watch has polled n more times, so a renewal
+// those ticks would have caused had time to happen.
+func (f *fakeAllowlist) waitForTicks(t *testing.T, n int64) {
+	t.Helper()
+	f.waitForRequests(t, f.requests.Load()+n)
+}
+
 // Each allowlist write re-issues the leaf exactly once; --renew-interval is an
 // hour, so any renewal inside the test can only come from the policy watch.
 func TestRenewLoopRenewsWhenAllowlistPolicyChanges(t *testing.T) {
@@ -127,31 +147,52 @@ func TestRenewLoopRenewsWhenAllowlistPolicyChanges(t *testing.T) {
 
 	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
 
-	time.Sleep(100 * time.Millisecond)
+	cds.waitForRequests(t, 3)
 	if got := len(attempts()); got != 0 {
 		t.Fatalf("%d renewals while the policy matched, want 0", got)
-	}
-	if cds.requests.Load() == 0 {
-		t.Fatal("policy watch never polled /allowlist")
 	}
 
 	cds.set(5, policyRouterOnly)
 	waitForAttempts(t, attempts, 1)
-	time.Sleep(100 * time.Millisecond)
+	cds.waitForTicks(t, 3)
 	if got := len(attempts()); got != 1 {
 		t.Fatalf("%d renewals after one allowlist write, want 1", got)
 	}
 
 	cds.set(6, policyWithBatch)
 	waitForAttempts(t, attempts, 2)
-	time.Sleep(100 * time.Millisecond)
+	cds.waitForTicks(t, 3)
 	if got := len(attempts()); got != 2 {
 		t.Fatalf("%d renewals after two allowlist writes, want 2", got)
 	}
 }
 
-// Watch ticks that see the change while its renewal is pending neither renew
-// again nor push the pending renewal out.
+// stubIssueCountingPolls is stubIssueUnderCurrentPolicy that also records how
+// many /allowlist requests the fake had served when each renewal started.
+// fail reports whether renewal n fails.
+func stubIssueCountingPolls(t *testing.T, cds *fakeAllowlist, fail func(n int) bool) (func() []time.Time, func() []int64) {
+	t.Helper()
+	var mu sync.Mutex
+	var polls []int64
+	attempts := stubObtainCert(t, func(n int) (*x509.Certificate, error) {
+		mu.Lock()
+		polls = append(polls, cds.requests.Load())
+		mu.Unlock()
+		if fail(n) {
+			return nil, errors.New("stubbed renewal failure")
+		}
+		version, body := cds.snapshot()
+		return stampedLeaf(t, version, body), nil
+	})
+	return attempts, func() []int64 {
+		mu.Lock()
+		defer mu.Unlock()
+		return append([]int64(nil), polls...)
+	}
+}
+
+// Watch ticks while a policy renewal is pending neither fetch /allowlist nor
+// re-arm the timer, which would push the renewal out forever at a 10ms tick.
 func TestRenewLoopDebouncesPolicyRenewal(t *testing.T) {
 	const pending = 300 * time.Millisecond
 	old := policyRenewDelayFn
@@ -161,20 +202,48 @@ func TestRenewLoopDebouncesPolicyRenewal(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(5, policyRouterOnly)
 	url := cds.serve(t)
-	attempts := stubIssueUnderCurrentPolicy(t, cds)
+	attempts, polls := stubIssueCountingPolls(t, cds, func(int) bool { return false })
 
 	start := time.Now()
 	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
 
 	at := waitForAttempts(t, attempts, 1)
-	// Without the debounce every 10ms tick would re-arm the timer and the
-	// renewal would never fire.
-	if gap := at[0].Sub(start); gap > 2*time.Second {
-		t.Fatalf("renewed %v after the change, want about %v", gap, pending)
+	if gap := at[0].Sub(start); gap < pending || gap > pending+time.Second {
+		t.Fatalf("renewed %v after the change, want in [%v, %v]", gap, pending, pending+time.Second)
 	}
-	time.Sleep(100 * time.Millisecond)
+	if got := polls()[0]; got != 1 {
+		t.Fatalf("%d /allowlist polls before the pending renewal fired, want 1 (the detection)", got)
+	}
+	cds.waitForTicks(t, 3)
 	if got := len(attempts()); got != 1 {
 		t.Fatalf("%d renewals for one change, want 1", got)
+	}
+}
+
+// A failed policy renewal is retried on the renewalRetryBase backoff; the watch
+// stays quiet meanwhile instead of re-arming the timer over the retry.
+func TestRenewLoopPolicyWatchHoldsOffDuringRetry(t *testing.T) {
+	oldBase := renewalRetryBase
+	renewalRetryBase = 200 * time.Millisecond
+	t.Cleanup(func() { renewalRetryBase = oldBase })
+
+	cds := &fakeAllowlist{}
+	cds.set(5, policyRouterOnly)
+	url := cds.serve(t)
+	attempts, polls := stubIssueCountingPolls(t, cds, func(n int) bool { return n == 1 })
+
+	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
+
+	at := waitForAttempts(t, attempts, 2)
+	if gap := at[1].Sub(at[0]); gap < renewalRetryBase || gap > renewalRetryBase+time.Second {
+		t.Fatalf("retry came %v after the failed renewal, want in [%v, %v]", gap, renewalRetryBase, renewalRetryBase+time.Second)
+	}
+	if got := polls(); got[1] != got[0] {
+		t.Fatalf("/allowlist polled %d times while the retry was pending, want 0", got[1]-got[0])
+	}
+	cds.waitForTicks(t, 3)
+	if got := len(attempts()); got != 2 {
+		t.Fatalf("%d renewals for one change and one failure, want 2", got)
 	}
 }
 
@@ -299,7 +368,11 @@ func TestValidateConfigPolicyWatchInterval(t *testing.T) {
 		{name: "disabled without claims", mutate: func(c *config) { c.PolicyWatchInterval, c.WorkloadClaims = 0, false }},
 		{name: "missing workload claims", mutate: func(c *config) { c.WorkloadClaims = false }, wantErr: errInvalidPolicyWatchInterval},
 		{name: "missing renew interval", mutate: func(c *config) { c.RenewInterval = 0 }, wantErr: errInvalidPolicyWatchInterval},
+		{name: "one second", mutate: func(c *config) { c.PolicyWatchInterval = time.Second }},
 		{name: "negative", mutate: func(c *config) { c.PolicyWatchInterval = -time.Minute }, wantErr: errInvalidPolicyWatchInterval},
+		{name: "sub-second", mutate: func(c *config) { c.PolicyWatchInterval = 500 * time.Millisecond }, wantErr: errInvalidPolicyWatchInterval},
+		{name: "ca watch one second", mutate: func(c *config) { c.CAOutPath, c.CAWatchInterval = "/tls/ca.pem", time.Second }},
+		{name: "ca watch sub-second", mutate: func(c *config) { c.CAOutPath, c.CAWatchInterval = "/tls/ca.pem", 500*time.Millisecond }, wantErr: errInvalidCAWatchInterval},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

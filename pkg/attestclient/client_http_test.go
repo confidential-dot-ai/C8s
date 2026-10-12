@@ -183,6 +183,11 @@ func TestAllowlistIfChanged(t *testing.T) {
 		switch match := r.Header.Get("If-None-Match"); match {
 		case `W/"broken"`:
 			http.Error(w, "store down", http.StatusInternalServerError)
+		case `W/"no-etag"`:
+			_, _ = w.Write([]byte(`{"workloads":[]}`))
+		case `W/"strong-etag"`:
+			w.Header().Set("ETag", `"`+current+`"`)
+			_, _ = w.Write([]byte(`{"workloads":[]}`))
 		case `W/"` + current + `"`:
 			w.Header().Set("ETag", match)
 			w.WriteHeader(http.StatusNotModified)
@@ -210,6 +215,14 @@ func TestAllowlistIfChanged(t *testing.T) {
 			t.Fatalf("AllowlistIfChanged(6) = %+v, want version %s and the served body", doc, current)
 		}
 	})
+
+	for _, sent := range []string{"no-etag", "strong-etag"} {
+		t.Run("200 with "+sent+" is an error", func(t *testing.T) {
+			if doc, changed, err := c.AllowlistIfChanged(context.Background(), sent); err == nil {
+				t.Fatalf("AllowlistIfChanged(%s) = %+v, %v, nil; want an error", sent, doc, changed)
+			}
+		})
+	}
 
 	t.Run("5xx is a StatusError", func(t *testing.T) {
 		_, _, err := c.AllowlistIfChanged(context.Background(), "broken")

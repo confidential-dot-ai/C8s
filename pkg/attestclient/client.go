@@ -259,8 +259,10 @@ type AllowlistDocument struct {
 
 // AllowlistIfChanged fetches CDS's allowlist unless its version is still
 // version: it sends If-None-Match: W/"<version>" and reports changed=false on
-// 304, which CDS settles from a single-row version read. Authenticity comes
-// from the armTLS transport the client was constructed over, as for MeshCA.
+// 304, which CDS settles from a single-row version read. A 200 without a weak
+// ETag W/"<version>" is an error: the caller cannot tell which snapshot it got.
+// Authenticity comes from the armTLS transport the client was constructed
+// over, as for MeshCA.
 func (c Client) AllowlistIfChanged(ctx context.Context, version string) (AllowlistDocument, bool, error) {
 	header := http.Header{"If-None-Match": {`W/"` + version + `"`}}
 	resp, body, err := c.send(ctx, http.MethodGet, "/allowlist", nil, header)
@@ -271,7 +273,11 @@ func (c Client) AllowlistIfChanged(ctx context.Context, version string) (Allowli
 		return AllowlistDocument{}, false, nil
 	}
 	etag := resp.Header.Get("ETag")
-	served := strings.TrimSuffix(strings.TrimPrefix(etag, `W/"`), `"`)
+	served, ok := strings.CutPrefix(etag, `W/"`)
+	served, closed := strings.CutSuffix(served, `"`)
+	if !ok || !closed || served == "" {
+		return AllowlistDocument{}, false, fmt.Errorf("allowlist response ETag %q is not a weak ETag W/\"<version>\"", etag)
+	}
 	return AllowlistDocument{Version: served, Body: body}, true, nil
 }
 

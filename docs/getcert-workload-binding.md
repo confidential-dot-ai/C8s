@@ -321,7 +321,9 @@ every running leaf naming a superseded snapshot, and strict clients reject it
 until it renews. get-cert's `--policy-watch-interval` closes that gap: it polls
 CDS's `GET /allowlist` with `If-None-Match` set to the stamped version over the
 same armTLS channel, and when the version or canonical digest differs it renews
-after a random delay of up to half the interval.
+after a random delay of up to half the interval. When a renewal comes back
+unnamed because the policy no longer matches the router, the watch has no stamp
+to compare and goes silent by design; `--unnamed-renew-interval` applies then.
 
 Two inventory behaviours that still matter here:
 

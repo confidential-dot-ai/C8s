@@ -533,6 +533,11 @@ func TestValidateConfigRejects(t *testing.T) {
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = -time.Minute
 		}},
+		{"sub-second ca watch interval", func(c *config) {
+			c.CAOutPath = "/tls/ca.pem"
+			c.RenewInterval = time.Hour
+			c.CAWatchInterval = 500 * time.Millisecond
+		}},
 		{"ca watch without ca-out", func(c *config) {
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = time.Minute

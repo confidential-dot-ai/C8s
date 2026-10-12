@@ -1182,10 +1182,12 @@ router:
     #    "0" disables the check.
     caWatchInterval: "1m"
     # -- How often the c8s-cert sidecar checks that the allowlist policy CDS
-    #    serves still matches the snapshot stamped in the router's leaf,
-    #    renewing within half this interval when it does not. Strict clients
-    #    reject a leaf whose stamp names a superseded policy, so without this
-    #    an allowlist write breaks them until the next scheduled renewal.
+    #    serves still matches the snapshot stamped in the router's leaf, and
+    #    renews when it does not. Strict clients reject a leaf whose stamp
+    #    names a superseded policy, so without this an allowlist write breaks
+    #    them until the next scheduled renewal. Worst case after a write: up to
+    #    one interval to detect it, up to half an interval of jitter, then one
+    #    issuance.
     #    Applies only when the router requests workload claims (node.baked or
     #    router.attest.expectedWorkload). "0" disables the check.
     policyWatchInterval: "1m"
