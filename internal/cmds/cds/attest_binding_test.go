@@ -25,7 +25,7 @@ func TestAttest_BindsSandboxToInventoryOnSuccess(t *testing.T) {
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code != http.StatusOK {
@@ -49,7 +49,7 @@ func TestAttest_ConflictingBindingStillIssues(t *testing.T) {
 	stub := newStubAttestationApi(t, "deadbeef")
 	h, signer := newSandboxTestEnv(t, stub.URL())
 	h.SandboxBindings = &recordingBinder{refuse: true}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code != http.StatusOK {
@@ -64,6 +64,7 @@ func TestAttest_NoTokenBindsNothing(t *testing.T) {
 	h, _ := newSandboxTestEnv(t, stub.URL())
 	binder := &recordingBinder{}
 	h.SandboxBindings = binder
+	// No token, so the CSR names the leaf itself.
 	csrPEM, _ := generateCSR(t)
 
 	if w := postAttest(t, h, issueChallenge(t, h), csrPEM); w.Code != http.StatusOK {
@@ -84,7 +85,7 @@ func TestAttest_FailedIssuanceBindsNothing(t *testing.T) {
 	// Pin a measurement the stub does not report, so the request fails after
 	// the sandbox token has been verified.
 	h.Measurements = map[string]bool{"00": true}
-	csrPEM, _ := generateCSR(t)
+	csrPEM := sandboxCSR(t)
 
 	challenge := issueChallenge(t, h)
 	if w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID)); w.Code == http.StatusOK {
