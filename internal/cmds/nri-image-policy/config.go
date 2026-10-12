@@ -65,7 +65,8 @@ type workloadClaimsConfig struct {
 // of every pulled snapshot (CDS and operator digests). Installer and busybox
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
-// entries. Generated system-image entries explicitly leave those fields open.
+// entries. Generated system-image entries pin the executable and explicitly
+// leave the other fields open.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`

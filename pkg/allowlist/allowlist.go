@@ -247,6 +247,20 @@ func (c Container) IsUnconstrained() bool {
 	return true
 }
 
+// PinsAtMostCommand reports whether the container leaves everything but its
+// executable to the host: args, mounts and environment are any, and command is
+// any or exact. It is the shape of a seeded component entry, whose arguments
+// and mounts are per-pod but whose binary is the image's.
+func (c Container) PinsAtMostCommand() bool {
+	if c.Command.Policy != PolicyAny && c.Command.Policy != PolicyExact {
+		return false
+	}
+	if c.Args.Policy != PolicyAny {
+		return false
+	}
+	return (mountConstraint{policy: &c.Mounts}).isUnconstrained() && (envConstraint{policy: &c.Env}).isUnconstrained()
+}
+
 // ArgvPinned reports whether every container's command and args policy is
 // exact or deny, so nothing about the entry's argv is left to the host. A
 // secrets grant requires it (docs/secrets.md).
@@ -279,18 +293,22 @@ func (w Workload) containers() []Container {
 	return slices.Concat(w.InitContainers, w.Containers)
 }
 
-// AdmitsAnyArgv reports whether some entry admits the digest under an
-// unconstrained argv policy. The injected-container drop set (internal/secrets)
-// keys on it: C8s's own images run with per-pod arguments, so they are only
-// ever admitted this way.
-func (a *Allowlist) AdmitsAnyArgv(digest string) bool {
+// AdmitsAnyArgs reports whether some entry admits the digest running argv's
+// command under an unconstrained args policy: the entry pins at most the
+// executable, and the arguments are the pod's to choose. The
+// injected-container drop set (internal/secrets) keys on it: C8s's own image
+// runs with per-pod arguments, so it is only ever admitted this way.
+func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 	d, err := types.ParseDigest(digest)
 	if err != nil {
 		return false
 	}
 	for _, w := range a.Workloads {
 		for _, c := range w.containers() {
-			if c.Digest == d && c.AnyArgv() {
+			if c.Digest != d || c.Args.Policy != PolicyAny {
+				continue
+			}
+			if _, ok := c.Command.matchCommand(argv); ok {
 				return true
 			}
 		}

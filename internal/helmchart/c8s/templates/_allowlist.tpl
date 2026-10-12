@@ -19,24 +19,41 @@
    gate a no-op, deriving even disabled components that carry a digest. */ -}}
 {{- $enabled := true -}}
 {{- if $c.enabledPath -}}{{- $enabled = eq (include "c8s.valueAtPath" (dict "root" $root.Values "path" $c.enabledPath)) "true" -}}{{- end -}}
-{{- $out = append $out (dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false)) -}}
+{{- $out = append $out (dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list)) -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}
 
+{{/* The chart-deployed system images the seed and the plugin base admit, as
+     digest -> {image, entrypoint}. Each is admitted pinned to its entrypoint
+     (c8s.componentContainer): the executable is the image's own, while the
+     arguments, environment and mounts are per-pod. A derived component
+     without an entrypoint fails the render: an entry left at any command
+     would admit the image under a shell or a mounted binary. */ -}}
 {{- define "c8s.imageAllowlist" -}}
 {{- $digests := dict -}}
+{{- $components := include "c8s.components" . | fromJsonArray -}}
 {{- if .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents -}}
-{{- range $c := (include "c8s.components" . | fromJsonArray) -}}
+{{- range $c := $components -}}
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "argvPinned")) (get $img "digest") -}}
-{{- $_ := set $digests (get $img "digest") (printf "%s@%s" (get $img "repository") (get $img "digest")) -}}
+{{- if not (get $c "entrypoint") -}}
+{{- fail (printf "c8sComponents entry %s has no entrypoint: the derived allowlist entry must pin the image's executable" (get $c "name")) -}}
+{{- end -}}
+{{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint")) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $cdsImg := .Values.cds.image -}}
 {{- if $cdsImg.digest -}}
-{{- $_ := set $digests $cdsImg.digest (printf "%s@%s" $cdsImg.repository $cdsImg.digest) -}}
+{{- $cdsEntrypoint := list -}}
+{{- range $c := $components -}}
+{{- if eq (get $c "name") "cds.image" -}}{{- $cdsEntrypoint = get $c "entrypoint" -}}{{- end -}}
+{{- end -}}
+{{- if not $cdsEntrypoint -}}
+{{- fail "c8sComponents entry cds.image has no entrypoint: the CDS self-entry must pin the image's executable" -}}
+{{- end -}}
+{{- $_ := set $digests $cdsImg.digest (dict "image" (printf "%s@%s" $cdsImg.repository $cdsImg.digest) "entrypoint" $cdsEntrypoint) -}}
 {{- end -}}
 {{- /* router nginx self-entry: a chart-deployed non-c8s system image. It is
        independently versioned and digest-pinned, so it is not in the
@@ -48,10 +65,39 @@
 {{- if .Values.router.enabled -}}
 {{- $lbImg := .Values.router.nginx.image -}}
 {{- if $lbImg.digest -}}
-{{- $_ := set $digests $lbImg.digest (printf "%s@%s" $lbImg.repository $lbImg.digest) -}}
+{{- $lbEntrypoint := required "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" .Values.router.nginx.entrypoint -}}
+{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" $lbEntrypoint) -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
+{{- end -}}
+
+{{/* The volumed image's two other invocations, both in the pre-delete
+     teardown hook (volumed-uninstall-hook.yaml): the teardown script and its
+     pause. Pinned like the installer's scripts, and seed-only like them: the
+     hook runs against a plugin that has pulled the served document, never
+     against a cold base. Empty when volumed is off. */ -}}
+{{- define "c8s.volumedHookContainers" -}}
+{{- $containers := list -}}
+{{- if and .Values.volumed.enabled .Values.volumed.image.digest -}}
+{{- $img := .Values.volumed.image -}}
+{{- $ref := printf "%s@%s" $img.repository $img.digest -}}
+{{- $sh := dict "policy" "exact" "argv" (list "/bin/sh" "-c") -}}
+{{- $teardown := printf "%s\n" (regexReplaceAll "\n+$" (.Files.Get "files/scripts/volumed-teardown.sh") "") -}}
+{{- $containers = append $containers (dict "digest" $img.digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list $teardown))) -}}
+{{- $containers = append $containers (dict "digest" $img.digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list "sleep infinity"))) -}}
+{{- end -}}
+{{ $containers | toJson }}
+{{- end -}}
+
+{{/* One allowlist container for a system image from c8s.imageAllowlist:
+     command pinned to the entrypoint, args and mounts any. The seed adds an
+     explicit env any; the base leaves env absent, which normalizes to any. */ -}}
+{{- define "c8s.componentContainer" -}}
+{{- $command := dict "policy" "exact" "argv" (get .entry "entrypoint") -}}
+{{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" $command "args" (dict "policy" "any") -}}
+{{- if .env -}}{{- $_ := set $container "env" (dict "policy" "any") -}}{{- end -}}
+{{ $container | toJson }}
 {{- end -}}
 
 {{- define "c8s.anyArgvDigests" -}}
@@ -66,13 +112,25 @@
 {{ $digests | toJson }}
 {{- end -}}
 
-{{/* The plugin boot base, as allowlist workloads: every digest the base
-     admits under any command line, keyed by its DigestEntryName. The boot
-     config excludes argv-pinned images, which are admitted by the served seed. */ -}}
+{{/* The plugin boot base, as allowlist workloads keyed by DigestEntryName:
+     the chart's system images pinned to their entrypoints, and every digest an
+     operator entry leaves unconstrained, admitted under any command line — an
+     operator's unconstrained entry for a system image wins, as its same-named
+     override does in the seed. The boot config excludes argv-pinned images,
+     which are admitted by the served seed. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
-{{- range $digest, $image := (merge (include "c8s.anyArgvDigests" . | fromJson) (include "c8s.imageAllowlist" . | fromJson)) -}}
+{{- $anyArgv := include "c8s.anyArgvDigests" . | fromJson -}}
+{{- range $digest, $entry := (include "c8s.imageAllowlist" . | fromJson) -}}
+{{- if and (not (has $digest $pinnedDigests)) (not (hasKey $anyArgv $digest)) -}}
+{{- $image := get $entry "image" -}}
+{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
+{{- $container := include "c8s.componentContainer" (dict "digest" $digest "entry" $entry "env" false) | fromJson -}}
+{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
+{{- end -}}
+{{- end -}}
+{{- range $digest, $image := $anyArgv -}}
 {{- if not (has $digest $pinnedDigests) -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
 {{- $container := dict "digest" $digest "image" $image "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") -}}
@@ -155,13 +213,19 @@
 {{- end -}}
 
 {{- define "c8s.allowlistSeedJSON" -}}
+{{- $root := . -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
-{{- range $digest, $image := (include "c8s.imageAllowlist" . | fromJson) -}}
+{{- $hookContainers := include "c8s.volumedHookContainers" . | fromJsonArray -}}
+{{- range $digest, $entry := (include "c8s.imageAllowlist" . | fromJson) -}}
 {{- if not (has $digest $pinnedDigests) -}}
+{{- $image := get $entry "image" -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
-{{- $container := dict "digest" $digest "image" $image "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") "env" (dict "policy" "any") -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
+{{- $containers := list (include "c8s.componentContainer" (dict "digest" $digest "entry" $entry "env" true) | fromJson) -}}
+{{- if eq $digest (default "" $root.Values.volumed.image.digest) -}}
+{{- $containers = concat $containers $hookContainers -}}
+{{- end -}}
+{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
 {{- end -}}
 {{- range $name, $entry := (include "c8s.argvPinnedEntries" . | fromJson) -}}

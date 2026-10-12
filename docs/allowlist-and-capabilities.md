@@ -22,12 +22,14 @@ environment values it may launch with (`env`) and the bind mounts it may receive
 The entry name is operator-chosen; the entry `label` and per-container `image`
 are informational. Policy is always resolved by container digest.
 
-An image that may run **however it is invoked** — the standalone and injected
-C8s components (cds, get-cert, the operator, armtls-mesh, the router), whose
-argv is per-pod — is an entry whose container `command` and `args` are both
-`any`. Nothing distinguishes such an entry from any other: it is matched,
-stamped and diffed like the rest, and the same digest may also appear
-elsewhere under a narrower policy — see [union
+An image whose **arguments are per-pod** — the standalone and injected C8s
+components (cds, get-cert, the operator, armtls-mesh, the router) — is an entry
+whose container `command` is `exact` at the image's entrypoint and whose `args`
+is `any`: the executable is the image's own, and everything after it is the
+pod's to choose. An image that may run however it is invoked is an entry with
+`command` and `args` both `any`. Nothing distinguishes either shape from any
+other entry: it is matched, stamped and diffed like the rest, and the same
+digest may also appear elsewhere under a narrower policy — see [union
 semantics](#a-digest-may-run-many-ways).
 
 ### Document shape
@@ -135,6 +137,17 @@ So the boundary between the two is `len(command.argv)` when `command` is `exact`
 and `0` when it is `any` — which makes every combination well-defined: `command
 exact + args any` pins the executable and lets flags vary; `command exact + args
 exact` pins the whole argv; `args deny` means "no arguments beyond the command".
+
+An exact command names bytes in the image, and that only holds while no mount
+the pod chose covers them. So when `mounts` is `any`, a container is admitted
+only if no non-platform mount sits at or above the pinned executable's absolute
+path: a volume bound over `/c8s`, or over `/app` for `/app/c8s`, would run the
+pod author's bytes under the pinned name. Under `deny` there is no such mount
+and under `exact` the operator declared every mount, so neither is checked. A
+relative executable is resolved by the container's `PATH`, which admission
+cannot follow; pin an absolute path. The check runs wherever mounts are
+observed: at the plugin's start-phase admission, which always observes them,
+and at CDS matching.
 
 An absent policy normalizes to `deny`, so a minimally specified container is
 maximally restrictive. `command: deny` requires an empty argv and therefore can
@@ -405,9 +418,11 @@ absence is no evidence and `hostUsers: false` is not required; and a cgroup v1
 node has no cgroup namespace on any container, so the privileged inference
 would refuse everything there.
 
-The exemption is only as narrow as the base entry. The node image's generated
-system entries admit their digests under `command`, `args` and `mounts` of
-`any`, so the control plane can restage one of those images — several ship a
+The exemption is only as narrow as the base entry. The chart's component
+entries pin each image to its entrypoint, so restaging one with a shell, or with
+a volume mounted over the binary, is refused. The node image's generated RKE2
+system entries still admit their digests under `command`, `args` and `mounts`
+of `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
 pinning argv in the generated entries, which is systemfloor's to do; the
 plugin already matches the whole entry, so a pin takes effect as soon as it is
@@ -467,10 +482,11 @@ injected image is seeded as its own entry, so a workload entry never has to
 enumerate C8s's own sidecars. Matching rests on nothing the host writes, and the
 container *name* is one of those things; the names identify injection only over
 authored input, where admission reserves them and `c8s allowlist derive` drops
-them. get-cert runs with per-pod dynamic arguments,
-which is exactly why the seeded component entries carry `command: any, args:
-any`: their argv is not fixed and must not be argv-policed. Before matching, a
-container admitted that way and running one of the invocations the webhook
+them. get-cert runs with per-pod dynamic arguments, which is exactly why the
+seeded component entries carry `command: exact` at the image's entrypoint and
+`args: any`: the binary is pinned, the rest of the argv is not fixed and must
+not be argv-policed. Before matching, a container whose image is admitted with
+open args for its executable and running one of the invocations the webhook
 injects is dropped from the candidate set
 ([`secrets.md`](secrets.md#the-injected-drop-set)). The same image in any other
 mode — for example, an application's `cds-attest` — is not injected, and the
@@ -521,18 +537,21 @@ The host NRI plugin also carries a **base enforcement allowlist** in
 Either a base entry or a served entry must satisfy the launch constraints.
 Both sources check argv at preliminary admission, then argv, environment, and
 mounts at final admission; unavailable evidence fails constrained policies.
-Generated system-image entries explicitly allow mounts and leave the other
-launch fields unconstrained so the platform can start before CDS is reachable.
+Generated system-image entries pin the executable and explicitly allow mounts,
+leaving the arguments and environment unconstrained so the platform can start
+before CDS is reachable.
 
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component
 digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
-unrestricted component digest becomes one entry named `<image basename>-<first 12 hex of
-digest>` with a single container under `command: any, args: any, env: any, mounts: any`; an
-operator-authored `workloads` entry of the same name replaces it whole in the
-rendered seed. Operator entries with unconstrained command, args, environment,
-and mounts also feed the host plugin's base allowlist; constrained entries
+component digest becomes one entry named `<image basename>-<first 12 hex of
+digest>` with a single container under `command: exact` at the image's
+entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`) and
+`args: any, env: any, mounts: any`; an operator-authored `workloads` entry of
+the same name replaces it whole in the rendered seed. The same component
+entries feed the host plugin's base allowlist, as do operator entries with
+unconstrained command, args, environment, and mounts; other operator entries
 are seed-only. The
 name is a function of the digest because CDS seeds **additively by name**: an
 image bump adds the new digest's entry beside the old one, which pods still

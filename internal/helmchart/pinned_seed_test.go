@@ -9,14 +9,17 @@ package helmchart
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	sigsyaml "sigs.k8s.io/yaml"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -313,6 +316,231 @@ func TestChartInstallerArgvPinIsRenderDeterministic(t *testing.T) {
 		}
 		if script != first {
 			t.Errorf("render %d: the installer script is not a function of the values", render)
+		}
+	}
+}
+
+// Digests the component-pin tests give the chart's own images. Each is a
+// distinct, well-formed sha256 the harness does not pin elsewhere.
+var componentTestDigests = map[string]string{
+	"image":                "sha256:1111000000000000000000000000000000000000000000000000000000000001",
+	"armtlsMesh.image":     "sha256:1111000000000000000000000000000000000000000000000000000000000002",
+	"volumed.image":        "sha256:1111000000000000000000000000000000000000000000000000000000000003",
+	"attestationApi.image": "sha256:1111000000000000000000000000000000000000000000000000000000000004",
+}
+
+// componentPinValues reads the entrypoints values.yaml declares for every
+// derived component, keyed by valuePath, plus the router nginx one under
+// "router.nginx".
+func componentPinValues(t *testing.T) map[string][]string {
+	t.Helper()
+	raw, err := os.ReadFile("c8s/values.yaml")
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	var values struct {
+		Components []struct {
+			ValuePath  string   `json:"valuePath"`
+			ArgvPinned bool     `json:"argvPinned"`
+			Entrypoint []string `json:"entrypoint"`
+		} `json:"c8sComponents"`
+		Router struct {
+			Nginx struct {
+				Entrypoint []string `json:"entrypoint"`
+			} `json:"nginx"`
+		} `json:"router"`
+	}
+	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("parse values.yaml: %v", err)
+	}
+	pins := map[string][]string{"router.nginx": values.Router.Nginx.Entrypoint}
+	for _, c := range values.Components {
+		if c.ArgvPinned {
+			continue
+		}
+		if len(c.Entrypoint) == 0 {
+			t.Errorf("c8sComponents %s declares no entrypoint", c.ValuePath)
+		}
+		pins[c.ValuePath] = c.Entrypoint
+	}
+	return pins
+}
+
+// dockerfileEntrypoint reads the exec-form ENTRYPOINT of an image Dockerfile
+// in this repository.
+func dockerfileEntrypoint(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	m := regexp.MustCompile(`(?m)^ENTRYPOINT\s+(\[.*\])\s*$`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("%s has no exec-form ENTRYPOINT", path)
+	}
+	var argv []string
+	if err := json.Unmarshal(m[1], &argv); err != nil {
+		t.Fatalf("%s ENTRYPOINT %s: %v", path, m[1], err)
+	}
+	return argv
+}
+
+// The entrypoint each component entry pins is the one its image bakes: for
+// the images built here, the Dockerfile's ENTRYPOINT; for attestation-api and
+// nginx, the published image's config (`crane config <ref>`), kept beside the
+// digest the chart pins.
+func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
+	pins := componentPinValues(t)
+	for valuePath, want := range map[string][]string{
+		"image":                dockerfileEntrypoint(t, "../../cmd/c8s/Dockerfile"),
+		"cds.image":            dockerfileEntrypoint(t, "../../cmd/cds/Dockerfile"),
+		"armtlsMesh.image":     dockerfileEntrypoint(t, "../../cmd/armtls-mesh/Dockerfile"),
+		"volumed.image":        dockerfileEntrypoint(t, "../../cmd/volumed/Dockerfile"),
+		"attestationApi.image": {"/attestation-api"},
+		// ENTRYPOINT plus the first CMD token: docker-entrypoint.sh execs
+		// whatever follows it, so the script alone pins nothing.
+		"router.nginx": {"/docker-entrypoint.sh", "nginx"},
+	} {
+		if got := pins[valuePath]; !slices.Equal(got, want) {
+			t.Errorf("%s entrypoint = %q, want %q", valuePath, got, want)
+		}
+	}
+}
+
+// componentRender renders the chart with every component enabled and
+// digest-pinned, and derivation on, so the seed and the base carry an entry
+// for each.
+func componentRender(t *testing.T) string {
+	t.Helper()
+	args := []string{
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "volumed.enabled=true",
+		"--set", "attestationApi.enabled=true",
+	}
+	for valuePath, digest := range componentTestDigests {
+		args = append(args, "--set", valuePath+".digest="+digest)
+	}
+	out, err := helmTemplate(t, args...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	return out
+}
+
+// imageDigest is the digest a container's image reference pins, or "".
+func imageDigest(image string) string {
+	_, digest, ok := strings.Cut(image, "@")
+	if !ok {
+		return ""
+	}
+	return digest
+}
+
+// Every container the chart runs from a component image must be admitted —
+// by the served seed and by the plugin's base — under the argv it is rendered
+// with and the mounts it holds, and nothing else from those images may be:
+// not a shell, and not the pinned path with a volume bound over it.
+func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
+	out := componentRender(t)
+	seed := renderedSeed(t, out)
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	pins := componentPinValues(t)
+	pinned := map[string][]string{}
+	for valuePath, digest := range componentTestDigests {
+		pinned[digest] = pins[valuePath]
+	}
+	pinned["sha256:0000000000000000000000000000000000000000000000000000000000000001"] = pins["cds.image"]
+	nginxDigest := ""
+	for _, w := range renderedPodSpecs(t, out) {
+		for _, c := range w.spec.Containers {
+			if strings.Contains(c.Image, "nginx-unprivileged@") {
+				nginxDigest = imageDigest(c.Image)
+			}
+		}
+	}
+	if nginxDigest == "" {
+		t.Fatal("the router's nginx container is not digest-pinned")
+	}
+	pinned[nginxDigest] = pins["router.nginx"]
+
+	seen := map[string]bool{}
+	for _, w := range renderedPodSpecs(t, out) {
+		name := w.kind + "/" + w.name
+		for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
+			digest := imageDigest(c.Image)
+			entrypoint, ok := pinned[digest]
+			if !ok {
+				continue
+			}
+			seen[digest] = true
+			argv := effectiveArgv(c)
+			if len(c.Command) == 0 {
+				argv = append(append([]string{}, entrypoint...), c.Args...)
+			}
+			mounts := make([]pkgallowlist.ObservedMount, 0, len(c.VolumeMounts))
+			for _, m := range c.VolumeMounts {
+				mounts = append(mounts, pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown})
+			}
+			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: &pkgallowlist.EnvObservation{}}
+			sources := map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base}
+			if name == "DaemonSet/c8s-volumed-teardown" {
+				// The pre-delete hook's script and pause are seed-only, like
+				// the installer's (c8s.volumedHookContainers).
+				delete(sources, "base")
+			}
+			for source, al := range sources {
+				if !al.BuildIndex().AdmitsContainer(running) {
+					t.Errorf("%s refuses %s container %s: argv %q, mounts %v", source, name, c.Name, argv[:min(len(argv), 3)], c.VolumeMounts)
+				}
+			}
+		}
+	}
+	for digest, entrypoint := range pinned {
+		if !seen[digest] {
+			t.Errorf("no rendered container runs %s (pinned to %q)", digest, entrypoint)
+		}
+		for source, al := range map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base} {
+			index := al.BuildIndex()
+			for _, argv := range [][]string{
+				{"/bin/sh", "-c", "cat /run/c8s/secrets/*"},
+				{"/bin/busybox", "sh"},
+				{entrypoint[0] + "x"},
+				entrypoint[:len(entrypoint)-1],
+			} {
+				if len(argv) == 0 {
+					continue
+				}
+				if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: argv}) {
+					t.Errorf("%s admits %s under %q", source, digest[:19], argv)
+				}
+			}
+			over := []pkgallowlist.ObservedMount{{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}}
+			if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: entrypoint, Mounts: over, Env: &pkgallowlist.EnvObservation{}}) {
+				t.Errorf("%s admits %s with a volume mounted over %s", source, digest[:19], entrypoint[0])
+			}
+		}
+	}
+}
+
+// With derivation off, the seed and the base still carry the CDS and nginx
+// self-entries, pinned the same way.
+func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+	pins := componentPinValues(t)
+	for source, al := range map[string]pkgallowlist.Allowlist{
+		"seed": *renderedSeed(t, out),
+		"base": bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base,
+	} {
+		index := al.BuildIndex()
+		if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: append(append([]string{}, pins["cds.image"]...), "--port=8443")}) {
+			t.Errorf("%s does not admit CDS under its entrypoint", source)
+		}
+		if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: []string{"/c8s", "get-secret"}}) {
+			t.Errorf("%s admits the CDS image in another mode", source)
 		}
 	}
 }

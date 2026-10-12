@@ -193,10 +193,12 @@ func (e *entry) declares(digest string) bool {
 	return false
 }
 
-// admitsAnyArgv reports whether the entry admits digest under any argv.
+// admitsAnyArgv reports whether the entry admits digest with its arguments
+// left open: under any argv, or pinned to an executable with any args, which
+// is how the chart seeds a component image.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
-		if c.Digest == digest && c.Command.Policy == "any" && c.Args.Policy == "any" {
+		if c.Digest == digest && (c.Command.Policy == "any" || c.Command.Policy == "exact") && c.Args.Policy == "any" {
 			return true
 		}
 	}
