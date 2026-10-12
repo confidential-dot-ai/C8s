@@ -24,6 +24,8 @@ type fakeAllowlist struct {
 	version  int
 	body     string
 	requests atomic.Int64
+	// notModified counts the 304s served.
+	notModified atomic.Int64
 }
 
 func (f *fakeAllowlist) set(version int, body string) {
@@ -50,6 +52,7 @@ func (f *fakeAllowlist) serve(t *testing.T) string {
 		etag := `W/"` + version + `"`
 		w.Header().Set("ETag", etag)
 		if r.Header.Get("If-None-Match") == etag {
+			f.notModified.Add(1)
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
@@ -170,6 +173,29 @@ func TestRenewLoopRenewsWhenAllowlistPolicyChanges(t *testing.T) {
 	}
 }
 
+// A write that bumps the version but keeps the bytes renews nothing, and the
+// watch asks for the new version from then on instead of re-fetching the body.
+func TestRenewLoopFollowsServedVersionWithStampedBytes(t *testing.T) {
+	cds := &fakeAllowlist{}
+	cds.set(4, policyTwoWorkloads)
+	url := cds.serve(t)
+	attempts := stubIssueUnderCurrentPolicy(t, cds)
+
+	startRenewLoop(t, policyWatchConfig(), url, stampedLeaf(t, "4", policyTwoWorkloads))
+	cds.waitForRequests(t, 1)
+
+	cds.set(5, policyTwoWorkloads)
+	cds.waitForTicks(t, 1)
+	before := cds.notModified.Load()
+	cds.waitForTicks(t, 2)
+	if got := len(attempts()); got != 0 {
+		t.Fatalf("%d renewals after a write with unchanged bytes, want 0", got)
+	}
+	if got := cds.notModified.Load() - before; got < 1 {
+		t.Fatalf("%d 304s in the two polls after the first 200 at the new version, want at least 1", got)
+	}
+}
+
 // stubIssueCountingPolls is stubIssueUnderCurrentPolicy that also records how
 // many /allowlist requests the fake had served when each renewal started.
 // fail reports whether renewal n fails.
@@ -277,7 +303,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		wantVersion string
 		want        bool
 	}{
-		{name: "unchanged version is a 304", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 4, body: policyRouterOnly, wantVersion: "4", want: false},
+		{name: "304 on version match skips the digest", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 4, body: policyRouterOnly, wantVersion: "4", want: false},
 		{name: "new version", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyRouterOnly, wantVersion: "5", want: true},
 		{name: "new version, same bytes", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyTwoWorkloads, wantVersion: "5", want: false},
 	}
@@ -289,7 +315,7 @@ func TestStampedPolicyStale(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), stamp)
+			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), stamp.AllowlistVersion, stamp.AllowlistDigest)
 			if err != nil {
 				t.Fatalf("stampedPolicyStale: %v", err)
 			}
@@ -312,7 +338,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp); err != nil || !stale {
+		if _, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err != nil || !stale {
 			t.Fatalf("stampedPolicyStale = %v, %v, want stale", stale, err)
 		}
 	})
@@ -326,7 +352,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp); err == nil {
+		if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err == nil {
 			t.Fatal("stampedPolicyStale succeeded, want error on a 500")
 		}
 	})

@@ -488,7 +488,8 @@ provisioning flow.
 The router discovery endpoints (`/.well-known/mesh-ca.pem`,
 `/.well-known/cds-cert.pem`, `/v1/discovery`) track the new CA without a
 router restart: the c8s-cert sidecar polls CDS's `/ca` every
-`router.certProvisioning.caWatchInterval` (default 1m) over the same
+`router.certProvisioning.caWatchInterval` (default 1m; values below 1s are
+rejected, `"0"` disables) over the same
 armTLS-verified channel it obtains certificates on, and re-issues its leaf —
 rewriting the served CA bundle and discovery document — as soon as CDS holds
 a CA the served bundle is missing. External clients that pinned the old CA

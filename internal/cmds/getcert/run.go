@@ -326,6 +326,10 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	}
 	// policyRenewPending debounces the policy watch until the timer fires.
 	var policyRenewPending bool
+	// policyVersion is the If-None-Match version: the stamp's, advanced to any
+	// served version whose bytes still match it, so a no-op allowlist write
+	// costs one 200 rather than one per tick until the next re-issue.
+	policyVersion := stampedPolicyVersion(leaf)
 
 	var watchC <-chan time.Time
 	var watchTicker *time.Ticker
@@ -382,6 +386,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 		case <-policyWatchC:
 			// A pending retry already re-issues, and an unparsed or unnamed
 			// leaf has no stamp to compare: the unnamed fast poll covers it.
+			// The watch resumes once a renewal succeeds and failures is 0.
 			if !haveCert || leaf == nil || failures > 0 || policyRenewPending {
 				continue
 			}
@@ -389,12 +394,13 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			if err != nil || stamp == nil {
 				continue
 			}
-			served, stale, err := stampedPolicyStale(ctx, policyClient, stamp)
+			served, stale, err := stampedPolicyStale(ctx, policyClient, policyVersion, stamp.AllowlistDigest)
 			if err != nil {
 				slog.Warn("allowlist policy check failed", "error", err)
 				continue
 			}
 			if !stale {
+				policyVersion = served
 				continue
 			}
 			delay := policyRenewDelayFn(cfg.PolicyWatchInterval, time.Until(renewDue))
@@ -437,6 +443,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			haveCert = true
 			failures = 0
 			leaf = renewed
+			policyVersion = stampedPolicyVersion(leaf)
 			if isNamedLeaf(leaf) {
 				unnamedRuns = 0
 			} else {
@@ -1020,22 +1027,36 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caOutPath st
 }
 
 // stampedPolicyStale reports whether the allowlist CDS serves differs from the
-// snapshot stamp names, and the served version. Strict clients decide on the
-// digest and read the version only for diagnostics, so a version bump with
+// stamped digest, and the served version. It sends version as If-None-Match, a
+// version already known to serve the stamped bytes. Strict clients decide on
+// the digest and read the version only for diagnostics, so a version bump with
 // identical bytes needs no renewal. A 304 settles on CDS's version counter
 // alone, so bytes that diverge at an unchanged counter (a restored database)
 // are not seen here; the CA watch covers a CDS restart. The fetch rides the
 // armTLS-verified client, like servedCAStale's.
-func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, stamp *armtls.MatchedWorkload) (string, bool, error) {
-	body, version, notModified, err := client.FetchCanonical(ctx, `W/"`+stamp.AllowlistVersion+`"`)
+func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, version string, digest []byte) (string, bool, error) {
+	body, served, notModified, err := client.FetchCanonical(ctx, `W/"`+version+`"`)
 	if err != nil {
 		return "", false, fmt.Errorf("fetch allowlist from cds: %w", err)
 	}
 	if notModified {
-		return stamp.AllowlistVersion, false, nil
+		return version, false, nil
 	}
-	digest := sha256.Sum256(body)
-	return version, !bytes.Equal(digest[:], stamp.AllowlistDigest), nil
+	sum := sha256.Sum256(body)
+	return served, !bytes.Equal(sum[:], digest), nil
+}
+
+// stampedPolicyVersion is the allowlist version leaf's stamp names, or "" when
+// leaf is nil or unnamed.
+func stampedPolicyVersion(leaf *x509.Certificate) string {
+	if leaf == nil {
+		return ""
+	}
+	stamp, err := armtls.MatchedWorkloadFromCert(leaf)
+	if err != nil || stamp == nil {
+		return ""
+	}
+	return stamp.AllowlistVersion
 }
 
 // policyRenewDelayFn is a var so the debounce test can hold a renewal pending.
