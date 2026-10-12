@@ -939,3 +939,48 @@ func TestIsInjectedContainerName(t *testing.T) {
 		}
 	}
 }
+
+// The injector renders a probe target and the endpoint recovers it, so one
+// encoding carries the pod's probe shape between them.
+func TestMeshProbePathRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		port int32
+		path string
+	}{
+		{8080, "/healthz"},
+		{8080, "/"},
+		{65535, "/-/ready"},
+		{1, "/api/v1/health_check"},
+	} {
+		rendered := MeshProbePath(tc.port, tc.path)
+		if !strings.HasPrefix(rendered, MeshProbePrefix) {
+			t.Fatalf("MeshProbePath(%d, %q) = %q, want the %s prefix", tc.port, tc.path, rendered, MeshProbePrefix)
+		}
+		port, path, err := ParseMeshProbePath(rendered)
+		if err != nil {
+			t.Fatalf("ParseMeshProbePath(%q): %v", rendered, err)
+		}
+		if port != tc.port || path != tc.path {
+			t.Errorf("ParseMeshProbePath(%q) = (%d, %q), want (%d, %q)", rendered, port, path, tc.port, tc.path)
+		}
+	}
+}
+
+func TestParseMeshProbePathRefusesUnrenderablePaths(t *testing.T) {
+	for _, rendered := range []string{"", "/readyz", MeshProbePrefix, MeshProbePrefix + "8080", MeshProbePrefix + "http/healthz", MeshProbePrefix + "0/healthz", MeshProbePrefix + "70000/healthz"} {
+		if _, _, err := ParseMeshProbePath(rendered); err == nil {
+			t.Errorf("ParseMeshProbePath(%q) = nil error, want a refusal", rendered)
+		}
+	}
+}
+
+// The injector's value and the endpoint's reading of it are one format.
+func TestMeshProbesEnvRoundTrip(t *testing.T) {
+	paths := []string{MeshProbePath(8080, "/healthz"), MeshProbePath(9000, "/live")}
+	if got := SplitMeshProbePaths(JoinMeshProbePaths(paths)); !slices.Equal(got, paths) {
+		t.Fatalf("SplitMeshProbePaths(JoinMeshProbePaths(%v)) = %v", paths, got)
+	}
+	if got := SplitMeshProbePaths(""); got != nil {
+		t.Fatalf("SplitMeshProbePaths(\"\") = %v, want no paths", got)
+	}
+}

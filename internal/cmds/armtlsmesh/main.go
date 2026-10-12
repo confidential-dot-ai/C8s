@@ -85,6 +85,7 @@ func newArmtlsMeshCommand() *cobra.Command {
 		},
 	}
 	bindProxyFlags(cmd.Flags(), &cfg)
+	cmd.AddCommand(newPodEndpointCommand())
 	cmd.AddCommand(newIptablesSyncCommand())
 	cmd.AddCommand(newIptablesCleanupCommand())
 	return cmd

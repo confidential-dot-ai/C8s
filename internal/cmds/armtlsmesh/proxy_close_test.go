@@ -25,7 +25,7 @@ func startMeshChain(t *testing.T, backend string, idle time.Duration) string {
 	}
 	t.Cleanup(func() { inLn.Close() })
 	inTLSLn := tls.NewListener(inLn, serverTLS)
-	inbound := &Proxy{logger: testLogger(), metrics: testMetrics(), resolver: &staticResolver{nodeIP: "127.0.0.1"}, idleTimeout: idle}
+	inbound := &Proxy{logger: testLogger(), metrics: testMetrics(), resolver: &staticResolver{nodeIP: "127.0.0.1"}, idleTimeout: idle, bufPool: newBufPool(0)}
 	go func() {
 		for {
 			c, err := inTLSLn.Accept()
@@ -46,6 +46,7 @@ func startMeshChain(t *testing.T, backend string, idle time.Duration) string {
 		logger:      testLogger(),
 		metrics:     testMetrics(),
 		idleTimeout: idle,
+		bufPool:     newBufPool(0),
 	}
 	outLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
