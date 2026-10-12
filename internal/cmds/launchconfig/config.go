@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -67,10 +68,11 @@ type Document struct {
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
-	// RegistryMirrors maps a registry host to the one mirror endpoint containerd
-	// tries first for it; the registry itself stays the last resort. Stage
-	// writes it as RKE2's registries.yaml. A pull-through cache near the node
-	// cannot change what the node runs: image references stay digest-pinned.
+	// RegistryMirrors maps a registry host to the http endpoint containerd tries
+	// before it; Stage writes it as RKE2's registries.yaml. Only http: the
+	// document carries no CA, and a cache on a private address has no public
+	// certificate. Image references stay digest-pinned, so a mirror cannot
+	// change what a node runs.
 	RegistryMirrors    map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
 	serverTokenPresent bool
 }
@@ -323,13 +325,8 @@ func (d *Document) validate() error {
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
 	}
-	if len(d.TLSSAN) > 253 {
-		return fmt.Errorf("tlsSAN exceeds DNS name length")
-	}
-	for _, label := range strings.Split(d.TLSSAN, ".") {
-		if !dnsLabel(label) {
-			return fmt.Errorf("tlsSAN must be a lowercase DNS hostname")
-		}
+	if !dnsHostname(d.TLSSAN) {
+		return fmt.Errorf("tlsSAN must be a lowercase DNS hostname of at most 253 characters")
 	}
 	if d.Workloads != "" {
 		if !json.Valid([]byte(d.Workloads)) {
@@ -343,47 +340,28 @@ func (d *Document) validate() error {
 }
 
 // validateRegistryMirrors accepts registry hosts (a lowercase DNS name with
-// an optional port) mapped to plain http or https endpoints with an IPv4
-// unicast host, an optional port and nothing else, so the file Stage writes
-// is exactly what review saw.
+// an optional port) mapped to http origins with a unicast IPv4 host.
 func validateRegistryMirrors(mirrors map[string]string) error {
 	if len(mirrors) > maxRegistryMirrors {
 		return fmt.Errorf("registryMirrors has more than %d entries", maxRegistryMirrors)
 	}
 	for registry, endpoint := range mirrors {
-		host, port, hasPort := strings.Cut(registry, ":")
-		if host == "" || len(host) > 253 || (hasPort && !validPort(port)) {
-			return fmt.Errorf("registryMirrors: %q must be a registry host with an optional port", registry)
-		}
-		for _, label := range strings.Split(host, ".") {
-			if !dnsLabel(label) {
-				return fmt.Errorf("registryMirrors: %q must be a lowercase DNS hostname", registry)
-			}
+		if host, port, hasPort := strings.Cut(registry, ":"); !dnsHostname(host) || (hasPort && !portNumber(port)) {
+			return fmt.Errorf("registryMirrors: %q must be a lowercase DNS hostname with an optional port", registry)
 		}
 		u, err := url.Parse(endpoint)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Opaque != "" ||
-			u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Host == "" {
-			return fmt.Errorf("registryMirrors: %q must be an http or https endpoint of the form scheme://host[:port]", registry)
+		if err != nil || u.Scheme != "http" || u.Host == "" || endpoint != "http://"+u.Host {
+			return fmt.Errorf("registryMirrors: %q must map to an endpoint of the form http://host[:port]", registry)
 		}
-		if err := ValidateIPv4(u.Hostname(), true); err != nil {
-			return fmt.Errorf("registryMirrors: %q endpoint host: %w", registry, err)
-		}
-		if p := u.Port(); p != "" && !validPort(p) {
+		host, port, hasPort := strings.Cut(u.Host, ":")
+		if hasPort && !portNumber(port) {
 			return fmt.Errorf("registryMirrors: %q endpoint port must be 1..65535", registry)
+		}
+		if err := ValidateIPv4(host, true); err != nil {
+			return fmt.Errorf("registryMirrors: %q endpoint host %w", registry, err)
 		}
 	}
 	return nil
-}
-
-func validPort(s string) bool {
-	if len(s) == 0 || len(s) > 5 || strings.TrimLeft(s, "0123456789") != "" {
-		return false
-	}
-	n := 0
-	for _, c := range s {
-		n = n*10 + int(c-'0')
-	}
-	return n >= 1 && n <= 65535
 }
 
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
@@ -416,6 +394,14 @@ func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
 }
 
 func dnsLabel(s string) bool { return len(validation.IsDNS1123Label(s)) == 0 }
+
+func dnsHostname(s string) bool { return len(validation.IsDNS1123Subdomain(s)) == 0 }
+
+// portNumber accepts a canonical decimal TCP port, as install.go does.
+func portNumber(s string) bool {
+	p, err := strconv.Atoi(s)
+	return err == nil && strconv.Itoa(p) == s && len(validation.IsValidPortNum(p)) == 0
+}
 
 func registerHex(s string) bool {
 	if len(s) != sha512.Size384*2 || s != strings.ToLower(s) {

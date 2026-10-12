@@ -62,7 +62,7 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 	f.StringArrayVar(&opts.Agents, "agent", nil, "agent node name; repeatable")
 	f.StringVar(&opts.TLSSAN, "tls-san", "", "DNS name for the front-door certificate (default c8s.local)")
 	f.StringVar(&opts.WorkloadsPath, "workloads", "", "optional c8s.allowlist/v1 JSON file applied as the initial workload allowlist")
-	f.StringToStringVar(&opts.RegistryMirrors, "registry-mirror", nil, "registry=endpoint: the mirror containerd tries first for that registry, for example ghcr.io=http://10.43.0.5:5000; repeatable")
+	f.StringToStringVar(&opts.RegistryMirrors, "registry-mirror", nil, "registry=http://host[:port], the mirror containerd tries before that registry; repeatable")
 	for _, name := range []string{"out", "cluster-id", "image-manifest"} {
 		_ = cmd.MarkFlagRequired(name)
 	}

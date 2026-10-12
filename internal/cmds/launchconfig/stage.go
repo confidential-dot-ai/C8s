@@ -154,9 +154,8 @@ type roleFragment struct {
 	NodeExternalIP string `yaml:"node-external-ip,omitempty"`
 }
 
-// rke2Registries is RKE2's registries.yaml: one mirror endpoint per registry.
-// The registry's own endpoint is not listed; containerd tries it last anyway,
-// so a mirror that is down costs a timeout, not the pull.
+// rke2Registries is the mirrors section of RKE2's registries.yaml. Only the
+// mirror is listed; containerd tries the registry itself last regardless.
 type rke2Registries struct {
 	Mirrors map[string]rke2Mirror `yaml:"mirrors"`
 }

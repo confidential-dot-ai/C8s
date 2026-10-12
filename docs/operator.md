@@ -117,13 +117,12 @@ The strict `c8s-launch/v1` document selects the role, cluster identity, node
 addresses, RKE2 join credentials, trusted role keys, image pins and TLS SAN.
 It accepts an optional `workloads` string containing a complete
 `c8s.allowlist/v1` JSON document, and an optional `registryMirrors` map from
-a registry host to one `http` or `https` endpoint with an IPv4 unicast host
-and an optional port (for example `ghcr.io: http://10.43.0.5:5000`), which
-staging writes as `/etc/rancher/rke2/registries.yaml` so containerd pulls
-through that mirror first and from the registry itself as the last resort;
-image references stay digest-pinned, so a mirror cannot change what a node
-runs. It does not accept Helm values, arbitrary service arguments or
-component toggles. The measured image runs volumed as a
+a registry host to one `http://<IPv4>[:port]` endpoint (for example
+`ghcr.io: http://10.43.0.5:5000`). Staging writes the map as
+`/etc/rancher/rke2/registries.yaml`, so containerd pulls through the mirror
+first and from the registry itself as the last resort. Image references stay
+digest-pinned, so a mirror cannot change what a node runs. It does not accept
+Helm values, arbitrary service arguments or component toggles. The measured image runs volumed as a
 host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
 every node without an install.
 

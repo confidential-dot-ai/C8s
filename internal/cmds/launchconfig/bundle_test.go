@@ -232,6 +232,7 @@ func TestNewBundleRefusesBadInputsAndLeavesNothingBehind(t *testing.T) {
 		{"bad agent name", []string{"--image-manifest", tdx, "--server-address", "10.0.0.10", "--agent", "server"}, "reserved"},
 		{"loopback server", []string{"--image-manifest", tdx, "--server-address", "127.0.0.1"}, "server.address"},
 		{"not a manifest", []string{"--image-manifest", filepath.Join(base, "missing.json")}, "--image-manifest"},
+		{"dns mirror", []string{"--image-manifest", tdx, "--registry-mirror", "ghcr.io=http://cache.example/v2"}, "registryMirrors"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -289,13 +290,5 @@ func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
 			t.Fatalf("%s lost the registry mirror: %+v", node, doc.RegistryMirrors)
 		}
 		stageBundleNode(t, dir, node)
-	}
-	bad := filepath.Join(t.TempDir(), "bad")
-	if err := runBundleCmd(t, "new", "--out", bad, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--registry-mirror", "ghcr.io=http://cache.example/v2"); err == nil {
-		t.Fatal("accepted a mirror endpoint with a DNS host and a path")
-	}
-	if _, err := os.Stat(bad); !os.IsNotExist(err) {
-		t.Fatal("a rejected bundle must leave nothing behind")
 	}
 }
