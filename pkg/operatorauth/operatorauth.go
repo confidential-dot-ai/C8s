@@ -157,73 +157,101 @@ func (v Verifier) Authorize(r *http.Request, body []byte) error {
 	if !ok || tokenStr == "" {
 		return fmt.Errorf("missing operator bearer token")
 	}
+	claims, err := parseSigned(v.Keys, tokenStr,
+		jwt.WithLeeway(v.ClockSkew),
+		jwt.WithIssuedAt(),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil {
+		return err
+	}
+	// The Signer's TTL is client-side only, so the replay bound is enforced
+	// here: iat is required and exp−iat must fit MaxTokenValidity, whatever
+	// tooling minted the token.
+	iat, err := claims.GetIssuedAt()
+	if err != nil || iat == nil {
+		return fmt.Errorf("operator token missing iat claim")
+	}
+	exp, err := claims.GetExpirationTime()
+	if err != nil || exp == nil {
+		return fmt.Errorf("operator token missing exp claim")
+	}
+	if validity := exp.Sub(iat.Time); validity <= 0 || validity > MaxTokenValidity {
+		return fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
+	}
+	return checkBindings(claims, r.Method, r.URL.Path, body)
+}
 
-	// Try each pinned key. A signature made by key N fails verification under
-	// the others, so at most one key yields a valid token; once one does, its
-	// result (including the body-binding check) is authoritative.
+// VerifyStoredToken verifies a write token stored beside the body it
+// authorized: its signature under one of keys, then htm, htu and pbh against
+// method, path and body. It checks no time claim: a stored token has expired
+// by the time anyone reads it, and the CDS checked its time claims at write
+// time (route policy W2, W3).
+func VerifyStoredToken(keys []*ecdsa.PublicKey, token, method, path string, body []byte) error {
+	claims, err := parseSigned(keys, token, jwt.WithoutClaimsValidation())
+	if err != nil {
+		return err
+	}
+	return checkBindings(claims, method, path, body)
+}
+
+// parseSigned returns the claims of token once its signature verifies under
+// one of keys with an allowed algorithm.
+func parseSigned(keys []*ecdsa.PublicKey, token string, opts ...jwt.ParserOption) (jwt.MapClaims, error) {
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("no operator keys configured")
+	}
+	if token == "" {
+		return nil, fmt.Errorf("missing operator bearer token")
+	}
+	opts = append(opts, jwt.WithValidMethods(validMethods))
+	// A signature made by key N fails under the others, so at most one key
+	// yields a valid token, and its claims are authoritative.
 	var lastErr error
-	for _, pub := range v.Keys {
+	for _, pub := range keys {
 		claims := jwt.MapClaims{}
-		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
+		parsed, err := jwt.ParseWithClaims(token, claims, func(t *jwt.Token) (any, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
 				return nil, fmt.Errorf("unexpected signing method %s", t.Method.Alg())
 			}
 			return pub, nil
-		},
-			jwt.WithValidMethods(validMethods),
-			jwt.WithLeeway(v.ClockSkew),
-			jwt.WithIssuedAt(),
-			jwt.WithExpirationRequired(),
-		)
+		}, opts...)
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if !token.Valid {
+		if !parsed.Valid {
 			lastErr = fmt.Errorf("token not valid")
 			continue
 		}
-
-		// Signature verified under this key; claim failures are authoritative.
-		// The Signer's TTL is client-side only, so the replay bound is enforced
-		// here: iat is required and exp−iat must fit MaxTokenValidity, whatever
-		// tooling minted the token.
-		iat, err := claims.GetIssuedAt()
-		if err != nil || iat == nil {
-			return fmt.Errorf("operator token missing iat claim")
-		}
-		exp, err := claims.GetExpirationTime()
-		if err != nil || exp == nil {
-			return fmt.Errorf("operator token missing exp claim")
-		}
-		if validity := exp.Sub(iat.Time); validity <= 0 || validity > MaxTokenValidity {
-			return fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
-		}
-		if htm, _ := claims[claimHTTPMethod].(string); htm != r.Method {
-			return fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, r.Method)
-		}
-		if htu, _ := claims[claimHTTPPath].(string); htu != r.URL.Path {
-			return fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, r.URL.Path)
-		}
-
-		// Body binding: the token's pbh must equal SHA-256 of the body the
-		// server received. Constant-time to avoid leaking the comparison via
-		// timing.
-		pbh, _ := claims[claimPayloadBodyHash].(string)
-		if pbh == "" {
-			return fmt.Errorf("operator token missing %s claim", claimPayloadBodyHash)
-		}
-		sum := sha256.Sum256(body)
-		want := base64.RawURLEncoding.EncodeToString(sum[:])
-		if subtle.ConstantTimeCompare([]byte(pbh), []byte(want)) != 1 {
-			return fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
-		}
-		return nil
+		return claims, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("token not signed by any pinned operator key")
 	}
-	return fmt.Errorf("operator token invalid: %w", lastErr)
+	return nil, fmt.Errorf("operator token invalid: %w", lastErr)
+}
+
+// checkBindings checks a verified token's htm, htu and pbh claims, in that
+// order.
+func checkBindings(claims jwt.MapClaims, method, path string, body []byte) error {
+	if htm, _ := claims[claimHTTPMethod].(string); htm != method {
+		return fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, method)
+	}
+	if htu, _ := claims[claimHTTPPath].(string); htu != path {
+		return fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, path)
+	}
+	pbh, _ := claims[claimPayloadBodyHash].(string)
+	if pbh == "" {
+		return fmt.Errorf("operator token missing %s claim", claimPayloadBodyHash)
+	}
+	sum := sha256.Sum256(body)
+	want := base64.RawURLEncoding.EncodeToString(sum[:])
+	// Constant-time so the comparison does not leak through timing.
+	if subtle.ConstantTimeCompare([]byte(pbh), []byte(want)) != 1 {
+		return fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
+	}
+	return nil
 }
 
 // ParsePublicKeysPEM parses one or more PEM "PUBLIC KEY" (PKIX/SubjectPublicKeyInfo)

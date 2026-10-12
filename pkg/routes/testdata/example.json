@@ -1,0 +1,17 @@
+{
+  "schema": "c8s.routes/v1",
+  "revision": 12,
+  "notBefore": "2026-09-01T00:00:00Z",
+  "maxAgeSeconds": 86400,
+  "hosts": {
+    "app.example": {
+      "routes": [
+        {"path": "/", "match": "prefix",
+         "backend": {"address": "vllm.ai.svc.cluster.local:8443", "workload": "vllm"}},
+        {"path": "/admin", "match": "prefix",
+         "backend": {"address": "admin.ops.svc.cluster.local:8443",
+                     "serverName": "admin.ops.svc", "ca": "-----BEGIN CERTIFICATE-----\nMIIBjTCCATOgAwIBAgIUGlk1ZfAa0O15hgTqTlLv3CwRW1UwCgYIKoZIzj0EAwIw\nGzEZMBcGA1UEAwwQYWRtaW4tY2EuZXhhbXBsZTAgFw0yNjEwMDkyMjM5MTVaGA8y\nMTI2MDkxNTIyMzkxNVowGzEZMBcGA1UEAwwQYWRtaW4tY2EuZXhhbXBsZTBZMBMG\nByqGSM49AgEGCCqGSM49AwEHA0IABDCfRql5wzAOXsxDEPa9yaLil9EUwsLPo2fM\nIt37MN8uGw8S2ED8X1d5MVk2l3IYeWvndlgvYPcqDHHNiU6E2bCjUzBRMB0GA1Ud\nDgQWBBQujq7BC56lz8NKHKaKU7QkXSjHPTAfBgNVHSMEGDAWgBQujq7BC56lz8NK\nHKaKU7QkXSjHPTAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIBnM\nD/x3XGbaU6BFjzek6PFzGbT5J5e56Rnm9QsyqVR5AiEAiYaRVmHNXhm2quSL2x+Y\nsrmm2GQqqxpYvpo9slK4BWY=\n-----END CERTIFICATE-----\n"}}
+      ]
+    }
+  }
+}

@@ -29,7 +29,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // Schema identifies the allowlist document format. It is the first field of the
@@ -159,7 +161,7 @@ func ParseServedJSON(data []byte) (*Allowlist, error) {
 }
 
 func parseJSON(data []byte, strict bool) (*Allowlist, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -186,7 +188,7 @@ func (a *Allowlist) Normalize() error {
 // a PUT /allowlist/workloads/{name} — applying the same normalization as
 // ParseJSON so a stored entry is canonical.
 func ParseWorkloadJSON(data []byte) (*Workload, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -382,7 +384,7 @@ func (a *Allowlist) normalize(strict bool) error {
 	for name, w := range a.Workloads {
 		// The grammar is not negotiable on either path: the name is used
 		// verbatim as a URL path segment.
-		if !workloadNameGrammarOK(name) {
+		if !workloadname.ValidGrammar(name) {
 			return fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
 		}
 		if len(name) > MaxWorkloadNameLen {
@@ -621,31 +623,10 @@ func policyKey(c Container) string {
 	return string(b)
 }
 
-// MaxWorkloadNameLen bounds an entry name to the Kubernetes label-value length,
-// so the confidential.ai/cw selector, an allowlist entry name, and the
-// matched-workload leaf stamp (pkg/armtls) can all represent it. It is enforced
-// where entries are written, not where a served document is read — see
-// normalize.
-const MaxWorkloadNameLen = 63
-
-// workloadNameGrammarOK restricts entry names to a URL-safe segment so a name
-// can be used verbatim as a path parameter without escaping ambiguity. It does
-// not apply MaxWorkloadNameLen; ValidWorkloadName is the bounded form.
-func workloadNameGrammarOK(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		b := name[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		case (b == '.' || b == '_' || b == '-') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
+// MaxWorkloadNameLen bounds an entry name; see workloadname.MaxLen. It is
+// enforced where entries are written, not where a served document is read —
+// see normalize.
+const MaxWorkloadNameLen = workloadname.MaxLen
 
 // ValidWorkloadName reports whether name is a legal workload entry name: the
 // URL-path-segment grammar, bounded to MaxWorkloadNameLen. It is the check the
@@ -658,5 +639,5 @@ func workloadNameGrammarOK(name string) bool {
 // that gap would retroactively invalidate stored entries, so the narrower rule
 // stays where it is enforced.
 func ValidWorkloadName(name string) bool {
-	return workloadNameGrammarOK(name) && len(name) <= MaxWorkloadNameLen
+	return workloadname.Valid(name)
 }
