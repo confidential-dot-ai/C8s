@@ -111,7 +111,7 @@ func TestAttest_MatchedWorkload_DropsInjectedContainers(t *testing.T) {
 	store := completeAPIStore(t)
 	containers := []workloadclaims.SandboxContainer{
 		{Digest: wlDigestA, Mounts: []pkgallowlist.ObservedMount{}},
-		{Digest: wlDigestC, Argv: []string{"get-cert", "--renew-interval=6h"}},
+		{Digest: wlDigestC, Argv: []string{"/c8s", "get-cert", "--renew-interval=6h"}, Mounts: []pkgallowlist.ObservedMount{}},
 	}
 	matched := issueWithInventory(t, store, []string{wlDigestA, wlDigestC}, containers, nil)
 	if matched == nil || matched.Name != "api" {
@@ -162,7 +162,7 @@ func TestAttest_MatchedWorkload_UnnamedCases(t *testing.T) {
 		"only injected containers": {
 			store:      completeAPIStore(t),
 			digests:    []string{wlDigestC},
-			containers: []workloadclaims.SandboxContainer{{Digest: wlDigestC, Argv: []string{"get-cert"}}},
+			containers: []workloadclaims.SandboxContainer{{Digest: wlDigestC, Argv: []string{"/c8s", "get-cert"}, Mounts: []pkgallowlist.ObservedMount{}}},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -169,7 +169,7 @@ func TestExplainNamesUnpinnedGrant(t *testing.T) {
 func TestExplainNamesAMissingMain(t *testing.T) {
 	eh := newExplainHarness(t)
 	eh.inv.containers = []workloadclaims.SandboxContainer{
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 		{Digest: testOther, Argv: []string{"sh"}},
 	}
 
@@ -223,7 +223,7 @@ func TestExplainReportsEarlyRefusals(t *testing.T) {
 	t.Run("only injected containers", func(t *testing.T) {
 		eh := newExplainHarness(t)
 		eh.inv.containers = []workloadclaims.SandboxContainer{
-			{Digest: testInjected, Argv: []string{"get-cert"}},
+			{Digest: testInjected, Argv: []string{"/c8s", "get-cert"}},
 		}
 		_, resp := eh.serve(testSandbox)
 		if !strings.Contains(resp.Refusal, "platform-injected") {
@@ -317,7 +317,7 @@ func TestExplainAgreesWithTheMatcher(t *testing.T) {
 		{"match", []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
 			{Digest: testAppImg2, Argv: []string{"/metrics"}},
-			{Digest: testInjected, Argv: []string{"get-cert"}},
+			{Digest: testInjected, Argv: []string{"/c8s", "get-cert"}},
 		}},
 		{"foreign image", []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},

@@ -235,7 +235,7 @@ func validate(cfg *config) error {
 		seen[v.Name] = true
 	}
 	if cfg.SocketDir == "" {
-		return fmt.Errorf("--socket-dir is required")
+		return fmt.Errorf("the node agent's socket directory is required")
 	}
 	return nil
 }
