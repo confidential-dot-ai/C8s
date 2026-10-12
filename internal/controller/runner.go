@@ -5,6 +5,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -108,6 +109,15 @@ var newDirectClient = func(mgr manager.Manager) (client.Client, error) {
 // webhookCertDir is where the webhook serving certs are written —
 // controller-runtime's default in production, overridable in tests.
 var webhookCertDir = webhook.DefaultCertDir
+
+// podName names this pod: POD_NAME from the downward API, else the hostname,
+// which is the pod name unless that is over 63 characters. A var for tests.
+var podName = func() (string, error) {
+	if name := os.Getenv("POD_NAME"); name != "" {
+		return name, nil
+	}
+	return os.Hostname()
+}
 
 // Production wiring hoisted to vars so Run's error paths are testable.
 var (
@@ -341,10 +351,13 @@ func confidentialWorkloadCRDAvailable(dc serverResourcesForGroupVersion) (bool, 
 }
 
 // bootstrapWebhookPKI mints a fresh CA + serving cert for the admission
-// webhook and patches the CA bundle onto the MutatingWebhookConfiguration
-// so the API server trusts the webhook.
+// webhook and adds the CA to the MutatingWebhookConfiguration's caBundle so
+// the API server trusts the webhook. The previous pod's CA stays in the bundle
+// until this pod leads, because during a rollout the previous pod is still the
+// only Ready endpoint.
 //
-// The CA is ephemeral — re-minted on every operator restart — but long-lived
+// The CA is ephemeral — re-minted on every operator restart, its key held only
+// in this process and never written to a Secret — but long-lived
 // (webhook.WebhookCATTL), so the patched bundle stays stable while short-lived
 // serving leaves rotate under it. A rotator runnable re-mints the leaf before
 // it expires; without it the leaf's ~30-day validity would lapse and, with a
@@ -368,7 +381,15 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 		fmt.Sprintf("%s.%s.svc.cluster.local", svcName, svcNS),
 	}
 
-	ca, err := issuer.NewCA(fmt.Sprintf("%s webhook", svcName), webhook.WebhookCATTL)
+	// The pod name in the CA's CommonName is its identity in the caBundle:
+	// AppendCABundle replaces the entry of an earlier container of this pod
+	// instead of growing the bundle. Pod names are unique among live pods,
+	// so no other live pod's entry can match.
+	pod, err := podName()
+	if err != nil {
+		return fmt.Errorf("resolve pod name: %w", err)
+	}
+	ca, err := issuer.NewCA(fmt.Sprintf("%s webhook %s", svcName, pod), webhook.WebhookCATTL)
 	if err != nil {
 		return fmt.Errorf("mint webhook CA: %w", err)
 	}
@@ -384,8 +405,23 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 		return fmt.Errorf("build bootstrap client: %w", err)
 	}
 	caPEM := certutil.EncodeCertPEM(ca.Cert.Raw)
-	if err := webhook.PatchCABundle(ctx, c, opts.WebhookConfigName, caPEM); err != nil {
+	if err := webhook.AppendCABundle(ctx, c, opts.WebhookConfigName, caPEM); err != nil {
 		return err
+	}
+
+	// Drop the CAs this pod replaced. A leader-only runnable, and the
+	// previous pod does not release the Lease on shutdown, so it runs once
+	// that pod has stopped serving. Without leader election nothing orders
+	// it after the old pod, so nothing is ever pruned: the bundle keeps one
+	// CA per past pod, bounded by webhook.MaxCABundleCerts (oldest pods
+	// dropped first), rather than reopen the rollout window.
+	if opts.LeaderElection {
+		pruner := webhookCABundlePruner(mgr.GetWebhookServer().StartedChecker(), c,
+			opts.WebhookConfigName, caPEM, 10*time.Second,
+			mgr.GetLogger().WithName("webhook-cabundle-pruner"))
+		if err := mgr.Add(pruner); err != nil {
+			return fmt.Errorf("add webhook caBundle pruner: %w", err)
+		}
 	}
 
 	// Keep the leaf fresh in-process. The CA is stable, so the patched bundle
@@ -396,6 +432,40 @@ func bootstrapWebhookPKI(ctx context.Context, mgr ctrl.Manager, opts Options) er
 		return fmt.Errorf("add webhook cert rotator: %w", err)
 	}
 	return nil
+}
+
+// webhookCABundlePruner waits until this pod's webhook server accepts TLS,
+// then prunes the CAs of pods that predate this one from the caBundle (see
+// webhook.PruneCABundle), retrying failures
+// every retry. A failure only leaves a stale CA trusted, whose key died with
+// its pod, so it is logged rather than returned: an error would stop the
+// manager and take the webhook down with it.
+func webhookCABundlePruner(started healthz.Checker, c client.Client, configName string, caPEM []byte, retry time.Duration, logger logr.Logger) manager.RunnableFunc {
+	return func(ctx context.Context) error {
+		ticker := time.NewTicker(retry)
+		defer ticker.Stop()
+		for {
+			if err := started(nil); err == nil {
+				// Re-adding first is a no-op while this pod's CA is in the
+				// bundle, and restores it if something overwrote the bundle
+				// (a helm-set webhook.caBundle) since bootstrap.
+				err := webhook.AppendCABundle(ctx, c, configName, caPEM)
+				if err == nil {
+					err = webhook.PruneCABundle(ctx, c, configName, caPEM)
+				}
+				if err == nil {
+					logger.Info("pruned superseded webhook CAs from the caBundle")
+					return nil
+				}
+				logger.Error(err, "webhook caBundle prune failed; retrying", "retry", retry)
+			}
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-ticker.C:
+			}
+		}
+	}
 }
 
 // webhookCertRotator re-issues the webhook serving leaf before it expires.

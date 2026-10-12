@@ -99,6 +99,12 @@ spec:
             {{- range .Values.operator.extraArgs }}
             - {{ . | quote }}
             {{- end }}
+          env:
+            # The webhook CA carries the pod name as its identity in the
+            # caBundle; the hostname is truncated past 63 characters.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
           ports:
             - name: metrics
               containerPort: 8080

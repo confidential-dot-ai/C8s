@@ -2177,6 +2177,24 @@ func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
 	}
 }
 
+// TestChartOperatorHasPodNameEnv pins the downward-API POD_NAME the operator
+// puts in its webhook CA's CommonName: the CA's identity in the caBundle,
+// which must be unique among live pods (the hostname is truncated at 63).
+func TestChartOperatorHasPodNameEnv(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	op := renderedDeploymentContainer(t, out, "c8s-operator", "operator")
+	for _, e := range op.Env {
+		if e.Name == "POD_NAME" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&
+			e.ValueFrom.FieldRef.FieldPath == "metadata.name" {
+			return
+		}
+	}
+	t.Fatalf("operator missing POD_NAME from metadata.name; env %+v", op.Env)
+}
+
 // TestChartNonBareMetalModeUsesAttestationSocket proves the bare-metal-mode wiring does
 // not leak into the other cvmModes: gke/aks dial the on-node Unix socket
 // and render no HOST_IP env anywhere. The consumers that must carry both the

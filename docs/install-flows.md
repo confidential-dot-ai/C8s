@@ -106,7 +106,7 @@ sequenceDiagram
     Helm->>K: create operator Deployment, CDS, ...
     Helm->>K: create MWC pod-injector (failurePolicy=Fail, empty caBundle)
     Op->>Op: bootstrapWebhookPKI: mint ephemeral CA + serving cert
-    Op->>K: patch MWC caBundle (every operator start)
+    Op->>K: prepend CA to MWC caBundle (every operator start)
     Op->>K: reinject sweep: delete controller-owned cw pods admitted uninjected
     Note over Pods,K: in-scope pod created before the caBundle patch →<br/>webhook call fails → Fail rejects → ReplicaSet retries
     Pods->>K: (retry) admitted + mutated correctly
@@ -125,8 +125,18 @@ Key properties (see `templates/webhook.yaml`, `controller/runner.go`):
 - The operator reports **Ready only once its webhook TLS listener accepts
   connections** (`/readyz` dials it), so it never becomes a Service endpoint
   that refuses admission calls.
-- The webhook CA is **ephemeral**: `bootstrapWebhookPKI` re-mints it and
-  re-patches the caBundle on every operator start. The chart renders the
+- The webhook CA is **ephemeral**: `bootstrapWebhookPKI` re-mints it on
+  every operator start, its key only in process memory, and adds it to the
+  caBundle, keeping the previous pod's CA. During a rolling update the old pod
+  stays the only Ready endpoint until the new one is, so replacing the bundle
+  would fail admission in between. The CA's CommonName carries the pod name
+  (`POD_NAME`), so a container restart replaces its own pod's entry in place
+  and a crash-looping pod cannot push the old pod's CA out. Once the new pod
+  holds the leader Lease (the old one has stopped) and its webhook serves, it
+  prunes the CAs of pods older than itself. With `--leader-elect=false`
+  nothing is ever pruned: the bundle keeps one CA per past pod, at most 16,
+  dropping the oldest pods' first (the CAs are valid for ten years, so expiry
+  rarely trims it). The chart renders the
   `caBundle` field only when `webhook.caBundle` is set, so a `helm upgrade`
   leaves the operator-patched bundle in place and MWC spec changes roll out
   like any other resource.
