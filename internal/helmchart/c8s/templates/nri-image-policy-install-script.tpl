@@ -85,7 +85,7 @@ render_nri_toml() {
   plugin_registration_timeout = "10s"
   plugin_request_timeout = "2s"
   socket_path = "/var/run/nri/nri.sock"
-[plugins."io.containerd.nri.v1.nri.default_validator"]
+[plugins."io.containerd.nri.v1.nri".default_validator]
   enable = true
   required_plugins = ["{{ $root.Values.nriImagePolicy.pluginName }}"]
 EOF
