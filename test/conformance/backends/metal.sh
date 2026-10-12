@@ -20,9 +20,9 @@ written="${SUITE_RESULTS:-${TMPDIR:-/tmp}}/metal-backend-entries"
 # shellcheck disable=SC2154  # measurement_args: set by cds_measurement_args above
 al() { c8s allowlist "$@" --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}"; }
 
-# The floor the scenarios assume. The baked floor holds neither fixture image;
-# "nginx" goes on it by a signed write (`add` prints the entry's name), "rogue"
-# stays off.
+# The served allowlist the scenarios assume. The base allowlist names neither
+# fixture image; "nginx" gets an any-argv entry by a signed write (`add`
+# prints the entry's name), "rogue" gets none.
 setup() {
     local ref
     ref="$(image_ref nginx)"
@@ -50,9 +50,28 @@ image_alias() { return $UNSUPPORTED; }
 
 served_allowlist() { al export; }
 
+# `apply` takes a name-keyed map of entries and lints it against the live
+# document first.
+allowlist_put() { jq -c --arg name "$1" '{($name): .}' "$2" | al apply - >/dev/null; }
+
+allowlist_delete() { al delete "$1" >/dev/null 2>&1 || true; }
+
+# The base allowlist is measured into the node image and not readable without
+# a shell, so answer from what it was built from: the system images pinned in
+# node-guest-image/c8s/image-policy.yaml.in, plus c8s's own component entries,
+# which boot staging merges in and which are the images running in $NS.
+base_declares() {
+    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in" ||
+        kubectl -n "$NS" get pods -o jsonpath='{.items[*].status.containerStatuses[*].imageID}' | grep -qF "$2"; then
+        echo yes
+    else
+        echo no
+    fi
+}
+
 # The lane's components-ready assert gates the suite; here only the node's
 # readiness is rechecked.
-enforcer_ready() {
+plugin_ready() {
     [ "$(kubectl get node "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
 }
 
