@@ -367,7 +367,9 @@ func TestDigestsClientTransportAndProtocolFailures(t *testing.T) {
 // 500 — distinct from the 404 that means "no such sandbox".
 type erroringResolver struct{}
 
-func (erroringResolver) SandboxForPeer(Peer) (string, error) { return "", errTestAttest }
+func (erroringResolver) SandboxForPeer(Peer) (CallerSandbox, error) {
+	return CallerSandbox{}, errTestAttest
+}
 func (erroringResolver) DigestsForSandbox(string) ([]string, []SandboxContainer, bool, error) {
 	return nil, nil, false, errTestAttest
 }

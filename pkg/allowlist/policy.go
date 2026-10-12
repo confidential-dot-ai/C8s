@@ -1,6 +1,10 @@
 package allowlist
 
-import "github.com/confidential-dot-ai/c8s/pkg/types"
+import (
+	"slices"
+
+	"github.com/confidential-dot-ai/c8s/pkg/types"
+)
 
 // Index answers admission queries for enforcers in O(1). Build it once from a
 // normalized Allowlist (BuildIndex). A nil *Index admits nothing, so an
@@ -116,6 +120,30 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// RoleOf reports the platform role this policy binds to an observed
+// container. A role rides on the whole verified identity, and two
+// declarations naming different roles for one launch bind none.
+func (i *Index) RoleOf(r RunningContainer) string {
+	if i == nil {
+		return ""
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return ""
+	}
+	r.Digest = d.String()
+	var roles []string
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Role != "" && c.admits(r) && !slices.Contains(roles, c.Role) {
+			roles = append(roles, c.Role)
+		}
+	}
+	if len(roles) != 1 {
+		return ""
+	}
+	return roles[0]
 }
 
 // AdmitsProcess is the preliminary NRI create-time check. It deliberately checks

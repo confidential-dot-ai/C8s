@@ -415,8 +415,10 @@ Two things this rests on that attestation does not enforce:
 
 get-cert fetches the CDS challenge for this issuance first, then POSTs its CSR
 public key and that challenge to `/sandbox`. The inventory resolves the
-*caller's* identity to a sandbox — nothing the caller sends names the pod — and
-signs
+*caller's* identity to a sandbox — nothing the caller sends names the pod. On a
+node with a mesh policy it answers `403` unless the enforcer verifies that
+sandbox as a member pod whose live ruleset is the one trusted policy defines
+and the caller is still the live process. Then it signs
 
 ```text
 SandboxToken ::= SEQUENCE {

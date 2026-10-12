@@ -23,6 +23,7 @@ type admissionInventory struct {
 	mu         sync.RWMutex
 	containers map[string]ctrRec                   // live containerID -> record (caller resolution)
 	admitted   map[string]admissionhistory.History // sandboxID -> everything ever admitted there
+	denied     map[string]error                    // sandboxID -> why it asserts no identity
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
 }
@@ -38,6 +39,7 @@ func newAdmissionInventory(procRoot string) *admissionInventory {
 	return &admissionInventory{
 		containers: map[string]ctrRec{},
 		admitted:   map[string]admissionhistory.History{},
+		denied:     map[string]error{},
 		sandboxes:  map[string]struct{}{},
 		procRoot:   procRoot,
 	}
@@ -99,11 +101,37 @@ func (b *admissionInventory) removeSandbox(sandboxID string) {
 	defer b.mu.Unlock()
 	delete(b.sandboxes, sandboxID)
 	delete(b.admitted, sandboxID)
+	delete(b.denied, sandboxID)
 	for id, rec := range b.containers {
 		if rec.sandboxID == sandboxID {
 			delete(b.containers, id)
 		}
 	}
+}
+
+// recordDenial notes a refusal that kept a container of the sandbox from
+// running. The first reason stands for the sandbox's life; removeSandbox
+// evicts it with the sandbox.
+//
+// INVARIANT: a sandbox with any denied container asserts no identity.
+func (b *admissionInventory) recordDenial(sandboxID string, reason error) {
+	if sandboxID == "" || reason == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, onRecord := b.denied[sandboxID]; onRecord {
+		return
+	}
+	b.denied[sandboxID] = reason
+}
+
+// denial is why the sandbox asserts no identity, nil when every container of
+// it the plugin decided on was let run.
+func (b *admissionInventory) denial(sandboxID string) error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.denied[sandboxID]
 }
 
 // callerForPeer resolves the calling process to its tracked container record.
@@ -141,9 +169,10 @@ func (b *admissionInventory) callerForPeer(peer workloadclaims.Peer) (ctrRec, er
 	return ctrRec{}, fmt.Errorf("caller cgroup names no tracked container")
 }
 
-// SandboxForPeer resolves the calling process to the pod sandbox it runs in,
-// bound by kernel credentials.
-func (b *admissionInventory) SandboxForPeer(peer workloadclaims.Peer) (string, error) {
+// sandboxForPeer resolves the calling process to the pod sandbox it runs in,
+// bound by kernel credentials. The enforcer's own verification of that
+// sandbox's protection is the plugin's answer (plugin.SandboxForPeer).
+func (b *admissionInventory) sandboxForPeer(peer workloadclaims.Peer) (string, error) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 

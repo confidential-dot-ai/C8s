@@ -134,6 +134,10 @@ type plugin struct {
 	// lifecycle callback over bookkeeping.
 	inventory *admissionInventory
 
+	// mesh is the mesh gate (meshgate.go). It is disabled unless the measured
+	// config carries a mesh policy, and a node without one hosts no members.
+	mesh *meshGate
+
 	// boot is the boot gate: nil unless policy.fatal_existing. See
 	// bootgate.go. bootRestart records that this registration is a plugin
 	// restart, which makes the startup check's denials fatal.
@@ -162,6 +166,7 @@ func newPlugin(
 		containerd: ctrd,
 	}
 	p.boot = newBootGate(cfg, logger)
+	p.mesh = newMeshGate(cfg.Mesh, logger)
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -237,6 +242,11 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
 	}
+	if p.mesh.policy != nil {
+		mask.Set(api.Event_RUN_POD_SANDBOX)
+		mask.Set(api.Event_REMOVE_POD_SANDBOX)
+		mask.Set(api.Event_UPDATE_CONTAINER)
+	}
 	return mask, nil
 }
 
@@ -250,22 +260,74 @@ func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	return nil
 }
 
-// RunPodSandbox records a started pod sandbox for the inventory's sandbox set.
-// Only subscribed when the inventory is enabled (see Configure).
+// RunPodSandbox records a started pod sandbox for the inventory's sandbox set
+// and installs the pod's packet protection, before any container of that pod
+// is created. A failed install refuses the sandbox, so the gate is what
+// refuses its containers (docs/armtls.md).
 func (p *plugin) RunPodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	if p.inventory != nil {
 		p.inventory.recordSandbox(pod.GetId())
+	}
+	if err := p.mesh.protect(pod); err != nil {
+		p.logger.Error("cannot protect a pod; every container of it will be refused", "error", err)
 	}
 	return nil
 }
 
 // RemovePodSandbox evicts a removed pod sandbox (and its containers) from the
-// inventory. Only subscribed when the inventory is enabled (see Configure).
+// inventory and the mesh gate.
 func (p *plugin) RemovePodSandbox(ctx context.Context, pod *api.PodSandbox) error {
 	if p.inventory != nil {
 		p.inventory.removeSandbox(pod.GetId())
 	}
+	p.mesh.forget(pod.GetId())
 	return nil
+}
+
+// UpdateContainer refuses every change to a container of a pod the enforcer
+// protects. An error here fails the update, so the container keeps the
+// resources it was admitted with.
+func (p *plugin) UpdateContainer(_ context.Context, pod *api.PodSandbox, ctr *api.Container, _ *api.LinuxResources) ([]*api.ContainerUpdate, error) {
+	if !p.mesh.hosts(pod) {
+		return nil, nil
+	}
+	return nil, fmt.Errorf("container %s of pod %s/%s cannot be changed while the pod is protected", ctr.GetName(), pod.GetNamespace(), pod.GetName())
+}
+
+// SandboxForPeer and DigestsForSandbox make the plugin the
+// workloadclaims.SandboxResolver: the inventory resolves the caller by kernel
+// credentials, holds the refusals that kept the sandbox's containers from
+// running, and the gate verifies the pod it runs in. Lock order: the
+// inventory's, then the gate's.
+func (p *plugin) SandboxForPeer(peer workloadclaims.Peer) (workloadclaims.CallerSandbox, error) {
+	sandboxID, err := p.inventory.sandboxForPeer(peer)
+	if err != nil {
+		return workloadclaims.CallerSandbox{}, err
+	}
+	refusal := p.inventory.denial(sandboxID)
+	if refusal == nil {
+		refusal = p.mesh.verifyMember(sandboxID)
+	}
+	return workloadclaims.CallerSandbox{
+		SandboxID: sandboxID,
+		Refusal:   refusal,
+	}, nil
+}
+
+func (p *plugin) DigestsForSandbox(sandboxID string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
+	return p.inventory.DigestsForSandbox(sandboxID)
+}
+
+// denyContainer records the refusal that keeps a container of sandboxID from
+// running and returns it for the hook to fail with.
+//
+// INVARIANT: every refusal a hook returns in enforcing mode passes through
+// here, so the sandbox it belongs to asserts no identity.
+func (p *plugin) denyContainer(sandboxID string, refusal error) error {
+	if p.inventory != nil {
+		p.inventory.recordDenial(sandboxID, refusal)
+	}
+	return refusal
 }
 
 // recordForInventory resolves a container's image digest and records it for the
@@ -753,6 +815,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 			p.inventory.recordSandbox(pod.GetId())
 		}
 	}
+	p.mesh.refuseExisting(pods)
 
 	// Ahead of every other decision: on a node image a container that already
 	// exists means admission was not in place when it started The
@@ -884,7 +947,7 @@ func (p *plugin) admitWhileInitializing(ctx context.Context, cfg *config, pod *a
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny {
 		log.Warn("plugin initializing: denying container creation", "denial", reason)
-		return fmt.Errorf("image policy plugin initializing: %s", reason)
+		return p.denyContainer(pod.GetId(), fmt.Errorf("image policy plugin initializing: %s", reason))
 	}
 	return nil
 }
@@ -897,9 +960,9 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 	verdict, reason := p.checkContainerPhase(ctx, p.cfg, pod, ctr, ctr.GetAnnotations()[annotationImageName], launchPreliminary)
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		if !p.Ready() {
-			return nil, nil, fmt.Errorf("image policy plugin initializing: %s", reason)
+			return nil, nil, p.denyContainer(pod.GetId(), fmt.Errorf("image policy plugin initializing: %s", reason))
 		}
-		return nil, nil, fmt.Errorf("%s", reason)
+		return nil, nil, p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
 	}
 	return p.socketDirAdjustment(pod, ctr), nil, nil
 }
@@ -920,10 +983,43 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
-		return fmt.Errorf("%s", reason)
+		return p.denyContainer(pod.GetId(), fmt.Errorf("%s", reason))
 	}
+	p.noteMeshStarted(ctx, pod, ctr, imageRef)
 	p.recordForInventory(ctx, pod, ctr, imageRef)
 	return nil
+}
+
+// noteMeshStarted tells the gate a pod's mesh endpoint is running, the start
+// the rest of the pod waits on.
+func (p *plugin) noteMeshStarted(ctx context.Context, pod *api.PodSandbox, ctr *api.Container, imageRef string) {
+	if !p.mesh.hosts(pod) {
+		return
+	}
+	launch := p.observedLaunch(ctx, ctr, imageRef, containerEnv(ctr), observedMounts(pod, ctr))
+	if p.roleOf(launch) == meshRole {
+		p.mesh.noteMeshStarted(pod.GetId())
+	}
+}
+
+// roleOf is the only role lookup: the role the measured base allowlist binds
+// to this finalized launch. The field never travels on the wire, so a role
+// comes from the node's own boot config.
+func (p *plugin) roleOf(launch allowlist.RunningContainer) string {
+	if p.policy == nil {
+		return ""
+	}
+	return p.policy.base.RoleOf(launch)
+}
+
+// observedLaunch is the container as a role lookup reads it.
+func (p *plugin) observedLaunch(ctx context.Context, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) allowlist.RunningContainer {
+	return allowlist.RunningContainer{
+		Digest: p.resolveDigest(ctx, imageRef),
+		Argv:   ctr.GetArgs(),
+		Env:    env,
+		Mounts: mounts,
+	}
 }
 
 // socketDirAdjustment bind-mounts the inventory's socket directory, read-only,
