@@ -94,10 +94,16 @@ func noEntryDeclares(ctx context.Context, image string) error {
 }
 
 func podRunsImage(ctx context.Context, name, image string) error {
-	return podRunsImages(ctx, name, image)
+	return describePod(ctx, name, image)
 }
 
-func podRunsImages(ctx context.Context, name string, images ...string) error {
+func podRunsImages(ctx context.Context, name, first, second string) error {
+	return describePod(ctx, name, first, second)
+}
+
+// describePod records a pod with one container per image. godog binds only
+// fixed-arity handlers, so the two sentences above wrap it.
+func describePod(ctx context.Context, name string, images ...string) error {
 	w := getWorld(ctx)
 	refs, err := w.refs(images...)
 	if err != nil {
