@@ -53,6 +53,115 @@ scratch() { echo "$WORKDIR"; }
 
 served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
 
+# The same forward dialled without TLS; the listener is TLS-only.
+cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
+cds_pins() { echo "$MOCK_MEASUREMENT"; }
+operator_key_set() { cat "$WORKDIR/operator-pub.pem"; }
+
+CDS_SELECTOR=app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=cds
+CDS_ARGS_ANNOTATION=c8s-conformance/cds-args
+
+# The CDS container's args are edited in place; the installed ones are kept
+# in an annotation on the Deployment, so default restores them from any
+# process. The Deployment's strategy is Recreate: the old pod goes before
+# the new one comes, and a pod that never becomes ready is still the only
+# one, so a reconfigured CDS is waited for as a running pod answering
+# /healthz, not as a completed rollout.
+cds_restart_with() {
+    local installed args since
+    installed="$(kubectl -n "$NS" get deploy c8s-cds -o jsonpath="{.metadata.annotations.$CDS_ARGS_ANNOTATION}")"
+    if [ -z "$installed" ]; then
+        [ "$1" != default ] || return 0 # nothing was changed
+        installed="$(kubectl -n "$NS" get deploy c8s-cds -o jsonpath='{.spec.template.spec.containers[?(@.name=="cds")].args}')"
+        kubectl -n "$NS" annotate deploy c8s-cds "$CDS_ARGS_ANNOTATION=$installed" --overwrite >/dev/null
+    fi
+    case "$1" in
+        default) args="$installed" ;;
+        min-ca-validity) args="$(jq -c --arg v "--min-ca-validity=$2" 'map(select(startswith("--min-ca-validity=") | not)) + [$v]' <<<"$installed")" ;;
+        pins) args="$(jq -c --arg v "--measurements=$2" 'map(select(startswith("--measurements=") | not)) + [$v]' <<<"$installed")" ;;
+        operator-keys)
+            [ "$2" = none ] || { echo "backend: cds_restart_with operator-keys takes none" >&2; return 2; }
+            args="$(jq -c 'map(select(startswith("--operator-keys=") | not))' <<<"$installed")" ;;
+        *) echo "backend: cds_restart_with: no parameter '$1'" >&2; return 2 ;;
+    esac
+    since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    cds_pf_stop
+    kubectl -n "$NS" patch deploy c8s-cds --type strategic \
+        -p "{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"cds\",\"args\":$args}]}}}}" >/dev/null
+    if [ "$1" = default ]; then
+        kubectl -n "$NS" annotate deploy c8s-cds "$CDS_ARGS_ANNOTATION-" >/dev/null
+        kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null
+    else
+        cds_await_running "$since"
+    fi
+}
+
+# Wait for the one CDS pod created since the timestamp to run and answer
+# /healthz through the forward.
+cds_await_running() {
+    local deadline=$(($(date +%s) + 180)) pods
+    while :; do
+        pods="$(kubectl -n "$NS" get pods -l "$CDS_SELECTOR" -o jsonpath='{range .items[*]}{.metadata.creationTimestamp} {.status.phase}{"\n"}{end}')"
+        if [ "$(printf '%s\n' "$pods" | grep -c .)" -eq 1 ] && [[ "$pods" > "$1" ]] && [[ "$pods" == *" Running" ]]; then
+            cds_pf_start
+            return
+        fi
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the reconfigured CDS is not running: $pods" >&2; return 1; }
+        sleep 2
+    done
+}
+
+# The mock attestation-api is the local attestation service of every
+# component here, the CDS's readiness check included.
+attestation_service_stop() {
+    kubectl -n kube-system scale deploy/mock-attestation --replicas=0 >/dev/null
+    kubectl -n kube-system wait --for=delete pod -l app=mock-attestation --timeout=120s >/dev/null 2>&1 || true
+}
+
+attestation_service_start() {
+    kubectl -n kube-system scale deploy/mock-attestation --replicas=1 >/dev/null
+    kubectl -n kube-system rollout status deploy/mock-attestation --timeout=180s >/dev/null
+}
+
+# PEM private keys outside CDS process memory: in the Secrets and ConfigMaps
+# of every namespace, and in the files of the node, where the CDS
+# container's root filesystem and its volumes live too. /proc, /sys and
+# /dev are not files.
+private_keys() {
+    local pem='-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----'
+    kubectl get secrets,configmaps -A -o json | python3 -c '
+import base64, json, re, sys
+pem = re.compile(sys.argv[1].encode(), re.S)
+for item in json.load(sys.stdin)["items"]:
+    for value in (item.get("data") or {}).values():
+        raw = base64.b64decode(value) if item["kind"] == "Secret" else value.encode()
+        for block in pem.findall(raw):
+            sys.stdout.buffer.write(block + b"\n")
+' "$pem"
+    local cds
+    cds="$(node_exec crictl ps -q --name '^cds$' | head -1)"
+    # shellcheck disable=SC2016  # $@ expands on the node
+    node_exec sh -c 'grep -rlI -e "PRIVATE KEY-----" "$@" 2>/dev/null | xargs -r cat' _ \
+        /etc /run /root /opt /tmp /var/lib/kubelet "/run/containerd/io.containerd.runtime.v2.task/k8s.io/$cds/rootfs" |
+        python3 -c '
+import re, sys
+for block in re.findall(sys.argv[1].encode(), sys.stdin.buffer.read(), re.S):
+    sys.stdout.buffer.write(block + b"\n")
+' "$pem"
+}
+
+# One issuance from this host, which the mock attestation admits like any
+# requester: the local attestation service is the mock on the node's
+# address, the pins are its measurement, and the CSR carries a DNS SAN the
+# CDS's Service pattern admits and no IP SAN (the source address the CDS
+# sees is the forward's). The CLI the harness built, or a fresh build.
+attest_direct() {
+    local bin="$C8S_ROOT/build/c8s"
+    [ -x "$bin" ] || go build -C "$C8S_ROOT" -o "$bin" ./cmd/c8s >&2 || return 1
+    "$bin" get-cert --cds-url "$(cds_url)" --attestation-api-url "http://$NODE_IP:8400" \
+        --cds-measurements "$MOCK_MEASUREMENT" --san "requester.$NS.svc" 2>/dev/null
+}
+
 # From the node's store, pulled when absent: the image's entrypoint, then its
 # cmd. The kind node image ships jq.
 image_entrypoint() {

@@ -35,6 +35,7 @@ type world struct {
 	pendingValidity string
 	versionBefore   string
 	read            *reading
+	cds             cdsState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -103,6 +104,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
+		registerCDSAPI(sc)
 		registerCDS(sc)
 		registerNode(sc)
 	}

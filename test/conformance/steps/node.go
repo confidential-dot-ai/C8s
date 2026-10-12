@@ -24,7 +24,7 @@ func registerNode(sc *godog.ScenarioContext) {
 	sc.Step(`^the first pull of the admission plugin on node "([^"]*)" has not succeeded$`, firstPullNotSucceeded)
 	sc.Step(`^the admission plugin on node "([^"]*)" pulls the served allowlist$`, pluginPulls)
 	sc.Step(`^the database of the CDS does not survive a restart$`, cdsVolatile)
-	sc.Step(`^the CDS has restarted$`, cdsRestarted)
+	sc.Step(`^the CDS (?:restarts|has restarted)$`, cdsRestarted)
 	sc.Step(`^the version of the served allowlist is below the version the admission plugin on node "([^"]*)" applied$`, versionBelowApplied)
 }
 

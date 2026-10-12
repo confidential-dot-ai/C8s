@@ -46,6 +46,31 @@
 #   allowlist_get [version]          read the allowlist, naming version in
 #                                    If-None-Match when given; prints
 #                                    "<status> <version>", then the body
+#   cds_read <document> [plain]      read a document of the CDS with no client
+#                                    certificate (mesh-ca, reference-values,
+#                                    operator-key-set, allowlist, readiness),
+#                                    over plain HTTP when asked; prints the
+#                                    status, then the body
+#   cds_serving_cert                 the certificate the CDS presents in the
+#                                    TLS handshake, PEM
+#   cds_ready                        yes/no: the CDS reports itself ready
+#   cds_pins                         the launch digests the CDS was started
+#                                    with, one per line
+#   operator_key_set                 the operator public keys the CDS loaded at
+#                                    startup, PEM
+#   cds_restart_with <parameter> <value>
+#                                    restart the CDS with min-ca-validity
+#                                    <duration>, pins <digest> or operator-keys
+#                                    none; default restores the installed
+#                                    configuration
+#   attestation_service_stop / attestation_service_start
+#                                    the local attestation service of the
+#                                    CDS's node
+#   private_keys <node>              every PEM private key held outside CDS
+#                                    process memory: in Kubernetes objects and
+#                                    in the files of the node
+#   attest_direct                    one issuance against the CDS process from
+#                                    an admitted TEE; prints the chain, PEM
 # node_name, image_ref, image_digest and pull_interval answer the same for a
 # whole run; callers may cache them. The allowlist is state: served_allowlist
 # answers for the moment of the call.
@@ -220,6 +245,48 @@ allowlist_get() {
     echo "$status $(awk 'tolower($1) == "etag:" {gsub(/[^0-9]/, "", $2); print $2}' "$headers")"
     cat "$body"
     rm -f "$headers" "$body"
+}
+
+# --- The CDS's own documents and state ---
+# A backend provides cds_plain_url, the same listener over http://, or 77.
+
+cds_document_path() {
+    case "$1" in
+        mesh-ca) echo /ca ;;
+        reference-values) echo /measurements ;;
+        operator-key-set) echo /operator-keys ;;
+        allowlist) echo /allowlist ;;
+        readiness) echo /readyz ;;
+        *) echo "backend: no CDS document '$1'" >&2; return 2 ;;
+    esac
+}
+
+# Status 000 when nothing answered, as for a TLS-only listener dialled plain.
+cds_read() {
+    local url path body status
+    path="$(cds_document_path "$1")" || return
+    if [ "${2:-}" = plain ]; then
+        url="$(cds_plain_url)" || return
+    else
+        url="$(cds_url)" || return
+    fi
+    body="$(mktemp)"
+    status="$(curl -sk -o "$body" -w '%{http_code}' --max-time 20 "$url$path" 2>/dev/null)" || status=000
+    echo "$status"
+    cat "$body"
+    rm -f "$body"
+}
+
+cds_serving_cert() {
+    local url host
+    url="$(cds_url)" || return
+    host="${url#https://}"
+    host="${host%%/*}"
+    openssl s_client -connect "$host" </dev/null 2>/dev/null | openssl x509
+}
+
+cds_ready() {
+    if [ "$(cds_read readiness | head -1)" = 200 ]; then echo yes; else echo no; fi
 }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.
