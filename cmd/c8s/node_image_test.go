@@ -164,7 +164,7 @@ func TestNodeImageRender(t *testing.T) {
 			if err := yaml.Unmarshal(docs["ConfigMap/c8s-router-nginx"], &nginx); err != nil {
 				t.Fatal(err)
 			}
-			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "location /healthz"} {
+			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "location /healthz", "include /run/c8s-node/router/upstream.conf;", "include /run/c8s-node/router/tls.conf;", "proxy_pass http://$c8s_upstream;", "listen 8080;"} {
 				if !strings.Contains(nginx.Data["nginx.conf"], directive) {
 					t.Errorf("nginx missing %q", directive)
 				}

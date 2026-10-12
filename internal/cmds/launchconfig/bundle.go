@@ -58,6 +58,7 @@ type BundleOptions struct {
 	Agents        []string
 	TLSSAN        string
 	WorkloadsPath string
+	Router        Router
 }
 
 // NewBundle generates the cluster's two launch keys and join tokens, writes
@@ -125,6 +126,10 @@ func NewBundle(opts BundleOptions) (err error) {
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
 	}
+	if opts.Router.Upstream != "" || len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" {
+		router := opts.Router
+		server.Router = &router
+	}
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err
 	}
@@ -162,7 +167,8 @@ func NewBundle(opts BundleOptions) (err error) {
 }
 
 // AddAgent derives an agent document from the bundle's server document
-// (same cluster, image, agent token, keys and SAN; never the server token),
+// (same cluster, image, agent token, keys and SAN; never the server token or
+// the server-only router block),
 // signs it with the bundle's agent key and writes <dir>/<name>. It works
 // on a bundle created earlier, so a cluster can grow without regenerating or
 // re-signing anything the server already booted with.
@@ -206,6 +212,7 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	agent.Node = Node{Name: name}
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken}
 	agent.Server.Address = serverAddress
+	agent.Router = nil
 	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
 }
 

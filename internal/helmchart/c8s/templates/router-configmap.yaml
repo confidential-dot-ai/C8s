@@ -8,6 +8,12 @@
 {{- $serverNames = "_" -}}
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
+{{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
+{{- $readTimeout := toString (default "3600s" .Values.router.upstream.readTimeout) -}}
+{{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) -}}
+{{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) -}}
+{{- end -}}
+{{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- include "router.validateProtocol" (required "protocol must be http or https" .Values.router.upstream.protocol) -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
 {{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
@@ -88,7 +94,7 @@ data:
 
         sendfile on;
         keepalive_timeout 65;
-{{- if $upstreamAddress }}
+{{- if or $upstreamAddress $launchDriven }}
 
         # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
         # other requests keep Connection: close to the upstream.
@@ -128,7 +134,7 @@ data:
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
 {{- end }}
 
-        {{- if $upstreamMeshWrapped }}
+        {{- if or $upstreamMeshWrapped $launchDriven }}
         # A mesh-wrapped catch-all is dialed via a variable (see location /), so
         # nginx re-resolves it here at request time per record TTL: a static
         # upstream block would pin the pod IPs the adopted workload's headless
@@ -163,9 +169,16 @@ data:
         server {
             listen {{ .Values.router.nginx.httpsPort }} ssl;
             server_name {{ $serverNames }};
+            {{- if $launchDriven }}
+
+            # The launch file's front-door mode selects the certificate:
+            # tls.conf includes tls-cds.conf (the mesh leaf) or tls-acme.conf.
+            include {{ include "router.launchDir" . }}/tls.conf;
+            {{- else }}
 
             ssl_certificate     {{ include "router.publicCertPath" . }};
             ssl_certificate_key {{ include "router.publicKeyPath" . }};
+            {{- end }}
 
             ssl_protocols TLSv1.2 TLSv1.3;
             ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-CHACHA20-POLY1305;
@@ -311,7 +324,35 @@ data:
             }
 
             {{- end }}
-            {{- if $upstreamAddress }}
+            {{- if $launchDriven }}
+            # The catch-all upstream comes from the signed launch file:
+            # upstream.conf sets $c8s_upstream to a mesh-wrapped
+            # c8s-<id>.<ns>.svc.cluster.local:<port>, or to "" when the launch
+            # file names none. Resolved per request like any mesh-wrapped
+            # upstream (resolver above).
+            location / {
+                include {{ include "router.launchDir" . }}/upstream.conf;
+                if ($c8s_upstream = "") {
+                    return 404;
+                }
+                {{- if default false .Values.router.cors.enabled }}
+                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
+                {{- end }}
+                proxy_pass http://$c8s_upstream;
+                proxy_set_header Host $host;
+                proxy_set_header X-Real-IP $remote_addr;
+                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                proxy_set_header X-Forwarded-Proto $scheme;
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $connection_upgrade;
+                # Timeouts and streaming: see the static catch-all below.
+                proxy_connect_timeout 5s;
+                proxy_read_timeout {{ $readTimeout }};
+                proxy_send_timeout {{ $readTimeout }};
+                proxy_buffering off;
+                proxy_http_version 1.1;
+            }
+            {{- else if $upstreamAddress }}
             location / {
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
@@ -331,10 +372,6 @@ data:
                 proxy_set_header X-Forwarded-Proto $scheme;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
-                {{- $readTimeout := toString (default "3600s" .Values.router.upstream.readTimeout) }}
-                {{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) }}
-                {{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) }}
-                {{- end }}
                 # A non-streaming completion sends nothing until it is done, so
                 # nginx's 60s default read timeout would 504 long generations.
                 # A dead upstream must fail fast instead.
@@ -372,7 +409,7 @@ data:
                 add_header Content-Type text/plain;
             }
         }
-        {{- if eq $publicTLSMode "acme" }}
+        {{- if $acmeSidecar }}
 
         # Public :80 (hostPort/Service -> acmeHTTPPort): HTTP-01 challenges
         # reach the acme sidecar on loopback; everything else upgrades.
@@ -392,4 +429,12 @@ data:
         }
         {{- end }}
     }
+  {{- if $launchDriven }}
+  tls-cds.conf: |-
+    ssl_certificate     {{ .Values.router.tlsMountPath }}/cert.pem;
+    ssl_certificate_key {{ .Values.router.tlsMountPath }}/key.pem;
+  tls-acme.conf: |-
+    ssl_certificate     {{ include "router.acmeCertDir" . }}/cert.pem;
+    ssl_certificate_key {{ include "router.acmeCertDir" . }}/key.pem;
+  {{- end }}
 {{- end }}

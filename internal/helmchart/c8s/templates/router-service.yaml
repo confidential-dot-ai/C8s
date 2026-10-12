@@ -30,7 +30,7 @@ spec:
       targetPort: https
       protocol: TCP
       name: https
-    {{- if eq (include "router.publicTLSMode" .) "acme" }}
+    {{- if eq (include "router.acmeSidecar" .) "true" }}
     {{- /* HTTP-01 validators dial :80. */}}
     - port: 80
       targetPort: http
