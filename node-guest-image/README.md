@@ -625,6 +625,15 @@ Provision it with your host-provisioning system before installing C8s:
   `--reset-with-sbr` → D3→D0 power-control cycle; FLR alone is insufficient.
 - On SEV-SNP hosts, `kvm_amd.sev_snp=1` and an IOMMU on the host cmdline.
 
+Attach GPUs at VM launch. The guest kernel has PCI hotplug compiled out, so a
+GPU attached later is not enumerated. `gpu-cc-enforce.service` checks CC mode
+and attestation once per boot and relies on this; the invariant gate fails if
+the kernel fragments or the resolved snapshot enable any `HOTPLUG_PCI*`
+symbol. A `/sys/bus/pci/rescan` by guest root or by any privileged platform
+pod (the NVIDIA device plugin, attestation-api, volumed, the NRI image-policy
+installer) still enumerates new devices without a check ([#669]). Tenant pods
+cannot do this under restricted PodSecurity.
+
 ## Troubleshooting
 
 Inspect the core workloads with the attested kubeconfig:
@@ -677,4 +686,5 @@ Migration state (see [#264] for the full plan):
 
 [confidential-os-builder]: https://github.com/confidential-dot-ai/confidential-os-builder
 [#264]: https://github.com/confidential-dot-ai/c8s/issues/264
+[#669]: https://github.com/confidential-dot-ai/c8s/issues/669
 [operator.md]: ../docs/operator.md
