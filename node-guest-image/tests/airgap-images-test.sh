@@ -81,6 +81,8 @@ edit_tag() {
     mv "$work/index.json" "$cached/index.json"
 }
 damage() {
+    # oras writes blobs read-only; a non-root runner cannot damage them in place.
+    chmod -R u+w "$cached"
     local blobs=("$cached"/blobs/sha256/*)
     case $1 in
         corrupt) sed -i s/amd64/amd65/ "$(grep -l amd64 "${blobs[@]}" | head -1)" ;;
@@ -102,6 +104,7 @@ for step in corrupt layer missing truncated stray emptydir untagged octet extrak
     cmp "$work/first/c8s-0.tar" "$work/recopied/c8s-0.tar"
 done
 # The archived oci-layout is fixed, so a damaged cached one never reaches it.
+chmod -R u+w "$cached"
 echo '{"imageLayoutVersion":"9"}' > "$cached/oci-layout"
 bash "$script" "$work/images.txt" "$work/cache" "$work/layout"
 cmp "$work/first/c8s-0.tar" "$work/layout/c8s-0.tar"
