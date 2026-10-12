@@ -395,7 +395,19 @@ func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
 
 func dnsLabel(s string) bool { return len(validation.IsDNS1123Label(s)) == 0 }
 
-func dnsHostname(s string) bool { return len(validation.IsDNS1123Subdomain(s)) == 0 }
+// dnsHostname accepts a lowercase DNS name: labels of at most 63 characters,
+// 253 in all.
+func dnsHostname(s string) bool {
+	if len(s) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(s, ".") {
+		if !dnsLabel(label) {
+			return false
+		}
+	}
+	return true
+}
 
 // portNumber accepts a canonical decimal TCP port, as install.go does.
 func portNumber(s string) bool {

@@ -60,6 +60,7 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"agent without keys", Agent, func(d *Document) { d.AgentOperatorPublicKeys = nil }, "requires agentOperatorPublicKeys"},
 		{"tls san length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 254) }, "lowercase DNS hostname"},
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
+		{"tls san label length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 64) + ".local" }, "lowercase DNS hostname"},
 		{"workloads json", Server, func(d *Document) { d.Workloads = "{" }, "valid JSON"},
 		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
 		{"mirror https", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "https://10.43.0.5"} }, "http://host"},
