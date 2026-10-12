@@ -511,7 +511,9 @@ func TestRenewLoopRetriesInitialCertBeforeRenewInterval(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), nil, false) }()
+	go func() {
+		done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), plaintextPolicyClient(cfg.CDSURL), nil, false)
+	}()
 
 	waitForFile(t, cfg.OutPath, done)
 
@@ -543,7 +545,9 @@ func TestRenewLoopStopsRetryingAfterFirstCert(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), nil, false) }()
+	go func() {
+		done <- renewLoop(ctx, cfg, plaintextCDSClient(cfg.CDSURL), plaintextPolicyClient(cfg.CDSURL), nil, false)
+	}()
 
 	waitForFile(t, cfg.OutPath, done)
 	before, err := os.Stat(cfg.OutPath)
@@ -686,7 +690,7 @@ func TestRenewLoopRenewsWhenCDSMeshCAChanges(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), leaf, true) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), leaf, true) }()
 
 	// Matching bundles: many watch ticks must pass without a renewal.
 	time.Sleep(100 * time.Millisecond)
@@ -820,7 +824,9 @@ func TestRenewLoopPicksUpNameWithinSeconds(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	start := time.Now()
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient("http://127.0.0.1:1"), unnamed, true) }()
+	go func() {
+		done <- renewLoop(ctx, cfg, plaintextCDSClient("http://127.0.0.1:1"), plaintextPolicyClient("http://127.0.0.1:1"), unnamed, true)
+	}()
 
 	at := waitForAttempts(t, attempts, 1)
 	if gap := at[0].Sub(start); gap > 3*time.Second {

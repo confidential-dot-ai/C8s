@@ -81,6 +81,23 @@ func (c Client) CanonicalBytes(ctx context.Context) ([]byte, string, error) {
 	return body, VersionFromETag(etag), nil
 }
 
+// FetchCanonical is CanonicalBytes with If-None-Match: notModified is true on
+// a 304 (body nil, version ""). A 200 without a weak ETag W/"N" is an error,
+// since the caller could not name the snapshot it got.
+func (c Client) FetchCanonical(ctx context.Context, ifNoneMatch string) ([]byte, string, bool, error) {
+	var body []byte
+	_, etag, notModified, err := c.fetch(ctx, ifNoneMatch, &body)
+	if err != nil || notModified {
+		return nil, "", notModified, err
+	}
+	version, ok := strings.CutPrefix(etag, `W/"`)
+	version, closed := strings.CutSuffix(version, `"`)
+	if !ok || !closed || version == "" {
+		return nil, "", false, fmt.Errorf("fetch allowlist: ETag %q is not a weak ETag W/\"N\"", etag)
+	}
+	return body, version, false, nil
+}
+
 func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (*allowlist.Allowlist, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/allowlist", nil)
 	if err != nil {

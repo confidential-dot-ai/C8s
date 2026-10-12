@@ -1179,7 +1179,7 @@ router:
     #    renewing immediately when it does not. A CDS restart regenerates the
     #    mesh CA in-memory, so without this the pod serves the dead CA (and a
     #    discovery document chained to it) until the next scheduled renewal.
-    #    "0" disables the check.
+    #    "0" disables the check; otherwise the minimum is 1s.
     caWatchInterval: "1m"
     # -- How often the c8s-cert sidecar checks that the allowlist policy CDS
     #    serves still matches the snapshot stamped in the router's leaf, and
@@ -1189,7 +1189,8 @@ router:
     #    one interval to detect it, up to half an interval of jitter, then one
     #    issuance.
     #    Applies only when the router requests workload claims (node.baked or
-    #    router.attest.expectedWorkload). "0" disables the check.
+    #    router.attest.expectedWorkload). "0" disables the check; otherwise
+    #    the minimum is 1s.
     policyWatchInterval: "1m"
 
   # -- Attestation + over-encryption sidecar (the c8s-verify protocol). When

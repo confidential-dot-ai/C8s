@@ -53,6 +53,7 @@ func (f *fakeAllowlist) serve(t *testing.T) string {
 			w.WriteHeader(http.StatusNotModified)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(srv.Close)
@@ -97,7 +98,7 @@ func startRenewLoop(t *testing.T, cfg config, url string, leaf *x509.Certificate
 	t.Helper()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), leaf, true) }()
+	go func() { done <- renewLoop(ctx, cfg, plaintextCDSClient(url), plaintextPolicyClient(url), leaf, true) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
@@ -112,9 +113,11 @@ func startRenewLoop(t *testing.T, cfg config, url string, leaf *x509.Certificate
 }
 
 const (
-	policyTwoWorkloads = `{"workloads":[{"name":"router"},{"name":"worker"}]}`
-	policyRouterOnly   = `{"workloads":[{"name":"router"}]}`
-	policyWithBatch    = `{"workloads":[{"name":"batch"},{"name":"router"}]}`
+	policyWorkload     = `{"containers":[{"digest":"sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","command":{"policy":"any"},"args":{"policy":"any"}}]}`
+	policyTwoWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"router":` + policyWorkload + `,"worker":` + policyWorkload + `}}`
+	// policyRouterOnly is policyTwoWorkloads with worker removed.
+	policyRouterOnly = `{"schema":"c8s.allowlist/v1","workloads":{"router":` + policyWorkload + `}}`
+	policyWithBatch  = `{"schema":"c8s.allowlist/v1","workloads":{"batch":` + policyWorkload + `,"router":` + policyWorkload + `}}`
 )
 
 // waitForRequests polls until the fake has served at least n /allowlist
@@ -247,18 +250,19 @@ func TestRenewLoopPolicyWatchHoldsOffDuringRetry(t *testing.T) {
 	}
 }
 
+// The scheduled renewal lands after several watch ticks; none of them polls.
 func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
 	cds := &fakeAllowlist{}
 	cds.set(5, policyRouterOnly)
 	url := cds.serve(t)
-	attempts := stubIssueUnderCurrentPolicy(t, cds)
+	unnamed := func() *x509.Certificate { return &x509.Certificate{NotAfter: time.Now().Add(time.Hour)} }
+	attempts := stubObtainCert(t, func(int) (*x509.Certificate, error) { return unnamed(), nil })
 
-	startRenewLoop(t, policyWatchConfig(), url, &x509.Certificate{NotAfter: time.Now().Add(time.Hour)})
+	cfg := policyWatchConfig()
+	cfg.RenewInterval = 100 * time.Millisecond
+	startRenewLoop(t, cfg, url, unnamed())
 
-	time.Sleep(100 * time.Millisecond)
-	if got := len(attempts()); got != 0 {
-		t.Fatalf("%d renewals for an unnamed leaf, want 0", got)
-	}
+	waitForAttempts(t, attempts, 1)
 	if got := cds.requests.Load(); got != 0 {
 		t.Fatalf("%d /allowlist polls for an unnamed leaf, want 0", got)
 	}
@@ -275,7 +279,7 @@ func TestStampedPolicyStale(t *testing.T) {
 	}{
 		{name: "unchanged version is a 304", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 4, body: policyRouterOnly, wantVersion: "4", want: false},
 		{name: "new version", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyRouterOnly, wantVersion: "5", want: true},
-		{name: "new version, same bytes", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyTwoWorkloads, wantVersion: "5", want: true},
+		{name: "new version, same bytes", stamp: stampedLeaf(t, "4", policyTwoWorkloads), served: 5, body: policyTwoWorkloads, wantVersion: "5", want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -285,7 +289,7 @@ func TestStampedPolicyStale(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			served, stale, err := stampedPolicyStale(context.Background(), plaintextCDSClient(cds.serve(t)), stamp)
+			served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), stamp)
 			if err != nil {
 				t.Fatalf("stampedPolicyStale: %v", err)
 			}
@@ -300,6 +304,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		// and it falls back to the full load; only the digest tells then.
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("ETag", `W/"4"`)
+			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(policyRouterOnly))
 		}))
 		t.Cleanup(srv.Close)
@@ -307,7 +312,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, stale, err := stampedPolicyStale(context.Background(), plaintextCDSClient(srv.URL), stamp); err != nil || !stale {
+		if _, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp); err != nil || !stale {
 			t.Fatalf("stampedPolicyStale = %v, %v, want stale", stale, err)
 		}
 	})
@@ -321,7 +326,7 @@ func TestStampedPolicyStale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, _, err := stampedPolicyStale(context.Background(), plaintextCDSClient(srv.URL), stamp); err == nil {
+		if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp); err == nil {
 			t.Fatal("stampedPolicyStale succeeded, want error on a 500")
 		}
 	})
