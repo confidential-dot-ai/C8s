@@ -119,9 +119,14 @@ const discoveryPublicTLSModeWebPKI = "webpki"
 // webhook's container silently replace or collide with it.
 const reservedSecretContainerName = workloadclaims.SecretContainerName
 
-// defaultCertVolumeName is the injected cert volume when a pod does not name
-// its own with AnnotationCertVolume.
-const defaultCertVolumeName = "c8s-certs"
+// DefaultCertVolumeName is the injected memory-backed cert volume when a pod
+// does not name its own with AnnotationCertVolume.
+const DefaultCertVolumeName = "c8s-certs"
+
+// DefaultWorkloadCertDir is where every container of an injected pod mounts
+// the cert volume when neither the pod (AnnotationCertDir) nor Config.CertDir
+// says.
+const DefaultWorkloadCertDir = "/etc/c8s/certs"
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
@@ -999,7 +1004,7 @@ func (inj *injection) withDefaults(cfg Config) injection {
 		effective.SAN = effective.WorkloadID
 	}
 	if effective.Cert.Volume == "" {
-		effective.Cert.Volume = defaultCertVolumeName
+		effective.Cert.Volume = DefaultCertVolumeName
 	}
 	if effective.Cert.Dir == "" {
 		effective.Cert.Dir = cfg.CertDir
@@ -1036,7 +1041,7 @@ func (inj *injection) withDefaults(cfg Config) injection {
 
 func (cfg Config) withDefaults() Config {
 	if cfg.CertDir == "" {
-		cfg.CertDir = "/etc/c8s/certs"
+		cfg.CertDir = DefaultWorkloadCertDir
 	}
 	if cfg.CertFSGroup == nil {
 		cfg.CertFSGroup = new(defaultCertFSGroup)
@@ -1140,7 +1145,7 @@ func rejectEphemeralReservedMounts(pod *corev1.Pod) error {
 func reservedVolumeNames(pod *corev1.Pod) map[string]bool {
 	certVolume := strings.TrimSpace(pod.Annotations[AnnotationCertVolume])
 	if certVolume == "" {
-		certVolume = defaultCertVolumeName
+		certVolume = DefaultCertVolumeName
 	}
 	reserved := map[string]bool{secretsVolumeName: true, certVolume: true}
 	for _, c := range pod.Spec.InitContainers {

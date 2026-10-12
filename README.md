@@ -180,11 +180,12 @@ kubectl label node <cds-node> role=cds
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator.pub
 
-# Install the platform (node-as-CVM) and point the bundled router
-# at your workload
+# Install the platform (node-as-CVM) and route the bundled router to your
+# workload, which serves TLS on 8443 with its injected certificate; install
+# prints the `c8s routes add` commands that store the route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
   --operator-keys operator.pub \
-  --workload-ref vllm=vllm/deployment/serving:8000 \
+  --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
 

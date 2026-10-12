@@ -443,7 +443,7 @@ func FuzzParse(f *testing.F) {
 			t.Fatalf("Parse(%q) = revision %d, maxAge %v; want both in range", b, m.Revision, m.MaxAge)
 		}
 		for name, h := range m.Hosts {
-			if checkHostKey(name) != nil || len(h.Routes) == 0 {
+			if CheckHost(name) != nil || len(h.Routes) == 0 {
 				t.Fatalf("Parse(%q) accepted host %q with %d routes", b, name, len(h.Routes))
 			}
 			for _, r := range h.Routes {

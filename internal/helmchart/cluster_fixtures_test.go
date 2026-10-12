@@ -89,8 +89,14 @@ func TestClusterDeploymentFixturesMeetRestrictedPolicy(t *testing.T) {
 				if app.Image != image {
 					t.Errorf("fixture image %q differs from pre-pull/floor image %q", app.Image, image)
 				}
-				if len(app.Ports) != 1 || app.Ports[0].ContainerPort != 8080 {
-					t.Errorf("fixture must expose nginx's unprivileged backend port 8080: %+v", app.Ports)
+				var ports []int32
+				for _, p := range app.Ports {
+					ports = append(ports, p.ContainerPort)
+				}
+				// adopt-me also serves TLS on its get-cert leaf once adopted.
+				want := map[string][]int32{"workload.yaml": {8080}, "adopt-me.yaml": {8080, 8443}}[file]
+				if !reflect.DeepEqual(ports, want) {
+					t.Errorf("fixture ports = %v, want %v", ports, want)
 				}
 				return false
 			})
@@ -236,7 +242,7 @@ func TestClusterHarnessKeepsImageAndBackendRoutingAligned(t *testing.T) {
 	for _, required := range []string{
 		`images pull "docker.io/$WORKLOAD_IMAGE"`,
 		`grep -Fq "docker.io/$WORKLOAD_IMAGE" "$WORKDIR/floor.tsv"`,
-		`--workload-ref web=adopted/deployment/web:8080`,
+		`--workload-ref web=adopted/deployment/web:8443 --upstream web`,
 		`{ port: 80, targetPort: 8080 }`,
 		`python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" "$mode" "$name" "$ns" "$CURL_IMAGE" -- "$@"`,
 	} {

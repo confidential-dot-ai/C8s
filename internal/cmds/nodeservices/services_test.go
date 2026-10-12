@@ -299,30 +299,19 @@ func TestPrepareAllowsIdenticalMeasuredFloorEntry(t *testing.T) {
 }
 
 func TestPrepareWritesRouterInputs(t *testing.T) {
-	const upstream = "c8s-gateway.confidential-inference.svc.cluster.local:9443"
 	tests := []struct {
 		name   string
 		router *launchconfig.Router
 		want   map[string]string
 	}{
 		{"unset", nil, map[string]string{
-			"upstream.conf":      "set $c8s_upstream \"\";\n",
 			"tls.conf":           "include /etc/nginx/c8s/tls-cds.conf;\n",
-			"upstream":           "",
 			"hostnames":          "",
 			"acme-email":         "",
 			"acme-directory-url": "",
 			"front-door-mode":    "cds\n",
 		}},
-		{"upstream only", &launchconfig.Router{Upstream: upstream}, map[string]string{
-			"upstream.conf":   "set $c8s_upstream \"" + upstream + "\";\n",
-			"tls.conf":        "include /etc/nginx/c8s/tls-cds.conf;\n",
-			"upstream":        upstream + "\n",
-			"hostnames":       "",
-			"front-door-mode": "cds\n",
-		}},
 		{"public", &launchconfig.Router{
-			Upstream:         upstream,
 			Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 			ACMEEmail:        "ops@confidential.ai",
 			ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -358,11 +347,11 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	// An unvalidated document still cannot publish nginx syntax.
 	root := prepareRoot(t)
 	doc := document(t, launchconfig.Server)
-	doc.Router = &launchconfig.Router{Upstream: upstream + `"; return 200 "x`}
+	doc.Router = &launchconfig.Router{Hostnames: []string{`a.example.com; return 200 "x"`}}
 	if err := Prepare(root, doc); err == nil {
-		t.Fatal("injected upstream was published")
+		t.Fatal("injected hostname was published")
 	}
-	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "upstream.conf")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "hostnames")); !os.IsNotExist(err) {
 		t.Fatalf("rejected document published router input: %v", err)
 	}
 }

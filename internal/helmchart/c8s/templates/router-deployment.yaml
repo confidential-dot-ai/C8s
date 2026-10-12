@@ -6,13 +6,6 @@ Recreate, silently defeating the operator's opt-out. */ -}}
 {{- end -}}
 
 {{- if .Values.router.attest.expectedWorkload -}}
-{{- if not .Values.router.attest.enabled -}}
-{{- /* The gate *is* the cds-attest sidecar's /readyz. Without the sidecar
-nothing renders it, yet the claims wiring it pulls in (get-cert's
---workload-claims, the inventory hostPath, the supplemental group) still would
-— cost and hostPath surface for a gate that does not exist. */ -}}
-{{- fail "router.attest.expectedWorkload gates the cds-attest sidecar's /readyz endpoint: set router.attest.enabled=true or clear expectedWorkload" -}}
-{{- end -}}
 {{- if .Values.router.hostPort.enabled -}}
 {{- /* Readiness only withdraws Service endpoints. The hostPort is published by
 the CNI portmap plugin, wired at sandbox creation and independent of pod
@@ -25,11 +18,6 @@ withheld. */ -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
 {{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
-{{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
-{{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
-{{- $attestUsesHTTPSUpstream := and .Values.router.attest.enabled (eq .Values.router.upstream.protocol "https") -}}
-{{- $upstreamAddress := .Values.router.upstream.address -}}
-{{- $attestUpstreamServerName := default (include "router.serverNameFromAddress" $upstreamAddress) .Values.router.upstream.tls.serverName -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -217,8 +205,8 @@ spec:
               subPath: nginx.conf
               readOnly: true
             {{- if $launchDriven }}
-            {{- /* nginx.conf includes router/upstream.conf and router/tls.conf
-                   from here; tls.conf includes a snippet from the dir below. */}}
+            {{- /* nginx.conf includes router/tls.conf from here; tls.conf
+                   includes a snippet from the dir below. */}}
             {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
             - name: nginx-config
               mountPath: {{ include "router.tlsSnippetDir" . }}
@@ -232,7 +220,9 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- if .Values.router.attest.enabled }}
+        {{- /* Always rendered: its routing listener carries every application
+        request nginx's location / sends it (route policy A7), and
+        attest.enabled=false only unregisters the attestation endpoints. */}}
         - name: cds-attest
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
@@ -242,9 +232,13 @@ spec:
             (/healthz, /readyz, both attest routes, /tunnel) sits on
             one listener, so binding the pod IP would publish the whole surface
             with no NetworkPolicy in front of it. The readiness probe reaches
-            /readyz through nginx instead (location = /readyz). */}}
+            /readyz through nginx instead (location = /readyz). The routing
+            listener is loopback too: nginx terminates public TLS first. */}}
             - --host=127.0.0.1
             - --port={{ .Values.router.attest.port }}
+            {{- if not .Values.router.attest.enabled }}
+            - --attest-endpoints=false
+            {{- end }}
             - --platform={{ .Values.router.attest.platform }}
             - --generation={{ .Values.router.attest.generation }}
             - --attestation-api-url={{ default (include "c8s.attestationApiURL" .) .Values.router.attest.attestationApiURL }}
@@ -276,27 +270,23 @@ spec:
             - --mesh-identity-cert-file={{ .Values.router.tlsMountPath }}/cert.pem
             - --mesh-identity-key-file={{ .Values.router.tlsMountPath }}/key.pem
             - --mesh-identity-ca-file={{ .Values.router.tlsMountPath }}/ca.pem
-            # Terminate over-encryption here and forward to the same workload
-            # backend nginx proxies to. An http upstream is plaintext at the
-            # app layer; pointed at a headless Service (an adopted workload),
-            # the node mesh wraps the pod-IP hop in attested mTLS. An https
-            # upstream terminates TLS itself and gets the mTLS args below.
-            # No adopted workload (empty upstream address) -> omit --upstream
-            # entirely; the sidecar then serves attestation with its echo
-            # backend instead of crashing on a scheme-only URL.
-            {{- if $launchDriven }}
-            - --upstream-file={{ include "router.launchDir" . }}/upstream
-            {{- else if $upstreamAddress }}
-            - --upstream={{ .Values.router.upstream.protocol }}://{{ $upstreamAddress }}
-            {{- if $attestUsesHTTPSUpstream }}
-            - --upstream-ca={{ $upstreamTrustedCAPath }}
-            {{- if .Values.router.upstream.tls.useCDSClientCert }}
-            - --upstream-cert={{ .Values.router.tlsMountPath }}/cert.pem
-            - --upstream-key={{ .Values.router.tlsMountPath }}/key.pem
+            # Route by the operator-signed manifest polled from the verified
+            # CDS: application requests from nginx on --routing-port, and
+            # requests decrypted from the tunnel.
+            - --cds-url={{ include "c8s.cdsURL" . }}
+            {{- include "router.cdsPinArgs" . | nindent 12 }}
+            # Off a baked node the operator keys come from CDS's
+            # GET /operator-keys, which is control-plane configuration
+            # (route policy W6; docs/operator.md, Route manifest).
+            {{- if .Values.node.baked }}
+            - --operator-keys-file=/run/c8s-node/operator-pubkey
             {{- end }}
-            - --upstream-server-name={{ $attestUpstreamServerName }}
-            {{- end }}
-            {{- end }}
+            - --routes-poll-interval={{ .Values.router.routing.pollInterval }}
+            - --routing-host=127.0.0.1
+            - --routing-port={{ include "router.routingPort" . }}
+            - --backend-timeout={{ .Values.router.routing.backendTimeout }}
+            - --tunnel-slots={{ include "c8s.positiveInt" (dict "value" .Values.router.routing.tunnelSlots "label" "router.routing.tunnelSlots") }}
+            - --reserved-paths={{ include "router.reservedPaths" . }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
           # IP so this pod-netns pod reaches the node-baked host attestation-api.
@@ -329,6 +319,12 @@ spec:
               mountPath: {{ .Values.router.tlsMountPath }}
               readOnly: true
             {{- include "c8s.attestationApiSocketMount" . | nindent 12 }}
+            {{- include "c8s.nodeConfigMount" . | nindent 12 }}
+            {{- if .Values.cds.measurementsConfig }}
+            - name: measurements-config
+              mountPath: /etc/c8s-measurements
+              readOnly: true
+            {{- end }}
             {{- if eq $publicTLSMode "webpki" }}
             # cds-attest reads the same public leaf nginx serves
             # (--serving-cert-file).
@@ -341,9 +337,6 @@ spec:
               mountPath: {{ include "router.acmeCertDir" . }}
               readOnly: true
             {{- end }}
-            {{- if $launchDriven }}
-            {{- include "c8s.nodeConfigMount" . | trim | nindent 12 }}
-            {{- end }}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -355,7 +348,6 @@ spec:
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-        {{- end }}
         {{- if $renderAllowlistProxy }}
         # nginx terminates the public, router-attested connection and forwards
         # /allowlist over pod loopback. This sidecar establishes the second
@@ -369,18 +361,7 @@ spec:
             - --port={{ include "c8s.int" .Values.router.allowlist.proxyPort }}
             - --cds-url={{ include "c8s.cdsURL" . }}
             - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-            {{- if .Values.node.baked }}
-            - --image-policy-file=/run/c8s-node/cds.json
-            {{- else if .Values.cds.measurementsConfig }}
-            - --image-policy-file=/etc/c8s-measurements/cds.json
-            {{- else }}
-            {{- with .Values.cds.measurements }}
-            - --cds-measurements={{ join "," . }}
-            {{- end }}
-            {{- with .Values.cds.rtmrs }}
-            - --cds-rtmrs={{ join "," . }}
-            {{- end }}
-            {{- end }}
+            {{- include "router.cdsPinArgs" . | nindent 12 }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: the proxy verifies CDS through the node-baked
           # attestation-api, reached from this pod via its node IP.

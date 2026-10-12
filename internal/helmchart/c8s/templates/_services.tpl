@@ -98,13 +98,3 @@ platforms = [{{- range $i, $p := $root.Values.attestationApi.platforms -}}
 [certs]
 cache_max_entries = 1024
 {{- end -}}
-
-{{- define "c8s.router.resolver" -}}
-{{- if .Values.router.nginx.resolver -}}
-{{- .Values.router.nginx.resolver -}}
-{{- else if eq .Values.nriImagePolicy.distro "rke2" -}}
-rke2-coredns-rke2-coredns.kube-system.svc.cluster.local
-{{- else -}}
-kube-dns.kube-system.svc.cluster.local
-{{- end -}}
-{{- end -}}

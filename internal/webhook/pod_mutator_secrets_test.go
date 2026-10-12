@@ -251,14 +251,14 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 		wantOK     bool
 	}{
 		{name: "mounts secrets", mount: secretsVolumeName},
-		{name: "mounts certs", mount: defaultCertVolumeName},
+		{name: "mounts certs", mount: DefaultCertVolumeName},
 		{name: "mounts a renamed cert volume", certVolume: "my-certs", mount: "my-certs"},
 		{name: "claims a reserved name", ctrName: reservedSecretContainerName, mount: "scratch"},
 		{name: "mounts something else", mount: "scratch", wantOK: true},
 		{name: "mounts nothing", wantOK: true},
 		// The pod renamed its cert volume, so the default name is no longer
 		// the one holding its key.
-		{name: "default name after a rename", certVolume: "my-certs", mount: defaultCertVolumeName, wantOK: true},
+		{name: "default name after a rename", certVolume: "my-certs", mount: DefaultCertVolumeName, wantOK: true},
 		// Every container of an injected pod mounts c8s material, and a target
 		// shares its process namespace.
 		{name: "targets the cert sidecar", injected: true, target: reservedCertContainerName},

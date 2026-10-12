@@ -7,8 +7,8 @@ production trust boundary.
 ## 1. Install C8s
 
 This demo shows confidential-workload injection, not the public front door, so
-it installs with router disabled. To also expose a workload through router, give
-it an upstream instead (see [router upstream](operator.md#router-upstream)).
+it installs with router disabled. To also expose a workload through router,
+write a route manifest for it instead (see [Route manifest](operator.md#route-manifest)).
 
 ```sh
 c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev-snp \

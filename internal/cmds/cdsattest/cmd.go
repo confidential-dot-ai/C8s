@@ -17,7 +17,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -40,16 +39,8 @@ type config struct {
 	readHeaderTimeout    time.Duration
 	tunnelIOTimeout      time.Duration
 
-	// over-encryption backend
-	upstream           string
-	upstreamCAFile     string
-	upstreamCertFile   string
-	upstreamKeyFile    string
-	upstreamServerName string
-
 	// Launch-driven inputs (node image): each file overrides its flag.
 	frontDoorModeFile   string
-	upstreamFile        string
 	acmeServingCertFile string
 
 	// attestOff unregisters attest-pq, attest-lb and the tunnel
@@ -59,25 +50,21 @@ type config struct {
 }
 
 // NewCmd returns the `cds-attest` subcommand: a sidecar that runs inside the
-// router pod and serves the *dynamic* client-facing attestation +
+// router pod, routes application requests by the operator-signed route
+// manifest, and serves the *dynamic* client-facing attestation +
 // over-encryption endpoints (the c8s-verify protocol). The router nginx
 // front-end terminates public TLS, serves the static CDS/mesh-CA certs, and
-// reverse-proxies /.well-known/c8s/attest-pq, /attest-lb, and the
-// over-encrypted application paths to this sidecar on loopback.
+// reverse-proxies /.well-known/c8s/ and every application request to this
+// sidecar on loopback.
 func NewCmd() *cobra.Command {
 	var cfg config
 	attestEndpoints := true
 	cmd := &cobra.Command{
 		Use:   "cds-attest",
-		Short: "Run the router attestation + over-encryption sidecar (attest-pq / attest-lb)",
+		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.attestOff = !attestEndpoints
 			cfg.routing.operatorKeysFileSet = cmd.Flags().Changed("operator-keys-file")
-			for _, name := range cdsOnlyFlags {
-				if cmd.Flags().Changed(name) {
-					cfg.routing.changed = append(cfg.routing.changed, name)
-				}
-			}
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return run(ctx, cfg)
@@ -101,15 +88,9 @@ func NewCmd() *cobra.Command {
 	f.DurationVar(&cfg.sessionMaxAge, "session-max-age", defaultSessionMaxAge, "absolute session lifetime: a session's keys retire this long after establishment, however busy it is")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", 5*time.Second, "HTTP read-header timeout")
 	f.DurationVar(&cfg.tunnelIOTimeout, "tunnel-io-timeout", defaultTunnelIOTimeout, "limit on reading one tunnel request body, and separately on writing its sealed response")
-	f.StringVar(&cfg.upstream, "upstream", "", "backend base URL to forward decrypted traffic to (http:// rides the armTLS mesh; https:// does mTLS). Empty uses an echo backend (demo).")
-	f.StringVar(&cfg.upstreamCAFile, "upstream-ca", "", "PEM CA bundle to verify an https upstream (the mesh CA)")
-	f.StringVar(&cfg.upstreamCertFile, "upstream-cert", "", "client cert presented to an https upstream (the CDS-issued LB cert)")
-	f.StringVar(&cfg.upstreamKeyFile, "upstream-key", "", "client key for --upstream-cert")
-	f.StringVar(&cfg.upstreamServerName, "upstream-server-name", "", "SNI/verification name for an https upstream")
 	f.StringVar(&cfg.frontDoorModeFile, "front-door-mode-file", "", "file holding the front-door mode, read at start instead of --front-door-mode")
-	f.StringVar(&cfg.upstreamFile, "upstream-file", "", "file holding a mesh-wrapped http upstream host:port, read at start instead of --upstream; an empty file uses the echo backend")
 	f.StringVar(&cfg.acmeServingCertFile, "acme-serving-cert-file", "", "serving-leaf PEM nginx presents in acme front-door mode; used instead of --serving-cert-file when --front-door-mode-file reads acme")
-	f.BoolVar(&attestEndpoints, "attest-endpoints", true, "serve attest-pq, attest-lb and the tunnel; false serves only the routing listener and probes (requires --cds-url)")
+	f.BoolVar(&attestEndpoints, "attest-endpoints", true, "serve attest-pq, attest-lb and the tunnel; false serves only the routing listener and probes")
 	bindRoutingFlags(f, &cfg.routing)
 	return cmd
 }
@@ -129,22 +110,6 @@ func loadFiles(cfg *config) error {
 			cfg.servingCertFile = cfg.acmeServingCertFile
 		}
 	}
-	if cfg.upstreamFile != "" {
-		if cfg.upstream != "" {
-			return fmt.Errorf("--upstream and --upstream-file are mutually exclusive")
-		}
-		data, err := os.ReadFile(cfg.upstreamFile)
-		if err != nil {
-			return fmt.Errorf("--upstream-file: %w", err)
-		}
-		if address := strings.TrimSpace(string(data)); address != "" {
-			// Plain http is safe only for a mesh-wrapped Service.
-			if err := launchconfig.ValidateRouterUpstream(address); err != nil {
-				return fmt.Errorf("--upstream-file: %w", err)
-			}
-			cfg.upstream = "http://" + address
-		}
-	}
 	return nil
 }
 
@@ -157,7 +122,6 @@ func run(ctx context.Context, cfg config) error {
 	if cfg.tunnelIOTimeout <= 0 {
 		return errors.New("--tunnel-io-timeout must be positive")
 	}
-	routingOn := cfg.routing.cdsURL != ""
 	if err := checkRoutingFlags(cfg); err != nil {
 		return err
 	}
@@ -171,36 +135,12 @@ func run(ctx context.Context, cfg config) error {
 		provider = p
 	}
 
-	var backend Backend
-	switch {
-	case routingOn:
-	case cfg.upstream != "":
-		hb, err := NewHTTPBackend(cfg.upstream, HTTPBackendOptions{
-			TrustedCAFile:  cfg.upstreamCAFile,
-			ClientCertFile: cfg.upstreamCertFile,
-			ClientKeyFile:  cfg.upstreamKeyFile,
-			ServerName:     cfg.upstreamServerName,
-		})
-		if err != nil {
-			return err
-		}
-		backend = hb
-		logger.Info("forwarding decrypted traffic to upstream", "upstream", cfg.upstream)
-	default:
-		backend = EchoBackend{}
-		logger.Warn("no --upstream set: using echo backend (demo only)")
-	}
-
 	ctx, stop := context.WithCancel(ctx)
 	defer stop()
 
-	var engine *routingEngine
-	if routingOn {
-		e, err := newRoutingEngine(cfg, logger)
-		if err != nil {
-			return err
-		}
-		engine = e
+	engine, err := newRoutingEngine(cfg, logger)
+	if err != nil {
+		return err
 	}
 
 	srvCfg := Config{
@@ -212,14 +152,12 @@ func run(ctx context.Context, cfg config) error {
 		MeshIdentityKeyFile:    cfg.meshIdentityKeyFile,
 		MeshIdentityCAFile:     cfg.meshIdentityCAFile,
 		ExpectedWorkload:       cfg.expectedWorkload,
-		Backend:                backend,
+		Backend:                engine.proxy,
+		Routes:                 engine.proxy.State(),
 		SessionTTL:             cfg.sessionTTL,
 		SessionMaxAge:          cfg.sessionMaxAge,
 		TunnelIOTimeout:        cfg.tunnelIOTimeout,
 		DisableAttestEndpoints: cfg.attestOff,
-	}
-	if engine != nil {
-		srvCfg.Routing = engine.proxy
 	}
 	srv := NewServer(srvCfg)
 
@@ -231,14 +169,12 @@ func run(ctx context.Context, cfg config) error {
 	}
 
 	errc := make(chan error, 2)
-	if engine != nil {
-		if err := engine.start(ctx, cfg.readHeaderTimeout, errc); err != nil {
-			return err
-		}
+	if err := engine.start(ctx, cfg.readHeaderTimeout, errc); err != nil {
+		return err
 	}
 	logger.Info("LB browser-facing endpoints listening", "addr", addr, "attest_endpoints", !cfg.attestOff)
 	go func() { errc <- srv.Serve(ctx, httpSrv) }()
-	err := <-errc
+	err = <-errc
 	stop()
 	return err
 }

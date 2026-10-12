@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/pflag"
 )
 
 // fakeBin is a directory of stub executables prepended to PATH. Every stub
@@ -111,6 +113,8 @@ func resetCLIState(t *testing.T) {
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes                bool
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup        int64
 		installGetCertRenewInterval                                                  time.Duration
+		installOperatorKey, installRoutesOut                                         string
+		installRoutesMaxAge                                                          time.Duration
 	}{
 		installNamespace, installRelease, installCvmMode,
 		installHardwarePlatform, installImagePullSecret, installImageTag,
@@ -124,6 +128,8 @@ func resetCLIState(t *testing.T) {
 		uninstallDeleteCRDs, uninstallDeleteNamespace, installVolumes,
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup,
 		installGetCertRenewInterval,
+		installOperatorKey, installRoutesOut,
+		installRoutesMaxAge,
 	}
 	t.Cleanup(func() {
 		installNamespace, installRelease, installCvmMode = saved.installNamespace, saved.installRelease, saved.installCvmMode
@@ -139,6 +145,7 @@ func resetCLIState(t *testing.T) {
 		installVolumes = saved.installVolumes
 		installCertFSGroup, installGetCertRunAsUser, installGetCertRunAsGroup = saved.installCertFSGroup, saved.installGetCertRunAsUser, saved.installGetCertRunAsGroup
 		installGetCertRenewInterval = saved.installGetCertRenewInterval
+		installOperatorKey, installRoutesOut, installRoutesMaxAge = saved.installOperatorKey, saved.installRoutesOut, saved.installRoutesMaxAge
 	})
 
 	installNamespace, installRelease = "c8s-system", "c8s"
@@ -156,6 +163,18 @@ func resetCLIState(t *testing.T) {
 	uninstallWait, uninstallHostSweep, uninstallHostSweepOnly = true, true, false
 	uninstallForce, uninstallDeleteCRDs, uninstallDeleteNamespace = false, false, false
 	renderValuesDistro = ""
+	installOperatorKey, installRoutesOut, installRoutesMaxAge = "", "routes.json", 24*time.Hour
+	prevOutSet, prevMaxAgeSet := installRoutesOutSet, installRoutesMaxAgeSet
+	prevRevision, prevRegisters := installRoutesRevision, installRegisters
+	t.Cleanup(func() {
+		installRoutesOutSet, installRoutesMaxAgeSet = prevOutSet, prevMaxAgeSet
+		installRoutesRevision, installRegisters = prevRevision, prevRegisters
+	})
+	installRoutesOutSet, installRoutesMaxAgeSet = false, false
+	installRoutesRevision, installRegisters = 0, nil
+	// cobra keeps a flag's Changed across Execute calls on the shared tree.
+	installCmd.Flags().VisitAll(func(f *pflag.Flag) { f.Changed = false })
+	t.Setenv("C8S_OPERATOR_KEY", "")
 }
 
 // runC8s executes the real cobra tree exactly as the binary would, from a

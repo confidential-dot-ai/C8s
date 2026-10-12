@@ -81,6 +81,9 @@ the consuming -f.
 
 Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if installUpstream != "" || len(installWorkloadRefs) > 0 {
+			return fmt.Errorf("render-values no longer takes --%s or --%s: the router routes only by the operator-signed route manifest on CDS, which values cannot carry. Render without them, then adopt with `c8s install --%s` or write the route with `c8s routes add`", flagUpstream, flagWorkloadRef, flagWorkloadRef)
+		}
 		if err := validateCvmMode(installCvmMode); err != nil {
 			return err
 		}
@@ -145,17 +148,6 @@ type digestResolver func(ctx context.Context, chartPath string, setArgs []string
 // <release> <chart>` verb and appends -f / wait flags, render-values converts
 // these to a values tree.
 func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, components []c8sComponent, imageTag, distro string, resolveDigests digestResolver) ([]string, error) {
-	// Derive the upstream address from the same deduped adoptions install's RunE
-	// validates against, so the address the chart receives and the id the RunE
-	// checks can never diverge on duplicate refs.
-	adoptions, err := collectWorkloadAdoptions(installWorkloadRefs)
-	if err != nil {
-		return nil, err
-	}
-	upstream, err := upstreamAddress(installUpstream, adoptions)
-	if err != nil {
-		return nil, err
-	}
 	var setArgs []string
 	// Chart has no default image tags. When digests are resolved (below) they
 	// pin the image and the chart prefers digest over tag, so emitting both is
@@ -178,7 +170,7 @@ func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, c
 	}
 	// --cvm-mode is required and validated in RunE, so always emit the mode's
 	// teeDevices/attestation-api values (and the --hardware-platform propagation).
-	setArgs, err = appendCvmModeInstallArgs(setArgs, installCvmMode, installHardwarePlatform)
+	setArgs, err := appendCvmModeInstallArgs(setArgs, installCvmMode, installHardwarePlatform)
 	if err != nil {
 		return nil, err
 	}
@@ -192,13 +184,6 @@ func buildValueArgs(ctx context.Context, cmd *cobra.Command, chartPath string, c
 	// Ahead of resolveDigests, which pins a component's image only while the
 	// effective values enable it.
 	setArgs = appendVolumedInstallArgs(setArgs, installVolumes)
-	// --upstream derives a c8s-<id>.<ns>.svc.cluster.local address; the chart
-	// recognizes that headless-Service shape as mesh-wrapped and admits plaintext
-	// http. Empty means "not plumbed" so an operator's -f (or the chart's
-	// no-catch-all install-then-attach state) stands.
-	if upstream != "" {
-		setArgs = append(setArgs, "--set-string", "router.upstream.address="+upstream)
-	}
 	if installImagePullSecret != "" {
 		setArgs = append(setArgs, "--set-string", "imagePullSecret="+installImagePullSecret)
 	}
@@ -323,8 +308,8 @@ func setNested(m map[string]any, path []string, value any) error {
 	for i, seg := range path {
 		if i == len(path)-1 {
 			// A trailing key[n] sets element n of a list (helm --set list
-			// syntax), the one indexed form the builder emits (e.g.
-			// cds.measurements[0]=…). setListElem grows the list as needed.
+			// syntax, e.g. cds.measurements[0]=…). setListElem grows the list
+			// as needed.
 			if key, idx, ok := parseListIndex(seg); ok {
 				return setListElem(m, strings.Join(path, "."), key, idx, value)
 			}
@@ -338,8 +323,30 @@ func setNested(m map[string]any, path []string, value any) error {
 			m[seg] = value
 			return nil
 		}
+		// An inner key[n] descends into element n of a list of maps, as an
+		// allowlist entry's containers[0].digest does.
+		if key, idx, ok := parseListIndex(seg); ok {
+			list, _ := m[key].([]any)
+			if existing, set := m[key]; set && existing != nil && list == nil {
+				return fmt.Errorf("value path %q conflicts with an existing non-list at %q", strings.Join(path, "."), key)
+			}
+			for len(list) <= idx {
+				list = append(list, nil)
+			}
+			child, ok := list[idx].(map[string]any)
+			if !ok {
+				if list[idx] != nil {
+					return fmt.Errorf("value path %q conflicts with an existing scalar at %q", strings.Join(path, "."), seg)
+				}
+				child = map[string]any{}
+				list[idx] = child
+			}
+			m[key] = list
+			m = child
+			continue
+		}
 		if strings.ContainsRune(seg, '[') {
-			return fmt.Errorf("value path %q: list index is only supported on the final segment, not %q", strings.Join(path, "."), seg)
+			return fmt.Errorf("value path %q: segment %q is not a valid key or key[n] list index", strings.Join(path, "."), seg)
 		}
 		child, ok := m[seg].(map[string]any)
 		if !ok {
@@ -400,11 +407,14 @@ func init() {
 	renderValuesCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Emits cds.measurements + armtlsMesh.measurements; empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
 	cmdsutil.BindImagePolicyFlags(renderValuesCmd.Flags(), &installMeasurementsConfig, nil, "", "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
 	renderValuesCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Emits cds.rtmrs + armtlsMesh.rtmrs; ignored for SNP evidence")
-	renderValuesCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "adopted workload as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Used here only to derive --upstream's address (render-values patches nothing)")
-	renderValuesCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload router routes its catch-all to; derives router.upstream.address c8s-<id>.<ns>.svc.cluster.local:<port> from that ref's :<port>")
+	renderValuesCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "refused: adoption patches workloads, which values cannot do; use c8s install")
+	renderValuesCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "refused: the router routes by the signed route manifest, which values cannot carry; use c8s routes add after the install")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")
 	renderValuesCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing dockerconfigjson Secret the chart wires into every component's imagePullSecrets")
 	renderValuesCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main'). Override to pin a specific branch/tag/release")
 	renderValuesCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes; the file's content is embedded as cds.operatorKeys in the emitted values (the chart value is PEM content, never a path)")
+	// Kept, hidden, so a script still passing them gets the refusal above.
+	_ = renderValuesCmd.Flags().MarkHidden(flagWorkloadRef)
+	_ = renderValuesCmd.Flags().MarkHidden(flagUpstream)
 	rootCmd.AddCommand(renderValuesCmd)
 }

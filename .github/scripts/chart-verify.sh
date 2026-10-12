@@ -26,10 +26,6 @@ common_set=(
   --set nriImagePolicy.image.tag=ci
   --set nriImagePolicy.image.digest=sha256:aaaa000000000000000000000000000000000000000000000000000000000000
   --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001
-  # router has no default upstream; a c8s-<id> headless-Service address (what
-  # `c8s install --upstream` derives, recognized as mesh-wrapped) is the
-  # representative configuration.
-  --set-string router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000
   # The default policy mode is fail-closed, which requires every digest-pinned
   # C8s component to be covered in the allowlist floor or the plugin would deny
   # it on its own node. deriveComponents auto-covers the C8s images from their

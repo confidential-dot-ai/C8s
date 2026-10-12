@@ -133,7 +133,7 @@ type serverConfig struct {
 // written, empty when unset, so the router pod never waits on a missing file.
 var serverOutputNames = []string{
 	"operator-pubkey", "allowlist-seed.json", "tls-san",
-	"router/upstream.conf", "router/tls.conf", "router/upstream", "router/hostnames",
+	"router/tls.conf", "router/hostnames",
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
 }
 
@@ -163,11 +163,8 @@ func (c serverConfig) files() map[string][]byte {
 		"operator-pubkey":     c.operatorPubKey,
 		"allowlist-seed.json": c.allowlistSeed,
 		"tls-san":             []byte(c.tlsSAN + "\n"),
-		// nginx includes this in location /; an empty value returns 404.
-		"router/upstream.conf": []byte(fmt.Sprintf("set $c8s_upstream \"%s\";\n", c.router.Upstream)),
 		// nginx includes this in its server block to pick the certificate.
 		"router/tls.conf":           []byte(fmt.Sprintf("include %s/tls-%s.conf;\n", RouterTLSSnippetDir, mode)),
-		"router/upstream":           line(c.router.Upstream),
 		"router/hostnames":          hostnames,
 		"router/acme-email":         line(c.router.ACMEEmail),
 		"router/acme-directory-url": line(c.router.ACMEDirectoryURL),
@@ -205,13 +202,8 @@ func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, er
 	if d.Router != nil {
 		router = *d.Router
 	}
-	// LoadStaged validated the document; check again the two values that
-	// reach nginx syntax, so no path can publish an injectable file.
-	if router.Upstream != "" {
-		if err := launchconfig.ValidateRouterUpstream(router.Upstream); err != nil {
-			return serverConfig{}, fmt.Errorf("staged router upstream: %w", err)
-		}
-	}
+	// LoadStaged validated the document; check the hostnames again, so no
+	// path can publish an injectable file.
 	for _, name := range router.Hostnames {
 		if err := launchconfig.ValidateHostname(name); err != nil {
 			return serverConfig{}, fmt.Errorf("staged router hostname: %w", err)

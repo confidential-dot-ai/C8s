@@ -51,18 +51,10 @@ type routingConfig struct {
 	backendTimeout      time.Duration
 	reservedPaths       []string
 	tunnelSlots         int
-	// changed holds the cdsOnlyFlags set on the command line.
-	changed []string
-}
-
-// cdsOnlyFlags configure manifest routing and mean nothing without --cds-url.
-var cdsOnlyFlags = []string{
-	"cds-measurements", "cds-rtmrs", "image-policy-file", "operator-keys-file",
-	"routes-poll-interval", "backend-timeout", "reserved-paths", "tunnel-slots",
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
-	f.StringVar(&cfg.cdsURL, "cds-url", "", "CDS base URL (https, armTLS-verified) to poll the signed route manifest from; enables manifest routing and excludes --upstream*")
+	f.StringVar(&cfg.cdsURL, "cds-url", "", "REQUIRED: CDS base URL (https, armTLS-verified) to poll the signed route manifest from")
 	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
@@ -78,15 +70,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 func checkRoutingFlags(cfg config) error {
 	r := cfg.routing
 	if r.cdsURL == "" {
-		switch {
-		case r.port != 0:
-			return errors.New("--routing-port requires --cds-url")
-		case cfg.attestOff:
-			return errors.New("--attest-endpoints=false requires --cds-url: without it the process serves nothing")
-		case len(r.changed) > 0:
-			return fmt.Errorf("--%s requires --cds-url", r.changed[0])
-		}
-		return nil
+		return errors.New("--cds-url is required: the router routes only by the route manifest it polls from CDS")
 	}
 	if cfg.attestOff && r.port == 0 {
 		return errors.New("--attest-endpoints=false requires --routing-port: without it the process serves nothing")
@@ -96,9 +80,6 @@ func checkRoutingFlags(cfg config) error {
 		if n, ok := routes.NormalizePath(p); !ok || n != p {
 			return fmt.Errorf("--reserved-paths entry %q is not a normalized path", p)
 		}
-	}
-	if cfg.upstream != "" || cfg.upstreamFile != "" || cfg.upstreamCAFile != "" || cfg.upstreamCertFile != "" || cfg.upstreamKeyFile != "" || cfg.upstreamServerName != "" {
-		return errors.New("--cds-url and --upstream* are mutually exclusive: the route manifest names every backend")
 	}
 	if cfg.attestationAPIURL == "" {
 		return errors.New("--cds-url requires --attestation-api-url to verify the CDS")

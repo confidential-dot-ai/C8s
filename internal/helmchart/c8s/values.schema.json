@@ -465,7 +465,9 @@
               }
             },
             "replicas": {},
-            "resolver": {},
+            "resolver": {
+              "$comment": "Removed with router.upstream. Listed only so validations.yaml can answer with the migration message."
+            },
             "resources": {},
             "runAsGroup": {},
             "runAsNonRoot": {},
@@ -486,7 +488,23 @@
             "secretName": {}
           }
         },
-        "routes": {},
+        "routes": {
+          "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
+        },
+        "routing": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "backendTimeout": {},
+            "pollInterval": {},
+            "port": {},
+            "readTimeout": {},
+            "tunnelSlots": {}
+          }
+        },
         "san": {},
         "service": {
           "type": [
@@ -504,30 +522,7 @@
         "strategy": {},
         "tlsMountPath": {},
         "upstream": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "additionalProperties": false,
-          "properties": {
-            "address": {},
-            "protocol": {},
-            "readTimeout": {},
-            "tls": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "additionalProperties": false,
-              "properties": {
-                "serverName": {},
-                "trustedCAPath": {},
-                "useCDSClientCert": {},
-                "verify": {},
-                "verifyDepth": {}
-              }
-            }
-          }
+          "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
         }
       }
     },

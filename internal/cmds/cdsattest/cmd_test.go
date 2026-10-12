@@ -77,36 +77,60 @@ func TestRunErrors(t *testing.T) {
 			cfg:     config{frontDoorMode: types.FrontDoorModeCDS, platform: "snp", evidenceFixture: filepath.Join(t.TempDir(), "missing.json")},
 			wantSub: "read evidence fixture",
 		},
-		{
-			// acme passes the mode gate: the failure is the later upstream check.
-			name:    "invalid upstream URL",
-			cfg:     config{frontDoorMode: types.FrontDoorModeACME, platform: "snp", evidenceFixture: fixture, upstream: "ftp://backend"},
-			wantSub: "upstream must be an http:// or https:// URL",
-		},
-		{
-			// The live-evidence branch must be selected on --attestation-api-url
-			// alone; the bad upstream proves run() got past provider selection.
-			name:    "invalid upstream URL with live evidence source",
-			cfg:     config{frontDoorMode: types.FrontDoorModeWebPKI, platform: "snp", attestationAPIURL: "http://127.0.0.1:9", upstream: "ftp://backend"},
-			wantSub: "upstream must be an http:// or https:// URL",
-		},
-		{
-			name:    "non-positive tunnel io timeout",
-			cfg:     config{tunnelIOTimeout: -time.Second},
-			wantSub: "--tunnel-io-timeout must be positive",
-		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := tc.cfg
-			if cfg.tunnelIOTimeout == 0 {
-				cfg.tunnelIOTimeout = defaultTunnelIOTimeout
-			}
-			err := run(t.Context(), cfg)
+			_, err := attestProvider(tc.cfg, slog.New(slog.DiscardHandler))
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
-				t.Fatalf("run() error = %v, want substring %q", err, tc.wantSub)
+				t.Fatalf("attestProvider() error = %v, want substring %q", err, tc.wantSub)
 			}
 		})
+	}
+}
+
+// TestRunRequiresCDSURL: without a route manifest source nothing could be
+// routed, so run refuses before serving anything.
+func TestRunRequiresCDSURL(t *testing.T) {
+	cfg := routedRunConfig(t, freePort(t))
+	cfg.routing.cdsURL = ""
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--cds-url is required") {
+		t.Fatalf("run() without --cds-url = %v, want the --cds-url error", err)
+	}
+}
+
+// routedRunConfig is a config run accepts with the attestation endpoints off,
+// polling a CDS that cannot be reached.
+func routedRunConfig(t *testing.T, port int) config {
+	t.Helper()
+	identity := writeTestMeshIdentity(t)
+	return config{
+		host:                 "127.0.0.1",
+		port:                 port,
+		logLevel:             "error",
+		meshIdentityCertFile: identity.certFile,
+		meshIdentityKeyFile:  identity.keyFile,
+		meshIdentityCAFile:   identity.caFile,
+		attestationAPIURL:    "http://127.0.0.1:9",
+		readHeaderTimeout:    time.Second,
+		tunnelIOTimeout:      defaultTunnelIOTimeout,
+		attestOff:            true,
+		routing: routingConfig{
+			cdsURL:           "https://127.0.0.1:9",
+			operatorKeysFile: filepath.Join(t.TempDir(), "absent"),
+			pollInterval:     time.Hour,
+			backendTimeout:   time.Hour,
+			host:             "127.0.0.1",
+			reservedPaths:    defaultReservedPaths,
+			tunnelSlots:      1,
+		},
+	}
+}
+
+func TestRunRejectsNonPositiveTunnelIOTimeout(t *testing.T) {
+	cfg := routedRunConfig(t, freePort(t))
+	cfg.tunnelIOTimeout = 0
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "--tunnel-io-timeout must be positive") {
+		t.Fatalf("run() with --tunnel-io-timeout=0 = %v, want the tunnel-io-timeout error", err)
 	}
 }
 
@@ -118,14 +142,10 @@ func TestRunReturnsListenError(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer l.Close()
-	cfg := config{
-		host:              "127.0.0.1",
-		port:              l.Addr().(*net.TCPAddr).Port, // already taken
-		attestationAPIURL: "http://127.0.0.1:9",
-		tunnelIOTimeout:   defaultTunnelIOTimeout,
-	}
-	if err := run(t.Context(), cfg); err == nil {
-		t.Fatal("run() on an occupied port returned nil, want bind error")
+	cfg := routedRunConfig(t, l.Addr().(*net.TCPAddr).Port) // already taken
+	cfg.routing.port = freePort(t)
+	if err := run(t.Context(), cfg); err == nil || !strings.Contains(err.Error(), "address already in use") {
+		t.Fatalf("run() on an occupied port = %v, want the bind error", err)
 	}
 }
 
@@ -158,19 +178,14 @@ func TestRunServesUntilSignalled(t *testing.T) {
 	fixture := writeFixtureFile(t)
 
 	port := freePort(t)
-	cfg := config{
-		host:              "127.0.0.1",
-		port:              port,
-		logLevel:          "not-a-level", // exercises the newLogger fallback too
-		frontDoorMode:     types.FrontDoorModeCDS,
-		evidenceFixture:   fixture,
-		platform:          "snp",
-		generation:        "genoa",
-		sessionTTL:        time.Minute,
-		readHeaderTimeout: time.Second,
-		tunnelIOTimeout:   defaultTunnelIOTimeout,
-		upstream:          "http://127.0.0.1:9", // valid URL; never dialed in this test
-	}
+	cfg := routedRunConfig(t, port)
+	cfg.attestOff = false
+	cfg.logLevel = "not-a-level" // exercises the newLogger fallback too
+	cfg.frontDoorMode = types.FrontDoorModeCDS
+	cfg.evidenceFixture = fixture
+	cfg.platform = "snp"
+	cfg.generation = "genoa"
+	cfg.sessionTTL = time.Minute
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()

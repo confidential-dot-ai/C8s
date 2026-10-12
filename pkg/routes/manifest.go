@@ -208,7 +208,7 @@ func parseHosts(raw json.RawMessage) (map[string]Host, error) {
 	// Sorted so that a manifest with several faults always reports the same one.
 	for _, name := range slices.Sorted(maps.Keys(entries)) {
 		at := fmt.Sprintf("hosts[%q]", name)
-		if err := checkHostKey(name); err != nil {
+		if err := CheckHost(name); err != nil {
 			return nil, fmt.Errorf("%s: %w", at, err)
 		}
 		h, err := parseHost(entries[name], at)
@@ -480,8 +480,9 @@ func isKind(raw json.RawMessage, first byte) bool {
 
 var errNumericFinalLabel = errors.New("final label must not be numeric (it would parse as an IPv4 address)")
 
-// checkHostKey enforces D5.
-func checkHostKey(name string) error {
+// CheckHost reports whether name can be a manifest host key (D5): a
+// lower-case DNS name with no port, trailing dot or numeric final label.
+func CheckHost(name string) error {
 	if net.ParseIP(name) != nil {
 		return errors.New("must not be an IP literal")
 	}
