@@ -58,6 +58,8 @@ type BundleOptions struct {
 	Agents        []string
 	TLSSAN        string
 	WorkloadsPath string
+	// RegistryMirrors is copied into the server document; agents inherit it.
+	RegistryMirrors map[string]string
 }
 
 // NewBundle generates the cluster's two launch keys and join tokens, writes
@@ -124,6 +126,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
+		RegistryMirrors:         opts.RegistryMirrors,
 	}
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err

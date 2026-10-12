@@ -272,3 +272,30 @@ func TestNewBundleCarriesAnInitialAllowlist(t *testing.T) {
 	}
 	stageBundleNode(t, dir, serverDir)
 }
+
+func TestNewBundleCarriesRegistryMirrorsToEveryNode(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-agent-1", "--registry-mirror", "ghcr.io=http://10.43.0.5:5000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runBundleCmd(t, "add-agent", "--bundle", dir, "--name", "late"); err != nil {
+		t.Fatal(err)
+	}
+	for _, node := range []string{serverDir, "demo-agent-1", "late"} {
+		doc, _ := readBundleDocument(t, dir, node)
+		if doc.RegistryMirrors["ghcr.io"] != "http://10.43.0.5:5000" {
+			t.Fatalf("%s lost the registry mirror: %+v", node, doc.RegistryMirrors)
+		}
+		stageBundleNode(t, dir, node)
+	}
+	bad := filepath.Join(t.TempDir(), "bad")
+	if err := runBundleCmd(t, "new", "--out", bad, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--registry-mirror", "ghcr.io=http://cache.example/v2"); err == nil {
+		t.Fatal("accepted a mirror endpoint with a DNS host and a path")
+	}
+	if _, err := os.Stat(bad); !os.IsNotExist(err) {
+		t.Fatal("a rejected bundle must leave nothing behind")
+	}
+}

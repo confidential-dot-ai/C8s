@@ -22,6 +22,9 @@ const (
 	serverTokenPath  = "/run/confos/rke2-server-token"
 	agentTokenPath   = "/run/confos/rke2-agent-token"
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
+	// RKE2 reads this file when it generates containerd's configuration;
+	// rke2-role.service runs before the RKE2 units, as for the role fragment.
+	rke2RegistriesPath = "/etc/rancher/rke2/registries.yaml"
 )
 
 // Stage authenticates the launch document and writes only fixed boot paths.
@@ -52,7 +55,7 @@ func clearOutputs(cfg Config) error {
 	// output fails. Collect errors so a blocked first marker never prevents
 	// attempting to remove the other.
 	var errs []error
-	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath}
+	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, rke2RegistriesPath}
 	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
@@ -113,6 +116,13 @@ func stageVerified(cfg Config, v *Verified) error {
 	if doc.Workloads != "" {
 		outputs = append(outputs, outputFile{Dir + "/workloads.json", []byte(doc.Workloads)})
 	}
+	if len(doc.RegistryMirrors) > 0 {
+		registries, err := yaml.Marshal(registriesFile(doc))
+		if err != nil {
+			return fmt.Errorf("encode RKE2 registries: %w", err)
+		}
+		outputs = append(outputs, outputFile{rke2RegistriesPath, registries})
+	}
 	marker := agentMarker
 	if doc.Role == Server {
 		outputs = append(outputs,
@@ -142,6 +152,25 @@ type roleFragment struct {
 	NodeName       string `yaml:"node-name"`
 	NodeIP         string `yaml:"node-ip,omitempty"`
 	NodeExternalIP string `yaml:"node-external-ip,omitempty"`
+}
+
+// rke2Registries is RKE2's registries.yaml: one mirror endpoint per registry.
+// The registry's own endpoint is not listed; containerd tries it last anyway,
+// so a mirror that is down costs a timeout, not the pull.
+type rke2Registries struct {
+	Mirrors map[string]rke2Mirror `yaml:"mirrors"`
+}
+
+type rke2Mirror struct {
+	Endpoint []string `yaml:"endpoint"`
+}
+
+func registriesFile(doc *Document) rke2Registries {
+	out := rke2Registries{Mirrors: make(map[string]rke2Mirror, len(doc.RegistryMirrors))}
+	for registry, endpoint := range doc.RegistryMirrors {
+		out.Mirrors[registry] = rke2Mirror{Endpoint: []string{endpoint}}
+	}
+	return out
 }
 
 func rke2Fragment(doc *Document) roleFragment {

@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -34,12 +35,13 @@ const (
 	SchemaVersion            = "c8s-launch/v1"
 	DefaultAttestationAPIURL = "http://127.0.0.1:8400"
 	// Dir holds the root-only artifacts Stage writes for the node services.
-	Dir               = "/run/confos/launch"
-	DefaultStagedPath = Dir + "/config.json"
-	MaxDocumentSize   = 1024 * 1024
-	maxSignatureSize  = 4096
-	maxAgentKeys      = 128
-	defaultTLSSAN     = "c8s.local"
+	Dir                = "/run/confos/launch"
+	DefaultStagedPath  = Dir + "/config.json"
+	MaxDocumentSize    = 1024 * 1024
+	maxSignatureSize   = 4096
+	maxAgentKeys       = 128
+	maxRegistryMirrors = 8
+	defaultTLSSAN      = "c8s.local"
 )
 
 // Role selects the services started for this boot, without changing its image.
@@ -64,7 +66,12 @@ type Document struct {
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
-	Workloads          string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+	// RegistryMirrors maps a registry host to the one mirror endpoint containerd
+	// tries first for it; the registry itself stays the last resort. Stage
+	// writes it as RKE2's registries.yaml. A pull-through cache near the node
+	// cannot change what the node runs: image references stay digest-pinned.
+	RegistryMirrors    map[string]string `yaml:"registryMirrors,omitempty" json:"registry_mirrors,omitempty"`
 	serverTokenPresent bool
 }
 
@@ -332,7 +339,51 @@ func (d *Document) validate() error {
 			return fmt.Errorf("workloads: %w", err)
 		}
 	}
+	return validateRegistryMirrors(d.RegistryMirrors)
+}
+
+// validateRegistryMirrors accepts registry hosts (a lowercase DNS name with
+// an optional port) mapped to plain http or https endpoints with an IPv4
+// unicast host, an optional port and nothing else, so the file Stage writes
+// is exactly what review saw.
+func validateRegistryMirrors(mirrors map[string]string) error {
+	if len(mirrors) > maxRegistryMirrors {
+		return fmt.Errorf("registryMirrors has more than %d entries", maxRegistryMirrors)
+	}
+	for registry, endpoint := range mirrors {
+		host, port, hasPort := strings.Cut(registry, ":")
+		if host == "" || len(host) > 253 || (hasPort && !validPort(port)) {
+			return fmt.Errorf("registryMirrors: %q must be a registry host with an optional port", registry)
+		}
+		for _, label := range strings.Split(host, ".") {
+			if !dnsLabel(label) {
+				return fmt.Errorf("registryMirrors: %q must be a lowercase DNS hostname", registry)
+			}
+		}
+		u, err := url.Parse(endpoint)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Opaque != "" ||
+			u.Path != "" || u.RawQuery != "" || u.Fragment != "" || u.Host == "" {
+			return fmt.Errorf("registryMirrors: %q must be an http or https endpoint of the form scheme://host[:port]", registry)
+		}
+		if err := ValidateIPv4(u.Hostname(), true); err != nil {
+			return fmt.Errorf("registryMirrors: %q endpoint host: %w", registry, err)
+		}
+		if p := u.Port(); p != "" && !validPort(p) {
+			return fmt.Errorf("registryMirrors: %q endpoint port must be 1..65535", registry)
+		}
+	}
 	return nil
+}
+
+func validPort(s string) bool {
+	if len(s) == 0 || len(s) > 5 || strings.TrimLeft(s, "0123456789") != "" {
+		return false
+	}
+	n := 0
+	for _, c := range s {
+		n = n*10 + int(c-'0')
+	}
+	return n >= 1 && n <= 65535
 }
 
 func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
