@@ -59,9 +59,11 @@
 #   operator_key_set                 the operator public keys the CDS loaded at
 #                                    startup, PEM
 #   cds_restart_with <parameter> <value>
-#                                    restart the CDS with min-ca-validity
-#                                    <duration>, pins <digest> or operator-keys
-#                                    none; default restores the installed
+#                                    restart the CDS with one parameter
+#                                    changed: min-ca-validity <duration>,
+#                                    pins <digest>|none, operator-keys none,
+#                                    san-validation true|false, inventory-cidr
+#                                    <cidr>; default restores the installed
 #                                    configuration
 #   attestation_service_stop / attestation_service_start
 #                                    the local attestation service of the
@@ -96,15 +98,26 @@
 #                                    the node's
 #   evidence_unsigned <ns> <pod> <report-data-hex>
 #                                    evidence whose signature does not verify
-#   pod_cert_file <ns> <pod> <file>  tls.crt or tls.key from the pod's
-#                                    certificate volume; nothing while absent
+#   pod_cert_file <ns> <pod> <file> [container]
+#                                    tls.crt or tls.key from the pod's
+#                                    certificate volume, through the named
+#                                    container when given; nothing while absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
 #                                    prints accepts or rejects
-# node_name, image_ref, image_digest and pull_interval answer the same for a
-# whole run; callers may cache them. The allowlist is state: served_allowlist
-# answers for the moment of the call.
+# node_name, image_ref, image_digest, pull_interval and cds_pod_url answer the
+# same for a whole run; callers may cache them. The allowlist is state:
+# served_allowlist answers for the moment of the call.
+#
+# The implementations below that are the same everywhere need these from the
+# backend, which the steps never call:
+#   cds_url                          the base URL of the CDS, reachable from here
+#   cds_plain_url                    the same listener over http://, or 77
+#   operator_key                     the operator's private key, PEM
+#   optoken_bin                      the token minter built from
+#                                    test/integration/cluster/optoken
+#   scratch                          a directory kept for the run
 set -o pipefail
 
 C8S_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -145,17 +158,14 @@ pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
 # the first are the fixture's --container groups, one shell-quoted string each.
-# fixture_flags holds what a variant adds to the fixture's command line.
-fixture_flags=()
-pod_manifest() { fixture_flags=(); render_pod "$@"; }
+pod_manifest() { render_pod -- "$@"; }
 
 # The renew interval a pod carrying a workload ID is given: short enough to
 # observe a renewal, and below the CDS's named leaf TTL.
-CW_RENEW_INTERVAL=30s
+CW_RENEW_INTERVAL=10s
 
 cw_pod_manifest() {
-    fixture_flags=(--annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL")
-    render_pod "$@"
+    render_pod --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" -- "$@"
 }
 
 # The node's admission plugin binds its socket directory into a container
@@ -166,11 +176,18 @@ REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
     image="$(image_ref requester)" || return
-    fixture_flags=(--annotation confidential.ai/c8s-injected=true --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532)
-    render_pod "$1" "$2" "$3" "$image" sleep 3600
+    render_pod --annotation confidential.ai/c8s-injected=true --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
+        -- "$1" "$2" "$3" "$image" sleep 3600
 }
 
+# render_pod [fixture flags...] -- <name> <ns> <node> <image> <command...> [+ ...]
 render_pod() {
+    local -a flags=()
+    while [ "$1" != -- ]; do
+        flags+=("$1")
+        shift
+    done
+    shift
     local name="$1" ns="$2" node="$3" image="$4"
     shift 4
     local -a first=() extras=() group=()
@@ -185,8 +202,13 @@ render_pod() {
         fi
     done
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" client "$name" "$ns" "$image" \
-        --node "$node" --pull-policy IfNotPresent ${fixture_flags[@]+"${fixture_flags[@]}"} "${extras[@]}" -- "${first[@]}"
+        --node "$node" --pull-policy IfNotPresent ${flags[@]+"${flags[@]}"} "${extras[@]}" -- "${first[@]}"
 }
+
+# The webhook mounts the certificate volume here in every container of a pod
+# carrying a workload ID; read through one of them, once it runs.
+CERT_VOLUME_PATH=/etc/c8s/certs
+pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is
 # the pod's. Status 000 when nothing answered; empty when the pod cannot run
@@ -205,17 +227,24 @@ requester_request() {
     printf '%s\n' "${resp%$'\n'*}"
 }
 
-# What the webhook tells every requester it injects.
-cds_pod_url() {
-    kubectl -n "$NS" get deploy -l app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=operator \
-        -o jsonpath='{.items[0].spec.template.spec.containers[*].args}' |
-        jq -r '.[] | select(startswith("--cds-url=")) | ltrimstr("--cds-url=")' | head -1
+# deploy_arg <flag> <jsonpath to the container args> <kubectl get deploy
+# arguments...>: the value of --<flag>= in those args, empty when unset.
+deploy_arg() {
+    local flag="$1" path="$2"
+    shift 2
+    kubectl -n "$NS" get deploy "$@" -o jsonpath="$path" |
+        jq -r --arg p "--$flag=" '.[] | select(startswith($p)) | ltrimstr($p)' | tail -1
 }
 
-cds_arg() {
-    kubectl -n "$NS" get deploy c8s-cds -o jsonpath='{.spec.template.spec.containers[?(@.name=="cds")].args}' |
-        jq -r --arg p "--$1=" '.[] | select(startswith($p)) | ltrimstr($p)' | tail -1
+operator_arg() {
+    deploy_arg "$1" '{.items[0].spec.template.spec.containers[*].args}' \
+        -l app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=operator
 }
+
+cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].args}' c8s-cds; }
+
+# What the webhook tells every requester it injects.
+cds_pod_url() { operator_arg cds-url; }
 
 # The CDS's --challenge-ttl, or its built-in default.
 challenge_ttl() {

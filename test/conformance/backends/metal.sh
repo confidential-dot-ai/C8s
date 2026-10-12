@@ -98,9 +98,7 @@ attest_direct() { return "$UNSUPPORTED"; }
 # would need a second TEE.
 attestation_socket() {
     local url
-    url="$(kubectl -n "$NS" get deploy -l app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=operator \
-        -o jsonpath='{.items[0].spec.template.spec.containers[*].args}' |
-        jq -r '.[] | select(startswith("--attestation-api-url=")) | ltrimstr("--attestation-api-url=")' | head -1)"
+    url="$(operator_arg attestation-api-url)"
     case "$url" in
         unix://*) echo "/run/c8s/workload-claims/$(basename "${url#unix://}")" ;;
         *) return "$UNSUPPORTED" ;;
@@ -137,9 +135,13 @@ print(json.dumps(env))
 PYEOF
 }
 
-# The certificate volume is read through the pod's first container, so a
-# leaf is seen only once that container runs.
-pod_cert_file() { kubectl -n "$1" exec "$2" -c curl -- cat "/etc/c8s/certs/$3" 2>/dev/null || true; }
+# No node shell: the certificate volume is read through a container of the
+# pod, the first one unless named, so a leaf is seen only once it runs.
+pod_cert_file() {
+    local container="${4:-}"
+    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
+    pod_cert_file_in "$1" "$2" "$container" "$3"
+}
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 

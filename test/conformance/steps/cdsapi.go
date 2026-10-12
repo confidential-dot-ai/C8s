@@ -21,8 +21,7 @@ import (
 func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^the CDS has (?:an operator key|operator keys)$`, cdsHasOperatorKey)
 	sc.Step(`^the seed of the CDS declares image "([^"]*)"$`, seedDeclares)
-	sc.Step(`^the served allowlist has a workload entry "([^"]*)"$`, servedHasEntry)
-	sc.Step(`^the served allowlist has no workload entry "([^"]*)"$`, servedLacksEntry)
+	sc.Step(`^the served allowlist has (a|no) workload entry "([^"]*)"$`, servedHasEntry)
 	sc.Step(`^a workload entry in the served allowlist admits image "([^"]*)" under any argv$`, servedAdmitsAnyArgv)
 	sc.Step(`^a caller holds no write token$`, callerHoldsNoToken)
 	sc.Step(`^a caller holds a write token signed with a key that is not an operator key$`, callerHoldsForeignToken)
@@ -44,8 +43,7 @@ func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^that relying party reads the allowlist naming the version it read before$`, readsAllowlistNamingVersion)
 	sc.Step(`^that relying party receives the served allowlist$`, receivesServed)
 	sc.Step(`^the CDS answers with the version and no body$`, answersVersionNoBody)
-	sc.Step(`^a workload entry in the allowlist that relying party received declares image "([^"]*)"$`, receivedDeclares)
-	sc.Step(`^no workload entry in the allowlist that relying party received declares image "([^"]*)"$`, receivedLacks)
+	sc.Step(`^(a|no) workload entry in the allowlist that relying party received declares image "([^"]*)"$`, receivedDeclares)
 	sc.Step(`^"([^"]*)" is in the allowlist that relying party received$`, receivedHasEntry)
 	sc.Step(`^"([^"]*)" in that allowlist pins the mounts of "([^"]*)" to one rule of kind "([^"]*)" with destination "([^"]*)"$`, receivedPinsMounts)
 	sc.Step(`^the version is (the version read before|one greater than the version read before|greater than the version read before|below the version read before)$`, versionCompares)
@@ -57,10 +55,12 @@ const (
 	callerForeign = "foreign"
 )
 
-// write is one request to the CDS's allowlist routes.
+// write is one request to the CDS's allowlist routes; validity is the
+// lifetime its token is minted with, the signer's default when empty.
 type write struct {
 	method, path string
 	body         []byte
+	validity     string
 }
 
 // reading is what a relying party got back from a read.
@@ -74,18 +74,30 @@ const workloadsPath = "/allowlist/workloads/"
 
 func (w *world) workloadPath(name string) string { return workloadsPath + w.writtenName(name) }
 
-// anyArgvEntry is an entry named name admitting image under any argv, as a
-// write body.
-func (w *world) anyArgvEntry(name, image string) ([]byte, error) {
+// cdsAPIState is the scenario's view of the CDS API (cdsapi.go): who sends
+// the next write, the last write's token and status, a write signed before
+// it is sent, and what a relying party read.
+type cdsAPIState struct {
+	caller        string
+	lastToken     string
+	lastStatus    int
+	pending       *write
+	versionBefore string
+	read          *reading
+}
+
+// putAnyArgv is the write of an entry named name admitting image under any
+// argv.
+func (w *world) putAnyArgv(name, image string) (write, error) {
 	ref, err := w.be.call("image_ref", image)
 	if err != nil {
-		return nil, err
+		return write{}, err
 	}
 	digest, err := w.digestOf(image)
 	if err != nil {
-		return nil, err
+		return write{}, err
 	}
-	return json.Marshal(entry{
+	body, err := json.Marshal(entry{
 		Label:          name,
 		InitContainers: []entryContainer{},
 		Containers: []entryContainer{{
@@ -94,6 +106,10 @@ func (w *world) anyArgvEntry(name, image string) ([]byte, error) {
 			Mounts: mountsPolicy{Policy: "any"}, Env: policy{Policy: "any"},
 		}},
 	})
+	if err != nil {
+		return write{}, err
+	}
+	return write{method: http.MethodPut, path: w.workloadPath(name), body: body}, nil
 }
 
 // withBodyFile runs fn with body in a file, the form the backend takes.
@@ -110,14 +126,13 @@ func withBodyFile(body []byte, fn func(path string) error) error {
 	return fn(f.Name())
 }
 
-// token mints the write token for wr: signer is "operator" or "foreign",
-// validity a Go duration or empty for the signer's default.
-func (w *world) token(signer string, wr write, validity string) (string, error) {
+// token mints the write token for wr: signer is "operator" or "foreign".
+func (w *world) token(signer string, wr write) (string, error) {
 	var token string
 	err := withBodyFile(wr.body, func(path string) error {
 		args := []string{signer, wr.method, wr.path, path}
-		if validity != "" {
-			args = append(args, validity)
+		if wr.validity != "" {
+			args = append(args, wr.validity)
 		}
 		out, err := w.be.call("write_token", args...)
 		token = out
@@ -139,10 +154,10 @@ func (w *world) send(wr write, auth string) error {
 	if err != nil {
 		return err
 	}
-	if w.lastStatus, err = strconv.Atoi(status); err != nil {
+	if w.api.lastStatus, err = strconv.Atoi(status); err != nil {
 		return fmt.Errorf("status %q: %w", status, err)
 	}
-	if w.lastStatus == http.StatusNoContent {
+	if w.api.lastStatus == http.StatusNoContent {
 		lastMutation = time.Now()
 		if wr.method == http.MethodPut {
 			w.written[strings.TrimPrefix(wr.path, workloadsPath)] = true
@@ -154,11 +169,11 @@ func (w *world) send(wr write, auth string) error {
 // operatorWrite signs wr with the operator's key and sends it, keeping the
 // token for a replay.
 func (w *world) operatorWrite(wr write) error {
-	token, err := w.token("operator", wr, "")
+	token, err := w.token("operator", wr)
 	if err != nil {
 		return err
 	}
-	w.lastToken = token
+	w.api.lastToken = token
 	return w.send(wr, token)
 }
 
@@ -191,26 +206,15 @@ func seedDeclares(ctx context.Context, image string) error {
 	return nil
 }
 
-func servedHasEntry(ctx context.Context, name string) error {
+func servedHasEntry(ctx context.Context, quantifier, name string) error {
 	w := getWorld(ctx)
 	s, err := w.served()
 	if err != nil {
 		return err
 	}
-	if _, ok := s.raw[w.writtenName(name)]; !ok {
-		return fmt.Errorf("the served allowlist has no workload entry %q", name)
-	}
-	return nil
-}
-
-func servedLacksEntry(ctx context.Context, name string) error {
-	w := getWorld(ctx)
-	s, err := w.served()
-	if err != nil {
-		return err
-	}
-	if _, ok := s.raw[w.writtenName(name)]; ok {
-		return fmt.Errorf("the served allowlist has a workload entry %q", name)
+	_, has := s.raw[w.writtenName(name)]
+	if want := quantifier == "a"; has != want {
+		return fmt.Errorf("the served allowlist has %s workload entry %q", map[bool]string{true: "a", false: "no"}[has], name)
 	}
 	return nil
 }
@@ -232,27 +236,26 @@ func servedAdmitsAnyArgv(ctx context.Context, image string) error {
 }
 
 func callerHoldsNoToken(ctx context.Context) error {
-	getWorld(ctx).caller = callerNone
+	getWorld(ctx).api.caller = callerNone
 	return nil
 }
 
 func callerHoldsForeignToken(ctx context.Context) error {
-	getWorld(ctx).caller = callerForeign
+	getWorld(ctx).api.caller = callerForeign
 	return nil
 }
 
 func callerWrites(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
-	body, err := w.anyArgvEntry(name, image)
+	wr, err := w.putAnyArgv(name, image)
 	if err != nil {
 		return err
 	}
-	wr := write{method: http.MethodPut, path: w.workloadPath(name), body: body}
-	switch w.caller {
+	switch w.api.caller {
 	case callerNone:
 		return w.send(wr, "")
 	case callerForeign:
-		token, err := w.token("foreign", wr, "")
+		token, err := w.token("foreign", wr)
 		if err != nil {
 			return err
 		}
@@ -263,52 +266,35 @@ func callerWrites(ctx context.Context, name, image string) error {
 
 func operatorWritesAnyArgv(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
-	body, err := w.anyArgvEntry(name, image)
+	wr, err := w.putAnyArgv(name, image)
 	if err != nil {
 		return err
 	}
-	return w.operatorWrite(write{method: http.MethodPut, path: w.workloadPath(name), body: body})
+	return w.operatorWrite(wr)
 }
 
 // operatorWritesUnknownMember adds a member no rule of the document names.
 func operatorWritesUnknownMember(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
-	body, err := w.anyArgvEntry(name, image)
+	wr, err := w.putAnyArgv(name, image)
 	if err != nil {
 		return err
 	}
 	var members map[string]any
-	if err := json.Unmarshal(body, &members); err != nil {
+	if err := json.Unmarshal(wr.body, &members); err != nil {
 		return err
 	}
 	members["note"] = "a member no rule names"
-	if body, err = json.Marshal(members); err != nil {
+	if wr.body, err = json.Marshal(members); err != nil {
 		return err
 	}
-	return w.operatorWrite(write{method: http.MethodPut, path: w.workloadPath(name), body: body})
+	return w.operatorWrite(wr)
 }
 
 // operatorWritesDescribed writes the entry the scenario described, through
 // the signed path, without waiting for the plugin.
 func operatorWritesDescribed(ctx context.Context, name string) error {
-	w := getWorld(ctx)
-	e, err := w.entry(name)
-	if err != nil {
-		return err
-	}
-	written := w.writtenName(name)
-	if w.written[written] {
-		return nil
-	}
-	body, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	if err := w.putEntry(written, body); err != nil {
-		return err
-	}
-	w.written[written] = true
-	return nil
+	return getWorld(ctx).writeEntry(name)
 }
 
 // operatorRemoves deletes the entry, keeping a served one the scenario did
@@ -327,19 +313,19 @@ func operatorRemoves(ctx context.Context, name string) error {
 }
 
 func (w *world) replay(wr write) error {
-	if w.lastToken == "" {
+	if w.api.lastToken == "" {
 		return errors.New("the scenario has recorded no write token to replay")
 	}
-	return w.send(wr, w.lastToken)
+	return w.send(wr, w.api.lastToken)
 }
 
 func replayOnWrite(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
-	body, err := w.anyArgvEntry(name, image)
+	wr, err := w.putAnyArgv(name, image)
 	if err != nil {
 		return err
 	}
-	return w.replay(write{method: http.MethodPut, path: w.workloadPath(name), body: body})
+	return w.replay(wr)
 }
 
 func replayOnRemoval(ctx context.Context, name string) error {
@@ -351,43 +337,37 @@ func replayOnRemoval(ctx context.Context, name string) error {
 // the token is minted when the write is sent.
 func operatorSignsWrite(ctx context.Context, name, image string) error {
 	w := getWorld(ctx)
-	body, err := w.anyArgvEntry(name, image)
+	wr, err := w.putAnyArgv(name, image)
 	if err != nil {
 		return err
 	}
-	w.pending = &write{method: http.MethodPut, path: w.workloadPath(name), body: body}
-	w.pendingValidity = ""
+	w.api.pending = &wr
 	return nil
 }
 
 func tokenExpiresHours(ctx context.Context, hours int) error {
 	w := getWorld(ctx)
-	if w.pending == nil {
+	if w.api.pending == nil {
 		return errors.New("the scenario has described no write to sign")
 	}
-	w.pendingValidity = fmt.Sprintf("%dh", hours)
+	w.api.pending.validity = fmt.Sprintf("%dh", hours)
 	return nil
 }
 
 func operatorSendsSigned(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.pending == nil {
+	if w.api.pending == nil {
 		return errors.New("the scenario has described no write to sign")
 	}
-	token, err := w.token("operator", *w.pending, w.pendingValidity)
-	if err != nil {
-		return err
-	}
-	w.lastToken = token
-	return w.send(*w.pending, token)
+	return w.operatorWrite(*w.api.pending)
 }
 
 func (w *world) refused(status int, what string) error {
-	if w.lastStatus == 0 {
+	if w.api.lastStatus == 0 {
 		return errors.New("the scenario has sent the CDS no write")
 	}
-	if w.lastStatus != status {
-		return fmt.Errorf("the CDS answered %d, not %d (%s)", w.lastStatus, status, what)
+	if w.api.lastStatus != status {
+		return fmt.Errorf("the CDS answered %d, not %d (%s)", w.api.lastStatus, status, what)
 	}
 	return nil
 }
@@ -413,7 +393,7 @@ func readsVersion(ctx context.Context) error {
 	if version == "" {
 		return errors.New("the CDS answered with no version")
 	}
-	w.versionBefore = version
+	w.api.versionBefore = version
 	return nil
 }
 
@@ -427,19 +407,11 @@ func (w *world) get(version string) error {
 	if err != nil {
 		return err
 	}
-	first, body, _ := strings.Cut(out, "\n")
-	fields := strings.Fields(first)
-	if len(fields) == 0 {
-		return errors.New("allowlist_get answered nothing")
+	status, version, body, err := statusLine(out)
+	if err != nil {
+		return fmt.Errorf("allowlist_get: %w", err)
 	}
-	r := &reading{body: []byte(body)}
-	if r.status, err = strconv.Atoi(fields[0]); err != nil {
-		return fmt.Errorf("status %q: %w", fields[0], err)
-	}
-	if len(fields) > 1 {
-		r.version = fields[1]
-	}
-	w.read = r
+	w.api.read = &reading{status: status, version: version, body: body}
 	return nil
 }
 
@@ -447,21 +419,21 @@ func readsAllowlist(ctx context.Context) error { return getWorld(ctx).get("") }
 
 func readsAllowlistNamingVersion(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.versionBefore == "" {
+	if w.api.versionBefore == "" {
 		return errors.New("the relying party has read no version")
 	}
-	return w.get(w.versionBefore)
+	return w.get(w.api.versionBefore)
 }
 
 // received is the allowlist the last read carried.
 func (w *world) received() (served, error) {
-	if w.read == nil {
+	if w.api.read == nil {
 		return served{}, errors.New("the relying party has read nothing")
 	}
-	if w.read.status != http.StatusOK {
-		return served{}, fmt.Errorf("the read was answered %d, with no allowlist", w.read.status)
+	if w.api.read.status != http.StatusOK {
+		return served{}, fmt.Errorf("the read was answered %d, with no allowlist", w.api.read.status)
 	}
-	return parseServed(string(w.read.body))
+	return parseServed(string(w.api.read.body))
 }
 
 func receivesServed(ctx context.Context) error {
@@ -473,7 +445,7 @@ func receivesServed(ctx context.Context) error {
 	if s.schema != "c8s.allowlist/v1" {
 		return fmt.Errorf("the body's schema is %q, not an allowlist", s.schema)
 	}
-	if w.read.version == "" {
+	if w.api.read.version == "" {
 		return errors.New("the answer carries no version")
 	}
 	return nil
@@ -481,22 +453,23 @@ func receivesServed(ctx context.Context) error {
 
 func answersVersionNoBody(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.read == nil {
+	r := w.api.read
+	if r == nil {
 		return errors.New("the relying party has read nothing")
 	}
-	if w.read.status != http.StatusNotModified {
-		return fmt.Errorf("the read was answered %d, not 304", w.read.status)
+	if r.status != http.StatusNotModified {
+		return fmt.Errorf("the read was answered %d, not 304", r.status)
 	}
-	if w.read.version == "" {
+	if r.version == "" {
 		return errors.New("the answer carries no version")
 	}
-	if len(w.read.body) != 0 {
-		return fmt.Errorf("the answer carries a body of %d bytes", len(w.read.body))
+	if len(r.body) != 0 {
+		return fmt.Errorf("the answer carries a body of %d bytes", len(r.body))
 	}
 	return nil
 }
 
-func receivedDeclares(ctx context.Context, image string) error {
+func receivedDeclares(ctx context.Context, quantifier, image string) error {
 	w := getWorld(ctx)
 	digest, err := w.digestOf(image)
 	if err != nil {
@@ -506,24 +479,9 @@ func receivedDeclares(ctx context.Context, image string) error {
 	if err != nil {
 		return err
 	}
-	if !s.declares(digest) {
-		return fmt.Errorf("no entry in the received allowlist declares %s (%s)", image, digest)
-	}
-	return nil
-}
-
-func receivedLacks(ctx context.Context, image string) error {
-	w := getWorld(ctx)
-	digest, err := w.digestOf(image)
-	if err != nil {
-		return err
-	}
-	s, err := w.received()
-	if err != nil {
-		return err
-	}
-	if s.declares(digest) {
-		return fmt.Errorf("an entry in the received allowlist declares %s (%s)", image, digest)
+	declares := s.declares(digest)
+	if want := quantifier == "a"; declares != want {
+		return fmt.Errorf("%s entry in the received allowlist declares %s (%s)", map[bool]string{true: "an", false: "no"}[declares], image, digest)
 	}
 	return nil
 }
@@ -569,12 +527,12 @@ func receivedPinsMounts(ctx context.Context, name, image, kind, destination stri
 
 func versionCompares(ctx context.Context, relation string) error {
 	w := getWorld(ctx)
-	if w.versionBefore == "" {
+	if w.api.versionBefore == "" {
 		return errors.New("the relying party has read no version")
 	}
-	before, err := strconv.Atoi(w.versionBefore)
+	before, err := strconv.Atoi(w.api.versionBefore)
 	if err != nil {
-		return fmt.Errorf("version read before %q: %w", w.versionBefore, err)
+		return fmt.Errorf("version read before %q: %w", w.api.versionBefore, err)
 	}
 	s, err := w.be.call("served_version")
 	if err != nil {

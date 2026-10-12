@@ -17,7 +17,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"os"
 	"strings"
 	"time"
 
@@ -44,9 +43,7 @@ func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^the signature of the evidence "([^"]*)" presents does not verify$`, evidenceUnsigned)
 	sc.Step(`^the evidence "([^"]*)" presents reports a launch digest that is not node "([^"]*)"'s$`, evidenceOtherDigest)
 	sc.Step(`^the self-signature of the CSR "([^"]*)" prepared does not verify$`, csrBadSignature)
-	sc.Step(`^the CSR of "([^"]*)" carries a DNS SAN no configured pattern matches$`, csrUnmatchedDNSSAN)
-	sc.Step(`^the CSR of "([^"]*)" carries an IP SAN that is the address of another pod$`, csrOtherIPSAN)
-	sc.Step(`^the CSR of "([^"]*)" carries its own address as an IP SAN$`, csrOwnIPSAN)
+	sc.Step(`^the CSR of "([^"]*)" carries (a DNS SAN no configured pattern matches|an IP SAN that is the address of another pod|its own address as an IP SAN)$`, csrCarries)
 	sc.Step(`^"([^"]*)" requests a leaf with that challenge( and that sandbox token)?$`, requestsLeaf)
 	sc.Step(`^"([^"]*)" repeats the same attest request$`, repeatsAttest)
 	sc.Step(`^the CDS refuses the attest request with "([^"]*)"$`, cdsRefusesAttest)
@@ -60,13 +57,13 @@ func registerRequester(sc *godog.ScenarioContext) {
 const inventorySocket = "/run/c8s/workload-claims/workload-claims.sock"
 
 // evidenceMode and csrMode name what a scenario changes about the evidence
-// and the CSR the requester presents; empty is a well-behaved requester.
+// and the CSR the requester presents; empty is a well-behaved requester. The
+// values are the sentences' own phrases where a sentence sets them.
 type evidenceMode string
 
 const (
 	evidenceOtherKey         evidenceMode = "a different key"
 	evidenceEarlierChallenge evidenceMode = "an earlier challenge"
-	evidenceOwnKey           evidenceMode = "the key it holds"
 	evidenceNoSignature      evidenceMode = "unsigned"
 	evidenceForeignDigest    evidenceMode = "other launch digest"
 )
@@ -75,14 +72,14 @@ type csrMode string
 
 const (
 	csrBadSig       csrMode = "bad signature"
-	csrUnmatchedDNS csrMode = "unmatched DNS SAN"
-	csrOtherIP      csrMode = "another pod's IP SAN"
-	csrOwnIP        csrMode = "own IP SAN"
+	csrUnmatchedDNS csrMode = "a DNS SAN no configured pattern matches"
+	csrOtherIP      csrMode = "an IP SAN that is the address of another pod"
+	csrOwnIP        csrMode = "its own address as an IP SAN"
 )
 
-// requester is one pod the scenario drives and everything it has prepared.
+// requester is one pod the scenario drives and everything it has prepared;
+// the leaf its last attest request was issued is on its pod.
 type requester struct {
-	name string
 	pod  *pod
 	node string
 	addr string
@@ -94,12 +91,19 @@ type requester struct {
 	forged   *forgedToken
 	evidence evidenceMode
 	csr      csrMode
-	// The last attest request and what the CDS answered.
-	lastBody    []byte
-	lastStatus  int
-	lastCode    string
-	lastMessage string
-	leaf        *leaf
+	// The last attest request and what the CDS answered: a leaf on the pod,
+	// or a refusal.
+	lastBody   []byte
+	lastStatus int
+	refusal    *refusal
+}
+
+// answer describes what the CDS answered the last attest request.
+func (r *requester) answer() string {
+	if r.refusal != nil {
+		return fmt.Sprintf("%d %s", r.lastStatus, r.refusal)
+	}
+	return fmt.Sprintf("%d", r.lastStatus)
 }
 
 // forgedToken is a sandbox token signed by a key of the requester's own,
@@ -138,7 +142,8 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if _, ok := w.issuance.requesters[name]; ok {
 		return fmt.Errorf("a requester %q is already on a node", name)
 	}
-	if _, err := w.node(node); err != nil {
+	k8sNode, err := w.node(node)
+	if err != nil {
 		return err
 	}
 	if _, ok := w.entries["requester"]; !ok {
@@ -153,12 +158,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	w.describe(name, ref)
-	p := w.pods[name]
-	k8sNode, err := w.be.call("node_name", node)
-	if err != nil {
-		return err
-	}
+	p := w.describe(name, ref)
 	manifest, err := w.be.call("requester_manifest", p.name, w.namespace, k8sNode)
 	if err != nil {
 		return err
@@ -178,7 +178,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	r := &requester{name: name, pod: p, node: node, addr: strings.TrimSpace(addr)}
+	r := &requester{pod: p, node: node, addr: strings.TrimSpace(addr)}
 	w.issuance.requesters[name] = r
 	url, err := w.be.call("cds_pod_url")
 	if err != nil {
@@ -197,36 +197,32 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 
 // relay sends a request from inside the requester's pod.
 func (w *world) relay(r *requester, method, url string, body []byte, socket string) (int, []byte, error) {
-	args := []string{w.namespace, r.pod.name, method, url}
-	if body != nil || socket != "" {
-		f, err := os.CreateTemp("", "request-*.json")
-		if err != nil {
-			return 0, nil, err
+	var out string
+	send := func(bodyFile string) (err error) {
+		args := []string{w.namespace, r.pod.name, method, url}
+		if bodyFile != "" {
+			args = append(args, bodyFile)
 		}
-		defer os.Remove(f.Name())
-		_, werr := f.Write(body)
-		if err := errors.Join(werr, f.Close()); err != nil {
-			return 0, nil, err
-		}
-		args = append(args, f.Name())
 		if socket != "" {
 			args = append(args, socket)
 		}
+		out, err = w.be.call("requester_request", args...)
+		return err
 	}
-	out, err := w.be.call("requester_request", args...)
+	var err error
+	if body != nil || socket != "" {
+		err = withBodyFile(body, send)
+	} else {
+		err = send("")
+	}
 	if err != nil {
 		return 0, nil, err
 	}
-	first, rest, _ := strings.Cut(out, "\n")
-	var status int
-	if _, err := fmt.Sscanf(strings.TrimSpace(first), "%d", &status); err != nil {
-		return 0, nil, fmt.Errorf("the requester %q could not send %s %s: %q", r.name, method, url, out)
+	status, _, resp, err := statusLine(out)
+	if err != nil {
+		return 0, nil, fmt.Errorf("the requester %q could not send %s %s: %q", r.pod.name, method, url, out)
 	}
-	return status, []byte(rest), nil
-}
-
-func (w *world) cdsPodURL() (string, error) {
-	return w.be.call("cds_pod_url")
+	return status, resp, nil
 }
 
 func generateKey() (*ecdsa.PrivateKey, error) {
@@ -250,7 +246,7 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if err != nil {
 		return err
 	}
-	url, err := w.cdsPodURL()
+	url, err := w.be.call("cds_pod_url")
 	if err != nil {
 		return err
 	}
@@ -324,7 +320,7 @@ func evidenceCommitsTo(ctx context.Context, name, what string) error {
 		return err
 	}
 	r.evidence = evidenceMode(what)
-	if r.evidence == evidenceOwnKey {
+	if what == "the key it holds" {
 		r.evidence = ""
 	}
 	return nil
@@ -352,21 +348,23 @@ func evidenceOtherDigest(ctx context.Context, name, node string) error {
 	return nil
 }
 
-func setCSRMode(ctx context.Context, name string, mode csrMode) error {
+func csrCarries(ctx context.Context, name, what string) error {
 	r, err := getWorld(ctx).requester(name)
 	if err != nil {
 		return err
 	}
-	r.csr = mode
+	r.csr = csrMode(what)
 	return nil
 }
 
-func csrBadSignature(ctx context.Context, name string) error { return setCSRMode(ctx, name, csrBadSig) }
-func csrUnmatchedDNSSAN(ctx context.Context, name string) error {
-	return setCSRMode(ctx, name, csrUnmatchedDNS)
+func csrBadSignature(ctx context.Context, name string) error {
+	r, err := getWorld(ctx).requester(name)
+	if err != nil {
+		return err
+	}
+	r.csr = csrBadSig
+	return nil
 }
-func csrOtherIPSAN(ctx context.Context, name string) error { return setCSRMode(ctx, name, csrOtherIP) }
-func csrOwnIPSAN(ctx context.Context, name string) error   { return setCSRMode(ctx, name, csrOwnIP) }
 
 // evidenceOver asks the node's local attestation service for evidence over
 // report data, as the envelope the CDS takes.
@@ -412,7 +410,7 @@ func (w *world) otherPodAddress(r *requester) (string, error) {
 // evidence over the key alone, as a requester's CSR carries.
 func (w *world) buildCSR(r *requester) ([]byte, error) {
 	if r.key == nil {
-		return nil, fmt.Errorf("%q holds no key", r.name)
+		return nil, fmt.Errorf("%q holds no key", r.pod.name)
 	}
 	tmpl := x509.CertificateRequest{}
 	switch r.csr {
@@ -465,7 +463,7 @@ func (w *world) buildCSR(r *requester) ([]byte, error) {
 func (r *requester) sandboxToken() (json.RawMessage, error) {
 	if r.forged == nil {
 		if r.token == nil {
-			return nil, fmt.Errorf("%q holds no sandbox token", r.name)
+			return nil, fmt.Errorf("%q holds no sandbox token", r.pod.name)
 		}
 		return r.token, nil
 	}
@@ -555,7 +553,7 @@ func requestsLeaf(ctx context.Context, name, withToken string) error {
 
 // attest sends an attest body and records what the CDS answered.
 func (w *world) attest(r *requester, body []byte) error {
-	url, err := w.cdsPodURL()
+	url, err := w.be.call("cds_pod_url")
 	if err != nil {
 		return err
 	}
@@ -563,7 +561,7 @@ func (w *world) attest(r *requester, body []byte) error {
 	if err != nil {
 		return err
 	}
-	r.lastBody, r.lastStatus, r.lastCode, r.lastMessage, r.leaf = body, status, "", "", nil
+	r.lastBody, r.lastStatus, r.refusal, r.pod.leaf = body, status, nil, nil
 	w.issuance.lastAttest = r
 	if status == 200 {
 		l, err := parseLeaf(resp)
@@ -573,17 +571,14 @@ func (w *world) attest(r *requester, body []byte) error {
 		if l == nil {
 			return errors.New("the CDS answered 200 with no certificate")
 		}
-		r.leaf = l
+		r.pod.leaf = l
 		return nil
 	}
-	var doc struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(resp, &doc); err != nil {
+	var doc refusal
+	if err := json.Unmarshal(resp, &doc); err != nil || doc.Code == "" {
 		return fmt.Errorf("the CDS answered %d with a body that is not an error document: %s", status, resp)
 	}
-	r.lastCode, r.lastMessage = doc.Error, doc.Message
+	r.refusal = &doc
 	return nil
 }
 
@@ -605,11 +600,11 @@ func cdsRefusesAttest(ctx context.Context, code string) error {
 	if last == nil {
 		return errors.New("no requester has sent an attest request")
 	}
-	if last.lastStatus == 200 {
-		return fmt.Errorf("the CDS issued %q a leaf (serial %s) instead of refusing with %s", last.name, last.leaf.serial(), code)
+	if last.refusal == nil {
+		return fmt.Errorf("the CDS answered %q %s instead of refusing with %s", last.pod.name, last.answer(), code)
 	}
-	if last.lastCode != code {
-		return fmt.Errorf("the CDS refused with %d %s (%s), not %s", last.lastStatus, last.lastCode, last.lastMessage, code)
+	if last.refusal.Code != code {
+		return fmt.Errorf("the CDS refused with %s, not %s", last.answer(), code)
 	}
 	return nil
 }
@@ -657,7 +652,8 @@ func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error
 }
 
 func signsOwnToken(ctx context.Context, name string) error {
-	r, err := getWorld(ctx).requester(name)
+	w := getWorld(ctx)
+	r, err := w.requester(name)
 	if err != nil {
 		return err
 	}
@@ -669,18 +665,14 @@ func signsOwnToken(ctx context.Context, name string) error {
 		return err
 	}
 	r.forged, r.token = &forgedToken{key: key}, nil
+	w.issuance.forger = r
 	return nil
 }
 
 // forgedTokenHost reads the host phrase of the Scenario Outline.
 func forgedTokenHost(ctx context.Context, phrase string) error {
 	w := getWorld(ctx)
-	var r *requester
-	for _, candidate := range w.issuance.requesters {
-		if candidate.forged != nil {
-			r = candidate
-		}
-	}
+	r := w.issuance.forger
 	if r == nil {
 		return errors.New("no requester has signed a sandbox token of its own")
 	}

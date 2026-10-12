@@ -184,12 +184,11 @@ attest_direct() {
         --cds-measurements "$MOCK_MEASUREMENT" --san "requester.$NS.svc" 2>/dev/null
 }
 
-# The mock attestation-api on the node's address issues a version-2 SNP
-# report over any report data, with an all-zero launch measurement (the pin
-# the CDS was installed with) and no signature anyone checks. Evidence for
-# another launch digest is the same report with those bytes set; the mock's
-# verifier reads the digest from the report it is shown.
-MOCK_ATTESTATION_URL="http://$NODE_IP:8400"
+# The mock issues a version-2 SNP report over any report data, with an
+# all-zero launch measurement (the pin the CDS was installed with) and no
+# signature anyone checks. Evidence for another launch digest is the same
+# report with those bytes set; the mock's verifier reads the digest from the
+# report it is shown.
 evidence() {
     python3 - "$(mock_attestation_url)" "$3" "${4:-}" <<'PYEOF'
 import base64, json, sys, urllib.request
@@ -216,18 +215,24 @@ PYEOF
 evidence_unsigned() { return "$UNSUPPORTED"; }
 relying_party() { return "$UNSUPPORTED"; }
 
+pod_uid() { kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}'; }
+
 # The pod's certificate volume is the memory-backed emptyDir the webhook
 # adds, which the kubelet keeps under the pod's directory on the node; read
 # there, so the first leaf is seen before any workload container runs.
 pod_cert_file() {
+    if [ -n "${4:-}" ]; then
+        pod_cert_file_in "$1" "$2" "$4" "$3"
+        return
+    fi
     local uid
-    uid="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}')" || return
+    uid="$(pod_uid "$1" "$2")" || return
     node_exec cat "/var/lib/kubelet/pods/$uid/volumes/kubernetes.io~empty-dir/c8s-certs/$3" 2>/dev/null || true
 }
 
 pod_sandbox_id() {
     local uid
-    uid="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}')" || return
+    uid="$(pod_uid "$1" "$2")" || return
     node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | head -1
 }
 

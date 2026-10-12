@@ -22,21 +22,12 @@ type world struct {
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
-	entries map[string]*entry
-	written map[string]bool
-	removed map[string]json.RawMessage
-	// the CDS as a caller sees it (cdsapi.go): who sends the next write, the
-	// last write's token and status, a write signed before it is sent, and
-	// what a relying party read.
-	caller          string
-	lastToken       string
-	lastStatus      int
-	pending         *write
-	pendingValidity string
-	versionBefore   string
-	read            *reading
-	cds             cdsState
-	issuance        issuanceState
+	entries  map[string]*entry
+	written  map[string]bool
+	removed  map[string]json.RawMessage
+	api      cdsAPIState
+	cds      cdsState
+	issuance issuanceState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -59,8 +50,10 @@ type pod struct {
 	containers []*container
 	deployed   bool
 	// workloadID: the pod opts into a leaf of its own, which the webhook's
-	// requester obtains and renews; leaf is the one it holds as last read,
-	// renewed and refusal what its last renewal did.
+	// requester obtains and renews. leaf is the one the pod holds as last
+	// read (or, for a requester the scenario drives, the one its last attest
+	// request was issued); renewed and refusal are what an injected
+	// requester's last attempt did.
 	workloadID bool
 	leaf       *leaf
 	renewed    bool
@@ -137,12 +130,13 @@ func (w *world) runUndo() error {
 // describe records a pod the scenario will deploy, one container per
 // reference; it becomes the last pod. A scenario that says nothing about the
 // argv gets one that keeps the container alive.
-func (w *world) describe(name string, refs ...string) {
+func (w *world) describe(name string, refs ...string) *pod {
 	p := &pod{name: name}
 	for _, ref := range refs {
 		p.containers = append(p.containers, &container{ref: ref, command: []string{"sleep", "3600"}})
 	}
 	w.pods[name], w.lastPod = p, p
+	return p
 }
 
 func (p *pod) last() *container { return p.containers[len(p.containers)-1] }

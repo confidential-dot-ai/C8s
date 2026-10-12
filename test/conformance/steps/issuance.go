@@ -3,21 +3,23 @@ package steps
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/cucumber/godog"
 )
 
@@ -62,6 +64,7 @@ func registerIssuance(sc *godog.ScenarioContext) {
 	sc.Step(`^the CDS has an empty pin set$`, cdsEmptyPins)
 	sc.Step(`^IP SAN binding is (on|off)$`, ipSANBinding)
 	sc.Step(`^the configured node address range of the CDS covers no node$`, inventoryRangeCoversNoNode)
+	sc.Step(`^the sandbox inventory on node "([^"]*)" restarts$`, inventoryRestarts)
 }
 
 // certContainer is the requester the webhook injects into a pod carrying a
@@ -73,51 +76,80 @@ const certContainer = "c8s-cert"
 // at most 30s plus jitter, and the request itself.
 const renewWindow = 120 * time.Second
 
-// refusal is what a pod's requester logged about an attest request the CDS
-// refused: the A3 error code and message.
+// refusal is the CDS's error document for an attest request it refused: the
+// A3 error code and message, as a requester logged or received it.
 type refusal struct {
-	code, message string
+	Code    string `json:"error"`
+	Message string `json:"message"`
 }
+
+func (r *refusal) String() string { return r.Code + " (" + r.Message + ")" }
 
 // issuanceState is the scenario's view of issuance (issuance.go,
 // requester.go): the requesters it drives and the relying party it stands up.
 type issuanceState struct {
 	requesters map[string]*requester
 	lastAttest *requester
-	relying    relyingParty
+	// forger is the requester that signed a sandbox token of its own.
+	forger  *requester
+	relying relyingParty
 	// read is the leaf "is read" named, for the sentences that follow it.
 	read *leaf
 }
 
-// holder resolves a name to what holds a leaf: a requester the scenario
-// drives, or a pod.
-func (w *world) holder(name string) (*requester, *pod, error) {
-	if r, ok := w.issuance.requesters[name]; ok {
-		return r, nil, nil
-	}
-	p, err := w.pod(name)
-	if err != nil {
-		return nil, nil, err
-	}
-	return nil, p, nil
-}
-
 // leafOf is the leaf name holds, which a sentence must have established.
 func (w *world) leafOf(name string) (*leaf, error) {
-	r, p, err := w.holder(name)
+	p, err := w.pod(name)
 	if err != nil {
 		return nil, err
 	}
-	var l *leaf
-	if r != nil {
-		l = r.leaf
-	} else {
-		l = p.leaf
-	}
-	if l == nil {
+	if p.leaf == nil {
 		return nil, fmt.Errorf("the scenario has not established that %q holds a leaf", name)
 	}
-	return l, nil
+	return p.leaf, nil
+}
+
+// injectedPod is a pod carrying a workload ID, whose requester the webhook
+// injected; a requester the scenario drives is addressed by what it requests.
+func (w *world) injectedPod(name string) (*pod, error) {
+	p, err := w.pod(name)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := w.issuance.requesters[name]; ok {
+		return nil, fmt.Errorf("%q is a requester the scenario drives; say what it requests", name)
+	}
+	if !p.workloadID {
+		return nil, fmt.Errorf("%q carries no workload ID, so no requester obtains it a leaf", name)
+	}
+	return p, nil
+}
+
+// publicKeyOf is the key name holds: the one generated for a requester the
+// scenario drives, or the one in a pod's certificate volume.
+func (w *world) publicKeyOf(name string) (crypto.PublicKey, error) {
+	if r, ok := w.issuance.requesters[name]; ok {
+		if r.key == nil {
+			return nil, fmt.Errorf("%q holds no key", name)
+		}
+		return &r.key.PublicKey, nil
+	}
+	p, err := w.injectedPod(name)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := w.certFile(p, "tls.key")
+	if err != nil {
+		return nil, err
+	}
+	if raw == nil {
+		return nil, fmt.Errorf("%q holds no key in its certificate volume", name)
+	}
+	key, err := parsePrivateKey(raw)
+	if err != nil {
+		return nil, fmt.Errorf("the key %q holds: %w", name, err)
+	}
+	return &key.PublicKey, nil
 }
 
 func carriesWorkloadID(ctx context.Context, name string) error {
@@ -133,12 +165,13 @@ func carriesWorkloadID(ctx context.Context, name string) error {
 	return nil
 }
 
-// certFile reads a file of the pod's certificate volume; nil while absent.
-func (w *world) certFile(p *pod, file string) ([]byte, error) {
+// certFile reads a file of the pod's certificate volume, through the named
+// container when given; nil while absent.
+func (w *world) certFile(p *pod, file string, container ...string) ([]byte, error) {
 	if !p.deployed {
 		return nil, fmt.Errorf("pod %q has not been deployed", p.name)
 	}
-	out, err := w.be.call("pod_cert_file", w.namespace, p.name, file)
+	out, err := w.be.call("pod_cert_file", append([]string{w.namespace, p.name, file}, container...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -191,14 +224,11 @@ func parseRefusal(line string) (*refusal, bool) {
 	if start < 0 || end < start {
 		return nil, false
 	}
-	var doc struct {
-		Error   string `json:"error"`
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal([]byte(text[start:end+1]), &doc); err != nil || doc.Error == "" {
+	var doc refusal
+	if err := json.Unmarshal([]byte(text[start:end+1]), &doc); err != nil || doc.Code == "" {
 		return nil, false
 	}
-	return &refusal{code: doc.Error, message: doc.Message}, true
+	return &doc, true
 }
 
 // refusals lists the refusals the log reports under the given failure line.
@@ -217,29 +247,31 @@ func refusals(log, kind string) []*refusal {
 
 func holdsLeaf(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	r, p, err := w.holder(name)
-	if err != nil {
-		return err
-	}
-	if r != nil {
-		if r.leaf == nil {
-			return fmt.Errorf("%q holds no leaf: the last attest request answered %d %s %s", name, r.lastStatus, r.lastCode, r.lastMessage)
+	if r, ok := w.issuance.requesters[name]; ok {
+		if r.pod.leaf == nil {
+			return fmt.Errorf("%q holds no leaf: the last attest request was answered %s", name, r.answer())
 		}
 		return nil
 	}
-	for deadline := time.Now().Add(observe); ; time.Sleep(time.Second) {
-		l, err := w.podLeaf(p)
-		if err != nil {
-			return err
-		}
-		if l != nil {
-			p.leaf = l
-			return nil
-		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s", name, observe, tail(w.certLog(p), 5))
-		}
+	p, err := w.injectedPod(name)
+	if err != nil {
+		return err
 	}
+	found, err := poll(observe, func() (bool, error) {
+		l, err := w.podLeaf(p)
+		if err != nil || l == nil {
+			return false, err
+		}
+		p.leaf = l
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s", name, observe, tail(w.certLog(p), 5))
+	}
+	return nil
 }
 
 // holdsNoLeaf: the pod's requester has been refused its first leaf, and
@@ -247,41 +279,41 @@ func holdsLeaf(ctx context.Context, name string) error {
 // the requester keeps retrying.
 func holdsNoLeaf(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	_, p, err := w.holder(name)
+	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
 	}
-	if p == nil {
-		return fmt.Errorf("%q is a requester the scenario drives; it holds a leaf or its request was refused", name)
-	}
-	for deadline := time.Now().Add(observe); ; time.Sleep(time.Second) {
+	refused, err := poll(observe, func() (bool, error) {
 		l, err := w.podLeaf(p)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if l != nil {
-			return fmt.Errorf("%q holds a leaf (serial %s)", name, l.serial())
+			return false, fmt.Errorf("%q holds a leaf (serial %s)", name, l.serial())
 		}
-		if rs := refusals(w.certLog(p), failedFirst); len(rs) > 0 {
-			p.refusal = rs[len(rs)-1]
-			return nil
+		rs := refusals(w.certLog(p), failedFirst)
+		if len(rs) == 0 {
+			return false, nil
 		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%q holds no leaf after %s, but its requester reported no refusal either: %s", name, observe, tail(w.certLog(p), 5))
-		}
+		p.refusal = rs[len(rs)-1]
+		return true, nil
+	})
+	if err != nil {
+		return err
 	}
+	if !refused {
+		return fmt.Errorf("%q holds no leaf after %s, but its requester reported no refusal either: %s", name, observe, tail(w.certLog(p), 5))
+	}
+	return nil
 }
 
 // renewsLeaf waits for the pod's next issuance to settle: a new chain in the
 // volume, or a refusal in its requester's log.
 func renewsLeaf(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	_, p, err := w.holder(name)
+	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
-	}
-	if p == nil {
-		return fmt.Errorf("%q is a requester the scenario drives; say that it requests a leaf", name)
 	}
 	if p.leaf == nil {
 		if err := holdsLeaf(ctx, name); err != nil {
@@ -291,37 +323,42 @@ func renewsLeaf(ctx context.Context, name string) error {
 	before := p.leaf
 	refusedBefore := len(refusals(w.certLog(p), failedRenewal))
 	p.renewed, p.refusal = false, nil
-	for deadline := time.Now().Add(renewWindow); ; time.Sleep(time.Second) {
+	settled, err := poll(renewWindow, func() (bool, error) {
 		l, err := w.podLeaf(p)
 		if err != nil {
-			return err
+			return false, err
 		}
 		if l != nil && l.serial() != before.serial() {
 			p.leaf, p.renewed = l, true
-			return nil
+			return true, nil
 		}
 		if rs := refusals(w.certLog(p), failedRenewal); len(rs) > refusedBefore {
 			p.refusal = rs[len(rs)-1]
-			return nil
+			return true, nil
 		}
-		if !time.Now().Before(deadline) {
-			return fmt.Errorf("%q neither renewed its leaf nor was refused within %s; its requester logged: %s", name, renewWindow, tail(w.certLog(p), 5))
-		}
+		return false, nil
+	})
+	if err != nil {
+		return err
 	}
+	if !settled {
+		return fmt.Errorf("%q neither renewed its leaf nor was refused within %s; its requester logged: %s", name, renewWindow, tail(w.certLog(p), 5))
+	}
+	return nil
 }
 
 func leafReplaced(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	_, p, err := w.holder(name)
+	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
 	}
-	if p == nil || p.leaf == nil {
+	if p.leaf == nil {
 		return fmt.Errorf("the scenario has not established that %q holds a leaf", name)
 	}
 	if !p.renewed {
 		if p.refusal != nil {
-			return fmt.Errorf("the leaf %q holds was not replaced; the renewal was refused: %s %s", name, p.refusal.code, p.refusal.message)
+			return fmt.Errorf("the leaf %q holds was not replaced; the renewal was refused: %s", name, p.refusal)
 		}
 		return fmt.Errorf("the leaf %q holds was not replaced", name)
 	}
@@ -330,11 +367,11 @@ func leafReplaced(ctx context.Context, name string) error {
 
 func leafUnchanged(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	_, p, err := w.holder(name)
+	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
 	}
-	if p == nil || p.leaf == nil {
+	if p.leaf == nil {
 		return fmt.Errorf("the scenario has not established that %q holds a leaf", name)
 	}
 	if p.renewed {
@@ -345,15 +382,15 @@ func leafUnchanged(ctx context.Context, name string) error {
 
 func refusalMessage(ctx context.Context, name, message string) error {
 	w := getWorld(ctx)
-	_, p, err := w.holder(name)
+	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
 	}
-	if p == nil || p.refusal == nil {
+	if p.refusal == nil {
 		return fmt.Errorf("the scenario has not observed a refusal %q received", name)
 	}
-	if p.refusal.message != message {
-		return fmt.Errorf("the refusal's message is %q (code %s), not %q", p.refusal.message, p.refusal.code, message)
+	if p.refusal.Message != message {
+		return fmt.Errorf("the refusal's message is %q (code %s), not %q", p.refusal.Message, p.refusal.Code, message)
 	}
 	return nil
 }
@@ -437,30 +474,11 @@ func leafCertifiesKey(ctx context.Context, name, keyHolder string) error {
 	if err != nil {
 		return err
 	}
-	r, p, err := w.holder(keyHolder)
+	pub, err := w.publicKeyOf(keyHolder)
 	if err != nil {
 		return err
 	}
-	var ok bool
-	if r != nil {
-		if r.key == nil {
-			return fmt.Errorf("%q holds no key", keyHolder)
-		}
-		ok, err = l.certifies(&r.key.PublicKey)
-	} else {
-		raw, ferr := w.certFile(p, "tls.key")
-		if ferr != nil {
-			return ferr
-		}
-		if raw == nil {
-			return fmt.Errorf("%q holds no key in its certificate volume", keyHolder)
-		}
-		key, kerr := parsePrivateKey(raw)
-		if kerr != nil {
-			return fmt.Errorf("the key %q holds: %w", keyHolder, kerr)
-		}
-		ok, err = l.certifies(&key.PublicKey)
-	}
+	ok, err := certifies(l.cert, pub)
 	if err != nil {
 		return err
 	}
@@ -503,23 +521,11 @@ func leafCertificateEvidence(ctx context.Context, name string) error {
 }
 
 func certificateEvidenceCommitsToKey(ctx context.Context) error {
-	w := getWorld(ctx)
-	l := w.issuance.read
-	if l == nil {
-		return errors.New("no leaf's certificate evidence has been read")
-	}
-	data, err := l.certificateEvidence()
+	l, err := getWorld(ctx).readLeaf()
 	if err != nil {
 		return err
 	}
-	want, err := armtls.ReportDataForKey(l.cert.PublicKey, nil)
-	if err != nil {
-		return err
-	}
-	if len(data) < 48 || !bytes.Equal(data[:48], want[:48]) {
-		return errors.New("the report data of the certificate evidence does not begin with SHA-384 of the leaf's public key")
-	}
-	return nil
+	return l.commitsToOwnKey()
 }
 
 // leafNotBackdated: the leaf's not-before is when it was signed, which is at
@@ -554,12 +560,10 @@ func leafExtKeyUsage(ctx context.Context, name, usage string) error {
 	if !ok {
 		return fmt.Errorf("no extended key usage %q is known here", usage)
 	}
-	for _, u := range l.cert.ExtKeyUsage {
-		if u == want {
-			return nil
-		}
+	if !slices.Contains(l.cert.ExtKeyUsage, want) {
+		return fmt.Errorf("the leaf %q holds lacks the extended key usage %s", name, usage)
 	}
-	return fmt.Errorf("the leaf %q holds lacks the extended key usage %s", name, usage)
+	return nil
 }
 
 func leafRead(ctx context.Context, name string) error {
@@ -654,33 +658,34 @@ func matchedRecordsDigest(ctx context.Context) error {
 // once each runs, and compares.
 func containersShareLeaf(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	p, err := w.pod(name)
+	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
 	}
 	if len(p.containers) < 2 {
 		return fmt.Errorf("%q has one container", name)
 	}
+	out, err := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "jsonpath={.spec.containers[*].name}")
+	if err != nil {
+		return err
+	}
 	var first []byte
-	for i := range p.containers {
-		container := "curl"
-		if i > 0 {
-			container = fmt.Sprintf("c%d", i+1)
-		}
-		var raw string
-		for deadline := time.Now().Add(observe); ; time.Sleep(time.Second) {
-			raw, err = kubectl(nil, "-n", w.namespace, "exec", p.name, "-c", container, "--", "cat", "/etc/c8s/certs/tls.crt")
-			if err == nil || !time.Now().Before(deadline) {
-				break
-			}
-		}
+	for i, container := range strings.Fields(out) {
+		var raw []byte
+		found, err := poll(observe, func() (bool, error) {
+			raw, err = w.certFile(p, "tls.crt", container)
+			return raw != nil, err
+		})
 		if err != nil {
-			return fmt.Errorf("reading the chain through container %d of %q: %w", i+1, name, err)
+			return err
+		}
+		if !found {
+			return fmt.Errorf("container %s of %q holds no chain after %s", container, name, observe)
 		}
 		if i == 0 {
-			first = []byte(raw)
-		} else if !bytes.Equal(first, []byte(raw)) {
-			return fmt.Errorf("container %d of %q holds a different chain than its first container", i+1, name)
+			first = raw
+		} else if !bytes.Equal(first, raw) {
+			return fmt.Errorf("container %s of %q holds a different chain than its first container", container, name)
 		}
 	}
 	return nil
@@ -697,12 +702,10 @@ func leafIPSAN(ctx context.Context, name, addressOf string) error {
 		return fmt.Errorf("%q is not a requester the scenario drives, so its address is not known here", addressOf)
 	}
 	want := net.ParseIP(r.addr)
-	for _, ip := range l.cert.IPAddresses {
-		if ip.Equal(want) {
-			return nil
-		}
+	if !slices.ContainsFunc(l.cert.IPAddresses, want.Equal) {
+		return fmt.Errorf("the leaf %q holds carries IP SANs %v, not %s", name, l.cert.IPAddresses, r.addr)
 	}
-	return fmt.Errorf("the leaf %q holds carries IP SANs %v, not %s", name, l.cert.IPAddresses, r.addr)
+	return nil
 }
 
 // relyingParty is the operator's verifier as the scenario equips it: the
@@ -740,14 +743,11 @@ func (w *world) writeFile(name string, data []byte) (string, error) {
 
 func relyingPartyHoldsMeshCA(ctx context.Context) error {
 	w := getWorld(ctx)
-	doc, err := w.readDocument("mesh CA certificate", false)
+	ca, err := w.meshCAServed()
 	if err != nil {
 		return err
 	}
-	if doc.status != 200 {
-		return fmt.Errorf("the CDS answered %d to a read of the mesh CA certificate", doc.status)
-	}
-	path, err := w.writeFile("mesh-ca.pem", doc.body)
+	path, err := w.writeFile("mesh-ca.pem", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca.Raw}))
 	if err != nil {
 		return err
 	}
@@ -821,11 +821,11 @@ func relyingPartyVerdict(ctx context.Context, want string) error {
 // cdsPinsDigests is a precondition this environment may not meet: a CDS
 // installed with no pins cannot show what pinned ones refuse.
 func cdsPinsDigests(ctx context.Context) error {
-	out, err := getWorld(ctx).be.call("cds_pins")
+	pins, err := getWorld(ctx).pins()
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(out) == "" {
+	if len(pins) == 0 {
 		return godog.ErrSkip
 	}
 	return nil
@@ -854,6 +854,15 @@ func ipSANBinding(ctx context.Context, state string) error {
 // documentation range no node has an address in.
 func inventoryRangeCoversNoNode(ctx context.Context) error {
 	return getWorld(ctx).reconfigure("inventory-cidr", "192.0.2.0/24")
+}
+
+// inventoryRestarts restarts the node's sandbox inventory, which runs in the
+// admission plugin's process; the backend restarts whatever hosts it.
+func inventoryRestarts(ctx context.Context, node string) error {
+	if err := pluginStops(ctx, node); err != nil {
+		return err
+	}
+	return pluginStarts(ctx, node)
 }
 
 // tail is the last n lines of a log, for an error message.
