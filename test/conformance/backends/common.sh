@@ -24,7 +24,10 @@
 #   plugin_stop <node>               stop the plugin; the runtime creates no workload container
 #                                    until plugin_start
 #   plugin_start <node>              start the plugin again and wait until it is ready
-#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, and undo it
+#   cds_block / cds_unblock          make the CDS unreachable for every node's pull, and undo it;
+#                                    cds_block returns once node_refuses says a pull is refused
+#   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
+#                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
@@ -271,7 +274,15 @@ cds_block() {
     kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION=$port" --overwrite >/dev/null
     for candidate in $(seq $((port + 1)) $((port + 5))); do
         kubectl -n "$NS" patch svc c8s-cds --type json \
-            -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$candidate}]" >/dev/null 2>&1 && return 0
+            -p "[{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":$candidate}]" >/dev/null 2>&1 || continue
+        # kube-proxy reprograms the node after the patch; until it has, a
+        # pull still reaches the CDS.
+        local deadline=$(($(date +%s) + 60))
+        until [ "$(node_refuses "$port")" = yes ]; do
+            [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the node still accepts pulls on $port after 60s" >&2; return 1; }
+            sleep 1
+        done
+        return 0
     done
     kubectl -n "$NS" annotate svc c8s-cds "$CDS_PORT_ANNOTATION-" >/dev/null
     echo "backend: no free node port near $port" >&2

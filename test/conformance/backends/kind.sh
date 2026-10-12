@@ -274,6 +274,13 @@ base_declares() {
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/var/run/nri-image-policy/health.sock
 
+# Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
+# kind node image ships curl.
+node_refuses() {
+    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null
+    if [ $? -eq 7 ]; then echo yes; else echo no; fi
+}
+
 # The pids running the plugin binary; the kind node image ships procps.
 plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
 

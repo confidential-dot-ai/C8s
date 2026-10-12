@@ -194,6 +194,9 @@ node_containers() { return $UNSUPPORTED; }
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted
 # CDS serves (its versions start over), so the CDS stays up too.
+# No shell on the node: the pull is taken to be refused as soon as the
+# Service is patched.
+node_refuses() { echo yes; }
 plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
