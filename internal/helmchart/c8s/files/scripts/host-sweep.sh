@@ -13,10 +13,10 @@
 # the pod's termination grace period (and the runtime restart it triggers can
 # kill the pod mid-cleanup), the mesh preStop deliberately keeps its
 # fail-closed guard, and none of them knows about the C8s-side artifacts
-# (the RKE2 containerd-prep template). This sweep is the
-# idempotent last word and runs on every uninstall, whatever the release's
-# shape: leftovers may come from a previous install of a different shape,
-# which this release's values cannot see.
+# (the RKE2 containerd-prep template, `c8s volume attach` LIO disks). This
+# sweep is the idempotent last word and runs on every uninstall, whatever
+# the release's shape: leftovers may come from a previous install of a
+# different shape, which this release's values cannot see.
 #
 # Baked node image exception: on the C8s node image the NRI plugin, its floor
 # config, the containerd drop-in, and the managed RKE2 containerd template
@@ -29,7 +29,9 @@
 # fail the sweep (the CLI then keeps the
 # DaemonSet so its logs survive). Per-object netfilter failures warn and
 # continue; a host with no iptables at all fails the sweep at the end, after
-# every other step ran.
+# every other step ran. A `c8s volume attach` disk that is in use warns and
+# stays; one whose use cannot be read, or an idle one that will not tear
+# down, stays and fails the sweep the same way.
 #
 # Env (all required unless noted; set by `c8s uninstall` from the release's
 # computed values):
@@ -160,6 +162,177 @@ if [ "$baked_node" = "0" ]; then
     */nri-image-policy) rm -rf "/host${NRI_CACHE_DIR}" ;;
     *) [ ! -e "/host${NRI_CACHE_DIR}" ] || echo "leaving NRI cache dir with a custom name: ${NRI_CACHE_DIR}" ;;
   esac
+fi
+
+# `c8s volume attach` LIO loopback disks. attach builds them through configfs
+#    (internal/cmds/volume/attach.go) and nothing in the release removes them,
+#    so a disk serving a volume's image outlived the uninstall and the next
+#    install's attach of that name refused until someone ran detach. Only what
+#    attach builds is touched: a backstore under its fileio_0 HBA whose unit
+#    serial is exactly c8s-vol-<backstore name>, and the loopback target whose
+#    WWN attach derives from that serial (loopbackWWN). Teardown follows
+#    Attacher.Detach: LUN mapping, LUN, portal group and target, then the
+#    backstore, which LIO refuses to release while a LUN references it.
+#    A disk is left in place and named when the disk or a partition of it has
+#    a holder (volumed's dm-crypt, a partition mapping), is mounted in any
+#    mount namespace on the host (one /proc/<pid>/mountinfo per distinct
+#    namespace, matched by device number or, for filesystems such as btrfs
+#    that report an anonymous one, by mount source), or is active swap:
+#    removing it unbinds the device under its user. A process holding the raw device open with no mount or
+#    holder is invisible here, as it is to Detach. State the check cannot read
+#    fails the sweep and the disk stays. Runs in the host's mount and PID
+#    namespaces, where configfs is mounted and every process is visible.
+#    Args: configfs mount, sysfs mount, procfs mount.
+# shellcheck disable=SC2016
+lio_sweep_script='
+set -u
+LC_ALL=C
+export LC_ALL
+cfg="$1/target"
+sys="$2"
+proc="$3"
+hba="$cfg/core/fileio_0"
+[ -d "$hba" ] || exit 0
+failed=0
+sha=""
+mnt_devs=""
+mnt_scanned=0
+
+# The device numbers and sources mounted anywhere on the host, read once and
+# only when a c8s backstore exists: one mountinfo per distinct mount
+# namespace. A PID whose ns/mnt link cannot be read has exited (zombies and
+# exiting tasks have no namespaces, and their mountinfo fails to read too) and
+# holds nothing; a live one whose mountinfo cannot be read is an unknown, not
+# "unmounted". A procfs without self/mountinfo is no procfs to scan.
+scan_mounts() {
+  [ "$mnt_scanned" = 0 ] || return 0
+  mnt_scanned=1
+  if [ ! -r "$proc/self/mountinfo" ]; then
+    mnt_devs="UNREADABLE $proc/self/mountinfo"
+    return 0
+  fi
+  mnt_devs=$(
+    seen=" "
+    for pid in "$proc"/[0-9]*; do
+      ns=$(readlink "$pid/ns/mnt" 2>/dev/null) || continue
+      case "$seen" in *" $ns "*) continue ;; *) ;; esac
+      if cat "$pid/mountinfo" 2>/dev/null; then
+        seen="$seen$ns "
+      elif readlink "$pid/ns/mnt" >/dev/null 2>&1; then
+        echo "UNREADABLE $pid/mountinfo"
+      fi
+    done | awk "\$1 == \"UNREADABLE\" { print; next }
+      { if (!seen[\$3]++) print \$3
+        for (i = 7; i < NF; i++) if (\$i == \"-\") { if (!seen[\$(i + 2)]++) print \$(i + 2); break } }"
+  )
+}
+
+for store in "$hba"/*; do
+  [ -d "$store" ] || continue
+  name=${store##*/}
+  # A c8s volume name: dns-1123 label of at most 12 characters (names.go).
+  case "$name" in
+    *[!a-z0-9-]*|-*|*-) continue ;;
+  esac
+  [ "${#name}" -le 12 ] || continue
+  serial=$(cat "$store/wwn/vpd_unit_serial" 2>/dev/null) || continue
+  serial=${serial#"T10 VPD Unit Serial Number: "}
+  [ "$serial" = "c8s-vol-$name" ] || continue
+
+  if [ -z "$sha" ]; then
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha=sha256sum
+    elif command -v busybox >/dev/null 2>&1 && busybox sha256sum </dev/null >/dev/null 2>&1; then
+      sha="busybox sha256sum"
+    else
+      echo "ERROR: no sha256sum on this host — cannot locate the loopback target of c8s volume $name" >&2
+      failed=1
+      continue
+    fi
+  fi
+  wwn="naa.5$(printf "%s" "c8s-vol-$name" | $sha | cut -c1-15)"
+  target="$cfg/loopback/$wwn"
+  tpgt="$target/tpgt_1"
+
+  held=""
+  unknown=""
+  if [ -e "$tpgt/address" ]; then
+    if addr=$(cat "$tpgt/address" 2>/dev/null); then
+      for blk in "$sys/class/scsi_device/$addr:0/device/block"/*; do
+        [ -d "$blk" ] || continue
+        # The disk, then each partition on it.
+        for part in "$blk" "$blk"/*; do
+          [ "$part" = "$blk" ] || [ -f "$part/partition" ] || continue
+          pname=${part##*/}
+          for h in "$part"/holders/*; do
+            if [ -e "$h" ] || [ -L "$h" ]; then held="$held ${h##*/}"; fi
+          done
+          if ! devno=$(cat "$part/dev" 2>/dev/null); then
+            unknown="$unknown $part/dev"
+            continue
+          fi
+          scan_mounts
+          for m in $mnt_devs; do
+            case "$m" in
+              UNREADABLE) ;;
+              "$devno"|"/dev/$pname") held="$held $pname(mounted)" ;;
+              *) ;;
+            esac
+          done
+          if [ -e "$proc/swaps" ]; then
+            if swaps=$(cat "$proc/swaps" 2>/dev/null); then
+              for s in $(printf "%s\n" "$swaps" | awk "NR > 1 { print \$1 }"); do
+                if [ "$s" = "/dev/$pname" ]; then held="$held $pname(swap)"; fi
+              done
+            else
+              unknown="$unknown $proc/swaps"
+            fi
+          fi
+        done
+      done
+      case "$mnt_devs" in
+        *UNREADABLE*) unknown="$unknown $(printf "%s\n" "$mnt_devs" | awk "\$1 == \"UNREADABLE\" { print \$2 }")" ;;
+        *) ;;
+      esac
+    else
+      unknown="$unknown $tpgt/address"
+    fi
+  fi
+  if [ -n "$unknown" ]; then
+    echo "ERROR: leaving c8s volume $name attached: cannot tell whether its disk is in use (unreadable:$unknown)" >&2
+    failed=1
+    continue
+  fi
+  if [ -n "$held" ]; then
+    echo "warning: leaving c8s volume $name attached: its disk is in use by$held — release it, then run: c8s volume detach $name" >&2
+    continue
+  fi
+
+  if [ -d "$tpgt" ]; then
+    for l in "$tpgt"/lun/lun_0/*; do
+      if [ -L "$l" ]; then rm -f "$l"; fi
+    done
+    [ ! -d "$tpgt/lun/lun_0" ] || rmdir "$tpgt/lun/lun_0" 2>/dev/null || :
+    rmdir "$tpgt" 2>/dev/null || :
+  fi
+  [ ! -d "$target" ] || rmdir "$target" 2>/dev/null || :
+  # Best effort, as in Detach: some kernels refuse to un-enable a device, and
+  # the rmdir is what releases it.
+  { echo 0 > "$store/enable"; } 2>/dev/null || :
+  rmdir "$store" 2>/dev/null || :
+  if [ -e "$store" ] || [ -e "$target" ]; then
+    echo "ERROR: could not detach c8s volume $name (backstore $store, target $target)" >&2
+    failed=1
+  else
+    echo "c8s volume LIO disk detached: $name ($wwn)"
+  fi
+done
+exit "$failed"
+'
+
+if ! nsenter -t 1 -m -u -i -n -p -- sh -c "$lio_sweep_script" lio-sweep /sys/kernel/config /sys /proc; then
+  echo "ERROR: c8s volume LIO sweep failed — an attached volume disk is left serving its image" >&2
+  sweep_failed=1
 fi
 
 # ARMTLS-MESH netfilter state. The mesh's preStop removes only the traffic

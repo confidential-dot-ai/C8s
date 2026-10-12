@@ -213,11 +213,11 @@ sequenceDiagram
 
 **`c8s uninstall`** wraps the Helm step and adds a host sweep after the release
 is gone. A short-lived privileged DaemonSet removes chart-installed NRI policy,
-mesh netfilter state, and managed containerd-prep templates, preserving baked
-node-image components. Release values are read before deletion so install-time
-`-f` overrides are honored. `--host-sweep=false` skips the sweep;
-`--host-sweep-only` recovers a cluster whose release a bare `helm uninstall`
-already deleted. See [`operator.md`](operator.md#uninstall).
+mesh netfilter state, managed containerd-prep templates, and idle
+`c8s volume attach` LIO disks, preserving baked node-image components. Release
+values are read before deletion so install-time `-f` overrides are honored.
+`--host-sweep=false` skips the sweep; `--host-sweep-only` recovers a cluster
+whose release a bare `helm uninstall` already deleted. See [`operator.md`](operator.md#uninstall).
 
 ---
 
