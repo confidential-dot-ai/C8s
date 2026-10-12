@@ -308,17 +308,17 @@ func holdsNoLeaf(ctx context.Context, name string) error {
 }
 
 // renewsLeaf waits for the pod's next issuance to settle: a new chain in the
-// volume, or a refusal in its requester's log.
+// volume, or a refusal in its requester's log. The baseline is the chain in
+// the volume now, not the one an earlier sentence read: a renewal between
+// the two sentences is not the one this asks about.
 func renewsLeaf(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.injectedPod(name)
 	if err != nil {
 		return err
 	}
-	if p.leaf == nil {
-		if err := holdsLeaf(ctx, name); err != nil {
-			return err
-		}
+	if err := holdsLeaf(ctx, name); err != nil {
+		return err
 	}
 	before := p.leaf
 	refusedBefore := len(refusals(w.certLog(p), failedRenewal))
@@ -654,8 +654,9 @@ func matchedRecordsDigest(ctx context.Context) error {
 	return nil
 }
 
-// containersShareLeaf reads the chain through every container of the pod,
-// once each runs, and compares.
+// containersShareLeaf reads the chain through every container of the pod
+// and compares, until the reads agree: a renewal between two reads is not a
+// disagreement.
 func containersShareLeaf(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.injectedPod(name)
@@ -669,24 +670,37 @@ func containersShareLeaf(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	var first []byte
-	for i, container := range strings.Fields(out) {
-		var raw []byte
-		found, err := poll(observe, func() (bool, error) {
-			raw, err = w.certFile(p, "tls.crt", container)
-			return raw != nil, err
-		})
-		if err != nil {
-			return err
+	containers := strings.Fields(out)
+	var missing, differing string
+	same, err := poll(observe, func() (bool, error) {
+		var first []byte
+		missing, differing = "", ""
+		for i, container := range containers {
+			raw, err := w.certFile(p, "tls.crt", container)
+			if err != nil {
+				return false, err
+			}
+			if raw == nil {
+				missing = container
+				return false, nil
+			}
+			if i == 0 {
+				first = raw
+			} else if !bytes.Equal(first, raw) {
+				differing = container
+				return false, nil
+			}
 		}
-		if !found {
-			return fmt.Errorf("container %s of %q holds no chain after %s", container, name, observe)
-		}
-		if i == 0 {
-			first = raw
-		} else if !bytes.Equal(first, raw) {
-			return fmt.Errorf("container %s of %q holds a different chain than its first container", container, name)
-		}
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	if missing != "" {
+		return fmt.Errorf("container %s of %q holds no chain after %s", missing, name, observe)
+	}
+	if !same {
+		return fmt.Errorf("container %s of %q holds a different chain than its first container after %s", differing, name, observe)
 	}
 	return nil
 }

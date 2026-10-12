@@ -88,6 +88,8 @@ cds_restart_with() {
         inventory-cidr) flag=--sandbox-inventory-cidr ;;
         *) echo "backend: cds_restart_with: no parameter '$1'" >&2; return 2 ;;
     esac
+    # A change applies on top of the running args, so two in one scenario
+    # compose; one that changes nothing needs no new pod.
     if [ "$2" = none ]; then
         args="$(cds_arg_set "$current" "$flag")"
     elif [ -n "$flag" ]; then
