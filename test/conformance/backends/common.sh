@@ -48,8 +48,8 @@ kubeconfig() { echo "$KUBECONFIG"; }
 
 # "rogue" is the harness's curl image, which no entry declares at install;
 # "nginx" is its workload image, the router's nginx digest, which the install
-# seed admits only under its entrypoint and the scenarios therefore admit
-# under any argv with an entry they write. The rest are public images no
+# seed admits only under its entrypoint and setup therefore admits under any
+# argv with an entry it writes. The rest are public images no
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest.
 image_ref() {

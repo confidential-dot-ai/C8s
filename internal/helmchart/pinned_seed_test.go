@@ -573,3 +573,33 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 		t.Errorf("base widened the operator's entry to any command: %v", base.Workloads)
 	}
 }
+
+// An open-args entry pinned to another executable does not cover the
+// component: it would reach the base and still deny the component on its
+// own node. Two open-args entries pinning one digest differently cannot both
+// reach the base, so the render fails.
+func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
+	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	entry := func(name, argv0 string) []string {
+		p := "nriImagePolicy.bootstrapAllowlist.workloads." + name + ".containers[0]."
+		return []string{
+			"--set-string", p + "digest=" + opD,
+			"--set-string", p + "command.policy=exact",
+			"--set-string", p + "command.argv[0]=" + argv0,
+			"--set-string", p + "args.policy=any",
+			"--set-string", p + "mounts.policy=any",
+		}
+	}
+	base := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
+	out, err := helmTemplate(t, append(base, entry("c8s-operator", "/bin/sh")...)...)
+	if err == nil {
+		t.Fatalf("helm template succeeded with the component covered only by an entry pinned to /bin/sh\n%s", out)
+	}
+	if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
+		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
+	}
+	out, err = helmTemplate(t, append(append(base, entry("c8s-operator", "/c8s")...), entry("c8s-operator-sh", "/bin/sh")...)...)
+	if err == nil || !strings.Contains(out, "different commands") {
+		t.Fatalf("conflicting pins for one digest must fail the render: err=%v\n%s", err, out)
+	}
+}

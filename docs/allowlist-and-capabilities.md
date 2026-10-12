@@ -564,7 +564,11 @@ running the old image keep matching while they recycle. The seed never
 overwrites an entry the store already holds, so an edit made with `workload
 apply` survives a restart, while a deleted entry returns on the next CDS start
 for as long as the chart still renders it — to remove an image, roll the chart
-with it gone. During an upgrade an enforcer that pulls the old document shape
+with it gone. The same rule means a cluster installed before the component
+entries pinned their entrypoints keeps serving its stored `command: any`
+entries for the digests it already had: the pin reaches such a cluster with
+the next image bump, or by editing the stored entry (`c8s allowlist edit`).
+A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart

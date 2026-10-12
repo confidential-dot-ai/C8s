@@ -65,8 +65,10 @@
 {{- if .Values.router.enabled -}}
 {{- $lbImg := .Values.router.nginx.image -}}
 {{- if $lbImg.digest -}}
-{{- $lbEntrypoint := required "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" .Values.router.nginx.entrypoint -}}
-{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" $lbEntrypoint) -}}
+{{- if not .Values.router.nginx.entrypoint -}}
+{{- fail "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" -}}
+{{- end -}}
+{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint) -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
@@ -104,7 +106,9 @@
      command any or exact — as digest -> {image, entrypoint}, entrypoint empty
      for command any. Both shapes can start a component before CDS is
      reachable, so both feed the base and cover a component for the render
-     guard. An entry that pins args, env or mounts is seed-only. */ -}}
+     guard. An entry that pins args, env or mounts is seed-only. Two entries
+     pinning one digest to different commands fail the render: the base
+     carries one pin per digest. */ -}}
 {{- define "c8s.openArgsEntries" -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
@@ -113,6 +117,9 @@
 {{- if and (or (eq $command "any") (eq $command "exact")) (eq (dig "args" "policy" "" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (eq (dig "mounts" "policy" "deny" $c) "any") -}}
 {{- $entrypoint := list -}}
 {{- if eq $command "exact" -}}{{- $entrypoint = dig "command" "argv" list $c -}}{{- end -}}
+{{- if and (hasKey $digests $c.digest) (ne (get (get $digests $c.digest) "entrypoint" | toJson) ($entrypoint | toJson)) -}}
+{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads pin %s to different commands (%s and %s); the base carries one pin per digest, so give the digest one open-args entry" $c.digest (get (get $digests $c.digest) "entrypoint" | toJson) ($entrypoint | toJson)) -}}
+{{- end -}}
 {{- $_ := set $digests $c.digest (dict "image" (default $entry.label $c.image | default "") "entrypoint" $entrypoint) -}}
 {{- end -}}
 {{- end -}}
