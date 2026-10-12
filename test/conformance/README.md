@@ -48,11 +48,12 @@ a scenario's "node one", which pullable reference and digest a scenario's
 "nginx" means, what the CDS serves, whether the policy enforcer on a node is
 enforcing and how often it pulls, whether the node's base allowlist names a
 digest, which containers a node's runtime holds for a digest, and a
-Restricted-compatible pod manifest to deploy. It also acts for the operator: a
-scenario's allowlist entries are written and deleted through the backend's
-signed path, and undone after the scenario. The enforcer exposes nothing about
-the allowlist version it holds, so after a write the steps wait out two pull
-intervals before acting on it.
+Restricted-compatible pod manifest to deploy. It also acts for the operator:
+when a scenario says the enforcer has synced, the entries it described are
+written through the backend's signed path, and they are undone after the
+scenario. The enforcer exposes nothing about the allowlist version it holds, so
+the steps wait until two pull intervals have passed since the last write before
+acting on it.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this

@@ -52,27 +52,21 @@ served_allowlist() { al export; }
 
 # `apply` takes a name-keyed map of entries and lints it against the live
 # document first.
-allowlist_put() {
-    jq -c --arg name "$1" '{($name): .}' "$2" | al apply - >/dev/null
-    echo "$1" >> "$written"
-}
+allowlist_put() { jq -c --arg name "$1" '{($name): .}' "$2" | al apply - >/dev/null; }
 
 allowlist_delete() { al delete "$1" >/dev/null 2>&1 || true; }
 
-# The base allowlist is measured into the node image (node-guest-image/c8s/
-# image-policy.yaml.in): the node's system images and c8s's components. With
-# no shell on the node it is not readable, so answer from what runs under
-# those entries: a digest running in the platform namespaces is in it, nothing
-# else is.
+# The base allowlist is measured into the node image and not readable without
+# a shell, so answer from what it was built from: the system images pinned in
+# node-guest-image/c8s/image-policy.yaml.in, plus c8s's own component entries,
+# which boot staging merges in and which are the images running in $NS.
 base_declares() {
-    local ns digest
-    for ns in "$NS" kube-system; do
-        for digest in $(kubectl -n "$ns" get pods -o jsonpath='{range .items[*].status.containerStatuses[*]}{.imageID}{"\n"}{end}' |
-            grep -oE 'sha256:[0-9a-f]{64}' | sort -u); do
-            [ "$digest" = "$2" ] && { echo yes; return; }
-        done
-    done
-    echo no
+    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in" ||
+        kubectl -n "$NS" get pods -o jsonpath='{.items[*].status.containerStatuses[*].imageID}' | grep -qF "$2"; then
+        echo yes
+    else
+        echo no
+    fi
 }
 
 # The lane's components-ready assert gates the suite; here only the node's

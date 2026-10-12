@@ -13,48 +13,25 @@ import (
 )
 
 // Sentences about the allowlist as a scenario writes it: entries described
-// in Given steps, written to CDS by the operator's signed path when a pod is
-// deployed or the enforcer is said to have synced, and undone afterwards.
+// in Given steps, written to CDS by the operator's signed path when the
+// enforcer is said to have synced, and undone afterwards.
 func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^the allowlist has a workload entry named "([^"]*)"$`, entryNamed)
 	sc.Step(`^"([^"]*)" declares image "([^"]*)"$`, entryDeclares)
-	sc.Step(`^"([^"]*)" declares image "([^"]*)" as a main container$`, entryDeclares)
 	sc.Step(`^"([^"]*)" declares image "([^"]*)" as an init container$`, entryDeclaresInit)
 	sc.Step(`^"([^"]*)" pins the command line of "([^"]*)" to "([^"]*)"$`, entryPinsCommand)
 	sc.Step(`^"([^"]*)" admits any command line for "([^"]*)"$`, entryAdmitsAnyCommand)
-	sc.Step(`^no workload entry declares both images$`, noEntryDeclaresBoth)
+	sc.Step(`^no workload entry declares both "([^"]*)" and "([^"]*)"$`, noEntryDeclaresBoth)
 	sc.Step(`^the digest of "([^"]*)" is on the allowlist$`, digestOnAllowlist)
 	sc.Step(`^the digest of "([^"]*)" is removed from the allowlist at the CDS$`, digestRemovedAtCDS)
 	sc.Step(`^the boot floor of node "([^"]*)" does not contain the digest of "([^"]*)"$`, baseLacks)
 	sc.Step(`^the policy enforcer on node "([^"]*)" refreshes its allowlist$`, enforcerRefreshes)
 }
 
-// entry is a workload entry the scenario describes, in the served document's
-// shape, written whole once the scenario acts.
-type entry struct {
-	Label          string           `json:"label,omitempty"`
-	InitContainers []entryContainer `json:"initContainers"`
-	Containers     []entryContainer `json:"containers"`
-	written        bool
-}
-
-type entryContainer struct {
-	Digest  string     `json:"digest"`
-	Image   string     `json:"image"`
-	Command argvPolicy `json:"command"`
-	Args    argvPolicy `json:"args"`
-	Mounts  policy     `json:"mounts"`
-	Env     policy     `json:"env"`
-}
-
-type argvPolicy struct {
-	Policy string   `json:"policy"`
-	Argv   []string `json:"argv,omitempty"`
-}
-
-type policy struct {
-	Policy string `json:"policy"`
-}
+// lastMutation is when this process last changed the allowlist at CDS. It
+// outlives the scenario because one scenario's restore is what the next
+// scenario's sync has to wait out.
+var lastMutation time.Time
 
 // writtenName is the entry's name at CDS: the scenario's name, suffixed so
 // that two scenarios naming "web" never meet.
@@ -71,19 +48,21 @@ func (w *world) entry(name string) (*entry, error) {
 }
 
 // find returns the entry's declared container for image, init or main.
-func (w *world) find(e *entry, image string) (*entryContainer, error) {
+func (w *world) find(name, image string) (*entryContainer, error) {
+	e, err := w.entry(name)
+	if err != nil {
+		return nil, err
+	}
 	ref, err := w.be.call("image_ref", image)
 	if err != nil {
 		return nil, err
 	}
-	for _, list := range [][]entryContainer{e.InitContainers, e.Containers} {
-		for i := range list {
-			if list[i].Image == ref {
-				return &list[i], nil
-			}
+	for _, c := range e.containers() {
+		if c.Image == ref {
+			return c, nil
 		}
 	}
-	return nil, fmt.Errorf("the entry declares no container running %q", image)
+	return nil, fmt.Errorf("%q declares no container running %q", name, image)
 }
 
 func entryNamed(ctx context.Context, name string) error {
@@ -95,62 +74,46 @@ func entryNamed(ctx context.Context, name string) error {
 	return nil
 }
 
-// declared builds a declared container for image whose policies, unless a
-// later step opens them, admit nothing: the document's defaults.
-func (w *world) declared(image string) (entryContainer, error) {
+// declare adds image to the entry, init or main, with policies that admit
+// nothing until a later step opens them: the document's defaults.
+func (w *world) declare(name, image string, init bool) error {
+	e, err := w.entry(name)
+	if err != nil {
+		return err
+	}
 	ref, err := w.be.call("image_ref", image)
 	if err != nil {
-		return entryContainer{}, err
+		return err
 	}
 	digest, err := w.digestOf(image)
 	if err != nil {
-		return entryContainer{}, err
+		return err
 	}
-	w.named(image)
-	return entryContainer{
+	c := entryContainer{
 		Digest: digest, Image: ref,
 		Command: argvPolicy{Policy: "deny"}, Args: argvPolicy{Policy: "deny"},
 		Mounts: policy{Policy: "any"}, Env: policy{Policy: "any"},
-	}, nil
+	}
+	if init {
+		e.InitContainers = append(e.InitContainers, c)
+	} else {
+		e.Containers = append(e.Containers, c)
+	}
+	return nil
 }
 
 func entryDeclares(ctx context.Context, name, image string) error {
-	w := getWorld(ctx)
-	e, err := w.entry(name)
-	if err != nil {
-		return err
-	}
-	c, err := w.declared(image)
-	if err != nil {
-		return err
-	}
-	e.Containers = append(e.Containers, c)
-	return nil
+	return getWorld(ctx).declare(name, image, false)
 }
 
 func entryDeclaresInit(ctx context.Context, name, image string) error {
-	w := getWorld(ctx)
-	e, err := w.entry(name)
-	if err != nil {
-		return err
-	}
-	c, err := w.declared(image)
-	if err != nil {
-		return err
-	}
-	e.InitContainers = append(e.InitContainers, c)
-	return nil
+	return getWorld(ctx).declare(name, image, true)
 }
 
 // entryPinsCommand pins the whole command line: the container's command is
 // the words given and its args are empty, as the pod manifests here set them.
 func entryPinsCommand(ctx context.Context, name, image, line string) error {
-	w := getWorld(ctx)
-	e, err := w.entry(name)
-	if err != nil {
-		return err
-	}
-	c, err := w.find(e, image)
+	c, err := getWorld(ctx).find(name, image)
 	if err != nil {
 		return err
 	}
@@ -160,12 +123,7 @@ func entryPinsCommand(ctx context.Context, name, image, line string) error {
 }
 
 func entryAdmitsAnyCommand(ctx context.Context, name, image string) error {
-	w := getWorld(ctx)
-	e, err := w.entry(name)
-	if err != nil {
-		return err
-	}
-	c, err := w.find(e, image)
+	c, err := getWorld(ctx).find(name, image)
 	if err != nil {
 		return err
 	}
@@ -173,55 +131,33 @@ func entryAdmitsAnyCommand(ctx context.Context, name, image string) error {
 	return nil
 }
 
-// noEntryDeclaresBoth checks that no entry, served or described, names every
-// image the scenario has named so far.
-func noEntryDeclaresBoth(ctx context.Context) error {
+// noEntryDeclaresBoth checks that no entry, served or described, names both
+// images.
+func noEntryDeclaresBoth(ctx context.Context, first, second string) error {
 	w := getWorld(ctx)
-	if len(w.images) < 2 {
-		return errors.New("the scenario names fewer than two images")
-	}
-	digests := make([]string, 0, len(w.images))
-	for _, image := range w.images {
-		d, err := w.digestOf(image)
-		if err != nil {
-			return err
-		}
-		digests = append(digests, d)
-	}
-	doc, err := w.servedAllowlist()
+	a, err := w.digestOf(first)
 	if err != nil {
 		return err
 	}
-	for name, e := range doc.Workloads {
-		if declaresAll(e.declaresDigest, digests) {
-			return fmt.Errorf("harness precondition: served entry %q declares all of %s", name, strings.Join(w.images, ", "))
+	b, err := w.digestOf(second)
+	if err != nil {
+		return err
+	}
+	s, err := w.served()
+	if err != nil {
+		return err
+	}
+	for name, e := range s.entries {
+		if e.declares(a) && e.declares(b) {
+			return fmt.Errorf("harness precondition: served entry %q declares both %s and %s", name, first, second)
 		}
 	}
 	for name, e := range w.entries {
-		declares := func(d string) bool {
-			for _, list := range [][]entryContainer{e.InitContainers, e.Containers} {
-				for _, c := range list {
-					if c.Digest == d {
-						return true
-					}
-				}
-			}
-			return false
-		}
-		if declaresAll(declares, digests) {
-			return fmt.Errorf("the described entry %q declares all of %s", name, strings.Join(w.images, ", "))
+		if e.declares(a) && e.declares(b) {
+			return fmt.Errorf("the described entry %q declares both %s and %s", name, first, second)
 		}
 	}
 	return nil
-}
-
-func declaresAll(declares func(string) bool, digests []string) bool {
-	for _, d := range digests {
-		if !declares(d) {
-			return false
-		}
-	}
-	return true
 }
 
 // digestOnAllowlist makes the served allowlist admit image under any command
@@ -232,24 +168,20 @@ func digestOnAllowlist(ctx context.Context, image string) error {
 	if err != nil {
 		return err
 	}
-	doc, err := w.servedAllowlist()
+	s, err := w.served()
 	if err != nil {
 		return err
 	}
-	if doc.floorAdmits(digest) {
+	if s.admitsAnyArgv(digest) {
 		return nil
 	}
-	name := image
-	if _, exists := w.entries[name]; exists {
-		return fmt.Errorf("the scenario already describes an entry %q", name)
-	}
-	if err := entryNamed(ctx, name); err != nil {
+	if err := entryNamed(ctx, image); err != nil {
 		return err
 	}
-	if err := entryDeclares(ctx, name, image); err != nil {
+	if err := w.declare(image, image, false); err != nil {
 		return err
 	}
-	if err := entryAdmitsAnyCommand(ctx, name, image); err != nil {
+	if err := entryAdmitsAnyCommand(ctx, image, image); err != nil {
 		return err
 	}
 	return w.writeEntries()
@@ -258,32 +190,42 @@ func digestOnAllowlist(ctx context.Context, image string) error {
 // writeEntries writes every described entry not yet at CDS.
 func (w *world) writeEntries() error {
 	for name, e := range w.entries {
-		if e.written {
+		written := w.writtenName(name)
+		if w.wrote(written) {
 			continue
 		}
 		body, err := json.Marshal(e)
 		if err != nil {
 			return err
 		}
-		f, err := os.CreateTemp("", "entry-*.json")
-		if err != nil {
+		if err := w.putEntry(written, body); err != nil {
 			return err
 		}
-		_, werr := f.Write(body)
-		cerr := f.Close()
-		if werr != nil || cerr != nil {
-			return errors.Join(werr, cerr)
-		}
-		written := w.writtenName(name)
-		_, err = w.be.call("allowlist_put", written, f.Name())
-		_ = os.Remove(f.Name())
-		if err != nil {
-			return err
-		}
-		e.written = true
 		w.written = append(w.written, written)
 	}
 	return nil
+}
+
+// putEntry writes body under name through the backend's signed path.
+func (w *world) putEntry(name string, body []byte) error {
+	f, err := os.CreateTemp("", "entry-*.json")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, werr := f.Write(body)
+	if err := errors.Join(werr, f.Close()); err != nil {
+		return err
+	}
+	_, err = w.be.call("allowlist_put", name, f.Name())
+	lastMutation = time.Now()
+	return err
+}
+
+func (w *world) deleteEntry(name string) error {
+	_, err := w.be.call("allowlist_delete", name)
+	lastMutation = time.Now()
+	return err
 }
 
 // digestRemovedAtCDS deletes every served entry that declares image's digest,
@@ -294,24 +236,20 @@ func digestRemovedAtCDS(ctx context.Context, image string) error {
 	if err != nil {
 		return err
 	}
-	doc, err := w.servedAllowlist()
-	if err != nil {
-		return err
-	}
-	raw, err := w.servedEntries()
+	s, err := w.served()
 	if err != nil {
 		return err
 	}
 	deleted := 0
-	for name, e := range doc.Workloads {
-		if !e.declaresDigest(digest) {
+	for name, e := range s.entries {
+		if !e.declares(digest) {
 			continue
 		}
-		if _, err := w.be.call("allowlist_delete", name); err != nil {
+		if err := w.deleteEntry(name); err != nil {
 			return err
 		}
 		if !w.wrote(name) {
-			w.removed[name] = raw[name]
+			w.removed[name] = s.raw[name]
 		}
 		deleted++
 	}
@@ -335,24 +273,10 @@ func (w *world) wrote(name string) bool {
 func (w *world) restoreAllowlist() error {
 	var errs []error
 	for _, name := range w.written {
-		if _, err := w.be.call("allowlist_delete", name); err != nil {
-			errs = append(errs, err)
-		}
+		errs = append(errs, w.deleteEntry(name))
 	}
 	for name, body := range w.removed {
-		f, err := os.CreateTemp("", "entry-*.json")
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if _, err := f.Write(body); err != nil {
-			errs = append(errs, err)
-		}
-		_ = f.Close()
-		if _, err := w.be.call("allowlist_put", name, f.Name()); err != nil {
-			errs = append(errs, err)
-		}
-		_ = os.Remove(f.Name())
+		errs = append(errs, w.putEntry(name, body))
 	}
 	return errors.Join(errs...)
 }
@@ -386,26 +310,27 @@ func enforcerRefreshes(ctx context.Context, node string) error {
 	return w.awaitApplied()
 }
 
-// awaitApplied waits two pull intervals: a pull that started just before the
-// write has then been followed by one that saw it. The enforcer exposes
-// nothing about the version it holds, so this is a wait, not an observation.
+// sync writes the described entries and waits for the enforcer to hold them.
+func (w *world) sync() error {
+	if err := w.writeEntries(); err != nil {
+		return err
+	}
+	return w.awaitApplied()
+}
+
+// awaitApplied waits until two pull intervals have passed since the last
+// write or delete: a pull that started just before it has then been followed
+// by one that saw it. The enforcer exposes nothing about the version it
+// holds, so this is a wait, not an observation.
 func (w *world) awaitApplied() error {
-	interval, err := w.pullInterval()
+	s, err := w.be.call("pull_interval")
 	if err != nil {
 		return err
 	}
-	time.Sleep(2 * interval)
+	interval, err := time.ParseDuration(s)
+	if err != nil {
+		return fmt.Errorf("pull interval %q: %w", s, err)
+	}
+	time.Sleep(time.Until(lastMutation.Add(2 * interval)))
 	return nil
-}
-
-func (w *world) pullInterval() (time.Duration, error) {
-	s, err := w.be.call("pull_interval")
-	if err != nil {
-		return 0, err
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0, fmt.Errorf("pull interval %q: %w", s, err)
-	}
-	return d, nil
 }

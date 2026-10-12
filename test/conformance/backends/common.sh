@@ -22,11 +22,12 @@
 #   pull_interval                    how often the enforcer pulls, as a Go duration
 #   enforcer_ready <node>            the node's policy enforcer is enforcing
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
-#   pod_manifest <name> <ns> <node> <image> <command...>
-#                                    a pod manifest pinned to node
-# node_name, image_ref and image_digest answer the same for a whole run;
-# callers may cache them. The allowlist is state: served_allowlist answers
-# for the moment of the call.
+#   pod_manifest <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
+#                                    a pod manifest pinned to node, one
+#                                    container per +-separated group
+# node_name, image_ref, image_digest and pull_interval answer the same for a
+# whole run; callers may cache them. The allowlist is state: served_allowlist
+# answers for the moment of the call.
 set -o pipefail
 
 C8S_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -61,12 +62,24 @@ image_ref() {
 # the steps wait this out rather than observe it.
 pull_interval() { echo 5s; }
 
-# The harness's Restricted-compatible pod, pinned to the node.
+# The harness's Restricted-compatible pod, pinned to the node. Containers after
+# the first are the fixture's --container groups, one shell-quoted string each.
 pod_manifest() {
     local name="$1" ns="$2" node="$3" image="$4"
     shift 4
+    local -a first=() extras=() group=()
+    local arg first_done=0
+    for arg in "$@" +; do # the trailing + flushes the last group
+        if [ "$arg" != + ]; then
+            group+=("$arg")
+        elif [ "$first_done" = 0 ]; then
+            first=("${group[@]}") first_done=1 group=()
+        else
+            extras+=(--container "$(printf '%q ' "${group[@]}")") group=()
+        fi
+    done
     python3 "$CLUSTER_HARNESS_DIR/pod-fixture.py" client "$name" "$ns" "$image" \
-        --node "$node" --pull-policy IfNotPresent -- "$@"
+        --node "$node" --pull-policy IfNotPresent "${extras[@]}" -- "${first[@]}"
 }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.

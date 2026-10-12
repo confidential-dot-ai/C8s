@@ -20,7 +20,11 @@ const exitUnsupported = 77
 // ../backends/common.sh states the contract.
 type backend struct {
 	script string
+	memo   map[string]string // answers of the functions constant for a run
 }
+
+// constant names the functions whose answer the contract fixes for a run.
+var constant = map[string]bool{"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true}
 
 // newBackend finds the backend beside this package; `go test` runs with the
 // package directory as its working directory.
@@ -32,7 +36,7 @@ func newBackend(name string) (backend, error) {
 	if _, err := os.Stat(script); err != nil {
 		return backend{}, fmt.Errorf("backend %q: %w", name, err)
 	}
-	b := backend{script: script}
+	b := backend{script: script, memo: map[string]string{}}
 	// Steps call kubectl directly too; point it where the backend does.
 	kubeconfig, err := b.call("kubeconfig")
 	if err != nil {
@@ -47,6 +51,10 @@ func newBackend(name string) (backend, error) {
 // call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip;
 // any other failure is a harness error carrying the function's stderr.
 func (b backend) call(fn string, args ...string) (string, error) {
+	key := fn + "\x00" + strings.Join(args, "\x00")
+	if out, ok := b.memo[key]; ok && constant[fn] {
+		return out, nil
+	}
 	cmd := exec.Command("bash", append([]string{b.script, fn}, args...)...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -54,7 +62,11 @@ func (b backend) call(fn string, args ...string) (string, error) {
 	var exit *exec.ExitError
 	switch {
 	case err == nil:
-		return strings.TrimSpace(stdout.String()), nil
+		out := strings.TrimSpace(stdout.String())
+		if constant[fn] {
+			b.memo[key] = out
+		}
+		return out, nil
 	case errors.As(err, &exit) && exit.ExitCode() == exitUnsupported:
 		return "", godog.ErrSkip
 	default:

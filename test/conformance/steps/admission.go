@@ -19,16 +19,13 @@ func registerAdmission(sc *godog.ScenarioContext) {
 	sc.Step(`^the floor contains the digest of "([^"]*)"$`, floorHas)
 	sc.Step(`^no workload entry declares image "([^"]*)"$`, noEntryDeclares)
 	sc.Step(`^a pod "([^"]*)" whose only container runs image "([^"]*)"$`, podRunsImage)
+	sc.Step(`^a pod "([^"]*)" whose containers run images "([^"]*)" and "([^"]*)"$`, podRunsImages)
 	sc.Step(`^a pod "([^"]*)" whose only container names image "([^"]*)" without a digest$`, podNamesImageByTag)
-	sc.Step(`^a pod "([^"]*)" with two containers$`, podWithTwoContainers)
-	sc.Step(`^the first container of "([^"]*)" runs image "([^"]*)"$`, firstContainerRuns)
-	sc.Step(`^the second container of "([^"]*)" runs image "([^"]*)"$`, secondContainerRuns)
 	sc.Step(`^the image store on node "([^"]*)" resolves that name to the digest of "([^"]*)"$`, storeResolves)
 	sc.Step(`^the command line of that container is "([^"]*)"$`, commandLine)
 	sc.Step(`^"([^"]*)" is deployed on node "([^"]*)"$`, deployOnNode)
 	sc.Step(`^the container of "([^"]*)" is not created$`, containerNotCreated)
-	sc.Step(`^the container of "([^"]*)" is created$`, containerCreated)
-	sc.Step(`^both containers of "([^"]*)" are created$`, bothContainersCreated)
+	sc.Step(`^(?:the container|both containers) of "([^"]*)" (?:is|are) created$`, containersCreated)
 	sc.Step(`^"([^"]*)" keeps running$`, keepsRunning)
 	sc.Step(`^the policy enforcer on node "([^"]*)" does not admit image "([^"]*)"$`, enforcerDoesNotAdmit)
 	sc.Step(`^no process from image "([^"]*)" runs on node "([^"]*)"$`, noProcessFromImage)
@@ -41,7 +38,7 @@ func registerAdmission(sc *godog.ScenarioContext) {
 const observe = 90 * time.Second
 
 // enforcerSynced: the enforcer is enforcing and holds what CDS serves now,
-// including whatever the scenario has written so far.
+// including whatever the scenario has described so far.
 func enforcerSynced(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.be.call("node_name", node)
@@ -51,10 +48,7 @@ func enforcerSynced(ctx context.Context, node string) error {
 	if _, err := w.be.call("enforcer_ready", k8sNode); err != nil {
 		return err
 	}
-	if err := w.writeEntries(); err != nil {
-		return err
-	}
-	return w.awaitApplied()
+	return w.sync()
 }
 
 func floorLacks(ctx context.Context, image string) error {
@@ -73,11 +67,11 @@ func requireFloor(ctx context.Context, image string, want bool) error {
 	if err != nil {
 		return err
 	}
-	doc, err := w.servedAllowlist()
+	s, err := w.served()
 	if err != nil {
 		return err
 	}
-	if doc.floorAdmits(digest) != want {
+	if s.admitsAnyArgv(digest) != want {
 		return fmt.Errorf("harness precondition: floor admits %s (%s) = %v, want %v", image, digest, !want, want)
 	}
 	return nil
@@ -89,24 +83,27 @@ func noEntryDeclares(ctx context.Context, image string) error {
 	if err != nil {
 		return err
 	}
-	doc, err := w.servedAllowlist()
+	s, err := w.served()
 	if err != nil {
 		return err
 	}
-	if doc.declares(digest) {
+	if s.declares(digest) {
 		return fmt.Errorf("harness precondition: an allowlist entry declares %s (%s)", image, digest)
 	}
 	return nil
 }
 
 func podRunsImage(ctx context.Context, name, image string) error {
+	return podRunsImages(ctx, name, image)
+}
+
+func podRunsImages(ctx context.Context, name string, images ...string) error {
 	w := getWorld(ctx)
-	ref, err := w.be.call("image_ref", image)
+	refs, err := w.refs(images...)
 	if err != nil {
 		return err
 	}
-	w.named(image)
-	w.describe(name, ref)
+	w.describe(name, refs...)
 	return nil
 }
 
@@ -117,43 +114,9 @@ func podNamesImageByTag(ctx context.Context, name, image string) error {
 	return nil
 }
 
-// podWithTwoContainers describes the pod; the next two steps fill it.
-func podWithTwoContainers(ctx context.Context, name string) error {
-	w := getWorld(ctx)
-	p := &pod{name: name}
-	w.pods[name], w.lastPod = p, p
-	return nil
-}
-
-func firstContainerRuns(ctx context.Context, name, image string) error {
-	return nthContainerRuns(ctx, name, image, 0)
-}
-
-func secondContainerRuns(ctx context.Context, name, image string) error {
-	return nthContainerRuns(ctx, name, image, 1)
-}
-
-func nthContainerRuns(ctx context.Context, name, image string, n int) error {
-	w := getWorld(ctx)
-	p, err := w.pod(name)
-	if err != nil {
-		return err
-	}
-	if len(p.containers) != n {
-		return fmt.Errorf("%q has %d containers; the ordinal is %d", name, len(p.containers), n+1)
-	}
-	ref, err := w.be.call("image_ref", image)
-	if err != nil {
-		return err
-	}
-	w.named(image)
-	p.add(ref)
-	return nil
-}
-
 func storeResolves(ctx context.Context, node, image string) error {
 	w := getWorld(ctx)
-	if w.lastPod == nil || len(w.lastPod.containers) == 0 {
+	if w.lastPod == nil {
 		return errors.New("no pod names an image yet")
 	}
 	// The alias is store-wide; node_name still checks the node exists here.
@@ -170,102 +133,44 @@ func storeResolves(ctx context.Context, node, image string) error {
 
 func commandLine(ctx context.Context, line string) error {
 	w := getWorld(ctx)
-	if w.lastPod == nil || len(w.lastPod.containers) == 0 {
+	if w.lastPod == nil {
 		return errors.New("no container has been described yet")
 	}
 	w.lastPod.last().command = strings.Fields(line)
 	return nil
 }
 
-// deployOnNode writes the entries the scenario described, waits for the
-// enforcer on the node to hold them, and applies the pod.
+// deployOnNode applies the pod. The entries the scenario described must have
+// reached the enforcer first, which only the sync sentence promises.
 func deployOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
 	p, err := w.pod(name)
 	if err != nil {
 		return err
 	}
-	if len(p.containers) == 0 {
-		return fmt.Errorf("%q has no containers", name)
+	for entry := range w.entries {
+		if !w.wrote(w.writtenName(entry)) {
+			return fmt.Errorf("entry %q is described but not written; the scenario must say the enforcer has synced the allowlist before deploying", entry)
+		}
 	}
 	k8sNode, err := w.be.call("node_name", node)
 	if err != nil {
 		return err
 	}
-	pending := false
-	for _, e := range w.entries {
-		pending = pending || !e.written
-	}
-	if pending {
-		if err := w.writeEntries(); err != nil {
-			return err
+	args := []string{p.name, w.namespace, k8sNode, p.containers[0].ref}
+	for i, c := range p.containers {
+		if i > 0 {
+			args = append(args, "+", c.ref)
 		}
-		if err := w.awaitApplied(); err != nil {
-			return err
-		}
+		args = append(args, c.command...)
 	}
-	manifest, err := w.manifest(p, k8sNode)
+	manifest, err := w.be.call("pod_manifest", args...)
 	if err != nil {
 		return err
 	}
 	p.deployed = true
-	_, err = kubectl(manifest, "apply", "-f", "-")
+	_, err = kubectl([]byte(manifest), "apply", "-f", "-")
 	return err
-}
-
-// manifest renders the backend's pod for the first container and adds the
-// rest as copies of it, so every container carries the same security context.
-func (w *world) manifest(p *pod, k8sNode string) ([]byte, error) {
-	first := p.containers[0]
-	rendered, err := w.be.call("pod_manifest", append([]string{p.name, w.namespace, k8sNode, first.ref}, first.command...)...)
-	if err != nil {
-		return nil, err
-	}
-	if len(p.containers) == 1 {
-		return []byte(rendered), nil
-	}
-	var whole map[string]json.RawMessage
-	var spec map[string]any
-	if err := json.Unmarshal([]byte(rendered), &whole); err != nil {
-		return nil, fmt.Errorf("pod manifest is not JSON: %w", err)
-	}
-	if err := json.Unmarshal(whole["spec"], &spec); err != nil {
-		return nil, fmt.Errorf("pod manifest spec: %w", err)
-	}
-	list, _ := spec["containers"].([]any)
-	if len(list) != 1 {
-		return nil, fmt.Errorf("pod manifest has %d containers, want 1", len(list))
-	}
-	template, _ := list[0].(map[string]any)
-	containers := make([]any, 0, len(p.containers))
-	for i, c := range p.containers {
-		copyOf := make(map[string]any, len(template)+3)
-		for k, v := range template {
-			copyOf[k] = v
-		}
-		copyOf["name"] = fmt.Sprintf("c%d", i+1)
-		copyOf["image"] = c.ref
-		copyOf["command"] = c.command
-		containers = append(containers, copyOf)
-	}
-	spec["containers"] = containers
-	specJSON, err := json.Marshal(spec)
-	if err != nil {
-		return nil, err
-	}
-	whole["spec"] = specJSON
-	return json.Marshal(whole)
-}
-
-// status reads, in one call, the container's id (empty until the runtime has
-// created it) and its container-create refusal, if any. A pull failure or a
-// crash is not a refusal.
-func (w *world) status(p *pod) (id, refusal string) {
-	st := w.statuses(p)
-	if len(st) == 0 {
-		return "", ""
-	}
-	return st[0].id, st[0].refusal
 }
 
 type containerStatus struct {
@@ -274,7 +179,9 @@ type containerStatus struct {
 	restarts    int
 }
 
-// statuses reads every container's id, refusal and running state in one call.
+// statuses reads every container's id (empty until the runtime has created
+// it), its container-create refusal, if any, and its running state in one
+// call. A pull failure or a crash is not a refusal.
 func (w *world) statuses(p *pod) []containerStatus {
 	out, _ := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
@@ -306,15 +213,52 @@ func (w *world) statuses(p *pod) []containerStatus {
 	return st
 }
 
-// await polls the deployed pod's status every second until the condition
-// holds or observe runs out, and returns the last status seen.
-func (w *world) await(p *pod, until func(id, refusal string) bool) (id, refusal string, err error) {
+// created is the id of a created container, or empty.
+func created(st []containerStatus) string {
+	for _, s := range st {
+		if s.id != "" {
+			return s.id
+		}
+	}
+	return ""
+}
+
+// refusals joins the refusals recorded so far.
+func refusals(st []containerStatus) string {
+	var texts []string
+	for _, s := range st {
+		if s.refusal != "" {
+			texts = append(texts, s.refusal)
+		}
+	}
+	return strings.Join(texts, "; ")
+}
+
+// decided: the runtime has created or refused a container.
+func decided(st []containerStatus) bool { return created(st) != "" || refusals(st) != "" }
+
+// allCreated reports whether every container of the pod has an id.
+func (p *pod) allCreated(st []containerStatus) bool {
+	if len(st) != len(p.containers) {
+		return false
+	}
+	for _, s := range st {
+		if s.id == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// await polls the deployed pod's statuses every second until the condition
+// holds or observe runs out, and returns the last statuses seen.
+func (w *world) await(p *pod, until func([]containerStatus) bool) ([]containerStatus, error) {
 	if !p.deployed {
-		return "", "", fmt.Errorf("pod %q has not been deployed", p.name)
+		return nil, fmt.Errorf("pod %q has not been deployed", p.name)
 	}
 	for deadline := time.Now().Add(observe); ; time.Sleep(time.Second) {
-		if id, refusal = w.status(p); until(id, refusal) || !time.Now().Before(deadline) {
-			return id, refusal, nil
+		if st := w.statuses(p); until(st) || !time.Now().Before(deadline) {
+			return st, nil
 		}
 	}
 }
@@ -325,67 +269,36 @@ func containerNotCreated(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	id, refusal, err := w.await(p, func(id, refusal string) bool { return id != "" || refusal != "" })
+	st, err := w.await(p, decided)
 	switch {
 	case err != nil:
 		return err
-	case id != "":
-		return fmt.Errorf("the container of %q was created (%s)", name, id)
-	case refusal == "":
+	case created(st) != "":
+		return fmt.Errorf("the container of %q was created (%s)", name, created(st))
+	case refusals(st) == "":
 		return fmt.Errorf("no refusal recorded for %q within %s, and no container either", name, observe)
 	}
 	return nil
 }
 
-func containerCreated(ctx context.Context, name string) error {
+func containersCreated(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.pod(name)
 	if err != nil {
 		return err
 	}
-	id, refusal, err := w.await(p, func(id, _ string) bool { return id != "" })
+	st, err := w.await(p, p.allCreated)
 	switch {
 	case err != nil:
 		return err
-	case id == "":
-		return fmt.Errorf("the container of %q was not created within %s; refusal: %s", name, observe, refusal)
+	case !p.allCreated(st):
+		return fmt.Errorf("not every container of %q was created within %s; refusals: %s", name, observe, refusals(st))
 	}
 	return nil
 }
 
-// bothContainersCreated waits until every container of the pod has an id.
-func bothContainersCreated(ctx context.Context, name string) error {
-	w := getWorld(ctx)
-	p, err := w.pod(name)
-	if err != nil {
-		return err
-	}
-	if !p.deployed {
-		return fmt.Errorf("pod %q has not been deployed", name)
-	}
-	var last []containerStatus
-	for deadline := time.Now().Add(observe); time.Now().Before(deadline); time.Sleep(time.Second) {
-		last = w.statuses(p)
-		created := len(last) == len(p.containers)
-		for _, s := range last {
-			created = created && s.id != ""
-		}
-		if created {
-			return nil
-		}
-	}
-	var refusals []string
-	for _, s := range last {
-		if s.refusal != "" {
-			refusals = append(refusals, s.refusal)
-		}
-	}
-	return fmt.Errorf("not every container of %q was created within %s; refusals: %s", name, observe, strings.Join(refusals, "; "))
-}
-
 // keepsRunning: a deployed pod's containers are all running and none has
-// restarted, checked after a pull interval has passed, which is when a change
-// at CDS would have reached the enforcer.
+// restarted. The scenario says when to look; this reads once.
 func keepsRunning(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.pod(name)
@@ -395,11 +308,6 @@ func keepsRunning(ctx context.Context, name string) error {
 	if !p.deployed {
 		return fmt.Errorf("pod %q has not been deployed", name)
 	}
-	interval, err := w.pullInterval()
-	if err != nil {
-		return err
-	}
-	time.Sleep(2 * interval)
 	st := w.statuses(p)
 	if len(st) != len(p.containers) {
 		return fmt.Errorf("%q reports %d containers, want %d", name, len(st), len(p.containers))
@@ -465,21 +373,18 @@ func refusalNamesImage(ctx context.Context, image string) error {
 
 // refusalSaysLaunchNotAdmitted: the refusal is the one for a digest the
 // allowlist lists whose launch no entry admits, not the one for an unknown
-// digest, and it still names the image.
+// digest.
 func refusalSaysLaunchNotAdmitted(ctx context.Context) error {
 	w := getWorld(ctx)
-	p, text, err := w.lastRefusal()
+	_, text, err := w.lastRefusal()
 	if err != nil {
 		return err
 	}
-	ref := p.containers[0].ref
 	switch {
 	case strings.Contains(text, "not in allowlist"):
 		return fmt.Errorf("the refusal says the image is not allowlisted: %s", text)
 	case !strings.Contains(text, "allowlisted"):
 		return fmt.Errorf("the refusal does not say the image is allowlisted: %s", text)
-	case !strings.Contains(text, ref):
-		return fmt.Errorf("the refusal does not name %s: %s", ref, text)
 	}
 	return nil
 }
@@ -502,14 +407,14 @@ func (w *world) lastRefusal() (*pod, string, error) {
 	if p == nil {
 		return nil, "", errors.New("no pod has been described")
 	}
-	id, refusal, err := w.await(p, func(id, refusal string) bool { return id != "" || refusal != "" })
+	st, err := w.await(p, decided)
 	switch {
 	case err != nil:
 		return nil, "", err
-	case id != "":
-		return nil, "", fmt.Errorf("the container of %q was created (%s); no refusal to inspect", p.name, id)
-	case refusal == "":
+	case created(st) != "":
+		return nil, "", fmt.Errorf("the container of %q was created (%s); no refusal to inspect", p.name, created(st))
+	case refusals(st) == "":
 		return nil, "", fmt.Errorf("no refusal recorded for %q within %s", p.name, observe)
 	}
-	return p, refusal, nil
+	return p, refusals(st), nil
 }
