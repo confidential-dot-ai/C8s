@@ -147,6 +147,39 @@ func TestVerifyRejectsBodyMismatch(t *testing.T) {
 	}
 }
 
+// TestWithTTLBoundsValidity proves the signer's TTL is what the verifier
+// measures: a token minted to outlive MaxTokenValidity is rejected, one within
+// it is accepted, and the default signer is unchanged.
+func TestWithTTLBoundsValidity(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	signer, err := NewSignerFromKeyPEM(keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte("body")
+	v := Verifier{Keys: []*ecdsa.PublicKey{pub}}
+
+	auth, err := signer.WithTTL(time.Hour).Authorization(http.MethodPost, "/allowlist", body)
+	if err != nil {
+		t.Fatalf("authorize: %v", err)
+	}
+	if err := v.Authorize(reqWith(auth), body); err == nil {
+		t.Fatal("expected a token valid for an hour to be rejected")
+	}
+
+	auth, err = signer.WithTTL(MaxTokenValidity).Authorization(http.MethodPost, "/allowlist", body)
+	if err != nil {
+		t.Fatalf("authorize: %v", err)
+	}
+	if err := v.Authorize(reqWith(auth), body); err != nil {
+		t.Fatalf("expected a token valid for MaxTokenValidity to verify: %v", err)
+	}
+
+	if signer.ttl != DefaultTokenTTL {
+		t.Fatalf("WithTTL changed the original signer's ttl to %s", signer.ttl)
+	}
+}
+
 func TestVerifyRejectsExpiredToken(t *testing.T) {
 	keyPEM, pub := genKey(t, elliptic.P256())
 	body := []byte("body")
