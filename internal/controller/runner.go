@@ -288,10 +288,23 @@ func setupManager(ctx context.Context, mgr manager.Manager, dc serverResourcesFo
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		return fmt.Errorf("add healthz: %w", err)
 	}
-	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
+	if err := mgr.AddReadyzCheck("readyz", readyzCheck(mgr, opts)); err != nil {
 		return fmt.Errorf("add readyz: %w", err)
 	}
 	return nil
+}
+
+// readyzCheck gates readiness on the webhook's TLS listener when the operator
+// serves one. mgr.Start serves the health probes before it starts the webhook
+// server, so a bare Ping would make the pod a Service endpoint while admission
+// calls to it are still refused, and failurePolicy=Fail turns that into
+// rejected Pod creations on every start. Without injection there is no webhook
+// server, and GetWebhookServer would add one, so readiness stays a Ping.
+func readyzCheck(mgr manager.Manager, opts Options) healthz.Checker {
+	if opts.GetCertImage == "" {
+		return healthz.Ping
+	}
+	return mgr.GetWebhookServer().StartedChecker()
 }
 
 // runReinjectSweep is the reinject-sweep runnable body; a named function so

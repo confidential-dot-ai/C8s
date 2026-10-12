@@ -122,6 +122,9 @@ Key properties (see `templates/webhook.yaml`, `controller/runner.go`):
   which excludes the release namespace (plus `kube-system`, `kube-public`,
   `kube-node-lease`, and `webhook.extraExcluded`), so the operator can always
   boot to patch the caBundle — no deadlock.
+- The operator reports **Ready only once its webhook TLS listener accepts
+  connections** (`/readyz` dials it), so it never becomes a Service endpoint
+  that refuses admission calls.
 - The webhook CA is **ephemeral**: `bootstrapWebhookPKI` re-mints it and
   re-patches the caBundle on every operator start. The chart renders the
   `caBundle` field only when `webhook.caBundle` is set, so a `helm upgrade`

@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -26,9 +28,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	crreconcile "sigs.k8s.io/controller-runtime/pkg/reconcile"
+	crwebhook "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/confidential-dot-ai/c8s/api/v1alpha2"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/webhook"
 )
 
 func confidentialWorkloadResources() *metav1.APIResourceList {
@@ -85,6 +89,91 @@ func TestSetupManagerWebhookRegisters(t *testing.T) {
 	_, pattern := mux.Handler(httptest.NewRequest(http.MethodPost, "/mutate-pods", nil))
 	if pattern != "/mutate-pods" {
 		t.Fatalf("mux pattern for /mutate-pods = %q, want an exact registration", pattern)
+	}
+}
+
+// Readiness must track the webhook's TLS listener when injection is on: the
+// manager serves probes before it starts the webhook server, so a Ping would
+// mark the pod Ready while admission calls to it are still refused.
+func TestReadyzCheckTracksWebhookServer(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+
+	if err := readyzCheck(newTestManager(t), Options{})(req); err != nil {
+		t.Fatalf("readyz without injection = %v, want Ping", err)
+	}
+
+	dir := t.TempDir()
+	ca, err := issuer.NewCA("test webhook", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := webhook.BootstrapServingCert(ca, []string{"localhost"}, dir); err != nil {
+		t.Fatal(err)
+	}
+	// The webhook server binds its own port, so a free port is picked and
+	// released first; another process can grab it in between, so a bind
+	// failure retries on a fresh port instead of flaking.
+	var bindErr error
+	for range 5 {
+		bindErr = readyzTracksWebhookServerOnFreePort(t, dir, req)
+		if bindErr == nil {
+			return
+		}
+	}
+	t.Fatalf("webhook server never bound a port: %v", bindErr)
+}
+
+// readyzTracksWebhookServerOnFreePort runs the readyz assertions against a
+// webhook server on a free port. It returns the server's Start error if the
+// server exited (the port was taken) before readyz went ready.
+func readyzTracksWebhookServerOnFreePort(t *testing.T, certDir string, req *http.Request) error {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := l.Addr().(*net.TCPAddr).Port
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := managerOptions(Options{MetricsAddr: "0", HealthAddr: "0"})
+	opts.MapperProvider = func(*rest.Config, *http.Client) (meta.RESTMapper, error) {
+		return testRESTMapper(), nil
+	}
+	opts.WebhookServer = crwebhook.NewServer(crwebhook.Options{Host: "127.0.0.1", Port: port, CertDir: certDir})
+	mgr, err := ctrl.NewManager(&rest.Config{Host: "http://127.0.0.1:1"}, opts)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	check := readyzCheck(mgr, Options{GetCertImage: "ghcr.io/c8s/c8s:latest"})
+	if err := check(req); err == nil {
+		t.Fatal("readyz before the webhook server starts = nil, want not ready")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- mgr.GetWebhookServer().Start(ctx) }()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		err := check(req)
+		if err == nil {
+			cancel()
+			<-done
+			return nil
+		}
+		select {
+		case startErr := <-done:
+			return fmt.Errorf("webhook server exited: %w", startErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("readyz after the webhook server started = %v, want ready", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
