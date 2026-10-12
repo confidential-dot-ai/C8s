@@ -92,6 +92,70 @@ attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
 
+# The node's local attestation service, over the socket the plugin binds into
+# the requester (the webhook rebases a unix:// attestation-api URL under
+# that directory for the requesters it injects). A chosen launch digest
+# would need a second TEE.
+attestation_socket() {
+    local url
+    url="$(kubectl -n "$NS" get deploy -l app.kubernetes.io/name=c8s-operator,app.kubernetes.io/component=operator \
+        -o jsonpath='{.items[0].spec.template.spec.containers[*].args}' |
+        jq -r '.[] | select(startswith("--attestation-api-url=")) | ltrimstr("--attestation-api-url=")' | head -1)"
+    case "$url" in
+        unix://*) echo "/run/c8s/workload-claims/$(basename "${url#unix://}")" ;;
+        *) return "$UNSUPPORTED" ;;
+    esac
+}
+
+evidence() {
+    [ -z "${4:-}" ] || return "$UNSUPPORTED"
+    local socket body out
+    socket="$(attestation_socket)" || return
+    body="$(mktemp)"
+    python3 -c 'import base64, json, sys; print(json.dumps({"report_data": base64.b64encode(bytes.fromhex(sys.argv[1])).decode()}))' "$3" >"$body"
+    out="$(requester_request "$1" "$2" POST http://localhost/attest "$body" "$socket")"
+    rm -f "$body"
+    [ "$(head -1 <<<"$out")" = 200 ] || { echo "backend: attestation service: $out" >&2; return 1; }
+    tail -n +2 <<<"$out"
+}
+
+# Real evidence with one byte of the signed report body changed: an SNP
+# report's launch measurement. Other evidence shapes are not edited here.
+evidence_unsigned() {
+    local env
+    env="$(evidence "$1" "$2" "$3")" || return
+    python3 - "$env" <<'PYEOF'
+import base64, json, sys
+env = json.loads(sys.argv[1])
+try:
+    report = bytearray(base64.b64decode(env["evidence"]["attestation_report"]))
+except (KeyError, TypeError):
+    sys.exit(77)
+report[0x90] ^= 0xFF
+env["evidence"]["attestation_report"] = base64.b64encode(bytes(report)).decode()
+print(json.dumps(env))
+PYEOF
+}
+
+# The certificate volume is read through the pod's first container, so a
+# leaf is seen only once that container runs.
+pod_cert_file() { kubectl -n "$1" exec "$2" -c curl -- cat "/etc/c8s/certs/$3" 2>/dev/null || true; }
+
+pod_sandbox_id() { return "$UNSUPPORTED"; }
+
+# The operator's verifier on a saved leaf: 0 accepts, 2 rejects on a verdict;
+# anything else means it could not judge.
+relying_party() {
+    local leaf="$1" ca="$2" rc=0
+    shift 2
+    c8s verify --from-file "$leaf" --mesh-ca "$ca" "${measurement_args[@]}" "$@" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) echo accepts ;;
+        2) echo rejects ;;
+        *) echo "backend: c8s verify exited $rc" >&2; return 1 ;;
+    esac
+}
+
 # From the registry, with the crane the lane installs; no node shell.
 image_entrypoint() {
     command -v crane >/dev/null || return $UNSUPPORTED

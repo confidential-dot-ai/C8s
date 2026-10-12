@@ -154,7 +154,11 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		}
 		args = append(args, c.command...)
 	}
-	manifest, err := w.be.call("pod_manifest", args...)
+	renderer := "pod_manifest"
+	if p.workloadID {
+		renderer = "cw_pod_manifest"
+	}
+	manifest, err := w.be.call(renderer, args...)
 	if err != nil {
 		return err
 	}

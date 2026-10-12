@@ -36,6 +36,7 @@ type world struct {
 	versionBefore   string
 	read            *reading
 	cds             cdsState
+	issuance        issuanceState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -57,6 +58,13 @@ type pod struct {
 	name       string
 	containers []*container
 	deployed   bool
+	// workloadID: the pod opts into a leaf of its own, which the webhook's
+	// requester obtains and renews; leaf is the one it holds as last read,
+	// renewed and refusal what its last renewal did.
+	workloadID bool
+	leaf       *leaf
+	renewed    bool
+	refusal    *refusal
 }
 
 type container struct {
@@ -85,6 +93,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				running:    map[string]*pod{},
 				nodes:      map[string]bool{},
 				pluginDown: map[string]bool{},
+				issuance:   issuanceState{requesters: map[string]*requester{}},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
@@ -106,6 +115,8 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerAllowlist(sc)
 		registerCDSAPI(sc)
 		registerCDS(sc)
+		registerIssuance(sc)
+		registerRequester(sc)
 		registerNode(sc)
 	}
 }

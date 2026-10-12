@@ -84,6 +84,8 @@ cds_restart_with() {
         min-ca-validity) flag=--min-ca-validity ;;
         pins) flag=--measurements ;;
         operator-keys) flag=--operator-keys ;;
+        san-validation) flag=--san-validation ;;
+        inventory-cidr) flag=--sandbox-inventory-cidr ;;
         *) echo "backend: cds_restart_with: no parameter '$1'" >&2; return 2 ;;
     esac
     if [ "$2" = none ]; then
@@ -180,6 +182,53 @@ attest_direct() {
     [ -x "$bin" ] || make -C "$C8S_ROOT" build-c8s >&2 || return 1
     "$bin" get-cert --cds-url "$(cds_url)" --attestation-api-url "$(mock_attestation_url)" \
         --cds-measurements "$MOCK_MEASUREMENT" --san "requester.$NS.svc" 2>/dev/null
+}
+
+# The mock attestation-api on the node's address issues a version-2 SNP
+# report over any report data, with an all-zero launch measurement (the pin
+# the CDS was installed with) and no signature anyone checks. Evidence for
+# another launch digest is the same report with those bytes set; the mock's
+# verifier reads the digest from the report it is shown.
+MOCK_ATTESTATION_URL="http://$NODE_IP:8400"
+evidence() {
+    python3 - "$(mock_attestation_url)" "$3" "${4:-}" <<'PYEOF'
+import base64, json, sys, urllib.request
+url, report_data, digest = sys.argv[1:4]
+if not digest:
+    body = json.dumps({"report_data": base64.b64encode(bytes.fromhex(report_data)).decode()}).encode()
+    req = urllib.request.Request(url + "/attest", body, {"Content-Type": "application/json"})
+    sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode())
+    sys.exit()
+report = bytearray(1184)
+report[0] = 0x02    # report version 2
+report[0x0A] = 0x03 # SMT-allowed policy
+rd = bytes.fromhex(report_data)
+report[0x50:0x50 + len(rd)] = rd
+d = bytes.fromhex(digest)
+report[0x90:0x90 + len(d)] = d
+print(json.dumps({"platform": "snp", "evidence": {"attestation_report": base64.b64encode(bytes(report)).decode()}}))
+PYEOF
+}
+
+# The mock reports every signature valid, so nothing here is unsigned; and
+# its evidence verifies nowhere but at the mock, so no verifier on this host
+# can act as a relying party.
+evidence_unsigned() { return "$UNSUPPORTED"; }
+relying_party() { return "$UNSUPPORTED"; }
+
+# The pod's certificate volume is the memory-backed emptyDir the webhook
+# adds, which the kubelet keeps under the pod's directory on the node; read
+# there, so the first leaf is seen before any workload container runs.
+pod_cert_file() {
+    local uid
+    uid="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}')" || return
+    node_exec cat "/var/lib/kubelet/pods/$uid/volumes/kubernetes.io~empty-dir/c8s-certs/$3" 2>/dev/null || true
+}
+
+pod_sandbox_id() {
+    local uid
+    uid="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}')" || return
+    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | head -1
 }
 
 # From the node's store, pulled when absent: the image's entrypoint, then its
