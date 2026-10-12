@@ -474,3 +474,42 @@ func TestAuthorizeKeyRejectsUnparsedServerKey(t *testing.T) {
 		})
 	}
 }
+
+func TestRegistryMirrorsAcceptHTTPOriginsWithOptionalPorts(t *testing.T) {
+	good := map[string]string{"ghcr.io": "http://10.43.0.5:5000", "registry.example:5000": "http://10.43.0.5"}
+	if err := validateRegistryMirrors(good); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStageWritesTheRegistriesFileOnlyWhenMirrorsAreSet(t *testing.T) {
+	doc, key, pub := testDocument(t, "tdx", Agent)
+	doc.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:5000"}
+	testLoader(t, doc, pub)
+	cfg := testConfig(t, doc, key)
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	registries, err := os.ReadFile(cfg.path(rke2RegistriesPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "mirrors:\n    ghcr.io:\n        endpoint:\n            - http://10.43.0.5:5000\n"
+	if string(registries) != want {
+		t.Fatalf("registries.yaml:\n%s", registries)
+	}
+	staged, err := LoadStaged(cfg.path(DefaultStagedPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if staged.RegistryMirrors["ghcr.io"] != "http://10.43.0.5:5000" {
+		t.Fatal("staged configuration lost the mirrors")
+	}
+	// A re-stage without the field leaves no mirror behind.
+	doc.RegistryMirrors = nil
+	signDocument(t, cfg, doc, key)
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	requireAbsent(t, cfg.path(rke2RegistriesPath))
+}

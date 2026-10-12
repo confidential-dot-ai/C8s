@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -57,10 +58,24 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 			}
 		}, "too many"},
 		{"agent without keys", Agent, func(d *Document) { d.AgentOperatorPublicKeys = nil }, "requires agentOperatorPublicKeys"},
-		{"tls san length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 254) }, "DNS name length"},
+		{"tls san length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 254) }, "lowercase DNS hostname"},
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
+		{"tls san label length", Server, func(d *Document) { d.TLSSAN = strings.Repeat("a", 64) + ".local" }, "lowercase DNS hostname"},
 		{"workloads json", Server, func(d *Document) { d.Workloads = "{" }, "valid JSON"},
 		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
+		{"mirror https", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "https://10.43.0.5"} }, "http://host"},
+		{"mirror path", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:5000/v2"} }, "http://host"},
+		{"mirror userinfo", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://u:p@10.43.0.5"} }, "http://host"},
+		{"mirror dns host", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://cache.example:5000"} }, "endpoint host"},
+		{"mirror port", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io": "http://10.43.0.5:70000"} }, "endpoint port"},
+		{"mirror registry case", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"GHCR.io": "http://10.43.0.5"} }, "lowercase DNS hostname"},
+		{"mirror registry port", Server, func(d *Document) { d.RegistryMirrors = map[string]string{"ghcr.io:x": "http://10.43.0.5"} }, "optional port"},
+		{"too many mirrors", Server, func(d *Document) {
+			d.RegistryMirrors = map[string]string{}
+			for i := 0; i <= maxRegistryMirrors; i++ {
+				d.RegistryMirrors[fmt.Sprintf("r%d.example", i)] = "http://10.43.0.5"
+			}
+		}, "more than"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
