@@ -20,7 +20,8 @@ import (
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
 // `workload_entry_digest` indexes each container digest for membership, and
 // `allowlist_version` is the counter every mutation bumps (the worker pull
-// ETag).
+// ETag). `route_manifest` holds the signed route manifest, which shares the
+// database and so its lifetime (route policy C5).
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
@@ -55,6 +56,13 @@ CREATE TABLE IF NOT EXISTS workload_entry_digest (
 	entry_name TEXT NOT NULL,
 	role       TEXT NOT NULL,
 	PRIMARY KEY (digest, entry_name, role)
+);
+CREATE TABLE IF NOT EXISTS route_manifest (
+	id       INTEGER PRIMARY KEY CHECK (id = 1),
+	revision INTEGER NOT NULL,
+	digest   TEXT NOT NULL,
+	manifest BLOB NOT NULL,
+	token    TEXT NOT NULL
 );
 `
 

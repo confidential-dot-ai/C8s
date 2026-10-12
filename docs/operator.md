@@ -543,6 +543,98 @@ every enforcer ignores a served version at or below the one it last applied
 that had applied version N stays on that policy until the restarted
 CDS counts past N again, or the plugin itself restarts.
 
+### Route manifest
+
+CDS stores one signed route manifest (`c8s.routes/v1`) at `/routes`, in the
+same database as the allowlist, so it shares the allowlist's lifetime. There
+is no route seed: after CDS starts with an empty database, write the manifest
+again. CDS logs a warning at startup when it holds none. The router does not
+apply the route manifest.
+
+`GET /routes` is unauthenticated and returns
+`{"manifest": "<base64 of the manifest bytes>", "token": "<write token>"}`.
+`PUT /routes` takes the manifest bytes and is authorized exactly like an
+allowlist write, against the same `cds.operatorKeys`. An optional `If-Match`
+header carries the lower-case hex route digest of the manifest the writer
+read; CDS then stores the write only if the stored manifest still has that
+digest. CDS stores the bytes and the write token verbatim. CDS answers:
+
+| Request | Status |
+|---|---|
+| `GET`, a manifest is stored | 200 with the JSON above |
+| `GET`, no manifest is stored | 404 |
+| `PUT`, the write is stored | 204 |
+| `PUT`, the write token does not verify against `cds.operatorKeys`, or `cds.operatorKeys` is empty | 401 |
+| `PUT`, CDS has no mesh CA to check `ca` against | 500 |
+| `PUT`, the body exceeds 1 MiB | 400 |
+| `PUT`, the manifest fails validation, or a `ca` holds the CDS mesh CA | 422 |
+| `PUT`, the revision is not greater than the stored one | 409 |
+| `PUT`, `If-Match` differs from the stored manifest's route digest, or no manifest is stored | 412 |
+
+The `c8s routes` CLI takes the `c8s allowlist` connection and credential
+flags. Point `--url` at CDS itself, with no path, because the router does not
+relay `/routes`. A port-forward works; pin the CDS launch digest with
+`--measurements`.
+
+To show the stored route manifest and add a route:
+
+```sh
+c8s routes show --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
+    --operator-keys operator.pub
+c8s routes add --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
+    --operator-key operator.key --operator-keys operator.pub \
+    --host app.example --path / --address vllm.ai.svc.cluster.local:8443 --workload vllm
+```
+
+- `CDS_DIGEST`: the CDS launch digest.
+- `operator.pub`, `operator.key`: the operator key pair whose public half is in
+  `cds.operatorKeys`.
+
+| Subcommand | Effect |
+|---|---|
+| `show [--raw] [-o json] [--operator-keys FILE]` | Prints revision, `notBefore`, `maxAgeSeconds`, route digest and routes. `--operator-keys` verifies the stored token's signature and bindings. |
+| `digest FILE` | Validates a manifest file and prints its route digest, the hex SHA-256 of its bytes. |
+| `put FILE [--dry-run]` | Validates the file locally, then signs and stores its bytes verbatim. |
+| `add --operator-keys FILE --host H --path P [--match prefix\|exact] --address A (--workload W \| --server-name N --ca FILE) [--revision N] [--dry-run]` | Adds the route, or replaces the one with the same path and match, and stores the next revision. With no stored manifest, it writes a new one with `--max-age` (default 24h, at least 1s); otherwise it warns that `--max-age` is ignored. |
+| `rm --operator-keys FILE --host H --path P [--match M] [--revision N] [--dry-run]` | Removes the route, and the host when it has no route left, and stores the next revision. |
+
+`add` and `rm` re-sign the stored routes, so they require `--operator-keys`
+and refuse a stored manifest that does not verify against it. They set
+`notBefore` to now, or keep a later stored one, and keep the stored
+`maxAgeSeconds`. The next revision is the later of the stored one plus one and
+the current Unix time in seconds, or `--revision N`, which must be above the
+stored one. When a manifest is stored, `add` and `rm` send its digest as
+`If-Match`, so a 412 means another write landed first: re-run the command.
+`add` on an empty store is not compare-and-swap: a `put` that lands between
+the 404 and the write is replaced. Both writers hold the operator key.
+`--dry-run` still fetches the stored manifest from CDS.
+
+An edit re-signs every stored route at a new revision, not only the one it
+changes. Before signing, `add` and `rm` print each route the new revision
+carries to stderr. After a CDS reset, check that list: the stored manifest may
+be older than the one routers hold, and an edit would re-authorize the routes
+you had removed since. Once the router applies the manifest, it keeps the
+highest revision it applied, even across a CDS reset. The default revision,
+the current Unix time, outranks it unless a router applied a revision ahead of
+your clock; then pass `--revision` above that revision.
+
+`GET /routes` serves the write token, so any reader can replay it as a
+`PUT /routes` until its `exp` plus the CDS `--jwt-clock-skew` allowance
+(`cds.jwtClockSkew`, 30 seconds by default). `c8s routes` mints 60-second
+tokens; CDS accepts at most 5 minutes between `iat` and `exp` from any tool.
+The token names no CDS: a replay succeeds on any CDS that trusts the same
+operator key and stores a lower revision, or none. Use a separate operator key
+for each cluster.
+
+After an operator key rotation, the stored manifest still carries the token of
+the old key, so `add` and `rm` refuse it unless `--operator-keys` holds the
+old public key. To recover, do one of the following:
+
+- Keep the old public key in `--operator-keys` for the next `add` or `rm`,
+  which re-signs the manifest under the new key.
+- Review the bytes from `c8s routes show --raw`, raise `revision`, and store
+  the file with `put`.
+
 ## Attestation-api
 
 The attestation-api DaemonSet binds pod loopback and is served to on-node

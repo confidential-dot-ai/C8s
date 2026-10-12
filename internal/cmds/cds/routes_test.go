@@ -37,6 +37,7 @@ func newStubRouter(t *testing.T) http.Handler {
 	deps := dependencies{
 		AttestHandler:    AttestHandler{Challenges: &cs, CA: ca, CertTTL: time.Hour},
 		AllowlistHandler: allowlist.Handler{Store: &store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }},
+		Routes:           routeHandler{Store: &store, MeshCA: ca.Cert},
 		ReadyFn:          func() bool { return true },
 		CACertPEM:        certutil.EncodeCertPEM(ca.Cert.Raw),
 		RateLimiter:      newTestRateLimiter(t),
@@ -208,6 +209,9 @@ func TestRouter_RoutesMountedWithExpectedMethods(t *testing.T) {
 		{http.MethodGet, "/metrics", http.StatusOK},
 		{http.MethodGet, "/ca", http.StatusOK},
 		{http.MethodGet, "/allowlist", http.StatusOK},
+		{http.MethodGet, "/routes", http.StatusNotFound},
+		{http.MethodPut, "/routes", http.StatusUnauthorized},
+		{http.MethodDelete, "/routes", http.StatusMethodNotAllowed},
 		{http.MethodGet, "/does-not-exist", http.StatusNotFound},
 		{http.MethodPost, "/sign-csr", http.StatusNotFound},
 		{http.MethodPost, "/healthz", http.StatusMethodNotAllowed},
