@@ -153,13 +153,15 @@ type entry struct {
 	Containers     []entryContainer `json:"containers"`
 }
 
+// entryContainer is a declared container. Command and Args are nil when the
+// entry states no policy, which the document's defaults then decide.
 type entryContainer struct {
-	Digest  string     `json:"digest"`
-	Image   string     `json:"image,omitempty"`
-	Command argvPolicy `json:"command"`
-	Args    argvPolicy `json:"args"`
-	Mounts  policy     `json:"mounts"`
-	Env     policy     `json:"env"`
+	Digest  string       `json:"digest"`
+	Image   string       `json:"image,omitempty"`
+	Command *argvPolicy  `json:"command,omitempty"`
+	Args    *argvPolicy  `json:"args,omitempty"`
+	Mounts  mountsPolicy `json:"mounts"`
+	Env     policy       `json:"env"`
 }
 
 type argvPolicy struct {
@@ -167,8 +169,25 @@ type argvPolicy struct {
 	Argv   []string `json:"argv,omitempty"`
 }
 
+func anyArgv() *argvPolicy                { return &argvPolicy{Policy: "any"} }
+func denyArgv() *argvPolicy               { return &argvPolicy{Policy: "deny"} }
+func exactArgv(argv []string) *argvPolicy { return &argvPolicy{Policy: "exact", Argv: argv} }
+
+func (p *argvPolicy) is(policy string) bool { return p != nil && p.Policy == policy }
+
 type policy struct {
 	Policy string `json:"policy"`
+}
+
+type mountsPolicy struct {
+	Policy string      `json:"policy"`
+	Rules  []mountRule `json:"rules,omitempty"`
+}
+
+// mountRule is the part of a rule every kind carries.
+type mountRule struct {
+	Destination string `json:"destination"`
+	Kind        string `json:"kind"`
 }
 
 // containers lists the entry's declared containers, init then main.
@@ -196,7 +215,7 @@ func (e *entry) declares(digest string) bool {
 // admitsAnyArgv reports whether the entry admits digest under any argv.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
-		if c.Digest == digest && c.Command.Policy == "any" && c.Args.Policy == "any" {
+		if c.Digest == digest && c.Command.is("any") && c.Args.is("any") {
 			return true
 		}
 	}

@@ -94,8 +94,8 @@ func (w *world) declare(name, image string, init bool) error {
 	}
 	c := entryContainer{
 		Digest: digest, Image: ref,
-		Command: argvPolicy{Policy: "deny"}, Args: argvPolicy{Policy: "deny"},
-		Mounts: policy{Policy: "any"}, Env: policy{Policy: "any"},
+		Command: denyArgv(), Args: denyArgv(),
+		Mounts: mountsPolicy{Policy: "any"}, Env: policy{Policy: "any"},
 	}
 	if init {
 		e.InitContainers = append(e.InitContainers, c)
@@ -120,8 +120,7 @@ func entryPinsArgv(ctx context.Context, name, image, line string) error {
 	if err != nil {
 		return err
 	}
-	c.Command = argvPolicy{Policy: "exact", Argv: strings.Fields(line)}
-	c.Args = argvPolicy{Policy: "deny"}
+	c.Command, c.Args = exactArgv(strings.Fields(line)), denyArgv()
 	return nil
 }
 
@@ -130,7 +129,7 @@ func entryAdmitsAnyArgv(ctx context.Context, name, image string) error {
 	if err != nil {
 		return err
 	}
-	c.Command, c.Args = argvPolicy{Policy: "any"}, argvPolicy{Policy: "any"}
+	c.Command, c.Args = anyArgv(), anyArgv()
 	return nil
 }
 
