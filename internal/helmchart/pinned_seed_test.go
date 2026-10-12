@@ -599,7 +599,34 @@ func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
 	}
 	out, err = helmTemplate(t, append(append(base, entry("c8s-operator", "/c8s")...), entry("c8s-operator-sh", "/bin/sh")...)...)
-	if err == nil || !strings.Contains(out, "different commands") {
-		t.Fatalf("conflicting pins for one digest must fail the render: err=%v\n%s", err, out)
+	if err == nil || !strings.Contains(out, "incomparable commands") {
+		t.Fatalf("incomparable pins for one digest must fail the render: err=%v\n%s", err, out)
+	}
+}
+
+// Two open-args entries for one digest whose pins are comparable both render:
+// the base carries the wider one, so an any-argv `c8s allowlist add` entry
+// beside a `/c8s cds-attest` application entry keeps rendering, as it did
+// before pinned entries reached the base.
+func TestChartOverlappingOperatorPinsKeepTheWider(t *testing.T) {
+	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	attest := "nriImagePolicy.bootstrapAllowlist.workloads.attest.containers[0]."
+	args := append([]string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"},
+		anyArgvEntryArgs("c8s-operator", opD, "ghcr.io/confidential-dot-ai/c8s-operator@"+opD)...)
+	args = append(args,
+		"--set-string", attest+"digest="+opD,
+		"--set-string", attest+"command.policy=exact",
+		"--set-string", attest+"command.argv[0]=/c8s",
+		"--set-string", attest+"command.argv[1]=cds-attest",
+		"--set-string", attest+"args.policy=any",
+		"--set-string", attest+"mounts.policy=any",
+	)
+	out, err := helmTemplate(t, args...)
+	if err != nil {
+		t.Fatalf("an any-argv entry beside a pinned one must render: %v\n%s", err, out)
+	}
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	if !base.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
+		t.Errorf("base did not keep the wider any-argv shape: %v", base.Workloads)
 	}
 }

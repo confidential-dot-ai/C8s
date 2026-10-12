@@ -106,9 +106,7 @@
      command any or exact — as digest -> {image, entrypoint}, entrypoint empty
      for command any. Both shapes can start a component before CDS is
      reachable, so both feed the base and cover a component for the render
-     guard. An entry that pins args, env or mounts is seed-only. Two entries
-     pinning one digest to different commands fail the render: the base
-     carries one pin per digest. */ -}}
+     guard. An entry that pins args, env or mounts is seed-only. */ -}}
 {{- define "c8s.openArgsEntries" -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
@@ -116,9 +114,23 @@
 {{- $command := dig "command" "policy" "" $c -}}
 {{- if and (or (eq $command "any") (eq $command "exact")) (eq (dig "args" "policy" "" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (eq (dig "mounts" "policy" "deny" $c) "any") -}}
 {{- $entrypoint := list -}}
-{{- if eq $command "exact" -}}{{- $entrypoint = dig "command" "argv" list $c -}}{{- end -}}
-{{- if and (hasKey $digests $c.digest) (ne (get (get $digests $c.digest) "entrypoint" | toJson) ($entrypoint | toJson)) -}}
-{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads pin %s to different commands (%s and %s); the base carries one pin per digest, so give the digest one open-args entry" $c.digest (get (get $digests $c.digest) "entrypoint" | toJson) ($entrypoint | toJson)) -}}
+{{- if eq $command "exact" -}}
+{{- $entrypoint = dig "command" "argv" list $c -}}
+{{- if not $entrypoint -}}
+{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads entry %s pins %s to an exact command with no argv" $name $c.digest) -}}
+{{- end -}}
+{{- end -}}
+{{- /* Two open-args entries for one digest: the base carries the wider pin —
+       any over a pin, a prefix over what extends it. Two pins neither of
+       which extends the other cannot both reach the base. */ -}}
+{{- if hasKey $digests $c.digest -}}
+{{- $prior := get (get $digests $c.digest) "entrypoint" -}}
+{{- $short := $entrypoint -}}{{- $long := $prior -}}
+{{- if gt (len $entrypoint) (len $prior) -}}{{- $short = $prior -}}{{- $long = $entrypoint -}}{{- end -}}
+{{- if and $short (ne ($short | toJson) (slice $long 0 (len $short) | toJson)) -}}
+{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads pin %s to incomparable commands (%s and %s); the base carries one pin per digest, so give the digest one open-args entry" $c.digest ($prior | toJson) ($entrypoint | toJson)) -}}
+{{- end -}}
+{{- $entrypoint = $short -}}
 {{- end -}}
 {{- $_ := set $digests $c.digest (dict "image" (default $entry.label $c.image | default "") "entrypoint" $entrypoint) -}}
 {{- end -}}

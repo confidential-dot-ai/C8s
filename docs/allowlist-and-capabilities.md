@@ -542,9 +542,10 @@ The host NRI plugin also carries a **base enforcement allowlist** in
 Either a base entry or a served entry must satisfy the launch constraints.
 Both sources check argv at preliminary admission, then argv, environment, and
 mounts at final admission; unavailable evidence fails constrained policies.
-Generated system-image entries pin the executable and explicitly allow mounts,
+The chart's component entries pin the executable and explicitly allow mounts,
 leaving the arguments and environment unconstrained so the platform can start
-before CDS is reachable.
+before CDS is reachable; the node image's generated RKE2 system entries leave
+command and args open as well.
 
 ## Bootstrap
 

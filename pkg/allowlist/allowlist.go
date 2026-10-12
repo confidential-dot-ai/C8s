@@ -317,8 +317,8 @@ func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 }
 
 // DigestEntry is the entry that admits an image under any command line: one
-// container at digest, labelled with the image reference. The chart seeds one
-// per bootstrap digest and `c8s allowlist add` writes one.
+// container at digest, labelled with the image reference. `c8s allowlist add`
+// writes one; the chart's component entries pin their entrypoint instead.
 func DigestEntry(digest types.Digest, image string) Workload {
 	return Workload{
 		Label:          image,

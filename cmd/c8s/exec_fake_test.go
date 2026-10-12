@@ -191,3 +191,20 @@ func captureStream(t *testing.T, stream **os.File, fn func()) string {
 
 func captureStdout(t *testing.T, fn func()) string { return captureStream(t, &os.Stdout, fn) }
 func captureStderr(t *testing.T, fn func()) string { return captureStream(t, &os.Stderr, fn) }
+
+// fakeCrane is a crane stub that resolves every reference to digest and
+// answers `crane config` with the entrypoint the chart pins for the image the
+// reference names, so an install's entrypoint check passes.
+func fakeCrane(digest string) string {
+	return `case "$1" in
+config)
+  case "$2" in
+  *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"]}}' ;;
+  *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"]}}' ;;
+  *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"]}}' ;;
+  *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"]}}' ;;
+  *) echo '{"config":{"Entrypoint":["/c8s"]}}' ;;
+  esac ;;
+*) echo ` + digest + ` ;;
+esac`
+}
