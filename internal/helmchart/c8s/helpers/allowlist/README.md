@@ -33,14 +33,15 @@ this seed merged with signed workload entries for CDS; the image also admits
 the core images in its NRI bootstrap floor. The local-path helper remains
 argv-pinned in the seed for baked nodes.
 
-`c8s.anyArgvDigests` extracts workload digests whose command, args, environment,
-and mount policies are all unconstrained. An omitted mount policy is `deny`
-and prevents inclusion. `c8s.baseWorkloads` renders the host plugin's boot
-base, excluding `c8s.argvPinnedDigests`: each `c8s.imageAllowlist` image as a
-`c8s.componentContainer` entry, and each `c8s.anyArgvDigests` digest as an
-any-argv entry, which wins for a system image an operator left unconstrained.
-Workloads that pin any of those fields remain in the served
-seed without being added by `c8s.anyArgvDigests`.
+`c8s.openArgsEntries` extracts workload digests whose args, environment and
+mount policies are unconstrained and whose command is `any` or `exact`, as
+digest-to-`{image, entrypoint}` with an empty entrypoint for `any`. An omitted
+mount policy is `deny` and prevents inclusion. `c8s.baseWorkloads` renders the
+host plugin's boot base, excluding `c8s.argvPinnedDigests`: each
+`c8s.imageAllowlist` image as a `c8s.componentContainer` entry, and each
+`c8s.openArgsEntries` digest under the command it pins or under any, which
+wins for a system image an operator wrote an entry for. Workloads that pin
+args, env or mounts remain in the served seed without reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes

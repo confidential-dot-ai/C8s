@@ -47,8 +47,9 @@ subject() { echo "c8s $(git -C "$C8S_ROOT" rev-parse --short HEAD) on $PLATFORM"
 kubeconfig() { echo "$KUBECONFIG"; }
 
 # "rogue" is the harness's curl image, which no entry declares at install;
-# "nginx" is its workload image, admitted under any argv by the install seed
-# (kind) or by an entry setup writes (metal). The rest are public images no
+# "nginx" is its workload image, the router's nginx digest, which the install
+# seed admits only under its entrypoint and the scenarios therefore admit
+# under any argv with an entry they write. The rest are public images no
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest.
 image_ref() {

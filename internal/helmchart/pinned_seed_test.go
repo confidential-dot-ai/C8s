@@ -544,3 +544,32 @@ func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
 		}
 	}
 }
+
+// An operator entry that pins a component's entrypoint and leaves args, env
+// and mounts open can start the component on a cold node, so it covers the
+// component for the fail-closed guard and reaches the base under that pin.
+// Pinning any other field keeps the entry seed-only (TestChartBaseSkipsPinnedEntries).
+func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
+	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
+	out, err := helmTemplate(t,
+		"--set-string", "image.digest="+opD,
+		"--set", "nriImagePolicy.policy.mode=fail-closed",
+		"--set-string", p+"digest="+opD,
+		"--set-string", p+"command.policy=exact",
+		"--set-string", p+"command.argv[0]=/c8s",
+		"--set-string", p+"args.policy=any",
+		"--set-string", p+"mounts.policy=any",
+	)
+	if err != nil {
+		t.Fatalf("helm template should render with the component covered by an entrypoint-pinned entry: %v\n%s", err, out)
+	}
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	index := base.BuildIndex()
+	if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/c8s", "operator"}}) {
+		t.Errorf("base does not admit the operator under the entry's pin: %v", base.Workloads)
+	}
+	if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
+		t.Errorf("base widened the operator's entry to any command: %v", base.Workloads)
+	}
+}

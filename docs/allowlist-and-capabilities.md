@@ -419,10 +419,15 @@ node has no cgroup namespace on any container, so the privileged inference
 would refuse everything there.
 
 The exemption is only as narrow as the base entry. The chart's component
-entries pin each image to its entrypoint, so restaging one with a shell, or with
-a volume mounted over the binary, is refused. The node image's generated RKE2
-system entries still admit their digests under `command`, `args` and `mounts`
-of `any`, so the control plane can restage one of those images — several ship a
+entries pin each image to its entrypoint, so restaging one with another
+executable, or with a volume mounted over the pinned path, is refused. That is
+all the pin covers: with `mounts` and `env` left `any`, an entrypoint that
+loads further code — nginx's `docker-entrypoint.d` scripts and its `PATH`
+lookup of `nginx`, the mesh's `ipset`, any dynamically linked binary's
+`LD_PRELOAD` — can still be pointed at a volume. Closing that needs `mounts`
+and `env` rules for those entries. The node image's generated RKE2 system
+entries still admit their digests under `command`, `args` and `mounts` of
+`any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
 pinning argv in the generated entries, which is systemfloor's to do; the
 plugin already matches the whole entry, so a pin takes effect as soon as it is
@@ -550,9 +555,9 @@ digest>` with a single container under `command: exact` at the image's
 entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`) and
 `args: any, env: any, mounts: any`; an operator-authored `workloads` entry of
 the same name replaces it whole in the rendered seed. The same component
-entries feed the host plugin's base allowlist, as do operator entries with
-unconstrained command, args, environment, and mounts; other operator entries
-are seed-only. The
+entries feed the host plugin's base allowlist, as does every operator entry
+that leaves args, environment and mounts unconstrained, whether its command is
+`any` or pinned; other operator entries are seed-only. The
 name is a function of the digest because CDS seeds **additively by name**: an
 image bump adds the new digest's entry beside the old one, which pods still
 running the old image keep matching while they recycle. The seed never
