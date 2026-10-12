@@ -308,10 +308,6 @@ spec:
             - --idle-timeout
             - {{ .Values.armtlsMesh.idleTimeout | quote }}
             {{- end }}
-            {{- if ne (int .Values.armtlsMesh.sessionCacheSize) 64 }}
-            - --session-cache-size
-            - {{ .Values.armtlsMesh.sessionCacheSize | quote }}
-            {{- end }}
             {{- if ne $certMode "self-signed" }}
             - --cert-mode
             - {{ $certMode | quote }}

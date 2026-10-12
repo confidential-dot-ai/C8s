@@ -499,9 +499,6 @@ armtlsMesh:
   maxConnsPerSource: 0
   idleTimeout: ""
 
-  # TLS session cache
-  sessionCacheSize: 64
-
   # Logging
   logLevel: info
 
