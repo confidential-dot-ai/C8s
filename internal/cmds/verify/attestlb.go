@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
@@ -122,6 +123,10 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 	if err != nil || !bytes.Equal(echoed, nonce) {
 		return nil, &securityError{err: fmt.Errorf("response nonce does not echo the challenge (possible replay or MITM)")}
 	}
+	servingDigest := servingLeafDigest(servingLeaf)
+	if r.ServingLeafSHA256 != "" && r.ServingLeafSHA256 != servingDigest {
+		return nil, &securityError{err: fmt.Errorf("receipt serving_leaf_sha256 does not match the serving certificate observed on the connection")}
+	}
 	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
@@ -137,21 +142,33 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 		return nil, &securityError{err: err}
 	}
 
+	servingLeafNote := "the serving leaf this connection presented"
+	if !fresh {
+		servingLeafNote = "the serving leaf recorded when the receipt was fetched (--observed-serving-cert)"
+	}
 	sandboxID, sandboxErr := armtls.SandboxIDFromCert(leaf)
 	workload, workloadErr := armtls.MatchedWorkloadFromCert(leaf)
 	return &evidence{
-		platform:         platformOrDefault(r.Platform),
-		rawEvidence:      r.Evidence,
-		erd:              erd,
-		fresh:            fresh,
-		source:           source,
-		bindingNote:      "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + the serving leaf this connection presented + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
-		leaf:             leaf,
-		leafChainDerived: true,
-		frontDoor:        frontDoorAttested,
-		sandboxID:        sandboxID,
-		sandboxErr:       sandboxErr,
-		workload:         workload,
-		workloadErr:      workloadErr,
+		platform:          platformOrDefault(r.Platform),
+		rawEvidence:       r.Evidence,
+		erd:               erd,
+		fresh:             fresh,
+		source:            source,
+		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
+		leaf:              leaf,
+		leafChainDerived:  true,
+		frontDoor:         frontDoorAttested,
+		servingLeafSHA256: servingDigest,
+		sandboxID:         sandboxID,
+		sandboxErr:        sandboxErr,
+		workload:          workload,
+		workloadErr:       workloadErr,
 	}, nil
+}
+
+// servingLeafDigest hashes a serving leaf the way cds-attest reports it in
+// serving_leaf_sha256, so a client can match the verdict to the receipt.
+func servingLeafDigest(der []byte) string {
+	sum := sha256.Sum256(der)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
