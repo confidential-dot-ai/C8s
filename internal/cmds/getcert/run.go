@@ -263,7 +263,10 @@ func run(cfg config) error {
 
 	creds, err := resumeCredentials(ctx, cfg, volume)
 	if err != nil {
-		return err
+		// Nothing resumed means nothing was revalidated, so whatever the volume
+		// still points at is unvalidated: withdraw it before exiting, or a
+		// crashlooping sidecar would leave it readable.
+		return errors.Join(err, withdrawGeneration(volume))
 	}
 
 	if err := obtainCertWithRetry(ctx, cfg, client, creds); err != nil {
@@ -434,6 +437,12 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, cred
 				continue
 			}
 			if err != nil {
+				// A failed renewal retains the published generation only while
+				// it still validates; once it does not, it is withdrawn and
+				// consumers fail closed rather than serve it.
+				if withdrawErr := creds.withdrawUnusable(time.Now()); withdrawErr != nil {
+					return withdrawErr
+				}
 				// A short backoff, not a full interval: the timer is paced so
 				// it fires around half the published generation's remaining
 				// lifetime, so by the time a renewal fails the generation is
