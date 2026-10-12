@@ -50,6 +50,29 @@ image_alias() { return $UNSUPPORTED; }
 
 served_allowlist() { al export; }
 
+# The allowlist front door of the guest is the CDS's own listener, which the
+# c8s CLI's signed writes and raw reads go through. The launch bundle's key is
+# the run's operator key; the token minter is built from the checkout on
+# first use, with the Go toolchain that built the CLI.
+cds_url() { echo "$C8S_ALLOWLIST_URL"; }
+operator_key() { echo "$C8S_OPERATOR_KEY"; }
+scratch() { echo "${SUITE_RESULTS:-${TMPDIR:-/tmp}}"; }
+optoken_bin() {
+    local bin
+    bin="$(scratch)/optoken"
+    if [ ! -x "$bin" ]; then
+        command -v go >/dev/null || return $UNSUPPORTED
+        go build -C "$C8S_ROOT" -o "$bin" ./test/integration/cluster/optoken >&2 || return 1
+    fi
+    echo "$bin"
+}
+
+# From the registry, with the crane the lane installs; no node shell.
+image_entrypoint() {
+    command -v crane >/dev/null || return $UNSUPPORTED
+    crane config "$1" | jq -r '.config | ((.Entrypoint // []) + (.Cmd // []))[]'
+}
+
 # `apply` takes a name-keyed map of entries and lints it against the live
 # document first.
 allowlist_put() { jq -c --arg name "$1" '{($name): .}' "$2" | al apply - >/dev/null; }

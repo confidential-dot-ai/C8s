@@ -22,6 +22,14 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" declares image "([^"]*)" as an init container$`, entryDeclaresInit)
 	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to "([^"]*)"$`, entryPinsArgv)
 	sc.Step(`^"([^"]*)" admits any argv for "([^"]*)"$`, entryAdmitsAnyArgv)
+	sc.Step(`^"([^"]*)" pins the command of "([^"]*)" to "([^"]*)"$`, entryPinsCommand)
+	sc.Step(`^"([^"]*)" pins the args of "([^"]*)" to "([^"]*)"$`, entryPinsArgs)
+	sc.Step(`^"([^"]*)" admits any command for "([^"]*)"$`, entryAdmitsAnyCommand)
+	sc.Step(`^"([^"]*)" admits any args for "([^"]*)"$`, entryAdmitsAnyArgs)
+	sc.Step(`^"([^"]*)" states no command or args policy for "([^"]*)"$`, entryStatesNoArgvPolicy)
+	sc.Step(`^"([^"]*)" states no args policy for "([^"]*)"$`, entryStatesNoArgsPolicy)
+	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to the entrypoint of that image$`, entryPinsEntrypoint)
+	sc.Step(`^"([^"]*)" pins the mounts of "([^"]*)" to one rule of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsMounts)
 	sc.Step(`^no workload entry declares both "([^"]*)" and "([^"]*)"$`, noEntryDeclaresBoth)
 	sc.Step(`^a workload entry admits image "([^"]*)" under any argv$`, someEntryAdmitsAnyArgv)
 	sc.Step(`^the entries declaring image "([^"]*)" are removed from the served allowlist$`, entriesRemoved)
@@ -130,6 +138,96 @@ func entryAdmitsAnyArgv(ctx context.Context, name, image string) error {
 		return err
 	}
 	c.Command, c.Args = anyArgv(), anyArgv()
+	return nil
+}
+
+// The sentences below set one policy of a declared container each; what they
+// leave alone keeps the default declare gave it, or the nil an earlier
+// sentence set.
+func entryPinsCommand(ctx context.Context, name, image, line string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Command = exactArgv(strings.Fields(line))
+	return nil
+}
+
+func entryPinsArgs(ctx context.Context, name, image, line string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Args = exactArgv(strings.Fields(line))
+	return nil
+}
+
+func entryAdmitsAnyCommand(ctx context.Context, name, image string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Command = anyArgv()
+	return nil
+}
+
+func entryAdmitsAnyArgs(ctx context.Context, name, image string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Args = anyArgv()
+	return nil
+}
+
+func entryStatesNoArgvPolicy(ctx context.Context, name, image string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Command, c.Args = nil, nil
+	return nil
+}
+
+func entryStatesNoArgsPolicy(ctx context.Context, name, image string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Args = nil
+	return nil
+}
+
+// entryPinsEntrypoint pins the whole argv to what the image starts with when
+// a pod spec overrides nothing, as the backend reads it from the image.
+func entryPinsEntrypoint(ctx context.Context, name, image string) error {
+	w := getWorld(ctx)
+	c, err := w.find(name, image)
+	if err != nil {
+		return err
+	}
+	ref, err := w.be.call("image_ref", image)
+	if err != nil {
+		return err
+	}
+	out, err := w.be.call("image_entrypoint", ref)
+	if err != nil {
+		return err
+	}
+	argv := strings.Split(out, "\n")
+	if out == "" {
+		return fmt.Errorf("image %s (%s) has no entrypoint and no cmd", image, ref)
+	}
+	c.Command, c.Args = exactArgv(argv), denyArgv()
+	return nil
+}
+
+func entryPinsMounts(ctx context.Context, name, image, kind, destination string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	c.Mounts = mountsPolicy{Policy: "exact", Rules: []mountRule{{Destination: destination, Kind: kind}}}
 	return nil
 }
 

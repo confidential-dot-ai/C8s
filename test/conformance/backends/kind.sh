@@ -44,9 +44,21 @@ image_alias() {
     node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
 }
 
-served_allowlist() {
-    cds_pf_start
-    curl -sSfk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist"
+# The CDS through the port-forward lib.sh shares; the harness's operator key
+# and token minter beside it.
+cds_url() { cds_pf_start && echo "https://127.0.0.1:$CDS_LOCAL_PORT"; }
+operator_key() { echo "$WORKDIR/operator.key"; }
+optoken_bin() { echo "$WORKDIR/optoken"; }
+scratch() { echo "$WORKDIR"; }
+
+served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
+
+# From the node's store, pulled when absent: the image's entrypoint, then its
+# cmd. The kind node image ships jq.
+image_entrypoint() {
+    image_digest "$1" >/dev/null
+    # shellcheck disable=SC2016  # $1 expands on the node
+    node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | ((.Entrypoint // []) + (.Cmd // []))[]"' _ "$1"
 }
 
 # Signed with the harness's operator key, as its own allowlist checks are.
@@ -134,11 +146,7 @@ cds_restart() {
 }
 
 # The number in the weak entity tag W/"<n>" of GET /allowlist.
-served_version() {
-    cds_pf_start
-    curl -sSfk -o /dev/null -D - "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" |
-        awk 'tolower($1) == "etag:" {gsub(/[^0-9]/, "", $2); print $2}'
-}
+served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
 
 node_containers() { node_exec crictl ps -a -q --image "$2"; }
 

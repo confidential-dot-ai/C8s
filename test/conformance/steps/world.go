@@ -25,6 +25,16 @@ type world struct {
 	entries map[string]*entry
 	written map[string]bool
 	removed map[string]json.RawMessage
+	// the CDS as a caller sees it (cdsapi.go): who sends the next write, the
+	// last write's token and status, a write signed before it is sent, and
+	// what a relying party read.
+	caller          string
+	lastToken       string
+	lastStatus      int
+	pending         *write
+	pendingValidity string
+	versionBefore   string
+	read            *reading
 	// appliedVersion is the served version the plugin had applied when the
 	// scenario last waited for it.
 	appliedVersion string
@@ -89,6 +99,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
+		registerCDS(sc)
 		registerNode(sc)
 	}
 }
@@ -222,25 +233,32 @@ func (e *entry) admitsAnyArgv(digest string) bool {
 	return false
 }
 
-// served is the document CDS serves at the moment of the call: its entries
-// parsed, and raw for putting one back as it was.
+// served is an allowlist document as CDS serves it: its entries parsed, and
+// raw for putting one back as it was.
 type served struct {
+	schema  string
 	entries map[string]*entry
 	raw     map[string]json.RawMessage
 }
 
+// served is the document CDS serves at the moment of the call.
 func (w *world) served() (served, error) {
 	out, err := w.be.call("served_allowlist")
 	if err != nil {
 		return served{}, err
 	}
+	return parseServed(out)
+}
+
+func parseServed(out string) (served, error) {
 	var doc struct {
+		Schema    string                     `json:"schema"`
 		Workloads map[string]json.RawMessage `json:"workloads"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		return served{}, fmt.Errorf("served allowlist is not JSON: %w", err)
 	}
-	s := served{raw: doc.Workloads, entries: make(map[string]*entry, len(doc.Workloads))}
+	s := served{schema: doc.Schema, raw: doc.Workloads, entries: make(map[string]*entry, len(doc.Workloads))}
 	for name, raw := range doc.Workloads {
 		e := &entry{}
 		if err := json.Unmarshal(raw, e); err != nil {
