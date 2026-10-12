@@ -72,24 +72,18 @@ base_declares() {
 }
 
 # The chart's nriImagePolicy.hostPaths.pluginDir/pluginFilename, which
-# containerd launches at its own start (plugin_path), and runtimeDir/
-# healthSocketName as the worker DaemonSet's pause container mounts it.
+# containerd launches at its own start (plugin_path), and its runtimeDir/
+# healthSocketName, both on the node.
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
-PLUGIN_HEALTH=/host/var/run/nri-image-policy/health.sock
+PLUGIN_HEALTH=/var/run/nri-image-policy/health.sock
 
-# The pids running the plugin binary, by /proc: the node image has no pgrep.
-plugin_pids() {
-    # shellcheck disable=SC2016  # the script runs on the node; $1 is its argument
-    node_exec sh -c 'for p in /proc/[0-9]*; do
-        [ "$(readlink "$p/exe" 2>/dev/null)" = "$1" ] && echo "${p#/proc/}"
-    done; true' _ "$PLUGIN_BIN"
-}
+# The pids running the plugin binary; the kind node image ships procps.
+plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
 
-# The plugin's own /healthz answers 200 once its first pull has settled. The
-# pause container carries curl and the host runtime directory.
+# The plugin's own /healthz answers 200 once its first pull has settled; the
+# kind node image ships curl.
 plugin_healthy() {
-    kubectl -n "$NS" exec ds/c8s-nri-image-policy-worker -c pause -- \
-        curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
+    node_exec curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
 }
 
 # Ready within the installer's budget: a containerd restart, then the first
