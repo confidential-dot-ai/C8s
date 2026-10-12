@@ -47,6 +47,7 @@ func registerIssuance(sc *godog.ScenarioContext) {
 	sc.Step(`^the extended key usage of the leaf "([^"]*)" holds includes "([^"]*)"$`, leafExtKeyUsage)
 	sc.Step(`^the leaf "([^"]*)" holds is read$`, leafRead)
 	sc.Step(`^its TTL is at most (\d+) hours$`, leafTTLAtMost)
+	sc.Step(`^it does not chain to the mesh CA the CDS now serves$`, leafDoesNotChainToServedCA)
 	sc.Step(`^its matched workload records the version of the served allowlist$`, matchedRecordsVersion)
 	sc.Step(`^its matched workload records the digest of the served allowlist$`, matchedRecordsDigest)
 	sc.Step(`^both containers of "([^"]*)" hold the same leaf$`, containersShareLeaf)
@@ -586,6 +587,24 @@ func leafTTLAtMost(ctx context.Context, hours int) error {
 	ttl := l.cert.NotAfter.Sub(l.cert.NotBefore)
 	if ttl > time.Duration(hours)*time.Hour {
 		return fmt.Errorf("the leaf's TTL is %s, more than %d hours", ttl, hours)
+	}
+	return nil
+}
+
+// leafDoesNotChainToServedCA: the leaf read earlier was signed by a mesh CA
+// the CDS no longer holds.
+func leafDoesNotChainToServedCA(ctx context.Context) error {
+	w := getWorld(ctx)
+	l, err := w.readLeaf()
+	if err != nil {
+		return err
+	}
+	ca, err := w.meshCAServed()
+	if err != nil {
+		return err
+	}
+	if err := l.cert.CheckSignatureFrom(ca); err == nil {
+		return fmt.Errorf("the leaf (serial %s) chains to the mesh CA the CDS now serves", l.serial())
 	}
 	return nil
 }
