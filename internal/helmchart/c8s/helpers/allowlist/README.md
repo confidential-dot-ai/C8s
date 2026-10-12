@@ -39,9 +39,12 @@ digest-to-`{image, entrypoint}` with an empty entrypoint for `any`. An omitted
 mount policy is `deny` and prevents inclusion. `c8s.baseWorkloads` renders the
 host plugin's boot base, excluding `c8s.argvPinnedDigests`: each
 `c8s.imageAllowlist` image as a `c8s.componentContainer` entry, and each
-`c8s.openArgsEntries` digest under the command it pins or under any, which
-wins for a system image an operator wrote an entry for. Workloads that pin
-args, env or mounts remain in the served seed without reaching the base.
+`c8s.openArgsEntries` digest under the command it pins or under any
+(`c8s.openArgsContainer`). For a system image an operator also wrote an
+open-args entry for, a wider operator pin (any, or a prefix of the
+entrypoint) replaces the component's container and a different one is
+admitted beside it. Workloads that pin args, env or mounts remain in the
+served seed without reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes
@@ -53,6 +56,9 @@ derived image digest outside `c8s.argvPinnedDigests`, followed by
 `c8s.argvPinnedEntries` and `bootstrapAllowlist.workloads`. The volumed entry
 also carries `c8s.volumedHookContainers`: the pre-delete teardown hook's
 script and pause, pinned like the installer's scripts and seed-only like them.
+A same-named `bootstrapAllowlist.workloads` override replaces the volumed
+entry whole, hook containers included; an override must declare them too, or
+the pre-delete hook is refused and the uninstall fails.
 A supplied workload replaces the entire derived entry of the same name. The document must satisfy `pkg/allowlist.ParseJSON`.
 
 ## Argv-pinned entries

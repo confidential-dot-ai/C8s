@@ -630,3 +630,34 @@ func TestChartOverlappingOperatorPinsKeepTheWider(t *testing.T) {
 		t.Errorf("base did not keep the wider any-argv shape: %v", base.Workloads)
 	}
 }
+
+// With derivation on, an operator open-args entry for a component's digest
+// pinned to another invocation does not displace the component's own pin from
+// the base: both are admitted there, so neither is refused on a cold node.
+func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
+	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	attest := "nriImagePolicy.bootstrapAllowlist.workloads.attest.containers[0]."
+	out, err := helmTemplate(t,
+		"--set-string", "image.digest="+opD,
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set-string", attest+"digest="+opD,
+		"--set-string", attest+"command.policy=exact",
+		"--set-string", attest+"command.argv[0]=/c8s",
+		"--set-string", attest+"command.argv[1]=cds-attest",
+		"--set-string", attest+"args.policy=any",
+		"--set-string", attest+"mounts.policy=any",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	index := base.BuildIndex()
+	for _, argv := range [][]string{{"/c8s", "operator"}, {"/c8s", "cds-attest", "--port=1"}} {
+		if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: argv}) {
+			t.Errorf("base does not admit %q", argv)
+		}
+	}
+	if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
+		t.Error("base admits the operator image under a shell")
+	}
+}

@@ -142,33 +142,53 @@
 {{/* The plugin boot base, as allowlist workloads keyed by DigestEntryName:
      the chart's system images pinned to their entrypoints, and every digest
      an operator entry admits with open args (c8s.openArgsEntries), under the
-     command that entry pins or under any — an operator's entry for a system
-     image wins, as its same-named override does in the seed. The boot config
-     excludes argv-pinned images, which are admitted by the served seed. */ -}}
+     command that entry pins or under any. The boot config excludes
+     argv-pinned images, which are admitted by the served seed. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
 {{- $openArgs := include "c8s.openArgsEntries" . | fromJson -}}
-{{- range $digest, $entry := (include "c8s.imageAllowlist" . | fromJson) -}}
-{{- if and (not (has $digest $pinnedDigests)) (not (hasKey $openArgs $digest)) -}}
-{{- $image := get $entry "image" -}}
-{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
-{{- $container := include "c8s.componentContainer" (dict "digest" $digest "entry" $entry "env" false) | fromJson -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
-{{- end -}}
-{{- end -}}
-{{- range $digest, $entry := $openArgs -}}
+{{- $components := include "c8s.imageAllowlist" . | fromJson -}}
+{{- range $digest, $entry := $components -}}
 {{- if not (has $digest $pinnedDigests) -}}
 {{- $image := get $entry "image" -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
-{{- $container := dict "digest" $digest "image" $image "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") -}}
-{{- if get $entry "entrypoint" -}}
-{{- $container = include "c8s.componentContainer" (dict "digest" $digest "entry" $entry "env" false) | fromJson -}}
+{{- $containers := list (include "c8s.componentContainer" (dict "digest" $digest "entry" $entry "env" false) | fromJson) -}}
+{{- /* An operator's open-args entry for the same digest: a wider pin (any, or
+       a prefix of the entrypoint) replaces the component's; one that pins
+       another invocation is admitted beside it, so neither the component nor
+       the operator's invocation is refused on a cold node. */ -}}
+{{- if hasKey $openArgs $digest -}}
+{{- $operator := get $openArgs $digest -}}
+{{- $pin := get $operator "entrypoint" -}}
+{{- $entrypoint := get $entry "entrypoint" -}}
+{{- $wider := le (len $pin) (len $entrypoint) -}}
+{{- range $i, $tok := $pin -}}{{- if and $wider (ne $tok (index $entrypoint $i)) -}}{{- $wider = false -}}{{- end -}}{{- end -}}
+{{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $operator) | fromJson -}}
+{{- if $wider -}}{{- $containers = list $container -}}{{- else -}}{{- $containers = append $containers $container -}}{{- end -}}
 {{- end -}}
+{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- end -}}
+{{- end -}}
+{{- range $digest, $entry := $openArgs -}}
+{{- if and (not (has $digest $pinnedDigests)) (not (hasKey $components $digest)) -}}
+{{- $image := get $entry "image" -}}
+{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
+{{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $entry) | fromJson -}}
 {{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
 {{- end -}}
 {{- end -}}
 {{ $workloads | toJson }}
+{{- end -}}
+
+{{/* The base container for an operator open-args entry: pinned to its
+     command when it has one, under any command otherwise. */ -}}
+{{- define "c8s.openArgsContainer" -}}
+{{- if get .entry "entrypoint" -}}
+{{- include "c8s.componentContainer" (dict "digest" .digest "entry" .entry "env" false) -}}
+{{- else -}}
+{{ dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") | toJson }}
+{{- end -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}
