@@ -28,14 +28,20 @@ func registerAdmission(sc *godog.ScenarioContext) {
 	sc.Step(`^(?:the container|both containers) of "([^"]*)" (?:is|are) created$`, containersCreated)
 	sc.Step(`^"([^"]*)" keeps running$`, keepsRunning)
 	sc.Step(`^the admission plugin on node "([^"]*)" denies a container running image "([^"]*)"$`, pluginDenies)
+	sc.Step(`^the admission plugin on node "([^"]*)" admits a container running image "([^"]*)"$`, pluginAdmits)
+	sc.Step(`^a container on node "([^"]*)" is running image "([^"]*)"$`, containerRunning)
+	sc.Step(`^the container running image "([^"]*)" is killed$`, runningContainerKilled)
+	sc.Step(`^the container running image "([^"]*)" keeps running$`, runningContainerKeepsRunning)
 	sc.Step(`^no process from image "([^"]*)" runs on node "([^"]*)"$`, noProcessFromImage)
 	sc.Step(`^the denial names image "([^"]*)"$`, denialNamesImage)
 	sc.Step(`^the denial does not contain "([^"]*)"$`, denialOmits)
 	sc.Step(`^the denial says the launch specification, not the image digest, was not admitted$`, denialIsLaunchNotAdmitted)
 }
 
-// observe bounds how long a step waits for the runtime to act or deny.
-const observe = 90 * time.Second
+// observe bounds how long a step waits for the runtime to act or deny. The
+// kubelet backs off after a failed create, doubling from 10s, so a container
+// created once the plugin is back can take over a minute to appear.
+const observe = 150 * time.Second
 
 // pluginApplied: the plugin on node is registered and ready, and holds what
 // CDS serves now, including whatever the scenario has described so far.
@@ -316,6 +322,81 @@ func pluginDenies(ctx context.Context, node, image string) error {
 		return err
 	}
 	return containerNotCreated(ctx, name)
+}
+
+// pluginAdmits deploys a probe pod running image on the node and expects its
+// container to be created.
+func pluginAdmits(ctx context.Context, node, image string) error {
+	w := getWorld(ctx)
+	name := fmt.Sprintf("probe-%d", len(w.pods))
+	if err := podRunsImage(ctx, name, image); err != nil {
+		return err
+	}
+	if err := deployOnNode(ctx, name, node); err != nil {
+		return err
+	}
+	return containersCreated(ctx, name)
+}
+
+// containerRunning starts a container of image on the node and waits for it
+// to run; later sentences refer to it by its image.
+func containerRunning(ctx context.Context, node, image string) error {
+	w := getWorld(ctx)
+	name := fmt.Sprintf("running-%d", len(w.pods))
+	if err := podRunsImage(ctx, name, image); err != nil {
+		return err
+	}
+	if err := deployOnNode(ctx, name, node); err != nil {
+		return err
+	}
+	p := w.pods[name]
+	st, err := w.await(p, func(st []containerStatus) bool { return len(st) == 1 && st[0].running })
+	switch {
+	case err != nil:
+		return err
+	case len(st) != 1 || !st[0].running:
+		return fmt.Errorf("the container of %s is not running within %s; denials: %s", image, observe, denials(st))
+	}
+	w.running[image] = p
+	return nil
+}
+
+func (w *world) runningPod(image string) (*pod, error) {
+	p, ok := w.running[image]
+	if !ok {
+		return nil, fmt.Errorf("the scenario started no container running image %q", image)
+	}
+	return p, nil
+}
+
+// runningContainerKilled: the container the scenario started is no longer
+// the one running. The kubelet recreates a killed container, and the plugin
+// decides that create anew, so a restart count or a denial is the trace.
+func runningContainerKilled(ctx context.Context, image string) error {
+	w := getWorld(ctx)
+	p, err := w.runningPod(image)
+	if err != nil {
+		return err
+	}
+	killed := func(st []containerStatus) bool {
+		return len(st) == 1 && (!st[0].running || st[0].restarts > 0 || st[0].denial != "")
+	}
+	st, err := w.await(p, killed)
+	switch {
+	case err != nil:
+		return err
+	case !killed(st):
+		return fmt.Errorf("the container running %s is still the one that was started, %s later", image, observe)
+	}
+	return nil
+}
+
+func runningContainerKeepsRunning(ctx context.Context, image string) error {
+	p, err := getWorld(ctx).runningPod(image)
+	if err != nil {
+		return err
+	}
+	return keepsRunning(ctx, p.name)
 }
 
 func noProcessFromImage(ctx context.Context, image, node string) error {

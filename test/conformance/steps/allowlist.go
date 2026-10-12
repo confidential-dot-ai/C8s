@@ -26,6 +26,8 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^a workload entry admits image "([^"]*)" under any argv$`, someEntryAdmitsAnyArgv)
 	sc.Step(`^the entries declaring image "([^"]*)" are removed from the served allowlist$`, entriesRemoved)
 	sc.Step(`^the base allowlist of node "([^"]*)" does not declare image "([^"]*)"$`, baseDoesNotDeclare)
+	sc.Step(`^the base allowlist of node "([^"]*)" declares image "([^"]*)"$`, baseDeclares)
+	sc.Step(`^a workload entry admitting image "([^"]*)" under any argv is added to the served allowlist$`, entryAdded)
 }
 
 // lastMutation is when this process last changed the served allowlist. It
@@ -273,24 +275,60 @@ func (w *world) restoreAllowlist() error {
 	return errors.Join(errs...)
 }
 
-// baseDoesNotDeclare checks a precondition on the node's base allowlist,
-// which stays fixed for the plugin's lifetime (L1).
-func baseDoesNotDeclare(ctx context.Context, node, image string) error {
+// entryAdded writes an entry admitting image under any argv now, without
+// waiting for the plugin: the scenario says what the plugin can reach.
+func entryAdded(ctx context.Context, image string) error {
+	w := getWorld(ctx)
+	if err := entryNamed(ctx, image); err != nil {
+		return err
+	}
+	if err := w.declare(image, image, false); err != nil {
+		return err
+	}
+	if err := entryAdmitsAnyArgv(ctx, image, image); err != nil {
+		return err
+	}
+	return w.writeEntries()
+}
+
+// baseDeclaresAnswer asks the backend whether the node's base allowlist,
+// fixed for the plugin's lifetime (L1), names image's digest.
+func baseDeclaresAnswer(ctx context.Context, node, image string) (answer, digest string, err error) {
 	w := getWorld(ctx)
 	k8sNode, err := w.be.call("node_name", node)
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	digest, err := w.digestOf(image)
+	digest, err = w.digestOf(image)
 	if err != nil {
-		return err
+		return "", "", err
 	}
-	answer, err := w.be.call("base_declares", k8sNode, digest)
+	answer, err = w.be.call("base_declares", k8sNode, digest)
+	return answer, digest, err
+}
+
+// baseDoesNotDeclare checks a precondition; a base allowlist that names the
+// image is a broken harness, not a result.
+func baseDoesNotDeclare(ctx context.Context, node, image string) error {
+	answer, digest, err := baseDeclaresAnswer(ctx, node, image)
 	if err != nil {
 		return err
 	}
 	if answer != "no" {
 		return fmt.Errorf("harness precondition: the base allowlist of node %q declares %s (%s)", node, image, digest)
+	}
+	return nil
+}
+
+// baseDeclares is a precondition this environment may not meet: which images
+// a base allowlist names is the installation's choice, so a miss is a skip.
+func baseDeclares(ctx context.Context, node, image string) error {
+	answer, _, err := baseDeclaresAnswer(ctx, node, image)
+	if err != nil {
+		return err
+	}
+	if answer != "yes" {
+		return godog.ErrSkip
 	}
 	return nil
 }
@@ -306,7 +344,8 @@ func (w *world) sync() error {
 // awaitApplied waits until two pull intervals have passed since the last
 // write or delete: a pull that started just before it has then been followed
 // by one that saw it. The plugin exposes nothing about the version it holds,
-// so this is a wait, not an observation.
+// so this is a wait, not an observation; the served version afterwards is
+// what it applied, unless the pull is blocked.
 func (w *world) awaitApplied() error {
 	s, err := w.be.call("pull_interval")
 	if err != nil {
@@ -317,5 +356,13 @@ func (w *world) awaitApplied() error {
 		return fmt.Errorf("pull interval %q: %w", s, err)
 	}
 	time.Sleep(time.Until(lastMutation.Add(2 * interval)))
+	if w.cdsBlocked {
+		return nil
+	}
+	version, err := w.be.call("served_version")
+	if err != nil && !errors.Is(err, godog.ErrSkip) {
+		return err
+	}
+	w.appliedVersion = version
 	return nil
 }

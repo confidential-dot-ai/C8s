@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,6 +25,18 @@ type world struct {
 	entries map[string]*entry
 	written map[string]bool
 	removed map[string]json.RawMessage
+	// appliedVersion is the served version the plugin had applied when the
+	// scenario last waited for it.
+	appliedVersion string
+	// running maps an image to the pod a scenario started a container of.
+	running map[string]*pod
+	// What the scenario did to the node and the CDS, undone after it: the
+	// Kubernetes nodes whose plugin it addressed, those it left stopped,
+	// whether it blocked the pull and whether it restarted the CDS.
+	nodes        map[string]bool
+	pluginDown   map[string]bool
+	cdsBlocked   bool
+	cdsRestarted bool
 }
 
 type pod struct {
@@ -49,12 +62,15 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				return ctx, err
 			}
 			w := &world{
-				be:        be,
-				namespace: "conf-" + hex.EncodeToString(suffix),
-				pods:      map[string]*pod{},
-				entries:   map[string]*entry{},
-				written:   map[string]bool{},
-				removed:   map[string]json.RawMessage{},
+				be:         be,
+				namespace:  "conf-" + hex.EncodeToString(suffix),
+				pods:       map[string]*pod{},
+				entries:    map[string]*entry{},
+				written:    map[string]bool{},
+				removed:    map[string]json.RawMessage{},
+				running:    map[string]*pod{},
+				nodes:      map[string]bool{},
+				pluginDown: map[string]bool{},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
@@ -65,12 +81,15 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			// Before may have failed before storing the world.
 			if w, ok := ctx.Value(worldKey{}).(*world); ok {
 				_, _ = kubectl(nil, "delete", "namespace", w.namespace, "--ignore-not-found", "--wait=false")
-				return ctx, w.restoreAllowlist()
+				// The node first: the allowlist is restored through the CDS,
+				// which the scenario may have blocked or restarted.
+				return ctx, errors.Join(w.restoreNode(), w.restoreAllowlist())
 			}
 			return ctx, nil
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
+		registerNode(sc)
 	}
 }
 

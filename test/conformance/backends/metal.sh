@@ -77,4 +77,13 @@ plugin_ready() {
 
 node_containers() { return $UNSUPPORTED; }
 
+# No shell on the node, so its plugin cannot be stopped or started; and
+# without a plugin start the plugin would ignore every allowlist a restarted
+# CDS serves (its versions start over), so the CDS stays up too.
+plugin_stop() { return $UNSUPPORTED; }
+plugin_start() { return $UNSUPPORTED; }
+cds_restart() { return $UNSUPPORTED; }
+
+served_version() { al list | awk '$1 == "version" {sub(/:$/, "", $2); print $2; exit}'; }
+
 dispatch "$@"
