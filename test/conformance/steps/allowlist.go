@@ -192,7 +192,7 @@ func someEntryAdmitsAnyArgv(ctx context.Context, image string) error {
 func (w *world) writeEntries() error {
 	for name, e := range w.entries {
 		written := w.writtenName(name)
-		if w.wrote(written) {
+		if w.written[written] {
 			continue
 		}
 		body, err := json.Marshal(e)
@@ -202,7 +202,7 @@ func (w *world) writeEntries() error {
 		if err := w.putEntry(written, body); err != nil {
 			return err
 		}
-		w.written = append(w.written, written)
+		w.written[written] = true
 	}
 	return nil
 }
@@ -249,7 +249,7 @@ func entriesRemoved(ctx context.Context, image string) error {
 		if err := w.deleteEntry(name); err != nil {
 			return err
 		}
-		if !w.wrote(name) {
+		if !w.written[name] {
 			w.removed[name] = s.raw[name]
 		}
 		deleted++
@@ -260,20 +260,11 @@ func entriesRemoved(ctx context.Context, image string) error {
 	return nil
 }
 
-func (w *world) wrote(name string) bool {
-	for _, n := range w.written {
-		if n == name {
-			return true
-		}
-	}
-	return false
-}
-
 // restoreAllowlist undoes the scenario's writes: its entries go, the entries
 // it removed come back.
 func (w *world) restoreAllowlist() error {
 	var errs []error
-	for _, name := range w.written {
+	for name := range w.written {
 		errs = append(errs, w.deleteEntry(name))
 	}
 	for name, body := range w.removed {

@@ -133,7 +133,7 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	for entry := range w.entries {
-		if !w.wrote(w.writtenName(entry)) {
+		if !w.written[w.writtenName(entry)] {
 			return fmt.Errorf("entry %q is described but not written; the scenario must say the plugin has applied the served allowlist before deploying", entry)
 		}
 	}

@@ -22,7 +22,7 @@ type world struct {
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
 	entries map[string]*entry
-	written []string
+	written map[string]bool
 	removed map[string]json.RawMessage
 }
 
@@ -53,6 +53,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				namespace: "conf-" + hex.EncodeToString(suffix),
 				pods:      map[string]*pod{},
 				entries:   map[string]*entry{},
+				written:   map[string]bool{},
 				removed:   map[string]json.RawMessage{},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
