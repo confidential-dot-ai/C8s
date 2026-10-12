@@ -154,6 +154,7 @@ func run(ctx context.Context, cfg config) error {
 		ExpectedWorkload:       cfg.expectedWorkload,
 		Backend:                engine.proxy,
 		Routes:                 engine.proxy.State(),
+		PublishRoutes:          cfg.routing.publish,
 		SessionTTL:             cfg.sessionTTL,
 		SessionMaxAge:          cfg.sessionMaxAge,
 		TunnelIOTimeout:        cfg.tunnelIOTimeout,

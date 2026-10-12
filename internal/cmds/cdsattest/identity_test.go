@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
@@ -128,6 +129,7 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	provider := &capturingProvider{}
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             provider,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -162,12 +164,15 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantReportData, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionIDRaw, nonce, identity.leaf.Raw, identity.ca.Raw)
+	wantReportData, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionIDRaw, nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !bytes.Equal(provider.lastReportData, wantReportData) {
 		t.Fatalf("report_data = %x, want identity transcript %x", provider.lastReportData, wantReportData)
+	}
+	if want := hex.EncodeToString(testRouteDigest[:]); bundle.RouteDigest != want {
+		t.Fatalf("bundle route_digest = %q, want %q", bundle.RouteDigest, want)
 	}
 
 	leafHash := sha256.Sum256(identity.leaf.Raw)
@@ -210,7 +215,7 @@ func validAttestPQBody(t *testing.T) []byte {
 }
 
 func TestIdentityBoundAttestationFailsClosedWithoutIdentity(t *testing.T) {
-	srv := NewServer(Config{Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS})
+	srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp := postAttestPQ(t, ts.URL, validAttestPQBody(t))
@@ -222,6 +227,7 @@ func TestIdentityBoundAttestationFailsClosedWithoutIdentity(t *testing.T) {
 
 func TestIdentityBoundAttestationFailsClosedOnInvalidConfiguredIdentity(t *testing.T) {
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: "/does/not/exist/cert.pem",
@@ -438,6 +444,7 @@ func TestAttestationRejectsQuerySelectors(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	certPath, _ := writeTestServingLeaf(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      certPath,
@@ -482,6 +489,7 @@ func TestAttestationRejectsQuerySelectors(t *testing.T) {
 func TestIdentityBoundAttestationRejectsDegenerateKey(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,

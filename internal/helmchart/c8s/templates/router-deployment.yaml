@@ -287,6 +287,11 @@ spec:
             - --backend-timeout={{ .Values.router.routing.backendTimeout }}
             - --tunnel-slots={{ include "c8s.positiveInt" (dict "value" .Values.router.routing.tunnelSlots "label" "router.routing.tunnelSlots") }}
             - --reserved-paths={{ include "router.reservedPaths" . }}
+            {{- if dig "routePublication" "enabled" false .Values.router }}
+            # Serve the applied signed manifest at /.well-known/c8s/routes for
+            # clients that check the route digest under pinned operator keys.
+            - --publish-routes
+            {{- end }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
           # IP so this pod-netns pod reaches the node-baked host attestation-api.

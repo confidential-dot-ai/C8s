@@ -145,6 +145,17 @@ func TestGatherOperatorKeys(t *testing.T) {
 		}
 	})
 
+	t.Run("silent in the attested modes", func(t *testing.T) {
+		// --operator-keys there checks the route manifest; a "use --kind cds"
+		// note would point at a combination parseRouteCheck refuses.
+		for _, mode := range []string{"attest-pq", "attest-lb"} {
+			got := gatherOperatorKeys(ctx, config{mode: mode, url: "x", operatorKeys: "operator.pub"}, &evidence{})
+			if got.note != "" || got.fingerprints != nil || got.fetchErr != nil {
+				t.Errorf("gatherOperatorKeys(--mode %s) = %+v, want an empty report", mode, got)
+			}
+		}
+	})
+
 	t.Run("no serving cert to bind to", func(t *testing.T) {
 		got := gatherOperatorKeys(ctx, config{kind: "cds", url: "cds.example.com"}, &evidence{})
 		if got.note == "" || got.fingerprints != nil {

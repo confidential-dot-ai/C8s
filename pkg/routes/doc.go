@@ -49,10 +49,6 @@
 // operator key can replay each other's manifests; pinning the route digest
 // detects it (V1).
 //
-// No evidence binds the route digest yet. Later changes cut router traffic
-// over to the router engine and add the evidence binding and route
-// publication (E1, E4).
-//
 // Requirement IDs in comments, such as D1, M3 and W2, refer to the route
 // policy specification. It is maintained outside this repository and is not
 // yet published.

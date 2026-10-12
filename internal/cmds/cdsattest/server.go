@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -40,6 +41,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -161,9 +163,14 @@ type Config struct {
 	// Backend routes tunnel requests by the applied route manifest (A7). Nil
 	// answers each with a sealed 503.
 	Backend Backend
-	// Routes, when set, gates new attested sessions on an applied, fresh route
-	// manifest (A2, F2). run always sets it; nil serves the channel alone.
+	// Routes gates new attested sessions on an applied, fresh route manifest
+	// (A2, F2) and supplies the route digest their transcripts bind (E1).
+	// run always sets it; nil refuses every attested handshake.
 	Routes *routing.State
+	// PublishRoutes serves the applied signed manifest at
+	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
+	// names hosts and backends a private deployment may not want public.
+	PublishRoutes bool
 	// DisableAttestEndpoints leaves attest-pq, attest-lb and the tunnel
 	// unregistered, for a router that runs only the routing listener.
 	DisableAttestEndpoints bool
@@ -185,10 +192,20 @@ type establishedSession struct {
 	client    string
 }
 
+// routeSource is the applied-manifest view the attested handshakes and the
+// route publication read: *routing.State in production.
+type routeSource interface {
+	Session() (*routing.Applied, error)
+	Current() *routing.Applied
+}
+
 // Server serves the c8s-verify endpoints.
 type Server struct {
 	cfg Config
 	log *slog.Logger
+	// routes is nil when no route manifest source is configured, and then
+	// every attested handshake is refused: its transcript binds a digest.
+	routes routeSource
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -225,9 +242,15 @@ func NewServer(cfg Config) *Server {
 	if cfg.TunnelIOTimeout <= 0 {
 		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
+	// A nil *routing.State must stay a nil interface for routesAdmit.
+	var source routeSource
+	if cfg.Routes != nil {
+		source = cfg.Routes
+	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
+		routes:           source,
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -304,6 +327,9 @@ func (s *Server) Handler() http.Handler {
 	// only needs to route this one fixed path to the sidecar.
 	r.Method(http.MethodPost, wellKnownPrefix+"/tunnel",
 		s.perClient(issuer.RateLimitBy(s.sessionLimiter, s.tunnelKey, http.HandlerFunc(s.handleTunnel))))
+	if s.cfg.PublishRoutes {
+		r.Method(http.MethodGet, routes.PublicationPath, s.perClient(http.HandlerFunc(s.handleRoutePublication)))
+	}
 	return r
 }
 
@@ -435,18 +461,20 @@ func attestNonce(w http.ResponseWriter, r *http.Request) (nonceB64 string, nonce
 // first: the client POSTs its nonce and X-Wing encapsulation key, the server
 // encapsulates once, and report_data commits the front-door mode and the
 // complete key exchange — the client's key, the server's ciphertext, the
-// session id, and the nonce — plus the exact mesh leaf and issuing mesh CA to
-// one domain-separated transcript. The leaf signs that transcript to prove
-// possession of its private key, and the session is live when the response
-// leaves; there is no second round trip.
+// session id, and the nonce — plus the exact mesh leaf, issuing mesh CA and
+// applied route digest to one domain-separated transcript. The leaf signs that
+// transcript to prove possession of its private key, and the session is live
+// when the response leaves; there is no second round trip.
 func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	req, nonce, xwingEK := parseAttestPQRequest(w, r)
 	if nonce == nil {
 		return
 	}
-	if !s.routesAdmit(w) {
+	applied, ok := s.routesAdmit(w)
+	if !ok {
 		return
 	}
+	digest := applied.Signed.Digest()
 	// Ahead of the report this request would mint: a request the store will
 	// not take costs no attestation.
 	client := clientBucket(r)
@@ -481,7 +509,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce)
+	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind mesh identity", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "mesh identity binding failed")
@@ -520,24 +548,27 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
 		SessionID:     id,
 		IdentityProof: proof,
+		RouteDigest:   hex.EncodeToString(digest[:]),
 	})
 }
 
 // handleAttestLB serves the ordinary-TLS binding: report_data commits the
 // front-door mode, nonce, the exact serving leaf nginx presents, the exact
-// mesh leaf, and the issuing mesh CA (overenc.LBTranscriptHash), and the mesh
-// leaf signs that transcript. No over-encryption key exchange happens and no
-// session is
-// stored — the client recomputes the transcript from the leaf it observed on
-// its own TLS connection and then rides that TLS.
+// mesh leaf, the issuing mesh CA and the applied route digest
+// (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
+// over-encryption key exchange happens and no session is stored — the client
+// recomputes the transcript from the leaf it observed on its own TLS
+// connection and then rides that TLS.
 func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	nonceB64, nonce := attestNonce(w, r)
 	if nonce == nil {
 		return
 	}
-	if !s.routesAdmit(w) {
+	applied, ok := s.routesAdmit(w)
+	if !ok {
 		return
 	}
+	digest := applied.Signed.Digest()
 	// The exact-DER binding detects leaf substitution, not key sharing: a
 	// WebPKI Secret's serving key is host-visible, so the host could terminate
 	// the client's TLS with the same leaf and proxy this request. Only a
@@ -561,7 +592,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce)
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -586,29 +617,31 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		FrontDoorMode:     s.cfg.FrontDoorMode,
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
+		RouteDigest:       hex.EncodeToString(digest[:]),
 	})
 }
 
 // routesAdmit refuses an attested handshake while no route manifest is applied
 // (A2) or the applied one is stale (F2), each with its own code so a client
-// can tell an unconfigured router from one cut off from the CDS. It gates
-// admission only, on a fresh applied manifest; binding the route digest into
-// the evidence (E1, E2) and publishing the manifest land with the verifier
-// changes.
-func (s *Server) routesAdmit(w http.ResponseWriter) bool {
-	if s.cfg.Routes == nil {
-		return true
+// can tell an unconfigured router from one cut off from the CDS. It returns
+// the manifest it loaded, whose digest the handshake's evidence binds (E1);
+// the handshake loads no other (E2). Later requests in the session route by
+// whatever manifest is then applied (E3).
+func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
+	if s.routes == nil {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "this router has no route manifest source")
+		return nil, false
 	}
-	_, err := s.cfg.Routes.Session()
+	applied, err := s.routes.Session()
 	switch {
-	case errors.Is(err, routing.ErrNotApplied):
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "no route manifest is applied yet")
-		return false
 	case errors.Is(err, routing.ErrStale):
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesStale, "the applied route manifest is stale")
-		return false
+		return nil, false
+	case err != nil || applied == nil:
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "no route manifest is applied yet")
+		return nil, false
 	}
-	return true
+	return applied, true
 }
 
 // meshIdentity loads the mesh credential set from the three files.

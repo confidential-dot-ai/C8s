@@ -488,6 +488,16 @@
             "secretName": {}
           }
         },
+        "routePublication": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" }
+          }
+        },
         "routes": {
           "$comment": "Removed: the route manifest names every backend. Listed only so validations.yaml can answer with the migration message rather than a generic unknown-key refusal."
         },
