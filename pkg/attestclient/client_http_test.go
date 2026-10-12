@@ -173,6 +173,53 @@ func TestMeshCA(t *testing.T) {
 	})
 }
 
+func TestAllowlistIfChanged(t *testing.T) {
+	const current = "7"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/allowlist" {
+			http.NotFound(w, r)
+			return
+		}
+		switch match := r.Header.Get("If-None-Match"); match {
+		case `W/"broken"`:
+			http.Error(w, "store down", http.StatusInternalServerError)
+		case `W/"` + current + `"`:
+			w.Header().Set("ETag", match)
+			w.WriteHeader(http.StatusNotModified)
+		default:
+			w.Header().Set("ETag", `W/"`+current+`"`)
+			_, _ = w.Write([]byte(`{"workloads":[]}`))
+		}
+	}))
+	defer srv.Close()
+	c := NewClientWithHTTP(srv.URL, srv.Client())
+
+	t.Run("304 is unchanged", func(t *testing.T) {
+		doc, changed, err := c.AllowlistIfChanged(context.Background(), current)
+		if err != nil || changed || doc.Body != nil {
+			t.Fatalf("AllowlistIfChanged(%s) = %+v, %v, %v; want unchanged", current, doc, changed, err)
+		}
+	})
+
+	t.Run("200 returns the served document", func(t *testing.T) {
+		doc, changed, err := c.AllowlistIfChanged(context.Background(), "6")
+		if err != nil || !changed {
+			t.Fatalf("AllowlistIfChanged(6) changed = %v, err = %v; want changed", changed, err)
+		}
+		if doc.Version != current || string(doc.Body) != `{"workloads":[]}` {
+			t.Fatalf("AllowlistIfChanged(6) = %+v, want version %s and the served body", doc, current)
+		}
+	})
+
+	t.Run("5xx is a StatusError", func(t *testing.T) {
+		_, _, err := c.AllowlistIfChanged(context.Background(), "broken")
+		var statusErr *StatusError
+		if !errors.As(err, &statusErr) || statusErr.Status != http.StatusInternalServerError {
+			t.Fatalf("error = %v, want StatusError 500", err)
+		}
+	})
+}
+
 func TestHealthzNotReady(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)

@@ -3,6 +3,7 @@
 package getcert
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -66,6 +67,7 @@ type config struct {
 	ReloadWatchPaths       []string
 	ReloadWatchInterval    time.Duration
 	CAWatchInterval        time.Duration
+	PolicyWatchInterval    time.Duration
 	DiscoveryOutPath       string
 	DiscoveryCDSCertURL    string
 	DiscoveryMeshCAURL     string
@@ -93,6 +95,7 @@ var procRoot = "/proc"
 var (
 	errInvalidDiscoveryPublicTLSMode             = errors.New("invalid discovery public TLS mode")
 	errInvalidCAWatchInterval                    = errors.New("invalid CA watch interval")
+	errInvalidPolicyWatchInterval                = errors.New("invalid policy watch interval")
 	errInvalidReloadWatchInterval                = errors.New("invalid reload watch interval")
 	errInvalidUnnamedRenewInterval               = errors.New("invalid unnamed renew interval")
 	errInvalidRenewJitterPercent                 = errors.New("invalid renew jitter percent")
@@ -148,6 +151,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags.StringArrayVar(&cfg.ReloadWatchPaths, "reload-watch", nil, "File path to poll for changes and reload nginx when it changes (repeatable)")
 	flags.DurationVar(&cfg.ReloadWatchInterval, "reload-watch-interval", time.Minute, "Poll interval for --reload-watch paths")
 	flags.DurationVar(&cfg.CAWatchInterval, "ca-watch-interval", 0, "Poll CDS's /ca at this interval and renew immediately when the bundle at --ca-out no longer contains the CA CDS currently holds. A CDS restart regenerates the mesh CA in-memory, so without this the pod serves the dead CA until the next scheduled renewal (0 = disabled; requires --ca-out and --renew-interval)")
+	flags.DurationVar(&cfg.PolicyWatchInterval, "policy-watch-interval", 0, "Poll CDS's /allowlist at this interval and renew, after a random delay of up to half the interval, when the active policy no longer matches the snapshot stamped in the installed leaf. A leaf names the policy snapshot at issuance, so strict clients reject it once the operator writes the allowlist, until it renews (0 = disabled; requires --workload-claims and --renew-interval)")
 	flags.StringVar(&cfg.DiscoveryOutPath, "discovery-out", "", "Path to write JSON discovery metadata for the issued certificate and attestation evidence")
 	flags.StringVar(&cfg.DiscoveryCDSCertURL, "discovery-cds-cert-url", "", "Public URL path where the CDS certificate PEM is served")
 	flags.StringVar(&cfg.DiscoveryMeshCAURL, "discovery-mesh-ca-url", "", "Public URL path where the mesh CA PEM is served")
@@ -287,7 +291,9 @@ func run(cfg config) error {
 // With --ca-watch-interval it also polls CDS's /ca and renews immediately when
 // the served CA bundle no longer contains the CA CDS holds, so a CDS restart
 // (which regenerates the mesh CA in-memory) does not leave the discovery
-// endpoints serving a dead CA until the next scheduled renewal.
+// endpoints serving a dead CA until the next scheduled renewal. With
+// --policy-watch-interval it polls CDS's /allowlist and renews, after a jitter,
+// when the policy no longer matches the installed leaf's matched-workload stamp.
 //
 // Until the first certificate lands the cadence is the initial-retry backoff
 // instead: c8s-cert-wait holds the workload on that certificate
@@ -310,6 +316,14 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, leaf
 	slog.Info("entering renewal loop", "interval", cfg.RenewInterval, "next", next, "have_cert", haveCert)
 	renewTimer := time.NewTimer(next)
 	defer renewTimer.Stop()
+	// renewDue lets the policy watch clamp its jitter to the scheduled renewal.
+	renewDue := time.Now().Add(next)
+	resetRenewal := func(d time.Duration) {
+		renewTimer.Reset(d)
+		renewDue = time.Now().Add(d)
+	}
+	// policyRenewPending debounces the policy watch until the timer fires.
+	var policyRenewPending bool
 
 	var watchC <-chan time.Time
 	var watchTicker *time.Ticker
@@ -334,6 +348,14 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, leaf
 		slog.Info("watching cds mesh CA for changes", "interval", cfg.CAWatchInterval, "ca_path", cfg.CAOutPath)
 	}
 
+	var policyWatchC <-chan time.Time
+	if cfg.PolicyWatchInterval > 0 {
+		policyTicker := time.NewTicker(cfg.PolicyWatchInterval)
+		defer policyTicker.Stop()
+		policyWatchC = policyTicker.C
+		slog.Info("watching cds allowlist policy for changes", "interval", cfg.PolicyWatchInterval)
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -354,13 +376,36 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, leaf
 				continue
 			}
 			slog.Info("cds holds a mesh CA the served bundle is missing, renewing now")
-			renewTimer.Reset(0)
+			resetRenewal(0)
+		case <-policyWatchC:
+			// A pending retry already re-issues, and an unparsed or unnamed
+			// leaf has no stamp to compare: the unnamed fast poll covers it.
+			if !haveCert || leaf == nil || failures > 0 || policyRenewPending {
+				continue
+			}
+			stamp, err := armtls.MatchedWorkloadFromCert(leaf)
+			if err != nil || stamp == nil {
+				continue
+			}
+			served, stale, err := stampedPolicyStale(ctx, client, stamp)
+			if err != nil {
+				slog.Warn("allowlist policy check failed", "error", err)
+				continue
+			}
+			if !stale {
+				continue
+			}
+			delay := policyRenewDelayFn(cfg.PolicyWatchInterval, time.Until(renewDue))
+			slog.Info("cds serves a newer allowlist policy than the leaf names, renewing", "stamped_version", stamp.AllowlistVersion, "served_version", served, "delay", delay)
+			policyRenewPending = true
+			resetRenewal(delay)
 		case <-renewTimer.C:
+			policyRenewPending = false
 			renewed, err := obtainCertFn(ctx, cfg, client)
 			if err != nil && !haveCert {
 				retry := initialBackoff.NextBackOff()
 				slog.Error("certificate request failed, still no certificate", "error", err, "retry_in", retry)
-				renewTimer.Reset(retry)
+				resetRenewal(retry)
 				continue
 			}
 			if err != nil {
@@ -380,7 +425,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, leaf
 				}
 				retry := renewalRetryInterval(cfg, leaf, failures)
 				slog.Error("certificate renewal failed, retrying", "error", err, "retry_in", retry, "failures", failures)
-				renewTimer.Reset(retry)
+				resetRenewal(retry)
 				continue
 			}
 			haveCert = true
@@ -396,7 +441,7 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, leaf
 					slog.Warn("certificate renewed but nginx reload failed", "error", err)
 				}
 			}
-			renewTimer.Reset(renewalInterval(cfg, leaf, unnamedRuns))
+			resetRenewal(renewalInterval(cfg, leaf, unnamedRuns))
 		case <-watchC:
 			changed, nextState, err := reloadWatchChanged(watchState, cfg.ReloadWatchPaths)
 			if err != nil {
@@ -701,6 +746,17 @@ func validateConfig(cfg config) error {
 			return fmt.Errorf("%w: --ca-watch-interval requires --renew-interval, the loop that re-issues on a CA change", errInvalidCAWatchInterval)
 		}
 	}
+	if cfg.PolicyWatchInterval < 0 {
+		return fmt.Errorf("%w: --policy-watch-interval must be 0 (disabled) or positive, got %v", errInvalidPolicyWatchInterval, cfg.PolicyWatchInterval)
+	}
+	if cfg.PolicyWatchInterval > 0 {
+		if !cfg.WorkloadClaims {
+			return fmt.Errorf("%w: --policy-watch-interval requires --workload-claims; without it the leaf carries no policy stamp to compare", errInvalidPolicyWatchInterval)
+		}
+		if cfg.RenewInterval <= 0 {
+			return fmt.Errorf("%w: --policy-watch-interval requires --renew-interval, the loop that re-issues on a policy change", errInvalidPolicyWatchInterval)
+		}
+	}
 	// A fast poll is a full attestation round-trip, so a sub-second value is
 	// never what an operator means; 0 is the documented "disabled".
 	if cfg.UnnamedRenewInterval != 0 && cfg.UnnamedRenewInterval < time.Second {
@@ -953,6 +1009,34 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caOutPath st
 		}
 	}
 	return false, nil
+}
+
+// stampedPolicyStale reports whether the allowlist CDS serves differs from the
+// snapshot stamp names, and the served version. Strict clients compare both
+// version and digest, so either mismatch is stale. The fetch rides the
+// armTLS-verified client, like servedCAStale's.
+func stampedPolicyStale(ctx context.Context, client attestclient.Client, stamp *armtls.MatchedWorkload) (string, bool, error) {
+	doc, changed, err := client.AllowlistIfChanged(ctx, stamp.AllowlistVersion)
+	if err != nil {
+		return "", false, fmt.Errorf("fetch allowlist from cds: %w", err)
+	}
+	if !changed {
+		return stamp.AllowlistVersion, false, nil
+	}
+	digest := sha256.Sum256(doc.Body)
+	stale := doc.Version != stamp.AllowlistVersion || !bytes.Equal(digest[:], stamp.AllowlistDigest)
+	return doc.Version, stale, nil
+}
+
+// policyRenewDelayFn is a var so the debounce test can hold a renewal pending.
+var policyRenewDelayFn = policyRenewDelay
+
+// policyRenewDelay spreads a fleet's policy-change renewals over half a watch
+// interval so one allowlist write does not land every pod on CDS at once. It
+// never postpones a renewal already due sooner.
+func policyRenewDelay(interval, remaining time.Duration) time.Duration {
+	delay := time.Duration(mrand.Int64N(int64(interval/2) + 1))
+	return max(0, min(delay, remaining))
 }
 
 // privateKeyMode returns 0640 for setgid directories, 0600 otherwise.

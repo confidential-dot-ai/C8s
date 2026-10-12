@@ -196,6 +196,9 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		// until the next scheduled renewal.
 		"--ca-watch-interval=1m",
 	)
+	// Without --workload-claims the leaf carries no policy stamp, and get-cert
+	// refuses the policy watch.
+	assertContainerLacksArgPrefix(t, cert, "--policy-watch-interval")
 	if cert.RestartPolicy == nil || *cert.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("c8s-cert restartPolicy = %v, want Always", cert.RestartPolicy)
 	}
@@ -1767,6 +1770,15 @@ func assertContainerNoArgPrefix(t *testing.T, container string, args []string, p
 	}
 }
 
+func assertContainerLacksArgPrefix(t *testing.T, c corev1.Container, prefix string) {
+	t.Helper()
+	for _, arg := range c.Args {
+		if strings.HasPrefix(arg, prefix) {
+			t.Fatalf("%s args contain %q, want no %s", c.Name, arg, prefix)
+		}
+	}
+}
+
 func assertContainerHasArgPrefix(t *testing.T, container string, args []string, prefix string) {
 	t.Helper()
 	for _, arg := range args {
@@ -2726,7 +2738,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims")
+	assertContainerArgs(t, cert, "--workload-claims", "--policy-watch-interval=1m")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -2971,6 +2983,7 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	}
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--verbose", "--renew-interval=30m", "--ca-watch-interval=2m")
+	assertContainerLacksArgPrefix(t, cert, "--policy-watch-interval")
 	if got := cert.SecurityContext.RunAsUser; got == nil || *got != 201 {
 		t.Fatalf("c8s-cert runAsUser = %v, want 201", got)
 	}
@@ -2994,6 +3007,17 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	if got := nginx.SecurityContext.RunAsNonRoot; got == nil || *got {
 		t.Fatalf("nginx runAsNonRoot = %v, want false", got)
 	}
+
+	claimsOut, err := helmTemplate(t,
+		"--set-string", "router.attest.expectedWorkload=infer",
+		"--set", "router.hostPort.enabled=false",
+		"--set-string", "router.certProvisioning.policyWatchInterval=3m",
+	)
+	if err != nil {
+		t.Fatalf("helm template (workload claims): %v\n%s", err, claimsOut)
+	}
+	claimsCert := routerGetCertContainer(t, claimsOut, "c8s-cert")
+	assertContainerArgs(t, claimsCert, "--workload-claims", "--policy-watch-interval=3m")
 }
 
 // TestChartDefaultRouterUpstreamIsWorkloadDirect pins the default front-door

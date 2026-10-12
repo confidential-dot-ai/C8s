@@ -640,6 +640,11 @@ list.
        volume and the socket's supplemental group
        (workloadclaims.InventorySocketGID) on the same condition. */ -}}
 {{- $extraArgs = append $extraArgs "--workload-claims" -}}
+{{- /* Only a claims leaf carries the policy stamp the watch compares;
+       get-cert refuses the flag without --workload-claims. */ -}}
+{{- with .Values.router.certProvisioning.policyWatchInterval -}}
+{{- $extraArgs = append $extraArgs (printf "--policy-watch-interval=%v" .) -}}
+{{- end -}}
 {{- if eq (include "router.mountInventorySocket" .) "true" -}}
 {{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
 {{- end -}}

@@ -248,31 +248,76 @@ func (c Client) Readyz() (bool, error) {
 	return c.ok("/readyz")
 }
 
+// AllowlistDocument is the allowlist CDS serves at GET /allowlist.
+type AllowlistDocument struct {
+	// Version is the store version from the response's weak ETag.
+	Version string
+	// Body is the canonical document bytes, the input to the digest a
+	// matched-workload stamp carries.
+	Body []byte
+}
+
+// AllowlistIfChanged fetches CDS's allowlist unless its version is still
+// version: it sends If-None-Match: W/"<version>" and reports changed=false on
+// 304, which CDS settles from a single-row version read. Authenticity comes
+// from the armTLS transport the client was constructed over, as for MeshCA.
+func (c Client) AllowlistIfChanged(ctx context.Context, version string) (AllowlistDocument, bool, error) {
+	header := http.Header{"If-None-Match": {`W/"` + version + `"`}}
+	resp, body, err := c.send(ctx, http.MethodGet, "/allowlist", nil, header)
+	if err != nil {
+		return AllowlistDocument{}, false, err
+	}
+	if resp.StatusCode == http.StatusNotModified {
+		return AllowlistDocument{}, false, nil
+	}
+	etag := resp.Header.Get("ETag")
+	served := strings.TrimSuffix(strings.TrimPrefix(etag, `W/"`), `"`)
+	return AllowlistDocument{Version: served, Body: body}, true, nil
+}
+
 // do sends method path with an optional JSON body and returns the response
 // body on 2xx. A non-2xx response becomes a *StatusError carrying a capped
 // copy of the body.
 func (c Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
+	_, respBody, err := c.send(ctx, method, path, body, nil)
+	return respBody, err
+}
+
+// send is do with extra request headers, returning the response alongside its
+// capped body. A 304 is a success only when header makes the request
+// conditional; any other non-2xx is a *StatusError.
+func (c Client) send(ctx context.Context, method, path string, body []byte, header http.Header) (*http.Response, []byte, error) {
 	var reader io.Reader
 	if body != nil {
 		reader = bytes.NewReader(body)
 	}
 	req, err := http.NewRequestWithContext(contextOrBackground(ctx), method, c.baseURL+path, reader)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
+	}
+	for name, values := range header {
+		req.Header[name] = values
 	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotModified && req.Header.Get("If-None-Match") != "" {
+		return resp, nil, nil
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
-		return nil, &StatusError{Status: resp.StatusCode, Body: string(respBody)}
+		return nil, nil, &StatusError{Status: resp.StatusCode, Body: string(respBody)}
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes))
+	if err != nil {
+		return nil, nil, err
+	}
+	return resp, respBody, nil
 }
 
 // ok reports whether a GET of path returned 2xx.
