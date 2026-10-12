@@ -13,9 +13,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
+	"net/mail"
 	"net/netip"
+	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -62,10 +66,101 @@ type Document struct {
 	Server                  ServerConfig `yaml:"server" json:"server"`
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
+
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
-	Workloads          string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
+
+	// Router is the server's front door. A baked image cannot know it at
+	// build time, so the signed launch file carries it.
+	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
+
 	serverTokenPresent bool
+}
+
+// Router selects the router's catch-all upstream and public hostnames. All
+// fields are optional; non-empty Hostnames switches the front door to ACME.
+type Router struct {
+	Upstream         string   `yaml:"upstream,omitempty" json:"upstream,omitempty"`
+	Hostnames        []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
+	ACMEEmail        string   `yaml:"acmeEmail,omitempty" json:"acme_email,omitempty"`
+	ACMEDirectoryURL string   `yaml:"acmeDirectoryURL,omitempty" json:"acme_directory_url,omitempty"`
+}
+
+// meshWrappedUpstreamRE is the chart's router.meshWrappedUpstream rule: the
+// operator-managed headless Service c8s-<id>.<ns>.svc.cluster.local:<port>.
+// It is the only plaintext http upstream the chart accepts, because the node
+// mesh wraps that hop in attested mTLS. Keep the two in lockstep.
+const meshWrappedUpstreamPattern = `^c8s-[a-z]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc\.cluster\.local:[0-9]+$`
+
+var meshWrappedUpstreamRE = regexp.MustCompile(meshWrappedUpstreamPattern)
+
+// ValidateRouterUpstream accepts only a mesh-wrapped upstream address with a
+// port in 1..65535, so the value is also safe inside an nginx directive.
+func ValidateRouterUpstream(address string) error {
+	if !meshWrappedUpstreamRE.MatchString(address) {
+		return fmt.Errorf("must be a mesh-wrapped c8s-<id>.<namespace>.svc.cluster.local:<port> address")
+	}
+	_, port, _ := strings.Cut(address, ":")
+	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
+		return fmt.Errorf("port must be between 1 and 65535")
+	}
+	return nil
+}
+
+// ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
+func ValidateHostname(name string) error {
+	if len(name) > 253 {
+		return fmt.Errorf("%q exceeds DNS name length", name)
+	}
+	if name == "" || net.ParseIP(name) != nil {
+		return fmt.Errorf("%q must be a lowercase DNS hostname", name)
+	}
+	for _, label := range strings.Split(name, ".") {
+		if !dnsLabel(label) {
+			return fmt.Errorf("%q must be a lowercase DNS hostname", name)
+		}
+	}
+	return nil
+}
+
+const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
+
+func (r *Router) validate() error {
+	if r.Upstream != "" {
+		if err := ValidateRouterUpstream(r.Upstream); err != nil {
+			return fmt.Errorf("router.upstream: %w", err)
+		}
+	}
+	if len(r.Hostnames) > maxRouterHostnames {
+		return fmt.Errorf("router.hostnames lists more than %d names", maxRouterHostnames)
+	}
+	seen := make(map[string]bool, len(r.Hostnames))
+	for _, name := range r.Hostnames {
+		if err := ValidateHostname(name); err != nil {
+			return fmt.Errorf("router.hostnames: %w", err)
+		}
+		if seen[name] {
+			return fmt.Errorf("router.hostnames lists %q twice", name)
+		}
+		seen[name] = true
+	}
+	if len(r.Hostnames) == 0 && (r.ACMEEmail != "" || r.ACMEDirectoryURL != "") {
+		return fmt.Errorf("router.acmeEmail and router.acmeDirectoryURL require router.hostnames")
+	}
+	if r.ACMEEmail != "" {
+		addr, err := mail.ParseAddress(r.ACMEEmail)
+		if err != nil || addr.Address != r.ACMEEmail || addr.Name != "" {
+			return fmt.Errorf("router.acmeEmail must be a bare email address")
+		}
+	}
+	if r.ACMEDirectoryURL != "" {
+		u, err := url.Parse(r.ACMEDirectoryURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.String() != r.ACMEDirectoryURL || strings.ContainsAny(r.ACMEDirectoryURL, " \t\r\n") {
+			return fmt.Errorf("router.acmeDirectoryURL must be an https URL")
+		}
+	}
+	return nil
 }
 
 // Image pins this boot's complete software identity. Platform names which
@@ -316,12 +411,15 @@ func (d *Document) validate() error {
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
 	}
-	if len(d.TLSSAN) > 253 {
-		return fmt.Errorf("tlsSAN exceeds DNS name length")
+	if err := ValidateHostname(d.TLSSAN); err != nil {
+		return fmt.Errorf("tlsSAN: %w", err)
 	}
-	for _, label := range strings.Split(d.TLSSAN, ".") {
-		if !dnsLabel(label) {
-			return fmt.Errorf("tlsSAN must be a lowercase DNS hostname")
+	if d.Router != nil {
+		if d.Role != Server {
+			return fmt.Errorf("router is server-only")
+		}
+		if err := d.Router.validate(); err != nil {
+			return err
 		}
 	}
 	if d.Workloads != "" {

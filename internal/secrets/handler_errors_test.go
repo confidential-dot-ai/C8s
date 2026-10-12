@@ -143,7 +143,7 @@ func TestInventoryFetchFailureRefuses(t *testing.T) {
 func TestOnlyInjectedContainersRefuses(t *testing.T) {
 	hn := newHarness(t)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 	}
 	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
 		t.Fatalf("injected-only sandbox = %d, want 403", w.Code)

@@ -259,7 +259,7 @@ reported   3 container(s)
 dropped    1 injected by c8s
 candidates 2
     sha256:1111…  [/serve]
-  - sha256:9999…  [get-secret]
+  - sha256:9999…  [/c8s get-secret]
     sha256:8888…  [sh -c sleep 1]
 
 vllm-llama  NEAR MISS
@@ -323,22 +323,40 @@ a workload's declared set, so they are removed before matching — an entry neve
 has to enumerate C8s's own sidecars.
 
 A container is dropped when its digest is admitted by some entry under an
-**unconstrained argv policy** (`command` and `args` both `any`) *and* its
-entrypoint is one C8s injects (`get-cert`, `get-secret`, `get-volume`, `/c8s`).
-Both halves are load-bearing. Admission alone would let a pod add any
-any-argv component image with its entrypoint overridden — and have it ignored.
+**unconstrained argv policy** (`command` and `args` both `any`) *and* its argv
+is the C8s binary in a mode the webhook injects: `/c8s get-cert`, `/c8s
+get-secret`, `/c8s get-volume`, or `/c8s probe-file`. Both conditions are
+required. Admission alone would let a pod add any any-argv component image
+with its entrypoint overridden — and have it ignored. The mode matters for the
+same reason. The C8s image in any other mode — `cds-attest`, `allowlist-proxy`,
+or a mode a pod author chose — is a declared container. The entry must admit it,
+as an init or a main container, or the pod matches nothing.
+
+A pod may add the image in one of the four modes, with arguments of its own.
+That container is dropped too: the inventory reports no container name, and
+matching keys on nothing the host writes. The drop therefore also requires
+every mount the container holds to be confined to the node, so whatever the
+container fetches or writes cannot reach any location the host reads. A
+confined mount is a platform mount, a read-only host path, or a volume on memory
+or encrypted scratch. A writable host path, a disk-backed `emptyDir`, or a PVC
+turns the container into a foreign container, and the pod matches nothing.
+Missing mount evidence fails closed the same way. The same holds for the real
+sidecars: a discovery or reload-watch volume the pod names for `get-cert` must
+be memory-backed, or the sidecar is foreign and the pod matches nothing. Each
+mode finds the node's sockets at a baked-in path, never a flag, so a pod author
+cannot point one at a socket of their choosing.
 
 The seeded component entries are the source: the injected image is among them,
 since it could not run otherwise, and an image bump seeds the new digest's entry
 beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#bootstrap)).
 
 What this rests on, in both directions: no image admitted under an unconstrained
-argv other than C8s's has an executable at one of those entrypoints, and the
-injected image's own entry stays unconstrained — an operator who narrows it
-(`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected sidecar
-into a foreign container and every release in the cluster is refused. Allowlist
-contents are operator-controlled and auditable, but that is a property of the
-deployment rather than something enforced here.
+argv other than C8s's carries an executable at `/c8s`, and the injected image's
+own entry stays unconstrained. An operator who narrows it
+(`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected
+sidecar into a foreign container, and every release in the cluster is refused.
+Allowlist contents are operator-controlled and auditable, but that is a property
+of the deployment rather than something enforced here.
 
 ## The grant
 

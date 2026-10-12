@@ -45,9 +45,21 @@ and pending steps are the judge's backlog and do not.
 A backend answers a fixed set of questions about one running environment so
 the steps need not know how it was built: which Kubernetes node stands behind
 a scenario's "node one", which pullable reference and digest a scenario's
-"nginx" means, what the CDS serves, whether the policy enforcer on a node is
-enforcing, which containers a node's runtime holds for a digest, and a
-Restricted-compatible pod manifest to deploy.
+"nginx" means, what the CDS serves, whether the admission plugin on a node is
+registered and ready and how often it pulls, whether the node's base allowlist
+names a digest, which containers a node's runtime holds for a digest, and a
+Restricted-compatible pod manifest to deploy. It also acts for the operator:
+when a scenario says the plugin has applied the served allowlist, the entries
+it described are written through the backend's signed path, and they are
+undone after the scenario. The plugin exposes nothing about the allowlist
+version it holds, so the steps wait until two pull intervals have passed since
+the last write before acting on it, and read the served version then.
+
+A backend also acts on the node and the CDS where a scenario asks: it stops
+and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
+and undoes that, and restarts the CDS. Each is undone after the scenario, and
+a plugin is started again wherever the CDS was restarted, since a plugin only
+accepts the versions a restarted CDS serves after a start of its own.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this
@@ -59,7 +71,7 @@ rejects unknown names.
 | Backend | Environment | Requires |
 |---|---|---|
 | [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec` | `C8S_IT_WORKDIR` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell, so `image_alias` and `node_containers` answer 77 | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start` and `cds_restart` answer 77 | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that

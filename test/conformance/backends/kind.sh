@@ -49,9 +49,95 @@ served_allowlist() {
     curl -sSfk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist"
 }
 
-enforcer_ready() {
-    kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=120s >/dev/null &&
-        node_exec test -S /var/run/nri-image-policy/workload-claims.sock
+# Signed with the harness's operator key, as its own allowlist checks are.
+allowlist_put() {
+    local code
+    code="$(cds_write PUT "/allowlist/workloads/$1" "$2")"
+    [ "$code" = 204 ] || { echo "backend: PUT /allowlist/workloads/$1: HTTP $code" >&2; return 1; }
+}
+
+allowlist_delete() {
+    local code
+    code="$(cds_write DELETE "/allowlist/workloads/$1" /dev/null)"
+    case "$code" in
+        204|404) ;;
+        *) echo "backend: DELETE /allowlist/workloads/$1: HTTP $code" >&2; return 1 ;;
+    esac
+}
+
+# The installer renders the base allowlist into the plugin's config directory
+# on the node; a digest is a string that appears nowhere else in it.
+base_declares() {
+    if node_exec grep -rqF "$2" /etc/nri/conf.d; then echo yes; else echo no; fi
+}
+
+# The chart's nriImagePolicy.hostPaths.pluginDir/pluginFilename, which
+# containerd launches at its own start (plugin_path), and its runtimeDir/
+# healthSocketName, both on the node.
+PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
+PLUGIN_HEALTH=/var/run/nri-image-policy/health.sock
+
+# The pids running the plugin binary; the kind node image ships procps.
+plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
+
+# The plugin's own /healthz answers 200 once its first pull has settled; the
+# kind node image ships curl.
+plugin_healthy() {
+    node_exec curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
+}
+
+# Ready within the installer's budget: a containerd restart, then the first
+# pull's bounded retries (2+4+8+16s between attempts) when the CDS is away.
+plugin_ready() {
+    local deadline=$(($(date +%s) + 300))
+    until plugin_healthy; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the plugin on $1 is not ready after 300s" >&2; return 1; }
+        sleep 2
+    done
+}
+
+# containerd does not relaunch a plugin that exited, so a killed plugin stays
+# down, and required_plugins makes every workload container create fail.
+plugin_stop() {
+    local pids
+    for _ in $(seq 1 30); do
+        pids="$(plugin_pids)"
+        [ -n "$pids" ] || return 0
+        # shellcheck disable=SC2086  # one argument per pid
+        node_exec kill $pids 2>/dev/null || true
+        sleep 1
+    done
+    echo "backend: the plugin on $1 is still running" >&2
+    return 1
+}
+
+# A containerd restart launches the plugins in plugin_path again; shims
+# survive it, so running containers do too. The new plugin registers, runs
+# its startup check once ready, and pulls afresh (its applied version starts
+# over).
+plugin_start() {
+    node_exec systemctl restart containerd
+    for _ in $(seq 1 60); do
+        [ -n "$(plugin_pids)" ] && { plugin_ready "$1"; return; }
+        sleep 1
+    done
+    echo "backend: the plugin on $1 did not start" >&2
+    return 1
+}
+
+# The CDS data volume is an emptyDir here (cds_volatile answers yes): the new
+# pod serves the seed at version 1. The port-forward followed the old pod.
+cds_restart() {
+    kubectl -n "$NS" rollout restart deploy/c8s-cds >/dev/null
+    kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null
+    cds_pf_stop
+}
+
+# The number in the weak entity tag W/"<n>" of GET /allowlist.
+served_version() {
+    cds_pf_start
+    curl -sSfk -o /dev/null -D - "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" |
+        awk 'tolower($1) == "etag:" {gsub(/[^0-9]/, "", $2); print $2}'
 }
 
 node_containers() { node_exec crictl ps -a -q --image "$2"; }

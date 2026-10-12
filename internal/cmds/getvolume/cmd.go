@@ -46,6 +46,9 @@ Nothing here creates one.`,
 	// This command's timeout also covers the node agent.
 	f.Lookup("request-timeout").Usage = "per-request timeout against CDS and the node agent"
 	f.StringSliceVar(&specs, "volume", nil, "NAME=/store/path to open; NAME selects the device by serial (repeatable)")
-	f.StringVar(&cfg.SocketDir, "socket-dir", workloadclaims.SidecarSocketDir, "directory holding the node agent's socket, as this pod sees it")
+	// The socket directory is baked in, not supplied, like get-cert's inventory
+	// endpoint: a flag would let a pod author point the key handoff at a
+	// socket of their own choosing.
+	cfg.SocketDir = workloadclaims.SidecarSocketDir
 	return cmd
 }

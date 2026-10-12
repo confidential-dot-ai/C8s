@@ -927,8 +927,9 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 }
 
 // socketDirAdjustment bind-mounts the inventory's socket directory, read-only,
-// at workloadclaims.SidecarSocketDir into the webhook-injected sidecars of an
-// injected pod — the OCI-level replacement for a pod-spec hostPath volume,
+// at workloadclaims.SidecarSocketDir into the socket consumers
+// (workloadclaims.IsSocketConsumer) of an injected pod — the OCI-level
+// replacement for a pod-spec hostPath volume,
 // which PodSecurity baseline and restricted would reject. nil for every other
 // container, and whenever the inventory is disabled.
 //
@@ -942,7 +943,7 @@ func (p *plugin) socketDirAdjustment(pod *api.PodSandbox, ctr *api.Container) *a
 	if pod.GetAnnotations()[workloadclaims.AnnotationInjected] != "true" {
 		return nil
 	}
-	if !workloadclaims.IsSidecarContainer(ctr.GetName()) {
+	if !workloadclaims.IsSocketConsumer(ctr.GetName()) {
 		return nil
 	}
 	adjust := &api.ContainerAdjustment{}

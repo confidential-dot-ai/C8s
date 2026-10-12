@@ -470,8 +470,11 @@ authored input, where admission reserves them and `c8s allowlist derive` drops
 them. get-cert runs with per-pod dynamic arguments,
 which is exactly why the seeded component entries carry `command: any, args:
 any`: their argv is not fixed and must not be argv-policed. Before matching, a
-container admitted that way and running an injected entrypoint is dropped from
-the candidate set ([`secrets.md`](secrets.md#the-injected-drop-set)).
+container admitted that way and running one of the invocations the webhook
+injects is dropped from the candidate set
+([`secrets.md`](secrets.md#the-injected-drop-set)). The same image in any other
+mode — for example, an application's `cds-attest` — is not injected, and the
+entry must declare it.
 
 ## Distribution and trust
 

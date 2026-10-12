@@ -353,6 +353,7 @@ func TestCreateContainer_MountsSocketDirIntoInjectedSidecars(t *testing.T) {
 				workloadclaims.CertContainerName,
 				workloadclaims.SecretContainerName,
 				workloadclaims.VolumeContainerName,
+				workloadclaims.AttestContainerName,
 			} {
 				adjust, _, err := createAndStart(p, context.Background(), pod, makeCtr(pod.Id, ctrName))
 				if err != nil {
