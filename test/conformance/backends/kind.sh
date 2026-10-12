@@ -130,7 +130,10 @@ cds_arg_set() {
 }
 
 # Wait for the one CDS pod that is none of the given UIDs (the pods before
-# the change) to run, then answer /healthz through the forward.
+# the change) to run and answer /healthz through the forward, then for the
+# Service to route to it: that takes its readiness probe, which runs some
+# seconds after the pod does. A CDS that reports itself not ready
+# (min-ca-validity) never joins the Service, and is not waited for.
 cds_await_running() {
     local deadline=$(($(date +%s) + 180)) pods uid phase
     while :; do
@@ -138,9 +141,14 @@ cds_await_running() {
         read -r uid phase <<<"$pods"
         if [ "$(printf '%s\n' "$pods" | grep -c .)" -eq 1 ] && [[ " $1 " != *" $uid "* ]] && [ "$phase" = Running ]; then
             cds_pf_start
-            return
+            break
         fi
         [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the reconfigured CDS is not running: $pods" >&2; return 1; }
+        sleep 2
+    done
+    while [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$CDS_LOCAL_PORT/readyz")" = 200 ]; do
+        [ -z "$(kubectl -n "$NS" get endpoints c8s-cds -o jsonpath='{.subsets[*].addresses[*].ip}')" ] || return 0
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the Service does not route to the ready CDS" >&2; return 1; }
         sleep 2
     done
 }
