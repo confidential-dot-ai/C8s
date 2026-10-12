@@ -97,6 +97,7 @@ c8s volume create \
   --escrow-out ./weights.escrow.json \
   --node node-1 \
   --url https://cds.example --measurements-file ./m.txt \
+  --mesh-ca ./mesh-ca.pem \
   --operator-key ./operator.key
 ```
 
@@ -113,6 +114,7 @@ c8s volume create --mutable \
   --node node-1 \
   --url https://cds.example \
   --measurements-file ./m.txt \
+  --mesh-ca ./mesh-ca.pem \
   --operator-key ./operator.key
 ```
 
@@ -128,8 +130,28 @@ c8s volume create --mutable \
   --node node-1 \
   --url https://cds.example \
   --measurements-file ./m.txt \
+  --mesh-ca ./mesh-ca.pem \
   --operator-key ./operator.key
 ```
+
+### Naming the CDS the key goes to
+
+`--mesh-ca` is the same gate `c8s secrets put` carries (see
+[secrets.md](secrets.md), "Naming the CDS you are writing to"): before the key is
+written, the CLI reads the mesh CA CDS serves at `GET /ca` over the attested
+connection and refuses unless it is in the bundle you pinned. `--measurements`
+alone proves an attested build, not your CDS, and a volume key unlocks a whole
+volume. Read the bundle with `c8s cds ca`.
+
+Everything that can be refused without reaching CDS is refused before anything
+is built: a missing or unreadable `--mesh-ca`, a missing operator key, an
+unpinned endpoint, or `http://` without `--insecure`. The connection and the CA
+comparison wait until the build is done, so a long build does not hold a router
+connection idle. A CA that does not match is therefore found after the image
+and escrow exist; the key is withheld, and the escrow file can be stored later
+with `c8s secrets put <path> --from-file <escrow> --mesh-ca <bundle>`. `--force` writes
+without the check and says so on stderr. `--dry-run` never reaches CDS and needs
+neither, and a plaintext `--insecure` dev endpoint is exempt.
 
 ### Ownership for a non-root consumer
 
@@ -209,8 +231,10 @@ the key.
 
 CDS keeps secrets in process memory and nowhere else, so **a CDS restart makes
 every volume in the cluster unopenable until its key is written again**, and the
-escrow file is what you write it back from. Lose it and restart CDS and the
-ciphertext is unrecoverable — there is no other copy.
+escrow file is what you write it back from, with `c8s secrets put <path>
+--from-file <escrow>`. A restart also replaces the mesh CA, so read the bundle
+again with `c8s cds ca` for that write's `--mesh-ca`. Lose the escrow file and
+restart CDS and the ciphertext is unrecoverable — there is no other copy.
 
 Keep escrow files somewhere durable and access-controlled. Their compromise is
 equivalent to handing over the plaintext, permanently.
