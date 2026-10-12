@@ -96,10 +96,19 @@ func mutatingWebhookConfig(name string) *admissionv1.MutatingWebhookConfiguratio
 	}
 }
 
+// validatingWebhookConfig is the pod validator's configuration, which the
+// operator patches beside the injector's and cannot come up without.
+func validatingWebhookConfig(injectorName string) *admissionv1.ValidatingWebhookConfiguration {
+	return &admissionv1.ValidatingWebhookConfiguration{
+		Name:     validatorConfigName(injectorName),
+		Webhooks: []admissionv1.ValidatingWebhook{{Name: "pods-validate.c8s.dev"}},
+	}
+}
+
 func TestSetupManagerFullWiring(t *testing.T) {
 	dir := stubWebhookCertDir(t)
 	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(mutatingWebhookConfig("c8s-mutating")).Build()
+		WithObjects(mutatingWebhookConfig("c8s-mutating"), validatingWebhookConfig("c8s-mutating")).Build()
 	stubDirectClient(t, fc, nil)
 
 	mgr := newTestManager(t)
@@ -245,5 +254,21 @@ func TestWebhookCertRotatorRetriesOnFailure(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("rotator did not stop after cancel")
+	}
+}
+
+// A mesh image with no image for the credential containers would inject an
+// endpoint with nothing to publish the credentials it reads, so the operator
+// refuses to start instead of injecting half a mesh.
+func TestSetupManagerRefusesMeshImageWithoutGetCertImage(t *testing.T) {
+	mgr := newTestManager(t)
+	opts := Options{
+		DisableStatusMirror: true,
+		MeshImage:           "ghcr.io/c8s/armtls-mesh:latest",
+		LeaderElectionNS:    "c8s-system",
+	}
+	err := setupManager(context.Background(), mgr, nil, opts, logr.Discard())
+	if err == nil || !strings.Contains(err.Error(), "--mesh-image needs --get-cert-image") {
+		t.Fatalf("err = %v, want the missing get-cert image refused", err)
 	}
 }

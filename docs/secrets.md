@@ -403,8 +403,8 @@ destination:
 ]}
 ```
 
-The destinations follow `confidential.ai/c8s-cert-dir` and
-`confidential.ai/c8s-secret-dir` where the pod sets them. `exact` is set
+The destinations are the injector's cert directory and
+`confidential.ai/c8s-secret-dir` where the pod sets it. `exact` is set
 equality, so the rules also cover every other non-platform mount the pod
 declares; a configMap, projected or PVC source classes as `data`, whose
 destination sits below `/mnt/c8s-data/`.

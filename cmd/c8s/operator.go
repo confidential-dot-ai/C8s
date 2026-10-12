@@ -16,12 +16,14 @@ var operatorCmd = &cobra.Command{
 	Use:   "operator",
 	Short: "Run the c8s controller-manager and admission webhook",
 	Long: `Runs the controller-runtime manager that mirrors per-pod attestation
-state into ConfidentialWorkload status. Also hosts the mutating admission
-webhook that injects get-cert bootstrap and renewal containers into pods opted
-in via annotation.
+state into ConfidentialWorkload status. Also hosts the admission webhooks that
+inject the C8s platform containers into a pod and reject a pod whose final
+shape is not the injected one.
 
-Pod-to-pod mTLS is handled by the node-level armtls-mesh DaemonSet, not
-by this command.`,
+With --mesh-image the injected mesh endpoint carries pod-to-pod traffic and
+every pod outside an exempt namespace is injected; without it the node-level
+armtls-mesh DaemonSet is the mesh and only pods annotated confidential.ai/cw
+are injected.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		policyJSON, err := operatorMeasurementsPolicy(cdsMeasurementsConfig, cdsMeasurements, cdsRTMRs)
 		if err != nil {
@@ -35,6 +37,7 @@ by this command.`,
 			LeaderElectionNS:            leaderElectionNS,
 			DisableStatusMirror:         !statusMirrorEnabled,
 			GetCertImage:                getCertImage,
+			MeshImage:                   meshImage,
 			CDSURL:                      cdsURL,
 			AttestationApiURL:           attestationApiURL,
 			CDSMeasurements:             cdsMeasurements,
@@ -51,8 +54,7 @@ by this command.`,
 			GetCertRunAsNonRoot:         getCertRunAsNonRoot,
 			WorkloadClaimsHostDir:       workloadClaimsHostDir,
 			MeshOutboundPort:            meshOutboundPort,
-			MeshExcludeSourceNamespaces: meshExcludeSourceNamespaces,
-		})
+			MeshExcludeSourceNamespaces: meshExcludeSourceNamespaces})
 	},
 }
 
@@ -63,6 +65,7 @@ var (
 	leaderElectionNS        string
 	statusMirrorEnabled     bool
 	getCertImage            string
+	meshImage               string
 	cdsURL                  string
 	attestationApiURL       string
 	cdsMeasurements         []string
@@ -90,13 +93,14 @@ func init() {
 	operatorCmd.Flags().StringVar(&leaderElectionNS, "leader-election-namespace", "c8s-system", "namespace holding the leader-election Lease")
 	operatorCmd.Flags().BoolVar(&statusMirrorEnabled, "status-mirror-enabled", true, "enable CRD-backed ConfidentialWorkload status mirror controller")
 	operatorCmd.Flags().StringVar(&getCertImage, "get-cert-image", "", "image reference the admission webhook injects for get-cert containers (empty = webhook disabled)")
+	operatorCmd.Flags().StringVar(&meshImage, "mesh-image", "", "armtls-mesh image the webhook injects as the pod mesh endpoint (empty = the node DaemonSet is the mesh and injection stays opt-in)")
 	operatorCmd.Flags().StringVar(&cdsURL, "cds-url", "", "CDS Service URL the injected get-cert containers POST to")
 	operatorCmd.Flags().StringVar(&attestationApiURL, "attestation-api-url", "", "attestation-api endpoint (empty = no verification)")
 	operatorCmd.Flags().StringSliceVar(&cdsMeasurements, "cds-measurements", nil, "SHA-384 hex launch measurement(s) the injected secret fetcher requires CDS to present (repeatable; empty pins none)")
 	cmdsutil.BindImagePolicyFlags(operatorCmd.Flags(), &cdsMeasurementsConfig, nil, "", "propagates the complete CDS identity policy to injected sidecars; excludes --cds-measurements and --cds-rtmrs")
 	operatorCmd.Flags().StringSliceVar(&cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> the injected sidecars additionally hold CDS to (repeatable; ignored for SNP evidence, empty pins no registers)")
 	operatorCmd.Flags().StringSliceVar(&excludeNamespaces, "exclude-namespaces", nil, "extra namespaces the startup reinject sweep skips (mirrors webhook.extraExcluded)")
-	operatorCmd.Flags().StringVar(&webhookConfigName, "webhook-config-name", "", "MutatingWebhookConfiguration to patch caBundle (empty = skip)")
+	operatorCmd.Flags().StringVar(&webhookConfigName, "webhook-config-name", "", "MutatingWebhookConfiguration to patch caBundle; the pod validator's configuration is named beside it (empty = skip)")
 	operatorCmd.Flags().StringVar(&webhookServiceName, "webhook-service-name", "", "webhook Service name (defaults to c8s)")
 	operatorCmd.Flags().StringVar(&webhookServiceNamespace, "webhook-service-namespace", "", "webhook Service namespace (defaults to --leader-election-namespace)")
 	operatorCmd.Flags().Int64Var(&certFSGroup, "cert-fs-group", 65532, "fsGroup applied to injected pods when unset (-1 disables mutation)")

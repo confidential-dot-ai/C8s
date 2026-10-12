@@ -338,10 +338,10 @@ trusted platform namespaces.
 
 `c8s uninstall` reverses `c8s install`. It runs `helm uninstall` to remove the
 release (operator, CDS, attestation-api, armtls-mesh, router, the
-webhook configuration and admission policies). The
-`MutatingWebhookConfiguration` is release-tracked, so it is deleted with the
-release — a `failurePolicy: Fail` webhook cannot outlive the operator Service
-and block pod creation cluster-wide.
+webhook configurations and admission policies). Both webhook configurations are
+release-tracked, so they are deleted with the release — a `failurePolicy: Fail`
+webhook cannot outlive the operator Service and block pod creation
+cluster-wide.
 
 It then **sweeps the host-side artifacts** that chart hooks cannot guarantee
 were removed: chart-installed NRI policy, armtls-mesh netfilter state, and the
@@ -930,9 +930,10 @@ revalidated and its key reused, so the previously-issued chain stays valid.
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on
-the mesh). File names are overridable per pod with `confidential.ai/c8s-cert-file`,
-`confidential.ai/c8s-key-file`, and `confidential.ai/c8s-ca-file`; all three
-must stay in the cert directory.
+the mesh). The directory and the three file names are the injector's: a pod
+carrying `confidential.ai/c8s-cert-volume`, `confidential.ai/c8s-cert-dir`,
+`confidential.ai/c8s-cert-file`, `confidential.ai/c8s-key-file` or
+`confidential.ai/c8s-ca-file` is refused.
 
 `tls.key` is written `0640` owned by the get-cert user (UID/GID 65532, the pod's
 `fsGroup`). An image whose entrypoint starts as root and then drops to a
@@ -947,8 +948,8 @@ application-level TLS reload remains the workload's responsibility unless the
 pod opts into one of the C8s reload annotations.
 
 Platform-owned workloads can specialize the same webhook behavior with typed
-C8s annotations for the cert volume, cert/key filenames, renewal interval,
-nginx reload, Secret watch paths, discovery output, and get-cert UID/GID.
+C8s annotations for the renewal interval, nginx reload, Secret watch paths,
+discovery output, and get-cert UID/GID.
 (router, living in the webhook-excluded release namespace, renders equivalent
 get-cert containers directly from the chart's templates instead.) The
 webhook rejects incomplete reload-watch or discovery annotation sets during pod

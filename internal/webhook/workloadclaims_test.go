@@ -35,7 +35,6 @@ func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 		GetCertImage:          "img",
 		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
-		CertDir:               "/etc/c8s/certs",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})
 
@@ -63,7 +62,6 @@ func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {
 		GetCertImage:          "img",
 		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
-		CertDir:               "/etc/c8s/certs",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})
 	cert := pod.Spec.InitContainers[0]
@@ -85,7 +83,6 @@ func TestWorkloadClaims_NoHostDirNoInventory(t *testing.T) {
 		GetCertImage:      "img",
 		CDSURL:            "http://cds:8443",
 		AttestationApiURL: "http://as:8400",
-		CertDir:           "/etc/c8s/certs",
 	})
 	if findVolume(pod, "c8s-workload-claims") != nil {
 		t.Fatal("no inventory volume expected when disabled")
@@ -108,7 +105,6 @@ func TestWorkloadClaims_InjectsInventorySupplementalGroup(t *testing.T) {
 		GetCertImage:          "img",
 		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
-		CertDir:               "/etc/c8s/certs",
 		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
 	})
 	if pod.Spec.SecurityContext == nil {

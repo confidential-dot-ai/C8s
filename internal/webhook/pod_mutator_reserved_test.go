@@ -22,7 +22,7 @@ func TestPreDeclaredReservedMountIsForcedReadOnly(t *testing.T) {
 		volume string
 	}{
 		{"secrets", secretsVolumeName},
-		{"certs", defaultCertVolumeName},
+		{"certs", certVolumeName},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
@@ -78,39 +78,33 @@ func TestFetcherKeepsWriteAccessAcrossReinvocation(t *testing.T) {
 	}
 }
 
-// TestEphemeralGuardIgnoresAnnotationRewrite is the annotation-rewrite bypass:
-// annotations stay mutable on a running pod, so pointing AnnotationCertVolume
-// at a decoy must not free the volume that actually holds the leaf key.
-func TestEphemeralGuardIgnoresAnnotationRewrite(t *testing.T) {
+// An ephemeral container is attached to a running pod, so it is the one way
+// into the volumes the injected sidecars hold.
+func TestEphemeralGuardCoversInjectedVolumes(t *testing.T) {
 	pod := podWithApp()
-	pod.Annotations = map[string]string{AnnotationCertVolume: "my-certs"}
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
-		Cert:       certSpec{Volume: "my-certs"},
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db"}},
 	}, secretsConfig())
 
-	// The attacker rewrites the annotation on the running pod, then attaches an
-	// ephemeral container mounting the real cert volume.
-	pod.Annotations[AnnotationCertVolume] = "decoy"
 	pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{{
 		Name:         "debugger",
-		VolumeMounts: []corev1.VolumeMount{{Name: "my-certs", MountPath: "/x"}},
+		VolumeMounts: []corev1.VolumeMount{{Name: certVolumeName, MountPath: "/x"}},
 	}}
 
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
-		t.Fatal("annotation rewrite let an ephemeral container mount the real cert volume")
+	if err := rejectEphemeralReach(pod); err == nil {
+		t.Fatal("an ephemeral container mounted the volume holding the leaf key")
 	}
 
 	// The secrets volume has a fixed name, so it is reserved either way.
 	pod.Spec.EphemeralContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: secretsVolumeName, MountPath: "/x"}}
-	if err := rejectEphemeralReservedMounts(pod); err == nil {
+	if err := rejectEphemeralReach(pod); err == nil {
 		t.Fatal("ephemeral container mounted the released secrets")
 	}
 
 	// A genuinely unrelated volume is still fine.
 	pod.Spec.EphemeralContainers[0].VolumeMounts = []corev1.VolumeMount{{Name: "scratch", MountPath: "/x"}}
-	if err := rejectEphemeralReservedMounts(pod); err != nil {
+	if err := rejectEphemeralReach(pod); err != nil {
 		t.Fatalf("rejected a harmless ephemeral container: %v", err)
 	}
 }
@@ -125,7 +119,7 @@ func TestReservedVolumeNamesCoversSidecarMounts(t *testing.T) {
 	}
 
 	reserved := reservedVolumeNames(pod)
-	for _, want := range []string{secretsVolumeName, defaultCertVolumeName, "my-certs", "sidecar-extra"} {
+	for _, want := range []string{secretsVolumeName, certVolumeName, "my-certs", "sidecar-extra"} {
 		if !reserved[want] {
 			t.Errorf("%q not reserved", want)
 		}

@@ -14,7 +14,6 @@ func secretsConfig() Config {
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		CDSURL:            "https://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-		CertDir:           "/etc/c8s/certs",
 	}
 }
 
@@ -212,7 +211,7 @@ func TestSecretsAnnotationsRequireOptIn(t *testing.T) {
 	for _, name := range []string{AnnotationSecrets, AnnotationSecretDir} {
 		pod := podWithApp()
 		pod.Annotations = map[string]string{name: "DB=/api/db"}
-		if _, err := parseAnnotations(pod); err == nil {
+		if _, err := parseAnnotations(pod, ""); err == nil {
 			t.Fatalf("%s without %s was silently ignored", name, AnnotationWorkload)
 		}
 	}
@@ -225,7 +224,7 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 		AnnotationSecrets:   " DB=/api/db , HF=/api/hf ",
 		AnnotationSecretDir: "/var/run/app-secrets",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,23 +241,18 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 // secret straight out of a live pod.
 func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		certVolume string
-		mount      string
-		ctrName    string
-		target     string
-		injected   bool
-		wantOK     bool
+		name     string
+		mount    string
+		ctrName  string
+		target   string
+		injected bool
+		wantOK   bool
 	}{
 		{name: "mounts secrets", mount: secretsVolumeName},
-		{name: "mounts certs", mount: defaultCertVolumeName},
-		{name: "mounts a renamed cert volume", certVolume: "my-certs", mount: "my-certs"},
+		{name: "mounts certs", mount: certVolumeName},
 		{name: "claims a reserved name", ctrName: reservedSecretContainerName, mount: "scratch"},
 		{name: "mounts something else", mount: "scratch", wantOK: true},
 		{name: "mounts nothing", wantOK: true},
-		// The pod renamed its cert volume, so the default name is no longer
-		// the one holding its key.
-		{name: "default name after a rename", certVolume: "my-certs", mount: defaultCertVolumeName, wantOK: true},
 		// Every container of an injected pod mounts c8s material, and a target
 		// shares its process namespace.
 		{name: "targets the cert sidecar", injected: true, target: reservedCertContainerName},
@@ -271,9 +265,6 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			pod := podWithApp()
 			if tc.injected {
 				mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
-			}
-			if tc.certVolume != "" {
-				pod.Annotations = map[string]string{AnnotationCertVolume: tc.certVolume}
 			}
 			name := tc.ctrName
 			if name == "" {
@@ -298,7 +289,7 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			}
 			pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{ec}
 
-			err := rejectEphemeralReservedMounts(pod)
+			err := rejectEphemeralReach(pod)
 			if tc.wantOK && err != nil {
 				t.Fatalf("rejected a harmless ephemeral container: %v", err)
 			}

@@ -79,19 +79,52 @@ func PatchCABundle(ctx context.Context, c client.Client, configName string, caPE
 	if err := c.Get(ctx, types.NamespacedName{Name: configName}, &cfg); err != nil {
 		return fmt.Errorf("get MutatingWebhookConfiguration %q: %w", configName, err)
 	}
+	return updateCABundle(ctx, c, configName, &cfg, caPEM,
+		clientConfigs(cfg.Webhooks, func(w *admissionv1.MutatingWebhook) *admissionv1.WebhookClientConfig {
+			return &w.ClientConfig
+		}))
+}
+
+// PatchValidatingCABundle is PatchCABundle for the pod validator's
+// ValidatingWebhookConfiguration.
+func PatchValidatingCABundle(ctx context.Context, c client.Client, configName string, caPEM []byte) error {
+	var cfg admissionv1.ValidatingWebhookConfiguration
+	if err := c.Get(ctx, types.NamespacedName{Name: configName}, &cfg); err != nil {
+		return fmt.Errorf("get ValidatingWebhookConfiguration %q: %w", configName, err)
+	}
+	return updateCABundle(ctx, c, configName, &cfg, caPEM,
+		clientConfigs(cfg.Webhooks, func(w *admissionv1.ValidatingWebhook) *admissionv1.WebhookClientConfig {
+			return &w.ClientConfig
+		}))
+}
+
+// updateCABundle installs caPEM on every client config of the fetched
+// configuration and writes it back, if that changes anything.
+func updateCABundle(ctx context.Context, c client.Client, configName string, cfg client.Object,
+	caPEM []byte, clients []*admissionv1.WebhookClientConfig,
+) error {
 	changed := false
-	for i := range cfg.Webhooks {
-		if bytes.Equal(cfg.Webhooks[i].ClientConfig.CABundle, caPEM) {
+	for _, client := range clients {
+		if bytes.Equal(client.CABundle, caPEM) {
 			continue
 		}
-		cfg.Webhooks[i].ClientConfig.CABundle = caPEM
+		client.CABundle = caPEM
 		changed = true
 	}
 	if !changed {
 		return nil
 	}
-	if err := c.Update(ctx, &cfg); err != nil {
-		return fmt.Errorf("update MutatingWebhookConfiguration %q: %w", configName, err)
+	if err := c.Update(ctx, cfg); err != nil {
+		return fmt.Errorf("update %T %q: %w", cfg, configName, err)
 	}
 	return nil
+}
+
+// clientConfigs alias the webhooks' client configs, for amending in place.
+func clientConfigs[W any](webhooks []W, clientConfig func(*W) *admissionv1.WebhookClientConfig) []*admissionv1.WebhookClientConfig {
+	configs := make([]*admissionv1.WebhookClientConfig, 0, len(webhooks))
+	for i := range webhooks {
+		configs = append(configs, clientConfig(&webhooks[i]))
+	}
+	return configs
 }
