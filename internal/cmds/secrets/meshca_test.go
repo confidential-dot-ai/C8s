@@ -2,60 +2,16 @@ package secrets
 
 import (
 	"bytes"
-	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/json"
 	"encoding/pem"
-	"math/big"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
-
-// testMeasurement is a syntactically valid SHA-384 launch measurement. Its
-// value is irrelevant: the injected verifier approves, so what these tests
-// exercise is the mesh-CA gate that runs after a pinned measurement passes.
-const testMeasurement = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-// meshCA mints a self-signed CA certificate standing in for one CDS's mesh CA.
-// Two calls produce two distinct CAs — the CDS_M / CDS_N split this gate exists
-// to detect.
-func meshCA(t *testing.T, cn string) []byte {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: cn},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return der
-}
 
 func writePEM(t *testing.T, name string, ders ...[]byte) string {
 	t.Helper()
@@ -70,46 +26,6 @@ func writePEM(t *testing.T, name string, ders ...[]byte) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-// armtlsServingCert mints the self-signed armTLS serving cert a direct CDS
-// presents, so the CLI reaches the write over the same attested path it uses in
-// production rather than over plaintext.
-func armtlsServingCert(t *testing.T) tls.Certificate {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	embedded, err := json.Marshal(teetypes.AttestationEvidence{
-		Platform: teetypes.PlatformAzSNP,
-		Evidence: json.RawMessage(`{"hcl_report":"fake"}`),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	att := &armtls.Attestation{Family: armtls.TEETypeSEVSNP, Report: embedded}
-	ext, err := armtls.MarshalExtension(att)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber:    big.NewInt(2),
-		Subject:         pkix.Name{CommonName: "cds"},
-		NotBefore:       time.Now().Add(-time.Hour),
-		NotAfter:        time.Now().Add(time.Hour),
-		DNSNames:        []string{"localhost"},
-		ExtraExtensions: []pkix.Extension{ext},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leaf, err := x509.ParseCertificate(der)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}
 }
 
 // newAttestedCDS serves the secrets API over armTLS, answering GET /ca with
@@ -135,10 +51,7 @@ func newAttestedCDSServingCA(t *testing.T, status int, body []byte) (*fakeCDS, s
 		_, _ = w.Write(body)
 	})
 	mux.HandleFunc("/", f.serve)
-	srv := httptest.NewUnstartedServer(mux)
-	srv.TLS = &tls.Config{Certificates: []tls.Certificate{armtlsServingCert(t)}}
-	srv.StartTLS()
-	t.Cleanup(srv.Close)
+	srv := testutil.NewARMTLSServer(t, mux)
 	return f, srv.URL
 }
 
@@ -146,11 +59,7 @@ func newAttestedCDSServingCA(t *testing.T, status int, body []byte) (*fakeCDS, s
 // only thing under test is the mesh-CA gate.
 func runAttested(t *testing.T, stdin string, args ...string) (stdout, stderr string, err error) {
 	t.Helper()
-	approve := func(context.Context, string, json.RawMessage, localverify.Params) (*teetypes.VerificationResult, error) {
-		match := true
-		return &teetypes.VerificationResult{SignatureValid: true, ReportDataMatch: &match}, nil
-	}
-	cmd := newCmd(testutil.VerifierStub(approve))
+	cmd := newCmd(testutil.ApproveAll())
 	var out, errb bytes.Buffer
 	cmd.SetOut(&out)
 	cmd.SetErr(&errb)
@@ -160,15 +69,15 @@ func runAttested(t *testing.T, stdin string, args ...string) (stdout, stderr str
 	return out.String(), errb.String(), err
 }
 
-// A measurement pin proves the peer is an attested build; every confidential
-// pod boots that build, so the write is refused until the operator names the
-// mesh CA that distinguishes their CDS from anything else at the same shape.
+// A measurement pin proves the peer is an attested build; nodes can boot that
+// same build, so the write is refused until the operator names the mesh CA that
+// distinguishes their CDS from another one at the same measurement.
 func TestPutRefusesWithoutMeshCA(t *testing.T) {
-	f, url := newAttestedCDS(t, meshCA(t, "cds-m"))
+	f, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-m"))
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key)
+		"--measurements", testutil.TestMeasurement, "--operator-key", key)
 	if err == nil {
 		t.Fatal("a write with no --mesh-ca was accepted")
 	}
@@ -184,12 +93,12 @@ func TestPutRefusesWithoutMeshCA(t *testing.T) {
 // operator never pinned is refused even though its attestation is valid — the
 // CDS_N case, where a genuine TEE at the same measurement is not your CDS.
 func TestPutRefusesAnotherCDSsMeshCA(t *testing.T) {
-	f, url := newAttestedCDS(t, meshCA(t, "cds-n"))
-	bundle := writePEM(t, "mesh-ca.pem", meshCA(t, "cds-m"))
+	f, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
+	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "cds-m"))
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
 	if err == nil {
 		t.Fatal("a write to a CDS serving an unpinned mesh CA was accepted")
 	}
@@ -203,13 +112,13 @@ func TestPutRefusesAnotherCDSsMeshCA(t *testing.T) {
 
 // The matching CA is the whole point: the write proceeds and the secret lands.
 func TestPutAcceptsThePinnedMeshCA(t *testing.T) {
-	ca := meshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "cds-m")
 	f, url := newAttestedCDS(t, ca)
 	bundle := writePEM(t, "mesh-ca.pem", ca)
 	key := writeOperatorKey(t)
 
 	out, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
 	if err != nil {
 		t.Fatalf("put against the pinned CDS: %v", err)
 	}
@@ -224,20 +133,20 @@ func TestPutAcceptsThePinnedMeshCA(t *testing.T) {
 // A bundle carrying several CAs (rotation) admits a CDS serving any one of
 // them, and still refuses one serving a CA outside the bundle.
 func TestPutAcceptsAnyCAInTheBundle(t *testing.T) {
-	old, current := meshCA(t, "cds-old"), meshCA(t, "cds-current")
+	old, current := testutil.MeshCA(t, "cds-old"), testutil.MeshCA(t, "cds-current")
 	bundle := writePEM(t, "mesh-ca.pem", old, current)
 	key := writeOperatorKey(t)
 
 	for _, ca := range [][]byte{old, current} {
 		_, url := newAttestedCDS(t, ca)
 		if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-			"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle); err != nil {
+			"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle); err != nil {
 			t.Fatalf("a CA in the bundle was refused: %v", err)
 		}
 	}
-	_, url := newAttestedCDS(t, meshCA(t, "cds-n"))
+	_, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
 	if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle); err == nil {
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle); err == nil {
 		t.Fatal("a CA outside the bundle was accepted")
 	}
 }
@@ -245,11 +154,11 @@ func TestPutAcceptsAnyCAInTheBundle(t *testing.T) {
 // --force is the documented escape hatch. It writes, and it says on stderr that
 // it skipped the check, so the bypass is visible in an operator's transcript.
 func TestPutForceSkipsTheCheckLoudly(t *testing.T) {
-	f, url := newAttestedCDS(t, meshCA(t, "cds-n"))
+	f, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-n"))
 	key := writeOperatorKey(t)
 
 	_, errOut, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--force")
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--force")
 	if err != nil {
 		t.Fatalf("--force did not write: %v", err)
 	}
@@ -265,11 +174,11 @@ func TestPutForceSkipsTheCheckLoudly(t *testing.T) {
 // would vacuously satisfy a subset check.
 func TestPutRefusesEmptyServedCA(t *testing.T) {
 	_, url := newAttestedCDS(t, nil)
-	bundle := writePEM(t, "mesh-ca.pem", meshCA(t, "cds-m"))
+	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "cds-m"))
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
 	if err == nil {
 		t.Fatal("a CDS serving no CA was accepted")
 	}
@@ -281,7 +190,7 @@ func TestPutRefusesEmptyServedCA(t *testing.T) {
 // An unreadable or certificate-free bundle fails the write rather than
 // degrading to no check.
 func TestPutRefusesUnusableBundle(t *testing.T) {
-	_, url := newAttestedCDS(t, meshCA(t, "cds-m"))
+	_, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-m"))
 	key := writeOperatorKey(t)
 	empty := filepath.Join(t.TempDir(), "empty.pem")
 	if err := os.WriteFile(empty, []byte("not pem\n"), 0o600); err != nil {
@@ -293,7 +202,7 @@ func TestPutRefusesUnusableBundle(t *testing.T) {
 		"no certs": empty,
 	} {
 		_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-			"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", path)
+			"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", path)
 		if err == nil {
 			t.Fatalf("%s bundle was accepted", name)
 		}
@@ -318,7 +227,7 @@ func TestPutPlaintextInsecureSkipsTheGate(t *testing.T) {
 // one. Each of these is a distinct refusal, and none of them may fall through
 // to a comparison against a set the CLI never actually received.
 func TestPutRefusesAnUnusableCAResponse(t *testing.T) {
-	good := meshCA(t, "cds-m")
+	good := testutil.MeshCA(t, "cds-m")
 	bundle := writePEM(t, "mesh-ca.pem", good)
 	key := writeOperatorKey(t)
 
@@ -363,7 +272,7 @@ func TestPutRefusesAnUnusableCAResponse(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f, url := newAttestedCDSServingCA(t, tc.status, tc.body)
 			_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-				"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+				"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
 			if err == nil {
 				t.Fatal("the write was accepted")
 			}
@@ -381,15 +290,15 @@ func TestPutRefusesAnUnusableCAResponse(t *testing.T) {
 // check, so proceed" branch: an unanswered /ca is the same refusal as a wrong
 // one.
 func TestPutRefusesWhenTheCAIsUnreachable(t *testing.T) {
-	_, url := newAttestedCDS(t, meshCA(t, "cds-m"))
-	bundle := writePEM(t, "mesh-ca.pem", meshCA(t, "cds-m"))
+	_, url := newAttestedCDS(t, testutil.MeshCA(t, "cds-m"))
+	bundle := writePEM(t, "mesh-ca.pem", testutil.MeshCA(t, "cds-m"))
 	key := writeOperatorKey(t)
 
 	// A port with nothing behind it: the URL parses and the scheme is https,
 	// so the gate runs and the fetch is what fails.
 	dead := strings.Replace(url, url[strings.LastIndex(url, ":")+1:], "1", 1)
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", dead,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", bundle)
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", bundle)
 	if err == nil {
 		t.Fatal("a write to an unreachable CDS was accepted")
 	}
@@ -399,7 +308,7 @@ func TestPutRefusesWhenTheCAIsUnreachable(t *testing.T) {
 // usable bundle: the extra block is skipped, and the CA in it still matches.
 // Operators paste these out of files that hold more than one kind of object.
 func TestPutIgnoresNonCertificateBlocksInTheBundle(t *testing.T) {
-	ca := meshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "cds-m")
 	f, url := newAttestedCDS(t, ca)
 	var buf bytes.Buffer
 	if err := pem.Encode(&buf, &pem.Block{Type: "PRIVATE KEY", Bytes: []byte("ignored")}); err != nil {
@@ -415,7 +324,7 @@ func TestPutIgnoresNonCertificateBlocksInTheBundle(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	if _, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", path); err != nil {
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", path); err != nil {
 		t.Fatalf("a bundle with a non-certificate block was refused: %v", err)
 	}
 	if len(f.seen) != 1 {
@@ -426,7 +335,7 @@ func TestPutIgnoresNonCertificateBlocksInTheBundle(t *testing.T) {
 // A bundle whose certificate does not parse fails the write. Pinning against a
 // set the CLI could not fully read is not pinning.
 func TestPutRefusesABundleWithAnUnparseableCertificate(t *testing.T) {
-	ca := meshCA(t, "cds-m")
+	ca := testutil.MeshCA(t, "cds-m")
 	_, url := newAttestedCDS(t, ca)
 	path := filepath.Join(t.TempDir(), "truncated.pem")
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: ca[:len(ca)/2]}), 0o600); err != nil {
@@ -435,11 +344,45 @@ func TestPutRefusesABundleWithAnUnparseableCertificate(t *testing.T) {
 	key := writeOperatorKey(t)
 
 	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
-		"--measurements", testMeasurement, "--operator-key", key, "--mesh-ca", path)
+		"--measurements", testutil.TestMeasurement, "--operator-key", key, "--mesh-ca", path)
 	if err == nil {
 		t.Fatal("an unparseable bundle was accepted")
 	}
 	if !strings.Contains(err.Error(), "--mesh-ca") || !strings.Contains(err.Error(), "does not parse") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// The CA check binds the write to the peer that served the CA. Here the real
+// CDS answers /ca and closes the connection; the redial lands on another
+// attested server at the same measurement, which serves the same public CA
+// bytes. Its handshake passes attestation, so only the serving-certificate pin
+// stands between it and the secret.
+func TestPutRefusesAWriteThatRedialsToAnotherPeer(t *testing.T) {
+	ca := testutil.MeshCA(t, "cds-m")
+	impostor := &fakeCDS{values: map[string]intsecrets.Origin{}}
+	impostorMux := http.NewServeMux()
+	impostorMux.HandleFunc("/ca", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(testutil.PEMCerts(ca)) })
+	impostorMux.HandleFunc("/", impostor.serve)
+	impostorSrv := testutil.NewARMTLSServer(t, impostorMux)
+
+	var proxy *testutil.ReroutingProxy
+	checkedMux := http.NewServeMux()
+	checkedMux.HandleFunc("/ca", func(w http.ResponseWriter, _ *http.Request) {
+		proxy.Reroute(impostorSrv)
+		w.Header().Set("Connection", "close")
+		_, _ = w.Write(testutil.PEMCerts(ca))
+	})
+	proxy = testutil.NewReroutingProxy(t, testutil.NewARMTLSServer(t, checkedMux))
+	url := proxy.URL
+
+	_, _, err := runAttested(t, "hunter2", "put", "/tenant-a/db", "--url", url,
+		"--measurements", testutil.TestMeasurement, "--operator-key", writeOperatorKey(t),
+		"--mesh-ca", writePEM(t, "mesh-ca.pem", ca))
+	if err == nil || !strings.Contains(err.Error(), "different serving certificate") {
+		t.Fatalf("got %v, want the redial refused for presenting another certificate", err)
+	}
+	if len(impostor.seen) != 0 {
+		t.Fatalf("the secret reached a peer other than the one whose CA was checked (%d writes)", len(impostor.seen))
 	}
 }

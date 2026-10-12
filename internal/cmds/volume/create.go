@@ -2,6 +2,7 @@ package volume
 
 import (
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/api/resource"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -25,6 +27,7 @@ type createConfig struct {
 	workDir   string
 	mutable   bool
 	dryRun    bool
+	gate      cdsconn.MeshCAGate
 
 	// run executes the build tools. Not a flag: tests set it so the whole
 	// create flow is exercised without erofs-utils and cryptsetup installed.
@@ -32,7 +35,7 @@ type createConfig struct {
 }
 
 func newCreateCmd(o *options) *cobra.Command {
-	var cfg createConfig
+	cfg := createConfig{gate: cdsconn.MeshCAGate{What: "volume key"}}
 	cmd := &cobra.Command{
 		Use:   "create",
 		Short: "Build an encrypted volume and store its key",
@@ -56,7 +59,10 @@ on the c8s node image. See docs/volumes.md for attachment recipes.
 
 The key is generated here and exists in exactly two places: the CDS process, and
 the escrow file. A CDS restart empties the store, and without the escrow file
-the volume is unopenable — keep it somewhere durable and access-controlled.`,
+the volume is unopenable — keep it somewhere durable and access-controlled.
+
+The write names the CDS it trusts with --mesh-ca: the mesh CA CDS serves must be
+one you pinned, or the key is refused. --force writes without that check.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runCreate(cmd, o, cfg)
@@ -73,6 +79,7 @@ the volume is unopenable — keep it somewhere durable and access-controlled.`,
 	f.StringVar(&cfg.size, "size", "", "mutable filesystem size, e.g. 50Gi (default: inferred from --source; required without one)")
 	f.StringVar(&cfg.workDir, "work-dir", "", "directory for build intermediates (default: a temp dir); they are removed either way")
 	f.BoolVar(&cfg.dryRun, "dry-run", false, "build the image and write escrow, but do not call CDS")
+	cfg.gate.BindFlags(f)
 	return cmd
 }
 
@@ -81,8 +88,24 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 	if err != nil {
 		return err
 	}
+	// Every refusal that needs no network runs before the build, so it leaves no
+	// image or escrow behind. Connecting and the mesh CA check wait until the
+	// write: a router front door is one attested connection, and a long build
+	// would leave it idle long enough to drop.
+	var signer authorizer
 	if !cfg.dryRun {
 		if err := o.Validate(); err != nil {
+			return err
+		}
+		if err := o.CheckEndpoint(); err != nil {
+			return err
+		}
+		s, err := o.Signer()
+		if err != nil {
+			return err
+		}
+		signer = s
+		if err := cfg.gate.Precheck(o.URL); err != nil {
 			return err
 		}
 	}
@@ -129,13 +152,15 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		return nil
 	}
 
-	signer, err := o.Signer()
-	if err != nil {
-		return err
-	}
 	hc, err := o.HTTPClient(cmd.Context())
 	if err != nil {
-		return err
+		return notStored(err, cfg, path, "retry with")
+	}
+	if err := cfg.gate.Check(cmd.Context(), cmd.ErrOrStderr(), hc, o.URL); err != nil {
+		if errors.Is(err, cdsconn.ErrMeshCAMismatch) {
+			return notStored(err, cfg, path, "once you reach the CDS your bundle names, store it with")
+		}
+		return notStored(err, cfg, path, "retry with")
 	}
 	if err := putBlob(cmd.Context(), hc, strings.TrimRight(o.URL, "/"), path, blob, signer); err != nil {
 		return err
@@ -143,6 +168,13 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 
 	printResult(out, cfg, path, size, verity)
 	return nil
+}
+
+// notStored explains a failure after the image and escrow exist but before the
+// key was sent: the escrow file is the key, and `secrets put` stores it.
+func notStored(err error, cfg createConfig, path, how string) error {
+	return fmt.Errorf("%w\nthe key was not stored; %s and %s were written. To store the key, %s "+
+		"'c8s secrets put %s --from-file %s --mesh-ca <bundle.pem>'", err, cfg.out, cfg.escrowOut, how, path, cfg.escrowOut)
 }
 
 func validateCreate(cfg *createConfig) (string, error) {
