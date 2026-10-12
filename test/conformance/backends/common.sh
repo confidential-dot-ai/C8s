@@ -13,14 +13,14 @@
 #   setup / teardown                 once per run, before and after the scenarios
 #   node_name <logical>              the Kubernetes node behind a scenario's node
 #   image_ref <logical>              a pullable reference for a scenario's image
-#   image_digest <ref>               the digest the enforcer compares for ref
+#   image_digest <ref>               the digest the plugin compares for ref
 #   image_alias <ref> <name>         make the node resolve name to ref's bytes
 #   served_allowlist                 the allowlist document CDS serves, as JSON
 #   allowlist_put <name> <file>      write the entry in file under name, signed
 #   allowlist_delete <name>          delete the entry; absent is not an error
 #   base_declares <node> <digest>    yes/no: the node's base allowlist names digest
-#   pull_interval                    how often the enforcer pulls, as a Go duration
-#   enforcer_ready <node>            the node's policy enforcer is enforcing
+#   pull_interval                    how often the plugin pulls, as a Go duration
+#   plugin_ready <node>              the node's admission plugin is registered and ready
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
 #   pod_manifest <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
@@ -39,10 +39,11 @@ subject() { echo "c8s $(git -C "$C8S_ROOT" rev-parse --short HEAD) on $PLATFORM"
 
 kubeconfig() { echo "$KUBECONFIG"; }
 
-# "rogue" is the harness's curl image, deliberately off the install-time floor;
-# "nginx" is its workload image, on the floor (kind) or put there by setup (metal).
-# The rest are public images no floor and no base allowlist names, for the
-# scenarios that write their own entries; each has its own digest.
+# "rogue" is the harness's curl image, which no entry declares at install;
+# "nginx" is its workload image, admitted under any argv by the install seed
+# (kind) or by an entry setup writes (metal). The rest are public images no
+# served entry and no base allowlist names, for the scenarios that write their
+# own entries; each has its own digest.
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
@@ -55,11 +56,11 @@ image_ref() {
     esac
 }
 
-# The enforcer's pull interval: the chart's nriImagePolicy.refresh.interval,
+# The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
 # which the node image bakes as the equal value (node-guest-image/c8s/
-# image-policy.yaml.in, allowlist.pull.interval). The enforcer exposes
-# nothing about the version it holds, and containerd discards its log, so
-# the steps wait this out rather than observe it.
+# image-policy.yaml.in, allowlist.pull.interval). The plugin exposes nothing
+# about the version it holds, and containerd discards its log, so the steps
+# wait this out rather than observe it.
 pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after

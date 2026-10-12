@@ -12,29 +12,29 @@ import (
 	"github.com/cucumber/godog"
 )
 
-// Sentences about the allowlist as a scenario writes it: entries described
-// in Given steps, written to CDS by the operator's signed path when the
-// enforcer is said to have synced, and undone afterwards.
+// Sentences about the served allowlist as a scenario writes it: entries
+// described in Given steps, written to CDS by the operator's signed path when
+// the plugin is said to have applied the served allowlist, and undone
+// afterwards.
 func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^the allowlist has a workload entry named "([^"]*)"$`, entryNamed)
 	sc.Step(`^"([^"]*)" declares image "([^"]*)"$`, entryDeclares)
 	sc.Step(`^"([^"]*)" declares image "([^"]*)" as an init container$`, entryDeclaresInit)
-	sc.Step(`^"([^"]*)" pins the command line of "([^"]*)" to "([^"]*)"$`, entryPinsCommand)
-	sc.Step(`^"([^"]*)" admits any command line for "([^"]*)"$`, entryAdmitsAnyCommand)
+	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to "([^"]*)"$`, entryPinsArgv)
+	sc.Step(`^"([^"]*)" admits any argv for "([^"]*)"$`, entryAdmitsAnyArgv)
 	sc.Step(`^no workload entry declares both "([^"]*)" and "([^"]*)"$`, noEntryDeclaresBoth)
-	sc.Step(`^the digest of "([^"]*)" is on the allowlist$`, digestOnAllowlist)
-	sc.Step(`^the digest of "([^"]*)" is removed from the allowlist at the CDS$`, digestRemovedAtCDS)
-	sc.Step(`^the boot floor of node "([^"]*)" does not contain the digest of "([^"]*)"$`, baseLacks)
-	sc.Step(`^the policy enforcer on node "([^"]*)" refreshes its allowlist$`, enforcerRefreshes)
+	sc.Step(`^a workload entry admits image "([^"]*)" under any argv$`, someEntryAdmitsAnyArgv)
+	sc.Step(`^the entries declaring image "([^"]*)" are removed from the served allowlist$`, entriesRemoved)
+	sc.Step(`^the base allowlist of node "([^"]*)" does not declare image "([^"]*)"$`, baseDoesNotDeclare)
 }
 
-// lastMutation is when this process last changed the allowlist at CDS. It
+// lastMutation is when this process last changed the served allowlist. It
 // outlives the scenario because one scenario's restore is what the next
-// scenario's sync has to wait out.
+// scenario's applied sentence has to wait out.
 var lastMutation time.Time
 
-// writtenName is the entry's name at CDS: the scenario's name, suffixed so
-// that two scenarios naming "web" never meet.
+// writtenName is the entry's allowlist workload name at CDS: the scenario's
+// name, suffixed so that two scenarios naming "web" never meet.
 func (w *world) writtenName(name string) string {
 	return name + "-" + strings.TrimPrefix(w.namespace, "conf-")
 }
@@ -74,8 +74,9 @@ func entryNamed(ctx context.Context, name string) error {
 	return nil
 }
 
-// declare adds image to the entry, init or main, with policies that admit
-// nothing until a later step opens them: the document's defaults.
+// declare adds a declared container for image to the entry, init or main,
+// with the document's default policies: argv denied, mounts and environment
+// unconstrained, until a later step opens the argv.
 func (w *world) declare(name, image string, init bool) error {
 	e, err := w.entry(name)
 	if err != nil {
@@ -110,9 +111,9 @@ func entryDeclaresInit(ctx context.Context, name, image string) error {
 	return getWorld(ctx).declare(name, image, true)
 }
 
-// entryPinsCommand pins the whole command line: the container's command is
-// the words given and its args are empty, as the pod manifests here set them.
-func entryPinsCommand(ctx context.Context, name, image, line string) error {
+// entryPinsArgv pins the whole argv: command exact, the words given, and
+// args denied, as the pod manifests here leave args empty.
+func entryPinsArgv(ctx context.Context, name, image, line string) error {
 	c, err := getWorld(ctx).find(name, image)
 	if err != nil {
 		return err
@@ -122,7 +123,7 @@ func entryPinsCommand(ctx context.Context, name, image, line string) error {
 	return nil
 }
 
-func entryAdmitsAnyCommand(ctx context.Context, name, image string) error {
+func entryAdmitsAnyArgv(ctx context.Context, name, image string) error {
 	c, err := getWorld(ctx).find(name, image)
 	if err != nil {
 		return err
@@ -160,9 +161,9 @@ func noEntryDeclaresBoth(ctx context.Context, first, second string) error {
 	return nil
 }
 
-// digestOnAllowlist makes the served allowlist admit image under any command
-// line, writing an entry when nothing admits it yet.
-func digestOnAllowlist(ctx context.Context, image string) error {
+// someEntryAdmitsAnyArgv makes the served allowlist admit image under any
+// argv, writing an entry when no served entry does yet.
+func someEntryAdmitsAnyArgv(ctx context.Context, image string) error {
 	w := getWorld(ctx)
 	digest, err := w.digestOf(image)
 	if err != nil {
@@ -181,7 +182,7 @@ func digestOnAllowlist(ctx context.Context, image string) error {
 	if err := w.declare(image, image, false); err != nil {
 		return err
 	}
-	if err := entryAdmitsAnyCommand(ctx, image, image); err != nil {
+	if err := entryAdmitsAnyArgv(ctx, image, image); err != nil {
 		return err
 	}
 	return w.writeEntries()
@@ -228,9 +229,9 @@ func (w *world) deleteEntry(name string) error {
 	return err
 }
 
-// digestRemovedAtCDS deletes every served entry that declares image's digest,
+// entriesRemoved deletes every served entry that declares image's digest,
 // keeping each for restoreAllowlist.
-func digestRemovedAtCDS(ctx context.Context, image string) error {
+func entriesRemoved(ctx context.Context, image string) error {
 	w := getWorld(ctx)
 	digest, err := w.digestOf(image)
 	if err != nil {
@@ -281,7 +282,9 @@ func (w *world) restoreAllowlist() error {
 	return errors.Join(errs...)
 }
 
-func baseLacks(ctx context.Context, node, image string) error {
+// baseDoesNotDeclare checks a precondition on the node's base allowlist,
+// which stays fixed for the plugin's lifetime (L1).
+func baseDoesNotDeclare(ctx context.Context, node, image string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.be.call("node_name", node)
 	if err != nil {
@@ -301,16 +304,7 @@ func baseLacks(ctx context.Context, node, image string) error {
 	return nil
 }
 
-// enforcerRefreshes waits until the enforcer on node holds what CDS serves now.
-func enforcerRefreshes(ctx context.Context, node string) error {
-	w := getWorld(ctx)
-	if _, err := w.be.call("node_name", node); err != nil {
-		return err
-	}
-	return w.awaitApplied()
-}
-
-// sync writes the described entries and waits for the enforcer to hold them.
+// sync writes the described entries and waits for the plugin to hold them.
 func (w *world) sync() error {
 	if err := w.writeEntries(); err != nil {
 		return err
@@ -320,8 +314,8 @@ func (w *world) sync() error {
 
 // awaitApplied waits until two pull intervals have passed since the last
 // write or delete: a pull that started just before it has then been followed
-// by one that saw it. The enforcer exposes nothing about the version it
-// holds, so this is a wait, not an observation.
+// by one that saw it. The plugin exposes nothing about the version it holds,
+// so this is a wait, not an observation.
 func (w *world) awaitApplied() error {
 	s, err := w.be.call("pull_interval")
 	if err != nil {

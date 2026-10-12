@@ -18,8 +18,9 @@ type world struct {
 	namespace string
 	pods      map[string]*pod
 	lastPod   *pod
-	// entries the scenario describes, written to CDS when it says the
-	// enforcer has synced; written and removed are undone after the scenario.
+	// entries the scenario describes, written to CDS when it says the plugin
+	// has applied the served allowlist; written and removed are undone after
+	// the scenario.
 	entries map[string]*entry
 	written []string
 	removed map[string]json.RawMessage
@@ -73,8 +74,8 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 }
 
 // describe records a pod the scenario will deploy, one container per
-// reference; it becomes the last pod. A scenario that says nothing about a
-// command line gets one that keeps the container alive.
+// reference; it becomes the last pod. A scenario that says nothing about the
+// argv gets one that keeps the container alive.
 func (w *world) describe(name string, refs ...string) {
 	p := &pod{name: name}
 	for _, ref := range refs {
@@ -125,7 +126,7 @@ func (w *world) digestOf(image string) (string, error) {
 // read from CDS and what they write to it. It is deliberately not
 // pkg/allowlist: the steps observe the cluster from outside, through the
 // document CDS serves, so a change to the package cannot change what the
-// suite accepts. admitsAnyArgv means what AdmitsAnyArgv means there.
+// suite accepts.
 type entry struct {
 	Label          string           `json:"label,omitempty"`
 	InitContainers []entryContainer `json:"initContainers"`
@@ -172,7 +173,7 @@ func (e *entry) declares(digest string) bool {
 	return false
 }
 
-// admitsAnyArgv reports whether the entry admits digest under any command line.
+// admitsAnyArgv reports whether the entry admits digest under any argv.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
 		if c.Digest == digest && c.Command.Policy == "any" && c.Args.Policy == "any" {
@@ -221,8 +222,7 @@ func (s served) declares(digest string) bool {
 	return false
 }
 
-// admitsAnyArgv reports whether a served entry admits digest under any
-// command line: the floor, as the scenarios call it.
+// admitsAnyArgv reports whether a served entry admits digest under any argv.
 func (s served) admitsAnyArgv(digest string) bool {
 	for _, e := range s.entries {
 		if e.admitsAnyArgv(digest) {

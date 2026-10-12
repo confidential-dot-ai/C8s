@@ -12,71 +12,47 @@ import (
 )
 
 // Sentences of the container-admission vocabulary
-// (features/enforcement/container-admission.feature and its siblings).
+// (features/enforcement/container-admission.feature and its siblings), in
+// the terms of the admission enforcement specification: the admission
+// plugin, entries, argv, denials.
 func registerAdmission(sc *godog.ScenarioContext) {
-	sc.Step(`^the policy enforcer on node "([^"]*)" has synced the allowlist$`, enforcerSynced)
-	sc.Step(`^the floor does not contain the digest of "([^"]*)"$`, floorLacks)
-	sc.Step(`^the floor contains the digest of "([^"]*)"$`, floorHas)
+	sc.Step(`^the admission plugin on node "([^"]*)" (?:has applied|applies) the served allowlist$`, pluginApplied)
 	sc.Step(`^no workload entry declares image "([^"]*)"$`, noEntryDeclares)
 	sc.Step(`^a pod "([^"]*)" whose only container runs image "([^"]*)"$`, podRunsImage)
 	sc.Step(`^a pod "([^"]*)" whose containers run images "([^"]*)" and "([^"]*)"$`, podRunsImages)
 	sc.Step(`^a pod "([^"]*)" whose only container names image "([^"]*)" without a digest$`, podNamesImageByTag)
 	sc.Step(`^the image store on node "([^"]*)" resolves that name to the digest of "([^"]*)"$`, storeResolves)
-	sc.Step(`^the command line of that container is "([^"]*)"$`, commandLine)
+	sc.Step(`^the argv of that container is "([^"]*)"$`, argv)
 	sc.Step(`^"([^"]*)" is deployed on node "([^"]*)"$`, deployOnNode)
 	sc.Step(`^the container of "([^"]*)" is not created$`, containerNotCreated)
 	sc.Step(`^(?:the container|both containers) of "([^"]*)" (?:is|are) created$`, containersCreated)
 	sc.Step(`^"([^"]*)" keeps running$`, keepsRunning)
-	sc.Step(`^the policy enforcer on node "([^"]*)" does not admit image "([^"]*)"$`, enforcerDoesNotAdmit)
+	sc.Step(`^the admission plugin on node "([^"]*)" denies a container running image "([^"]*)"$`, pluginDenies)
 	sc.Step(`^no process from image "([^"]*)" runs on node "([^"]*)"$`, noProcessFromImage)
-	sc.Step(`^the refusal names image "([^"]*)"$`, refusalNamesImage)
-	sc.Step(`^the refusal does not contain "([^"]*)"$`, refusalOmits)
-	sc.Step(`^the refusal states that the image is allowlisted but its command line is not$`, refusalSaysLaunchNotAdmitted)
+	sc.Step(`^the denial names image "([^"]*)"$`, denialNamesImage)
+	sc.Step(`^the denial does not contain "([^"]*)"$`, denialOmits)
+	sc.Step(`^the denial says the launch specification, not the image digest, was not admitted$`, denialIsLaunchNotAdmitted)
 }
 
-// observe bounds how long a step waits for the runtime to act or refuse.
+// observe bounds how long a step waits for the runtime to act or deny.
 const observe = 90 * time.Second
 
-// enforcerSynced: the enforcer is enforcing and holds what CDS serves now,
-// including whatever the scenario has described so far.
-func enforcerSynced(ctx context.Context, node string) error {
+// pluginApplied: the plugin on node is registered and ready, and holds what
+// CDS serves now, including whatever the scenario has described so far.
+func pluginApplied(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.be.call("node_name", node)
 	if err != nil {
 		return err
 	}
-	if _, err := w.be.call("enforcer_ready", k8sNode); err != nil {
+	if _, err := w.be.call("plugin_ready", k8sNode); err != nil {
 		return err
 	}
 	return w.sync()
 }
 
-func floorLacks(ctx context.Context, image string) error {
-	return requireFloor(ctx, image, false)
-}
-
-func floorHas(ctx context.Context, image string) error {
-	return requireFloor(ctx, image, true)
-}
-
-// requireFloor checks a precondition the backend fixed at install; a cluster
+// noEntryDeclares checks a precondition on the served allowlist; a cluster
 // that does not meet it is a broken harness, not a result.
-func requireFloor(ctx context.Context, image string, want bool) error {
-	w := getWorld(ctx)
-	digest, err := w.digestOf(image)
-	if err != nil {
-		return err
-	}
-	s, err := w.served()
-	if err != nil {
-		return err
-	}
-	if s.admitsAnyArgv(digest) != want {
-		return fmt.Errorf("harness precondition: floor admits %s (%s) = %v, want %v", image, digest, !want, want)
-	}
-	return nil
-}
-
 func noEntryDeclares(ctx context.Context, image string) error {
 	w := getWorld(ctx)
 	digest, err := w.digestOf(image)
@@ -88,7 +64,7 @@ func noEntryDeclares(ctx context.Context, image string) error {
 		return err
 	}
 	if s.declares(digest) {
-		return fmt.Errorf("harness precondition: an allowlist entry declares %s (%s)", image, digest)
+		return fmt.Errorf("harness precondition: a served entry declares %s (%s)", image, digest)
 	}
 	return nil
 }
@@ -137,7 +113,9 @@ func storeResolves(ctx context.Context, node, image string) error {
 	return err
 }
 
-func commandLine(ctx context.Context, line string) error {
+// argv sets the container's command; the manifests here leave args empty, so
+// this is the whole argv the runtime executes.
+func argv(ctx context.Context, line string) error {
 	w := getWorld(ctx)
 	if w.lastPod == nil {
 		return errors.New("no container has been described yet")
@@ -147,7 +125,7 @@ func commandLine(ctx context.Context, line string) error {
 }
 
 // deployOnNode applies the pod. The entries the scenario described must have
-// reached the enforcer first, which only the sync sentence promises.
+// reached the plugin first, which only the applied sentence promises.
 func deployOnNode(ctx context.Context, name, node string) error {
 	w := getWorld(ctx)
 	p, err := w.pod(name)
@@ -156,7 +134,7 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	}
 	for entry := range w.entries {
 		if !w.wrote(w.writtenName(entry)) {
-			return fmt.Errorf("entry %q is described but not written; the scenario must say the enforcer has synced the allowlist before deploying", entry)
+			return fmt.Errorf("entry %q is described but not written; the scenario must say the plugin has applied the served allowlist before deploying", entry)
 		}
 	}
 	k8sNode, err := w.be.call("node_name", node)
@@ -180,14 +158,14 @@ func deployOnNode(ctx context.Context, name, node string) error {
 }
 
 type containerStatus struct {
-	id, refusal string
-	running     bool
-	restarts    int
+	id, denial string
+	running    bool
+	restarts   int
 }
 
 // statuses reads every container's id (empty until the runtime has created
-// it), its container-create refusal, if any, and its running state in one
-// call. A pull failure or a crash is not a refusal.
+// it), the denial reason the create check returned, if any, and its running
+// state in one call. A pull failure or a crash is not a denial.
 func (w *world) statuses(p *pod) []containerStatus {
 	out, _ := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
@@ -212,7 +190,7 @@ func (w *world) statuses(p *pod) []containerStatus {
 	for _, c := range doc.Status.ContainerStatuses {
 		s := containerStatus{id: c.ContainerID, running: c.State.Running != nil, restarts: c.RestartCount}
 		if c.State.Waiting != nil && c.State.Waiting.Reason == "CreateContainerError" {
-			s.refusal = strings.TrimSpace(c.State.Waiting.Message)
+			s.denial = strings.TrimSpace(c.State.Waiting.Message)
 		}
 		st = append(st, s)
 	}
@@ -229,19 +207,19 @@ func created(st []containerStatus) string {
 	return ""
 }
 
-// refusals joins the refusals recorded so far.
-func refusals(st []containerStatus) string {
+// denials joins the denial reasons recorded so far.
+func denials(st []containerStatus) string {
 	var texts []string
 	for _, s := range st {
-		if s.refusal != "" {
-			texts = append(texts, s.refusal)
+		if s.denial != "" {
+			texts = append(texts, s.denial)
 		}
 	}
 	return strings.Join(texts, "; ")
 }
 
-// decided: the runtime has created or refused a container.
-func decided(st []containerStatus) bool { return created(st) != "" || refusals(st) != "" }
+// decided: the runtime has created or denied a container.
+func decided(st []containerStatus) bool { return created(st) != "" || denials(st) != "" }
 
 // allCreated reports whether every container of the pod has an id.
 func (p *pod) allCreated(st []containerStatus) bool {
@@ -281,8 +259,8 @@ func containerNotCreated(ctx context.Context, name string) error {
 		return err
 	case created(st) != "":
 		return fmt.Errorf("the container of %q was created (%s)", name, created(st))
-	case refusals(st) == "":
-		return fmt.Errorf("no refusal recorded for %q within %s, and no container either", name, observe)
+	case denials(st) == "":
+		return fmt.Errorf("no denial recorded for %q within %s, and no container either", name, observe)
 	}
 	return nil
 }
@@ -298,7 +276,7 @@ func containersCreated(ctx context.Context, name string) error {
 	case err != nil:
 		return err
 	case !p.allCreated(st):
-		return fmt.Errorf("not every container of %q was created within %s; refusals: %s", name, observe, refusals(st))
+		return fmt.Errorf("not every container of %q was created within %s; denials: %s", name, observe, denials(st))
 	}
 	return nil
 }
@@ -326,9 +304,9 @@ func keepsRunning(ctx context.Context, name string) error {
 	return nil
 }
 
-// enforcerDoesNotAdmit deploys a probe pod running image on the node and
-// expects the refusal.
-func enforcerDoesNotAdmit(ctx context.Context, node, image string) error {
+// pluginDenies deploys a probe pod running image on the node and expects the
+// create check to deny it.
+func pluginDenies(ctx context.Context, node, image string) error {
 	w := getWorld(ctx)
 	name := fmt.Sprintf("probe-%d", len(w.pods))
 	if err := podRunsImage(ctx, name, image); err != nil {
@@ -360,9 +338,9 @@ func noProcessFromImage(ctx context.Context, image, node string) error {
 	return nil
 }
 
-func refusalNamesImage(ctx context.Context, image string) error {
+func denialNamesImage(ctx context.Context, image string) error {
 	w := getWorld(ctx)
-	p, text, err := w.lastRefusal()
+	p, text, err := w.lastDenial()
 	if err != nil {
 		return err
 	}
@@ -372,43 +350,43 @@ func refusalNamesImage(ctx context.Context, image string) error {
 	}
 	ref := p.containers[0].ref
 	if !strings.Contains(text, ref) && !strings.Contains(text, digest) {
-		return fmt.Errorf("the refusal names neither %s nor %s: %s", ref, digest, text)
+		return fmt.Errorf("the denial names neither %s nor %s: %s", ref, digest, text)
 	}
 	return nil
 }
 
-// refusalSaysLaunchNotAdmitted: the refusal is the one for a digest the
-// allowlist lists whose launch no entry admits, not the one for an unknown
-// digest.
-func refusalSaysLaunchNotAdmitted(ctx context.Context) error {
+// denialIsLaunchNotAdmitted: the denial is the one for a digest the served
+// allowlist lists whose launch specification no entry admits (C1 step 4,
+// launch_not_admitted), not the one for a digest no entry declares.
+func denialIsLaunchNotAdmitted(ctx context.Context) error {
 	w := getWorld(ctx)
-	_, text, err := w.lastRefusal()
+	_, text, err := w.lastDenial()
 	if err != nil {
 		return err
 	}
 	switch {
 	case strings.Contains(text, "not in allowlist"):
-		return fmt.Errorf("the refusal says the image is not allowlisted: %s", text)
+		return fmt.Errorf("the denial says the image is not in the allowlist: %s", text)
 	case !strings.Contains(text, "allowlisted"):
-		return fmt.Errorf("the refusal does not say the image is allowlisted: %s", text)
+		return fmt.Errorf("the denial does not say the image is allowlisted: %s", text)
 	}
 	return nil
 }
 
-func refusalOmits(ctx context.Context, secret string) error {
+func denialOmits(ctx context.Context, secret string) error {
 	w := getWorld(ctx)
-	_, text, err := w.lastRefusal()
+	_, text, err := w.lastDenial()
 	if err != nil {
 		return err
 	}
 	if strings.Contains(text, secret) {
-		return fmt.Errorf("the refusal repeats %q: %s", secret, text)
+		return fmt.Errorf("the denial repeats %q: %s", secret, text)
 	}
 	return nil
 }
 
-// lastRefusal waits for the last deployed pod's refusal and returns its text.
-func (w *world) lastRefusal() (*pod, string, error) {
+// lastDenial waits for the last deployed pod's denial and returns its reason.
+func (w *world) lastDenial() (*pod, string, error) {
 	p := w.lastPod
 	if p == nil {
 		return nil, "", errors.New("no pod has been described")
@@ -418,9 +396,9 @@ func (w *world) lastRefusal() (*pod, string, error) {
 	case err != nil:
 		return nil, "", err
 	case created(st) != "":
-		return nil, "", fmt.Errorf("the container of %q was created (%s); no refusal to inspect", p.name, created(st))
-	case refusals(st) == "":
-		return nil, "", fmt.Errorf("no refusal recorded for %q within %s", p.name, observe)
+		return nil, "", fmt.Errorf("the container of %q was created (%s); no denial to inspect", p.name, created(st))
+	case denials(st) == "":
+		return nil, "", fmt.Errorf("no denial recorded for %q within %s", p.name, observe)
 	}
-	return p, refusals(st), nil
+	return p, denials(st), nil
 }

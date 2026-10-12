@@ -71,7 +71,7 @@ base_declares() {
     if node_exec grep -rqF "$2" /etc/nri/conf.d; then echo yes; else echo no; fi
 }
 
-enforcer_ready() {
+plugin_ready() {
     kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=120s >/dev/null &&
         node_exec test -S /var/run/nri-image-policy/workload-claims.sock
 }

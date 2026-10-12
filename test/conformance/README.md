@@ -45,15 +45,15 @@ and pending steps are the judge's backlog and do not.
 A backend answers a fixed set of questions about one running environment so
 the steps need not know how it was built: which Kubernetes node stands behind
 a scenario's "node one", which pullable reference and digest a scenario's
-"nginx" means, what the CDS serves, whether the policy enforcer on a node is
-enforcing and how often it pulls, whether the node's base allowlist names a
-digest, which containers a node's runtime holds for a digest, and a
+"nginx" means, what the CDS serves, whether the admission plugin on a node is
+registered and ready and how often it pulls, whether the node's base allowlist
+names a digest, which containers a node's runtime holds for a digest, and a
 Restricted-compatible pod manifest to deploy. It also acts for the operator:
-when a scenario says the enforcer has synced, the entries it described are
-written through the backend's signed path, and they are undone after the
-scenario. The enforcer exposes nothing about the allowlist version it holds, so
-the steps wait until two pull intervals have passed since the last write before
-acting on it.
+when a scenario says the plugin has applied the served allowlist, the entries
+it described are written through the backend's signed path, and they are
+undone after the scenario. The plugin exposes nothing about the allowlist
+version it holds, so the steps wait until two pull intervals have passed since
+the last write before acting on it.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this

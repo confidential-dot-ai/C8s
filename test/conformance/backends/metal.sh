@@ -20,9 +20,9 @@ written="${SUITE_RESULTS:-${TMPDIR:-/tmp}}/metal-backend-entries"
 # shellcheck disable=SC2154  # measurement_args: set by cds_measurement_args above
 al() { c8s allowlist "$@" --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}"; }
 
-# The floor the scenarios assume. The baked floor holds neither fixture image;
-# "nginx" goes on it by a signed write (`add` prints the entry's name), "rogue"
-# stays off.
+# The served allowlist the scenarios assume. The base allowlist names neither
+# fixture image; "nginx" gets an any-argv entry by a signed write (`add`
+# prints the entry's name), "rogue" gets none.
 setup() {
     local ref
     ref="$(image_ref nginx)"
@@ -71,7 +71,7 @@ base_declares() {
 
 # The lane's components-ready assert gates the suite; here only the node's
 # readiness is rechecked.
-enforcer_ready() {
+plugin_ready() {
     [ "$(kubectl get node "$1" -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}')" = True ]
 }
 
