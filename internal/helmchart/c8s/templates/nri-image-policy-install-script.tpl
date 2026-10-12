@@ -83,7 +83,7 @@ render_nri_toml() {
   plugin_path = "{{ $root.Values.nriImagePolicy.hostPaths.pluginDir }}"
   plugin_config_path = "{{ $root.Values.nriImagePolicy.hostPaths.configDir }}"
   plugin_registration_timeout = "10s"
-  plugin_request_timeout = "2s"
+  plugin_request_timeout = {{ $root.Values.nriImagePolicy.requestTimeout | quote }}
   socket_path = "/var/run/nri/nri.sock"
 [plugins."io.containerd.nri.v1.nri".default_validator]
   enable = true
@@ -161,6 +161,37 @@ Caller dict: .root. The script must set restart_needed to 0 or 1 first.
 {{- define "nri-image-policy.restartAndWait" -}}
 {{- $root := .root -}}
 RESTART_COMMAND={{ include "nri-image-policy.restartCommand" $root | quote }}
+
+# A plugin that already died stays dead until containerd restarts, and this
+# pod's plugin-ready container would then hold the rollout forever. Restart
+# for that too, at most once per window: a plugin that dies again right away
+# gets the health failure below, not a containerd restart per init retry. On
+# RKE2 that restart is the whole rke2-server/agent unit. The stamp is on
+# tmpfs, so a reboot clears it.
+#
+# A plugin whose health socket still answers is alive whatever the process
+# check says, so a check that misreads this node's process tree leaves the
+# pod NotReady rather than restarting the runtime.
+if [ "$restart_needed" = "0" ] && ! /usr/local/bin/c8s nri-image-policy plugin-ready --check \
+    --plugin-path={{ include "nri-image-policy.hostPluginPath" $root | squote }}; then
+  if curl --unix-socket "/host{{ include "nri-image-policy.hostHealthSocket" $root }}" --silent --fail \
+      --max-time 2 --output /dev/null http://localhost/healthz; then
+    echo "WARNING: plugin health socket answers but no plugin process was found under containerd; not restarting" >&2
+  else
+    stamp="/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/dead-plugin-restart"
+    now=$(date +%s)
+    last=$(cat "$stamp" 2>/dev/null || true)
+    case "$last" in ''|*[!0-9]*) last=0 ;; esac
+    if [ $((now - last)) -ge 600 ]; then
+      echo "plugin not running; restarting containerd to relaunch it"
+      printf '%s\n' "$now" > "$stamp"
+      restart_needed=1
+    else
+      echo "plugin not running; containerd was restarted for that $((now - last))s ago, not again within 600s" >&2
+    fi
+  fi
+fi
+
 restarted_containerd=0
 if [ "$restart_needed" = "1" ]; then
   restarted_containerd=1
