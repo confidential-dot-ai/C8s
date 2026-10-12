@@ -79,7 +79,7 @@ assert config["imports"] == ["/var/lib/rancher/rke2/agent/etc/containerd/config-
 effective = tomllib.loads((root / "effective.toml").read_text())
 plugins = effective["plugins"]
 assert plugins["io.containerd.nri.v1.nri"]["disable"] is False
-validator = plugins["io.containerd.nri.v1.nri.default_validator"]
+validator = plugins["io.containerd.nri.v1.nri"]["default_validator"]
 assert validator["enable"] is True
 assert validator["required_plugins"] == ["nri-image-policy"]
 PY
