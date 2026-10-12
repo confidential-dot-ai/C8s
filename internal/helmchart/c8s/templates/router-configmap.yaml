@@ -310,6 +310,9 @@ data:
             # the attest-lb challenge, and the over-encrypted tunnel — are
             # proxied to the in-pod `cds-attest` sidecar.
             # X-Real-IP is the address the sidecar meters each client by.
+            # Buffering keeps a slow client from holding a sidecar tunnel slot
+            # for longer than nginx takes to relay a loopback request. Tunnel
+            # records go up to 8 MiB, and a reply waits on the backend.
             location /.well-known/c8s/ {
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
@@ -317,6 +320,10 @@ data:
                 {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
                 {{- end }}
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
+                proxy_buffering on;
+                proxy_request_buffering on;
+                client_max_body_size 8m;
+                proxy_read_timeout {{ $readTimeout }};
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

@@ -49,9 +49,8 @@
 // operator key can replay each other's manifests; pinning the route digest
 // detects it (V1).
 //
-// Nothing uses this package yet, and no evidence binds the route digest.
-// Later changes add the CDS /routes API and its CLI, the router engine, the
-// cut-over of router traffic to it, and the evidence binding and route
+// No evidence binds the route digest yet. Later changes cut router traffic
+// over to the router engine and add the evidence binding and route
 // publication (E1, E4).
 //
 // Requirement IDs in comments, such as D1, M3 and W2, refer to the route

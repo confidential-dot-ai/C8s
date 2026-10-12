@@ -2904,6 +2904,15 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	renderedRouterNginxConfig(t, out).
 		location(t, "prefix", "/.well-known/c8s/").
 		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	// The tunnel's slot bound relies on nginx buffering both directions.
+	tunnel := renderedRouterNginxConfig(t, out).location(t, "prefix", "/.well-known/c8s/")
+	for _, name := range []string{"proxy_buffering", "proxy_request_buffering"} {
+		if got := tunnel.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{"on"}) {
+			t.Fatalf("/.well-known/c8s/ %s = %v, want exactly on", name, got)
+		}
+	}
+	tunnel.assertDirective(t, "client_max_body_size", "8m")
+	tunnel.assertDirective(t, "proxy_read_timeout", "3600s")
 	renderedRouterNginxConfig(t, out).
 		location(t, "exact", "/readyz").
 		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
