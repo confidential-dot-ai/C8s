@@ -104,6 +104,13 @@ spec:
               containerPort: 8080
             - name: health
               containerPort: 8081
+          # setupManager (CRD discovery + webhook PKI bootstrap) runs before the
+          # health server serves, with :8081 already bound by NewManager, so
+          # probes hang rather than refuse. 30x10s covers that window.
+          startupProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /readyz, port: health }
             initialDelaySeconds: 3
