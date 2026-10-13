@@ -532,7 +532,9 @@ func checkComponentEntries(t *testing.T, out string) {
 	pinned[nginxDigest] = pins["router.nginx"]
 
 	images := componentImages(t)
-	seen := map[string]bool{}
+	// An admitted launch of each digest outside the hook, to restage with a
+	// volume over its executable.
+	admitted := map[string]pkgallowlist.RunningContainer{}
 	for _, w := range renderedPodSpecs(t, out) {
 		name := w.kind + "/" + w.name
 		for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
@@ -541,7 +543,6 @@ func checkComponentEntries(t *testing.T, out string) {
 			if !ok {
 				continue
 			}
-			seen[digest] = true
 			argv := effectiveArgv(c)
 			if len(c.Command) == 0 {
 				argv = append(append([]string{}, entrypoint...), c.Args...)
@@ -559,10 +560,14 @@ func checkComponentEntries(t *testing.T, out string) {
 					t.Errorf("%s refuses %s container %s: argv %q, mounts %v", source, name, c.Name, argv[:min(len(argv), 3)], c.VolumeMounts)
 				}
 			}
+			if _, ok := admitted[digest]; !ok && name != "DaemonSet/c8s-volumed-teardown" {
+				admitted[digest] = running
+			}
 		}
 	}
 	for digest, entrypoint := range pinned {
-		if !seen[digest] {
+		launch, seen := admitted[digest]
+		if !seen {
 			t.Errorf("no rendered container runs %s (pinned to %q)", digest, entrypoint)
 		}
 		for source, al := range map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base} {
@@ -580,9 +585,9 @@ func checkComponentEntries(t *testing.T, out string) {
 					t.Errorf("%s admits %s under %q", source, digest[:19], argv)
 				}
 			}
-			overs := [][]pkgallowlist.ObservedMount{
-				{{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}},
-				{{Destination: "/opt/host", Class: pkgallowlist.MountHost}},
+			overs := []pkgallowlist.ObservedMount{
+				{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory},
+				{Destination: "/opt/host", Class: pkgallowlist.MountHost},
 			}
 			for _, w := range al.Workloads {
 				for _, c := range w.Containers {
@@ -596,13 +601,17 @@ func checkComponentEntries(t *testing.T, out string) {
 						t.Errorf("%s %s denyBelow = %q, want /etc/ssl included", source, digest[:19], c.Mounts.DenyBelow)
 					}
 					for _, denied := range c.Mounts.DenyBelow {
-						overs = append(overs, []pkgallowlist.ObservedMount{{Destination: denied, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}})
+						overs = append(overs, pkgallowlist.ObservedMount{Destination: denied, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory})
 					}
 				}
 			}
-			for _, over := range overs {
-				if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: entrypoint, Mounts: over, Env: &pkgallowlist.EnvObservation{}}) {
-					t.Errorf("%s admits %s with a %s mount at %s", source, digest[:19], over[0].Class, over[0].Destination)
+			// Restage the admitted launch, so the refusal is the mount's and
+			// not the environment's.
+			for _, mount := range overs {
+				over := launch
+				over.Mounts = append(slices.Clone(launch.Mounts), mount)
+				if seen && index.AdmitsContainer(over) {
+					t.Errorf("%s admits %s with a %s mount at %s", source, digest[:19], mount.Class, mount.Destination)
 				}
 			}
 		}
