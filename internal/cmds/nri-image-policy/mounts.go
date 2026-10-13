@@ -84,7 +84,7 @@ func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.Ob
 			return mount
 		}
 	}
-	return observeHostMount(m)
+	return o.observeHostMount(m)
 }
 
 func defaultStorage(s mountStorageInspector) mountStorageInspector {
@@ -193,18 +193,30 @@ func cutTwoOrMore(s string) (string, string, bool) {
 	return a, b, ok && a != "" && b != ""
 }
 
-func observeHostMount(m *api.Mount) allowlist.ObservedMount {
+// observeHostMount records a host mount as read-only only when nothing below
+// its destination can be written: plain ro on a recursive bind leaves nested
+// mounts with their own flags, and slave or shared propagation brings in host
+// mounts made later.
+func (o mountObserver) observeHostMount(m *api.Mount) allowlist.ObservedMount {
 	mount := observed(m, allowlist.MountHost, allowlist.MountUnknown)
+	readOnly, recursiveReadOnly, recursiveBind, propagated := false, false, false, false
 	for _, option := range m.GetOptions() {
 		switch option {
 		case "ro":
-			mount.ReadOnly = true
-		case "rw":
-			mount.ReadOnly = false
-		case "rro", "rrw":
-			return mount
+			readOnly, recursiveReadOnly = true, false
+		case "rw", "rrw":
+			readOnly, recursiveReadOnly = false, false
+		case "rro":
+			readOnly, recursiveReadOnly = true, true
+		case "rbind":
+			recursiveBind = true
+		case "slave", "rslave", "shared", "rshared":
+			propagated = true
+		case "private", "rprivate":
+			propagated = false
 		}
 	}
+	mount.ReadOnly = readOnly && !propagated && (recursiveReadOnly || !recursiveBind || o.storage.NoMountsBelow(m.GetSource()))
 	digest, err := allowlist.HostSourceDigest(m.GetSource())
 	if err != nil {
 		return mount

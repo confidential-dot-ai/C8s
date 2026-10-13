@@ -26,7 +26,10 @@ type ObservedMount struct {
 	Class            MountClass   `json:"class"`
 	Storage          MountStorage `json:"storage"`
 	HostSourceDigest string       `json:"hostSourceDigest,omitempty"`
-	ReadOnly         bool         `json:"readOnly,omitempty"`
+	// ReadOnly holds when nothing reachable through the mount is writable: the
+	// node reports a host bind read-only only when it is recursively read-only
+	// or proven to carry no nested mount, and receives no propagated mounts.
+	ReadOnly bool `json:"readOnly,omitempty"`
 }
 
 // ErrNoMatch reports that no entry describes the running set; ErrAmbiguous that

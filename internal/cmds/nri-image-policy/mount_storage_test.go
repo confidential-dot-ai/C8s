@@ -370,3 +370,32 @@ func TestOverlayStorageFailsClosed(t *testing.T) {
 		})
 	}
 }
+
+func TestNoMountsBelow(t *testing.T) {
+	source, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, mountInfo string
+		want            bool
+	}{
+		{"none below", "20 1 0:1 / / rw - ext4 /dev/root rw\n21 20 0:2 / " + source + " rw - ext4 /dev/vdb rw\n", true},
+		{"sibling with a shared prefix", "21 20 0:2 / " + source + "2 rw - tmpfs tmpfs rw\n", true},
+		{"one below", "21 20 0:2 / " + source + "/pvc rw - ext4 /dev/vdc rw\n", false},
+		{"malformed line", "21 20\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "mountinfo")
+			if err := os.WriteFile(file, []byte(tc.mountInfo), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if got := (linuxStorageInspector{mountInfo: file}).NoMountsBelow(source); got != tc.want {
+				t.Fatalf("NoMountsBelow(%q) = %v, want %v", source, got, tc.want)
+			}
+		})
+	}
+	if (linuxStorageInspector{mountInfo: "/nonexistent"}).NoMountsBelow(source) {
+		t.Fatal("NoMountsBelow without a mount table = true, want false")
+	}
+}

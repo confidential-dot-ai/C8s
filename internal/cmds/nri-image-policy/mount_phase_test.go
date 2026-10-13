@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
@@ -88,13 +89,18 @@ func TestExactHostMountAdmissionUsesFinalStartSpec(t *testing.T) {
 		{"relative source", "service", "/config", []string{"ro"}, true, false},
 		{"unclean source", "/etc/../etc/service", "/config", []string{"ro"}, true, false},
 		{"NUL source", "/etc/service\x00", "/config", []string{"ro"}, true, false},
-		{"recursive read-only", "/etc/service", "/config", []string{"rro", "ro"}, true, false},
-		{"recursive writable", "/etc/service", "/config", []string{"rrw", "rw"}, false, false},
+		{"recursive read-only", "/etc/service", "/config", []string{"rbind", "rro"}, true, true},
+		{"recursive writable", "/etc/service", "/config", []string{"rrw", "rw"}, false, true},
+		{"read-only with slave propagation", "/etc/service", "/config", []string{"rbind", "ro", "rslave"}, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// A real directory: the observer proves from the node's mount
+			// table that nothing is mounted below a recursive read-only bind.
+			service := t.TempDir()
+			tc.source = strings.ReplaceAll(tc.source, "/etc/service", service)
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{
-				{Destination: "/config", Kind: allowlist.MountHost, Source: "/etc/service", ReadOnly: tc.policyReadOnly},
+				{Destination: "/config", Kind: allowlist.MountHost, Source: service, ReadOnly: tc.policyReadOnly},
 			}}
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
@@ -126,7 +132,7 @@ func TestExactHostMountAdmissionUsesFinalStartSpec(t *testing.T) {
 			if inventoryErr != nil || len(containers) != 1 || len(containers[0].Mounts) != 1 {
 				t.Fatalf("missing final evidence: containers=%+v error=%v", containers, inventoryErr)
 			}
-			digest, err := allowlist.HostSourceDigest("/etc/service")
+			digest, err := allowlist.HostSourceDigest(service)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -156,8 +162,13 @@ func TestConfinedMountAdmissionUsesFinalStartSpec(t *testing.T) {
 		{"writable host path at an unconfined destination", &api.Mount{Type: "bind", Source: "/run/xtables.lock", Destination: "/run/xtables.lock", Options: []string{"rw"}}, true},
 		{"read-only host path over a denied directory", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/bin", Options: []string{"ro"}}, false},
 		{"read-only host path over the loader preload list", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/etc", Options: []string{"ro"}}, false},
+		{"read-only host path with slave propagation", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "ro", "rslave"}}, false},
+		{"recursively read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "rro"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.mount.Source == "/etc/service" {
+				tc.mount.Source = t.TempDir()
+			}
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
 			al.Workloads["w"].Containers[0].Mounts = policy
 			if err := al.Normalize(); err != nil {

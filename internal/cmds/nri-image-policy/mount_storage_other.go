@@ -13,3 +13,7 @@ func newMountStorageInspector() mountStorageInspector {
 func (platformStorageInspector) Inspect(string) allowlist.MountStorage {
 	return allowlist.MountUnknown
 }
+
+func (platformStorageInspector) NoMountsBelow(string) bool {
+	return false
+}

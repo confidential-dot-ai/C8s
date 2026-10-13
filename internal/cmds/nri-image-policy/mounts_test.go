@@ -13,6 +13,15 @@ type fixedStorage allowlist.MountStorage
 
 func (s fixedStorage) Inspect(string) allowlist.MountStorage { return allowlist.MountStorage(s) }
 
+func (fixedStorage) NoMountsBelow(string) bool { return true }
+
+// nestedMounts reports whether every host source has mounts below it.
+type nestedMounts bool
+
+func (nestedMounts) Inspect(string) allowlist.MountStorage { return allowlist.MountUnknown }
+
+func (n nestedMounts) NoMountsBelow(string) bool { return !bool(n) }
+
 func TestMountObserverBindsSourcesToCurrentPodAndSandbox(t *testing.T) {
 	pod := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
 	ctr := &api.Container{Name: "app", PodSandboxId: pod.Id, Mounts: []*api.Mount{
@@ -116,25 +125,31 @@ func TestHostMountSourceAndAccess(t *testing.T) {
 	for _, tc := range []struct {
 		name, source    string
 		options         []string
+		nested          bool
 		readOnly, valid bool
 	}{
-		{"read-only", "/etc/service", []string{"rbind", "ro"}, true, true},
-		{"writable", "/etc/service", []string{"bind", "rw"}, false, true},
-		{"last read-only", "/etc/service", []string{"rw", "ro"}, true, true},
-		{"last writable", "/etc/service", []string{"ro", "rw"}, false, true},
-		{"recursive writable", "/etc/service", []string{"ro", "rrw"}, true, false},
-		{"recursive read-only", "/etc/service", []string{"rro"}, false, false},
-		{"relative bind", "service", []string{"bind"}, false, false},
-		{"unclean", "/etc/../service", []string{"bind"}, false, false},
+		{"read-only", "/etc/service", []string{"rbind", "ro"}, false, true, true},
+		{"writable", "/etc/service", []string{"bind", "rw"}, false, false, true},
+		{"last read-only", "/etc/service", []string{"rw", "ro"}, false, true, true},
+		{"last writable", "/etc/service", []string{"ro", "rw"}, false, false, true},
+		{"recursive writable", "/etc/service", []string{"ro", "rrw"}, false, false, true},
+		{"recursive read-only", "/etc/service", []string{"rbind", "rro"}, true, true, true},
+		{"read-only recursive bind over nested mounts", "/var/lib/kubelet", []string{"rbind", "ro"}, true, false, true},
+		{"read-only plain bind over nested mounts", "/var/lib/kubelet", []string{"bind", "ro"}, true, true, true},
+		{"read-only with slave propagation", "/etc/service", []string{"rbind", "ro", "rslave"}, false, false, true},
+		{"recursive read-only with shared propagation", "/etc/service", []string{"rbind", "rro", "rshared"}, false, false, true},
+		{"propagation reset to private", "/etc/service", []string{"rslave", "rbind", "ro", "rprivate"}, false, true, true},
+		{"relative bind", "service", []string{"bind"}, false, false, false},
+		{"unclean", "/etc/../service", []string{"bind"}, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctr := &api.Container{Mounts: []*api.Mount{{Type: "bind", Source: tc.source, Destination: "/config", Options: tc.options}}}
-			got := newMountObserver(nil).Observe(&api.PodSandbox{}, ctr)
+			got := newMountObserver(nestedMounts(tc.nested)).Observe(&api.PodSandbox{}, ctr)
 			if len(got) != 1 || got[0].Class != allowlist.MountHost {
 				t.Fatalf("host bind disappeared: %+v", got)
 			}
 			if (got[0].HostSourceDigest != "") != tc.valid || got[0].ReadOnly != tc.readOnly {
-				t.Fatalf("unexpected host evidence: %+v", got[0])
+				t.Fatalf("Observe(%q, %q) = %+v, want readOnly %v, commitment %v", tc.source, tc.options, got[0], tc.readOnly, tc.valid)
 			}
 		})
 	}

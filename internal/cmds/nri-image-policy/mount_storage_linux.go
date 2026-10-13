@@ -277,6 +277,30 @@ func containingOverlay(mountInfo, source string) (mountpoint, upper string, ok b
 	return containingMountpoint, overlayUpper, s.Err() == nil && overlayUpper != ""
 }
 
+func (i linuxStorageInspector) NoMountsBelow(source string) bool {
+	clean, err := filepath.EvalSymlinks(filepath.Clean(source))
+	if err != nil {
+		return false
+	}
+	f, err := os.Open(i.mountInfo)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	prefix := strings.TrimSuffix(clean, "/") + "/"
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		fields := strings.Fields(s.Text())
+		if len(fields) < 5 {
+			return false
+		}
+		if strings.HasPrefix(unescapeMountInfo(fields[4]), prefix) {
+			return false
+		}
+	}
+	return s.Err() == nil
+}
+
 func optionValue(options, name string) string {
 	for option := range strings.SplitSeq(options, ",") {
 		if value, ok := strings.CutPrefix(option, name+"="); ok {
