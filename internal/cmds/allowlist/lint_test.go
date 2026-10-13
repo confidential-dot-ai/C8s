@@ -477,6 +477,8 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 		{"lookalike prefix", "PATH", "/mnt/c8s-data/toolset", "data", false},
 		{"application data variable", "DATA_PATH", "/mnt/c8s-data/tools", "data", false},
 		{"emptyDir is not operator data", "PATH", "/mnt/c8s-data/tools", "emptyDir", false},
+		{"preloaded data file", "LD_PRELOAD", "/lib/a.so /mnt/c8s-data/tools/b.so", "data", true},
+		{"audited data file", "LD_AUDIT", "/mnt/c8s-data/tools/a.so", "data", true},
 	} {
 		for _, policy := range []struct{ name, env string }{
 			{"exact", `"env":{"policy":"exact","values":{"` + tc.variable + `":"` + tc.value + `"}}`},
@@ -500,6 +502,23 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestLintRejectsHostChosenSearchPaths(t *testing.T) {
+	for _, variable := range []string{"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "PYTHONPATH", "NODE_PATH"} {
+		t.Run(variable, func(t *testing.T) {
+			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+				`"env":{"policy":"match","variables":{"` + variable + `":{"present":true},"MODE":{"exact":"production"}}}}`
+			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[`+container+`]}}}`)
+			out, _, err := runCmd("lint", "--strict", file)
+			if err == nil {
+				t.Fatalf("lint --strict accepted a host-chosen %s: %s", variable, out)
+			}
+			if want := "leaves " + variable + " to the host"; !strings.Contains(out, want) {
+				t.Fatalf("lint output = %s, want %q", out, want)
+			}
+		})
 	}
 }
 
