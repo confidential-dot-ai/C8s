@@ -45,15 +45,16 @@ argv-pinned in the seed for baked nodes.
 policies are unconstrained, whose mount policy is `any` or `confined`, and
 whose command is `any` or `exact`, as digest-to-`{image, entrypoint, mounts}`
 with an empty entrypoint for `any`. An omitted mount policy is `deny` and
-prevents inclusion; of two entries for one digest, `any` mounts win over
-`confined`, and two different `confined` policies fail the render. `c8s.baseWorkloads` renders the
+prevents inclusion; two open-args entries for one digest must carry the
+same mount policy, or the render fails. `c8s.baseWorkloads` renders the
 host plugin's boot base, excluding `c8s.argvPinnedDigests`: each
 `c8s.imageAllowlist` image as a `c8s.componentContainer` entry, and each
 `c8s.openArgsEntries` digest under the command it pins or under any
 (`c8s.openArgsContainer`). For a system image an operator also wrote an
 open-args entry for, a wider operator pin (any, or a prefix of the
-entrypoint) replaces the component's container and a different one is
-admitted beside it. Workloads that pin args or env, or set mounts to `deny`
+entrypoint) whose mounts admit every table the component's do (`any`, or the
+same policy) replaces the component's container; any other is admitted
+beside it. Workloads that pin args or env, or set mounts to `deny`
 or `exact`, remain in the served seed without reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
@@ -86,10 +87,14 @@ Script argv comes from the same includes/files as the DaemonSets. Trailing
 newlines collapse to one, matching YAML block-scalar clipping. Image
 references are digest-pinned.
 
-Install, uninstall, containerd-prep, and local-path helper entries explicitly
-set `mounts: {policy: any}` because these platform scripts require host mounts,
+Install, uninstall and containerd-prep entries explicitly set
+`mounts: {policy: any}` because these platform scripts require host mounts,
 which exact workload mount rules do not support. Their command/args pins still
-apply. The pause and `plugin-ready` containers have no workload mounts and
+apply. The local-path helper pins its executable and leaves args open like a
+component entry, so it takes `mounts: confined`: busybox's binaries and loader
+are denied below, and its two mounts, the writable node path
+(`rke2.localPathHelper.dataDir`) and the `/script` ConfigMap, are `unconfined`.
+The scripts it runs still come from that ConfigMap. The pause and `plugin-ready` containers have no workload mounts and
 retain the default `deny` policy. `plugin-ready` runs under `/bin/sh -c`
 because `c8s uninstall` takes the entry's one non-script shape as its sweep
 pause. Operator-supplied workload policies are preserved as authored.

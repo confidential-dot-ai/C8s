@@ -220,7 +220,7 @@ treats the non-platform mounts differently:
 | --- | --- | --- |
 | `deny` (default) | none | denied |
 | `exact` | exactly the set its `rules` name | denied |
-| `confined` | any confined mount, and any mount at an `unconfined` destination, provided none covers a `denyBelow` path | denied |
+| `confined` | any confined mount, and any mount at an `unconfined` destination, provided none covers a `denyBelow` path or sits inside another volume | denied |
 | `any` | any | admitted |
 
 `exact` requires the observed non-platform set to equal its concrete rules:
@@ -239,7 +239,7 @@ treats the non-platform mounts differently:
 
 A mount is **confined** when what a container writes through it stays inside
 the node's TEE boundary: a platform mount, a read-only host path whose source
-commitment the node recorded (recursive `rro`/`rrw` options withhold it), or an
+commitment the node recorded, or an
 `emptyDir` or `data` volume on memory or encrypted storage. A writable host
 path, a disk-backed `emptyDir`, or a PVC the node cannot vouch for is not.
 `confined` admits any set of confined mounts, so the pod keeps choosing its
@@ -264,7 +264,10 @@ Both lists take clean absolute paths and are compared as written, the way
 the destination appears in the OCI specification; the runtime resolves image
 symlinks in a destination when it mounts. So `denyBelow` must also list every
 symlink that leads into a denied directory, such as `/lib`, `/bin` and `/sbin`
-on a merged-`/usr` image. The pinned executable is checked as under `any`,
+on a merged-`/usr` image. A volume can hold symlinks too, and the runtime
+follows them when it creates a later mount inside that volume, so `confined`
+refuses any mount at or below another non-platform mount's destination. The
+pinned executable is checked as under `any`,
 whether `denyBelow` lists it or not. `confined` is constrained but
 host-dependent: a read-only host path admits whatever the host keeps there.
 The [injected drop set](secrets.md#the-injected-drop-set) uses the same
@@ -328,6 +331,11 @@ A `host` rule pins an exact source path and mount-level access mode:
 
 The source is the clean absolute path in the final OCI specification, after
 containerd resolves symlinks. An omitted `readOnly` requires a writable mount.
+The node reports a host mount read-only only when nothing reachable through it
+is writable. Plain `ro` on a recursive bind leaves each nested mount its own
+flags, so it counts only when the node's mount table holds no mount below the
+source; `rro` (`recursiveReadOnly: Enabled`) always counts; slave or shared
+propagation, which brings in host mounts made later, never does.
 Host evidence carries a SHA-256 source commitment and the access mode through
 inventory and release matching. Host-backed workloads remain host-dependent;
 the path pin grants access to the contents at that node path. Read-only mode
@@ -630,10 +638,16 @@ entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
 The `confined` mount policy reaches a cluster the same way: a digest the chart
 already seeded keeps its stored `mounts: any` entry until the next image bump
-or an edit, and `lint`, `upload` and `apply` refuse such an entry until it is
-edited. A plugin built before the policy rejects a served document that
-carries it, so roll a node image's baked plugin forward before, or with, the
-chart that seeds it.
+or an edit. `lint`, `upload` and `apply` refuse every entry that pins its
+command, leaves args open and keeps `mounts: any`, whoever wrote it: a stored
+component entry, an operator `bootstrapAllowlist` entry, or a hand-written
+workload entry of that shape. Edit each to `mounts: confined` with a
+`denyBelow` list before the next upload. A plugin built before the policy
+rejects the whole served document once it carries one `confined` entry, which
+blocks admission on that node. Roll every enforcing node's plugin forward
+first, and upgrade the chart only after the last node runs it. A node rolled
+back to an older plugin stays blocked while the store holds a `confined`
+entry, so roll back nodes only after editing those entries away.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
