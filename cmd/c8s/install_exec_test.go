@@ -1372,38 +1372,66 @@ func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
 }
 
 // An install refuses a component whose image does not start with the
-// entrypoint the chart seeds it under: the seed would deny it on its own node.
-func TestInstallChecksComponentEntrypoints(t *testing.T) {
-	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}}
-	t.Run("matching entrypoint passes", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", fakeCrane(testDigest))
-		if err := checkComponentEntrypoint(context.Background(), comp, testDigest); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		mustContainLine(t, f.calls(t), "crane config ghcr.io/x/op@"+testDigest)
-	})
-	t.Run("entrypoint and cmd together satisfy a longer pin", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", `echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"]}}'`)
-		nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}}
-		if err := checkComponentEntrypoint(context.Background(), nginx, testDigest); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-	t.Run("moved entrypoint aborts", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", `echo '{"config":{"Entrypoint":["/usr/bin/c8s"]}}'`)
-		err := checkComponentEntrypoint(context.Background(), comp, testDigest)
-		if err == nil || !strings.Contains(err.Error(), "pinned to") {
-			t.Fatalf("want an entrypoint mismatch, got %v", err)
-		}
-	})
+// entrypoint, or set the env, the chart seeds it under: the seed would deny
+// it on its own node.
+func TestInstallChecksComponentImages(t *testing.T) {
+	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}}
+	nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}}
+	for name, tc := range map[string]struct {
+		component c8sComponent
+		config    string
+		wantErr   string
+	}{
+		"matching image passes": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/bin:/bin"]}}`,
+		},
+		"entrypoint and cmd together satisfy a longer pin": {
+			component: nginx,
+			config:    `{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["NGINX_VERSION=1.30.5","PATH=/usr/bin:/bin"]}}`,
+		},
+		"moved entrypoint aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/usr/bin/c8s"],"Env":["PATH=/usr/bin:/bin"]}}`,
+			wantErr:   "pinned to",
+		},
+		"extra variable aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/bin:/bin","LD_LIBRARY_PATH=/opt/lib"]}}`,
+			wantErr:   "imageEnv",
+		},
+		"changed value aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/opt/bin:/usr/bin:/bin"]}}`,
+			wantErr:   "imageEnv",
+		},
+		"missing variable aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"]}}`,
+			wantErr:   "imageEnv",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeBin(t)
+			f.tool(t, "crane", "echo '"+tc.config+"'")
+			err := checkComponentImage(context.Background(), tc.component, testDigest)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("checkComponentImage(%s) = %v, want nil", tc.component.valuePrefix, err)
+				}
+				mustContainLine(t, f.calls(t), "crane config "+tc.component.repository+"@"+testDigest)
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("checkComponentImage(%s) = %v, want an error naming %s", tc.component.valuePrefix, err, tc.wantErr)
+			}
+		})
+	}
 	t.Run("no entrypoint, nothing to check", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", "exit 1")
-		if err := checkComponentEntrypoint(context.Background(), c8sComponent{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err := checkComponentImage(context.Background(), c8sComponent{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
+			t.Fatalf("checkComponentImage(nriImagePolicy.image) = %v, want nil", err)
 		}
 	})
 }

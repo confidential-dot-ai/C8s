@@ -1374,6 +1374,14 @@ func TestChartComponentsFromValues(t *testing.T) {
 	if !strings.HasPrefix(pinned["attestationApi.image"], "sha256:") || len(pinned["attestationApi.image"]) != len("sha256:")+64 {
 		t.Errorf("attestationApi pinnedDigest is not a sha256 digest: %q", pinned["attestationApi.image"])
 	}
+
+	// Every component the chart derives an entry for declares the image's Env,
+	// PATH among them, which the install check compares with the image.
+	for _, c := range comps {
+		if len(c.entrypoint) > 0 && c.imageEnv["PATH"] == "" {
+			t.Errorf("chartComponents: %s imageEnv = %v, want the image's PATH", c.valuePrefix, c.imageEnv)
+		}
+	}
 }
 
 // componentEnabledPredicate must honor a -f values file, not just chart

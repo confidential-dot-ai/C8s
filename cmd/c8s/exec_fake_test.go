@@ -195,15 +195,21 @@ func captureStderr(t *testing.T, fn func()) string { return captureStream(t, &os
 // fakeCrane is a crane stub that resolves every reference to digest and
 // answers `crane config` with the entrypoint the chart pins for the image the
 // reference names, so an install's entrypoint check passes.
+// The Env entries the chart's imageEnv declares for the component images.
+const (
+	fakePath  = `"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"`
+	fakeCerts = `"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"`
+)
+
 func fakeCrane(digest string) string {
 	return `case "$1" in
 config)
   case "$2" in
-  *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"]}}' ;;
-  *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"]}}' ;;
-  *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"]}}' ;;
-  *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"]}}' ;;
-  *) echo '{"config":{"Entrypoint":["/c8s"]}}' ;;
+  *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":[` + fakePath + `,` + fakeCerts + `]}}' ;;
+  *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":[` + fakePath + `]}}' ;;
+  *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":[` + fakePath + `]}}' ;;
+  *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"],"Env":[` + fakePath + `]}}' ;;
+  *) echo '{"config":{"Entrypoint":["/c8s"],"Env":[` + fakePath + `,` + fakeCerts + `]}}' ;;
   esac ;;
 *) echo ` + digest + ` ;;
 esac`
