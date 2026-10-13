@@ -195,3 +195,43 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		})
 	}
 }
+
+func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
+	noHostPort := []string{"--set", "router.hostPort.enabled=false"}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "hostPort bound", args: digestArgs},
+		{name: "entry seeded", args: slices.Concat(digestArgs, noHostPort), want: routerEntry},
+		{name: "explicit name", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload=infer"}), want: "infer"},
+		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
+		{name: "no entry", args: noHostPort},
+		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: routerEntry},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			var got string
+			for _, arg := range attest.Args {
+				if v, ok := strings.CutPrefix(arg, "--expected-workload="); ok {
+					got = v
+				}
+			}
+			if got != tc.want {
+				t.Fatalf("--expected-workload = %q, want %q", got, tc.want)
+			}
+			if tc.want == "" {
+				return
+			}
+			assertRouterReadyzProbe(t, out)
+			if tc.want == routerEntry {
+				assertRouterMatches(t, out)
+			}
+		})
+	}
+}

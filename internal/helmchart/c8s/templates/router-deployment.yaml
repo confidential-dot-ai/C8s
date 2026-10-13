@@ -5,7 +5,7 @@ Recreate, silently defeating the operator's opt-out. */ -}}
 {{- fail (printf "router.hostPort.enabled must be a boolean; do not set it via --set-string, got: %v" .Values.router.hostPort.enabled) -}}
 {{- end -}}
 
-{{- $expectedWorkload := .Values.router.attest.expectedWorkload -}}
+{{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- if $expectedWorkload -}}
 {{- if not .Values.router.attest.enabled -}}
 {{- /* The gate *is* the cds-attest sidecar's /readyz. Without the sidecar

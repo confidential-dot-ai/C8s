@@ -1218,9 +1218,11 @@ router:
     # Requires attest.enabled and hostPort.enabled: false — readiness only
     # withdraws Service endpoints, while a hostPort is published by the CNI
     # portmap plugin independently of pod readiness, so the gate would withhold
-    # nothing. The chart fails the render on either mistake. Empty keeps
-    # today's always-ready behavior.
-    expectedWorkload: ""
+    # nothing. The chart fails the render on either mistake. Unset (null)
+    # defaults to c8s-router when that entry is seeded, attest is enabled,
+    # hostPort is off and the node inventory is reachable; otherwise the
+    # sidecar stays always-ready. "" turns the gate off.
+    expectedWorkload: null
     # -- Container resource requests/limits for the sidecar.
     resources: {}
 

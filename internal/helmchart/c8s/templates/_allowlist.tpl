@@ -170,11 +170,13 @@
 {{ $argv | toJson }}
 {{- end -}}
 
-{{- /* deriveComponents seeds the c8s image's any-argv entry, without which
+{{- /* Values-only apart from argv, so router.expectedWorkload can call it.
+       deriveComponents seeds the c8s image's any-argv entry, without which
        get-cert is not dropped as injected and the router cannot match. */ -}}
 {{- define "c8s.routerWorkloadSeeded" -}}
 {{- if and .Values.router.enabled .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents .Values.router.nginx.image.digest .Values.image.digest (or .Values.router.attest.enabled (eq (include "router.renderAllowlistRoute" .) "true")) -}}
-{{- $argv := include "c8s.routerArgv" (dict "root" . "expectedWorkload" .Values.router.attest.expectedWorkload) -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- $argv := include "c8s.routerArgv" (dict "root" . "expectedWorkload" (ternary $explicit "" (kindIs "string" $explicit))) -}}
 {{- /* kubelet expands $(VAR) and $$ in args, so such argv is not known here. */ -}}
 {{- if not (contains "$" $argv) -}}true{{- end -}}
 {{- end -}}
@@ -189,7 +191,7 @@
 {{- $ref := printf "%s@%s" .Values.image.repository .Values.image.digest -}}
 {{- /* The c8s image's ENTRYPOINT, like secrets.InjectedBinary. */ -}}
 {{- $entrypoint := dict "policy" "exact" "argv" (list "/c8s") -}}
-{{- range $name, $args := (include "c8s.routerArgv" (dict "root" . "expectedWorkload" .Values.router.attest.expectedWorkload) | fromJson) -}}
+{{- range $name, $args := (include "c8s.routerArgv" (dict "root" . "expectedWorkload" (include "router.expectedWorkload" .)) | fromJson) -}}
 {{- $c := dict "digest" $.Values.image.digest "image" $ref "command" $entrypoint "args" (dict "policy" "exact" "argv" $args) "mounts" $any "env" $any -}}
 {{- /* acme is a native sidecar: declared init, so present but not required. */ -}}
 {{- if eq $name "acme" -}}

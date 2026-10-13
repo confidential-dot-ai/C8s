@@ -693,6 +693,21 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- end -}}
 
 {{/*
+The cds-attest readiness gate's workload name. An explicit string wins, and
+"" turns the gate off. Unset defaults to c8s-router where the gate can render
+and be satisfied: the entry is seeded, cds-attest runs, hostPort is off, and
+the node inventory is reachable.
+*/}}
+{{- define "router.expectedWorkload" -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- if kindIs "string" $explicit -}}
+{{- $explicit -}}
+{{- else if and (eq (include "c8s.routerWorkloadSeeded" .) "true") .Values.router.attest.enabled (not .Values.router.hostPort.enabled) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+c8s-router
+{{- end -}}
+{{- end -}}
+
+{{/*
 "true" when the router pod must mount the node inventory's socket directory:
 workload claims are required and this is the node-CVM shape. A baked
 router always requests claims so clients can verify its workload stamp.
@@ -705,7 +720,7 @@ condition true in every renderable shape today; the condition is spelled out
 anyway so the two consumers of the socket stay on one rule.
 */}}
 {{- define "router.mountInventorySocket" -}}
-{{- if and (or .Values.node.baked .Values.router.attest.expectedWorkload) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if and (or .Values.node.baked (include "router.expectedWorkload" .)) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -730,7 +745,7 @@ list.
 {{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
-{{- if or .Values.node.baked .Values.router.attest.expectedWorkload -}}
+{{- if or .Values.node.baked (include "router.expectedWorkload" .) -}}
 
 {{- /* A baked router needs the same workload stamp that clients pin, even
        when the optional ingress readiness gate is unset.

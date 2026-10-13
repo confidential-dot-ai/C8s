@@ -105,12 +105,16 @@ matching.
 `bootstrapAllowlist.deriveComponents` is true (it seeds the c8s image's
 any-argv entry), both `router.nginx.image.digest` and `image.digest` are set,
 at least one c8s-image main container renders, and no pinned argument
-contains `$`. Kubelet expands
-`$(VAR)` and `$$` in args, so such argv (`$(HOST_IP)` in the attestation-api
-URL when `cvmMode=bare-metal` without a local attestation-api) is not known at
-render time. `c8s.routerArgv` takes `(dict "root" $ "expectedWorkload" <name>)`
-and returns the rendered argv per container name; the seeded cds-attest argv
-includes `--expected-workload` when the gate is set.
+contains `$`. Kubelet expands `$(VAR)` and `$$` in args, so such argv
+(`$(HOST_IP)` in the attestation-api URL when `cvmMode=bare-metal` without a
+local attestation-api) is not known at render time. `c8s.routerArgv` takes `(dict "root" $ "expectedWorkload" <name>)`
+and returns the rendered argv per container name.
+
+`router.expectedWorkload` defaults the cds-attest readiness gate to
+`c8s-router` when the entry is seeded, `router.attest.enabled` is true,
+`router.hostPort.enabled` is false, and the inventory is reachable. An explicit
+string, including `""`, wins. The seeded cds-attest argv includes the resulting
+`--expected-workload`.
 
 The entry name is fixed, and CDS seeds additively by name: a store that already
 holds `c8s-router` keeps it across a chart upgrade.
