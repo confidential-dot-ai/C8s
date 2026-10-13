@@ -191,14 +191,8 @@ each variable’s matcher. Missing env evidence fails `exact`, `deny`, and `matc
 "env": { "policy": "exact", "values": {"PATH": "/usr/bin:/bin", "MODEL_DIR": "/models"} }
 ```
 
-```yaml
-env:
-  policy: match
-  variables:
-    MODE:
-      exact: production
-    GPU_SERIAL:
-      present: true
+```json
+"env": { "policy": "match", "variables": {"MODE": {"exact": "production"}, "GPU_SERIAL": {"present": true}} }
 ```
 
 Each variable requires exactly one matcher: `exact` pins its string value,
@@ -214,6 +208,15 @@ to their names for CDS workload matching and secret release. Names are visible;
 raw values are omitted, but digests allow guessing low-entropy values. `match`
 requires per-variable evidence from the node. Deferred CDI edits leave env and
 mount evidence unavailable, so constrained policies reject those launches.
+
+Consumers that predate `match` reject the whole allowlist when it contains one,
+and nodes that predate it report no per-variable evidence. To start using
+`match`:
+
+1. Upgrade CDS, the node images and every other allowlist consumer.
+2. Add the `match` policies.
+3. Recreate the affected pods. Restarting their containers is not enough: the
+   sandbox's admission history keeps the records from the old node software.
 
 ## Mount policy (`mounts`)
 
