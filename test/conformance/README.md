@@ -61,6 +61,14 @@ and undoes that, and restarts the CDS. Each is undone after the scenario, and
 a plugin is started again wherever the CDS was restarted, since a plugin only
 accepts the versions a restarted CDS serves after a start of its own.
 
+Where a scenario is about the CDS's own API, the backend sends the request as
+the scenario says rather than through its signed path: a write with the
+Authorization a caller holds, or none; a read naming a version; the write
+token minted with the operator's key or with a key that is not an operator
+key, and for a chosen lifetime. It also answers whether the CDS holds an
+operator key, whether its seed names a digest, and what argv an image starts
+with.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this
 environment cannot express that", which the steps turn into a skip. It also
@@ -71,7 +79,7 @@ rejects unknown names.
 | Backend | Environment | Requires |
 |---|---|---|
 | [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec` | `C8S_IT_WORKDIR` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start` and `cds_restart` answer 77 | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start` and `cds_restart` answer 77; `image_entrypoint` answers 77 without `crane`, `write_token` without Go | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` and `crane` for the write-token and entrypoint functions |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that

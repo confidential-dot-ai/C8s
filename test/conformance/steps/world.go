@@ -25,6 +25,16 @@ type world struct {
 	entries map[string]*entry
 	written map[string]bool
 	removed map[string]json.RawMessage
+	// the CDS as a caller sees it (cdsapi.go): who sends the next write, the
+	// last write's token and status, a write signed before it is sent, and
+	// what a relying party read.
+	caller          string
+	lastToken       string
+	lastStatus      int
+	pending         *write
+	pendingValidity string
+	versionBefore   string
+	read            *reading
 	// appliedVersion is the served version the plugin had applied when the
 	// scenario last waited for it.
 	appliedVersion string
@@ -89,6 +99,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
+		registerCDS(sc)
 		registerNode(sc)
 	}
 }
@@ -153,13 +164,15 @@ type entry struct {
 	Containers     []entryContainer `json:"containers"`
 }
 
+// entryContainer is a declared container. Command and Args are nil when the
+// entry states no policy, which the document's defaults then decide.
 type entryContainer struct {
-	Digest  string     `json:"digest"`
-	Image   string     `json:"image,omitempty"`
-	Command argvPolicy `json:"command"`
-	Args    argvPolicy `json:"args"`
-	Mounts  policy     `json:"mounts"`
-	Env     policy     `json:"env"`
+	Digest  string       `json:"digest"`
+	Image   string       `json:"image,omitempty"`
+	Command *argvPolicy  `json:"command,omitempty"`
+	Args    *argvPolicy  `json:"args,omitempty"`
+	Mounts  mountsPolicy `json:"mounts"`
+	Env     policy       `json:"env"`
 }
 
 type argvPolicy struct {
@@ -167,8 +180,25 @@ type argvPolicy struct {
 	Argv   []string `json:"argv,omitempty"`
 }
 
+func anyArgv() *argvPolicy                { return &argvPolicy{Policy: "any"} }
+func denyArgv() *argvPolicy               { return &argvPolicy{Policy: "deny"} }
+func exactArgv(argv []string) *argvPolicy { return &argvPolicy{Policy: "exact", Argv: argv} }
+
+func (p *argvPolicy) is(policy string) bool { return p != nil && p.Policy == policy }
+
 type policy struct {
 	Policy string `json:"policy"`
+}
+
+type mountsPolicy struct {
+	Policy string      `json:"policy"`
+	Rules  []mountRule `json:"rules,omitempty"`
+}
+
+// mountRule is the part of a rule every kind carries.
+type mountRule struct {
+	Destination string `json:"destination"`
+	Kind        string `json:"kind"`
 }
 
 // containers lists the entry's declared containers, init then main.
@@ -196,32 +226,39 @@ func (e *entry) declares(digest string) bool {
 // admitsAnyArgv reports whether the entry admits digest under any argv.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
-		if c.Digest == digest && c.Command.Policy == "any" && c.Args.Policy == "any" {
+		if c.Digest == digest && c.Command.is("any") && c.Args.is("any") {
 			return true
 		}
 	}
 	return false
 }
 
-// served is the document CDS serves at the moment of the call: its entries
-// parsed, and raw for putting one back as it was.
+// served is an allowlist document as CDS serves it: its entries parsed, and
+// raw for putting one back as it was.
 type served struct {
+	schema  string
 	entries map[string]*entry
 	raw     map[string]json.RawMessage
 }
 
+// served is the document CDS serves at the moment of the call.
 func (w *world) served() (served, error) {
 	out, err := w.be.call("served_allowlist")
 	if err != nil {
 		return served{}, err
 	}
+	return parseServed(out)
+}
+
+func parseServed(out string) (served, error) {
 	var doc struct {
+		Schema    string                     `json:"schema"`
 		Workloads map[string]json.RawMessage `json:"workloads"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		return served{}, fmt.Errorf("served allowlist is not JSON: %w", err)
 	}
-	s := served{raw: doc.Workloads, entries: make(map[string]*entry, len(doc.Workloads))}
+	s := served{schema: doc.Schema, raw: doc.Workloads, entries: make(map[string]*entry, len(doc.Workloads))}
 	for name, raw := range doc.Workloads {
 		e := &entry{}
 		if err := json.Unmarshal(raw, e); err != nil {

@@ -176,13 +176,19 @@ func versionBelowApplied(ctx context.Context, node string) error {
 
 // restoreNode undoes what the scenario did to the node and the CDS: the pull
 // is unblocked, and the plugin is started again where the scenario stopped
-// it, or wherever it addressed one if the CDS was restarted, since only a
-// start lets the plugin accept the versions a restarted CDS serves.
+// it, or on every node it addressed and on node "one" if the CDS was
+// restarted, since only a start lets a plugin accept the versions a
+// restarted CDS serves, whether or not the scenario spoke of its node.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
 		_, err := w.be.call("cds_unblock")
 		errs = append(errs, err)
+	}
+	if w.cdsRestarted {
+		if k8sNode, err := w.be.call("node_name", "one"); err == nil {
+			w.nodes[k8sNode] = true
+		}
 	}
 	for k8sNode := range w.nodes {
 		if !w.pluginDown[k8sNode] && !w.cdsRestarted {

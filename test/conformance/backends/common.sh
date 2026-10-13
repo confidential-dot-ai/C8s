@@ -32,6 +32,20 @@
 #   pod_manifest <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
 #                                    container per +-separated group
+#   image_entrypoint <ref>           the argv the image starts with when the pod
+#                                    spec overrides nothing, one word per line
+#   operator_keys                    yes/no: the CDS holds an operator key
+#   seed_declares <digest>           yes/no: the seed of the CDS names digest
+#   write_token <operator|foreign> <method> <path> <body-file> [validity]
+#                                    the Authorization header of a write token,
+#                                    signed with the operator's key or with one
+#                                    that is not an operator key
+#   allowlist_request <method> <path> <body-file> [authorization]
+#                                    send the write as given, authorization
+#                                    included only when given; prints the status
+#   allowlist_get [version]          read the allowlist, naming version in
+#                                    If-None-Match when given; prints
+#                                    "<status> <version>", then the body
 # node_name, image_ref, image_digest and pull_interval answer the same for a
 # whole run; callers may cache them. The allowlist is state: served_allowlist
 # answers for the moment of the call.
@@ -133,6 +147,79 @@ cds_volatile() {
     else
         echo no
     fi
+}
+
+# --- The CDS API as a caller sees it ---
+# The signed path (allowlist_put, allowlist_delete) is the harness's way of
+# writing; these send what a scenario says, authorization included or not,
+# with curl against the CDS. A backend provides what differs:
+#   cds_url        the base URL of the CDS, reachable from here
+#   operator_key   the operator's private key, PEM
+#   optoken_bin    the token minter built from test/integration/cluster/optoken
+#   scratch        a directory kept for the run
+
+operator_keys() {
+    local url code
+    url="$(cds_url)" || return
+    code="$(curl -sSk -o /dev/null -w '%{http_code}' "$url/operator-keys")" || code=000
+    case "$code" in
+        200) echo yes ;;
+        404) echo no ;;
+        *) echo "backend: GET /operator-keys: HTTP $code" >&2; return 1 ;;
+    esac
+}
+
+# The chart's seed ConfigMap, where the chart installed one.
+seed_declares() {
+    local seed
+    seed="$(kubectl -n "$NS" get configmaps -o json |
+        jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .data["allowlist-seed.json"] // empty')"
+    [ -n "$seed" ] || return $UNSUPPORTED
+    if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
+}
+
+# A key that is not an operator key, minted once per run.
+foreign_key() {
+    local key
+    key="$(scratch)/foreign.key"
+    [ -s "$key" ] || openssl ecparam -genkey -name prime256v1 -noout -out "$key" 2>/dev/null
+    echo "$key"
+}
+
+write_token() {
+    local key bin
+    case "$1" in
+        operator) key="$(operator_key)" || return ;;
+        foreign) key="$(foreign_key)" || return ;;
+        *) echo "backend: write_token: no signer '$1'" >&2; return 2 ;;
+    esac
+    shift
+    bin="$(optoken_bin)" || return
+    "$bin" "$key" "$@"
+}
+
+# Always exit 0: curl prints 000 on transport failure, and the steps assert on
+# the code itself.
+allowlist_request() {
+    local url
+    url="$(cds_url)" || return
+    local -a auth=()
+    [ -z "${4:-}" ] || auth=(-H "Authorization: $4")
+    curl -sSk -o /dev/null -w '%{http_code}' -X "$1" -H 'Content-Type: application/json' \
+        --data-binary "@$3" ${auth[@]+"${auth[@]}"} "$url$2" || true
+}
+
+allowlist_get() {
+    local url headers body status
+    url="$(cds_url)" || return
+    headers="$(mktemp)"
+    body="$(mktemp)"
+    local -a match=()
+    [ -z "${1:-}" ] || match=(-H "If-None-Match: W/\"$1\"")
+    status="$(curl -sSk -o "$body" -D "$headers" -w '%{http_code}' ${match[@]+"${match[@]}"} "$url/allowlist")" || status=000
+    echo "$status $(awk 'tolower($1) == "etag:" {gsub(/[^0-9]/, "", $2); print $2}' "$headers")"
+    cat "$body"
+    rm -f "$headers" "$body"
 }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.
