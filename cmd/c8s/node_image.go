@@ -322,7 +322,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, c.argv)
 			}
 			if !slices.ContainsFunc(seedContainers[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c) }) {
-				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q lists the variables its manifest sets %q", image, c.argv, c.env)
+				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q lists the variables its manifest sets %q (envFrom cannot be checked)", image, c.argv, c.env)
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -359,11 +359,13 @@ type bakedImage struct {
 }
 
 // bakedContainer is the argv a manifest spells out with an explicit command,
-// nil for a container that runs the image's entrypoint, and the names of the
-// variables the manifest sets.
+// nil for a container that runs the image's entrypoint, the names of the
+// variables the manifest sets, and whether it also imports some (envFrom),
+// whose names this cannot resolve.
 type bakedContainer struct {
-	argv []string
-	env  []string
+	argv    []string
+	env     []string
+	envFrom bool
 }
 
 // seedLaunches reports whether seed, an entry container that pins at most the
@@ -377,7 +379,7 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 	if seed.Env.Policy != pkgallowlist.PolicyMatch {
 		return true
 	}
-	return !slices.ContainsFunc(c.env, func(name string) bool {
+	return !c.envFrom && !slices.ContainsFunc(c.env, func(name string) bool {
 		_, listed := seed.Env.Variables[name]
 		return !listed
 	})
@@ -412,7 +414,7 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
-		container := bakedContainer{}
+		container := bakedContainer{envFrom: len(c.EnvFrom) > 0}
 		if len(c.Command) > 0 {
 			container.argv = slices.Concat(c.Command, c.Args)
 		}
