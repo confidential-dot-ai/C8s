@@ -52,7 +52,7 @@ func Digest(ctx context.Context, ref string) (string, error) {
 }
 
 // Config returns the parsed OCI image config for a reference via
-// `crane config <ref>`, exposing the image's baked Entrypoint and Cmd.
+// `crane config <ref>`, exposing the image's baked Entrypoint, Cmd and Env.
 func Config(ctx context.Context, ref string) (*ImageConfig, error) {
 	out, err := run(ctx, "config", ref)
 	if err != nil {
@@ -99,6 +99,7 @@ type ImageConfig struct {
 	Config struct {
 		Entrypoint []string `json:"Entrypoint"`
 		Cmd        []string `json:"Cmd"`
+		Env        []string `json:"Env"`
 	} `json:"config"`
 }
 

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,11 +102,12 @@ const platformExemptNamespace = "kube-system"
 // against, so an operator's -f override of a repository cannot leave the chart
 // deploying repoA@<digest-of-repoB>.
 type c8sComponent struct {
-	valuePrefix  string   // values path, e.g. "cds.image" (renders {repository}@{digest})
-	repository   string   // values.yaml default repository resolved against
-	enabledPath  string   // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
-	pinnedDigest string   // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
-	entrypoint   []string // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
+	valuePrefix  string            // values path, e.g. "cds.image" (renders {repository}@{digest})
+	repository   string            // values.yaml default repository resolved against
+	enabledPath  string            // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
+	pinnedDigest string            // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
+	entrypoint   []string          // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
+	imageEnv     map[string]string // the image config's Env the seeded entry's env match pins
 }
 
 // chartComponents reads the component set from the chart at chartPath via
@@ -158,7 +160,13 @@ func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, err
 				entrypoint = append(entrypoint, tok)
 			}
 		}
-		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest, entrypoint: entrypoint})
+		imageEnv := map[string]string{}
+		if raw, ok := m["imageEnv"].(map[string]any); ok {
+			for name, value := range raw {
+				imageEnv[name] = fmt.Sprint(value)
+			}
+		}
+		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest, entrypoint: entrypoint, imageEnv: imageEnv})
 	}
 	return comps, nil
 }
@@ -2051,8 +2059,9 @@ func tagCouplingHint(repo string) string {
 // appendResolvedDigestArgs resolves each chart component's repo:tag to its
 // registry digest (via crane) and appends the helm --set flags that pin it.
 // Every pinned image, resolved or chart-pinned, is checked against the
-// entrypoint the chart seeds it under: a pin the image does not start with
-// would render a seed that denies the component on its own node.
+// entrypoint and environment the chart seeds it under: an image that starts
+// with another executable or sets other variables would render a seed that
+// denies the component on its own node.
 func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []string, tag string, components []c8sComponent) ([]string, error) {
 	if !crane.Available() {
 		return nil, fmt.Errorf("digest resolution needs the 'crane' CLI on PATH; install it or pass --resolve-digests=false and supply digests via -f")
@@ -2067,7 +2076,7 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 		if c.pinnedDigest == "" || c.enabledPath != "" && !boolAtPathOrFalse(enabled, c.enabledPath) {
 			continue
 		}
-		if err := checkComponentEntrypoint(ctx, c, c.pinnedDigest); err != nil {
+		if err := checkComponentImage(ctx, c, c.pinnedDigest); err != nil {
 			return nil, err
 		}
 	}
@@ -2080,7 +2089,7 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 		// so stdout must stay clean. Install's stdout is diagnostic too.
 		fmt.Fprintf(os.Stderr, "+ resolved %s -> %s\n", ref, digest)
 		if c, ok := byRef[ref]; ok {
-			if err := checkComponentEntrypoint(ctx, c, digest); err != nil {
+			if err := checkComponentImage(ctx, c, digest); err != nil {
 				return "", err
 			}
 		}
@@ -2093,22 +2102,31 @@ func boolAtPathOrFalse(enabled func(string) (bool, error), path string) bool {
 	return err == nil && on
 }
 
-// checkComponentEntrypoint reads the image config at repo@digest and requires
-// the component's seeded entrypoint to be a prefix of the argv the image bakes
-// (ENTRYPOINT then CMD). A component without an entrypoint is seeded
-// argv-pinned elsewhere and has nothing to check.
-func checkComponentEntrypoint(ctx context.Context, c c8sComponent, digest string) error {
+// checkComponentImage reads the image config at repo@digest and requires the
+// component's seeded entrypoint to be a prefix of the argv the image bakes
+// (ENTRYPOINT then CMD), and its imageEnv to equal the Env the image bakes. A
+// component without an entrypoint is seeded argv-pinned elsewhere and has
+// nothing to check.
+func checkComponentImage(ctx context.Context, c c8sComponent, digest string) error {
 	if len(c.entrypoint) == 0 {
 		return nil
 	}
 	ref := c.repository + "@" + digest
 	cfg, err := crane.Config(ctx, ref)
 	if err != nil {
-		return fmt.Errorf("component %s: read the image config to check its entrypoint: %w", c.valuePrefix, err)
+		return fmt.Errorf("component %s: read the image config to check its entrypoint and env: %w", c.valuePrefix, err)
 	}
 	baked := slices.Concat(cfg.Config.Entrypoint, cfg.Config.Cmd)
 	if len(baked) < len(c.entrypoint) || !slices.Equal(baked[:len(c.entrypoint)], c.entrypoint) {
 		return fmt.Errorf("component %s: image %s starts with %q, but the chart seeds it pinned to %q (c8sComponents[].entrypoint); the node plugin would deny it. Align the entrypoint with the image", c.valuePrefix, ref, baked, c.entrypoint)
+	}
+	env := map[string]string{}
+	for _, entry := range cfg.Config.Env {
+		name, value, _ := strings.Cut(entry, "=")
+		env[name] = value
+	}
+	if !maps.Equal(env, c.imageEnv) {
+		return fmt.Errorf("component %s: image %s sets env %q, but the chart seeds it matching %q (c8sComponents[].imageEnv); the node plugin would deny it. Align imageEnv with the image", c.valuePrefix, ref, cfg.Config.Env, c.imageEnv)
 	}
 	return nil
 }
