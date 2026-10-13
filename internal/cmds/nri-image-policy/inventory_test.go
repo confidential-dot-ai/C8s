@@ -30,7 +30,10 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 		{name: "observed empty spec", pod: &api.PodSandbox{Id: "pod", Uid: "uid"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &plugin{inventory: newAdmissionInventory(t.TempDir())}
+			p := &plugin{
+				inventory: newAdmissionInventory(t.TempDir()),
+				mesh:      newMeshGate(nil, discardLogger()),
+			}
 			ctr := &api.Container{Id: "ctr", PodSandboxId: "pod", Args: []string{"/app"}}
 			p.recordDigest(ctr, digestApp, observedMounts(tc.pod, ctr))
 			_, reported, known, err := p.inventory.DigestsForSandbox("pod")
@@ -70,16 +73,16 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 // sandboxDigestsFor walks the production path CDS drives: bind the caller by
 // kernel credentials to its sandbox, then list what that sandbox runs.
 func sandboxDigestsFor(b *admissionInventory, pid int) ([]string, error) {
-	id, err := b.SandboxForPeer(workloadclaims.PeerForPID(pid))
+	sandboxID, err := b.sandboxForPeer(workloadclaims.PeerForPID(pid))
 	if err != nil {
 		return nil, err
 	}
-	digests, _, known, err := b.DigestsForSandbox(id)
+	digests, _, known, err := b.DigestsForSandbox(sandboxID)
 	if err != nil {
 		return nil, err
 	}
 	if !known {
-		return nil, fmt.Errorf("sandbox %s unknown", id)
+		return nil, fmt.Errorf("sandbox %s unknown", sandboxID)
 	}
 	return digests, nil
 }
@@ -253,7 +256,7 @@ func TestInventoryRemoveKeepsAdmissionRecord(t *testing.T) {
 	}
 }
 
-// SandboxForPeer binds the caller by kernel PID → cgroup → tracked container
+// sandboxForPeer binds the caller by kernel PID → cgroup → tracked container
 // → its sandbox. An untracked caller fails.
 func TestInventorySandboxForPeer(t *testing.T) {
 	procRoot := t.TempDir()
@@ -261,7 +264,7 @@ func TestInventorySandboxForPeer(t *testing.T) {
 	b.record(cidGetCert, "sandbox-1", "c8s-cert", digestOther, nil, nil)
 	writeCgroup(t, procRoot, 4242, cidGetCert)
 
-	got, err := b.SandboxForPeer(workloadclaims.PeerForPID(4242))
+	got, err := b.sandboxForPeer(workloadclaims.PeerForPID(4242))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,10 +273,10 @@ func TestInventorySandboxForPeer(t *testing.T) {
 	}
 
 	writeCgroup(t, procRoot, 55, cidOther)
-	if _, err := b.SandboxForPeer(workloadclaims.PeerForPID(55)); err == nil {
+	if _, err := b.sandboxForPeer(workloadclaims.PeerForPID(55)); err == nil {
 		t.Fatal("untracked caller resolved to a sandbox")
 	}
-	if _, err := b.SandboxForPeer(workloadclaims.PeerForPID(0)); err == nil {
+	if _, err := b.sandboxForPeer(workloadclaims.PeerForPID(0)); err == nil {
 		t.Fatal("peer pid 0 accepted")
 	}
 }

@@ -66,9 +66,14 @@ type Workload struct {
 }
 
 // Container binds a digest to the process policy permitted for it.
+//
+// Role names the platform role an enforcer grants to these bytes under this
+// policy. It is YAML-only: a document on the wire carries no role, so a role
+// comes from a measured boot config and nothing a CDS serves can claim one.
 type Container struct {
 	Digest  types.Digest `json:"digest" yaml:"digest"`
 	Image   string       `json:"image,omitempty" yaml:"image,omitempty"`
+	Role    string       `json:"-" yaml:"role,omitempty"`
 	Command ArgvPolicy   `json:"command" yaml:"command"`
 	Args    ArgvPolicy   `json:"args" yaml:"args"`
 	Mounts  MountPolicy  `json:"mounts" yaml:"mounts,omitempty"`

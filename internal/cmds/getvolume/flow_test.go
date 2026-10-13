@@ -28,7 +28,9 @@ const flowSandbox = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 // binds its caller by peer credentials, which a unix socket supplies.
 type stubResolver struct{}
 
-func (stubResolver) SandboxForPeer(workloadclaims.Peer) (string, error) { return flowSandbox, nil }
+func (stubResolver) SandboxForPeer(workloadclaims.Peer) (workloadclaims.CallerSandbox, error) {
+	return workloadclaims.CallerSandbox{SandboxID: flowSandbox}, nil
+}
 func (stubResolver) DigestsForSandbox(string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
 	return nil, nil, false, nil
 }
