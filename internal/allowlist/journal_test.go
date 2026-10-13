@@ -271,26 +271,18 @@ func TestReplaceAllReportsUnstoredSignature(t *testing.T) {
 
 func TestConsumeToken(t *testing.T) {
 	store := openJournaled(t)
-	until := time.Now().Add(time.Hour)
-	if err := store.ConsumeToken("t1", until); err != nil {
-		t.Fatalf("first use = %v", err)
-	}
-	if err := store.ConsumeToken("h.p1.s1", until); err != nil {
-		t.Fatalf("first use = %v", err)
+	for _, first := range []string{"t1", "h.p1.s1"} {
+		if err := store.ConsumeToken(first); err != nil {
+			t.Fatalf("ConsumeToken(%q) first use = %v", first, err)
+		}
 	}
 	for _, reuse := range []string{"t1", "h.p1.s1", "h.p1.s2"} {
-		if err := store.ConsumeToken(reuse, until); !errors.Is(err, ErrTokenReused) {
+		if err := store.ConsumeToken(reuse); !errors.Is(err, ErrTokenReused) {
 			t.Fatalf("ConsumeToken(%q) = %v, want ErrTokenReused", reuse, err)
 		}
 	}
-	if err := store.ConsumeToken("h.p2.s1", until); err != nil {
-		t.Fatalf("other payload = %v, want accepted", err)
-	}
-	if err := store.ConsumeToken("t2", time.Now().Add(-time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.ConsumeToken("t2", until); err != nil {
-		t.Fatalf("reuse after the record expired = %v, want it pruned", err)
+	if err := store.ConsumeToken("h.p2.s1"); err != nil {
+		t.Fatalf("ConsumeToken(other payload) = %v, want accepted", err)
 	}
 }
 

@@ -32,7 +32,7 @@ func TestSingleUse(t *testing.T) {
 	}
 	denied := errors.New("denied")
 	var verdict error
-	authorize := singleUse(func(*http.Request, []byte) error { return verdict }, &store, time.Second)
+	authorize := singleUse(func(*http.Request, []byte) error { return verdict }, &store, time.Time{})
 	r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 
@@ -85,7 +85,7 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	twin := token[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
 
 	verifier := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}
-	authorize := singleUse(verifier.Authorize, &store, time.Second)
+	authorize := singleUse(verifier.Authorize, &store, time.Time{})
 	request := func(token string) *http.Request {
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -99,5 +99,36 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	}
 	if err := authorize(request(twin), nil); !errors.Is(err, allowlist.ErrTokenReused) {
 		t.Fatalf("twin after first use = %v, want ErrTokenReused", err)
+	}
+}
+
+// A store that forgets spent tokens at restart refuses every token issued
+// before CDS started, so a signature fetched earlier cannot write again.
+func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	start := time.Now().Truncate(time.Second)
+	authorize := singleUse(func(*http.Request, []byte) error { return nil }, &store, start)
+	for _, tc := range []struct {
+		name   string
+		claims jwt.MapClaims
+		ok     bool
+	}{
+		{"issued before start", jwt.MapClaims{"iat": start.Add(-time.Second).Unix()}, false},
+		{"issued at start", jwt.MapClaims{"iat": start.Unix()}, true},
+		{"no iat", jwt.MapClaims{}, false},
+	} {
+		token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, tc.claims).SignedString([]byte("k"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
+		r.Header.Set("Authorization", "Bearer "+token)
+		if err := authorize(r, nil); (err == nil) != tc.ok {
+			t.Errorf("%s: authorize = %v, want ok=%v", tc.name, err, tc.ok)
+		}
 	}
 }

@@ -185,7 +185,11 @@ func run(cfg config) error {
 	}
 	allowlistWriteAuthorizer := writeAuthorizer
 	if cfg.operatorKeys != "" {
-		allowlistWriteAuthorizer = singleUse(writeAuthorizer, &allowlistStore, time.Duration(cfg.jwtClockSkew)*time.Second)
+		var notBefore time.Time
+		if !cfg.allowlistPersistent {
+			notBefore = time.Now().Truncate(time.Second) // iat has whole seconds
+		}
+		allowlistWriteAuthorizer = singleUse(writeAuthorizer, &allowlistStore, notBefore)
 	}
 
 	if !cfg.allowlistPersistent {

@@ -34,8 +34,7 @@ CREATE TABLE IF NOT EXISTS journal_signature (
 	token  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS used_token (
-	digest   TEXT PRIMARY KEY,
-	until_ms INTEGER NOT NULL
+	digest TEXT PRIMARY KEY
 );
 `
 
@@ -210,9 +209,9 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 // ConsumeToken records that the JWT token authorized a write, or returns
 // ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one write only.
-// The record survives restarts of a persistent store and is pruned after
-// until, when the token no longer verifies anyway.
-func (s *Store) ConsumeToken(token string, until time.Time) error {
+// Records are never pruned: expiry is judged on a clock the host can turn
+// back, and a pruned record would let a published token write again.
+func (s *Store) ConsumeToken(token string) error {
 	// Key on the signed header.payload: the signature segment has several
 	// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).
 	if i := strings.LastIndexByte(token, '.'); i >= 0 {
@@ -220,10 +219,7 @@ func (s *Store) ConsumeToken(token string, until time.Time) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.db.Exec("DELETE FROM used_token WHERE until_ms < ?", time.Now().UnixMilli()); err != nil {
-		return err
-	}
-	res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest, until_ms) VALUES (?, ?)", objectDigest([]byte(token)), until.UnixMilli())
+	res, err := s.db.Exec("INSERT OR IGNORE INTO used_token (digest) VALUES (?)", objectDigest([]byte(token)))
 	if err != nil {
 		return err
 	}

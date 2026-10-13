@@ -149,18 +149,18 @@ func (v Verifier) Authorize(r *http.Request, body []byte) error {
 		jwt.WithLeeway(v.ClockSkew), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
 }
 
-// TokenExpiry returns the exp claim of a token Authorize or VerifyStored
+// TokenIssuedAt returns the iat claim of a token Authorize or VerifyStored
 // already checked; it does not verify the token itself.
-func TokenExpiry(token string) (time.Time, error) {
+func TokenIssuedAt(token string) (time.Time, error) {
 	claims := jwt.MapClaims{}
 	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
 		return time.Time{}, err
 	}
-	exp, err := claims.GetExpirationTime()
-	if err != nil || exp == nil {
-		return time.Time{}, fmt.Errorf("operator token missing exp claim")
+	iat, err := claims.GetIssuedAt()
+	if err != nil || iat == nil {
+		return time.Time{}, fmt.Errorf("operator token missing iat claim")
 	}
-	return exp.Time, nil
+	return iat.Time, nil
 }
 
 // VerifyStored checks a token that authorized a past request: its signature

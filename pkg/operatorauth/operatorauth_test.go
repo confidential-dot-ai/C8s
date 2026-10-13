@@ -514,27 +514,27 @@ func TestOperatorSignatureVector(t *testing.T) {
 	}
 }
 
-func TestTokenExpiry(t *testing.T) {
+func TestTokenIssuedAt(t *testing.T) {
 	keyPEM, _ := genKey(t, elliptic.P256())
-	exp := time.Now().Add(time.Minute).Truncate(time.Second)
-	noExp := baseClaims(nil)
-	delete(noExp, "exp")
+	iat := time.Now().Add(-time.Minute).Truncate(time.Second)
+	noIat := baseClaims(nil)
+	delete(noIat, "iat")
 	for _, tc := range []struct {
 		name  string
 		token string
 		ok    bool
 	}{
-		{"exp", strings.TrimPrefix(mintCustom(t, keyPEM, jwt.MapClaims{"exp": exp.Unix()}), "Bearer "), true},
-		{"missing exp", strings.TrimPrefix(mintCustom(t, keyPEM, noExp), "Bearer "), false},
+		{"iat", strings.TrimPrefix(mintCustom(t, keyPEM, jwt.MapClaims{"iat": iat.Unix()}), "Bearer "), true},
+		{"missing iat", strings.TrimPrefix(mintCustom(t, keyPEM, noIat), "Bearer "), false},
 		{"malformed", "not-a-jwt", false},
 	} {
-		got, err := TokenExpiry(tc.token)
+		got, err := TokenIssuedAt(tc.token)
 		if (err == nil) != tc.ok {
-			t.Errorf("%s: TokenExpiry = %v, %v; want ok=%v", tc.name, got, err, tc.ok)
+			t.Errorf("%s: TokenIssuedAt = %v, %v; want ok=%v", tc.name, got, err, tc.ok)
 			continue
 		}
-		if tc.ok && !got.Equal(exp) {
-			t.Errorf("%s: TokenExpiry = %v, want %v", tc.name, got, exp)
+		if tc.ok && !got.Equal(iat) {
+			t.Errorf("%s: TokenIssuedAt = %v, want %v", tc.name, got, iat)
 		}
 	}
 }

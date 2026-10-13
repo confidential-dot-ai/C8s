@@ -493,9 +493,9 @@ Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
 operator public keys it pins. Each token authorizes one allowlist write: CDS
-remembers it until it expires and answers a replay with 409. Without
-`cds.persistence.enabled` that memory resets with CDS, so a token published
-as a signature can replay its write until it expires.
+remembers every spent token and answers a replay with 409. Without
+`cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
+token issued before it started; mint a fresh one after a restart.
 
 ### Refresh and anti-rollback
 
