@@ -652,6 +652,34 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/x/cds:main")
 	})
 
+	t.Run("checks the image against the effective imageEnv", func(t *testing.T) {
+		chart := writeChart(t, "c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv: {PATH: /bin}\ncds:\n  image:\n    repository: ghcr.io/x/cds\n")
+		pinned := []c8sComponent{{valuePrefix: "cds.image", repository: "ghcr.io/x/cds", entrypoint: []string{"/c8s", "cds"}, imageEnv: map[string]string{"PATH": "/bin"}}}
+		override := filepath.Join(t.TempDir(), "env.yaml")
+		if err := os.WriteFile(override, []byte("c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv:\n      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for name, tc := range map[string]struct {
+			values  []string
+			wantErr bool
+		}{
+			"chart default differs from the image": {wantErr: true},
+			"-f override matches the image":        {values: []string{override}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				resetCLIState(t)
+				installValues = tc.values
+				f := newFakeBin(t)
+				f.tool(t, "helm", helmShowValuesBody)
+				f.tool(t, "crane", fakeCrane(testDigest))
+				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", pinned)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("appendResolvedDigestArgs(%s) = %v, want error %v", name, err, tc.wantErr)
+				}
+			})
+		}
+	})
+
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
