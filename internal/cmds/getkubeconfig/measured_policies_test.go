@@ -102,9 +102,10 @@ func TestRunReplaysMeasuredPolicies(t *testing.T) {
 			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 			stubVerify(t, res, nil)
 
-			var releaseHits atomic.Int32
+			var releaseHits, listHits atomic.Int32
 			release := newAttestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path == credrelease.MeasuredPoliciesPath {
+					listHits.Add(1)
 					io.WriteString(w, tc.served)
 					return
 				}
@@ -121,6 +122,9 @@ func TestRunReplaysMeasuredPolicies(t *testing.T) {
 			}
 			if tc.wantErr && releaseHits.Load() != 0 {
 				t.Fatalf("cred-release hits = %d, want 0", releaseHits.Load())
+			}
+			if n := listHits.Load(); n != 1 {
+				t.Fatalf("%s fetched %d times, want once per run", credrelease.MeasuredPoliciesPath, n)
 			}
 		})
 	}
