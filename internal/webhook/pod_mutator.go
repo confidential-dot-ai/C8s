@@ -800,6 +800,11 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	if effective.Reload.Nginx {
 		pod.Spec.ShareProcessNamespace = new(true)
 	}
+	// The injected sidecars share the C8s image's allowlist entry, whose env
+	// match lists every variable by name. Service links would add one set per
+	// Service in the namespace, so the sidecar's names would change whenever
+	// a Service is added; the KUBERNETES_* variables stay either way.
+	pod.Spec.EnableServiceLinks = new(false)
 
 	injected := []corev1.Container{certContainer(&effective, cfg), certWaitContainer(&effective, cfg)}
 	if len(effective.Secrets.Specs) > 0 {
