@@ -24,9 +24,10 @@ are informational. Policy is always resolved by container digest.
 
 An image whose **arguments are per-pod** — the standalone and injected C8s
 components (cds, get-cert, the operator, armtls-mesh, the router) — is an entry
-whose container `command` is `exact` at the image's entrypoint and whose `args`
-is `any`: the executable is the image's own, and everything after it is the
-pod's to choose. An image that may run however it is invoked is an entry with
+whose container `command` is `exact` at the image's entrypoint, or at the
+entrypoint and a subcommand, and whose `args` is `any`: the executable is the
+image's own, and everything after it is the pod's to choose. Its `env` is
+`match`, listing every variable the component launches with. An image that may run however it is invoked is an entry with
 `command` and `args` both `any`. Nothing distinguishes either shape from any
 other entry: it is matched, stamped and diffed like the rest, and the same
 digest may also appear elsewhere under a narrower policy — see [union
@@ -446,12 +447,13 @@ would refuse everything there.
 
 The exemption is only as narrow as the base entry. The chart's component
 entries pin each image to its entrypoint, so restaging one with another
-executable, or with a volume mounted over the pinned path, is refused. That is
-all the pin covers: with `mounts` and `env` left `any`, an entrypoint that
-loads further code — nginx's `docker-entrypoint.d` scripts and its `PATH`
-lookup of `nginx`, the mesh's `ipset`, any dynamically linked binary's
-`LD_PRELOAD` — can still be pointed at a volume. Closing that needs `mounts`
-and `env` rules for those entries. The node image's generated RKE2 system
+executable, or with a volume mounted over the pinned path, is refused. Their
+`env` is `match` over the names the component launches with, `PATH` pinned to
+the image's value, so a pod cannot set `LD_PRELOAD` or redirect a `PATH`
+lookup. `mounts` is still `any`: an entrypoint that loads further code from a
+fixed path — nginx's `docker-entrypoint.d` scripts, the mesh's `ipset` under
+`/usr/sbin`, a shared library under `/lib` — can still be pointed at a volume
+mounted there. Closing that needs `mounts` rules for those entries. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
@@ -515,8 +517,8 @@ container *name* is one of those things; the names identify injection only over
 authored input, where admission reserves them and `c8s allowlist derive` drops
 them. get-cert runs with per-pod dynamic arguments, which is exactly why the
 seeded component entries carry `command: exact` at the image's entrypoint and
-`args: any`: the binary is pinned, the rest of the argv is not fixed and must
-not be argv-policed. Before matching, a container whose image is admitted with
+mode (`/c8s get-cert`) and `args: any`: the binary is pinned, the rest of the
+argv is not fixed and must not be argv-policed. Before matching, a container whose image is admitted with
 open args for its executable and running one of the invocations the webhook
 injects is dropped from the candidate set
 ([`secrets.md`](secrets.md#the-injected-drop-set)). The same image in any other
@@ -578,9 +580,19 @@ command and args open as well.
 The chart renders the seed (`--allowlist-seed`) from the resolved component
 digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
 component digest becomes one entry named `<image basename>-<first 12 hex of
-digest>` with a single container under `command: exact` at the image's
-entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`) and
-`args: any, env: any, mounts: any`; an operator-authored `workloads` entry of
+digest>` with one container per way the chart or the webhook runs the image:
+`command: exact` at the image's entrypoint (`c8sComponents[].entrypoint`,
+`router.nginx.entrypoint`) plus the subcommand, `args: any, mounts: any`, and
+`env: match`. The match lists the image config's variables pinned `exact`
+(`c8sComponents[].imageEnv`, `router.nginx.imageEnv`), the pod spec's
+(`exact` for a constant, `present` for a downward-API value), the runtime's
+`HOSTNAME`, and the `KUBERNETES_*` variables the kubelet adds. Component pods
+and injected pods run with `enableServiceLinks: false`, so no other Service
+adds a variable; a loader variable such as `LD_PRELOAD` is never listed, so
+`match` refuses it. `c8s install --resolve-digests` refuses an image whose
+config sets other variables than `imageEnv`, and `c8s allowlist lint` reports
+a component entry whose `env` is `any`, or whose `match` lists a loader
+variable as `present`, as an error. An operator-authored `workloads` entry of
 the same name replaces it whole in the rendered seed. The same component
 entries feed the host plugin's base allowlist, as does every operator entry
 that leaves args, environment and mounts unconstrained, whether its command is
@@ -595,6 +607,8 @@ with it gone. The same rule means a cluster installed before the component
 entries pinned their entrypoints keeps serving its stored `command: any`
 entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
+The env match reaches such a cluster the same way: an entry stored with
+`env: any` keeps it until the image bump or an edit.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
