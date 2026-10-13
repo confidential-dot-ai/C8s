@@ -228,16 +228,21 @@ func pinsNoEnvValue(env pkgallowlist.EnvPolicy) bool {
 	return true
 }
 
-// componentRepositories are the last path segments of the C8s component
-// images the chart seeds with open args (c8sComponents and router.nginx).
-var componentRepositories = []string{"c8s-operator", "cds", "armtls-mesh", "volumed", "attestation-api", "nginx-unprivileged"}
+// componentRepositories are the repository paths, without the registry, of
+// the component images the chart seeds with open args (c8sComponents and
+// router.nginx). A mirror that keeps the path still matches.
+var componentRepositories = []string{
+	"confidential-dot-ai/c8s-operator", "confidential-dot-ai/cds", "confidential-dot-ai/armtls-mesh",
+	"confidential-dot-ai/volumed", "confidential-dot-ai/attestation-api", "nginxinc/nginx-unprivileged",
+}
 
 // componentEnvFindings rejects a component entry that leaves env to the host,
 // or matches with present a variable a component's loader, shell or
 // entrypoint reads code from (searchPathFindings covers loaderVariables for
-// every entry): the pinned entrypoint would load code the pod chooses. A component entry is the shape the chart seeds: a
-// component image pinned to an exact command with open args. An entry under
-// any command, as `c8s allowlist add` writes, pins no entrypoint to protect.
+// every entry): the pinned entrypoint would load code the pod chooses. A
+// component entry is the shape the chart seeds: a component image pinned to
+// an exact command with open args. An entry under any command, as `c8s
+// allowlist add` writes, pins no entrypoint to protect.
 func componentEnvFindings(al *pkgallowlist.Allowlist) []finding {
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
@@ -268,7 +273,10 @@ func isComponentImage(image string) bool {
 	if err != nil {
 		return false
 	}
-	return slices.Contains(componentRepositories, path.Base(reference.Path(named)))
+	repository := reference.Path(named)
+	return slices.ContainsFunc(componentRepositories, func(component string) bool {
+		return repository == component || strings.HasSuffix(repository, "/"+component)
+	})
 }
 
 // componentLoaderVariable reports whether the dynamic loader, a shell or a
