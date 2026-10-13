@@ -62,16 +62,31 @@ func decodeEnvMatcher(data []byte, matcher envMatcherBehavior) bool {
 	return dec.Decode(matcher) == nil && matcher.valid()
 }
 
+// UnmarshalYAML takes an unquoted numeric exact value by its literal text, so
+// `exact: 8080` pins "8080" rather than failing as a non-string.
 func (m *EnvMatcher) UnmarshalYAML(node *yaml.Node) error {
-	var fields map[string]any
-	if err := node.Decode(&fields); err != nil {
-		return fmt.Errorf("invalid environment matcher")
+	if node.Kind != yaml.MappingNode || len(node.Content) != 2 {
+		return fmt.Errorf("environment matcher requires exactly one of exact or present: true")
 	}
-	data, err := json.Marshal(fields)
-	if err != nil {
-		return fmt.Errorf("invalid environment matcher")
+	key, value := node.Content[0], node.Content[1]
+	if key.Value == "exact" && value.Kind == yaml.ScalarNode {
+		switch value.Tag {
+		case "!!str", "!!int", "!!float":
+			exact := exactEnvMatcher{Exact: &value.Value}
+			if !exact.valid() {
+				return fmt.Errorf("invalid environment matcher")
+			}
+			m.matcher = exact
+			return nil
+		}
+		return fmt.Errorf("environment matcher exact value must be a string, got %s; quote it", value.Tag)
 	}
-	return m.UnmarshalJSON(data)
+	var present presentEnvMatcher
+	if key.Value != "present" || value.Kind != yaml.ScalarNode || value.Tag != "!!bool" || value.Decode(&present.Present) != nil || !present.valid() {
+		return fmt.Errorf("environment matcher requires exactly one of exact or present: true")
+	}
+	m.matcher = present
+	return nil
 }
 
 type exactEnvMatcher struct {
