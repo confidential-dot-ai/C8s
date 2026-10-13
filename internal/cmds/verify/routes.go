@@ -192,7 +192,18 @@ func (rc *routeCheck) bind(ctx context.Context, base, serverName string, timeout
 	if err != nil {
 		return nil, err
 	}
-	route.refetch = func() (*boundRoute, error) { return rc.published(ctx, base, serverName, timeout) }
+	route.refetch = func() (*boundRoute, error) {
+		fresh, err := rc.published(ctx, base, serverName, timeout)
+		if err != nil {
+			return nil, err
+		}
+		// Only a newer manifest explains the mismatch. An older one is a
+		// replica behind, or rolled back, from the one first published.
+		if fresh.revision <= route.revision {
+			return nil, &securityError{err: fmt.Errorf("route digest mismatch: the re-fetched manifest has revision %d, not newer than the revision %d first published", fresh.revision, route.revision)}
+		}
+		return fresh, nil
+	}
 	return route, nil
 }
 

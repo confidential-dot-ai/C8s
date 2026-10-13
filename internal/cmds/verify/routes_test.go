@@ -16,6 +16,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -270,6 +271,37 @@ func TestParseRouteCheckV2(t *testing.T) {
 				t.Fatal("no floor parsed")
 			}
 		})
+	}
+}
+
+// The re-fetch after a digest mismatch accepts only a newer manifest than the
+// one first published: an older one is a replica behind or rolled back.
+func TestV2RefetchRefusesAnOlderManifest(t *testing.T) {
+	op := newOperatorSigner(t)
+	newer, _ := op.publish(t, 5)
+	older, _ := op.publish(t, 3)
+	newest, _ := op.publish(t, 6)
+	var served [][]byte
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(served[0])
+		served = served[1:]
+	}))
+	t.Cleanup(ts.Close)
+
+	served = [][]byte{newer, older, newer, newest}
+	route, err := (&routeCheck{keys: op.keys}).bind(context.Background(), ts.URL, "", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := route.refetch(); !isSecurityError(err) {
+		t.Fatalf("refetch of revision 3 after 5 = %v, want a security error", err)
+	}
+	route, err = (&routeCheck{keys: op.keys}).bind(context.Background(), ts.URL, "", 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh, err := route.refetch(); err != nil || fresh.revision != 6 {
+		t.Fatalf("refetch of revision 6 after 5 = %+v, %v, want revision 6", fresh, err)
 	}
 }
 
