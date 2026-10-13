@@ -191,9 +191,10 @@ func (c Client) mutate(ctx context.Context, method, path string, body []byte, au
 	return nil
 }
 
-// VersionFromETag extracts N from a weak ETag of the form W/"N", or "" if the
-// header is missing or malformed. Exported because enforcers polling the
-// allowlist track the same counter for epoch anti-rollback.
+// VersionFromETag extracts a non-empty N from a weak ETag of the form W/"N",
+// or "" for anything else. A strong ETag yields "" by design: CDS only emits
+// W/"N". Exported because enforcers polling the allowlist track the same
+// counter for epoch anti-rollback.
 func VersionFromETag(etag string) string {
 	v, _ := weakVersion(etag)
 	return v
