@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
-	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
@@ -49,17 +48,8 @@ func (h routeHandler) handleGet(w http.ResponseWriter, _ *http.Request) {
 // order: read, authorize, validate, mesh-CA exclusion, revision, If-Match,
 // store.
 func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
-	if h.Authorize == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
-	body, ok := httputil.ReadCappedBody(w, r, allowlistWriteBodyCap)
+	body, ok := h.Authorize.ReadAuthorized(w, r, allowlistWriteBodyCap)
 	if !ok {
-		return
-	}
-	if err := h.Authorize(r, body); err != nil {
-		slog.Warn("route manifest write rejected", "remote", r.RemoteAddr, "reason", err)
-		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
 	if h.MeshCA == nil {

@@ -175,7 +175,7 @@ func TestAddStartsAtUnixTime(t *testing.T) {
 	h := newHarness(t)
 	start := time.Now()
 	before := start.UTC().Truncate(time.Second)
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "vllm.ai.svc:8443", "--workload", "vllm", "--max-age", "1h")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "vllm.ai.svc:8443", "--workload", "vllm", "--max-age", "1h")
 	end := time.Now()
 
 	m := h.cds.stored(t)
@@ -192,10 +192,10 @@ func TestAddStartsAtUnixTime(t *testing.T) {
 // set notBefore to now.
 func TestAddRmEditOneRoute(t *testing.T) {
 	h := newHarness(t)
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a", "--max-age", "2h")
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/admin", "--match", "exact", "--address", "b:1", "--workload", "b", "--max-age", "5m")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a", "--max-age", "2h")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/admin", "--match", "exact", "--address", "b:1", "--workload", "b", "--max-age", "5m")
 	prev := h.cds.stored(t).Revision
-	out := h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "c:1", "--workload", "c")
+	out := h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "c:1", "--workload", "c")
 	m := h.cds.stored(t)
 	if !strings.Contains(out, "replaced prefix route app.example /") || !strings.Contains(out, fmt.Sprintf("revision %d", m.Revision)) {
 		t.Fatalf("add output = %q", out)
@@ -227,8 +227,8 @@ func TestRmRefusals(t *testing.T) {
 	if _, err := h.run(t, "rm", "--host", "app.example", "--path", "/"); err == nil {
 		t.Fatal("rm with no stored manifest: want an error")
 	}
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/x", "--address", "a:1", "--workload", "a")
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/x", "--match", "exact", "--address", "a:1", "--workload", "a")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/x", "--address", "a:1", "--workload", "a")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/x", "--match", "exact", "--address", "a:1", "--workload", "a")
 	for _, tc := range []struct {
 		args []string
 		want string
@@ -251,7 +251,7 @@ func TestAddBackendFlags(t *testing.T) {
 		{"--workload", "a", "--server-name", "a.example"},
 		{"--server-name", "a.example"},
 	} {
-		base := []string{"add", "--host", "app.example", "--path", "/", "--address", "a:1"}
+		base := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1"}
 		if _, err := h.run(t, append(base, args...)...); err == nil {
 			t.Errorf("add %v: want a backend-flag error", args)
 		}
@@ -264,7 +264,7 @@ func TestAddBackendFlags(t *testing.T) {
 // A 409 tells the operator how to recover.
 func TestPutStaleRevisionGuidance(t *testing.T) {
 	h := newHarness(t)
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
 	file := filepath.Join(t.TempDir(), "routes.json")
 	if err := os.WriteFile(file, []byte(`{"schema":"c8s.routes/v1","revision":1,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`), 0o600); err != nil {
 		t.Fatal(err)
@@ -308,7 +308,7 @@ func TestPutShowDigest(t *testing.T) {
 // W2: show refuses a manifest no trusted key signed.
 func TestShowRejectsUntrustedSignature(t *testing.T) {
 	h := newHarness(t)
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
 	_, otherPub, _ := writeKey(t, t.TempDir(), "other")
 	if _, err := h.run(t, "show", "--operator-keys", otherPub); err == nil || !strings.Contains(err.Error(), "fails verification") {
 		t.Fatalf("show with an untrusted key: error = %v", err)
@@ -341,7 +341,7 @@ func TestPutRejectsInvalidFileLocally(t *testing.T) {
 // refuse a stored manifest no trusted key signed.
 func TestEditRequiresVerifiedManifest(t *testing.T) {
 	h := newHarness(t)
-	add := []string{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
 	if _, err := h.runUnverified(t, add...); err == nil || !strings.Contains(err.Error(), "pass --operator-keys") {
 		t.Fatalf("add without --operator-keys: error = %v", err)
 	}
@@ -384,7 +384,7 @@ func TestEditKeepsFutureNotBefore(t *testing.T) {
 	h.mustRun(t, "put", file)
 	want := time.Date(2099, 1, 1, 0, 0, 0, 5e8, time.UTC)
 	for _, args := range [][]string{
-		{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"},
+		{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"},
 		{"rm", "--host", "app.example", "--path", "/"},
 	} {
 		prev := h.cds.stored(t).Revision
@@ -417,7 +417,7 @@ func TestEditRevisionAboveClock(t *testing.T) {
 	writeFile(t, file, `{"schema":"c8s.routes/v1","revision":`+strconv.FormatUint(ahead, 10)+`,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{"app.example":{"routes":[{"path":"/old","match":"exact","backend":{"address":"b:1","workload":"b"}}]}}}`)
 	h.mustRun(t, "put", file)
 
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
 	if m := h.cds.stored(t); m.Revision != ahead+1 {
 		t.Fatalf("add over stored revision %d: revision %d, want %d", ahead, m.Revision, ahead+1)
 	}
@@ -443,7 +443,7 @@ func TestEditRevisionAboveClock(t *testing.T) {
 
 func TestRmRejectsUnknownMatch(t *testing.T) {
 	h := newHarness(t)
-	h.mustRun(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
+	h.mustRun(t, "add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a")
 	if _, err := h.run(t, "rm", "--host", "app.example", "--path", "/", "--match", "Prefix"); err == nil || !strings.Contains(err.Error(), `--match "Prefix"`) {
 		t.Fatalf("rm --match Prefix: error = %v", err)
 	}
@@ -479,7 +479,7 @@ func TestWritesLoadKeyBeforeConnecting(t *testing.T) {
 	common := []string{"--url", "https://" + ln.Addr().String(), "--measurements", strings.Repeat("ab", 48), "--timeout", "2s"}
 	for _, args := range [][]string{
 		{"put", file},
-		{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a", "--operator-keys", pubFile},
+		{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a", "--operator-keys", pubFile},
 		{"rm", "--host", "app.example", "--path", "/", "--operator-keys", pubFile},
 	} {
 		cmd := newCmd(nil)
@@ -508,7 +508,7 @@ func writeFile(t *testing.T, path, content string) {
 // a write that landed in between fails with 412; put sends none.
 func TestEditSendsIfMatch(t *testing.T) {
 	h := newHarness(t)
-	add := []string{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
 	h.mustRun(t, add...)
 	first := digestHex(h.cds.env.Manifest)
 	h.mustRun(t, "rm", "--host", "app.example", "--path", "/")
@@ -528,9 +528,21 @@ func TestEditSendsIfMatch(t *testing.T) {
 	}
 }
 
+// An empty store is also what a CDS reset leaves: add starts a new manifest
+// only when asked to, since one would drop every route routers hold.
+func TestAddRefusesAnEmptyStoreWithoutNew(t *testing.T) {
+	h := newHarness(t)
+	if _, err := h.run(t, "add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"); err == nil {
+		t.Fatal("add on an empty store without --new succeeded")
+	}
+	if h.cds.env != nil {
+		t.Fatal("add without --new stored a manifest")
+	}
+}
+
 func TestAddMaxAge(t *testing.T) {
 	h := newHarness(t)
-	add := []string{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
+	add := []string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}
 	if _, err := h.run(t, append(add, "--max-age", "500ms")...); err == nil || !strings.Contains(err.Error(), "--max-age") {
 		t.Fatalf("add --max-age 500ms: error = %v, want one naming --max-age", err)
 	}
@@ -545,7 +557,7 @@ func TestAddMaxAge(t *testing.T) {
 func TestDryRunRequiresPinnedEndpoint(t *testing.T) {
 	_, pubFile, _ := writeKey(t, t.TempDir(), "operator")
 	for _, args := range [][]string{
-		{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"},
+		{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"},
 		{"rm", "--host", "app.example", "--path", "/"},
 	} {
 		cmd := newCmd(nil)

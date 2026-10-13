@@ -138,20 +138,27 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 // authorize reads the body (capped) and runs the configured authorizer.
 // On success returns the body for downstream decoding.
 func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	if h.WriteAuthorizer == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return nil, false
-	}
 	cap := h.MaxWriteBodyBytes
 	if cap <= 0 {
 		cap = DefaultMaxWriteBodyBytes
 	}
-	body, ok := httputil.ReadCappedBody(w, r, cap)
+	return h.WriteAuthorizer.ReadAuthorized(w, r, cap)
+}
+
+// ReadAuthorized reads the body, capped at maxBytes, and authorizes it. On
+// failure it has answered the request; a nil authorizer refuses every write.
+// Every write CDS authorizes as an allowlist write goes through it.
+func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, maxBytes int64) ([]byte, bool) {
+	if a == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return nil, false
+	}
+	body, ok := httputil.ReadCappedBody(w, r, maxBytes)
 	if !ok {
 		return nil, false
 	}
-	if err := h.WriteAuthorizer(r, body); err != nil {
-		slog.Warn("allowlist write rejected", "method", r.Method, "remote", r.RemoteAddr, "reason", err)
+	if err := a(r, body); err != nil {
+		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil, false
 	}

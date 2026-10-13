@@ -583,7 +583,7 @@ c8s routes show --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
     --operator-keys operator.pub
 c8s routes add --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
     --operator-key operator.key --operator-keys operator.pub \
-    --host app.example --path / --address vllm.ai.svc.cluster.local:8443 --workload vllm
+    --host app.example --path / --address vllm.ai.svc.cluster.local:8443 --workload vllm --new
 ```
 
 - `CDS_DIGEST`: the CDS launch digest.
@@ -595,7 +595,7 @@ c8s routes add --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
 | `show [--raw] [-o json] [--operator-keys FILE]` | Prints revision, `notBefore`, `maxAgeSeconds`, route digest and routes. `--operator-keys` verifies the stored token's signature and bindings. |
 | `digest FILE` | Validates a manifest file and prints its route digest, the hex SHA-256 of its bytes. |
 | `put FILE [--dry-run]` | Validates the file locally, then signs and stores its bytes verbatim. |
-| `add --operator-keys FILE --host H --path P [--match prefix\|exact] --address A (--workload W \| --server-name N --ca FILE) [--revision N] [--dry-run]` | Adds the route, or replaces the one with the same path and match, and stores the next revision. With no stored manifest, it writes a new one with `--max-age` (default 24h, at least 1s); otherwise it warns that `--max-age` is ignored. |
+| `add --operator-keys FILE --host H --path P [--match prefix\|exact] --address A (--workload W \| --server-name N --ca FILE) [--new] [--revision N] [--dry-run]` | Adds the route, or replaces the one with the same path and match, and stores the next revision. With no stored manifest it refuses, since a CDS reset looks the same; with `--new` it writes a new one with `--max-age` (default 24h, at least 1s). Over a stored manifest it warns that `--max-age` is ignored. |
 | `rm --operator-keys FILE --host H --path P [--match M] [--revision N] [--dry-run]` | Removes the route, and the host when it has no route left, and stores the next revision. |
 
 `add` and `rm` re-sign the stored routes, so they require `--operator-keys`

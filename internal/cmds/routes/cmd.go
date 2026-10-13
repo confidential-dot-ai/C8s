@@ -50,9 +50,9 @@ its database. 'add' and 'rm' fetch the stored route manifest, verify it
 against --operator-keys, change one route, and write the next revision. They
 set notBefore to now, or keep the stored notBefore when it is later. The next
 revision is the later of the stored one plus one and the current Unix time in
-seconds, or --revision. Once the router applies the manifest, it keeps the
-highest revision it applied, even across a CDS reset, so after a reset write
-one above it. Before signing, they print every route the new revision
+seconds, or --revision. A router keeps the highest revision it accepted,
+applied or staged, even across a CDS reset, so after a reset write one above
+it; 'add' refuses an empty store unless --new starts the first manifest. Before signing, they print every route the new revision
 carries, since the write re-authorizes them all.
 
 To sign writes, pass the operator key with --operator-key (or

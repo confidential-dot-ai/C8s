@@ -59,7 +59,7 @@ func newAddCmd(o *options) *cobra.Command {
 		workload, serverName, ca   string
 		maxAge                     time.Duration
 		revision                   uint64
-		dryRun                     bool
+		dryRun, newManifest        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "add",
@@ -67,9 +67,11 @@ func newAddCmd(o *options) *cobra.Command {
 		Long: `Fetch the stored manifest, verify it against --operator-keys (required), add a
 route for --host, and store the next revision. notBefore becomes now, or keeps
 the stored value when it is later. A route with the same --path and --match is
-replaced. When CDS stores no route manifest, add writes a new one with
---max-age; otherwise it keeps the stored maxAgeSeconds. --dry-run also fetches
-the stored manifest from CDS.
+replaced. When CDS stores no route manifest, add refuses unless --new is
+passed, and then writes a new one with --max-age; otherwise it keeps the
+stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last manifest
+instead: a new one outranks the routes routers hold and drops all but this one.
+--dry-run also fetches the stored manifest from CDS.
 
 Name the backend in one of two ways:
   --workload            an allowlist workload name; the router requires it in
@@ -99,7 +101,11 @@ Name the backend in one of two ways:
 				}
 				r.Backend.CA = string(pemBytes)
 			}
-			return o.edit(cmd, dryRun, maxAge, revision, func(m *pkgroutes.Manifest) (string, error) {
+			var newMaxAge time.Duration
+			if newManifest {
+				newMaxAge = maxAge
+			}
+			return o.edit(cmd, dryRun, newMaxAge, revision, func(m *pkgroutes.Manifest) (string, error) {
 				return addRoute(m, host, r), nil
 			})
 		},
@@ -112,7 +118,8 @@ Name the backend in one of two ways:
 	f.StringVar(&workload, "workload", "", "allowlist workload name the backend's named leaf must carry")
 	f.StringVar(&serverName, "server-name", "", "TLS server name of an address backend")
 	f.StringVar(&ca, "ca", "", "PEM file of trust anchors for an address backend")
-	f.DurationVar(&maxAge, "max-age", 24*time.Hour, "maxAgeSeconds when CDS stores no route manifest; otherwise add keeps the stored value")
+	f.DurationVar(&maxAge, "max-age", 24*time.Hour, "maxAgeSeconds of a manifest --new starts; otherwise add keeps the stored value")
+	f.BoolVar(&newManifest, "new", false, "start a new manifest when CDS stores none (the first route of a cluster)")
 	bindRevisionFlag(f, &revision)
 	f.BoolVar(&dryRun, "dry-run", false, "fetch the stored manifest from CDS and print the new one without storing it")
 	for _, name := range []string{"host", "path", "address"} {
@@ -205,6 +212,10 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 	switch {
 	case errors.Is(err, routesclient.ErrNotFound) && newMaxAge > 0:
 		m = &pkgroutes.Manifest{MaxAge: newMaxAge, Hosts: map[string]pkgroutes.Host{}}
+	case errors.Is(err, routesclient.ErrNotFound):
+		// A CDS reset also looks like this. A new manifest would outrank the
+		// routes routers hold and drop all but this one.
+		return errors.New("CDS stores no route manifest. After a CDS reset, 'c8s routes put' the last manifest you stored; to start the first one, run 'c8s routes add --new'")
 	case err != nil:
 		return err
 	default:
