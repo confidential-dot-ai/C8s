@@ -503,6 +503,13 @@ The cost is that a pod which ever ran an image outside its entry never receives 
 secret, even after that image is gone. That is the correct direction for a
 release decision.
 
+The record also grows with every distinct launch configuration: each admission
+whose argv, environment or mounts differ from an earlier one, including a new
+value for a variable matched with `present`, adds a record. CDS reads at most
+1 MiB of history, which fits 64 distinct admissions with 64 environment
+variables, 16 mounts and 1 KiB of argv each. Past that, CDS refuses release and
+workload identity for the sandbox; recreate the pod to start a new record.
+
 ## Restarts
 
 **A CDS restart destroys every secret, and requires rolling every workload that
