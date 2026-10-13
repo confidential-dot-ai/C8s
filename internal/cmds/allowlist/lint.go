@@ -304,19 +304,23 @@ func processOf(c pkgallowlist.Container) [2]pkgallowlist.ArgvPolicy {
 	return [2]pkgallowlist.ArgvPolicy{c.Command, c.Args}
 }
 
-// searchPathFindings rejects pinned loader and interpreter search paths that
-// overlap operator-supplied data, which could otherwise be loaded as code.
+// loaderVariables choose where the loader or an interpreter finds code.
+var loaderVariables = []string{"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "PYTHONPATH", "NODE_PATH"}
+
+// searchPathFindings rejects loader and interpreter search paths the host
+// chooses, and pinned ones overlapping operator-supplied data: either way,
+// content outside the measured image could be loaded as code.
 func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		for _, c := range allContainers(al.Workloads[name]) {
-			if c.Mounts.Policy != pkgallowlist.PolicyExact {
-				continue
-			}
 			pinnedValues := c.Env.ExactValues()
-			for _, variable := range []string{"PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "NODE_PATH"} {
-				value, set := pinnedValues[variable]
-				if !set {
+			for _, variable := range loaderVariables {
+				value, pinned := pinnedValues[variable]
+				if _, matched := c.Env.Variables[variable]; matched && !pinned {
+					out = append(out, errorf("workload %q container %s leaves %s to the host; the host could choose where code is loaded from (pin it with exact, or leave it unlisted)", name, c.Digest.String(), variable))
+				}
+				if !pinned || c.Mounts.Policy != pkgallowlist.PolicyExact {
 					continue
 				}
 				for _, rule := range c.Mounts.Rules {
@@ -337,7 +341,10 @@ func searchPathLoadsMountedContent(value string, rule pkgallowlist.MountRule) bo
 
 func searchPathReachesMount(value, destination string) bool {
 	destination = path.Clean(destination)
-	for _, element := range strings.Split(value, ":") {
+	// ld.so splits LD_PRELOAD on spaces as well as colons; other variables
+	// split on colons only, so check both readings.
+	elements := append(strings.Split(value, ":"), strings.FieldsFunc(value, func(r rune) bool { return r == ':' || r == ' ' })...)
+	for _, element := range elements {
 		element = path.Clean(element)
 		if element == destination || strings.HasPrefix(element, strings.TrimSuffix(destination, "/")+"/") || strings.HasPrefix(destination, strings.TrimSuffix(element, "/")+"/") {
 			return true

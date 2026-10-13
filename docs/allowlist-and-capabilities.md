@@ -205,7 +205,9 @@ Each variable requires exactly one matcher: `exact` pins its string value,
 including `""`; `present: true` accepts any value, including empty. Missing or
 additional variables are rejected. An empty `variables: {}` requires an observed
 empty environment. The allowlisted program and its dependencies must be safe for
-every possible value of a variable matched with `present`.
+every possible value of a variable matched with `present`. `lint` rejects
+`present` on `PATH`, `LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT`, `PYTHONPATH`
+and `NODE_PATH`, because the host would choose where code loads from.
 
 Supply these policies per container through `c8s allowlist derive --env-file`.
 The NRI plugin enforces env after cumulative NRI adjustments. The admission
