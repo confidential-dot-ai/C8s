@@ -277,3 +277,26 @@ func writeMeasurementsFile(t *testing.T, hexes ...string) string {
 	}
 	return p
 }
+
+// CheckEndpoint makes HTTPClient's refusals without dialling, for a command
+// that has expensive work to do before it connects.
+func TestCheckEndpointRefusesWithoutNetwork(t *testing.T) {
+	for name, o := range map[string]Options{
+		"plaintext without insecure": {URL: "http://" + closedAddr(t)},
+		"unknown scheme":             {URL: "ftp://cds.example"},
+		"no host":                    {URL: "https://"},
+		"bad measurement":            {URL: "https://" + closedAddr(t), Measurements: []string{"nothex"}},
+	} {
+		if err := o.CheckEndpoint(); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	for name, o := range map[string]Options{
+		"plaintext with insecure": {URL: "http://" + closedAddr(t), Insecure: true},
+		"https":                   {URL: "https://" + closedAddr(t)},
+	} {
+		if err := o.CheckEndpoint(); err != nil {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+}

@@ -167,6 +167,12 @@ confirm which one was sent.
 serves at `GET /ca` over the attested connection and refuses unless it is one
 you pinned.
 
+The write goes to the peer whose CA was read. Through a router front door the
+CLI uses one connection for both. On a direct URL, a connection the CLI has to
+reopen must present the same serving certificate as the first one, or the write
+is refused before anything is sent: a fresh handshake proves only an attested
+build at `$M`, which another CDS can match.
+
 `--measurements` alone does not cover this. It proves the peer is an attested
 build at a pinned launch measurement — but nodes can boot the same image,
 so that measurement does not identify a particular CDS instance. The mesh CA key is generated per CDS, so it is what tells your CDS from
@@ -176,6 +182,11 @@ already trust.
 The write is refused with no `--mesh-ca`. `--force` writes without the check
 and says so on stderr; it governs the CA check only, and is unrelated to
 `--overwrite`, which governs replacing a value already at the path.
+
+`c8s volume create` writes a volume key into the same store and carries the
+same `--mesh-ca` and `--force` (see [volumes.md](volumes.md), "Naming the CDS
+the key goes to"). `c8s secrets explain` and `c8s allowlist` sign with the same
+operator key against the same endpoint but do not check the mesh CA.
 
 ### Reading the mesh CA bundle
 
