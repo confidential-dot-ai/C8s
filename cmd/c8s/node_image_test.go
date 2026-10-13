@@ -467,6 +467,7 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
 		{"pinned args", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"deny"},"mounts":{"policy":"any"}}]},"init"`},
 		{"restricted mounts", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"any"},"mounts":{"policy":"deny"}}]},"init"`},
+		{"exact env", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"exact","values":{"PATH":"/bin"}}}]},"init"`},
 		{"pinned executable other than the baked command", `"` + testDigest + `","command":{"policy":"any"}`, `"` + testDigest + `","command":{"policy":"exact","argv":["/other"]}`},
 		{"unexpected namespace", "name: c8s-cds", "name: c8s-cds\n  namespace: outside"},
 		{"cluster resource namespace", "name: confidentialworkloads.confidential.ai", "name: confidentialworkloads.confidential.ai\n  namespace: c8s-system"},
@@ -612,5 +613,22 @@ func TestNodeImageCollectAcceptsConfinedMounts(t *testing.T) {
 	}
 	if _, err := collectNodeImageArtifacts([]byte(confined)); err != nil {
 		t.Fatalf("rejected a seed confining the baked image's mounts: %v", err)
+	}
+}
+
+// A component entry runs one image in several invocations, each pinned to
+// its subcommand with its env matched by name; the baked command is admitted
+// by one of them.
+func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
+	env := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"HOSTNAME":{"present":true}}}`
+	input := strings.Replace(nodeImageCollectFixture(),
+		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
+		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+env+`},`+
+			`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s","volumed"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+env+`}`, 1)
+	if input == nodeImageCollectFixture() {
+		t.Fatal("fixture did not change")
+	}
+	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
+		t.Fatalf("collectNodeImageArtifacts(matched env invocations) = %v, want nil", err)
 	}
 }
