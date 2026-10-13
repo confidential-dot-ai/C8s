@@ -293,6 +293,9 @@ func TestSetCDSPinsSetsMeasurePolicies(t *testing.T) {
 	if cfg := loadPatched(t, path); !cfg.Allowlist.Pull.MeasurePolicies {
 		t.Fatal("a run without --measure-policies turned measuring off")
 	}
+	if got := setPins(t, path, "--cds-measurements", pinA); got != pinsUnchanged {
+		t.Fatalf("re-run without --measure-policies outcome = %q, want %q", got, pinsUnchanged)
+	}
 	if got := setPins(t, path, "--cds-measurements", pinA, "--measure-policies=false"); got != pinsUpdated {
 		t.Fatalf("disable outcome = %q, want %q", got, pinsUpdated)
 	}
