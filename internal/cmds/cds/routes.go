@@ -18,7 +18,7 @@ type dependencies struct {
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
 	ReadyFn           attestation.ReadinessFunc
-	CACertPEM         []byte
+	MeshCA            *issuer.MeshCA        // the one current CA: served at /ca and signs every leaf
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
 	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
@@ -43,6 +43,9 @@ func newRouter(deps dependencies) http.Handler {
 	if deps.ChallengeLimiter == deps.RateLimiter {
 		panic("cds: dependencies.ChallengeLimiter must be a limiter of its own, not the attestation one")
 	}
+	// One CA for the whole router: the handler signs with the certificate
+	// /ca publishes.
+	deps.AttestHandler.MeshCA = deps.MeshCA
 	r := chi.NewRouter()
 	r.Use(server.RequestLogger)
 
@@ -77,7 +80,7 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
 
-	r.Get("/ca", handleCA(deps.CACertPEM))
+	r.Get("/ca", handleCA(deps.MeshCA))
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
 
@@ -125,10 +128,11 @@ func capBody(max int64, next http.Handler) http.Handler {
 	return http.MaxBytesHandler(next, max)
 }
 
-func handleCA(caCertPEM []byte) http.HandlerFunc {
+// handleCA serves the one current mesh CA certificate; a renewal replaces it.
+func handleCA(mesh *issuer.MeshCA) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/x-pem-file")
-		w.Write(caCertPEM)
+		w.Write(mesh.Current().CertPEM)
 	}
 }
 

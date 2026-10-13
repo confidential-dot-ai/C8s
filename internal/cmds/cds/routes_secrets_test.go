@@ -32,9 +32,11 @@ func secretsRouter(t *testing.T, enabled bool) http.Handler {
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
+	mesh := testMeshCA(t)
 	deps := dependencies{
 		AttestHandler:    AttestHandler{Challenges: &cs},
 		ReadyFn:          func() bool { return true },
+		MeshCA:           mesh,
 		RateLimiter:      limiter,
 		ChallengeLimiter: newTestRateLimiter(t),
 		MaxRequestSize:   65536,
@@ -101,9 +103,11 @@ func TestRouter_SecretsChallengePoolIsSeparate(t *testing.T) {
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
+	mesh := testMeshCA(t)
 	deps := dependencies{
 		AttestHandler:     AttestHandler{Challenges: &cs},
 		ReadyFn:           func() bool { return true },
+		MeshCA:            mesh,
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
 		MaxRequestSize:    65536,
@@ -143,10 +147,12 @@ func TestRouter_SecretsPutUsesTheAllowlistWriteCap(t *testing.T) {
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
+	mesh := testMeshCA(t)
 	var seen int
 	deps := dependencies{
 		AttestHandler:     AttestHandler{Challenges: &cs},
 		ReadyFn:           func() bool { return true },
+		MeshCA:            mesh,
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
 		MaxRequestSize:    8,
@@ -233,9 +239,11 @@ func TestRouter_SecretRoutesRateLimitPerSandbox(t *testing.T) {
 	}
 	cs := attestation.NewChallengeStore(time.Minute)
 	secretsCS := attestation.NewChallengeStore(time.Minute)
+	mesh := testMeshCA(t)
 	r := newRouter(dependencies{
 		AttestHandler:     AttestHandler{Challenges: &cs},
 		ReadyFn:           func() bool { return true },
+		MeshCA:            mesh,
 		RateLimiter:       limiter,
 		ChallengeLimiter:  newTestRateLimiter(t),
 		MaxRequestSize:    65536,

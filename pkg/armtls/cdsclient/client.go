@@ -364,12 +364,36 @@ func containsCert(certs []*x509.Certificate, cert *x509.Certificate) bool {
 func continuityCABundle(published, trusted []*x509.Certificate, now time.Time) []*x509.Certificate {
 	seed := make([]*x509.Certificate, 0, len(published))
 	for _, cert := range published {
-		if containsCert(trusted, cert) && isUsableCA(cert, now) {
+		if !isUsableCA(cert, now) {
+			continue
+		}
+		if containsCert(trusted, cert) || renewalOfTrustedCA(cert, trusted) {
 			seed = append(seed, cert)
 		}
 	}
 	accepted := growAcceptedByLink(seed, published, trusted, now, certSignedByOther)
 	return orderLikePublished(accepted, published)
+}
+
+// renewalOfTrustedCA reports whether cert is a renewed certificate for a
+// trusted CA: the same subject and public key, self-signed under that key so
+// only its holder could have published it, and outliving the certificate it
+// replaces so a replay cannot shorten the anchor.
+func renewalOfTrustedCA(cert *x509.Certificate, trusted []*x509.Certificate) bool {
+	if cert.CheckSignatureFrom(cert) != nil {
+		return false
+	}
+	for _, anchor := range trusted {
+		if anchor == nil {
+			continue
+		}
+		if bytes.Equal(anchor.RawSubjectPublicKeyInfo, cert.RawSubjectPublicKeyInfo) &&
+			bytes.Equal(anchor.RawSubject, cert.RawSubject) &&
+			cert.NotAfter.After(anchor.NotAfter) {
+			return true
+		}
+	}
+	return false
 }
 
 // growAcceptedByLink iteratively extends accepted with candidates that share

@@ -3,7 +3,6 @@ package cds
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -36,6 +35,10 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
+
+// caRenewalCheckInterval is how often the renewal loop re-reads the current
+// mesh CA certificate.
+const caRenewalCheckInterval = 15 * time.Minute
 
 func run(cfg config) error {
 	logger, err := certutil.NewJSONLogger(cfg.logLevel)
@@ -120,15 +123,14 @@ func run(cfg config) error {
 
 	// CDS generates its mesh CA in process at startup; the private key never
 	// touches a Kubernetes Secret.
-	mesh, err := issuer.NewCAWithCurve(cfg.caCommonName, cfg.caCertValidity, elliptic.P384())
+	mesh, err := issuer.NewMeshCA(cfg.caCommonName, cfg.caCertValidity)
 	if err != nil {
 		return fmt.Errorf("generate mesh CA: %w", err)
 	}
 	slog.Info("generated in-memory mesh CA",
-		"fingerprint", certutil.CertFingerprint(mesh.Cert.Raw),
-		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
+		"fingerprint", certutil.CertFingerprint(mesh.Current().CA.Cert.Raw),
+		"not_after", mesh.Current().CA.Cert.NotAfter.Format(time.RFC3339),
 	)
-	caChainPEM := certutil.EncodeCertPEM(mesh.Cert.Raw)
 
 	measurements := parseReferenceDigests(cfg.measurements)
 	if len(measurements) == 0 {
@@ -280,8 +282,7 @@ func run(cfg config) error {
 		AttestHandler: AttestHandler{
 			Challenges:        &challengeStore,
 			AttestationClient: asClient,
-			CA:                mesh,
-			CAChainPEM:        caChainPEM,
+			MeshCA:            mesh,
 			CertTTL:           cfg.certTTL,
 			NamedCertTTL:      cfg.namedCertTTL,
 			RequestTimeout:    cfg.requestTimeout,
@@ -301,8 +302,8 @@ func run(cfg config) error {
 			WriteAuthorizer:   writeAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
-		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
-		CACertPEM:         caChainPEM,
+		ReadyFn:           readinessFn(checker.Ready, mesh, cfg.minCAValidity),
+		MeshCA:            mesh,
 		OperatorKeysPEM:   operatorKeysPEM,
 		MeasurementsDoc:   measurementsDoc,
 		RateLimiter:       rateLimiter,
@@ -323,6 +324,8 @@ func run(cfg config) error {
 	addr := fmt.Sprintf("%s:%d", cfg.host, cfg.port)
 	srv := newHTTPServer(addr, router, cfg)
 
+	serve := srv.ListenAndServe
+	var meshPeers *armtls.CertManager
 	if cfg.armtlsPlatform != "" {
 		attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
 		serverCfg := &armtls.ServerConfig{
@@ -336,13 +339,17 @@ func run(cfg config) error {
 		// armTLS path would admit a self-signed peer whose sandbox-ID extension
 		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
 		// reachable by a caller with no certificate.
-		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
+		serverCfg.ClientCAs = []*x509.Certificate{mesh.Current().CA.Cert}
 		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
 		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
 		}
 		srv.TLSConfig = tlsCfg
+		meshPeers = certMgr
+		serve = func() error {
+			return srv.ListenAndServeTLS("", "")
+		}
 
 		warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		err = certMgr.WarmUp(warmupCtx)
@@ -350,21 +357,16 @@ func run(cfg config) error {
 		if err != nil {
 			return fmt.Errorf("warm up armtls serving cert: %w", err)
 		}
-
-		go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
-
-		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
-		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			return err
-		}
-		return nil
+		slog.Info("cds serving armTLS", "platform", cfg.armtlsPlatform)
+	} else {
+		slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	}
 
-	slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
 	go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
+	go renewMeshCAWhenDue(ctx, mesh, caRenewalCheckInterval, meshPeers)
 
 	slog.Info("cds listening", "addr", addr)
-	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
+	if err := serve(); err != http.ErrServerClosed {
 		return err
 	}
 	return nil
@@ -494,6 +496,16 @@ func validateConfig(cfg config) error {
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
 	}
+	if cfg.minCAValidity <= 0 {
+		return fmt.Errorf("--min-ca-validity must be positive (it is the window CA renewal has to succeed in before /readyz fails)")
+	}
+	// Renewal starts at half the certificate's lifetime and is retried once
+	// per check interval, so this is what makes "renewed before the remaining
+	// validity falls below --min-ca-validity" hold by construction.
+	if cfg.caCertValidity/2 <= cfg.minCAValidity+caRenewalCheckInterval {
+		return fmt.Errorf("--ca-cert-validity (%v) must exceed 2 x (--min-ca-validity %v + %v renewal check interval)",
+			cfg.caCertValidity, cfg.minCAValidity, caRenewalCheckInterval)
+	}
 	if err := validateSecretsConfig(cfg); err != nil {
 		return err
 	}
@@ -580,20 +592,62 @@ func parseReferenceDigests(raw []string) map[string]bool {
 }
 
 // readinessFn returns a closure that flips /readyz to 503 when either the
-// attestation-api is unhealthy or the loaded mesh CA is within
-// minCAValidity of expiry. The CA expiry signal gives operators a window to
-// rotate before signing requests start producing leaves that outlive the CA.
-func readinessFn(svcReady func() bool, caCert *x509.Certificate, minCAValidity time.Duration) func() bool {
+// attestation-api is unhealthy or the current mesh CA certificate is within
+// minCAValidity of expiry — the window renewal has to succeed in.
+func readinessFn(svcReady func() bool, mesh *issuer.MeshCA, minCAValidity time.Duration) func() bool {
 	return func() bool {
 		if !svcReady() {
 			return false
 		}
-		if caCert == nil {
-			return false
-		}
-		if minCAValidity > 0 && time.Until(caCert.NotAfter) < minCAValidity {
+		if !caValidityHolds(mesh.Current().CA.Cert, minCAValidity, time.Now()) {
 			return false
 		}
 		return true
 	}
+}
+
+// caValidityHolds reports whether the certificate has at least minValidity left.
+func caValidityHolds(cert *x509.Certificate, minValidity time.Duration, now time.Time) bool {
+	return cert.NotAfter.Sub(now) >= minValidity
+}
+
+// renewMeshCAWhenDue renews the mesh CA certificate under the key the process
+// keeps and republishes it to meshPeers, the pool that verifies client leaves;
+// a nil meshPeers is a listener with no such pool. A failed renewal is retried
+// on the next tick, and readiness drops once the current certificate no longer
+// holds --min-ca-validity.
+func renewMeshCAWhenDue(ctx context.Context, mesh *issuer.MeshCA, every time.Duration, meshPeers *armtls.CertManager) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !pastHalfLife(mesh.Current().CA.Cert, time.Now()) {
+				continue
+			}
+			renewed, err := mesh.RenewCertificate()
+			if err != nil {
+				slog.Error("mesh CA certificate renewal failed", "error", err)
+				continue
+			}
+			if meshPeers != nil {
+				meshPeers.UpdateCACerts([]*x509.Certificate{renewed.CA.Cert})
+			}
+			slog.Info("renewed mesh CA certificate",
+				"audit", true,
+				"fingerprint", certutil.CertFingerprint(renewed.CA.Cert.Raw),
+				"not_after", renewed.CA.Cert.NotAfter.Format(time.RFC3339),
+			)
+		}
+	}
+}
+
+// pastHalfLife is the renewal trigger: half the certificate's lifetime, which
+// --ca-cert-validity guarantees leaves room for renewal to retry in before
+// readiness fails.
+func pastHalfLife(cert *x509.Certificate, now time.Time) bool {
+	return now.After(cert.NotBefore.Add(cert.NotAfter.Sub(cert.NotBefore) / 2))
 }

@@ -2,7 +2,6 @@ package issuer_test
 
 import (
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -53,9 +52,10 @@ func TestWrapCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCA b: %v", err)
 	}
-	c384, err := issuer.NewCAWithCurve("c", time.Hour, elliptic.P384())
+	// The mesh CA is the P-384 one, for the cross-curve check below.
+	c384, err := issuer.NewMeshCA("c", time.Hour)
 	if err != nil {
-		t.Fatalf("NewCAWithCurve P-384: %v", err)
+		t.Fatalf("NewMeshCA P-384: %v", err)
 	}
 
 	wrapped, err := issuer.WrapCA(a.Cert, a.Key)
@@ -73,7 +73,7 @@ func TestWrapCA(t *testing.T) {
 	if _, err := issuer.WrapCA(a.Cert, b.Key); err == nil {
 		t.Error("mismatched keypair: expected error, got nil")
 	}
-	if _, err := issuer.WrapCA(c384.Cert, a.Key); err == nil {
+	if _, err := issuer.WrapCA(c384.Current().CA.Cert, a.Key); err == nil {
 		t.Error("cross-curve keypair (P-384 cert, P-256 key): expected error, got nil")
 	}
 
@@ -126,91 +126,6 @@ func testCertForKey(t *testing.T, key *ecdsa.PrivateKey, tmpl *x509.Certificate)
 		t.Fatalf("parse test cert: %v", err)
 	}
 	return cert
-}
-
-func TestNewCAWithParent(t *testing.T) {
-	parent, err := issuer.NewCA("parent ca", time.Hour)
-	if err != nil {
-		t.Fatalf("NewCA parent: %v", err)
-	}
-	child, err := issuer.NewCAWithParent("child ca", time.Hour, elliptic.P384(), parent.Cert, parent.Key)
-	if err != nil {
-		t.Fatalf("NewCAWithParent: %v", err)
-	}
-	if child.Cert.Subject.CommonName != "child ca" {
-		t.Fatalf("child CN = %q, want child ca", child.Cert.Subject.CommonName)
-	}
-	if err := child.Cert.CheckSignatureFrom(parent.Cert); err != nil {
-		t.Fatalf("child CA was not signed by parent: %v", err)
-	}
-
-	otherParent, err := issuer.NewCA("other ca", time.Hour)
-	if err != nil {
-		t.Fatalf("NewCA other parent: %v", err)
-	}
-	if _, err := issuer.NewCAWithParent("child ca", time.Hour, elliptic.P384(), parent.Cert, otherParent.Key); err == nil {
-		t.Fatal("expected parent key mismatch error")
-	}
-}
-
-func TestNewCAWithParentValidityWindow(t *testing.T) {
-	parent, err := issuer.NewCA("parent ca", 30*24*time.Hour)
-	if err != nil {
-		t.Fatalf("NewCA parent: %v", err)
-	}
-
-	child, err := issuer.NewCAWithParent("child ca", time.Hour, elliptic.P384(), parent.Cert, parent.Key)
-	if err != nil {
-		t.Fatalf("NewCAWithParent: %v", err)
-	}
-	if got := time.Until(child.Cert.NotAfter); got < 59*time.Minute || got > 61*time.Minute {
-		t.Fatalf("explicit validity: NotAfter in %v, want ~1h", got)
-	}
-
-	defaulted, err := issuer.NewCAWithParent("child ca", 0, elliptic.P384(), parent.Cert, parent.Key)
-	if err != nil {
-		t.Fatalf("NewCAWithParent zero validity: %v", err)
-	}
-	if got := time.Until(defaulted.Cert.NotAfter); got < 364*24*time.Hour || got > 366*24*time.Hour {
-		t.Fatalf("zero validity: NotAfter in %v, want ~365d default", got)
-	}
-}
-
-func TestNewCAWithParentAllowsMultiGenerationChains(t *testing.T) {
-	root, err := issuer.NewCA("root ca", time.Hour)
-	if err != nil {
-		t.Fatalf("NewCA root: %v", err)
-	}
-	intermediate, err := issuer.NewCAWithParent("intermediate ca", time.Hour, elliptic.P384(), root.Cert, root.Key)
-	if err != nil {
-		t.Fatalf("NewCAWithParent intermediate: %v", err)
-	}
-	current, err := issuer.NewCAWithParent("current ca", time.Hour, elliptic.P384(), intermediate.Cert, intermediate.Key)
-	if err != nil {
-		t.Fatalf("NewCAWithParent current: %v", err)
-	}
-
-	res, err := current.Issue(issuer.Request{CommonName: "mesh-node"})
-	if err != nil {
-		t.Fatalf("Issue: %v", err)
-	}
-	leaf, err := certutil.ParseCertificatePEM(res.CertPEM)
-	if err != nil {
-		t.Fatalf("parse leaf: %v", err)
-	}
-
-	roots := x509.NewCertPool()
-	roots.AddCert(root.Cert)
-	intermediates := x509.NewCertPool()
-	intermediates.AddCert(intermediate.Cert)
-	intermediates.AddCert(current.Cert)
-	if _, err := leaf.Verify(x509.VerifyOptions{
-		Roots:         roots,
-		Intermediates: intermediates,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-	}); err != nil {
-		t.Fatalf("multi-generation CA chain does not verify from root: %v", err)
-	}
 }
 
 func TestIssue(t *testing.T) {
