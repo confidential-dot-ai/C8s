@@ -553,8 +553,9 @@ The plugin journals the digests, one per line in extend order, at
 with the register. Three readers carry the list outside any transcript; a
 verifier trusts it only as far as it replays against a quote's RTMR[3]:
 
-- **Router.** On a baked node, `cds-attest --measured-policies-file` adds the
-  list to attest-pq and attest-lb bundles as `measured_policies`.
+- **Router.** On a baked node, or with `measurePolicies` on,
+  `cds-attest --measured-policies-file` adds the list to attest-pq and
+  attest-lb bundles as `measured_policies`. An unreadable journal omits it.
 - **cred-release.** It accepts its own binding as the seed followed by a
   prefix of the list, and serves the list at `GET /measured-policies`.
 - **`c8s get-kubeconfig`.** On TDX it fetches that list and accepts RTMR[3] as

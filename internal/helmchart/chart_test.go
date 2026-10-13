@@ -7752,8 +7752,8 @@ func TestChartSweepMountAdmission(t *testing.T) {
 
 // nriImagePolicy.measurePolicies reaches both plugin configs: the rendered
 // boot config and, on a baked node, the set-cds-pins patch. The router's
-// cds-attest reads the journal only on a baked node, from the runtime
-// directory it already mounts.
+// cds-attest reads the journal on a baked node or a measuring one, from the
+// runtime directory it already mounts.
 func TestChartMeasurePolicies(t *testing.T) {
 	for _, measure := range []bool{false, true} {
 		set := fmt.Sprintf("nriImagePolicy.measurePolicies=%t", measure)
@@ -7783,24 +7783,32 @@ func TestChartMeasurePolicies(t *testing.T) {
 		}
 	}
 
-	const flag = "--measured-policies-file=/var/run/nri-image-policy/measured-policies"
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	if attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"); slices.Contains(attest.Args, flag) {
-		t.Errorf("unbaked cds-attest args carry %s", flag)
-	}
-	out, err = helmTemplate(t, bakedArgs...)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	assertContainerArgs(t, attest, flag)
-	mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
-		return m.MountPath == "/var/run/nri-image-policy" && m.ReadOnly
-	})
-	if !mounted {
-		t.Errorf("baked cds-attest does not mount the runtime directory read-only: %+v", attest.VolumeMounts)
+	const dir = "/run/custom-nri"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{name: "unbaked", args: []string{"--set", "attestationApi.enabled=true"}},
+		{name: "unbaked, measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, wantFlag: true},
+		{name: "baked", args: bakedArgs, wantFlag: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(attest.Args, flag); got != tc.wantFlag {
+				t.Fatalf("cds-attest carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, attest.Args)
+			}
+			mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
+			}
+		})
 	}
 }
