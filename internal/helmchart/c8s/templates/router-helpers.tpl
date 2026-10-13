@@ -776,6 +776,10 @@ list.
        volume and the socket's supplemental group
        (workloadclaims.InventorySocketGID) on the same condition. */ -}}
 {{- $extraArgs = append $extraArgs "--workload-claims" -}}
+{{- /* Renew past a stamp taken while only part of the pod runs. */ -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
+{{- $extraArgs = append $extraArgs (printf "--expected-workload=%s" (include "c8s.routerWorkloadName" .)) -}}
+{{- end -}}
 {{- if eq (include "router.mountInventorySocket" .) "true" -}}
 {{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
 {{- end -}}

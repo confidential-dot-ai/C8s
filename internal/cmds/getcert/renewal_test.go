@@ -5,6 +5,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,8 +16,13 @@ import (
 
 func namedLeaf(t *testing.T) *x509.Certificate {
 	t.Helper()
+	return stampedLeaf(t, "api")
+}
+
+func stampedLeaf(t *testing.T, name string) *x509.Certificate {
+	t.Helper()
 	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
-		Name:             "api",
+		Name:             name,
 		AllowlistVersion: "1",
 		AllowlistDigest:  bytes.Repeat([]byte{0x11}, 32),
 	})
@@ -232,5 +239,54 @@ func TestValidateConfigUnnamedRenewInterval(t *testing.T) {
 		if err := validateConfig(cfg); err != nil {
 			t.Fatalf("--unnamed-renew-interval=%v: unexpected error %v", iv, err)
 		}
+	}
+}
+
+// A leaf stamped while the sandbox was still starting can name a subset
+// entry; with --expected-workload it keeps fast-polling instead of settling.
+func TestRenewalIntervalExpectedWorkload(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		expected string
+		leaf     *x509.Certificate
+		wantFast bool
+	}{
+		{name: "no stamp", expected: "api", leaf: &x509.Certificate{}, wantFast: true},
+		{name: "wrong name", expected: "c8s-router-0123456789ab", leaf: namedLeaf(t), wantFast: true},
+		{name: "expected name", expected: "api", leaf: namedLeaf(t)},
+		{name: "no expected workload", leaf: namedLeaf(t)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{RenewInterval: 6 * time.Hour, RenewJitterPercent: defaultRenewJitterPercent, UnnamedRenewInterval: 30 * time.Second, WorkloadClaims: true, ExpectedWorkload: tc.expected}
+			got := renewalInterval(cfg, tc.leaf, 0)
+			if fast := got <= 2500*time.Millisecond; fast != tc.wantFast {
+				t.Fatalf("renewalInterval(expected %q) = %v, want fast poll %v", tc.expected, got, tc.wantFast)
+			}
+		})
+	}
+}
+
+func TestWarnUnexpectedWorkloadOncePerName(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	defer slog.SetDefault(old)
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+
+	cfg := config{WorkloadClaims: true, ExpectedWorkload: "c8s-router-0123456789ab"}
+	warned := map[string]bool{}
+	for _, name := range []string{"c8s-operator-a", "c8s-operator-a", "c8s-router-0123456789ab", "", "other", "c8s-operator-a"} {
+		leaf := &x509.Certificate{}
+		if name != "" {
+			leaf = stampedLeaf(t, name)
+		}
+		warnUnexpectedWorkload(cfg, leaf, warned)
+	}
+	for name, want := range map[string]int{"c8s-operator-a": 1, "other": 1, "c8s-router-0123456789ab": 0} {
+		if got := strings.Count(buf.String(), "stamped_workload="+name+" "); got != want {
+			t.Errorf("warnings for %q = %d, want %d\n%s", name, got, want, buf.String())
+		}
+	}
+	if !strings.Contains(buf.String(), "level=WARN") || !strings.Contains(buf.String(), "expected_workload=c8s-router-0123456789ab") {
+		t.Errorf("warning lacks level or expected name:\n%s", buf.String())
 	}
 }

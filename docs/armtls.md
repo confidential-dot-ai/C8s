@@ -675,6 +675,16 @@ unnamed, starting at 2s and doubling up to `--unnamed-renew-interval` (default
 `--renew-interval` after a few polls, since being unnamed can be permanent.
 Poll timing never changes the match decision.
 
+A pod renewing while its sandbox is still starting can be stamped with a
+smaller entry that its running containers already satisfy, such as the c8s
+image's own entry while only the router's `acme` sidecar runs. With
+`--expected-workload=<name>`, get-cert treats a leaf stamped with any other name
+as unnamed for pacing: it keeps the fast poll and backoff above, and logs one
+warning per distinct wrong name. It never fails issuance or exits on a
+mismatch. The chart passes the seeded router entry's name to the router's
+`c8s-cert` container whenever it seeds that entry and wires
+`--workload-claims`, independent of the cds-attest readiness gate.
+
 The ordinary renewal delay is the earlier of `--renew-interval` and half the
 installed leaf's remaining lifetime, randomly shortened on each cycle by up to
 `--renew-jitter-percent` to spread refreshes across pods.

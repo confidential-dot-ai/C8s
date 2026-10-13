@@ -2683,6 +2683,9 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 		t.Fatal("c8s-cert init container missing")
 	}
 	assertContainerArgs(t, cert, "--workload-claims")
+	if got := expectedWorkloadArg(cert); got != "" {
+		t.Errorf("c8s-cert --expected-workload = %q with no seeded router entry, want none", got)
+	}
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {

@@ -273,6 +273,15 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 			if got != want || (tc.want == defaultGate && want == "") {
 				t.Fatalf("--expected-workload = %q, want %q", got, want)
 			}
+			// get-cert holds out for the seeded entry whenever claims are wired, gate or not.
+			cert, _ := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
+			wantCert := ""
+			if slices.Contains(cert.Args, "--workload-claims") {
+				wantCert = routerEntryName(t, renderedSeed(t, out))
+			}
+			if got := expectedWorkloadArg(cert); got != wantCert {
+				t.Errorf("c8s-cert --expected-workload = %q, want %q", got, wantCert)
+			}
 			if want == "" {
 				return
 			}
@@ -378,6 +387,18 @@ func TestChartRouterOperatorEntry(t *testing.T) {
 	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "my-router" {
 		t.Errorf("--expected-workload = %q, want my-router", got)
 	}
+	if got := certExpectedWorkload(t, out); got != "" {
+		t.Errorf("c8s-cert --expected-workload = %q with no seeded router entry, want none", got)
+	}
+}
+
+func certExpectedWorkload(t *testing.T, out string) string {
+	t.Helper()
+	cert, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "c8s-cert")
+	if !ok {
+		t.Fatal("c8s-cert init container missing")
+	}
+	return expectedWorkloadArg(cert)
 }
 
 func TestChartRouterExpectedWorkloadType(t *testing.T) {
