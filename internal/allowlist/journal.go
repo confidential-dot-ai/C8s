@@ -160,17 +160,25 @@ func (s *Store) History() ([]HistoryEntry, error) {
 	return entries, rows.Err()
 }
 
-// Object returns the canonical bytes of the journaled document digest
-// ("sha256:<hex>"), or false when there is none.
+// Object returns the canonical bytes of the document digest ("sha256:<hex>")
+// in the history, or false when there is none. Bytes that no longer hash to
+// digest are an error: StartJournal checked them only at startup.
 func (s *Store) Object(digest string) ([]byte, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var b []byte
-	err := s.db.QueryRow("SELECT body FROM journal_object WHERE digest = ?", digest).Scan(&b)
+	err := s.db.QueryRow(`SELECT body FROM journal_object WHERE digest = ?
+		AND EXISTS (SELECT 1 FROM journal_event WHERE digest = ?)`, digest, digest).Scan(&b)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, nil
 	}
-	return b, err == nil, err
+	if err != nil {
+		return nil, false, err
+	}
+	if objectDigest(b) != digest {
+		return nil, false, fmt.Errorf("allowlist history object does not hash to %s", digest)
+	}
+	return b, true, nil
 }
 
 // SignPolicy stores token, the operator write token that authorized a

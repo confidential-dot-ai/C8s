@@ -191,6 +191,28 @@ func TestStartJournalRefusesCorruptHistory(t *testing.T) {
 	}
 }
 
+// Object serves only history entries whose bytes still hash to their digest.
+func TestObjectRefusesUnservedOrTampered(t *testing.T) {
+	store := openJournaled(t)
+	if err := store.PutWorkload("a", oneContainerWorkload(mustParseDigest(t, digestA))); err != nil {
+		t.Fatal(err)
+	}
+	head := mustHistory(t, store)[1].Digest
+	stray := objectDigest([]byte("{}"))
+	if _, err := store.db.Exec("INSERT INTO journal_object (digest, body) VALUES (?, ?)", stray, []byte("{}")); err != nil {
+		t.Fatal(err)
+	}
+	if body, ok, err := store.Object(stray); ok || err != nil {
+		t.Errorf("Object(never served) = %q, %v, %v; want not found", body, ok, err)
+	}
+	if _, err := store.db.Exec("UPDATE journal_object SET body = CAST('{}' AS BLOB) WHERE digest = ?", head); err != nil {
+		t.Fatal(err)
+	}
+	if body, ok, err := store.Object(head); ok || err == nil {
+		t.Errorf("Object(tampered) = %q, %v, %v; want an error", body, ok, err)
+	}
+}
+
 func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
 	store := openJournaled(t)
 	h := Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
