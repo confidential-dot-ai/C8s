@@ -11,22 +11,25 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// The supported sandbox size documented on maxResponseBytes must fit in it.
-func TestSupportedSandboxFitsResponseCap(t *testing.T) {
-	const admissions, variables, mounts = 64, 64, 16
+// encodedInventory returns the encoded size of the documented history: 64
+// admissions, each with 64 variables, 16 mounts and 1 KiB of argv. Variable
+// names and mount destinations are nameBytes of ASCII JSON leaves unescaped.
+func encodedInventory(t *testing.T, nameBytes int) int {
+	t.Helper()
+	const admissions, variables, mounts, argvBytes = 64, 64, 16, 1 << 10
 	containers := make([]SandboxContainer, admissions)
 	for i := range containers {
 		entries := make([]string, variables)
 		for v := range entries {
-			entries[v] = fmt.Sprintf("%s_%02d=value-%d", strings.Repeat("N", 61), v, i)
+			entries[v] = fmt.Sprintf("%s_%02d=value-%d", strings.Repeat("N", nameBytes-3), v, i)
 		}
 		env, err := allowlist.ObserveEnv(entries)
 		if err != nil {
 			t.Fatal(err)
 		}
-		c := SandboxContainer{Env: env, Digest: digestA, Argv: []string{strings.Repeat("a", 1<<10)}}
+		c := SandboxContainer{Env: env, Digest: digestA, Argv: []string{strings.Repeat("a", argvBytes)}}
 		for m := range mounts {
-			c.Mounts = append(c.Mounts, allowlist.ObservedMount{Destination: fmt.Sprintf("/%s/%02d", strings.Repeat("d", 60), m), Class: "data", Storage: "projected"})
+			c.Mounts = append(c.Mounts, allowlist.ObservedMount{Destination: fmt.Sprintf("/%s/%02d", strings.Repeat("d", nameBytes-4), m), Class: "data", Storage: "projected"})
 		}
 		containers[i] = c
 	}
@@ -34,8 +37,17 @@ func TestSupportedSandboxFitsResponseCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(b) > maxResponseBytes {
-		t.Fatalf("supported sandbox encodes to %d bytes, over the %d-byte cap", len(b), maxResponseBytes)
+	return len(b)
+}
+
+// The supported sandbox size documented on maxResponseBytes must fit in it,
+// and the cap is on encoded bytes: the same counts with long paths do not fit.
+func TestSupportedSandboxFitsResponseCap(t *testing.T) {
+	if n := encodedInventory(t, 64); n > maxResponseBytes {
+		t.Fatalf("supported sandbox encodes to %d bytes, over the %d-byte cap", n, maxResponseBytes)
+	}
+	if n := encodedInventory(t, 1<<10); n <= maxResponseBytes {
+		t.Fatalf("sandbox with 1 KiB mount destinations encodes to %d bytes, within the %d-byte cap", n, maxResponseBytes)
 	}
 }
 
