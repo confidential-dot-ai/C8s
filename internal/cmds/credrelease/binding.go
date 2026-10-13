@@ -33,8 +33,8 @@ import (
 var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 
 // measuredPoliciesPath is the NRI plugin's journal of the allowlist policies
-// it extended into RTMR[3] (internal/policymeasure). Var so tests can move it.
-var measuredPoliciesPath = "/var/run/nri-image-policy/" + policymeasure.JournalName
+// it extended into RTMR[3]. Var so tests can move it.
+var measuredPoliciesPath = policymeasure.NodeJournal
 
 // ErrNoOperatorKey is returned (wrapped) by the Load* functions when no
 // operator pubkey is staged at all: the VM was launched without an opkeydata
@@ -195,11 +195,11 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 // the measured allowlist policies. The journal is read after the report, so it
 // may hold extends the report does not.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error {
-	policies, err := policymeasure.Read(measuredPoliciesPath)
+	policies, err := runtimemeasure.ReadJournal(measuredPoliciesPath)
 	if err != nil {
 		return fmt.Errorf("read measured policies: %w", err)
 	}
-	if _, err := policymeasure.Prefix(report, anchor, policies); err != nil {
+	if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
 		if len(policies) == 0 {
 			return err
 		}

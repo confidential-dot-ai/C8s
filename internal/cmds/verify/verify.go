@@ -28,7 +28,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
-	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -1561,9 +1560,9 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 	if pins.rtmr3 != nil {
 		want := pins.rtmr3
 		if pins.anchor != nil {
-			if p, err := policymeasure.Prefix(result, pins.anchor, measured); err == nil && len(p) > 0 {
-				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.anchor), p)
-				want, oc.MeasuredPolicies = reg[:], slices.Clone(p)
+			if k, err := runtimemeasure.MatchBindingPrefix(result, pins.anchor, measured); err == nil && k > 0 {
+				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.anchor), measured[:k])
+				want, oc.MeasuredPolicies = reg[:], slices.Clone(measured[:k])
 			}
 		}
 		if !check(3, "runtime operator-key/workload chain", want) {
