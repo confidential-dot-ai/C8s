@@ -497,9 +497,12 @@ release decision.
 The record also grows with every distinct launch configuration: each admission
 whose argv, environment or mounts differ from an earlier one, including a new
 value for a variable matched with `present`, adds a record. CDS reads at most
-1 MiB of history, which fits 64 distinct admissions with 64 environment
-variables, 16 mounts and 1 KiB of argv each. Past that, CDS refuses release and
-workload identity for the sandbox; recreate the pod to start a new record.
+1 MiB of JSON-encoded history. That fits 64 distinct admissions with 64
+environment variables, 16 mounts and 1 KiB of argv each, when variable names
+and mount destinations are at most 64 ASCII characters; longer names, paths or
+characters JSON escapes fit fewer. The limit is on encoded bytes, not on the
+number of admissions: past 1 MiB, CDS refuses release and workload identity for
+the sandbox; recreate the pod to start a new record.
 
 ## Restarts
 
