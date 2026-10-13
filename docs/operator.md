@@ -611,7 +611,8 @@ follows these rules:
 - `router.routing.readTimeout` bounds nginx's wait between reads and
   `router.routing.backendTimeout` (default 1h) one forwarded request, body
   included. `router.routing.tunnelSlots` (default 32) bounds the tunnelled
-  requests in flight in each router replica, shared by all clients.
+  requests in flight in each router replica, shared by all clients; one
+  client holds at most a quarter of them.
 
 `c8s install --upstream <cw-id>` writes the first manifest for an adopted
 workload: every DNS name in `router.san` (default
@@ -696,7 +697,7 @@ changes:
   routers hold unless one applied a revision written explicitly, by a
   faster clock, or in a burst of writes. CDS then accepts the new manifest,
   but such a router keeps routing by its old one. After a reset, write above
-  the highest revision any router applied: `--revision` on `add` and `rm`,
+  the highest revision any router accepted, applied or staged: `--revision` on `add` and `rm`,
   `--routes-revision` on install, or a `put` of a file with that revision.
 - **Operator keys are control-plane configuration off baked nodes.** Without
   a launch configuration, the router trusts the operator keys CDS serves, and

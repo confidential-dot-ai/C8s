@@ -279,8 +279,8 @@ func TestStoredManifestKeysFromValues(t *testing.T) {
 // of a new manifest only when install sent no write and CDS may store none.
 func TestWriteUpstreamRoutes(t *testing.T) {
 	const (
-		add          = "c8s routes add --host app.example --path / --address c8s-web.ws.svc.cluster.local:8443 --workload web --max-age 2h0m0s --operator-keys"
-		addOtherHost = "c8s routes add --host c8s-router.c8s-system.svc --path /"
+		add          = "c8s routes add --new --host app.example --path / --address c8s-web.ws.svc.cluster.local:8443 --workload web --max-age 2h0m0s --operator-keys"
+		addOtherHost = "c8s routes add --new --host c8s-router.c8s-system.svc --path /"
 		addRevision  = "--workload web --max-age 2h0m0s --revision 7 --operator-keys"
 		addRevision2 = "--workload web --max-age 2h0m0s --revision 8 --operator-keys"
 		replaces     = "it replaces a stored one and drops its other routes"
@@ -377,7 +377,7 @@ func TestWriteUpstreamRoutesExistingFile(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--routes-out") {
 		t.Fatalf("writeUpstreamRoutes() = %v, want the --routes-out refusal", err)
 	}
-	if !strings.Contains(out.String(), "c8s routes add --host app.example") {
+	if !strings.Contains(out.String(), "c8s routes add --new --host app.example") {
 		t.Errorf("output lacks the add command:\n%s", out.String())
 	}
 	if b, _ := os.ReadFile(installRoutesOut); string(b) != "keep" {
@@ -630,7 +630,7 @@ func TestPutUpstreamRoutesLostRace(t *testing.T) {
 	if b, err := os.ReadFile(installRoutesOut); err != nil || !bytes.Equal(b, manifest) {
 		t.Fatalf("--routes-out = %q, %v, want the refused manifest", b, err)
 	}
-	if !strings.Contains(out.String(), "c8s routes add --host app.example") || strings.Contains(out.String(), "c8s routes put ") {
+	if !strings.Contains(out.String(), "c8s routes add --new --host app.example") || strings.Contains(out.String(), "c8s routes put ") {
 		t.Fatalf("output lacks the add command or offers put:\n%s", out.String())
 	}
 }
@@ -670,7 +670,7 @@ func TestPutUpstreamRoutesRevisionBelowStored(t *testing.T) {
 		t.Fatalf("writeUpstreamRoutes() = %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "c8s routes add --host app.example") || strings.Contains(got, "c8s routes put ") || strings.Contains(got, "--revision") {
+	if !strings.Contains(got, "c8s routes add --new --host app.example") || strings.Contains(got, "c8s routes put ") || strings.Contains(got, "--revision") {
 		t.Fatalf("output lacks add, or offers put or --revision:\n%s", got)
 	}
 }

@@ -2128,7 +2128,7 @@ func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, wor
 // backend requires (route policy B1).
 //
 // A workload whose mounts cannot be modelled exactly is refused when it is the
-// upstream cw id; any other gets an entry without mount rules, a warning on
+// upstream cw id; any other gets an entry admitting any mounts, a warning on
 // warn, and no entry in the returned map.
 func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upstream string, warn io.Writer, resolve func(ref string) (string, error)) ([]string, map[string]adoptedEntry, error) {
 	entries := map[string]adoptedEntry{}
@@ -2149,7 +2149,7 @@ func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upst
 				if w.cwID == upstream {
 					return nil, nil, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist), or pass --resolve-digests=false", w.cwID, err, w.cwID)
 				}
-				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry without mount rules, so it cannot be a route backend until it mounts only memory-backed emptyDirs\n", w.cwID, err)
+				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry with any mounts, so it cannot be a route backend until it mounts only memory-backed emptyDirs\n", w.cwID, err)
 				exact = false
 				break
 			}
@@ -2189,8 +2189,9 @@ func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upst
 }
 
 // adoptedContainer declares digest under any command, args and env. With
-// exact, it mounts exactly the memory-backed emptyDirs at dests; without, it
-// sets no mount policy.
+// exact, it mounts exactly the memory-backed emptyDirs at dests; without, any
+// mounts. No mount policy would deny the injected certificate volume, so the
+// node would never admit the pod.
 func adoptedContainer(digest types.Digest, ref string, dests []string, exact bool) pkgallowlist.Container {
 	c := pkgallowlist.Container{
 		Digest:  digest,
@@ -2205,6 +2206,8 @@ func adoptedContainer(digest types.Digest, ref string, dests []string, exact boo
 			rules = append(rules, pkgallowlist.MountRule{Destination: dest, Kind: pkgallowlist.MountEmptyDir})
 		}
 		c.Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: rules}
+	} else {
+		c.Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}
 	}
 	return c
 }

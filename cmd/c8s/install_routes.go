@@ -524,7 +524,7 @@ func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries m
 		if installRoutesRevision != 0 && !badRevision {
 			revision = fmt.Sprintf(" --revision %d", installRoutesRevision+uint64(i))
 		}
-		fmt.Fprintf(w, "    c8s routes add --host %s --path / --address %s --workload %s --max-age %v%s --operator-keys %s %s\n", host, u.address, u.workload, installRoutesMaxAge, revision, operatorKeys, conn)
+		fmt.Fprintf(w, "    c8s routes add --new --host %s --path / --address %s --workload %s --max-age %v%s --operator-keys %s %s\n", host, u.address, u.workload, installRoutesMaxAge, revision, operatorKeys, conn)
 	}
 	if err := writeRoutesOut(manifest); err != nil {
 		return err

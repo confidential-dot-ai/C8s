@@ -15,7 +15,7 @@ func TestRevisionOutranksARouterAfterACDSReset(t *testing.T) {
 	h := newHarness(t)
 	router := routing.NewState(routing.StateConfig{MeshCAs: func() ([]*x509.Certificate, error) { return nil, nil }})
 	add := func(extra ...string) {
-		h.mustRun(t, append([]string{"add", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}, extra...)...)
+		h.mustRun(t, append([]string{"add", "--new", "--host", "app.example", "--path", "/", "--address", "a:1", "--workload", "a"}, extra...)...)
 	}
 	accept := func() error {
 		_, err := router.Accept(*h.cds.env, h.cds.keys)

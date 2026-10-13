@@ -183,7 +183,7 @@ func NextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 
 // edit fetches the stored manifest, applies change, and stores the result at
 // NextRevision. newMaxAge > 0 lets it start a new manifest when CDS stores
-// none.
+// none; otherwise it refuses.
 func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration, revision uint64, change func(*pkgroutes.Manifest) (string, error)) error {
 	// Without verification, the operator would sign whatever routes the
 	// control plane planted in CDS.

@@ -717,8 +717,9 @@ func TestBuildWorkloadImageArgsRefusesUnmodelledMounts(t *testing.T) {
 }
 
 // TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream: an adopted workload
-// that is not the --upstream target keeps an entry without mount rules, with
-// a warning, and the same workload as the target is refused.
+// that is not the --upstream target keeps an entry admitting any mounts, which
+// the node admits with its injected certificate volume, with a warning, and
+// the same workload as the target is refused.
 func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	tmpl := templateRunning("busybox@sha256:" + strings.Repeat("c", 64))
 	tmpl.Spec.Volumes = []corev1.Volume{{Name: "v", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}}}
@@ -742,8 +743,8 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 		t.Fatalf("entries = %v, want infer", slices.Sorted(maps.Keys(entries)))
 	}
 	web := "nriImagePolicy.bootstrapAllowlist.workloads.web.containers[0]."
-	if !slices.Contains(args, web+"digest=sha256:"+strings.Repeat("c", 64)) || slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, web+"mounts.") }) {
-		t.Fatalf("args = %q, want a web container without mount rules", args)
+	if !slices.Contains(args, web+"digest=sha256:"+strings.Repeat("c", 64)) || !slices.Contains(args, web+"mounts.policy=any") {
+		t.Fatalf("args = %q, want a web container admitting any mounts", args)
 	}
 	if _, _, err := buildWorkloadImageArgs(nil, adopted, "web", io.Discard, nil); err == nil || !strings.Contains(err.Error(), `write one named "web" yourself`) {
 		t.Fatalf("buildWorkloadImageArgs(upstream web) = %v, want the refusal", err)
