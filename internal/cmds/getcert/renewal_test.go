@@ -274,15 +274,15 @@ func TestWarnUnexpectedWorkloadOncePerName(t *testing.T) {
 
 	cfg := config{WorkloadClaims: true, ExpectedWorkload: "c8s-router-0123456789ab"}
 	warned := map[string]bool{}
-	for _, name := range []string{"c8s-operator-a", "c8s-operator-a", "", "other", "c8s-operator-a", "c8s-router-0123456789ab", "other"} {
+	for _, name := range []string{"c8s-operator-a", "c8s-operator-a", "", "other", "c8s-operator-a", "c8s-router-0123456789ab", "other", "c8s-operator-a"} {
 		leaf := &x509.Certificate{}
 		if name != "" {
 			leaf = stampedLeaf(t, name)
 		}
 		warnUnexpectedWorkload(cfg, leaf, warned)
 	}
-	// Naming the expected workload re-arms the warning for "other".
-	for name, want := range map[string]int{"c8s-operator-a": 1, "other": 2, "c8s-router-0123456789ab": 0} {
+	// Naming the expected workload re-arms the warning for every name.
+	for name, want := range map[string]int{"c8s-operator-a": 2, "other": 2, "c8s-router-0123456789ab": 0} {
 		if got := strings.Count(buf.String(), "stamped_workload="+name+" "); got != want {
 			t.Errorf("warnings for %q = %d, want %d\n%s", name, got, want, buf.String())
 		}

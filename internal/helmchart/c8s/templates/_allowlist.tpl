@@ -170,9 +170,6 @@
 {{ $argv | toJson }}
 {{- end -}}
 
-{{- /* Values-only apart from argv, so router.expectedWorkload can call it.
-       deriveComponents seeds the c8s image's any-argv entry, without which
-       get-cert is not dropped as injected and the router cannot match. */ -}}
 {{- /* Names of bootstrapAllowlist.workloads entries listing both router
        images, as a JSON list. */ -}}
 {{- define "c8s.operatorRouterEntries" -}}
@@ -191,6 +188,9 @@
 {{ $names | toJson }}
 {{- end -}}
 
+{{- /* Values-only apart from argv, so router.expectedWorkload can call it.
+       deriveComponents seeds the c8s image's any-argv entry, without which
+       get-cert is not dropped as injected and the router cannot match. */ -}}
 {{- define "c8s.routerWorkloadSeeded" -}}
 {{- $explicit := .Values.router.attest.expectedWorkload -}}
 {{- /* A gate naming an operator entry for the router replaces the seeded
@@ -245,6 +245,17 @@
 {{- $name -}}
 {{- end -}}
 
+{{- /* The entry the router pod should match: the seeded one, or the operator
+       router entry the gate names. "" when neither. */ -}}
+{{- define "c8s.routerEntryName" -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
+{{- include "c8s.routerWorkloadName" . -}}
+{{- else if and .Values.router.enabled (kindIs "string" $explicit) (has $explicit (include "c8s.operatorRouterEntries" . | fromJsonArray)) -}}
+{{- $explicit -}}
+{{- end -}}
+{{- end -}}
+
 {{- /* Fails the render when the router pod would match several entries, or
        a gate names an operator entry that lacks a router image; either way
        its leaf is never stamped with the gated name. */ -}}
@@ -258,7 +269,11 @@
 {{- $matching = append $operator (include "c8s.routerWorkloadName" .) | uniq -}}
 {{- end -}}
 {{- if gt (len $matching) 1 -}}
-{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads lists router.nginx.image.digest and image.digest together, so the router pod would match each of %s and never be stamped: keep one router entry, or set router.attest.expectedWorkload to an operator entry to replace the seeded one" (join ", " (sortAlpha $matching))) -}}
+{{- $hint := "remove all but one" -}}
+{{- if $seeded -}}
+{{- $hint = "remove the operator entries, or set router.attest.expectedWorkload to one of them to replace the seeded entry" -}}
+{{- end -}}
+{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads lists router.nginx.image.digest and image.digest together, so the router pod would match each of %s and never be stamped: %s" (join ", " (sortAlpha $matching)) $hint) -}}
 {{- end -}}
 {{- if and (kindIs "string" $explicit) (not (hasPrefix "c8s-router-" $explicit)) (hasKey (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) $explicit) (not (has $explicit $operator)) .Values.router.nginx.image.digest .Values.image.digest -}}
 {{- fail (printf "router.attest.expectedWorkload=%s names a nriImagePolicy.bootstrapAllowlist.workloads entry that does not list both router.nginx.image.digest and image.digest, so the router pod cannot match it" $explicit) -}}

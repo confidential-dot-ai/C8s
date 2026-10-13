@@ -682,9 +682,10 @@ image's own entry while only the router's `acme` sidecar runs. With
 `--renew-interval`, get-cert treats a leaf stamped with any other name as
 unnamed for pacing: it keeps the fast poll and backoff above, and logs one
 warning per distinct wrong name. It never fails issuance or exits on a
-mismatch. The chart passes the seeded router entry's name to the router's
-`c8s-cert` container whenever it seeds that entry and wires
-`--workload-claims`, independent of the cds-attest readiness gate.
+mismatch. The chart passes the router entry's name, seeded or the operator
+entry `router.attest.expectedWorkload` names, to the router's `c8s-cert`
+container whenever it wires `--workload-claims`, independent of the cds-attest
+readiness gate.
 
 The ordinary renewal delay is the earlier of `--renew-interval` and half the
 installed leaf's remaining lifetime, randomly shortened on each cycle by up to

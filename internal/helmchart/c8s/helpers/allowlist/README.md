@@ -119,6 +119,9 @@ A gate naming one replaces the seeded entry. `c8s.routerWorkload` fails the
 render when the router pod would match more than one entry, seeded or operator,
 or when the gate names a `bootstrapAllowlist.workloads` entry that is not an
 operator router entry: either way the leaf never carries the gated name.
+`c8s.routerEntryName` returns the entry the router pod should match, seeded or
+gated operator entry, which the router's `c8s-cert` receives as
+`--expected-workload` whenever workload claims are wired.
 
 `c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
 the SHA-256 of the rendered entry, so a changed digest or argv yields a new name.

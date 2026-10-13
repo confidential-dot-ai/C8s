@@ -380,6 +380,7 @@ func TestChartRouterOperatorEntry(t *testing.T) {
 	}{
 		{name: "beside the seeded entry", args: entry, wantErr: "would match each of c8s-router-"},
 		{name: "two operator entries", args: slices.Concat(entry, workload("other-router", nginxDigest, c8sDigest), gate("my-router")), wantErr: "would match each of my-router, other-router"},
+		{name: "two operator entries without a gate or c8s-image main", args: slices.Concat(entry, workload("other-router", nginxDigest, c8sDigest), []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}), wantErr: "would match each of my-router, other-router"},
 		{name: "gate on an entry without nginx", args: slices.Concat(entry[:2], workload("c8s-only", c8sDigest), gate("c8s-only")), wantErr: "router.attest.expectedWorkload=c8s-only names a nriImagePolicy.bootstrapAllowlist.workloads entry that does not list both"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -404,8 +405,14 @@ func TestChartRouterOperatorEntry(t *testing.T) {
 	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "my-router" {
 		t.Errorf("--expected-workload = %q, want my-router", got)
 	}
-	if got := certExpectedWorkload(t, out); got != "" {
-		t.Errorf("c8s-cert --expected-workload = %q with no seeded router entry, want none", got)
+	if got := certExpectedWorkload(t, out); got != "my-router" {
+		t.Errorf("c8s-cert --expected-workload = %q, want my-router", got)
+	}
+
+	// An operator entry holding one router image cannot match the router pod.
+	out, err = helmTemplate(t, slices.Concat(gateArgs, entry, workload("c8s-only", c8sDigest), gate("my-router"))...)
+	if err != nil {
+		t.Fatalf("helm template with a c8s-only operator entry: %v\n%s", err, out)
 	}
 }
 
