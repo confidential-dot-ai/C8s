@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -313,6 +314,29 @@ func TestLintSwappedMainAndInitIsNotShadowed(t *testing.T) {
 		if got, _, err := al.MatchWorkload(running); err != nil || got != want {
 			t.Fatalf("MatchWorkload(%s) = %q, %v, want %q", argv, got, err, want)
 		}
+	}
+}
+
+func TestLintWarnsWhenSecretsPinNoEnvValue(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		warns     bool
+	}{
+		{"any", `{"policy":"any"}`, true},
+		{"presence only", `{"policy":"match","variables":{"GPU_SERIAL":{"present":true}}}`, true},
+		{"one exact value", `{"policy":"match","variables":{"GPU_SERIAL":{"present":true},"MODE":{"exact":"production"}}}`, false},
+		{"empty match", `{"policy":"match","variables":{}}`, false},
+		{"exact", `{"policy":"exact","values":{"MODE":"production"}}`, false},
+		{"deny", `{"policy":"deny"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{"w":{"secrets":{"policy":"allow","read":["/app/key"]},"containers":[`+
+				`{"digest":"`+digA+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":`+tc.env+`}]}}}`)
+			warned := slices.ContainsFunc(lintOffline(al), func(f finding) bool { return strings.Contains(f.msg, "without pinning environment values") })
+			if warned != tc.warns {
+				t.Fatalf("secret warning = %v, want %v", warned, tc.warns)
+			}
+		})
 	}
 }
 
