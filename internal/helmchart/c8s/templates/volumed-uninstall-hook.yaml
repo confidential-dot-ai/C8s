@@ -45,6 +45,8 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
+      # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+      enableServiceLinks: false
       automountServiceAccountToken: false
       {{- with .Values.volumed.priorityClassName }}
       priorityClassName: {{ . }}

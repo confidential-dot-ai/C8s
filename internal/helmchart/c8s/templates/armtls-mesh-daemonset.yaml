@@ -63,6 +63,8 @@ spec:
         prometheus.io/port: {{ .Values.armtlsMesh.ports.health | quote }}
         prometheus.io/path: "/metrics"
     spec:
+      # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+      enableServiceLinks: false
       {{- with .Values.armtlsMesh.priorityClassName }}
       priorityClassName: {{ . }}
       {{- end }}
