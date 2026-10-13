@@ -640,12 +640,12 @@ verbatim bytes the guest initrd hashed, as written by `openssl ec -pubout`)
 and `verify` derives the bare operator-key seed,
 `SHA-384(0x00*48 ‖ SHA-384(pubkey))`, itself. The two are mutually exclusive
 — one register, one expected value — and `--operator-pkey` carries the same
-`--image-manifest` requirement. Note its scope: it pins the **bare** seed,
-i.e. a node with no per-workload RTMR[3] extends on top. That is what every
-node reports today; `c8s get-kubeconfig` is the command that also folds
-`--workload-image` extends into the expected register. Supplying any of these
-flags against SEV-SNP evidence is a policy error, not an ignored option: SNP
-has no runtime measurement registers.
+`--image-manifest` requirement. Note its scope: it pins the seed, optionally
+followed by the node's measured allowlist policies, but not per-workload
+extends; `c8s get-kubeconfig` is the command that folds `--workload-image`
+extends into the expected register. Supplying any of these flags against
+SEV-SNP evidence is a policy error, not an ignored option: SNP has no runtime
+measurement registers.
 
 A TDX verdict pinned on MRTD alone is **rejected**, not warned about, when no
 operator-pinned CA anchor (`--mesh-ca`) stands beside the measurements: the
@@ -688,6 +688,51 @@ Caveats the output surfaces:
 - **Freshness.** Verifying an armTLS serving cert binds REPORTDATA to the
   certificate key, not a per-request nonce, so it proves "this key was born in a
   TEE with this measurement" but not "freshly now" (`fresh: false`).
+
+### Check a node's policy history
+
+A node that measures its allowlist policies (Helm value
+`nriImagePolicy.measurePolicies`, see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
+reports RTMR[3] as the seed followed by each policy it enforced since boot.
+Its router's attest-pq and attest-lb bundles list those digests as
+`measured_policies`. With `--operator-pkey`, `verify` replays that list
+against RTMR[3] and reports the longest prefix that matches as `history:`
+(`measured_policies` in JSON). Without `--operator-pkey`, a listed history is
+not replayed and the verdict warns. Choose how to accept the history:
+
+| Flag | Accepts | Failure |
+|---|---|---|
+| `--pin-policy sha256:<hex>` (repeatable) | Only these digests, for every history entry and for the policy the leaf was issued under | `policy_history_not_pinned` |
+| `--trust-operator --trust-operator-keys <pem>` | Every history entry whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
+
+Both flags require `--operator-pkey` and exclude each other. Both fail with
+`policy_history_absent` when nothing replays: a node that does not measure
+proves nothing about the policies it enforced. `--pin-policy` also fails when
+the leaf carries no readable issuing policy; that stamp is CA-vouched, so
+without `--mesh-ca` the verdict stays partial.
+
+`--trust-operator` fetches each document from
+`<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
+(`allowlist_digest_mismatch` otherwise), and checks its stored write token
+against `--trust-operator-keys` with `operatorauth.VerifyStored`.
+`--operator-keys` does not feed it, and `--trust-operator-keys` alone is
+rejected. Only a document uploaded whole with a signed `PUT /allowlist`
+carries a token: a per-workload edit yields an unsigned policy, which fails
+`--trust-operator` until the node reboots. The documents authenticate
+themselves against the replayed digests, so any router replica may serve
+them.
+
+To review the documents before pinning them, add `--fetch-allowlists DIR`
+(also requires `--operator-pkey`): `verify` saves each one as
+`DIR/<hex>.json`, and a failed fetch or write fails the verdict with
+`allowlist_fetch_failed`.
+
+```sh
+c8s verify https://app.example.com --mode attest-lb \
+  --image-manifest image.json --operator-pkey operator.pub \
+  --trust-operator --trust-operator-keys operator-keys.pem
+```
 
 ### Complete measured identity policies
 
