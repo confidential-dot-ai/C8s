@@ -38,17 +38,19 @@ func (p *journalingProvider) Evidence(ctx context.Context, reportData []byte) (j
 }
 
 // Both bundles carry the journal as read after the evidence, and omit it when
-// no journal is configured.
+// no journal is configured or it cannot be read.
 func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
 	for _, tc := range []struct {
 		name       string
 		configured bool
+		unreadable bool
 		want       []string
 	}{
 		{name: "configured", configured: true, want: []string{p, q}},
 		{name: "unset"},
+		{name: "unreadable", configured: true, unreadable: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			identity := writeTestMeshIdentity(t)
@@ -68,6 +70,9 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 			}
 			if tc.configured {
 				cfg.MeasuredPoliciesFile = journal
+			}
+			if tc.unreadable {
+				cfg.MeasuredPoliciesFile = t.TempDir() // a directory: Read fails
 			}
 			ts := httptest.NewServer(NewServer(cfg).Handler())
 			defer ts.Close()
