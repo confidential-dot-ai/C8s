@@ -189,7 +189,7 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 		}
 		if w.Secrets != nil {
 			for _, c := range allContainers(w) {
-				if c.Env.Policy == pkgallowlist.PolicyAny || c.Env.Policy == "" {
+				if pinsNoEnvValue(c.Env) {
 					warnings = append(warnings, warnf("workload %q grants secrets without pinning environment values for container %s", name, c.Digest))
 				}
 			}
@@ -211,6 +211,19 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	warnings = append(warnings, shadowedEntries(al)...)
 	warnings = append(warnings, searchPathFindings(al)...)
 	return warnings
+}
+
+// pinsNoEnvValue reports whether the host may choose every environment value:
+// any, or match with only presence matchers. A required empty environment pins
+// everything there is.
+func pinsNoEnvValue(env pkgallowlist.EnvPolicy) bool {
+	switch env.Policy {
+	case pkgallowlist.PolicyDeny, pkgallowlist.PolicyExact:
+		return false
+	case pkgallowlist.PolicyMatch:
+		return len(env.Variables) > 0 && len(env.ExactValues()) == 0
+	}
+	return true
 }
 
 // shadowedEntries reports entries that can never be the unique match because
