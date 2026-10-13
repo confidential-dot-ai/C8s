@@ -1013,6 +1013,12 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
 
+On a node that measures allowlist policies, both bundles also carry
+`measured_policies`: the policy digests the node extended into RTMR[3], read
+after the quote and outside any transcript. A verifier trusts the longest
+prefix that replays against the quote's RTMR[3]; see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history).
+
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode and the upstream at boot. Mode `acme`
 applies when its `router.hostnames` is not empty, else mode `cds`. See

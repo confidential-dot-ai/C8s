@@ -559,8 +559,9 @@ verifier trusts it only as far as it replays against a quote's RTMR[3]:
 - **cred-release.** It accepts its own binding as the seed followed by a
   prefix of the list, and serves the list at `GET /measured-policies`.
 - **`c8s get-kubeconfig`.** On TDX it fetches that list and accepts RTMR[3] as
-  the seed, then the `--workload-image` chain, then the longest prefix of the
-  list that replays.
+  the seed extended by the `--workload-image` chain, optionally followed by a
+  prefix of the list that replays. The list arrives unauthenticated, so an
+  extend after the workload chain passes whenever the node lists it.
 
 The list is read after the quote is produced, so it may hold extends the
 quote does not. Verifiers use the longest prefix that replays.
