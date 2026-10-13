@@ -492,6 +492,7 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 		{"root directory", "PATH", "/", "data", true},
 		{"unrelated directory", "NODE_PATH", "/usr/lib/node_modules", "data", false},
 		{"lookalike prefix", "PATH", "/mnt/c8s-data/toolset", "data", false},
+		{"space inside a colon-delimited directory", "PATH", "/mnt/c8s-data/tools image/bin", "data", false},
 		{"application data variable", "DATA_PATH", "/mnt/c8s-data/tools", "data", false},
 		{"emptyDir is not operator data", "PATH", "/mnt/c8s-data/tools", "emptyDir", false},
 		{"preloaded data file", "LD_PRELOAD", "/lib/a.so /mnt/c8s-data/tools/b.so", "data", true},

@@ -331,7 +331,7 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 					continue
 				}
 				for _, rule := range c.Mounts.Rules {
-					if searchPathLoadsMountedContent(value, rule) {
+					if searchPathLoadsMountedContent(variable, value, rule) {
 						out = append(out, errorf("workload %q container %s pins %s to a search path overlapping %s mount %q; operator-supplied content could be loaded as code", name, c.Digest.String(), variable, rule.Kind, rule.Destination))
 					}
 				}
@@ -341,16 +341,16 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	return out
 }
 
-func searchPathLoadsMountedContent(value string, rule pkgallowlist.MountRule) bool {
+func searchPathLoadsMountedContent(variable, value string, rule pkgallowlist.MountRule) bool {
 	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost
-	return operatorSupplied && searchPathReachesMount(value, rule.Destination)
+	return operatorSupplied && searchPathReachesMount(variable, value, rule.Destination)
 }
 
-func searchPathReachesMount(value, destination string) bool {
+func searchPathReachesMount(variable, value, destination string) bool {
 	destination = path.Clean(destination)
-	// ld.so splits LD_PRELOAD on spaces as well as colons; other variables
-	// split on colons only, so check both readings.
-	elements := append(strings.Split(value, ":"), strings.FieldsFunc(value, func(r rune) bool { return r == ':' || r == ' ' })...)
+	// ld.so splits LD_PRELOAD on spaces as well as colons; the others split on
+	// colons only, so a space is part of a directory name.
+	elements := strings.FieldsFunc(value, func(r rune) bool { return r == ':' || (variable == "LD_PRELOAD" && r == ' ') })
 	for _, element := range elements {
 		element = path.Clean(element)
 		if element == destination || strings.HasPrefix(element, strings.TrimSuffix(destination, "/")+"/") || strings.HasPrefix(destination, strings.TrimSuffix(element, "/")+"/") {
