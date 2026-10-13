@@ -634,6 +634,11 @@ C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal 
     -f "$WORKDIR/values.yaml" --wait || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
+# The first leaf predates the app container, so it names no workload;
+# get-cert renews until CDS names it, then SIGHUPs nginx. It runs as nginx's
+# uid (101) to signal it. Only a stamped template may carry these.
+kubectl -n adopted patch deploy web --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"confidential.ai/c8s-reload-nginx":"true","confidential.ai/c8s-get-cert-run-as-user":"101","confidential.ai/c8s-get-cert-run-as-group":"101"}}}}}' \
+    || fail "could not annotate the adopted template"
 kubectl -n adopted rollout status deploy/web --timeout=300s || fail "adopted workload never rolled out"
 pass "install adopted a running workload (template stamped, rollout injected)"
 

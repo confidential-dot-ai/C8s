@@ -27,7 +27,13 @@ func TestAdoptMeInjection(t *testing.T) {
 		}
 	}
 	pod := &corev1.Pod{ObjectMeta: deployment.Spec.Template.ObjectMeta, Spec: deployment.Spec.Template.Spec}
-	pod.Annotations[AnnotationWorkload] = "web" // what install patches in
+	// What install stamps, and what the harness adds once it has.
+	pod.Annotations = map[string]string{
+		AnnotationWorkload:          "web",
+		AnnotationReloadNginx:       "true",
+		AnnotationGetCertRunAsUser:  "101",
+		AnnotationGetCertRunAsGroup: "101",
+	}
 	inj, err := parseAnnotations(pod)
 	if err != nil || inj == nil {
 		t.Fatalf("parseAnnotations(adopt-me) = %+v, %v", inj, err)

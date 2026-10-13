@@ -23,13 +23,9 @@ spec:
     metadata:
       labels:
         app: web
-      annotations:
-        # The first leaf predates the app container, so it names no workload;
-        # get-cert renews until CDS names it, then SIGHUPs nginx. It runs as
-        # nginx's uid (101) to signal it.
-        confidential.ai/c8s-reload-nginx: "true"
-        confidential.ai/c8s-get-cert-run-as-user: "101"
-        confidential.ai/c8s-get-cert-run-as-group: "101"
+      # No c8s annotations: the webhook refuses injection detail annotations
+      # without confidential.ai/cw, so the harness adds them after install
+      # stamps the template (run.sh, "Workload adoption").
     spec:
       securityContext:
         runAsNonRoot: true
