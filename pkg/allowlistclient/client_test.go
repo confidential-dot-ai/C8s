@@ -2,7 +2,6 @@ package allowlistclient
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -42,12 +41,20 @@ func TestList(t *testing.T) {
 	}
 }
 
+// The served digest is the stamped policy digest of the canonical document.
 func TestFetchServedDigestsServedBytes(t *testing.T) {
-	const body = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := al.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("ETag", `W/"4"`)
-		io.WriteString(w, body)
+		w.Write(body)
 	}))
 	defer srv.Close()
 
@@ -55,8 +62,11 @@ func TestFetchServedDigestsServedBytes(t *testing.T) {
 	if err != nil || notModified {
 		t.Fatalf("FetchServed = nm=%v err=%v", notModified, err)
 	}
-	sum := sha256.Sum256([]byte(body))
-	if want := "sha256:" + hex.EncodeToString(sum[:]); served.Digest != want {
+	sum, err := al.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "sha256:" + hex.EncodeToString(sum); served.Digest != want {
 		t.Errorf("FetchServed().Digest = %s, want %s", served.Digest, want)
 	}
 	if served.ETag != `W/"4"` || served.Allowlist == nil {

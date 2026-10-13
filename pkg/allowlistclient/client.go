@@ -74,8 +74,9 @@ func (c Client) Fetch(ctx context.Context, ifNoneMatch string) (*allowlist.Allow
 type Served struct {
 	Allowlist *allowlist.Allowlist
 	ETag      string
-	// Digest is "sha256:<hex>" of the exact bytes served, the digest CDS
-	// journals the document under.
+	// Digest is "sha256:<hex>" of the exact bytes served. CDS serves
+	// Allowlist.Canonical, so this is the policy digest it stamps into
+	// workload certificates and nodes measure into RTMR[3].
 	Digest string
 }
 
