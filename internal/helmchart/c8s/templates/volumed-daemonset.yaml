@@ -41,6 +41,8 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
+      # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+      enableServiceLinks: false
       # SO_PEERCRED reports a peer's PID in the reader's PID namespace, so a
       # caller in another pod resolves to 0 without this.
       hostPID: true

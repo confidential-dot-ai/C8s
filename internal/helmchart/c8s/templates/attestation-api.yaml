@@ -44,6 +44,8 @@ spec:
       annotations:
         checksum/config: {{ include "c8s.attestationApiConfig" (dict "root" .) | sha256sum }}
     spec:
+      # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+      enableServiceLinks: false
       serviceAccountName: {{ include "c8s.attestationApiName" . }}
       tolerations:
         - operator: Exists
