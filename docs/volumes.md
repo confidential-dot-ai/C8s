@@ -488,13 +488,18 @@ Rebooting or replacing the node clears them too — device-mapper state does not
 survive a reboot.
 
 **On nodes using the LIO fallback, a leftover backstore is separate.**
-`c8s volume attach` is operator-driven
-and outside the release lifecycle, so uninstall leaves it alone by design; a
-node that has had volumes attached still lists them afterwards. The two look
-alike on the node and are told apart by what lists them: a leaked mapping shows
-in `dmsetup ls` as `c8s-crypt-`/`c8s-verity-` names, an attached backstore in
-`/sys/kernel/config/target/core/fileio_0/`. Remove the second with
-`c8s volume detach <name>`.
+`c8s volume attach` is operator-driven and outside the release lifecycle, but
+`c8s uninstall`'s host sweep detaches the disks it built, so none outlives the
+release still serving its image and refusing the next attach of that name.
+That holds for releases installed from a chart carrying the step; for an
+older release the uninstall says so, and the disks need
+`c8s volume detach <name>`. The sweep leaves a disk that is still in use — held
+by a mapping the uninstall could not close, mounted, or swap — and names it. The two look alike on the node and
+are told apart by what lists them: a leaked mapping shows in `dmsetup ls` as
+`c8s-crypt-`/`c8s-verity-` names, an attached backstore in
+`/sys/kernel/config/target/core/fileio_0/`. Once the mapping is gone, remove
+the backstore with `c8s volume detach <name>`. A bare `helm uninstall` runs no
+sweep; `c8s uninstall --host-sweep-only` runs it afterwards.
 
 ## What this defends
 
