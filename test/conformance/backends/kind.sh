@@ -70,6 +70,16 @@ external_endpoint() {
     if ! docker inspect "$EXTERNAL_HELLO" >/dev/null 2>&1; then
         docker run -d --name "$EXTERNAL_HELLO" --network kind "$(image_ref tenant-app)" \
             sh -c 'mkdir -p /www && echo hello > /www/index.html && exec python3 -m http.server -b :: -d /www 8080' >/dev/null || return 1
+        # python takes a moment to listen, unlike the httpd it replaced.
+        local i
+        for i in $(seq 30); do
+            docker exec "$EXTERNAL_HELLO" wget -qO- -T 1 http://127.0.0.1:8080/ >/dev/null 2>&1 && break
+            sleep 0.5
+        done
+        if [ "$i" = 30 ]; then
+            echo "backend: the external hello API did not come up: $(docker logs "$EXTERNAL_HELLO" 2>&1 | tail -3)" >&2
+            return 1
+        fi
     fi
     addr="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$EXTERNAL_HELLO")"
     [ -n "$addr" ] || { echo "backend: the external hello container has no address" >&2; return 1; }
