@@ -227,6 +227,8 @@ cds:
     maxUnavailable: 0
   logLevel: info
   allowlistDB: /data/allowlist.db
+  # -- Operator JWT clock skew tolerance in seconds. With persistence.enabled
+  # false, CDS also refuses allowlist writes for this long after each start.
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
