@@ -18,6 +18,7 @@ func (c SandboxContainer) Key() string {
 	if c.Env == nil {
 		key.WriteString("nil")
 	} else {
+		// Marshal cannot fail: EnvObservation holds only strings and a string map.
 		encoded, _ := json.Marshal(c.Env)
 		key.Write(encoded)
 	}
