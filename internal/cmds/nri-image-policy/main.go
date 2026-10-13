@@ -68,6 +68,9 @@ func Run(args []string) error {
 	if len(args) > 0 && args[0] == setCDSPinsVerb {
 		return runSetCDSPins(os.Stdout, args[1:])
 	}
+	if len(args) > 0 && args[0] == pluginReadyVerb {
+		return runPluginReady(args[1:])
+	}
 	fs := flag.NewFlagSet("nri-image-policy", flag.ContinueOnError)
 	configPath := fs.String("config", defaultConfigPath, "path to config file")
 	healthAddr := fs.String("health-addr", ":8080", "health check listen address")

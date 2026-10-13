@@ -770,6 +770,16 @@ nriImagePolicy:
     # equal value measured into the node image, which an override cannot reach.
     interval: 5s
 
+  # containerd's NRI plugin_request_timeout: how long containerd waits on one
+  # plugin callback. A callback that overruns it makes NRI drop the plugin,
+  # which then exits and is not respawned until containerd restarts; the
+  # installer pod goes NotReady when that happens. Raise it on nodes where the
+  # plugin resolves image tags against a busy containerd. A Go duration
+  # ("2s", "500ms"). Changing it restarts containerd on each node as the
+  # installer rolls out. Under
+  # `baked` the node image's drop-in sets it, which an override cannot reach.
+  requestTimeout: 2s
+
   # --- Bootstrap allowlist ---
   # The entries the cluster needs before an operator writes anything, rendered
   # into CDS's --allowlist-seed (templates/cds.yaml) beside the chart's own
@@ -829,9 +839,10 @@ nriImagePolicy:
   nodeAffinity:
     excludeLabels: []
 
-  # Resources for the install-DaemonSet pod itself (init container that
-  # copies files and patches containerd, then sleeps idle). Not the host
-  # plugin process, which runs outside K8s and has no resource limits.
+  # Resources for the install-DaemonSet's init container, which copies files
+  # and patches containerd; its long-running plugin-ready container sets its
+  # own. Not the host plugin process, which runs outside K8s and has no
+  # resource limits.
   # The install init enters all host namespaces (nsenter -t 1) and spawns a
   # transient systemd unit (systemd-run) to restart containerd; that init peak
   # OOM-kills under a 64Mi limit on confidential nodes, so the limit is
