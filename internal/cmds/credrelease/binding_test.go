@@ -28,6 +28,8 @@ var operatorPub = []byte("operator public key bytes")
 func TestMain(m *testing.M) {
 	attestationReadyTimeout = 300 * time.Millisecond
 	attestationReadyInterval = 20 * time.Millisecond
+	// Keep the host's own journal, if any, out of every binding check.
+	measuredPoliciesPath = filepath.Join(os.TempDir(), "credrelease-test-no-journal")
 	os.Exit(m.Run())
 }
 
@@ -417,4 +419,74 @@ func TestLoadMeasuredIdentityFailsClosedOnUnresolvableMeasurement(t *testing.T) 
 			t.Fatal("want an error when the attestation-api is unreachable")
 		}
 	})
+}
+
+// The binding check replays the measured-policy journal, which may run ahead
+// of the report, and still accepts the bare seed.
+func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	report := func(digests ...string) *teetypes.VerificationResult {
+		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(operatorPub), digests)
+		return &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX, Claims: teetypes.Claims{
+			PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])},
+		}}
+	}
+	for _, tc := range []struct {
+		name    string
+		journal string // "" leaves no journal file
+		report  *teetypes.VerificationResult
+		wantErr bool
+	}{
+		{name: "bare seed, no journal", report: report()},
+		{name: "bare seed, journal ahead", journal: p + "\n", report: report()},
+		{name: "full journal", journal: p + "\n" + q + "\n", report: report(p, q)},
+		{name: "journal ahead of the report", journal: p + "\n" + q + "\n", report: report(p)},
+		{name: "extend the journal does not hold", journal: p + "\n", report: report(q), wantErr: true},
+		{name: "extend without a journal", report: report(p), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setMeasuredPolicies(t, tc.journal)
+			if err := verifyNodeBinding(tc.report, operatorPub); (err != nil) != tc.wantErr {
+				t.Fatalf("verifyNodeBinding = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestServeMeasuredPolicies(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	for _, tc := range []struct {
+		name, method, journal string
+		wantCode              int
+		wantBody              string
+	}{
+		{name: "journal", method: http.MethodGet, journal: p + "\n", wantCode: http.StatusOK, wantBody: `["` + p + `"]`},
+		{name: "no journal", method: http.MethodGet, wantCode: http.StatusOK, wantBody: `[]`},
+		{name: "post", method: http.MethodPost, wantCode: http.StatusMethodNotAllowed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setMeasuredPolicies(t, tc.journal)
+			rec := httptest.NewRecorder()
+			(&Handler{}).ServeHTTP(rec, httptest.NewRequest(tc.method, MeasuredPoliciesPath, nil))
+			if rec.Code != tc.wantCode || (tc.wantBody != "" && strings.TrimSpace(rec.Body.String()) != tc.wantBody) {
+				t.Fatalf("%s %s = %d %q, want %d %q", tc.method, MeasuredPoliciesPath, rec.Code, rec.Body, tc.wantCode, tc.wantBody)
+			}
+		})
+	}
+}
+
+// setMeasuredPolicies points the journal path at a file holding journal, or
+// at a missing file when journal is empty.
+func setMeasuredPolicies(t *testing.T, journal string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	if journal != "" {
+		if err := os.WriteFile(path, []byte(journal), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	orig := measuredPoliciesPath
+	measuredPoliciesPath = path
+	t.Cleanup(func() { measuredPoliciesPath = orig })
 }
