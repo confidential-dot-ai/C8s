@@ -839,8 +839,10 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	// admitted the inventory reports no workload containers, so the CDS
 	// denies by design; the real client retries through that window
 	// (internal/cmds/sidecar Retry). The probe makes one request, so it
-	// waits for the pod to be Ready once instead.
-	if !p.ready {
+	// waits for the pod to be Ready once instead. A pod the scenario gave
+	// an init container asks while that container runs, which is the point
+	// of its scenario, so it is not waited for.
+	if !p.ready && p.init == nil {
 		if _, err := kubectl(nil, "-n", w.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
 			return "", fmt.Errorf("%q did not become Ready before its first secret request: %w", p.name, err)
 		}
@@ -908,13 +910,25 @@ func (w *world) request(p *pod, method, logical string) (*answer, error) {
 	case s.token != nil:
 		args = append(args, "--token", string(s.token))
 	}
-	out, err := w.probe(p, args...)
-	if err != nil {
-		return nil, err
-	}
-	status, sent, body, err := statusLine(out)
-	if err != nil {
-		return nil, fmt.Errorf("the probe in %q printed no answer: %q", p.name, out)
+	// The CDS meters the workload secret routes per sandbox (cds
+	// --rate-limit, 10 a second by default); a scenario that asks many
+	// times in a row, such as filling the holder quota, is paced by the
+	// limiter, not judged by it, so a 429 is retried after a pause.
+	var status int
+	var sent string
+	var body []byte
+	for attempt := 0; ; attempt++ {
+		out, err := w.probe(p, args...)
+		if err != nil {
+			return nil, err
+		}
+		if status, sent, body, err = statusLine(out); err != nil {
+			return nil, fmt.Errorf("the probe in %q printed no answer: %q", p.name, out)
+		}
+		if status != http.StatusTooManyRequests || attempt == 5 {
+			break
+		}
+		time.Sleep(time.Second)
 	}
 	challenge, token, err := sentCredentials(sent)
 	if err != nil {
@@ -1613,8 +1627,8 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 
 func fileHoldsSupplied(ctx context.Context) error {
 	w := getWorld(ctx)
-	p, s, err := w.lastRequester()
-	if err != nil || s.files[s.lastPath] == nil {
+	p := w.secrets.last
+	if p == nil || p.secret == nil || p.secret.files[p.secret.lastPath] == nil {
 		return errors.New("no file of a secret client has been read")
 	}
 	want, ok := w.secrets.stored[p.secret.lastPath]

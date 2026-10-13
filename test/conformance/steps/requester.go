@@ -633,11 +633,16 @@ func cdsRefusesAttest(ctx context.Context, code string) error {
 // sidecar redeem a release challenge (secrets). Registering it twice would
 // leave godog to pick one.
 func holdsToken(ctx context.Context, name, node, suffix string) error {
-	w := getWorld(ctx)
-	if _, ok := w.issuance.requesters[name]; ok || suffix == " for a key other than its own" {
+	switch suffix {
+	case " for a key other than its own":
 		return holdsInventoryToken(ctx, name, node, suffix)
+	case " for that release challenge":
+		return holdsSandboxToken(ctx, name, node, suffix)
 	}
-	return holdsSandboxToken(ctx, name, node, suffix)
+	if _, ok := getWorld(ctx).issuance.requesters[name]; ok {
+		return holdsInventoryToken(ctx, name, node, "")
+	}
+	return holdsSandboxToken(ctx, name, node, "")
 }
 
 func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error {
