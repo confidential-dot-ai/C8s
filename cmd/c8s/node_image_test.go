@@ -593,3 +593,20 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
 	}
 }
+
+// A component entry that confines mounts still leaves the pod its own mount
+// table, so it reaches the measured base like one with mounts any.
+func TestNodeImageCollectAcceptsConfinedMounts(t *testing.T) {
+	input := strings.Replace(nodeImageCollectFixture(),
+		`"`+testDigest+`","command":{"policy":"any"}`,
+		`"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]}`, 1)
+	confined := strings.Replace(input,
+		`"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`,
+		`"args":{"policy":"any"},"mounts":{"policy":"confined","denyBelow":["/app","/usr"]}}]},"init"`, 1)
+	if confined == input {
+		t.Fatal("fixture did not change")
+	}
+	if _, err := collectNodeImageArtifacts([]byte(confined)); err != nil {
+		t.Fatalf("rejected a seed confining the baked image's mounts: %v", err)
+	}
+}

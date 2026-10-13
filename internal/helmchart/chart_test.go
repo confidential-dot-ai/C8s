@@ -5588,8 +5588,8 @@ func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 	for _, al := range []pkgallowlist.Allowlist{*seed, worker.Allowlist.Base} {
 		for _, entry := range al.Workloads {
 			for _, c := range entry.Containers {
-				if c.Digest.String() == cdsDigest && c.Mounts.Policy != pkgallowlist.PolicyAny {
-					t.Errorf("generated CDS mount policy = %+v, want explicit any", c.Mounts)
+				if c.Digest.String() == cdsDigest && (c.Mounts.Policy != pkgallowlist.PolicyConfined || !slices.Equal(c.Mounts.DenyBelow, []string{"/c8s", "/etc/ssl"})) {
+					t.Errorf("generated CDS mount policy = %+v, want confined below /c8s and /etc/ssl", c.Mounts)
 				}
 			}
 		}

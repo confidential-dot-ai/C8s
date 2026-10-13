@@ -127,8 +127,10 @@ spec:
 {{ toYaml .Values.operator.resources | indent 12 }}
           volumeMounts:
             # readOnlyRootFilesystem: true forces any transient files
-            # (controller-runtime cache tempfiles, etc.) to land in
-            # this emptyDir rather than the immutable image.
+            # (controller-runtime cache tempfiles, the webhook serving
+            # certificate, etc.) to land in this emptyDir rather than the
+            # immutable image. Memory-backed, so the operator's confined
+            # mount policy admits it on any node.
             - name: tmp
               mountPath: /tmp
             {{- include "c8s.nodeConfigMount" . | nindent 12 }}
@@ -139,7 +141,9 @@ spec:
             {{- end }}
       volumes:
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi
         {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
         {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
         - name: measurements-config

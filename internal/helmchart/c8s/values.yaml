@@ -30,6 +30,10 @@ node:
 ##                  starts with (the image's ENTRYPOINT, plus the subcommand
 ##                  when the image bakes one). Arguments stay unconstrained:
 ##                  they are per-pod. Required unless argvPinned.
+##   - denyBelow:   image paths no pod volume may cover (the derived entry's
+##                  `mounts: {policy: confined}`): the executable and every
+##                  directory its entrypoint loads code from. Derive it from
+##                  the image's Dockerfile. Required unless argvPinned.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
@@ -37,14 +41,18 @@ c8sComponents:
     enabledPath: ""
     cdsExempt: false
     entrypoint: ["/c8s"]
+    denyBelow: [/c8s, /etc/ssl]
   - valuePath: cds.image
     enabledPath: ""
     cdsExempt: true
     entrypoint: ["/c8s", "cds"]
+    denyBelow: [/c8s, /etc/ssl]
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     cdsExempt: false
     entrypoint: ["/attestation-api"]
+    denyBelow: [/attestation-api, /usr, /lib, /lib64, /bin, /sbin, /etc/ssl,
+                /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
     ## Released by attestation-rs: the image built from .github/build-pins.json's
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
@@ -53,6 +61,8 @@ c8sComponents:
     enabledPath: armtlsMesh.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "armtls-mesh"]
+    denyBelow: [/app, /usr, /lib, /lib64, /bin, /sbin, /etc/ssl, /etc/alternatives,
+                /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
     cdsExempt: false
@@ -64,6 +74,8 @@ c8sComponents:
     enabledPath: volumed.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "volumed"]
+    denyBelow: [/app, /usr, /lib, /lib64, /bin, /sbin, /etc/ssl, /etc/alternatives,
+                /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -1242,6 +1254,13 @@ router:
     # ENTRYPOINT and the first CMD token, which the entrypoint script requires
     # before it execs anything. Bump with the image if either changes.
     entrypoint: ["/docker-entrypoint.sh", "nginx"]
+    # Image paths no pod volume may cover: the entrypoint script, the
+    # directory it sources, the binaries and libraries it runs, and the
+    # loader's configuration (musl's search path included, as the image is
+    # Alpine). /etc/nginx stays mountable: the chart mounts nginx.conf there.
+    denyBelow: [/docker-entrypoint.sh, /docker-entrypoint.d, /usr, /lib, /lib64, /bin, /sbin,
+                /etc/nginx/modules, /etc/ld-musl-x86_64.path, /etc/ld-musl-aarch64.path,
+                /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
     # -- Number of nginx replicas.
     replicas: 1
     # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs

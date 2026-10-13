@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -410,13 +411,14 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 // componentRender renders the chart with every component enabled and
 // digest-pinned, and derivation on, so the seed and the base carry an entry
 // for each.
-func componentRender(t *testing.T) string {
+func componentRender(t *testing.T, extra ...string) string {
 	t.Helper()
 	args := []string{
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "volumed.enabled=true",
 		"--set", "attestationApi.enabled=true",
 	}
+	args = append(args, extra...)
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -439,9 +441,38 @@ func imageDigest(image string) string {
 // Every container the chart runs from a component image must be admitted —
 // by the served seed and by the plugin's base — under the argv it is rendered
 // with and the mounts it holds, and nothing else from those images may be:
-// not a shell, and not the pinned path with a volume bound over it.
+// not a shell, not the pinned path with a volume bound over it, not a volume
+// over a path the entry denies, and not a writable host path the chart does
+// not mount. Each variant turns on mounts the default render leaves out.
 func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
-	out := componentRender(t)
+	for name, args := range map[string][]string{
+		"default": nil,
+		"optional mounts on SEV-SNP": {
+			"--set", "cds.persistence.enabled=true",
+			"--set", "attestationApi.teeDevices.sevGuest=true",
+			"--set", "attestationApi.teeDevices.tpm=true",
+			"--set", "router.discovery.enabled=true",
+		},
+		"TDX": {
+			"--set", "attestationApi.teeDevices.sevGuest=false",
+			"--set", "attestationApi.teeDevices.tdxGuest=true",
+		},
+		"WebPKI public TLS": {
+			"--set-string", "router.publicTLS.mode=webpki",
+			"--set-string", "router.publicTLS.secretName=router-public-tls",
+		},
+		"ACME public TLS": {
+			"--set-string", "router.publicTLS.mode=acme",
+			"--set", "router.san={lb.example.com}",
+			"--set-string", "router.acme.email=ops@example.com",
+		},
+	} {
+		t.Run(name, func(t *testing.T) { checkComponentEntries(t, componentRender(t, args...)) })
+	}
+}
+
+func checkComponentEntries(t *testing.T, out string) {
+	t.Helper()
 	seed := renderedSeed(t, out)
 	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
 	pins := componentPinValues(t)
@@ -477,11 +508,7 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 			if len(c.Command) == 0 {
 				argv = append(append([]string{}, entrypoint...), c.Args...)
 			}
-			mounts := make([]pkgallowlist.ObservedMount, 0, len(c.VolumeMounts))
-			for _, m := range c.VolumeMounts {
-				mounts = append(mounts, pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown})
-			}
-			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: &pkgallowlist.EnvObservation{}}
+			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: observedMounts(t, w.spec, c), Env: &pkgallowlist.EnvObservation{}}
 			sources := map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base}
 			if name == "DaemonSet/c8s-volumed-teardown" {
 				// The pre-delete hook's script and pause are seed-only, like
@@ -514,9 +541,24 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 					t.Errorf("%s admits %s under %q", source, digest[:19], argv)
 				}
 			}
-			over := []pkgallowlist.ObservedMount{{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}}
-			if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: entrypoint, Mounts: over, Env: &pkgallowlist.EnvObservation{}}) {
-				t.Errorf("%s admits %s with a volume mounted over %s", source, digest[:19], entrypoint[0])
+			overs := [][]pkgallowlist.ObservedMount{
+				{{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}},
+				{{Destination: "/opt/host", Class: pkgallowlist.MountHost}},
+			}
+			for _, w := range al.Workloads {
+				for _, c := range w.Containers {
+					if c.Digest.String() != digest {
+						continue
+					}
+					for _, denied := range c.Mounts.DenyBelow {
+						overs = append(overs, []pkgallowlist.ObservedMount{{Destination: denied, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}})
+					}
+				}
+			}
+			for _, over := range overs {
+				if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: entrypoint, Mounts: over, Env: &pkgallowlist.EnvObservation{}}) {
+					t.Errorf("%s admits %s with a %s mount at %s", source, digest[:19], over[0].Class, over[0].Destination)
+				}
 			}
 		}
 	}
@@ -552,25 +594,44 @@ func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
 func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
-	out, err := helmTemplate(t,
-		"--set-string", "image.digest="+opD,
-		"--set", "nriImagePolicy.policy.mode=fail-closed",
-		"--set-string", p+"digest="+opD,
-		"--set-string", p+"command.policy=exact",
-		"--set-string", p+"command.argv[0]=/c8s",
-		"--set-string", p+"args.policy=any",
-		"--set-string", p+"mounts.policy=any",
-	)
-	if err != nil {
-		t.Fatalf("helm template should render with the component covered by an entrypoint-pinned entry: %v\n%s", err, out)
-	}
-	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
-	index := base.BuildIndex()
-	if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/c8s", "operator"}}) {
-		t.Errorf("base does not admit the operator under the entry's pin: %v", base.Workloads)
-	}
-	if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
-		t.Errorf("base widened the operator's entry to any command: %v", base.Workloads)
+	for name, tc := range map[string]struct {
+		args []string
+		want pkgallowlist.MountPolicy
+	}{
+		"any mounts": {[]string{"--set-string", p + "mounts.policy=any"}, pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
+		"confined mounts": {
+			[]string{"--set-string", p + "mounts.policy=confined", "--set-string", p + "mounts.denyBelow[0]=/c8s"},
+			pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyConfined, DenyBelow: []string{"/c8s"}},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, append([]string{
+				"--set-string", "image.digest=" + opD,
+				"--set", "nriImagePolicy.policy.mode=fail-closed",
+				"--set-string", p + "digest=" + opD,
+				"--set-string", p + "command.policy=exact",
+				"--set-string", p + "command.argv[0]=/c8s",
+				"--set-string", p + "args.policy=any",
+			}, tc.args...)...)
+			if err != nil {
+				t.Fatalf("helm template should render with the component covered by an entrypoint-pinned entry: %v\n%s", err, out)
+			}
+			base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+			index := base.BuildIndex()
+			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/c8s", "operator"}}) {
+				t.Errorf("base does not admit the operator under the entry's pin: %v", base.Workloads)
+			}
+			if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: []string{"/bin/sh"}}) {
+				t.Errorf("base widened the operator's entry to any command: %v", base.Workloads)
+			}
+			for _, w := range base.Workloads {
+				for _, c := range w.Containers {
+					if c.Digest.String() == opD && !reflect.DeepEqual(c.Mounts, tc.want) {
+						t.Errorf("base mount policy for the operator = %+v, want the entry's %+v", c.Mounts, tc.want)
+					}
+				}
+			}
+		})
 	}
 }
 

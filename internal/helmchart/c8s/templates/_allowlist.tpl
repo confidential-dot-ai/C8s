@@ -19,17 +19,20 @@
    gate a no-op, deriving even disabled components that carry a digest. */ -}}
 {{- $enabled := true -}}
 {{- if $c.enabledPath -}}{{- $enabled = eq (include "c8s.valueAtPath" (dict "root" $root.Values "path" $c.enabledPath)) "true" -}}{{- end -}}
-{{- $out = append $out (dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list)) -}}
+{{- $out = append $out (dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list) "denyBelow" (get $c "denyBelow" | default list)) -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}
 
 {{/* The chart-deployed system images the seed and the plugin base admit, as
-     digest -> {image, entrypoint}. Each is admitted pinned to its entrypoint
-     (c8s.componentContainer): the executable is the image's own, while the
-     arguments, environment and mounts are per-pod. A derived component
-     without an entrypoint fails the render: an entry left at any command
-     would admit the image under a shell or a mounted binary. */ -}}
+     digest -> {image, entrypoint, mounts}. Each is admitted pinned to its
+     entrypoint (c8s.componentContainer): the executable is the image's own,
+     while the arguments and environment are per-pod, and the mounts are
+     confined (c8s.componentMounts). A derived component without an
+     entrypoint or denyBelow list fails the render: an entry left at any
+     command would admit the image under a shell or a mounted binary, and one
+     with no denied path would let a volume replace the code its entrypoint
+     loads. */ -}}
 {{- define "c8s.imageAllowlist" -}}
 {{- $digests := dict -}}
 {{- $components := include "c8s.components" . | fromJsonArray -}}
@@ -40,20 +43,23 @@
 {{- if not (get $c "entrypoint") -}}
 {{- fail (printf "c8sComponents entry %s has no entrypoint: the derived allowlist entry must pin the image's executable" (get $c "name")) -}}
 {{- end -}}
-{{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint")) -}}
+{{- $mounts := include "c8s.componentMounts" (dict "root" $ "name" (get $c "name") "denyBelow" (get $c "denyBelow")) | fromJson -}}
+{{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint") "mounts" $mounts) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $cdsImg := .Values.cds.image -}}
 {{- if $cdsImg.digest -}}
 {{- $cdsEntrypoint := list -}}
+{{- $cdsDenyBelow := list -}}
 {{- range $c := $components -}}
-{{- if eq (get $c "name") "cds.image" -}}{{- $cdsEntrypoint = get $c "entrypoint" -}}{{- end -}}
+{{- if eq (get $c "name") "cds.image" -}}{{- $cdsEntrypoint = get $c "entrypoint" -}}{{- $cdsDenyBelow = get $c "denyBelow" -}}{{- end -}}
 {{- end -}}
 {{- if not $cdsEntrypoint -}}
 {{- fail "c8sComponents entry cds.image has no entrypoint: the CDS self-entry must pin the image's executable" -}}
 {{- end -}}
-{{- $_ := set $digests $cdsImg.digest (dict "image" (printf "%s@%s" $cdsImg.repository $cdsImg.digest) "entrypoint" $cdsEntrypoint) -}}
+{{- $mounts := include "c8s.componentMounts" (dict "root" . "name" "cds.image" "denyBelow" $cdsDenyBelow) | fromJson -}}
+{{- $_ := set $digests $cdsImg.digest (dict "image" (printf "%s@%s" $cdsImg.repository $cdsImg.digest) "entrypoint" $cdsEntrypoint "mounts" $mounts) -}}
 {{- end -}}
 {{- /* router nginx self-entry: a chart-deployed non-c8s system image. It is
        independently versioned and digest-pinned, so it is not in the
@@ -68,7 +74,8 @@
 {{- if not .Values.router.nginx.entrypoint -}}
 {{- fail "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" -}}
 {{- end -}}
-{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint) -}}
+{{- $mounts := include "c8s.componentMounts" (dict "root" . "name" "router.nginx" "denyBelow" .Values.router.nginx.denyBelow) | fromJson -}}
+{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "mounts" $mounts) -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
@@ -92,27 +99,65 @@
 {{ $containers | toJson }}
 {{- end -}}
 
-{{/* One allowlist container for a system image from c8s.imageAllowlist:
-     command pinned to the entrypoint, args and mounts any. The seed adds an
-     explicit env any; the base leaves env absent, which normalizes to any. */ -}}
+{{/* The confined mount policy of a component entry, as JSON: denyBelow from
+     c8sComponents (router.nginx.denyBelow for nginx), and as unconfined the
+     destinations where the chart itself mounts a writable host path, a PVC,
+     or a ConfigMap, whose storage the node can vouch for only on a C8s node
+     image. Keep each list in step with the component's templates; the chart
+     tests check every rendered mount against it. */ -}}
+{{- define "c8s.componentMounts" -}}
+{{- if not .denyBelow -}}
+{{- fail (printf "c8sComponents entry %s has no denyBelow: the derived allowlist entry must keep volumes off the code its entrypoint loads" .name) -}}
+{{- end -}}
+{{- $v := .root.Values -}}
+{{- $runtimeDir := $v.nriImagePolicy.hostPaths.runtimeDir -}}
+{{- $unconfined := list -}}
+{{- if eq .name "image" -}}
+{{- /* operator and allowlist-proxy config; attest-proxy config and its socket directory */ -}}
+{{- $unconfined = list "/etc/c8s-measurements" "/etc/attestation-api" $runtimeDir -}}
+{{- else if eq .name "cds.image" -}}
+{{- $unconfined = list "/data" "/etc/cds" "/etc/cds-operator-keys" "/etc/c8s-measurements" -}}
+{{- else if eq .name "attestationApi.image" -}}
+{{- $unconfined = list "/etc/attestation-api" -}}
+{{- if $v.attestationApi.teeDevices.sevGuest -}}{{- $unconfined = append $unconfined "/dev/sev-guest" -}}{{- end -}}
+{{- if $v.attestationApi.teeDevices.tdxGuest -}}{{- $unconfined = append $unconfined "/sys/kernel/config" -}}{{- end -}}
+{{- if $v.attestationApi.teeDevices.tpm -}}{{- $unconfined = concat $unconfined (list "/dev/tpm0" "/dev/tpmrm0") -}}{{- end -}}
+{{- else if eq .name "armtlsMesh.image" -}}
+{{- $unconfined = list "/run/xtables.lock" "/etc/c8s-measurements" -}}
+{{- else if eq .name "volumed.image" -}}
+{{- $unconfined = list $v.volumed.hostPaths.kubeletRoot "/dev" $runtimeDir -}}
+{{- else if eq .name "router.nginx" -}}
+{{- $unconfined = list "/etc/nginx/nginx.conf" (include "router.tlsSnippetDir" .root) -}}
+{{- end -}}
+{{- $mounts := dict "policy" "confined" "denyBelow" .denyBelow -}}
+{{- if $unconfined -}}{{- $_ := set $mounts "unconfined" (uniq $unconfined | sortAlpha) -}}{{- end -}}
+{{ $mounts | toJson }}
+{{- end -}}
+
+{{/* One allowlist container for a system image from c8s.imageAllowlist, or
+     for an operator open-args entry: command pinned to the entrypoint, args
+     any, and the entry's mount policy. The seed adds an explicit env any; the
+     base leaves env absent, which normalizes to any. */ -}}
 {{- define "c8s.componentContainer" -}}
 {{- $command := dict "policy" "exact" "argv" (get .entry "entrypoint") -}}
-{{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" $command "args" (dict "policy" "any") -}}
+{{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (get .entry "mounts") "command" $command "args" (dict "policy" "any") -}}
 {{- if .env -}}{{- $_ := set $container "env" (dict "policy" "any") -}}{{- end -}}
 {{ $container | toJson }}
 {{- end -}}
 
-{{/* Operator entries that pin at most the command — args, env and mounts any,
-     command any or exact — as digest -> {image, entrypoint}, entrypoint empty
-     for command any. Both shapes can start a component before CDS is
-     reachable, so both feed the base and cover a component for the render
-     guard. An entry that pins args, env or mounts is seed-only. */ -}}
+{{/* Operator entries that pin at most the command — args and env any, mounts
+     any or confined, command any or exact — as digest -> {image, entrypoint,
+     mounts}, entrypoint empty for command any. Both shapes can start a
+     component before CDS is reachable, so both feed the base and cover a
+     component for the render guard. An entry that pins args or env, or
+     mounts to deny or exact, is seed-only. */ -}}
 {{- define "c8s.openArgsEntries" -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
 {{- $command := dig "command" "policy" "" $c -}}
-{{- if and (or (eq $command "any") (eq $command "exact")) (eq (dig "args" "policy" "" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (eq (dig "mounts" "policy" "deny" $c) "any") -}}
+{{- $mounts := default (dict "policy" "deny") $c.mounts -}}
+{{- if and (or (eq $command "any") (eq $command "exact")) (eq (dig "args" "policy" "" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (has (get $mounts "policy") (list "any" "confined")) -}}
 {{- $entrypoint := list -}}
 {{- if eq $command "exact" -}}
 {{- $entrypoint = dig "command" "argv" list $c -}}
@@ -131,8 +176,16 @@
 {{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads pin %s to incomparable commands (%s and %s); the base carries one pin per digest, so give the digest one open-args entry" $c.digest ($prior | toJson) ($entrypoint | toJson)) -}}
 {{- end -}}
 {{- $entrypoint = $short -}}
+{{- /* The base carries one mount policy per digest too: any over confined,
+       and two different confined policies cannot both reach it. */ -}}
+{{- $priorMounts := get (get $digests $c.digest) "mounts" -}}
+{{- if eq (get $priorMounts "policy") "any" -}}
+{{- $mounts = $priorMounts -}}
+{{- else if and (ne (get $mounts "policy") "any") (ne ($priorMounts | toJson) ($mounts | toJson)) -}}
+{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads confine %s's mounts in two different ways (%s and %s); the base carries one mount policy per digest, so give the digest one open-args entry" $c.digest ($priorMounts | toJson) ($mounts | toJson)) -}}
 {{- end -}}
-{{- $_ := set $digests $c.digest (dict "image" (default $entry.label $c.image | default "") "entrypoint" $entrypoint) -}}
+{{- end -}}
+{{- $_ := set $digests $c.digest (dict "image" (default $entry.label $c.image | default "") "entrypoint" $entrypoint "mounts" $mounts) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -187,7 +240,7 @@
 {{- if get .entry "entrypoint" -}}
 {{- include "c8s.componentContainer" (dict "digest" .digest "entry" .entry "env" false) -}}
 {{- else -}}
-{{ dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") | toJson }}
+{{ dict "digest" .digest "image" (get .entry "image") "mounts" (get .entry "mounts") "command" (dict "policy" "any") "args" (dict "policy" "any") | toJson }}
 {{- end -}}
 {{- end -}}
 

@@ -55,8 +55,9 @@
 {{- end -}}
 {{- /*
   In fail-closed mode with deriveComponents off, every enabled C8s component
-  that is digest-pinned must be admitted with open args, env and mounts — under
-  any command, or pinned to its entrypoint — by a bootstrapAllowlist.workloads
+  that is digest-pinned must be admitted with open args and env, and mounts any
+  or confined — under any command, or pinned to its entrypoint — by a
+  bootstrapAllowlist.workloads
   entry (c8s.openArgsEntries), the shapes that reach the base; otherwise the
   NRI plugin would deny that component's pod on its own node. cds.image is exempt: it is always in
   the base via the seed self-entry, independent of derivation. argvPinned
@@ -83,7 +84,7 @@
 {{- end -}}
 {{- end -}}
 {{- if not $ok -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args, env and mounts unconstrained for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args and env unconstrained and mounts any or confined for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
