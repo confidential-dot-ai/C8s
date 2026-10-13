@@ -589,15 +589,28 @@ longer matches the register, the plugin applies no pulled allowlist and keeps
 enforcing the one it holds: at startup, the base allowlist alone.
 
 > [!WARNING]
-> Measuring is off by default. Every armTLS check that pins RTMR[3] to the
-> bare operator-key seed rejects a node that measures: CDS node identity, the
-> plugin's own pull from CDS, the allowlist and attestation proxies, and
-> sidecars. Turn it on only once those peers carry the measured list.
+> Measuring is off by default. c8s's own checks accept a node that measures,
+> but two kinds of check still require the bare operator-key seed and reject
+> it: armTLS verifiers built on attestation-go releases that predate runtime
+> extensions, and flat RTMR[3] pins (`--rtmrs 3=…`,
+> `allowlist.pull.cds_rtmrs`). Producers find the journal only under the
+> default `nriImagePolicy.hostPaths.runtimeDir`.
 
 The plugin journals the digests, one per line in extend order, at
 `<nriImagePolicy.hostPaths.runtimeDir>/measured-policies`, a tmpfs that dies
-with the register. Three readers carry the list outside any transcript; a
+with the register. These readers carry the list outside any transcript; a
 verifier trusts it only as far as it replays against a quote's RTMR[3]:
+
+- **armTLS evidence.** A TDX process that attests itself reads the journal
+  after obtaining its quote, at `/var/run/nri-image-policy/measured-policies`
+  or, in an injected sidecar, `/run/c8s/workload-claims/measured-policies`.
+  It sends the list with the evidence: in the armTLS certificate extension,
+  in the CDS `/attest` request as `runtime_extensions`, and in the router's
+  discovery document. Every anchored image pin c8s enforces (CDS node
+  identity, armTLS peers, `c8s allowlist` and `c8s secrets`,
+  `c8s verify --image-policy-file`) accepts the seed followed by any prefix
+  of the list that replays. Judging the policies in it is left to
+  `c8s verify --pin-policy` or `--trust-operator`.
 
 - **Router.** On a baked node, or with `measurePolicies` on,
   `cds-attest --measured-policies-file` adds the list to attest-pq and

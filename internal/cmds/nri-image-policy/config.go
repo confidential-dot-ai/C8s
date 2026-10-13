@@ -89,8 +89,9 @@ type pullConfig struct {
 	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
-	// applying it. Off by default: armTLS peers that pin RTMR[3] to the bare
-	// operator-key seed reject a node that measures.
+	// applying it. Off by default: verifiers on attestation-go predating
+	// runtime extensions, and flat RTMR[3] pins, still require the bare
+	// operator-key seed.
 	MeasurePolicies bool `yaml:"measure_policies"`
 }
 

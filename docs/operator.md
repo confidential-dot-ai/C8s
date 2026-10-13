@@ -696,7 +696,8 @@ A node that measures its allowlist policies (Helm value
 [Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
 reports RTMR[3] as the seed followed by each policy it enforced since boot.
 Its router's attest-pq and attest-lb bundles list those digests as
-`measured_policies`. With `--operator-pkey`, `verify` replays that list
+`measured_policies`, and its TDX armTLS certificates and discovery document
+carry them as runtime extensions. With `--operator-pkey`, `verify` replays that list
 against RTMR[3] and reports the longest prefix that matches as `history:`
 (`measured_policies` in JSON). Without `--operator-pkey`, a listed history is
 not replayed and the verdict warns. Choose how to accept the history:
@@ -739,8 +740,11 @@ c8s verify https://app.example.com --mode attest-lb \
 Image policy files preserve each image measurement, its TDX RTMR tuple and
 optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
-`remote.EnforceImages` checks the image and calls `runtimemeasure.VerifyBinding`
-for that same entry. An image cannot borrow another entry's authorized key.
+`remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
+binding for that same entry. On TDX the binding may be the key's seed followed
+by a prefix of the peer's measured policies that replays
+([Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
 entry, including its launch-key binding when present.
