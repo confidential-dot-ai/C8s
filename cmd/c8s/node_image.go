@@ -174,7 +174,15 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return fmt.Errorf("render node integration with helm: %w: %s", err, stderr.String())
 	}
-	artifacts, err := collectNodeImageArtifacts(rendered)
+	values, err := chartValues(ctx, chartDir)
+	if err != nil {
+		return err
+	}
+	entrypoints, err := cfg.entrypoints(values)
+	if err != nil {
+		return err
+	}
+	artifacts, err := collectNodeImageArtifacts(rendered, entrypoints)
 	if err != nil {
 		return err
 	}
@@ -196,6 +204,39 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	return nil
 }
 
+// entrypoints maps each digest the render pins to the argv prefix its chart
+// component entry pins it to (c8sComponents[].entrypoint,
+// router.nginx.entrypoint): a container that sets no command starts with it.
+func (cfg nodeImageRenderConfig) entrypoints(values map[string]any) (map[string][]string, error) {
+	components, err := componentsFromValues(values)
+	if err != nil {
+		return nil, err
+	}
+	nginx, err := routerNginxComponent(values)
+	if err != nil {
+		return nil, err
+	}
+	digests := make(map[string]string)
+	for _, input := range cfg.images() {
+		digests[input.valuePath] = input.digest
+	}
+	out := make(map[string][]string)
+	for _, c := range append(components, nginx) {
+		digest := digests[c.valuePrefix]
+		if digest == "" {
+			digest, _ = stringAtPath(values, c.valuePrefix+".digest")
+		}
+		if digest == "" || len(c.entrypoint) == 0 {
+			continue
+		}
+		if prior, ok := out[digest]; ok && !slices.Equal(prior, c.entrypoint) {
+			return nil, fmt.Errorf("node-image image %s is pinned to two entrypoints, %q and %q", digest, prior, c.entrypoint)
+		}
+		out[digest] = c.entrypoint
+	}
+	return out, nil
+}
+
 type nodeImageArtifacts struct {
 	integration []byte
 	seed        []byte
@@ -205,7 +246,9 @@ type nodeImageArtifacts struct {
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
 // seed; the same inventory drives image preloading into the measured rootfs.
-func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
+// entrypoints gives, by digest, the argv a container that sets no command
+// starts with.
+func collectNodeImageArtifacts(rendered []byte, entrypoints map[string][]string) (*nodeImageArtifacts, error) {
 	namespace, err := yaml.Marshal(corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -267,7 +310,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 			if _, expected := required[key]; !expected {
 				return nil, fmt.Errorf("unexpected node-image workload %s", key)
 			}
-			if err := collectWorkloadImages(object, key, images); err != nil {
+			if err := collectWorkloadImages(object, key, images, entrypoints); err != nil {
 				return nil, err
 			}
 		case "ConfigMap":
@@ -301,9 +344,8 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	// arguments, environment and mounts its manifest gives it: the seed must
 	// leave args and mounts to the pod, pin at most the executable, and match
 	// env at most by name; a pin must admit every invocation the manifests
-	// spell out, and a match must list every variable they set. The image's
-	// and the runtime's variables are not known here; the chart tests check
-	// those.
+	// run, and a match must agree with the variables they set. The image's
+	// variables are not known here; the chart tests check those.
 	seedContainers := make(map[string][]pkgallowlist.Container)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
@@ -322,7 +364,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, c.argv)
 			}
 			if !slices.ContainsFunc(seedContainers[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c) }) {
-				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q lists the variables its manifest sets %q (envFrom cannot be checked)", image, c.argv, c.env)
+				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q matches the variables its manifest sets %q (envFrom cannot be checked)", image, c.argv, c.names())
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -358,20 +400,38 @@ type bakedImage struct {
 	containers []bakedContainer
 }
 
-// bakedContainer is the argv a manifest spells out with an explicit command,
-// nil for a container that runs the image's entrypoint, the names of the
-// variables the manifest sets, and whether it also imports some (envFrom),
-// whose names this cannot resolve.
+// bakedContainer is the argv a baked container runs, nil when it sets no
+// command and the chart pins no entrypoint for its image; the variables its
+// manifest sets; and whether it also imports some (envFrom), whose names this
+// cannot resolve.
 type bakedContainer struct {
 	argv    []string
-	env     []string
+	env     []bakedVariable
 	envFrom bool
 }
 
+// bakedVariable is one variable a manifest sets. literal is false for a
+// value taken from a reference (fieldRef, secretKeyRef, ...), unknown here.
+type bakedVariable struct {
+	name, value string
+	literal     bool
+}
+
+func (c bakedContainer) names() []string {
+	names := make([]string, 0, len(c.env))
+	for _, v := range c.env {
+		names = append(names, v.name)
+	}
+	return names
+}
+
 // seedLaunches reports whether seed, an entry container that pins at most the
-// command, admits c's command and lists every variable c's manifest sets.
+// command, admits c's command and environment: every variable c's manifest
+// sets is listed, with the value an exact matcher pins, and every variable
+// the seed matches present is set by the manifest or the runtime. A variable
+// the seed pins exact and the manifest leaves unset is the image's.
 func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
-	if c.argv != nil && seed.Command.Policy == pkgallowlist.PolicyExact {
+	if seed.Command.Policy == pkgallowlist.PolicyExact {
 		if len(c.argv) < len(seed.Command.Argv) || !slices.Equal(c.argv[:len(seed.Command.Argv)], seed.Command.Argv) {
 			return false
 		}
@@ -379,16 +439,39 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 	if seed.Env.Policy != pkgallowlist.PolicyMatch {
 		return true
 	}
-	return !c.envFrom && !slices.ContainsFunc(c.env, func(name string) bool {
-		_, listed := seed.Env.Variables[name]
-		return !listed
-	})
+	if c.envFrom {
+		return false
+	}
+	exact := seed.Env.ExactValues()
+	set := make(map[string]bool, len(c.env))
+	for _, v := range c.env {
+		if _, listed := seed.Env.Variables[v.name]; !listed {
+			return false
+		}
+		if want, pinned := exact[v.name]; pinned && (!v.literal || v.value != want) {
+			return false
+		}
+		set[v.name] = true
+	}
+	for name := range seed.Env.Variables {
+		if _, pinned := exact[name]; !pinned && !set[name] && !runtimeVariable(name) {
+			return false
+		}
+	}
+	return true
+}
+
+// runtimeVariable reports whether the runtime sets name in every container:
+// containerd's HOSTNAME and the kubelet's API-server variables (see
+// c8s.runtimeEnv in the chart).
+func runtimeVariable(name string) bool {
+	return name == "HOSTNAME" || strings.HasPrefix(name, "KUBERNETES_")
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
 // keyed by reference. The rootfs preloads exactly these, so an unpinned or
 // tag-only image would leave the node pulling at boot: reject it here.
-func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage) error {
+func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage, entrypoints map[string][]string) error {
 	pod, found, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
 	if err != nil || !found {
 		return fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
@@ -417,9 +500,11 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		container := bakedContainer{envFrom: len(c.EnvFrom) > 0}
 		if len(c.Command) > 0 {
 			container.argv = slices.Concat(c.Command, c.Args)
+		} else if entrypoint, ok := entrypoints[baked.digest]; ok {
+			container.argv = slices.Concat(entrypoint, c.Args)
 		}
 		for _, e := range c.Env {
-			container.env = append(container.env, e.Name)
+			container.env = append(container.env, bakedVariable{name: e.Name, value: e.Value, literal: e.ValueFrom == nil})
 		}
 		baked.containers = append(baked.containers, container)
 	}
