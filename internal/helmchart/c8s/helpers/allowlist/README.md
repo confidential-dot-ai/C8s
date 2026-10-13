@@ -66,22 +66,27 @@ this seed merged with signed workload entries for CDS; the image also admits
 the core images in its NRI bootstrap floor. The local-path helper remains
 argv-pinned in the seed for baked nodes.
 
-`c8s.openArgsEntries` extracts workload digests whose args and environment
-policies are unconstrained, whose mount policy is `any` or `confined`, and
-whose command is `any` or `exact`, as digest-to-`{image, entrypoint, mounts}`
-with an empty entrypoint for `any`. An entry that matches env is seed-only
-like any other pinned entry. An omitted mount policy is `deny` and prevents
-inclusion; two open-args entries for one digest must carry the same mount
-policy, or the render fails. `c8s.baseWorkloads` renders the
-host plugin's boot base, excluding `c8s.argvPinnedDigests`: each
-`c8s.imageAllowlist` image with its `c8s.componentContainers`, and each
-`c8s.openArgsEntries` digest under the command it pins or under any
-(`c8s.openArgsContainer`). For a system image an operator also wrote an
-open-args entry for, a wider operator pin (any, or a prefix of the
-entrypoint) whose mounts admit every table the component's do (`any`, or the
-same policy) replaces the component's containers; any other is admitted
-beside them. Workloads that pin args or env, or set mounts to `deny`
-or `exact`, remain in the served seed without reaching the base.
+`c8s.openArgsEntries` extracts the workload containers whose args policy is
+`any`, whose mount policy is `any` or `confined`, whose env is `any` or
+`match`, and whose command is `any` or `exact`, as
+digest-to-`{image, containers}`, each container in its base form with its env
+and mount policy kept. An omitted mount policy is `deny` and prevents
+inclusion. `c8s.baseWorkloads` renders the host plugin's boot base, excluding
+`c8s.argvPinnedDigests`: each `c8s.imageAllowlist` image with its
+`c8s.componentContainers`, and each `c8s.openArgsEntries` digest with its
+containers. For a system image an operator also wrote open-args entries for,
+the operator's containers are admitted beside the component's, or replace
+them when one admits every invocation of the entrypoint with any env
+(`c8s.coversEntrypoint`) and every mount table the component's do
+(`c8s.admitsMounts`: `any`, or the same `confined` policy). The
+`uncovered_component_digest` guard accepts a component digest when, for every
+invocation in `c8s.componentInvocations`, one of its containers starts the
+entrypoint plus that subcommand (`c8s.startsEntrypoint`), whatever its env,
+with mounts that admit the component's own: `any`, or `confined` with no
+`denyBelow` path outside the component's list and every destination
+`c8s.componentMounts` leaves `unconfined`. Workloads that pin args, env
+`exact`, or mounts `deny` or `exact`, remain in the served seed without
+reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes
