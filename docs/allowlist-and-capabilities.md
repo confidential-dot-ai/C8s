@@ -524,6 +524,44 @@ mounts at final admission; unavailable evidence fails constrained policies.
 Generated system-image entries explicitly allow mounts and leave the other
 launch fields unconstrained so the platform can start before CDS is reachable.
 
+### Measured policy history
+
+On a TDX node, the NRI plugin can extend RTMR[3] with each allowlist it pulls
+before applying it. RTMR[3] then holds the operator-key seed followed by the
+digest of every policy the node enforced since boot. A policy digest is
+`sha256:<hex>` of the exact bytes `GET /allowlist` served. A rolled-back
+document is neither measured nor applied, a document the node fails to
+measure is not applied, and a return to an earlier document does not extend
+again.
+
+Set `nriImagePolicy.measurePolicies: true` to turn it on. The chart renders
+it as `allowlist.pull.measure_policies` in the plugin's boot config, and on a
+baked node patches it in through `set-cds-pins`. Measurement needs the launch
+operator key and `workload_claims.socket_dir`; without either the plugin logs
+an error and applies policies unmeasured.
+
+> [!WARNING]
+> Measuring is off by default. Every armTLS check that pins RTMR[3] to the
+> bare operator-key seed rejects a node that measures: CDS node identity, the
+> plugin's own pull from CDS, the allowlist and attestation proxies, and
+> sidecars. Turn it on only once those peers carry the measured list.
+
+The plugin journals the digests, one per line in extend order, at
+`<nriImagePolicy.hostPaths.runtimeDir>/measured-policies`, a tmpfs that dies
+with the register. Three readers carry the list outside any transcript; a
+verifier trusts it only as far as it replays against a quote's RTMR[3]:
+
+- **Router.** On a baked node, `cds-attest --measured-policies-file` adds the
+  list to attest-pq and attest-lb bundles as `measured_policies`.
+- **cred-release.** It accepts its own binding as the seed followed by a
+  prefix of the list, and serves the list at `GET /measured-policies`.
+- **`c8s get-kubeconfig`.** On TDX it fetches that list and accepts RTMR[3] as
+  the seed, then the `--workload-image` chain, then the longest prefix of the
+  list that replays.
+
+The list is read after the quote is produced, so it may hold extends the
+quote does not. Verifiers use the longest prefix that replays.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component
