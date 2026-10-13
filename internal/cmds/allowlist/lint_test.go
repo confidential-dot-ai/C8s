@@ -521,6 +521,15 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 		{"emptyDir is not operator data", "PATH", "/mnt/c8s-data/tools", "emptyDir", false},
 		{"preloaded data file", "LD_PRELOAD", "/lib/a.so /mnt/c8s-data/tools/b.so", "data", true},
 		{"audited data file", "LD_AUDIT", "/mnt/c8s-data/tools/a.so", "data", true},
+		{"origin escapes into the mount", "LD_PRELOAD", "$ORIGIN/../../mnt/c8s-data/tools/evil.so", "data", true},
+		{"braced loader token", "LD_LIBRARY_PATH", "/usr/${LIB}", "data", true},
+		{"relative directory", "PYTHONPATH", "lib", "data", true},
+		{"empty element is the working directory", "PATH", "/usr/bin:", "data", true},
+		{"catalog escape", "NLSPATH", "/%N", "data", true},
+		{"node require from the mount", "NODE_OPTIONS", "--require /mnt/c8s-data/tools/x.js", "data", true},
+		{"java agent from the mount", "JAVA_TOOL_OPTIONS", "-javaagent:/mnt/c8s-data/tools/a.jar", "data", true},
+		{"node flags only", "NODE_OPTIONS", "--max-old-space-size=4096", "data", false},
+		{"startup file elsewhere", "BASH_ENV", "/etc/bash_env", "data", false},
 	} {
 		for _, policy := range []struct{ name, env string }{
 			{"exact", `"env":{"policy":"exact","values":{"` + tc.variable + `":"` + tc.value + `"}}`},
@@ -548,7 +557,14 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 }
 
 func TestLintRejectsHostChosenSearchPaths(t *testing.T) {
-	for _, variable := range []string{"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "PYTHONPATH", "NODE_PATH"} {
+	for _, variable := range []string{
+		"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "LD_DYNAMIC_WEAK",
+		"GCONV_PATH", "LOCPATH", "NLSPATH", "GLIBC_TUNABLES", "MALLOC_ARENA_MAX",
+		"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+		"NODE_PATH", "NODE_OPTIONS",
+		"PERL5LIB", "RUBYLIB", "CLASSPATH", "JAVA_TOOL_OPTIONS",
+		"BASH_ENV", "ENV",
+	} {
 		t.Run(variable, func(t *testing.T) {
 			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
 				`"env":{"policy":"match","variables":{"` + variable + `":{"present":true},"MODE":{"exact":"production"}}}}`

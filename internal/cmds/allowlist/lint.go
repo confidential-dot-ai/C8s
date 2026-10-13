@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
@@ -360,8 +361,29 @@ func processOf(c pkgallowlist.Container) [2]pkgallowlist.ArgvPolicy {
 	return [2]pkgallowlist.ArgvPolicy{c.Command, c.Args}
 }
 
-// loaderVariables choose where the loader or an interpreter finds code.
-var loaderVariables = []string{"PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "PYTHONPATH", "NODE_PATH"}
+// loaderVariables let whoever sets them choose code to run: loader and
+// interpreter search paths, preloads, startup files, and options that load
+// modules or agents. A trailing "*" matches a prefix.
+var loaderVariables = []string{
+	"PATH",
+	"LD_LIBRARY_PATH", "LD_PRELOAD", "LD_AUDIT", "LD_DYNAMIC_WEAK",
+	"GCONV_PATH", "LOCPATH", "NLSPATH", "GLIBC_TUNABLES", "MALLOC_*",
+	"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "PYTHONUSERBASE",
+	"NODE_PATH", "NODE_OPTIONS",
+	"PERL5LIB", "RUBYLIB", "CLASSPATH", "JAVA_TOOL_OPTIONS",
+	"BASH_ENV", "ENV",
+}
+
+// optionVariables hold command-line options rather than paths; only their
+// path-like operands are compared with mounts.
+var optionVariables = []string{"NODE_OPTIONS", "JAVA_TOOL_OPTIONS"}
+
+func isLoaderVariable(name string) bool {
+	return slices.ContainsFunc(loaderVariables, func(v string) bool {
+		prefix, isPrefix := strings.CutSuffix(v, "*")
+		return name == v || isPrefix && strings.HasPrefix(name, prefix)
+	})
+}
 
 // searchPathFindings rejects loader and interpreter search paths the host
 // chooses, and pinned ones overlapping operator-supplied data: either way,
@@ -371,12 +393,19 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		for _, c := range allContainers(al.Workloads[name]) {
 			pinnedValues := c.Env.ExactValues()
-			for _, variable := range loaderVariables {
-				value, pinned := pinnedValues[variable]
-				if _, matched := c.Env.Variables[variable]; matched && !pinned {
-					out = append(out, errorf("workload %q container %s leaves %s to the host; the host could choose where code is loaded from (pin it with exact, or leave it unlisted)", name, c.Digest.String(), variable))
+			names := slices.Collect(maps.Keys(c.Env.Variables))
+			names = slices.AppendSeq(names, maps.Keys(pinnedValues))
+			slices.Sort(names)
+			for _, variable := range slices.Compact(names) {
+				if !isLoaderVariable(variable) {
+					continue
 				}
-				if !pinned || c.Mounts.Policy != pkgallowlist.PolicyExact {
+				value, pinned := pinnedValues[variable]
+				if !pinned {
+					out = append(out, errorf("workload %q container %s leaves %s to the host; the host could choose where code is loaded from (pin it with exact, or leave it unlisted)", name, c.Digest.String(), variable))
+					continue
+				}
+				if c.Mounts.Policy != pkgallowlist.PolicyExact {
 					continue
 				}
 				for _, rule := range c.Mounts.Rules {
@@ -395,12 +424,32 @@ func searchPathLoadsMountedContent(variable, value string, rule pkgallowlist.Mou
 	return operatorSupplied && searchPathReachesMount(variable, value, rule.Destination)
 }
 
+// searchPathReachesMount reports whether any element of value may resolve
+// inside destination. Elements lint cannot resolve statically count as
+// reaching it: relative and empty ones depend on the working directory, and
+// loader tokens such as $ORIGIN, $LIB and $PLATFORM or NLSPATH's % escapes
+// expand at run time.
 func searchPathReachesMount(variable, value, destination string) bool {
 	destination = path.Clean(destination)
-	// ld.so splits LD_PRELOAD on spaces as well as colons; the others split on
-	// colons only, so a space is part of a directory name.
-	elements := strings.FieldsFunc(value, func(r rune) bool { return r == ':' || (variable == "LD_PRELOAD" && r == ' ') })
+	var elements []string
+	switch {
+	case slices.Contains(optionVariables, variable):
+		for _, field := range strings.FieldsFunc(value, func(r rune) bool { return unicode.IsSpace(r) || r == '=' || r == ':' }) {
+			if !strings.HasPrefix(field, "-") && strings.ContainsAny(field, "/$%") {
+				elements = append(elements, field)
+			}
+		}
+	case variable == "LD_PRELOAD":
+		// ld.so splits LD_PRELOAD on spaces as well as colons and skips empty
+		// entries; elsewhere a space is part of a directory name.
+		elements = strings.FieldsFunc(value, func(r rune) bool { return r == ':' || r == ' ' })
+	default:
+		elements = strings.Split(value, ":")
+	}
 	for _, element := range elements {
+		if !path.IsAbs(element) || strings.ContainsAny(element, "$%") {
+			return true
+		}
 		element = path.Clean(element)
 		if element == destination || strings.HasPrefix(element, strings.TrimSuffix(destination, "/")+"/") || strings.HasPrefix(destination, strings.TrimSuffix(element, "/")+"/") {
 			return true

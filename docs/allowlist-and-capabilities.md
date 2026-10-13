@@ -200,8 +200,18 @@ including `""`; `present: true` accepts any value, including empty. Missing or
 additional variables are rejected. An empty `variables: {}` requires an observed
 empty environment. The allowlisted program and its dependencies must be safe for
 every possible value of a variable matched with `present`. `lint` rejects
-`present` on `PATH`, `LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT`, `PYTHONPATH`
-and `NODE_PATH`, because the host would choose where code loads from.
+`present` on variables that choose code to run, because the host would choose
+where code loads from:
+
+- Loader: `PATH`, `LD_LIBRARY_PATH`, `LD_PRELOAD`, `LD_AUDIT`,
+  `LD_DYNAMIC_WEAK`, `GCONV_PATH`, `LOCPATH`, `NLSPATH`, `GLIBC_TUNABLES`,
+  `MALLOC_*`.
+- Interpreters: `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONUSERBASE`,
+  `NODE_PATH`, `NODE_OPTIONS`, `PERL5LIB`, `RUBYLIB`, `CLASSPATH`,
+  `JAVA_TOOL_OPTIONS`, `BASH_ENV`, `ENV`.
+
+The list is a minimum: a program that reads other variables to find code needs
+those pinned too.
 
 Supply these policies per container through `c8s allowlist derive --env-file`.
 The NRI plugin enforces env after cumulative NRI adjustments. The admission
@@ -377,12 +387,13 @@ mounts; the pod spec alone cannot establish source class or storage protection.
 Omitting both flags leaves each container's mount policy at `deny`.
 
 Lint includes mount rules when checking whether workload entries are
-indistinguishable. It also rejects exact `PATH`, `LD_LIBRARY_PATH`, `PYTHONPATH`,
-or `NODE_PATH` values whose search directories overlap a declared `data` mount:
-those directories could load mounted content as code. A component entry — a
-container with an `exact` command and `args: any` — whose mounts are `any` is
-an error, and one whose `confined` policy lists no `denyBelow` path is a
-warning. The deprecated
+indistinguishable. It also rejects exact values of those variables whose paths
+overlap a declared `data` or `host` mount: those paths could load mounted
+content as code. Lint cannot resolve relative or empty elements, loader tokens
+such as `$ORIGIN`, or `%` escapes, so it treats them as overlapping. A component
+entry — a container with an `exact` command and `args: any` — whose mounts are
+`any` is an error, and one whose `confined` policy lists no `denyBelow` path is
+a warning. The deprecated
 `lint --cvm-mode` flag has no effect; NRI observes both environment and mounts.
 
 A `host` rule pins an exact source path and mount-level access mode:
