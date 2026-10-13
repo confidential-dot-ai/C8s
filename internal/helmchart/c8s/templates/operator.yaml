@@ -34,6 +34,8 @@ spec:
         {{- end }}
       {{- end }}
     spec:
+      # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+      enableServiceLinks: false
       serviceAccountName: {{ include "c8s.operatorName" . }}
       securityContext:
 {{ toYaml .Values.podSecurityContext | indent 8 }}

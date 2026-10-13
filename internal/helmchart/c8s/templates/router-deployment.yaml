@@ -72,6 +72,8 @@ spec:
         checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
         {{- end }}
     spec:
+      # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+      enableServiceLinks: false
       {{- /* Same control-plane pin as CDS: a baked image boots one server,
              and only servers carry this RKE2 role label. */}}
       {{- if .Values.node.baked }}
