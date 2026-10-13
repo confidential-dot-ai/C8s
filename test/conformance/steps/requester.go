@@ -474,9 +474,16 @@ func (r *requester) sandboxToken() (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	digest := sha256.Sum256(pub)
+	return signSandboxToken(r.forged.key, "forged-sandbox", pub, r.challenge, r.forged.host)
+}
+
+// signSandboxToken builds the inventory's token over a key (DER) and sandbox
+// ID, bound to nonce and naming host, signed by signer, as the JSON the
+// Authorization header carries.
+func signSandboxToken(signer *ecdsa.PrivateKey, sandboxID string, pubDER, nonce []byte, host string) (json.RawMessage, error) {
+	digest := sha256.Sum256(pubDER)
 	der, err := asn1.Marshal(sandboxTokenDER{
-		Version: 2, SandboxID: "forged-sandbox", KeyDigest: digest[:], Nonce: r.challenge, InventoryHost: r.forged.host,
+		Version: 2, SandboxID: sandboxID, KeyDigest: digest[:], Nonce: nonce, InventoryHost: host,
 	})
 	if err != nil {
 		return nil, err
@@ -484,7 +491,7 @@ func (r *requester) sandboxToken() (json.RawMessage, error) {
 	h := sha256.New()
 	h.Write(sandboxTokenDomain)
 	h.Write(der)
-	sig, err := ecdsa.SignASN1(rand.Reader, r.forged.key, h.Sum(nil))
+	sig, err := ecdsa.SignASN1(rand.Reader, signer, h.Sum(nil))
 	if err != nil {
 		return nil, err
 	}

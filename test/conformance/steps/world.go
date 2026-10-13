@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
+	messages "github.com/cucumber/messages/go/v34"
 )
 
 // world is one scenario's state. Names in the feature text (images, nodes,
@@ -29,6 +30,7 @@ type world struct {
 	cds      cdsState
 	issuance issuanceState
 	mesh     meshState
+	secrets  secretsState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -44,6 +46,9 @@ type world struct {
 	pluginDown   map[string]bool
 	cdsBlocked   bool
 	cdsRestarted bool
+	// outcome: the step running is a Then (or an And/But under one), for
+	// the few sentences that state a fact as a Given and check it as a Then.
+	outcome bool
 }
 
 type pod struct {
@@ -70,6 +75,13 @@ type pod struct {
 	namespace string
 	cert      *peerCert
 	addrs     []string
+	// What the secrets sentences add: the secret client's NAME=path specs,
+	// an init container (which "that container" addresses while initLast),
+	// and the requester state of the pod.
+	secrets  []string
+	init     *container
+	initLast bool
+	secret   *secretReq
 }
 
 type container struct {
@@ -105,11 +117,18 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 					ghosts:    map[string]*pod{},
 					endpoints: map[string]string{},
 				},
+				secrets: secretsState{stored: map[string][]byte{}},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
 			}
 			return context.WithValue(ctx, worldKey{}, w), nil
+		})
+		sc.StepContext().Before(func(ctx context.Context, st *godog.Step) (context.Context, error) {
+			if w, ok := ctx.Value(worldKey{}).(*world); ok {
+				w.outcome = st.Type == messages.PickleStepType_OUTCOME
+			}
+			return ctx, nil
 		})
 		sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 			// Before may have failed before storing the world.
@@ -130,6 +149,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerRequester(sc)
 		registerNode(sc)
 		registerMesh(sc)
+		registerSecrets(sc)
 	}
 }
 
@@ -162,7 +182,14 @@ func (w *world) describe(name string, refs ...string) *pod {
 	return p
 }
 
-func (p *pod) last() *container { return p.containers[len(p.containers)-1] }
+// last is the container "that container" addresses: the init container
+// while it is the one just described, else the last main one.
+func (p *pod) last() *container {
+	if p.initLast {
+		return p.init
+	}
+	return p.containers[len(p.containers)-1]
+}
 
 func (w *world) pod(name string) (*pod, error) {
 	p, ok := w.pods[name]
@@ -209,6 +236,7 @@ type entry struct {
 	Label          string           `json:"label,omitempty"`
 	InitContainers []entryContainer `json:"initContainers"`
 	Containers     []entryContainer `json:"containers"`
+	Secrets        *secretsGrant    `json:"secrets,omitempty"`
 }
 
 // entryContainer is a declared container. Command and Args are nil when the

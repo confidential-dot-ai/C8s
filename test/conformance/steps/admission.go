@@ -148,9 +148,21 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	ns := w.nsOf(p)
+	opts := append([]string(nil), p.opts...)
+	if len(p.secrets) > 0 {
+		opts = append(opts, "--annotation", annotationSecrets+"="+strings.Join(p.secrets, ","))
+	}
+	if p.init != nil {
+		opts = append(opts, "--init-container", p.init.ref+" "+strings.Join(p.init.command, " "))
+	}
+	if p.workloadID && w.secrets.active {
+		// A secrets scenario observes the leaf the pod obtained; a renewal
+		// in the middle of it would replace what it is about.
+		opts = append(opts, "--annotation", annotationRenewal+"="+secretsRenewal)
+	}
 	var args []string
-	if len(p.opts) > 0 {
-		args = append(append(args, p.opts...), "--")
+	if len(opts) > 0 {
+		args = append(append(args, opts...), "--")
 	}
 	args = append(args, p.name, ns, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {

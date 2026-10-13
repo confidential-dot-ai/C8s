@@ -129,6 +129,19 @@ proxy itself, presenting a certificate the scenario shaped, is
 [`tools/armtls-dial`](tools/armtls-dial/README.md), run inside a pod of the
 image the backend builds for the logical image `mesh-dialer`.
 
+For scenarios about secret release, the backend sends one request to the CDS
+as the scenario shaped it (`cds_request`: a method, a route, a body, an
+Authorization and a client certificate, each only when given), which carries
+the operator's secret writes under the write tokens `write_token` mints and a
+self-signed requester's read. The workload requester is `c8s secret-probe`,
+exec'd by the steps in the pod's certificate container (below); the secret
+client's files are read through the pod's first container. Secret paths are
+logical: a scenario's `/models/key` lives under a per-scenario prefix, since
+the store has no delete and outlives the scenario. A pod carrying a workload
+ID that a secrets scenario deploys renews its leaf every two hours rather than
+the issuance scenarios' thirty seconds, so the leaf it obtained stays the one
+it holds.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this
 environment cannot express that", which the steps turn into a skip. It also
