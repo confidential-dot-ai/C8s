@@ -157,6 +157,25 @@ func TestMutatePodCertSidecarCarriesHostIPEnv(t *testing.T) {
 	}
 }
 
+func TestMutatePodDisablesServiceLinks(t *testing.T) {
+	for name, links := range map[string]*bool{
+		"unset":       nil,
+		"enabled":     ptr.To(true),
+		"already off": ptr.To(false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				Annotations: map[string]string{},
+				Spec:        corev1.PodSpec{EnableServiceLinks: links, Containers: []corev1.Container{{Name: "app"}}},
+			}
+			mutatePod(pod, &injection{WorkloadID: "api"}, Config{GetCertImage: "image", CDSURL: "http://cds", CertDir: "/etc/c8s/certs"})
+			if got := pod.Spec.EnableServiceLinks; got == nil || *got {
+				t.Errorf("mutatePod(service links %s).EnableServiceLinks = %v, want false", name, ptr.Deref(got, true))
+			}
+		})
+	}
+}
+
 func TestMutatePodPreservesExistingFSGroup(t *testing.T) {
 	existing := int64(1234)
 	pod := &corev1.Pod{

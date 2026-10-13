@@ -327,6 +327,16 @@ a whole certificate lifetime — worse than what it prevents. The sandbox is
 instead unusable for secrets, which costs one workload rather than every pod on
 the node.
 
+### Service links are off in injected pods
+
+The webhook sets `enableServiceLinks: false` on every pod it injects into. The
+kubelet then adds only the `KUBERNETES_*` variables for the API server, not the
+`<SERVICE>_SERVICE_HOST` and `<SERVICE>_PORT_*` set for each Service in the
+namespace. The injected sidecars are admitted with an `env: match` policy that
+lists every variable by name, so a set that changes whenever a Service is added
+would deny them. A workload that reads service-link variables must resolve the
+Service by DNS instead (`<service>.<namespace>.svc`).
+
 ### The injected drop set
 
 C8s injects its own containers into every confidential pod. They are not part of
