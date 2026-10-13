@@ -102,7 +102,7 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 
 // noHistory explains an empty replayed history: a node that does not measure
 // its policies proves nothing about which ones it enforced.
-const noHistory = "no measured policy replayed against RTMR[3]; target an attest-pq or attest-lb endpoint on a node that measures its policies (nriImagePolicy.measurePolicies)"
+const noHistory = "no measured policy replayed against RTMR[3]; target a node that measures its policies (nriImagePolicy.measurePolicies)"
 
 // checkPolicyHistory fetches each policy in the replayed history from the
 // target and checks it hashes to its digest, then saves it (--fetch-allowlists)

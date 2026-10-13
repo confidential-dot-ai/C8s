@@ -137,7 +137,7 @@ const snpARMTLSTimeout = 30 * time.Second
 // The REPORTDATA anchor is the cert's own key hash, so a captured quote from
 // another guest cannot be replayed onto this channel.
 func (exp measuredPolicy) verifySNPCertificate(leaf *x509.Certificate) error {
-	platform, evidence, expectedReportData, err := localverify.CertEnvelope(leaf)
+	platform, evidence, params, err := localverify.CertEnvelope(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)
 	}
@@ -149,7 +149,7 @@ func (exp measuredPolicy) verifySNPCertificate(leaf *x509.Certificate) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), snpARMTLSTimeout)
 	defer cancel()
-	res, err := verifySNPARMTLS(ctx, platform, evidence, exp.verificationParams(expectedReportData))
+	res, err := verifySNPARMTLS(ctx, platform, evidence, exp.verificationParams(params.ExpectedReportData))
 	if err != nil {
 		return fmt.Errorf("armtls: verify serving cert evidence: %w", err)
 	}
