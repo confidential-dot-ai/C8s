@@ -284,9 +284,10 @@ cds:
   ## identity, UNSAFE).
   rtmrs: []
   ## PEM bundle of operator EC public keys (public material, not a secret).
-  ## When set, CDS accepts POST/PUT/DELETE /allowlist from a client presenting a
-  ## short-lived token signed by one of the matching operator private keys (see
-  ## `c8s allowlist` and the README "Operator allowlist credentials").
+  ## When set, CDS accepts PUT/DELETE under /allowlist from a client presenting a
+  ## short-lived, single-use token signed by one of the matching operator
+  ## private keys (see `c8s allowlist` and the README "Operator allowlist
+  ## credentials").
   ## Empty = allowlist writes are rejected (reads are still served). Prefer
   ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
   ## Measurements config: the JSON document listing the VM images this cluster

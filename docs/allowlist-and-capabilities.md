@@ -492,7 +492,10 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins.
+operator public keys it pins. Each token authorizes one allowlist write: CDS
+remembers it until it expires and answers a replay with 409. Without
+`cds.persistence.enabled` that memory resets with CDS, so a token published
+as a signature can replay its write until it expires.
 
 ### Refresh and anti-rollback
 
@@ -515,6 +518,48 @@ tracked follow-on.
 document for up to one interval after CDS commits a write; a node has taken a
 write once its plugin logs `pull loop: allowlist refreshed` with a version at or
 above the one `c8s allowlist list` reports.
+
+### Allowlist history
+
+CDS keeps an append-only history of every document it served, in the
+allowlist database. Each write that changes the document appends an entry,
+and so does CDS's start when the document differs from the last entry; a
+fresh database starts with the document CDS first serves. A write that leaves
+the document unchanged bumps the ETag but appends nothing. A policy digest is
+`sha256:<hex>` of the exact bytes `GET /allowlist` serves. The routes are
+unauthenticated reads like `GET /allowlist`, and the router and
+`c8s allowlist-proxy` pass them through:
+
+| Route | Returns |
+|---|---|
+| `GET /allowlist/history` | `{"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
+| `GET /allowlist/objects/sha256/<hex>` | The exact bytes of a document in the history |
+| `GET /allowlist/objects/sha256/<hex>/signature` | Its operator signature, as `text/plain`; 404 when unsigned |
+
+CDS refuses to start when a stored document no longer hashes to its digest.
+Without `cds.persistence.enabled`, the history restarts with each CDS start.
+
+#### Operator-signed allowlists
+
+A document's operator signature is the write token of a `PUT /allowlist`
+whose body is exactly its canonical bytes; the token's `pbh` claim hashes that
+body. `c8s allowlist upload` sends canonical bytes, so its writes are signed.
+A per-workload write (`apply`, `add`, `delete`) leaves its entry unsigned:
+upload the whole document to sign it. `operatorauth.VerifyStored` checks a
+stored token: signature, method, path and body, but not its expiry.
+`pkg/operatorauth/testdata/operator_signature_vector.json` is a test vector
+for other verifiers.
+
+#### Change policy
+
+To move from policy P to policy Q without stopping running workloads:
+
+1. Upload P∪Q, a document holding every entry of both.
+2. Roll the workloads onto Q's images.
+3. Upload Q.
+
+Each step is one signed history entry, so a verifier that trusts the operator
+key accepts every policy a node enforced along the way.
 
 The host NRI plugin also carries a **base enforcement allowlist** in
 `allowlist.base`, baked into its boot config and never changed by a pull.

@@ -39,6 +39,11 @@ func TestProxyPreservesAuthorizedRequests(t *testing.T) {
 			body:       []byte(`{"containers":{"server":{}}}`),
 		},
 		{
+			name:       "history read",
+			method:     http.MethodGet,
+			requestURI: "/allowlist/history",
+		},
+		{
 			name:       "delete body",
 			method:     http.MethodDelete,
 			requestURI: "/allowlist/workloads/model",
