@@ -28,6 +28,7 @@ type world struct {
 	api      cdsAPIState
 	cds      cdsState
 	issuance issuanceState
+	mesh     meshState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -58,6 +59,16 @@ type pod struct {
 	leaf       *leaf
 	renewed    bool
 	refusal    *refusal
+	// How the mesh sentences shape the pod: the ports its hello APIs and
+	// datagram listener use, pod_manifest options, a namespace other than
+	// the scenario's, the certificate a dialer in it presents, and its
+	// addresses once running.
+	hello     []int
+	datagram  int
+	opts      []string
+	namespace string
+	cert      *peerCert
+	addrs     []string
 }
 
 type container struct {
@@ -87,6 +98,12 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				nodes:      map[string]bool{},
 				pluginDown: map[string]bool{},
 				issuance:   issuanceState{requesters: map[string]*requester{}},
+				mesh: meshState{
+					nodes:     map[string]bool{},
+					counters:  map[string]int64{},
+					ghosts:    map[string]*pod{},
+					endpoints: map[string]string{},
+				},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
@@ -111,8 +128,13 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerIssuance(sc)
 		registerRequester(sc)
 		registerNode(sc)
+		registerMesh(sc)
 	}
 }
+
+// suffix is the random part of the scenario namespace, for names that must
+// not collide with another scenario's outside it.
+func (w *world) suffix() string { return strings.TrimPrefix(w.namespace, "conf-") }
 
 // onUndo records what the After hook has to run to put the cluster back.
 func (w *world) onUndo(fn func() error) { w.undo = append(w.undo, fn) }

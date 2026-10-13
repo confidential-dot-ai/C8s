@@ -16,8 +16,13 @@ PLATFORM="kind (mock attestation)"
 setup() { :; }
 
 # Each function runs in its own process, so the CDS port-forward lib.sh shares
-# through WORKDIR outlives the call that opened it.
-teardown() { cds_pf_stop; }
+# through WORKDIR outlives the call that opened it, as do the pod that scrapes
+# the mesh and the container outside the cluster.
+teardown() {
+    cds_pf_stop
+    mesh_scraper_teardown
+    docker rm -f "$EXTERNAL_HELLO" >/dev/null 2>&1 || true
+}
 
 node_name() {
     case "$1" in
@@ -43,6 +48,44 @@ image_alias() {
     node_exec ctr -n k8s.io images pull "$1" >/dev/null
     node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
 }
+
+# The mesh peer the steps drive, built from this checkout and loaded into the
+# node the way the harness loads the component images, once per run.
+DIALER_IMAGE="ghcr.io/confidential-dot-ai/armtls-dial:$IMAGE_TAG"
+dialer_image() {
+    if [ ! -e "$WORKDIR/armtls-dial.loaded" ]; then
+        docker build -q -f "$C8S_ROOT/test/conformance/tools/armtls-dial/Dockerfile" -t "$DIALER_IMAGE" "$C8S_ROOT" >/dev/null || return 1
+        kind load docker-image "$DIALER_IMAGE" --name "$CLUSTER" >/dev/null || return 1
+        touch "$WORKDIR/armtls-dial.loaded"
+    fi
+    echo "$DIALER_IMAGE"
+}
+
+# A hello API outside the cluster: a container on the kind docker network,
+# which pods reach through the node's address translation, so the address is
+# neither a pod's nor a Service's.
+EXTERNAL_HELLO="c8s-conformance-hello-$(basename "$WORKDIR")"
+external_endpoint() {
+    local addr
+    if ! docker inspect "$EXTERNAL_HELLO" >/dev/null 2>&1; then
+        docker run -d --name "$EXTERNAL_HELLO" --network kind "$(image_ref tenant-app)" \
+            sh -c 'mkdir -p /www && echo hello > /www/index.html && exec httpd -f -p 8080 -h /www' >/dev/null || return 1
+    fi
+    addr="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$EXTERNAL_HELLO")"
+    [ -n "$addr" ] || { echo "backend: the external hello container has no address" >&2; return 1; }
+    echo "$addr:8080"
+}
+
+# Pods obtain evidence where every component does: the mock, on the node
+# address. Blocking the node's local attestation service is stopping it, which
+# also takes the CDS's readiness with it until it is started again.
+attestation_endpoint() { mock_attestation_url; }
+attestation_block() { attestation_service_stop; }
+attestation_unblock() { attestation_service_start; }
+
+# The CDS and the mesh pin the mock's launch digest, which the mock reports
+# for every requester.
+mesh_pins_satisfied() { echo yes; }
 
 # The CDS through the port-forward lib.sh shares; the harness's operator key
 # and token minter beside it.

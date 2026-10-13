@@ -147,7 +147,12 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	args := []string{p.name, w.namespace, k8sNode, p.containers[0].ref}
+	ns := w.nsOf(p)
+	var args []string
+	if len(p.opts) > 0 {
+		args = append(append(args, p.opts...), "--")
+	}
+	args = append(args, p.name, ns, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {
 		if i > 0 {
 			args = append(args, "+", c.ref)
@@ -161,6 +166,13 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	manifest, err := w.be.call(renderer, args...)
 	if err != nil {
 		return err
+	}
+	if ns != w.namespace {
+		// Deleting the scenario namespace will not take this one.
+		w.onUndo(func() error {
+			_, err := kubectl(nil, "-n", ns, "delete", "pod", p.name, "--ignore-not-found", "--wait=false")
+			return err
+		})
 	}
 	p.deployed = true
 	_, err = kubectl([]byte(manifest), "apply", "-f", "-")

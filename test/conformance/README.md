@@ -91,6 +91,22 @@ performs one issuance against it; `common.sh` lists each function. The kind
 backend reaches the CDS through a port-forward to its pod, so a CDS that is
 not ready, and so has no Service endpoint, is still read.
 
+For scenarios about the armTLS mesh, the backend reads the node's mesh proxy:
+whether it is running, whether a pod address is in the node's interception or
+guard membership, its connection and guard-drop counters (scraped from the
+proxy's health port by a long-lived pod the backend keeps in its own
+namespace, torn down with the backend), its listener ports, the UIDs and
+namespaces it excepts, whether each role presents a CDS-issued leaf, and
+whether its verify set has taken the mesh CA. It renders pods with the options
+the mesh scenarios need (the node's network namespace, a chosen UID, a
+capability, a label, an init container), serves a hello API at an address
+outside the cluster, and blocks the node's local attestation service. Every
+pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
+sysctl, which kubelet allows by default. A peer that connects to the inbound
+proxy itself, presenting a certificate the scenario shaped, is
+[`tools/armtls-dial`](tools/armtls-dial/README.md), run inside a pod of the
+image the backend builds for the logical image `mesh-dialer`.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this
 environment cannot express that", which the steps turn into a skip. It also
@@ -101,11 +117,14 @@ rejects unknown names.
 | Backend | Environment | Requires |
 |---|---|---|
 | [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77 | `C8S_IT_WORKDIR` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell and no TEE on the harness host, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start`, `cds_restart`, `cds_restart_with`, `attestation_service_stop`, `private_keys`, `attest_direct`, `pod_sandbox_id`, `evidence` over a chosen launch digest and a plain-HTTP `cds_read` answer 77; `image_entrypoint` answers 77 without `crane`, `write_token` without Go; `pod_cert_file` reads through the pod's first container, so only once it runs; `node_refuses` answers yes at once, so `cds_block` returns before kube-proxy has reprogrammed the node | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` and `crane` for the write-token and entrypoint functions |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell and no TEE on the harness host, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start`, `cds_restart`, `cds_restart_with`, `attestation_service_stop`, `private_keys`, `attest_direct`, `pod_sandbox_id`, `evidence` over a chosen launch digest and a plain-HTTP `cds_read` answer 77; `image_entrypoint` answers 77 without `crane`, `write_token` without Go; `pod_cert_file` reads through the pod's first container, so only once it runs; `node_refuses` answers yes at once, so `cds_block` returns before kube-proxy has reprogrammed the node; no external address and no mock, so `external_endpoint`, `attestation_endpoint`, `attestation_block` and `dialer_image` answer 77 | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` and `crane` for the write-token and entrypoint functions |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
-change with c8s. A change to any of those updates the backend in the same PR.
+change with c8s. The tools under [`tools/`](tools) are built into images by the backends and
+may import c8s packages: they stand in for peers the cluster does not have,
+not for the steps' judgement. A change to any of those updates the backend in
+the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
 
 ## What is a coordinated change

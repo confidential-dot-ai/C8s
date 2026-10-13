@@ -30,6 +30,7 @@ setup() {
 }
 
 teardown() {
+    mesh_scraper_teardown
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true
@@ -91,6 +92,17 @@ attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
+attestation_block() { return "$UNSUPPORTED"; }
+attestation_unblock() { return "$UNSUPPORTED"; }
+
+# The lane pins the node's own measurement, so its evidence satisfies them.
+mesh_pins_satisfied() { echo yes; }
+
+# No address outside the cluster answers for the lane, and a pod that is not
+# injected has no socket to the attestation service; the mesh peer image is
+# built by the kind harness and not published.
+external_endpoint() { return "$UNSUPPORTED"; }
+attestation_endpoint() { return "$UNSUPPORTED"; }
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
