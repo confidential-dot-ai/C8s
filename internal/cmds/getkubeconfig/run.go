@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -89,7 +90,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if exp.identity.Family() == teetypes.FamilyTDX {
-		exp.policies = func() []string { return fetchMeasuredPolicies(ctx, cfg.ReleaseBaseURL, cfg.Timeout) }
+		// Once per run, so every gate checks the same list.
+		exp.policies = sync.OnceValue(func() []string { return fetchMeasuredPolicies(ctx, cfg.ReleaseBaseURL, cfg.Timeout) })
 	}
 
 	// 1. Verify the channel and a fresh nonce-bound report before releasing

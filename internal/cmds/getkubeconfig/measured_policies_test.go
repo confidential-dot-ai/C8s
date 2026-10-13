@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -76,6 +77,50 @@ func TestFetchMeasuredPolicies(t *testing.T) {
 			defer srv.Close()
 			if got := fetchMeasuredPolicies(context.Background(), srv.URL, 5*time.Second); !slices.Equal(got, tc.want) {
 				t.Fatalf("fetchMeasuredPolicies = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// Run fetches the node's list from cred-release and releases only when a
+// prefix of it replays the quote's RTMR[3].
+func TestRunReplaysMeasuredPolicies(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	for _, tc := range []struct {
+		name    string
+		served  string
+		wantErr bool
+	}{
+		{name: "list replays", served: `["` + p + `","` + q + `"]`},
+		{name: "list does not replay", served: `["` + q + `"]`, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
+			res := verifiedResultFor(env.exp)
+			reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.exp.operatorPubPEM), []string{p})
+			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
+			stubVerify(t, res, nil)
+
+			var releaseHits atomic.Int32
+			release := newAttestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == credrelease.MeasuredPoliciesPath {
+					io.WriteString(w, tc.served)
+					return
+				}
+				releaseHits.Add(1)
+				releaseHandler(t, http.StatusOK, goodRelease, nil).ServeHTTP(w, r)
+			}))
+			t.Cleanup(release.Close)
+			cfg := env.config()
+			cfg.ReleaseBaseURL = release.URL
+
+			err := Run(context.Background(), cfg)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Run = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && releaseHits.Load() != 0 {
+				t.Fatalf("cred-release hits = %d, want 0", releaseHits.Load())
 			}
 		})
 	}

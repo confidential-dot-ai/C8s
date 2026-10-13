@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"slices"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -129,9 +128,11 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 // workloadChain refuses --workload-image there — so the binding checked is the
 // launch-committed HOSTDATA alone.
 //
-// A node that measures allowlist policies extends them after the workloads.
-// The list may run ahead of the quote, so the longest prefix that replays
-// wins.
+// A node that measures allowlist policies extends them after the workloads,
+// and the list may run ahead of the quote, so any prefix that replays is
+// accepted. Policy and workload extends share one event encoding, so an
+// extend after the workload chain passes whenever the node lists it as a
+// policy: the workload chain itself stays exact.
 func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
@@ -140,10 +141,18 @@ func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error 
 	if err == nil || exp.policies == nil {
 		return err
 	}
-	policies := exp.policies()
-	for k := len(policies); k > 0; k-- {
-		chain := append(slices.Clone(exp.workloadDigests), policies[:k]...)
-		if runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, chain) == nil {
+	got, berr := runtimemeasure.Binding(res)
+	if berr != nil {
+		return err
+	}
+	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)
+	for _, p := range exp.policies() {
+		d, derr := runtimemeasure.CanonicalDigest(p)
+		if derr != nil {
+			return err
+		}
+		reg = runtimemeasure.Extend(reg, runtimemeasure.Event(d))
+		if bytes.Equal(got, reg[:]) {
 			return nil
 		}
 	}
