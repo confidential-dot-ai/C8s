@@ -502,6 +502,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30
 	cfg.port = freePort(t)
 	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
@@ -534,6 +535,44 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	}
 }
 
+// A non-persistent store forgets spent tokens at restart, so CDS refuses a
+// fresh token until --jwt-clock-skew has passed since start.
+func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
+	api := newHealthyAttestationApi(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30, not persistent
+	cfg.port = freePort(t)
+	cfg.operatorKeys = keysPath
+	base := startRunServer(t, cfg)
+
+	body := []byte(anySeed(map[string]string{"cds": digestA}))
+	sum := sha256.Sum256(body)
+	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"htm": http.MethodPut,
+		"htu": "/allowlist",
+		"pbh": base64.RawURLEncoding.EncodeToString(sum[:]),
+	}).SignedString(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPut, base+"/allowlist", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	respBody, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), allowlist.ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying ErrTokenBeforeStart", resp.StatusCode, respBody)
+	}
+}
+
 // A whole-document write stores its token as the document's signature, so the
 // token must not authorize a second write.
 func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
@@ -542,6 +581,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	cfg := validRunConfig(t, api.URL)
 	cfg.port = freePort(t)
 	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base := startRunServer(t, cfg)
 
 	doc, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
