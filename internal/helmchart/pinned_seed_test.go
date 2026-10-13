@@ -464,7 +464,9 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 	pinned[nginxDigest] = pins["router.nginx"]
 
 	images := componentImages(t)
-	seen := map[string]bool{}
+	// An admitted launch of each digest outside the hook, to restage with a
+	// volume over its executable.
+	admitted := map[string]pkgallowlist.RunningContainer{}
 	for _, w := range renderedPodSpecs(t, out) {
 		name := w.kind + "/" + w.name
 		for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
@@ -473,7 +475,6 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 			if !ok {
 				continue
 			}
-			seen[digest] = true
 			argv := effectiveArgv(c)
 			if len(c.Command) == 0 {
 				argv = append(append([]string{}, entrypoint...), c.Args...)
@@ -495,10 +496,14 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 					t.Errorf("%s refuses %s container %s: argv %q, mounts %v", source, name, c.Name, argv[:min(len(argv), 3)], c.VolumeMounts)
 				}
 			}
+			if _, ok := admitted[digest]; !ok && name != "DaemonSet/c8s-volumed-teardown" {
+				admitted[digest] = running
+			}
 		}
 	}
 	for digest, entrypoint := range pinned {
-		if !seen[digest] {
+		launch, seen := admitted[digest]
+		if !seen {
 			t.Errorf("no rendered container runs %s (pinned to %q)", digest, entrypoint)
 		}
 		for source, al := range map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base} {
@@ -516,8 +521,9 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 					t.Errorf("%s admits %s under %q", source, digest[:19], argv)
 				}
 			}
-			over := []pkgallowlist.ObservedMount{{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}}
-			if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: entrypoint, Mounts: over, Env: &pkgallowlist.EnvObservation{}}) {
+			over := launch
+			over.Mounts = append(slices.Clone(launch.Mounts), pkgallowlist.ObservedMount{Destination: entrypoint[0], Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory})
+			if seen && index.AdmitsContainer(over) {
 				t.Errorf("%s admits %s with a volume mounted over %s", source, digest[:19], entrypoint[0])
 			}
 		}

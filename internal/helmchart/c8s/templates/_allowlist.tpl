@@ -93,7 +93,8 @@
      links off, the kubelet adds only the variables of the default
      namespace's kubernetes Service (getServiceEnvVarMap in
      pkg/kubelet/kubelet_pods.go and FromServices in pkg/kubelet/envvars,
-     Kubernetes v1.34), whose port kube-apiserver fixes at 443
+     unchanged from Kubernetes v1.34 to v1.36), whose port kube-apiserver
+     fixes at 443
      (APIServerServicePort in cmd/kube-apiserver/app). */ -}}
 {{- define "c8s.runtimeEnv" -}}
 {{- $present := dict "present" true -}}
