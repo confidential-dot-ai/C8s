@@ -252,10 +252,11 @@ func (c Container) IsUnconstrained() bool {
 	return true
 }
 
-// PinsAtMostCommand reports whether the container leaves everything but its
-// executable to the host: args, mounts and environment are any, and command is
-// any or exact. It is the shape of a seeded component entry, whose arguments
-// and mounts are per-pod but whose binary is the image's.
+// PinsAtMostCommand reports whether the container is the shape of a seeded
+// component entry: command any or exact, args any, mounts any, and env any or
+// match. The binary is the image's while the arguments and mounts are per-pod;
+// match pins the variable names a component launches with but leaves values
+// such as HOSTNAME to the pod, which exact cannot.
 func (c Container) PinsAtMostCommand() bool {
 	if c.Command.Policy != PolicyAny && c.Command.Policy != PolicyExact {
 		return false
@@ -263,7 +264,10 @@ func (c Container) PinsAtMostCommand() bool {
 	if c.Args.Policy != PolicyAny {
 		return false
 	}
-	return (mountConstraint{policy: &c.Mounts}).isUnconstrained() && newEnvConstraint(&c.Env).isUnconstrained()
+	if !(mountConstraint{policy: &c.Mounts}).isUnconstrained() {
+		return false
+	}
+	return c.Env.Policy == PolicyMatch || newEnvConstraint(&c.Env).isUnconstrained()
 }
 
 // ArgvPinned reports whether every container's command and args policy is
