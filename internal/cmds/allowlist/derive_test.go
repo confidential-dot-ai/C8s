@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -130,8 +131,30 @@ func TestDeriveMountPolicies(t *testing.T) {
 	}
 }
 
+func TestDeriveConfinedMountsFromFile(t *testing.T) {
+	file := t.TempDir() + "/mounts.json"
+	data := `{"seed":{"policy":"deny"},"frontend":{"policy":"confined","denyBelow":["/usr","/app"],"unconfined":["/data"]},"worker":{"policy":"confined"}}`
+	if err := os.WriteFile(file, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := got["dynamo"].Containers[0].Mounts
+	if p.Policy != pkgallowlist.PolicyConfined || !slices.Equal(p.DenyBelow, []string{"/app", "/usr"}) || !slices.Equal(p.Unconfined, []string{"/data"}) {
+		t.Fatalf("frontend mounts = %+v, want confined below [/app /usr], unconfined [/data]", p)
+	}
+	if err := os.WriteFile(file, []byte(`{"seed":{"policy":"deny"},"frontend":{"policy":"confined","denyBelow":["usr"]},"worker":{"policy":"deny"}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file); err == nil || !strings.Contains(err.Error(), "clean absolute") {
+		t.Fatalf("relative denyBelow error = %v, want a clean-absolute refusal", err)
+	}
+}
+
 func TestDeriveMountShorthand(t *testing.T) {
-	for _, mode := range []string{"any", "deny"} {
+	for _, mode := range []string{"any", "deny", "confined"} {
 		got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts="+mode)
 		if err != nil {
 			t.Fatal(err)

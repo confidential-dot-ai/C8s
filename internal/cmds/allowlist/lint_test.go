@@ -280,8 +280,8 @@ func TestLintShadowedEntry(t *testing.T) {
 
 	// A seeded component entry pins the executable and leaves the arguments
 	// open, so it still shadows an entry pinning an invocation of that binary.
-	component := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"any"}}]}`
-	attest := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`
+	component := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"confined","denyBelow":["/c8s"]},"env":{"policy":"any"}}]}`
+	attest := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":{"policy":"confined","denyBelow":["/c8s"]}}]}`
 	if got := errs(`"seeded":` + component + `,"attest":` + attest); len(got) != 1 || !strings.Contains(got[0], `workload "attest" can never be the unique match: "seeded"`) {
 		t.Fatalf("component-shaped entry did not shadow a narrower invocation: %v", got)
 	}
@@ -518,6 +518,62 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
 			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.ambiguous {
 				t.Fatalf("live collision = %v, want %v", got, tc.ambiguous)
+			}
+		})
+	}
+}
+
+func TestLintComponentMounts(t *testing.T) {
+	component := func(command, mounts string) string {
+		return `{"c":{"containers":[{"digest":"` + digA + `","command":` + command + `,"args":{"policy":"any"},"mounts":` + mounts + `,"env":{"policy":"any"}}]}}`
+	}
+	pinned := `{"policy":"exact","argv":["/c8s"]}`
+	for _, tc := range []struct {
+		name, body string
+		wantErr    bool
+		wantOut    string
+	}{
+		{"any mounts", component(pinned, `{"policy":"any"}`), true, "leaves mounts any"},
+		{"confined without denyBelow", component(pinned, `{"policy":"confined"}`), false, "lists no denyBelow path"},
+		{"confined", component(pinned, `{"policy":"confined","denyBelow":["/c8s","/etc/ssl"]}`), false, "ok: no findings"},
+		{"unpinned command", component(`{"policy":"any"}`, `{"policy":"any"}`), false, "ok: no findings"},
+		{"relative denyBelow", component(pinned, `{"policy":"confined","denyBelow":["c8s"]}`), true, ""},
+		{"unconfined over denyBelow", component(pinned, `{"policy":"confined","denyBelow":["/etc/ssl"],"unconfined":["/etc"]}`), true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, _, err := runCmd("lint", writeFile(t, "in.json", tc.body))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("lint error = %v, want error %v\n%s", err, tc.wantErr, out)
+			}
+			if !strings.Contains(out, tc.wantOut) {
+				t.Fatalf("lint output = %q, want %q", out, tc.wantOut)
+			}
+		})
+	}
+}
+
+// Confined admits a table of platform mounts alone, so a confined component
+// entry shadows a narrower invocation whose mounts are deny, but not one whose
+// mounts it cannot speak for.
+func TestLintConfinedShadowing(t *testing.T) {
+	wide := `[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"confined","denyBelow":["/c8s"]},"env":{"policy":"any"}}]`
+	narrow := func(mounts string) string {
+		return `[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":` + mounts + `}]`
+	}
+	for _, tc := range []struct {
+		name, mounts string
+		want         bool
+	}{
+		{"deny", `{"policy":"deny"}`, true},
+		{"same confined", `{"policy":"confined","denyBelow":["/c8s"]}`, true},
+		{"other confined", `{"policy":"confined","denyBelow":["/usr"]}`, false},
+		{"exact", `{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/cfg","kind":"data"}]}`, false},
+		{"any", `{"policy":"any"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := entryPair(t, wide, narrow(tc.mounts))
+			if got := shadows(al.Workloads["alpha"], al.Workloads["beta"]); got != tc.want {
+				t.Fatalf("shadows(confined, %s) = %v, want %v", tc.mounts, got, tc.want)
 			}
 		})
 	}

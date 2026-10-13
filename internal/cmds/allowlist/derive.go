@@ -137,11 +137,13 @@ map of container names to env policies. Exact values describe the complete OCI
 launch environment, including image/runtime additions. Pod env/envFrom alone
 cannot establish it.
 
-Mount policy comes from --mounts=any|deny or --mounts-file, a JSON map of
-container names to mount policies covering every derived init and main
+Mount policy comes from --mounts=any|deny|confined or --mounts-file, a JSON map
+of container names to mount policies covering every derived init and main
 container. Omitting both leaves every container at "deny", which admits platform
-mounts alone. The pod spec cannot prove which sources are node-provided or how
-persistent storage is protected, so exact rules go in --mounts-file.
+mounts alone. "confined" admits mounts that keep writes inside the node; its
+denyBelow and unconfined paths, like exact rules, go in --mounts-file, since the
+pod spec cannot prove which sources are node-provided or how persistent storage
+is protected.
 
 The entry pins argv, so it expires the moment a container command changes:
 re-derive and re-apply whenever the workload is edited.
@@ -176,8 +178,8 @@ derives the same entry as the manifest it was admitted from.`,
 			if (envMode == "") == (envFile == "") {
 				return fmt.Errorf("specify exactly one of --env=any|deny or --env-file")
 			}
-			if mountsMode != "" && mountsMode != allowlist.PolicyAny && mountsMode != allowlist.PolicyDeny {
-				return fmt.Errorf("--mounts must be any or deny; use --mounts-file for exact rules")
+			if mountsMode != "" && mountsMode != allowlist.PolicyAny && mountsMode != allowlist.PolicyDeny && mountsMode != allowlist.PolicyConfined {
+				return fmt.Errorf("--mounts must be any, deny or confined; use --mounts-file for exact rules or denyBelow paths")
 			}
 			if mountsMode == "" && mountsFile == "" {
 				fmt.Fprintln(cmd.ErrOrStderr(),
@@ -268,7 +270,7 @@ derives the same entry as the manifest it was admitted from.`,
 		"grant read on this secret path (repeatable); omit for no secrets block")
 	cmd.Flags().StringVar(&envMode, "env", "", "environment policy for every container: any or deny")
 	cmd.Flags().StringVar(&envFile, "env-file", "", "JSON map of container names to explicit env policies (including exact values)")
-	cmd.Flags().StringVar(&mountsMode, "mounts", "", "mount policy for every container: any or deny (default deny)")
+	cmd.Flags().StringVar(&mountsMode, "mounts", "", "mount policy for every container: any, deny or confined (default deny)")
 	cmd.Flags().StringVar(&mountsFile, "mounts-file", "", "JSON map of container names to explicit mount policies")
 	cmd.Flags().StringVar(&label, "label", "", "optional entry label")
 	cmd.MarkFlagsMutuallyExclusive("mounts", "mounts-file")

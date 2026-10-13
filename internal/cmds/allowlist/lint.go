@@ -26,7 +26,8 @@ func newLintCmd(o *options) *cobra.Command {
 		Long: `Parse and validate an allowlist file (or stdin with '-') and report semantic
 findings: entries with no containers, a container that can never start, digests
 whose effective policy is unconstrained, tag-form image labels (TOCTOU),
-root-subtree path grants, and pinned search paths that overlap data mounts.
+root-subtree path grants, pinned search paths that overlap data mounts, and
+component entries whose mounts are not confined.
 --online additionally checks each digest exists in
 its registry via crane.
 
@@ -183,6 +184,7 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 			if argvPolicyName(c.Command) == pkgallowlist.PolicyDeny {
 				warnings = append(warnings, warnf("workload %q container %s command is deny; the effective argv must be empty, so the container can never start", name, d))
 			}
+			warnings = append(warnings, componentMountFindings(name, c)...)
 			if c.Image != "" && isTagForm(c.Image) {
 				warnings = append(warnings, warnf("workload %q container %s image %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, d, c.Image))
 			}
@@ -211,6 +213,26 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	warnings = append(warnings, shadowedEntries(al)...)
 	warnings = append(warnings, searchPathFindings(al)...)
 	return warnings
+}
+
+// componentMountFindings checks the mounts of a component entry, a container
+// that pins its executable and leaves the arguments open. Under any, a volume
+// can replace the code the pinned entrypoint loads, so the pin holds in name
+// only: an error. Under confined with no denyBelow path, only the executable
+// itself is protected: a warning.
+func componentMountFindings(name string, c pkgallowlist.Container) []finding {
+	if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyAny {
+		return nil
+	}
+	switch c.Mounts.Policy {
+	case pkgallowlist.PolicyAny:
+		return []finding{errorf("workload %q container %s pins its executable but leaves mounts any, so a volume can replace the code its entrypoint loads; use mounts confined with denyBelow covering those paths", name, c.Digest)}
+	case pkgallowlist.PolicyConfined:
+		if len(c.Mounts.DenyBelow) == 0 {
+			return []finding{warnf("workload %q container %s confines mounts but lists no denyBelow path; list the directories its entrypoint loads code from", name, c.Digest)}
+		}
+	}
+	return nil
 }
 
 // shadowedEntries reports entries that can never be the unique match because
@@ -284,13 +306,27 @@ func subsumes(wide, narrow pkgallowlist.Container) bool {
 	if !wide.AnyArgv() && !argvPrefixSubsumes(wide, narrow) && !reflect.DeepEqual(processOf(wide), processOf(narrow)) {
 		return false
 	}
-	if wide.Mounts.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Mounts, narrow.Mounts) {
+	if !mountsSubsume(wide.Mounts, narrow.Mounts) {
 		return false
 	}
 	if wide.Env.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Env, narrow.Env) {
 		return false
 	}
 	return true
+}
+
+// mountsSubsume reports whether every mount table narrow admits, wide admits
+// too. Confined admits a table of platform mounts alone, which is all deny
+// admits.
+func mountsSubsume(wide, narrow pkgallowlist.MountPolicy) bool {
+	switch {
+	case wide.Policy == pkgallowlist.PolicyAny, reflect.DeepEqual(wide, narrow):
+		return true
+	case wide.Policy == pkgallowlist.PolicyConfined:
+		return narrow.Policy == pkgallowlist.PolicyDeny
+	default:
+		return false
+	}
 }
 
 func argvPrefixSubsumes(wide, narrow pkgallowlist.Container) bool {
