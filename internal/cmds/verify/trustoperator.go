@@ -5,6 +5,7 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -65,13 +66,14 @@ func checkHistoryFlags(cfg config) ([]*ecdsa.PublicKey, error) {
 }
 
 // applyPinPolicy enforces --pin-policy: every policy the node enforced since
-// boot, and the one the leaf was issued under, must be pinned.
+// boot, and the one the leaf was issued under, must be pinned. It fails a
+// partial verdict too, so it holds wherever it runs among the demotions.
 func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
-	if len(cfg.pinPolicies) == 0 || !oc.Verified {
+	if len(cfg.pinPolicies) == 0 || (!oc.Verified && !oc.Partial) {
 		return
 	}
 	fail := func(format string, args ...any) {
-		oc.Verified = false
+		oc.Verified, oc.Partial = false, false
 		if oc.Error == "" {
 			oc.Error = fmt.Sprintf(format, args...)
 		}
@@ -86,10 +88,15 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 			return
 		}
 	}
-	if ev.workload != nil {
+	switch {
+	case ev.workload != nil:
 		if d := "sha256:" + hex.EncodeToString(ev.workload.AllowlistDigest); !slices.Contains(cfg.pinPolicies, d) {
 			fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned", d)
 		}
+	case ev.workloadErr != nil:
+		fail("policy_history_not_pinned: the leaf's issuing policy cannot be read: %v", ev.workloadErr)
+	case ev.leaf != nil:
+		fail("policy_history_not_pinned: the leaf carries no issuing policy to check against the pins")
 	}
 }
 
@@ -101,9 +108,9 @@ const noHistory = "no measured policy replayed against RTMR[3]; target an attest
 // target and checks it hashes to its digest, then saves it (--fetch-allowlists)
 // and requires its stored operator signature to verify under keys
 // (--trust-operator). The bytes authenticate themselves against the replayed
-// digest, so the fetch needs no attested channel; it is bound to the
-// attested serving leaf when this run observed one anyway.
-func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) {
+// digest and the token against keys, so the fetch needs no attested channel:
+// binding it to one serving leaf would only fail on a different replica.
+func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, keys []*ecdsa.PublicKey) {
 	if (!cfg.trustOperator && cfg.fetchAllowlists == "") || (!oc.Verified && !oc.Partial) {
 		return
 	}
@@ -118,7 +125,9 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	if len(oc.MeasuredPolicies) == 0 {
 		if cfg.trustOperator {
 			fail("policy_history_absent: %s", noHistory)
+			return
 		}
+		oc.Warnings = append(oc.Warnings, "--fetch-allowlists saved nothing: "+noHistory)
 		return
 	}
 	if cfg.url == "" {
@@ -136,7 +145,6 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 			return
 		}
 	}
-	bound := attestedServingLeaf(ev)
 	for _, digest := range oc.MeasuredPolicies {
 		hexDigest, ok := strings.CutPrefix(digest, "sha256:")
 		if !ok || !policyDigestRE.MatchString(digest) {
@@ -144,7 +152,7 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 			return
 		}
 		object := baseURL + "/allowlist/objects/sha256/" + hexDigest
-		body, err := fetchPolicy(ctx, object, cfg.server, bound, cfg.timeout)
+		body, err := fetchPolicy(ctx, object, cfg.server, cfg.timeout)
 		if err != nil {
 			fail("%s: fetch %s: %v", code, digest, err)
 			return
@@ -162,9 +170,13 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		if !cfg.trustOperator {
 			continue
 		}
-		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, bound, cfg.timeout)
+		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
+		if errors.Is(err, errNotFound) {
+			fail("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
+			return
+		}
 		if err != nil {
-			fail("policy_history_unsigned: policy %s carries no operator signature (%v); upload the whole document to sign it (c8s allowlist upload)", digest, err)
+			fail("policy_history_unsigned: fetch the signature of %s: %v", digest, err)
 			return
 		}
 		if err := operatorauth.VerifyStored(keys, strings.TrimSpace(string(token)), http.MethodPut, "/allowlist", body); err != nil {

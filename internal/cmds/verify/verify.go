@@ -28,6 +28,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -236,10 +237,10 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBTEE, "min-tcb-tee", 0, "minimum TEE TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
-	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. Requires --operator-pkey; excludes --trust-operator")
-	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history that carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Requires --operator-pkey and --trust-operator-keys")
-	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from")
-	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. Requires --operator-pkey")
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey; excludes --trust-operator")
+	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history that carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. Requires --operator-pkey and --trust-operator-keys")
+	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from. Requires --trust-operator; --operator-keys does not feed it")
+	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. A failed fetch or write fails the verdict (allowlist_fetch_failed). Requires --operator-pkey")
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer)")
 
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
@@ -394,7 +395,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
-	checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
+	checkPolicyHistory(ctx, &oc, cfg, plan.trustKeys)
 	applyInitDataNote(&oc, result, plan)
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
@@ -724,10 +725,10 @@ func parseInitDataPin(flag string) ([]byte, error) {
 type rtmrPins struct {
 	image runtimemeasure.ImageIdentity
 	rtmr3 []byte
-	// seed is the operator-key seed --operator-pkey derived rtmr3 from, nil
-	// otherwise. Only with it can RTMR[3] be replayed as the seed followed
-	// by measured policies.
-	seed *[runtimemeasure.Size]byte
+	// anchor is the --operator-pkey PEM rtmr3 was seeded from, nil otherwise.
+	// Only with it can RTMR[3] be replayed as the seed followed by measured
+	// policies.
+	anchor []byte
 	// manual holds --rtmr <index>=<hex>. It is enforced here, next to the
 	// other two, rather than left to armtls.VerifyPolicy.Policy.RTMRs: that field is
 	// read only by attestation-go/remote, on the delegated attestation-api
@@ -834,7 +835,7 @@ func resolveRTMRPins(cfg config) (rtmrPins, error) {
 		// verbatim — the check above only inspects them.
 		seed := runtimemeasure.Seed(pubPEM)
 		pins.rtmr3 = seed[:]
-		pins.seed = &seed
+		pins.anchor = pubPEM
 	}
 	if v, ok := manual[3]; ok {
 		pins.rtmr3 = v
@@ -1455,7 +1456,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	if !applyRTMRPins(&oc, plan.pins, ev.measured, result) {
 		return oc
 	}
-	if len(ev.measured) > 0 && plan.pins.seed == nil {
+	if len(ev.measured) > 0 && plan.pins.anchor == nil && isTDX(oc.Platform) {
 		oc.Warnings = append(oc.Warnings, "the node reported a measured allowlist policy history that was not replayed: pass --operator-pkey to check it against RTMR[3]")
 	}
 	oc.Verified = true
@@ -1559,17 +1560,16 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 	}
 	if pins.rtmr3 != nil {
 		want := pins.rtmr3
-		// The list is read after the quote, so it may hold extends the quote
-		// does not: the longest prefix that replays is what the node proved.
-		if got, err := result.Claims.RTMR(3); err == nil && pins.seed != nil && !bytes.Equal(got, want) {
-			for k := len(measured); k > 0; k-- {
-				if reg := runtimemeasure.FromDigestsSeeded(*pins.seed, measured[:k]); bytes.Equal(got, reg[:]) {
-					want, oc.MeasuredPolicies = reg[:], slices.Clone(measured[:k])
-					break
-				}
+		if pins.anchor != nil {
+			if p, err := policymeasure.Prefix(result, pins.anchor, measured); err == nil && len(p) > 0 {
+				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.anchor), p)
+				want, oc.MeasuredPolicies = reg[:], slices.Clone(p)
 			}
 		}
 		if !check(3, "runtime operator-key/workload chain", want) {
+			if pins.anchor != nil && len(measured) > 0 {
+				oc.Error += fmt.Sprintf("; no prefix of the %d measured policies the bundle lists replays to it", len(measured))
+			}
 			return false
 		}
 	}

@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -64,6 +65,9 @@ func TestReplayMeasuredPolicies(t *testing.T) {
 			if !slices.Equal(oc.MeasuredPolicies, tc.want) {
 				t.Errorf("MeasuredPolicies = %v, want %v", oc.MeasuredPolicies, tc.want)
 			}
+			if named := strings.Contains(oc.Error, "no prefix of the"); named != (!tc.ok && len(tc.measured) > 0) {
+				t.Errorf("Error = %q; want the rejected history named only when a listed one fails to replay", oc.Error)
+			}
 		})
 	}
 }
@@ -78,6 +82,10 @@ func TestMeasuredPoliciesWithoutOperatorPkeyWarn(t *testing.T) {
 	}
 	if !slices.ContainsFunc(oc.Warnings, func(w string) bool { return strings.Contains(w, "--operator-pkey") }) {
 		t.Errorf("Warnings = %v, want one naming --operator-pkey", oc.Warnings)
+	}
+	snp := snpVerifiedOutcome(t, config{}, &evidence{platform: "snp", measured: []string{testPolicyP}})
+	if slices.ContainsFunc(snp.Warnings, func(w string) bool { return strings.Contains(w, "--operator-pkey") }) {
+		t.Errorf("SNP Warnings = %v, want none naming --operator-pkey, a TDX-only flag", snp.Warnings)
 	}
 }
 
@@ -118,26 +126,61 @@ func TestPinPolicy(t *testing.T) {
 	stampR, _ := hex.DecodeString(strings.TrimPrefix(testPolicyR, "sha256:"))
 	pins := []string{testPolicyP, testPolicyQ}
 	for _, tc := range []struct {
-		name    string
-		history []string
-		stamp   []byte
-		wantErr string
+		name        string
+		history     []string
+		stamp       []byte
+		leaf        bool
+		workloadErr error
+		wantErr     string
 	}{
-		{"history pinned", []string{testPolicyP, testPolicyQ}, nil, ""},
-		{"stamp pinned", []string{testPolicyP}, stampP, ""},
-		{"history not pinned", []string{testPolicyP, testPolicyR}, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR},
-		{"stamp not pinned", []string{testPolicyP}, stampR, "policy_history_not_pinned: the leaf was issued under policy " + testPolicyR},
-		{"no history", nil, nil, "policy_history_absent"},
+		{"history pinned", []string{testPolicyP, testPolicyQ}, nil, false, nil, ""},
+		{"stamp pinned", []string{testPolicyP}, stampP, true, nil, ""},
+		{"history not pinned", []string{testPolicyP, testPolicyR}, nil, false, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR},
+		{"stamp not pinned", []string{testPolicyP}, stampR, true, nil, "policy_history_not_pinned: the leaf was issued under policy " + testPolicyR},
+		{"leaf without stamp", []string{testPolicyP}, nil, true, nil, "policy_history_not_pinned: the leaf carries no issuing policy"},
+		{"unreadable stamp", []string{testPolicyP}, nil, true, errors.New("bad extension"), "policy_history_not_pinned: the leaf's issuing policy cannot be read: bad extension"},
+		{"no history", nil, nil, false, nil, "policy_history_absent"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ev := &evidence{}
+			ev := &evidence{workloadErr: tc.workloadErr}
+			if tc.leaf {
+				ev.leaf = &x509.Certificate{}
+			}
 			if tc.stamp != nil {
 				ev.workload = &armtls.MatchedWorkload{Name: "app", AllowlistDigest: tc.stamp}
 			}
-			oc := Outcome{Verified: true, MeasuredPolicies: tc.history}
-			applyPinPolicy(&oc, config{pinPolicies: pins}, ev)
-			if oc.Verified != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
-				t.Errorf("applyPinPolicy = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.wantErr)
+			for _, partial := range []bool{false, true} {
+				oc := Outcome{Verified: !partial, Partial: partial, MeasuredPolicies: tc.history}
+				applyPinPolicy(&oc, config{pinPolicies: pins}, ev)
+				if passed := oc.Verified || oc.Partial; passed != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
+					t.Errorf("applyPinPolicy(partial %v) = passed %v, error %q; want error containing %q", partial, passed, oc.Error, tc.wantErr)
+				}
+			}
+		})
+	}
+}
+
+// Without --mesh-ca every attest-pq and attest-lb verdict is demoted to
+// partial; --pin-policy must still fail it, wherever it runs in the sequence.
+func TestPinPolicyThroughVerdictPolicies(t *testing.T) {
+	measured := []string{testPolicyP, testPolicyQ}
+	for _, tc := range []struct {
+		name    string
+		pins    []string
+		wantErr string
+	}{
+		{"pinned", measured, ""},
+		{"not pinned", []string{testPolicyP}, "policy_history_not_pinned: the node enforced policy " + testPolicyQ},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{pinPolicies: tc.pins}
+			plan, seed := historyPlan(t, cfg)
+			ev := &evidence{platform: "tdx", measured: measured, leafChainDerived: true}
+			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, measured))), nil, plan)
+			applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
+			checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+			if oc.Verified || oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
+				t.Errorf("verdict = verified %v, partial %v, error %q; want partial only without error containing %q", oc.Verified, oc.Partial, oc.Error, tc.wantErr)
 			}
 		})
 	}
@@ -195,6 +238,7 @@ func TestTrustOperator(t *testing.T) {
 	}{
 		{"signed", objectServer(digest, v.Policy, v.Token), keysPath, []string{digest}, ""},
 		{"unsigned", objectServer(digest, v.Policy, ""), keysPath, []string{digest}, "policy_history_unsigned: policy " + digest + " carries no operator signature"},
+		{"signature unavailable", signatureFails(objectServer(digest, v.Policy, v.Token)), keysPath, []string{digest}, "policy_history_unsigned: fetch the signature of " + digest + ": status 502"},
 		{"other key", objectServer(digest, v.Policy, v.Token), otherPub, []string{digest}, "policy_history_unsigned: policy " + digest + ":"},
 		{"unknown object", objectServer(testPolicyP, v.Policy, v.Token), keysPath, []string{digest}, "policy_history_unsigned: fetch " + digest},
 		{"tampered object", objectServer(digest, append(slices.Clone(v.Policy), ' '), v.Token), keysPath, []string{digest}, "allowlist_digest_mismatch"},
@@ -206,12 +250,24 @@ func TestTrustOperator(t *testing.T) {
 			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: tc.keys, timeout: 5 * time.Second}
 			plan, _ := historyPlan(t, cfg)
 			oc := Outcome{Partial: true, MeasuredPolicies: tc.history}
-			checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, plan.trustKeys)
+			checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
 			if oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, tc.wantErr)
 			}
 		})
 	}
+}
+
+// signatureFails answers every signature request with 502, as a router does
+// while CDS is unavailable.
+func signatureFails(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/signature") {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func TestFetchAllowlists(t *testing.T) {
@@ -220,33 +276,104 @@ func TestFetchAllowlists(t *testing.T) {
 	hexDigest := hex.EncodeToString(sum[:])
 	srv := httptest.NewTLSServer(objectServer("sha256:"+hexDigest, v.Policy, ""))
 	defer srv.Close()
-	leaf := sha256.Sum256(srv.Certificate().Raw)
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, []byte(v.KeysPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, tc := range []struct {
 		name    string
-		leaf    []byte
+		url     string
+		trust   bool
+		saved   bool
 		wantErr string
 	}{
-		{"bound to the attested leaf", leaf[:], ""},
-		{"serving leaf changed", make([]byte, sha256.Size), "allowlist_fetch_failed"},
+		{"fetch", srv.URL, false, true, ""},
+		{"saved before the signature check", srv.URL, true, true, "policy_history_unsigned: policy sha256:" + hexDigest + " carries no operator signature"},
+		{"no target URL", "", false, false, "allowlist_fetch_failed: fetching the policy history needs a target URL"},
+		{"no target URL to trust", "", true, false, "policy_history_unsigned: fetching the policy history needs a target URL"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := filepath.Join(t.TempDir(), "policies")
-			cfg := config{url: srv.URL, fetchAllowlists: dir, timeout: 5 * time.Second}
-			ev := &evidence{fresh: true, servingLeafSHA256: base64.RawURLEncoding.EncodeToString(tc.leaf)}
-			oc := Outcome{Verified: true, MeasuredPolicies: []string{"sha256:" + hexDigest}}
-			checkPolicyHistory(context.Background(), &oc, cfg, ev, nil)
-			if oc.Verified != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
-				t.Fatalf("checkPolicyHistory = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.wantErr)
+			cfg := config{url: tc.url, fetchAllowlists: dir, timeout: 5 * time.Second}
+			if tc.trust {
+				cfg.trustOperator, cfg.trustOperatorKeys = true, keysPath
 			}
-			if tc.wantErr != "" {
-				return
+			plan, _ := historyPlan(t, cfg)
+			oc := Outcome{Verified: true, MeasuredPolicies: []string{"sha256:" + hexDigest}}
+			checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+			if oc.Verified != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
+				t.Errorf("checkPolicyHistory = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.wantErr)
 			}
 			got, err := os.ReadFile(filepath.Join(dir, hexDigest+".json"))
-			if err != nil || !bytes.Equal(got, v.Policy) {
-				t.Errorf("saved policy = %q, %v; want the served bytes", got, err)
+			if saved := err == nil && bytes.Equal(got, v.Policy); saved != tc.saved {
+				t.Errorf("policy saved = %v (%v), want %v", saved, err, tc.saved)
 			}
 		})
+	}
+}
+
+func TestFetchAllowlistsEmptyHistoryWarns(t *testing.T) {
+	cfg := config{url: "https://unused.example", fetchAllowlists: t.TempDir()}
+	oc := Outcome{Verified: true}
+	checkPolicyHistory(context.Background(), &oc, cfg, nil)
+	if !oc.Verified || !slices.ContainsFunc(oc.Warnings, func(w string) bool { return strings.Contains(w, "--fetch-allowlists saved nothing") }) {
+		t.Errorf("checkPolicyHistory = verified %v, warnings %v; want verified with a warning naming --fetch-allowlists", oc.Verified, oc.Warnings)
+	}
+}
+
+// A history of a signed then an unsigned policy: both are saved for review,
+// and the failure names the second.
+func TestTrustOperatorTwoEntries(t *testing.T) {
+	v := loadSignatureVector(t)
+	signed := sha256.Sum256(v.Policy)
+	unsignedBody := []byte(`{"version":"2"}`)
+	unsigned := sha256.Sum256(unsignedBody)
+	history := []string{"sha256:" + hex.EncodeToString(signed[:]), "sha256:" + hex.EncodeToString(unsigned[:])}
+	signedObjects := objectServer(history[0], v.Policy, v.Token)
+	unsignedObjects := objectServer(history[1], unsignedBody, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, hex.EncodeToString(signed[:])) {
+			signedObjects.ServeHTTP(w, r)
+			return
+		}
+		unsignedObjects.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, []byte(v.KeysPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, fetchAllowlists: dir, timeout: 5 * time.Second}
+	plan, _ := historyPlan(t, cfg)
+	oc := Outcome{Partial: true, MeasuredPolicies: history}
+	checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+	if want := "policy_history_unsigned: policy " + history[1] + " carries no operator signature"; oc.Partial || !strings.Contains(oc.Error, want) {
+		t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, want)
+	}
+	for i, body := range [][]byte{v.Policy, unsignedBody} {
+		got, err := os.ReadFile(filepath.Join(dir, strings.TrimPrefix(history[i], "sha256:")+".json"))
+		if err != nil || !bytes.Equal(got, body) {
+			t.Errorf("saved %s = %q, %v; want the served bytes", history[i], got, err)
+		}
+	}
+}
+
+func TestFetchPolicyLimits(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /big", func(w http.ResponseWriter, _ *http.Request) { w.Write(make([]byte, maxPolicyBytes+1)) })
+	mux.HandleFunc("GET /redirect", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/big", http.StatusFound) })
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	for _, tc := range []struct{ path, wantErr string }{
+		{"/big", "exceeds"},
+		{"/redirect", "status 302"},
+		{"/missing", errNotFound.Error()},
+	} {
+		if _, err := fetchPolicy(context.Background(), srv.URL+tc.path, "", 5*time.Second); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+			t.Errorf("fetchPolicy(%s) = %v, want error containing %q", tc.path, err, tc.wantErr)
+		}
 	}
 }
 

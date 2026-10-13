@@ -691,7 +691,8 @@ Caveats the output surfaces:
 
 ### Check a node's policy history
 
-A node that measures its allowlist policies (see
+A node that measures its allowlist policies (Helm value
+`nriImagePolicy.measurePolicies`, see
 [Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
 reports RTMR[3] as the seed followed by each policy it enforced since boot.
 Its router's attest-pq and attest-lb bundles list those digests as
@@ -707,12 +708,25 @@ not replayed and the verdict warns. Choose how to accept the history:
 
 Both flags require `--operator-pkey` and exclude each other. Both fail with
 `policy_history_absent` when nothing replays: a node that does not measure
-proves nothing about the policies it enforced. `--trust-operator` fetches each
-document from `<target>/allowlist/objects/sha256/<hex>`, checks it hashes to
-its digest, and checks its stored write token with `operatorauth.VerifyStored`.
+proves nothing about the policies it enforced. `--pin-policy` also fails when
+the leaf carries no readable issuing policy; that stamp is CA-vouched, so
+without `--mesh-ca` the verdict stays partial.
+
+`--trust-operator` fetches each document from
+`<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
+(`allowlist_digest_mismatch` otherwise), and checks its stored write token
+against `--trust-operator-keys` with `operatorauth.VerifyStored`.
+`--operator-keys` does not feed it, and `--trust-operator-keys` alone is
+rejected. Only a document uploaded whole with a signed `PUT /allowlist`
+carries a token: a per-workload edit yields an unsigned policy, which fails
+`--trust-operator` until the node reboots. The documents authenticate
+themselves against the replayed digests, so any router replica may serve
+them.
+
 To review the documents before pinning them, add `--fetch-allowlists DIR`
 (also requires `--operator-pkey`): `verify` saves each one as
-`DIR/<hex>.json`.
+`DIR/<hex>.json`, and a failed fetch or write fails the verdict with
+`allowlist_fetch_failed`.
 
 ```sh
 c8s verify https://app.example.com --mode attest-lb \

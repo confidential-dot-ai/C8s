@@ -2,8 +2,7 @@ package verify
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,39 +12,32 @@ import (
 // maxPolicyBytes bounds one fetched policy object or signature.
 const maxPolicyBytes = 16 << 20
 
-// fetchPolicy GETs url. With certSHA256 set the connection must present that
-// serving leaf (fetchAttested); otherwise any peer is accepted.
-func fetchPolicy(ctx context.Context, url, serverName, certSHA256 string, timeout time.Duration) ([]byte, error) {
-	var resp *http.Response
-	var err error
-	if certSHA256 != "" {
-		resp, err = fetchAttested(ctx, url, serverName, certSHA256, timeout)
-	} else {
-		var req *http.Request
-		if req, err = http.NewRequestWithContext(ctx, http.MethodGet, url, nil); err != nil {
-			return nil, err
-		}
-		resp, err = insecureClient(serverName, timeout).Do(req)
+// errNotFound is a 404 from fetchPolicy: CDS holds no such object or signature.
+var errNotFound = errors.New("not found")
+
+// fetchPolicy GETs url from any peer: callers authenticate what it returns.
+func fetchPolicy(ctx context.Context, url, serverName string, timeout time.Duration) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
 	}
+	client := insecureClient(serverName, timeout)
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
+	switch resp.StatusCode {
+	case http.StatusOK:
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxPolicyBytes+1))
+		if err == nil && len(body) > maxPolicyBytes {
+			err = fmt.Errorf("response exceeds %d bytes", maxPolicyBytes)
+		}
+		return body, err
+	case http.StatusNotFound:
+		return nil, errNotFound
+	default:
 		return nil, fmt.Errorf("status %d", resp.StatusCode)
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, maxPolicyBytes))
-}
-
-// attestedServingLeaf is the hex SHA-256 of the serving leaf a live attest-lb
-// gather bound its evidence to, "" for any other gather.
-func attestedServingLeaf(ev *evidence) string {
-	if !ev.fresh || ev.servingLeafSHA256 == "" {
-		return ""
-	}
-	sum, err := base64.RawURLEncoding.DecodeString(ev.servingLeafSHA256)
-	if err != nil {
-		return ""
-	}
-	return hex.EncodeToString(sum)
 }
