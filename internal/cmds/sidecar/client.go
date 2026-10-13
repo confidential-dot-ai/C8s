@@ -61,27 +61,21 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 // at endpoint and bound to the challenge and this pod's leaf key, then the
 // request itself. Both are single-use, so every call takes its own.
 func Do(ctx context.Context, cfg Config, client *http.Client, pub crypto.PublicKey, endpoint, method, path string) ([]byte, int, error) {
-	challenge, err := fetchChallenge(ctx, cfg, client)
+	challenge, err := FetchChallenge(ctx, client, cfg.CDSURL, cfg.RequestTimeout)
 	if err != nil {
 		return nil, 0, err
 	}
-	token, err := workloadclaims.FetchSandboxToken(ctx, endpoint, cfg.InventoryTimeout, pub, challenge)
-	if err != nil {
-		return nil, 0, fmt.Errorf("redeem sandbox token: %w", err)
-	}
-	tokenJSON, err := json.Marshal(token)
+	tokenJSON, err := RedeemToken(ctx, endpoint, cfg.InventoryTimeout, pub, challenge)
 	if err != nil {
 		return nil, 0, err
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, method, cfg.CDSURL+"/secrets"+path, nil)
+	req, err := NewStoreRequest(reqCtx, cfg.CDSURL, method, path, challenge, tokenJSON)
 	if err != nil {
 		return nil, 0, err
 	}
-	req.Header.Set(secrets.ChallengeHeader, base64.StdEncoding.EncodeToString(challenge))
-	req.Header.Set("Authorization", secrets.AuthScheme+base64.StdEncoding.EncodeToString(tokenJSON))
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -130,10 +124,41 @@ func envelopeCode(body []byte) string {
 	return env.Error
 }
 
-func fetchChallenge(ctx context.Context, cfg Config, client *http.Client) ([]byte, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, cfg.RequestTimeout)
+// RedeemToken fetches a sandbox token from the inventory at endpoint, bound to
+// pub and challenge, and returns it as the JSON the Authorization header
+// carries.
+func RedeemToken(ctx context.Context, endpoint string, timeout time.Duration, pub crypto.PublicKey, challenge []byte) ([]byte, error) {
+	token, err := workloadclaims.FetchSandboxToken(ctx, endpoint, timeout, pub, challenge)
+	if err != nil {
+		return nil, fmt.Errorf("redeem sandbox token: %w", err)
+	}
+	return json.Marshal(token)
+}
+
+// NewStoreRequest builds the store request for path, which is appended to the
+// store route verbatim, carrying challenge and tokenJSON in the headers CDS
+// reads. A nil challenge or tokenJSON leaves its header unset; only the
+// conformance probe does that, to show CDS a request a sidecar never sends.
+func NewStoreRequest(ctx context.Context, cdsURL, method, path string, challenge, tokenJSON []byte) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, cdsURL+"/secrets"+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	if challenge != nil {
+		req.Header.Set(secrets.ChallengeHeader, base64.StdEncoding.EncodeToString(challenge))
+	}
+	if tokenJSON != nil {
+		req.Header.Set("Authorization", secrets.AuthScheme+base64.StdEncoding.EncodeToString(tokenJSON))
+	}
+	return req, nil
+}
+
+// FetchChallenge POSTs the release-challenge route of the CDS at cdsURL and
+// returns the single-use challenge it answers with.
+func FetchChallenge(ctx context.Context, client *http.Client, cdsURL string, timeout time.Duration) ([]byte, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cfg.CDSURL+secrets.ChallengeRoute, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, cdsURL+secrets.ChallengeRoute, nil)
 	if err != nil {
 		return nil, err
 	}

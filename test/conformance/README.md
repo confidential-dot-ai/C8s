@@ -26,6 +26,27 @@ sentences needs no change in this repo.
 godog's own flags are bound under `--godog.`: `--godog.format=cucumber:report.json`
 writes the report the runner records, `--godog.tags=@area:enforcement` selects.
 
+## Probes the steps exec
+
+Where a scenario needs the cluster to see a request no well-behaved client
+sends, the steps exec a probe built into the `c8s` binary that is already in
+the pod. `c8s secret-probe` (`internal/cmds/secretprobe`) is hidden from
+`c8s --help` because it is a test instrument, not a client for applications:
+run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
+--cert FILE --key FILE <action>` inside the injected certificate sidecar, it
+performs one workload secret request with every input under the caller's
+control. `challenge` fetches a fresh CDS challenge and prints it base64;
+`token` redeems a sandbox token for the pod's sandbox from the node's
+inventory socket, bound to the leaf's key and to a given challenge, and prints
+the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
+request with `<path>` verbatim, a fresh or given challenge or none, and a fresh
+or given token or none, then prints the HTTP status (`000` when nothing
+answered) on the first line and the body after it, exactly as received. It
+exits 0 whenever an answer was printed and 2 when it could not ask, so a
+scenario about a missing or replayed challenge, another pod's token, or a
+non-canonical path reads the CDS's verdict rather than a sidecar's refusal to
+send it. `c8s secret-probe --help` has the flags.
+
 ## Running
 
 [`run.sh`](run.sh) is what the suite's judge runs as its test command. It sets
