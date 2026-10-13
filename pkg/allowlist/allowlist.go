@@ -36,13 +36,14 @@ import (
 // canonical form.
 const Schema = "c8s.allowlist/v1"
 
-// Policy values. Argv policies use Deny/Any/Exact; secrets grants use
-// Deny/Allow — never Any (normalizeSecrets).
+// Policy values. Argv policies use Deny/Any/Exact; mount policies add
+// Confined; secrets grants use Deny/Allow — never Any (normalizeSecrets).
 const (
-	PolicyDeny  = "deny"
-	PolicyAny   = "any"
-	PolicyExact = "exact"
-	PolicyAllow = "allow"
+	PolicyDeny     = "deny"
+	PolicyAny      = "any"
+	PolicyExact    = "exact"
+	PolicyConfined = "confined"
+	PolicyAllow    = "allow"
 )
 
 // The yaml tags mirror the json ones so a document embeds in a YAML config
@@ -87,11 +88,20 @@ type ArgvPolicy struct {
 
 // MountPolicy governs bind mounts present at final OCI launch. An absent policy
 // is Deny: only verified platform mounts are admitted. Exact requires the
-// observed non-platform mount set to equal Rules. Any explicitly leaves mounts
-// unconstrained.
+// observed non-platform mount set to equal Rules. Confined admits any set of
+// confined mounts (ObservedMount.Confined), plus a mount of any kind at an
+// Unconfined destination, as long as no non-platform mount covers a DenyBelow
+// path. Any explicitly leaves mounts unconstrained.
 type MountPolicy struct {
 	Policy string      `json:"policy" yaml:"policy"`
 	Rules  []MountRule `json:"rules,omitempty" yaml:"rules,omitempty"`
+	// DenyBelow lists image paths no non-platform mount may sit at, below or
+	// above: the executable and every directory its entrypoint loads code from.
+	DenyBelow []string `json:"denyBelow,omitempty" yaml:"denyBelow,omitempty"`
+	// Unconfined lists exact destinations whose mount need not be confined: a
+	// writable host path or a volume on storage the node cannot vouch for that
+	// the workload needs.
+	Unconfined []string `json:"unconfined,omitempty" yaml:"unconfined,omitempty"`
 }
 
 // MountRule pins one non-platform mount by destination and source kind.
@@ -248,9 +258,11 @@ func (c Container) IsUnconstrained() bool {
 }
 
 // PinsAtMostCommand reports whether the container leaves everything but its
-// executable to the host: args, mounts and environment are any, and command is
-// any or exact. It is the shape of a seeded component entry, whose arguments
-// and mounts are per-pod but whose binary is the image's.
+// executable to the host: args and environment are any, mounts are any or
+// confined, and command is any or exact. It is the shape of a seeded component
+// entry, whose arguments and mounts are per-pod but whose binary is the
+// image's. Confined still admits whatever confined mounts a pod declares, so
+// it does not pin the mount table.
 func (c Container) PinsAtMostCommand() bool {
 	if c.Command.Policy != PolicyAny && c.Command.Policy != PolicyExact {
 		return false
@@ -258,7 +270,10 @@ func (c Container) PinsAtMostCommand() bool {
 	if c.Args.Policy != PolicyAny {
 		return false
 	}
-	return (mountConstraint{policy: &c.Mounts}).isUnconstrained() && (envConstraint{policy: &c.Env}).isUnconstrained()
+	if c.Mounts.Policy != PolicyAny && c.Mounts.Policy != PolicyConfined {
+		return false
+	}
+	return (envConstraint{policy: &c.Env}).isUnconstrained()
 }
 
 // ArgvPinned reports whether every container's command and args policy is
@@ -435,6 +450,9 @@ func normalizeContainers(workload, field string, cs []Container) error {
 // normalizeMounts validates and canonicalizes a mount policy. An absent policy
 // becomes Deny; verified platform mounts are part of that policy's baseline.
 func normalizeMounts(p *MountPolicy) error {
+	if p.Policy != PolicyConfined && (len(p.DenyBelow) != 0 || len(p.Unconfined) != 0) {
+		return fmt.Errorf("%s policy takes no denyBelow or unconfined paths", p.Policy)
+	}
 	switch p.Policy {
 	case PolicyAny, PolicyDeny, "":
 		if len(p.Rules) != 0 {
@@ -446,8 +464,13 @@ func normalizeMounts(p *MountPolicy) error {
 		p.Rules = nil
 	case PolicyExact:
 		return normalizeMountRules(p.Rules)
+	case PolicyConfined:
+		if len(p.Rules) != 0 {
+			return fmt.Errorf("confined policy takes no rules")
+		}
+		return normalizeConfined(p)
 	default:
-		return fmt.Errorf("unknown mount policy %q (want deny, any, or exact)", p.Policy)
+		return fmt.Errorf("unknown mount policy %q (want deny, any, exact, or confined)", p.Policy)
 	}
 	return nil
 }

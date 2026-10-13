@@ -165,13 +165,13 @@ func (c Container) admits(r RunningContainer) bool {
 // the host, a volume bound at or above that path would replace them with
 // content of the pod author's choosing and the pin would hold only in name.
 // Under deny there is no such mount, and under exact the operator declared
-// every mount, so only `any` is checked. Unavailable mount evidence is not a
-// finding, as `any` admits without evidence elsewhere: the start-phase check
-// always observes mounts, and CDI injection defers them until then. A relative
-// executable is resolved by the container's PATH, which this cannot follow,
-// so it is not checked.
+// every mount, so only `any` and `confined` are checked. Unavailable mount
+// evidence is not a finding, as `any` admits without evidence elsewhere: the
+// start-phase check always observes mounts, and CDI injection defers them
+// until then. A relative executable is resolved by the container's PATH,
+// which this cannot follow, so it is not checked.
 func (c Container) executableShadowed(r RunningContainer) bool {
-	if c.Command.Policy != PolicyExact || c.Mounts.Policy != PolicyAny {
+	if c.Command.Policy != PolicyExact || (c.Mounts.Policy != PolicyAny && c.Mounts.Policy != PolicyConfined) {
 		return false
 	}
 	if len(r.Argv) == 0 || !strings.HasPrefix(r.Argv[0], "/") {
@@ -195,7 +195,8 @@ func (c Container) admitsProcess(r RunningContainer) bool {
 }
 
 // admits checks classified final mount evidence. Platform mounts are the
-// baseline. Exact means equality with the non-platform rules.
+// baseline. Exact means equality with the non-platform rules; confined is
+// admitsConfined.
 func (p MountPolicy) admits(mounts []ObservedMount) bool {
 	if p.Policy == PolicyAny {
 		return true
@@ -207,6 +208,9 @@ func (p MountPolicy) admits(mounts []ObservedMount) bool {
 		return !slices.ContainsFunc(mounts, func(m ObservedMount) bool {
 			return m.Class != MountPlatform
 		})
+	}
+	if p.Policy == PolicyConfined {
+		return p.admitsConfined(mounts)
 	}
 	if p.Policy != PolicyExact {
 		return false

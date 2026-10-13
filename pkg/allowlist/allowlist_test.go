@@ -148,6 +148,8 @@ func TestPinsAtMostCommand(t *testing.T) {
 		"pinned args":                {Container{Command: any, Args: ArgvPolicy{Policy: PolicyExact, Argv: []string{"x"}}, Mounts: MountPolicy{Policy: PolicyAny}}, false},
 		"denied command":             {Container{Command: ArgvPolicy{Policy: PolicyDeny}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, false},
 		"mounts left absent (deny)":  {Container{Command: any, Args: any}, false},
+		"pinned command, confined":   {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyConfined, DenyBelow: []string{"/c8s"}}, Env: EnvPolicy{Policy: PolicyAny}}, true},
+		"exact mounts":               {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyExact, Rules: emptyDirRules("/x")}}, false},
 		"exact env":                  {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, false},
 	} {
 		t.Run(name, func(t *testing.T) {

@@ -67,6 +67,8 @@ func (m mountConstraint) admits(r RunningContainer) bool {
 
 // Deny and exact retain verified platform mounts (/etc/hosts, /etc/resolv.conf,
 // etc.), which the runtime adds to the OCI mount table even without workload volumes.
+// Confined is host-dependent: it admits any read-only host path, whose content
+// is the host's.
 func (m mountConstraint) hostIndependent() bool {
 	for _, rule := range m.policy.Rules {
 		if behavior := rule.behavior(); behavior == nil || !behavior.hostIndependent() {
