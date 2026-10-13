@@ -146,6 +146,20 @@ func anyEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
 	}}}
 }
 
+// componentEntry is the shape the chart seeds a C8s image in: the executable
+// pinned, everything else per-pod.
+func componentEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
+	t.Helper()
+	return pkgallowlist.Workload{Label: image, Containers: []pkgallowlist.Container{{
+		Digest:  mustDigest(t, digest),
+		Image:   image,
+		Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s"}},
+		Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
+		Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+		Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny},
+	}}}
+}
+
 // leafFor mints a client certificate carrying sandboxID, as CDS stamps it.
 func leafFor(t *testing.T, sandboxID string) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
@@ -198,7 +212,9 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s":     anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		"c8s": componentEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		// The previous release seeded the image under any argv; a node still
+		// running it keeps matching.
 		"c8s-old": anyEntry(t, testInjectedOld, "ghcr.io/confidential-dot-ai/c8s@"+testInjectedOld),
 		"busybox": anyEntry(t, testOther, "docker.io/library/busybox@"+testOther),
 		// Two mains: release is gated on every main container running, so the
@@ -576,15 +592,31 @@ func TestForeignAnyArgvContainerRefused(t *testing.T) {
 	}
 }
 
-// The injected image is an argv-unconstrained entry, so it is dropped only
-// when running an injected entrypoint. A pod that adds it running a shell
-// must not have that container ignored.
+// The injected image is dropped only when running an injected entrypoint. A
+// pod that adds it running a shell must not have that container ignored,
+// whether the entry pins the executable or leaves the argv open.
 func TestInjectedImageWithForeignArgvIsNotDropped(t *testing.T) {
+	for _, digest := range []string{testInjected, testInjectedOld} {
+		hn := newHarness(t)
+		hn.inv.containers = append(hn.inv.containers,
+			workloadclaims.SandboxContainer{Digest: digest, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
+		if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
+			t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
+		}
+	}
+}
+
+// An injected invocation is dropped only when its image is admitted with the
+// arguments left open. An entry that pins the whole argv declares the
+// container; the pod must then match an entry that names it.
+func TestInjectedModeUnderPinnedArgsIsNotDropped(t *testing.T) {
 	hn := newHarness(t)
-	hn.inv.containers = append(hn.inv.containers,
-		workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
+	al := hn.h.Policy.(fakePolicy).al
+	c8s := al.Workloads["c8s"]
+	c8s.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-cert", "--san=x"}}
+	al.Workloads["c8s"] = c8s
 	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
-		t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
+		t.Fatalf("sidecar declared by a pinned entry = %d, want 403", w.Code)
 	}
 }
 
@@ -661,7 +693,9 @@ func TestInventoryWithoutContainerDetailRefused(t *testing.T) {
 func TestEntryWithoutGrantRefused(t *testing.T) {
 	hn := newHarness(t)
 	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s":     anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		"c8s": componentEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		// The previous release seeded the image under any argv; a node still
+		// running it keeps matching.
 		"c8s-old": anyEntry(t, testInjectedOld, "ghcr.io/confidential-dot-ai/c8s@"+testInjectedOld),
 		"busybox": anyEntry(t, testOther, "docker.io/library/busybox@"+testOther),
 		"api": {Containers: []pkgallowlist.Container{{

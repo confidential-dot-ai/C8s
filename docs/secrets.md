@@ -322,15 +322,17 @@ C8s injects its own containers into every confidential pod. They are not part of
 a workload's declared set, so they are removed before matching — an entry never
 has to enumerate C8s's own sidecars.
 
-A container is dropped when its digest is admitted by some entry under an
-**unconstrained argv policy** (`command` and `args` both `any`) *and* its argv
-is the C8s binary in a mode the webhook injects: `/c8s get-cert`, `/c8s
-get-secret`, `/c8s get-volume`, or `/c8s probe-file`. Both conditions are
-required. Admission alone would let a pod add any any-argv component image
-with its entrypoint overridden — and have it ignored. The mode matters for the
-same reason. The C8s image in any other mode — `cds-attest`, `allowlist-proxy`,
-or a mode a pod author chose — is a declared container. The entry must admit it,
-as an init or a main container, or the pod matches nothing.
+A container is dropped when its argv is the C8s binary in a mode the webhook
+injects — `/c8s get-cert`, `/c8s get-secret`, `/c8s get-volume`, or `/c8s
+probe-file` — *and* some entry admits its digest running that binary under an
+**unconstrained args policy**: `command` exact at `/c8s` with `args: any`, the
+shape the chart seeds the C8s image in, or `command` and `args` both `any`, the
+shape earlier releases seeded. Both conditions are required. Admission alone
+would let a pod add any component image with its entrypoint overridden — and
+have it ignored. The mode matters for the same reason. The C8s image in any
+other mode — `cds-attest`, `allowlist-proxy`, or a mode a pod author chose — is
+a declared container. The entry must admit it, as an init or a main container,
+or the pod matches nothing.
 
 A pod may add the image in one of the four modes, with arguments of its own.
 That container is dropped too: the inventory reports no container name, and
@@ -350,9 +352,9 @@ The seeded component entries are the source: the injected image is among them,
 since it could not run otherwise, and an image bump seeds the new digest's entry
 beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#bootstrap)).
 
-What this rests on, in both directions: no image admitted under an unconstrained
-argv other than C8s's carries an executable at `/c8s`, and the injected image's
-own entry stays unconstrained. An operator who narrows it
+What this rests on, in both directions: no image admitted with open args for
+`/c8s` other than C8s's carries an executable at that path, and the injected
+image's own entry keeps its args open. An operator who pins them
 (`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected
 sidecar into a foreign container, and every release in the cluster is refused.
 Allowlist contents are operator-controlled and auditable, but that is a property

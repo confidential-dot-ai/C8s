@@ -12,12 +12,29 @@ PLATFORM="kind (mock attestation)"
 # shellcheck disable=SC1091  # written by the harness at run time
 . "$C8S_IT_WORKDIR/env"
 
-# The harness provides everything the scenarios assume.
-setup() { :; }
+# The served allowlist the scenarios assume: "nginx" admitted under any argv.
+# The install seed admits that digest only under its entrypoint (it is the
+# router's nginx), so the entry is the backend's to write, as on metal; the
+# shape is the one `c8s allowlist add` writes.
+nginx_entry=conformance-nginx
+setup() {
+    local ref digest entry
+    ref="$(image_ref nginx)"
+    digest="$(image_digest "$ref")"
+    entry="$(mktemp)"
+    jq -nc --arg digest "$digest" --arg image "$ref" \
+        '{label: $image, containers: [{digest: $digest, image: $image, command: {policy: "any"}, args: {policy: "any"}, env: {policy: "any"}, mounts: {policy: "any"}}]}' \
+        > "$entry"
+    allowlist_put "$nginx_entry" "$entry"
+    rm -f "$entry"
+}
 
 # Each function runs in its own process, so the CDS port-forward lib.sh shares
 # through WORKDIR outlives the call that opened it.
-teardown() { cds_pf_stop; }
+teardown() {
+    allowlist_delete "$nginx_entry" || true
+    cds_pf_stop
+}
 
 node_name() {
     case "$1" in

@@ -439,6 +439,7 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "entrypoint": {},
             "httpsPort": {},
             "image": {
               "type": [
