@@ -215,8 +215,9 @@ echo "==> nri-image-policy installer finished; plugin healthy: $health"
 Pins script for a node-as-CVM (--cvm-mode=bare-metal), where the node image bakes the
 plugin binary, its containerd registration and the boot config — base included,
 whose RKE2 system digests only the image build resolves. This release's CDS pins
-are the one thing that config cannot carry, so the installer patches those two
-keys into it and restarts containerd when they change.
+and the policy-measurement switch are the one thing that config cannot carry,
+so the installer patches those keys into it and restarts containerd when they
+change.
 
 Caller dict: .root.
 */}}
@@ -229,7 +230,8 @@ echo "==> nri-image-policy pins installer starting"
 result=$(/usr/local/bin/c8s nri-image-policy set-cds-pins \
   --config "/host{{ include "nri-image-policy.hostConfigPath" $root }}" \
   --cds-measurements {{ join "," $root.Values.cds.measurements | quote }} \
-  --cds-rtmrs {{ join "," $root.Values.cds.rtmrs | quote }})
+  --cds-rtmrs {{ join "," $root.Values.cds.rtmrs | quote }} \
+  --measure-policies={{ $root.Values.nriImagePolicy.measurePolicies }})
 echo "CDS pins $result"
 
 restart_needed=0
@@ -275,6 +277,7 @@ allowlist:
 {{- else }}
       []
 {{- end }}
+    measure_policies: {{ $root.Values.nriImagePolicy.measurePolicies }}
   base:
     {{- /* Also the installer's argv pin: JSON key order is defined, toYaml's is not. */ -}}
     {{- $base := include "c8s.baseWorkloads" $root | fromJson -}}

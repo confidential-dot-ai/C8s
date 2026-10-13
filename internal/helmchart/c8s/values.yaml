@@ -760,6 +760,15 @@ nriImagePolicy:
     # equal value measured into the node image, which an override cannot reach.
     interval: 5s
 
+  # Extend TDX RTMR[3] with each pulled allowlist's digest before applying it,
+  # so the register records every policy the node enforced since boot
+  # (docs/allowlist-and-capabilities.md, "Measured policy history"). Reaches
+  # the baked plugin too. Leave it off until armTLS peers carry the list:
+  # every armTLS check that pins RTMR[3] to the bare operator-key seed (CDS
+  # node identity, the plugin's own CDS pull, proxies, sidecars) rejects a
+  # node that measures.
+  measurePolicies: false
+
   # --- Bootstrap allowlist ---
   # The entries the cluster needs before an operator writes anything, rendered
   # into CDS's --allowlist-seed (templates/cds.yaml) beside the chart's own
