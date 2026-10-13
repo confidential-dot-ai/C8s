@@ -30,6 +30,11 @@ node:
 ##                  starts with (the image's ENTRYPOINT, plus the subcommand
 ##                  when the image bakes one). Arguments stay unconstrained:
 ##                  they are per-pod. Required unless argvPinned.
+##   - imageEnv:    the image config's Env, as name: value. The derived
+##                  entry's env match pins each to its value; `c8s install
+##                  --resolve-digests` refuses an image whose config differs.
+##                  Bump with the image. Required unless argvPinned; {} for
+##                  an image that sets none.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
@@ -37,14 +42,22 @@ c8sComponents:
     enabledPath: ""
     cdsExempt: false
     entrypoint: ["/c8s"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: cds.image
     enabledPath: ""
     cdsExempt: true
     entrypoint: ["/c8s", "cds"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     cdsExempt: false
     entrypoint: ["/attestation-api"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     ## Released by attestation-rs: the image built from .github/build-pins.json's
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
@@ -53,6 +66,8 @@ c8sComponents:
     enabledPath: armtlsMesh.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "armtls-mesh"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
     cdsExempt: false
@@ -64,6 +79,8 @@ c8sComponents:
     enabledPath: volumed.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "volumed"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -1242,6 +1259,13 @@ router:
     # ENTRYPOINT and the first CMD token, which the entrypoint script requires
     # before it execs anything. Bump with the image if either changes.
     entrypoint: ["/docker-entrypoint.sh", "nginx"]
+    # The image config's Env, which the seeded entry's env match pins. Bump
+    # with the image.
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      NGINX_VERSION: "1.30.5"
+      PKG_RELEASE: "1"
+      DYNPKG_RELEASE: "1"
     # -- Number of nginx replicas.
     replicas: 1
     # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs

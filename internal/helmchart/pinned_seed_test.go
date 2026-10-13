@@ -463,6 +463,7 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 	}
 	pinned[nginxDigest] = pins["router.nginx"]
 
+	images := componentImages(t)
 	seen := map[string]bool{}
 	for _, w := range renderedPodSpecs(t, out) {
 		name := w.kind + "/" + w.name
@@ -481,7 +482,8 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 			for _, m := range c.VolumeMounts {
 				mounts = append(mounts, pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown})
 			}
-			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: &pkgallowlist.EnvObservation{}}
+			repository, _, _ := strings.Cut(c.Image, "@")
+			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: launchEnv(t, images[repository].env, c)}
 			sources := map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base}
 			if name == "DaemonSet/c8s-volumed-teardown" {
 				// The pre-delete hook's script and pause are seed-only, like
