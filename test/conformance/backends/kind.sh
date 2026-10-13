@@ -77,11 +77,9 @@ external_endpoint() {
 }
 
 # Pods obtain evidence where every component does: the mock, on the node
-# address. Blocking the node's local attestation service is stopping it, which
-# also takes the CDS's readiness with it until it is started again.
+# address. Making the node's local attestation service unreachable is
+# attestation_service_stop, which also takes the CDS's readiness with it.
 attestation_endpoint() { mock_attestation_url; }
-attestation_block() { attestation_service_stop; }
-attestation_unblock() { attestation_service_start; }
 
 # The CDS and the mesh pin the mock's launch digest, which the mock reports
 # for every requester.

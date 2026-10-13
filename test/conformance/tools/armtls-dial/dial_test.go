@@ -84,8 +84,8 @@ func TestDialRejectedCertificate(t *testing.T) {
 		func(net.Conn) { t.Error("handler ran after a rejected certificate") })
 
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
-	if r.Handshake || r.Bytes != 0 || r.Status != 0 || r.Body != "" {
-		t.Fatalf("report = %+v, want handshake false and nothing received", r)
+	if !r.TLS || r.Handshake || r.Bytes != 0 || r.Status != 0 || r.Body != "" {
+		t.Fatalf("report = %+v, want tls true, handshake false and nothing received", r)
 	}
 	if !strings.Contains(r.Error, "bad certificate") {
 		t.Fatalf("error = %q, want the server's bad certificate alert", r.Error)
@@ -119,8 +119,8 @@ func TestDialAccepted(t *testing.T) {
 func TestDialClosedWithoutBytes(t *testing.T) {
 	addr := serve(t, nil, func(net.Conn) {})
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
-	if r.Handshake || r.Bytes != 0 || r.Error != "EOF" {
-		t.Fatalf("report = %+v, want handshake false with EOF", r)
+	if !r.TLS || r.Handshake || r.Bytes != 0 || r.Error != "EOF" {
+		t.Fatalf("report = %+v, want tls true, handshake false with EOF", r)
 	}
 }
 
@@ -143,8 +143,44 @@ func TestDialUnreachable(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), time.Second)
-	if r.Handshake || r.Error == "" {
+	if r.TLS || r.Handshake || r.Error == "" {
 		t.Fatalf("report = %+v", r)
+	}
+}
+
+// TestRunWritesCertificate drives the write mode: the files it leaves are
+// what --cert/--key read back, and the report of that dial names them.
+func TestRunWritesCertificate(t *testing.T) {
+	addr := serve(t,
+		func([][]byte, [][]*x509.Certificate) error { return errors.New("no") },
+		func(net.Conn) {})
+	dir := t.TempDir()
+	cert := testCert(t, certOptions{notAfter: time.Hour})
+	certFile, keyFile := dir+"/out.crt", dir+"/out.key"
+	if err := writePEM(cert, certFile, keyFile); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"--cert", certFile, "--key", keyFile, addr, "10.0.0.2:80"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("run = %d, stderr %q", code, stderr.String())
+	}
+	var r report
+	if err := json.Unmarshal(stdout.Bytes(), &r); err != nil {
+		t.Fatal(err)
+	}
+	if !r.TLS || !strings.Contains(r.Error, "bad certificate") {
+		t.Fatalf("report = %+v", r)
+	}
+	for _, args := range [][]string{
+		{"--self-signed", "--platform", "sev-snp", "--attestation-url", "http://127.0.0.1:1", "--write-cert", certFile},
+		{"--self-signed", "--platform", "sev-snp", "--attestation-url", "http://127.0.0.1:1", "--write-cert", certFile, "--write-key", keyFile, addr, "10.0.0.2:80"},
+		{"--cert", certFile, "--key", keyFile, "--write-cert", certFile, "--write-key", keyFile},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run(args, &stdout, &stderr); code != exitUsage || stderr.Len() == 0 {
+			t.Errorf("run(%q) = %d, stderr %q; want usage error", args, code, stderr.String())
+		}
 	}
 }
 

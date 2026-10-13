@@ -119,16 +119,17 @@
 #                                    yes/no: the address is in the node's
 #                                    interception membership (a local
 #                                    eligible pod) or its guard membership
-#   mesh_counter <node> <inbound_connections|guard_drops>
+#   mesh_counter <node> <inbound_connections|guard_drops>...
 #                                    the node's count of connections its
 #                                    inbound proxy accepted, or of packets its
-#                                    inbound guard dropped
+#                                    inbound guard dropped, one per line from
+#                                    one scrape
 #   mesh_port <outbound|inbound>     the port of that mesh listener
 #   mesh_uids                        the proxy UID, then the excluded UIDs,
 #                                    one per line
-#   mesh_role_mode <node> <client|server>
-#                                    cds or self-signed: the certificate that
-#                                    role of the node's mesh proxy presents
+#   mesh_cert_mode <node>            cds or self-signed: the certificate the
+#                                    node's mesh proxy presents (both roles
+#                                    switch together)
 #   mesh_chain_ready <node>          wait until the mesh proxy's verify set
 #                                    holds the mesh CA
 #   mesh_pins_satisfied <node>       yes/no: the node's evidence satisfies
@@ -148,9 +149,11 @@
 #                                    unreachable, and undo it
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
-# node_name, image_ref, image_digest, pull_interval and cds_pod_url answer the
-# same for a whole run; callers may cache them. The allowlist is state:
-# served_allowlist answers for the moment of the call.
+# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
+# node_address, mesh_port, mesh_uids, mesh_platform, excluded_namespace,
+# host_namespace_ns and attestation_endpoint answer the same for a whole run;
+# callers may cache them. The allowlist is state: served_allowlist answers for
+# the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
 # backend, which the steps never call:
@@ -207,11 +210,26 @@ pull_interval() { echo 5s; }
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
 # the first are the fixture's --container groups, one shell-quoted string each.
 # Options before -- are the fixture's own, named in the header; every pod may
-# send an echo request (a safe sysctl, which Restricted admits).
+# send an echo request (a safe sysctl, which Restricted admits), except one in
+# the node's network namespace, where kubelet refuses every net.* sysctl.
+PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
 pod_manifest() {
     take_pod_opts "$@"
     shift "$POD_OPTS_TAKEN"
-    render_pod --sysctl "net.ipv4.ping_group_range=0 2147483647" ${POD_OPTS[@]+"${POD_OPTS[@]}"} -- "$@"
+    render_fixture -- "$@"
+}
+
+# render_fixture <render flags...> -- <pod args...>: render_pod with the
+# flags, the ping sysctl where allowed, and the options take_pod_opts took.
+render_fixture() {
+    local -a flags=(--sysctl "$PING_SYSCTL")
+    case " ${POD_OPTS[*]-} " in *" --host-network "*) flags=() ;; esac
+    while [ "$1" != -- ]; do
+        flags+=("$1")
+        shift
+    done
+    shift
+    render_pod ${flags[@]+"${flags[@]}"} ${POD_OPTS[@]+"${POD_OPTS[@]}"} -- "$@"
 }
 
 # take_pod_opts <args...>: the options before a bare --, if there is one, into
@@ -239,8 +257,7 @@ CW_RENEW_INTERVAL=10s
 cw_pod_manifest() {
     take_pod_opts "$@"
     shift "$POD_OPTS_TAKEN"
-    render_pod --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" \
-        --sysctl "net.ipv4.ping_group_range=0 2147483647" ${POD_OPTS[@]+"${POD_OPTS[@]}"} -- "$@"
+    render_fixture --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" -- "$@"
 }
 
 # The node's admission plugin binds its socket directory into a container
@@ -504,10 +521,26 @@ MESH_SYNC_CONTAINER=iptables-sync
 MESH_SET_LOCAL=ARMTLS-MESH-LOCAL-PODS
 MESH_SET_GUARDED=ARMTLS-MESH-CW-PODS
 
-mesh_pod_on() { kubectl -n "$NS" get pods -l "$MESH_SELECTOR" --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}'; }
+# cached <key> <command...>: the command's output, kept in the run's scratch
+# directory after the first call; for what does not change during a run (the
+# mesh DaemonSet's spec, the mesh pod on a node). An empty answer is not kept.
+cached() {
+    local file
+    file="$(scratch)/cache-$1"
+    shift
+    if [ ! -s "$file" ]; then
+        "$@" > "$file" || { rm -f "$file"; return 1; }
+        [ -s "$file" ] || { rm -f "$file"; return 0; }
+    fi
+    cat "$file"
+}
+
+mesh_pod_on() { cached "mesh-pod-$1" kubectl -n "$NS" get pods -l "$MESH_SELECTOR" --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}'; }
+
+mesh_spec() { cached mesh-ds kubectl -n "$NS" get ds "$MESH_DS" -o json; }
 
 mesh_arg() {
-    kubectl -n "$NS" get ds "$MESH_DS" -o json 2>/dev/null |
+    mesh_spec 2>/dev/null |
         jq -r --arg f "--$1" '[.spec.template.spec.containers[] | .args // [] | . as $a | range(length) | select($a[.] == $f) | $a[. + 1]] | first // empty'
 }
 
@@ -530,38 +563,71 @@ mesh_member() {
 
 # A pod kept for the run that scrapes the mesh's health port on the node
 # address, which no pod-IP rule intercepts; one exec per scrape instead of a
-# pod per scrape.
+# pod per scrape. Its image is admitted by an entry of its own, since the
+# plugin denies what no served entry declares; the entry goes with the pod.
 MESH_SCRAPER_NS=c8s-conformance-tools
 MESH_SCRAPER=mesh-scraper
 mesh_scraper() {
+    local ready
+    ready="$(scratch)/mesh-scraper.ready"
+    [ ! -e "$ready" ] || return 0
     if ! kubectl -n "$MESH_SCRAPER_NS" get pod "$MESH_SCRAPER" >/dev/null 2>&1; then
         kubectl create namespace "$MESH_SCRAPER_NS" >/dev/null 2>&1 || true
-        local node image
+        local node image digest entry
         node="$(node_name one)" || return
         image="$(image_ref requester)" || return
+        digest="$(image_digest "$image")" || return
+        entry="$(scratch)/mesh-scraper.json"
+        any_workload "$digest" "$image" > "$entry"
+        allowlist_put "$MESH_SCRAPER" "$entry" || return
         render_pod -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 | kubectl apply -f - >/dev/null
     fi
-    kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=120s >/dev/null
+    kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=180s >/dev/null || return
+    touch "$ready"
 }
-mesh_scraper_teardown() { kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true; }
+mesh_scraper_teardown() {
+    kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    allowlist_delete "$MESH_SCRAPER" || true
+    rm -f "$(scratch)/mesh-scraper.ready"
+}
 
-# The sum of the series matching the pattern on the node's /metrics; a
-# failed scrape is an error, never a zero.
-mesh_metric_on() {
+# The node's /metrics, scraped once; a failed scrape is an error, never
+# empty. A scraper found gone is made again, once.
+mesh_metrics() {
     local addr port body
     addr="$(node_address "$1" ipv4)" || return
     port="$(mesh_arg health-port)"
+    port="${port:-15021}"
     mesh_scraper || return
-    body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:${port:-15021}/metrics")" || { echo "backend: no scrape of $addr:${port:-15021}" >&2; return 1; }
-    awk -v pat="$2" '$0 ~ pat {sum += $NF} END {printf "%d\n", sum + 0}' <<<"$body"
+    if ! body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
+        rm -f "$(scratch)/mesh-scraper.ready"
+        mesh_scraper || return
+        body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")" || { echo "backend: no scrape of $addr:$port" >&2; return 1; }
+    fi
+    printf '%s\n' "$body"
+}
+
+# The sum of the series matching the pattern in a scrape on stdin.
+metric_sum() { awk -v pat="$1" '$0 ~ pat {sum += $NF} END {printf "%d\n", sum + 0}'; }
+
+mesh_metric_on() {
+    local body
+    body="$(mesh_metrics "$1")" || return
+    metric_sum "$2" <<<"$body"
 }
 
 mesh_counter() {
-    case "$2" in
-        inbound_connections) mesh_metric_on "$1" '^armtls_mesh_connections_total\{.*direction="inbound"' ;;
-        guard_drops) mesh_metric_on "$1" '^armtls_mesh_iptables_cw_inbound_drops_total' ;;
-        *) echo "backend: mesh_counter: no counter '$2'" >&2; return 2 ;;
-    esac
+    local node="$1" body name pat
+    shift
+    body="$(mesh_metrics "$node")" || return
+    for name in "$@"; do
+        case "$name" in
+            inbound_connections) pat='^armtls_mesh_connections_total\{.*direction="inbound"' ;;
+            guard_drops) pat='^armtls_mesh_iptables_cw_inbound_drops_total' ;;
+            *) echo "backend: mesh_counter: no counter '$name'" >&2; return 2 ;;
+        esac
+        metric_sum "$pat" <<<"$body"
+    done
 }
 
 mesh_port() {
@@ -583,7 +649,7 @@ mesh_uids() {
 
 # Both roles switch to the CDS leaf together as far as the proxy reports
 # (one cert_mode gauge); the configured mode decides whether they try.
-mesh_role_mode() {
+mesh_cert_mode() {
     local v
     v="$(mesh_metric_on "$1" '^armtls_mesh_cert_mode\{mode="cds"\}')" || return
     if [ "$v" -ge 1 ]; then echo cds; else echo self-signed; fi
@@ -597,7 +663,7 @@ mesh_chain_ready() {
     local pod interval started wait
     pod="$(mesh_pod_on "$1")"
     [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
-    [ "$(mesh_role_mode "$1" server)" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
+    [ "$(mesh_cert_mode "$1")" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
     interval="$(mesh_arg ca-poll-interval)"
     started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.startTime}')"
     # Seconds still to wait until one poll interval and a margin have passed
@@ -612,7 +678,9 @@ print(max(0, int(interval + 30 - elapsed)), interval)
 PYEOF
 )
     sleep "$wait"
-    if kubectl -n "$NS" logs "$pod" -c armtls-mesh --since="${interval}s" 2>/dev/null | grep -q "CA bundle refresh failed"; then
+    local logs
+    logs="$(kubectl -n "$NS" logs "$pod" -c armtls-mesh --since="${interval}s" 2>/dev/null)" || true
+    if grep -q "CA bundle refresh failed" <<<"$logs"; then
         echo "backend: the mesh proxy on $1 failed a CA refresh in the last ${interval}s" >&2
         return 1
     fi
@@ -625,9 +693,13 @@ mesh_platform() {
 }
 
 node_address() {
-    local family="$2" addr
-    addr="$(kubectl get node "$1" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | tr ' ' '\n' |
-        case "$family" in ipv4) grep -v ':' ;; ipv6) grep ':' ;; *) echo "backend: node_address: no family '$family'" >&2; return 2 ;; esac | head -1)"
+    local pattern addr
+    case "$2" in
+        ipv4) pattern='^[^:]*$' ;;
+        ipv6) pattern=':' ;;
+        *) echo "backend: node_address: no family '$2'" >&2; return 2 ;;
+    esac
+    addr="$(kubectl get node "$1" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | tr ' ' '\n' | grep -m1 "$pattern")" || true
     [ -n "$addr" ] || return "$UNSUPPORTED"
     echo "$addr"
 }

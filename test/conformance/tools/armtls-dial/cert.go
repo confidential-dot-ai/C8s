@@ -12,9 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -49,8 +47,10 @@ func selfSignedCert(ctx context.Context, o certOptions) (tls.Certificate, error)
 	if err != nil {
 		return tls.Certificate{}, err
 	}
-	client, url := attestClient(o.attestationURL, o.timeout)
-	evidence, err := attestclient.MakeSNPARMTLSAttestFunc(client, url)(ctx, hex.EncodeToString(reportData[:]))
+	// The client routes a unix:// URL over the socket itself (attestation-go
+	// remote.NewClientWithHTTP), as every production caller's does.
+	client := attestclient.NewClientWithHTTP("", &http.Client{Timeout: o.timeout})
+	evidence, err := attestclient.MakeSNPARMTLSAttestFunc(client, o.attestationURL)(ctx, hex.EncodeToString(reportData[:]))
 	if err != nil {
 		return tls.Certificate{}, err
 	}
@@ -63,22 +63,6 @@ func selfSignedCert(ctx context.Context, o certOptions) (tls.Certificate, error)
 		return tls.Certificate{}, fmt.Errorf("parse minted certificate: %w", err)
 	}
 	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key, Leaf: leaf}, nil
-}
-
-// attestClient returns the attestation client and the URL to hand it. A
-// unix:// URL becomes a transport that dials the socket for every request.
-func attestClient(url string, timeout time.Duration) (attestclient.Client, string) {
-	hc := &http.Client{Timeout: timeout}
-	if socket, ok := strings.CutPrefix(url, "unix://"); ok {
-		hc.Transport = &http.Transport{
-			DisableKeepAlives: true,
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{Timeout: timeout}).DialContext(ctx, "unix", socket)
-			},
-		}
-		url = "http://unix"
-	}
-	return attestclient.NewClientWithHTTP("", hc), url
 }
 
 // buildCert is armtls.CreateAttestedCert with the validity window and the

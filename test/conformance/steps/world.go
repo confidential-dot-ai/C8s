@@ -65,6 +65,7 @@ type pod struct {
 	// addresses once running.
 	hello     []int
 	datagram  int
+	listener  string // the container whose log shows the datagrams received
 	opts      []string
 	namespace string
 	cert      *peerCert

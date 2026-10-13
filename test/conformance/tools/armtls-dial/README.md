@@ -23,13 +23,17 @@ armtls-dial [flags] <node-ip:port> <dest-ip:port>
   --not-after DUR             NotAfter = now + DUR for --self-signed (default 24h)
   --issuer-differs            issuer differs from subject and the certificate is signed by an unrelated key, still carrying the evidence extension
   --rewrite-not-after DUR     after signing, rewrite NotAfter inside the TBSCertificate to now+DUR without re-signing
+  --write-cert FILE           with --self-signed: write the minted certificate here as PEM and exit without dialing
+  --write-key FILE            with --write-cert: write the minted key here as PEM
   --timeout DUR               dial, handshake and read timeout (default 10s)
 ```
 
 Exactly one of `--cert/--key` or `--self-signed` is required; `--self-signed`
 needs `--attestation-url` and `--platform`; those two and the three flags
 shaping a minted certificate are refused with `--cert`. `--rewrite-not-after` applies
-to either source.
+to either source. `--write-cert/--write-key` take no positional arguments:
+they mint the certificate while its evidence can still be obtained and leave
+it for a later dial with `--cert/--key`.
 
 A minted certificate is built the way the mesh builds its own
 (`pkg/armtls.SelfSignedProvider`): the evidence binds the key through
@@ -41,10 +45,12 @@ and key usages as `armtls.CreateAttestedCert`.
 One JSON object on stdout:
 
 ```
-{"handshake": true|false, "error": "<message or empty>", "bytes": <application bytes received>, "status": <HTTP status parsed from the reply, 0 if none>, "body": "<response body, at most 4 KiB>"}
+{"tls": true|false, "handshake": true|false, "error": "<message or empty>", "bytes": <application bytes received>, "status": <HTTP status parsed from the reply, 0 if none>, "body": "<response body, at most 4 KiB>"}
 ```
 
-After the TLS handshake the tool writes the proxy's destination header
+`tls` is true once the TLS handshake returned without error; a connection
+refused, a timeout or a handshake the server fails leave it false. After the
+TLS handshake the tool writes the proxy's destination header
 `<dest-ip:port>\n`, then `GET / HTTP/1.0` with `Connection: close`, and reads
 until EOF or the timeout. In TLS 1.3 the client finishes first, so a proxy
 that rejects the client certificate alerts on the client's first read, after

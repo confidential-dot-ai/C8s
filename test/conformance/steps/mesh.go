@@ -44,22 +44,17 @@ func registerMesh(sc *godog.ScenarioContext) {
 	sc.Step(`^the NotAfter of that certificate is one year from now$`, notAfterOneYear)
 	sc.Step(`^the NotBefore of that certificate is (\d+) (minute|minutes|hour|hours) from now$`, notBeforeFromNow)
 	sc.Step(`^the evidence of node "([^"]*)" satisfies the pins of its mesh proxy$`, pinsSatisfied)
-	sc.Step(`^the (client|server) role of the mesh proxy of node "([^"]*)" presents a CDS-issued leaf$`, rolePresentsCDSLeaf)
+	sc.Step(`^the (?:client|server) role of the mesh proxy of node "([^"]*)" presents a CDS-issued leaf$`, rolePresentsCDSLeaf)
 	sc.Step(`^the verify set of the mesh proxy of node "([^"]*)" holds the mesh CA$`, verifySetHoldsCA)
 	sc.Step(`^the local attestation service of node "([^"]*)" is unreachable$`, attestationUnreachable)
 	sc.Step(`^a pod object "([^"]*)" is written with a node assignment other than node "([^"]*)"$`, ghostPod)
 	sc.Step(`^"([^"]*)" is recorded with a pod address$`, ghostAddress)
-	sc.Step(`^"([^"]*)" requests a hello from "([^"]*)"$`, requestsHello)
-	sc.Step(`^"([^"]*)" requests a hello from "([^"]*)" on its second port$`, requestsHelloSecondPort)
-	sc.Step(`^"([^"]*)" requests a hello from "([^"]*)" at its (IPv4|IPv6) address$`, requestsHelloAtFamily)
-	sc.Step(`^"([^"]*)" sends a UDP datagram to "([^"]*)"$`, sendsDatagram)
-	sc.Step(`^"([^"]*)" sends a UDP datagram to port 53 of "([^"]*)"$`, sendsDatagramTo53)
-	sc.Step(`^"([^"]*)" sends a UDP datagram from source port 53 to "([^"]*)"$`, sendsDatagramFrom53)
+	sc.Step(`^"([^"]*)" requests a hello from "([^"]*)"(?: (on its second port)| at its (IPv4|IPv6) address)?$`, requestsHello)
+	sc.Step(`^"([^"]*)" sends a UDP datagram( from source port 53)? to( port 53 of)? "([^"]*)"$`, sendsDatagram)
 	sc.Step(`^"([^"]*)" pings "([^"]*)"(?: at its IPv4 address)?$`, pings)
 	sc.Step(`^"([^"]*)" opens a TCP connection from source port 53 to the hello API of "([^"]*)"$`, connectsFrom53)
 	sc.Step(`^"([^"]*)" connects straight to the outbound proxy of node "([^"]*)" at the (node|loopback) address$`, connectsToOutbound)
-	sc.Step(`^"([^"]*)" connects to the inbound proxy of node "([^"]*)" naming "([^"]*)" as its destination$`, dialsInbound)
-	sc.Step(`^"([^"]*)" connects to the inbound proxy of node "([^"]*)" naming the second port of "([^"]*)" as its destination$`, dialsInboundSecondPort)
+	sc.Step(`^"([^"]*)" connects to the inbound proxy of node "([^"]*)" naming (the second port of )?"([^"]*)" as its destination$`, dialsInbound)
 	sc.Step(`^"([^"]*)" receives (the hello|no hello)$`, receivesHello)
 	sc.Step(`^the mesh proxy of node "([^"]*)" (carried the connection over armTLS|did not carry the connection)$`, carried)
 	sc.Step(`^the datagram (reaches|does not reach) "([^"]*)"$`, datagramReaches)
@@ -107,7 +102,7 @@ const (
 type meshState struct {
 	nodes     map[string]bool  // nodes whose mesh proxy the scenario named
 	counters  map[string]int64 // node + counter → value before the last action
-	answer    *probe           // the last request a pod made
+	answer    *execResult      // the last request a pod made
 	dial      *dialReport      // the last peer connection a dialer made
 	payload   string           // the datagram last sent
 	ghosts    map[string]*pod  // pod objects written with another node's assignment
@@ -115,14 +110,16 @@ type meshState struct {
 	endpoints map[string]string
 }
 
-// probe is what a pod's command printed and how it exited.
-type probe struct {
+// execResult is what a pod's command printed and how it exited.
+type execResult struct {
 	out string
 	rc  int
 }
 
-// dialReport is armtls-dial's report of one peer connection.
+// dialReport is armtls-dial's report of one peer connection; the fields are
+// the tool's (tools/armtls-dial/dial.go, report), which documents them.
 type dialReport struct {
+	TLS       bool   `json:"tls"`
 	Handshake bool   `json:"handshake"`
 	Error     string `json:"error"`
 	Bytes     int    `json:"bytes"`
@@ -132,7 +129,9 @@ type dialReport struct {
 
 // peerCert is the certificate a dialer in a pod presents: the pod's
 // CDS-issued leaf, or a self-signed attested TLS certificate shaped as the
-// scenario says.
+// scenario says. A self-signed one is minted when the dial happens, unless a
+// sentence took away what minting needs first; then it is minted at that
+// point and left in the pod as files.
 type peerCert struct {
 	leaf            bool
 	selfSigned      bool
@@ -140,6 +139,15 @@ type peerCert struct {
 	notBefore       time.Duration
 	notAfter        time.Duration
 	rewriteNotAfter time.Duration
+	files           []string // the minted certificate and key, once written
+}
+
+// mintedCert refuses a change to a certificate already minted.
+func (c *peerCert) shapeable() error {
+	if c.files != nil {
+		return fmt.Errorf("the certificate has been minted already; say its shape before the attestation service goes away")
+	}
+	return nil
 }
 
 // --- Description-time sentences ---
@@ -168,9 +176,14 @@ func meshRunning(ctx context.Context, node string) error {
 	return nil
 }
 
+// helloSite writes the hello body where busybox's httpd will serve it.
+func helloSite(port int) string {
+	return fmt.Sprintf("mkdir -p /tmp/www%d && echo %s > /tmp/www%d/index.html", port, hello, port)
+}
+
 // helloServer is busybox's httpd over a directory holding the hello body.
 func helloServer(port int) []string {
-	return []string{"sh", "-c", fmt.Sprintf("mkdir -p /tmp/www%d && echo %s > /tmp/www%d/index.html && exec httpd -f -p %d -h /tmp/www%d", port, hello, port, port, port)}
+	return []string{"sh", "-c", fmt.Sprintf("%s && exec httpd -f -p %d -h /tmp/www%d", helloSite(port), port, port)}
 }
 
 func servesHello(ctx context.Context, name string) error {
@@ -184,16 +197,28 @@ func servesHello(ctx context.Context, name string) error {
 	return nil
 }
 
+// servesSecondHello starts a second httpd in the running pod: the sentence
+// comes after the Background deployed it, and busybox's httpd daemonizes
+// without -f, so it outlives the exec.
 func servesSecondHello(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	p, err := w.undeployed(name)
+	p, err := w.pod(name)
 	if err != nil {
 		return err
 	}
 	if len(p.hello) == 0 {
 		return fmt.Errorf("%q serves no first hello API", name)
 	}
-	p.containers = append(p.containers, &container{ref: p.containers[0].ref, command: helloServer(secondHelloPort)})
+	if !p.deployed {
+		return fmt.Errorf("%q is not deployed; the second hello API starts in the running pod", name)
+	}
+	r, err := w.exec(p, fmt.Sprintf("%s && httpd -p %d -h /tmp/www%d >/dev/null 2>&1", helloSite(secondHelloPort), secondHelloPort, secondHelloPort))
+	if err != nil {
+		return err
+	}
+	if r.rc != 0 {
+		return fmt.Errorf("the second hello API of %q did not start (exit %d):\n%s", name, r.rc, r.out)
+	}
 	p.hello = append(p.hello, secondHelloPort)
 	return nil
 }
@@ -215,9 +240,11 @@ func receivesDatagrams(ctx context.Context, name, which string) error {
 		port = 53
 		p.opts = append(p.opts, "--add-capability", "NET_BIND_SERVICE")
 	}
+	p.listener = firstContainer
 	if len(p.hello) == 0 {
 		p.containers[0].command = datagramListener(port)
 	} else {
+		p.listener = secondContainer
 		p.containers = append(p.containers, &container{ref: p.containers[0].ref, command: datagramListener(port)})
 	}
 	p.datagram = port
@@ -531,23 +558,12 @@ func (w *world) cert(name string) (*pod, *peerCert, error) {
 }
 
 func holdsCDSLeaf(ctx context.Context, name string) error {
-	w := getWorld(ctx)
-	p, cert, err := w.cert(name)
-	if err != nil {
+	if err := holdsLeaf(ctx, name); err != nil {
 		return err
 	}
-	if !p.workloadID {
-		return fmt.Errorf("%q carries no workload ID, so no leaf is issued to it", name)
-	}
-	ok, err := poll(2*time.Minute, func() (bool, error) {
-		raw, err := w.certFile(p, "tls.crt")
-		return raw != nil, err
-	})
+	_, cert, err := getWorld(ctx).cert(name)
 	if err != nil {
 		return err
-	}
-	if !ok {
-		return fmt.Errorf("%q holds no leaf after 2 minutes", name)
 	}
 	cert.leaf = true
 	return nil
@@ -568,6 +584,9 @@ func holdsSelfSigned(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	if err := cert.shapeable(); err != nil {
+		return err
+	}
 	cert.selfSigned = true
 	w.lastPod = p
 	return nil
@@ -577,6 +596,9 @@ func holdsIssuerDiffers(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, cert, err := w.cert(name)
 	if err != nil {
+		return err
+	}
+	if err := cert.shapeable(); err != nil {
 		return err
 	}
 	cert.selfSigned, cert.issuerDiffers = true, true
@@ -598,6 +620,9 @@ func notAfterOneYear(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := cert.shapeable(); err != nil {
+		return err
+	}
 	cert.notAfter = 365 * 24 * time.Hour
 	return nil
 }
@@ -605,6 +630,9 @@ func notAfterOneYear(ctx context.Context) error {
 func notBeforeFromNow(ctx context.Context, n int, unit string) error {
 	cert, err := getWorld(ctx).lastCert()
 	if err != nil {
+		return err
+	}
+	if err := cert.shapeable(); err != nil {
 		return err
 	}
 	d := time.Duration(n) * time.Minute
@@ -631,13 +659,15 @@ func pinsSatisfied(ctx context.Context, node string) error {
 	return nil
 }
 
-func rolePresentsCDSLeaf(ctx context.Context, role, node string) error {
+// rolePresentsCDSLeaf: the proxy reports one certificate mode for both its
+// roles, so the sentence's role does not change what is asked.
+func rolePresentsCDSLeaf(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.node(node)
 	if err != nil {
 		return err
 	}
-	out, err := w.be.call("mesh_role_mode", k8sNode, role)
+	out, err := w.be.call("mesh_cert_mode", k8sNode)
 	if err != nil {
 		return err
 	}
@@ -657,14 +687,24 @@ func verifySetHoldsCA(ctx context.Context, node string) error {
 	return err
 }
 
+// attestationUnreachable stops the node's local attestation service. A
+// self-signed certificate a pod is to present needs that service for its
+// evidence, so one described but not yet minted is minted first.
 func attestationUnreachable(ctx context.Context, node string) error {
 	w := getWorld(ctx)
 	k8sNode, err := w.node(node)
 	if err != nil {
 		return err
 	}
-	w.onUndo(func() error { _, err := w.be.call("attestation_unblock", k8sNode); return err })
-	_, err = w.be.call("attestation_block", k8sNode)
+	for _, p := range w.pods {
+		if p.cert != nil && p.cert.selfSigned && p.cert.files == nil {
+			if err := w.mintCert(p); err != nil {
+				return err
+			}
+		}
+	}
+	w.onUndo(func() error { _, err := w.be.call("attestation_service_start", k8sNode); return err })
+	_, err = w.be.call("attestation_service_stop", k8sNode)
 	return err
 }
 
@@ -758,7 +798,7 @@ func ghostAddress(ctx context.Context, name string) error {
 // exec runs a shell script in the pod's first container and reports what it
 // printed and its exit status, which a failing command does not turn into
 // an error here.
-func (w *world) exec(p *pod, script string) (*probe, error) {
+func (w *world) exec(p *pod, script string) (*execResult, error) {
 	out, err := kubectl(nil, "-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--", "sh", "-c", script+"; echo \"rc=$?\"")
 	if err != nil {
 		return nil, err
@@ -771,7 +811,7 @@ func (w *world) exec(p *pod, script string) (*probe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("exit status of the command in %q: %w", p.name, err)
 	}
-	return &probe{out: out[:idx], rc: rc}, nil
+	return &execResult{out: out[:idx], rc: rc}, nil
 }
 
 // snapshot reads the counters of every mesh proxy the scenario named, so an
@@ -782,23 +822,43 @@ func (w *world) snapshot() error {
 		if err != nil {
 			return err
 		}
-		for _, counter := range []string{"inbound_connections", "guard_drops"} {
-			v, err := w.counter(k8sNode, counter)
-			if err != nil {
-				return err
-			}
-			w.mesh.counters[node+"/"+counter] = v
+		counters := []string{"inbound_connections", "guard_drops"}
+		values, err := w.counters(k8sNode, counters...)
+		if err != nil {
+			return err
+		}
+		for i, counter := range counters {
+			w.mesh.counters[node+"/"+counter] = values[i]
 		}
 	}
 	return nil
 }
 
+// counters reads the named counters of the node's mesh proxy from one scrape.
+func (w *world) counters(k8sNode string, counters ...string) ([]int64, error) {
+	out, err := w.be.call("mesh_counter", append([]string{k8sNode}, counters...)...)
+	if err != nil {
+		return nil, err
+	}
+	lines := strings.Fields(out)
+	if len(lines) != len(counters) {
+		return nil, fmt.Errorf("the backend answered %d counters for %d asked: %q", len(lines), len(counters), out)
+	}
+	values := make([]int64, len(lines))
+	for i, line := range lines {
+		if values[i], err = strconv.ParseInt(line, 10, 64); err != nil {
+			return nil, fmt.Errorf("the %s count of %s: %w", counters[i], k8sNode, err)
+		}
+	}
+	return values, nil
+}
+
 func (w *world) counter(k8sNode, counter string) (int64, error) {
-	out, err := w.be.call("mesh_counter", k8sNode, counter)
+	values, err := w.counters(k8sNode, counter)
 	if err != nil {
 		return 0, err
 	}
-	return strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	return values[0], nil
 }
 
 // target is where a request goes: a pod's address and port, or an endpoint.
@@ -843,16 +903,8 @@ func (w *world) requestHello(src, dest, family string, second bool) error {
 	return err
 }
 
-func requestsHello(ctx context.Context, src, dest string) error {
-	return getWorld(ctx).requestHello(src, dest, "", false)
-}
-
-func requestsHelloSecondPort(ctx context.Context, src, dest string) error {
-	return getWorld(ctx).requestHello(src, dest, "", true)
-}
-
-func requestsHelloAtFamily(ctx context.Context, src, dest, family string) error {
-	return getWorld(ctx).requestHello(src, dest, family, false)
+func requestsHello(ctx context.Context, src, dest, second, family string) error {
+	return getWorld(ctx).requestHello(src, dest, family, second != "")
 }
 
 func (w *world) sendDatagram(src, dest string, port int, sourcePort int) error {
@@ -886,16 +938,15 @@ func (w *world) sendDatagram(src, dest string, port int, sourcePort int) error {
 	return err
 }
 
-func sendsDatagram(ctx context.Context, src, dest string) error {
-	return getWorld(ctx).sendDatagram(src, dest, 0, 0)
-}
-
-func sendsDatagramTo53(ctx context.Context, src, dest string) error {
-	return getWorld(ctx).sendDatagram(src, dest, 53, 0)
-}
-
-func sendsDatagramFrom53(ctx context.Context, src, dest string) error {
-	return getWorld(ctx).sendDatagram(src, dest, 0, 53)
+func sendsDatagram(ctx context.Context, src, from53, to53, dest string) error {
+	var port, sourcePort int
+	if to53 != "" {
+		port = 53
+	}
+	if from53 != "" {
+		sourcePort = 53
+	}
+	return getWorld(ctx).sendDatagram(src, dest, port, sourcePort)
 }
 
 func pings(ctx context.Context, src, dest string) error {
@@ -987,43 +1038,35 @@ func (w *world) dial(src, node, dest string, second bool) error {
 	} else if target, err = w.target(dest, "", second); err != nil {
 		return err
 	}
-	args := []string{"/armtls-dial", "--timeout", "15s"}
+	args := []string{"--timeout", "15s"}
 	switch {
 	case cert.leaf:
-		paths, err := w.be.call("cert_paths")
+		certFile, keyFile, err := w.certPaths()
 		if err != nil {
 			return err
 		}
-		files := strings.Fields(paths)
-		if len(files) != 2 {
-			return fmt.Errorf("the backend named %d certificate paths, not two", len(files))
-		}
-		args = append(args, "--cert", files[0], "--key", files[1])
+		args = append(args, "--cert", certFile, "--key", keyFile)
+	case cert.files != nil:
+		args = append(args, "--cert", cert.files[0], "--key", cert.files[1])
 	case cert.selfSigned:
-		url, err := w.be.call("attestation_endpoint")
-		if err != nil {
-			return err
-		}
-		platform, err := w.be.call("mesh_platform")
-		if err != nil {
-			return err
-		}
-		args = append(args, "--self-signed", "--attestation-url", url, "--platform", platform,
-			"--not-before", cert.notBefore.String(), "--not-after", cert.notAfter.String())
-		if cert.issuerDiffers {
-			args = append(args, "--issuer-differs")
-		}
-		if cert.rewriteNotAfter != 0 {
-			args = append(args, "--rewrite-not-after", cert.rewriteNotAfter.String())
-		}
+		args = append(args, cert.mintArgs()...)
 	default:
 		return fmt.Errorf("the scenario has not said what certificate %q holds", src)
+	}
+	if cert.rewriteNotAfter != 0 {
+		args = append(args, "--rewrite-not-after", cert.rewriteNotAfter.String())
+	}
+	if cert.selfSigned && cert.files == nil {
+		var err error
+		if args, err = w.mintFlags(args); err != nil {
+			return err
+		}
 	}
 	args = append(args, net.JoinHostPort(nodeAddr, inbound), target)
 	if err := w.snapshot(); err != nil {
 		return err
 	}
-	out, err := kubectl(nil, append([]string{"-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--"}, args...)...)
+	out, err := w.armtlsDial(p, args...)
 	if err != nil {
 		return err
 	}
@@ -1032,24 +1075,78 @@ func (w *world) dial(src, node, dest string, second bool) error {
 		return fmt.Errorf("armtls-dial in %q printed no report: %w\n%s", src, err, out)
 	}
 	w.mesh.dial = &report
-	w.mesh.answer = &probe{out: report.Body, rc: 0}
+	w.mesh.answer = &execResult{out: report.Body, rc: 0}
 	if report.Status == 0 {
 		w.mesh.answer.rc = 1
 	}
 	return nil
 }
 
-func dialsInbound(ctx context.Context, src, node, dest string) error {
-	return getWorld(ctx).dial(src, node, dest, false)
+func dialsInbound(ctx context.Context, src, node, second, dest string) error {
+	return getWorld(ctx).dial(src, node, dest, second != "")
 }
 
-func dialsInboundSecondPort(ctx context.Context, src, node, dest string) error {
-	return getWorld(ctx).dial(src, node, dest, true)
+// certPaths is where a pod carrying a workload ID holds its leaf and key.
+func (w *world) certPaths() (certFile, keyFile string, err error) {
+	paths, err := w.be.call("cert_paths")
+	if err != nil {
+		return "", "", err
+	}
+	files := strings.Fields(paths)
+	if len(files) != 2 {
+		return "", "", fmt.Errorf("the backend named %d certificate paths, not two", len(files))
+	}
+	return files[0], files[1], nil
+}
+
+// mintArgs are the armtls-dial flags shaping a self-signed certificate as
+// the scenario described it; mintFlags adds where its evidence comes from.
+func (c *peerCert) mintArgs() []string {
+	args := []string{"--self-signed", "--not-before", c.notBefore.String(), "--not-after", c.notAfter.String()}
+	if c.issuerDiffers {
+		args = append(args, "--issuer-differs")
+	}
+	return args
+}
+
+func (w *world) mintFlags(args []string) ([]string, error) {
+	url, err := w.be.call("attestation_endpoint")
+	if err != nil {
+		return nil, err
+	}
+	platform, err := w.be.call("mesh_platform")
+	if err != nil {
+		return nil, err
+	}
+	return append(args, "--attestation-url", url, "--platform", platform), nil
+}
+
+// mintCert mints the pod's self-signed certificate now and leaves it in the
+// pod for the dial to present.
+func (w *world) mintCert(p *pod) error {
+	if !p.deployed {
+		return fmt.Errorf("%q has not been deployed, so its certificate cannot be minted yet", p.name)
+	}
+	files := []string{"/tmp/peer.crt", "/tmp/peer.key"}
+	args, err := w.mintFlags(append(p.cert.mintArgs(), "--write-cert", files[0], "--write-key", files[1]))
+	if err != nil {
+		return err
+	}
+	if _, err := w.armtlsDial(p, args...); err != nil {
+		return err
+	}
+	p.cert.files = files
+	return nil
+}
+
+// armtlsDial runs the mesh peer in the pod's first container.
+func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
+	return kubectl(nil, append([]string{"-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--", "/armtls-dial"}, args...)...)
 }
 
 // --- Outcomes ---
 
-func (w *world) lastAnswer() (*probe, error) {
+func (w *world) lastAnswer() (*execResult, error) {
 	if w.mesh.answer == nil {
 		return nil, fmt.Errorf("no request has been made")
 	}
@@ -1104,26 +1201,24 @@ func carried(ctx context.Context, node, what string) error {
 		}
 		return nil
 	}
-	// Unchanged over a quiet period, read twice.
-	for i := 0; i < 2; i++ {
-		time.Sleep(meshQuiet / 2)
-		now, err := w.counter(k8sNode, "inbound_connections")
-		if err != nil {
-			return err
-		}
-		if now != before {
-			return fmt.Errorf("the inbound proxy of node %q accepted a connection (%d before, %d after)", node, before, now)
-		}
+	// A monotonic counter unchanged after a quiet period was unchanged
+	// throughout it.
+	time.Sleep(meshQuiet)
+	now, err := w.counter(k8sNode, "inbound_connections")
+	if err != nil {
+		return err
+	}
+	if now != before {
+		return fmt.Errorf("the inbound proxy of node %q accepted a connection (%d before, %d after)", node, before, now)
 	}
 	return nil
 }
 
 func (w *world) listenerLog(p *pod) (string, error) {
-	container := firstContainer
-	if len(p.hello) > 0 && p.datagram != 0 {
-		container = secondContainer
+	if p.listener == "" {
+		return "", fmt.Errorf("%q receives no datagrams", p.name)
 	}
-	return kubectl(nil, "-n", w.nsOf(p), "logs", p.name, "-c", container)
+	return kubectl(nil, "-n", w.nsOf(p), "logs", p.name, "-c", p.listener)
 }
 
 func datagramReaches(ctx context.Context, what, name string) error {
@@ -1228,6 +1323,9 @@ func handshake(ctx context.Context, what string) error {
 	rejected := strings.Contains(r.Error, certRejected)
 	if what == "completes" && rejected {
 		return fmt.Errorf("the inbound proxy refused the certificate: %s", r.Error)
+	}
+	if what == "completes" && !r.TLS {
+		return fmt.Errorf("no TLS session was established: %s", r.Error)
 	}
 	if what == "fails" && !rejected {
 		return fmt.Errorf("the inbound proxy accepted the certificate (handshake %t, error %q, %d bytes received)", r.Handshake, r.Error, r.Bytes)

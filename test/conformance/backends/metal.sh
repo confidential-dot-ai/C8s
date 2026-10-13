@@ -92,8 +92,6 @@ attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
-attestation_block() { return "$UNSUPPORTED"; }
-attestation_unblock() { return "$UNSUPPORTED"; }
 
 # The lane pins the node's own measurement, so its evidence satisfies them.
 mesh_pins_satisfied() { echo yes; }

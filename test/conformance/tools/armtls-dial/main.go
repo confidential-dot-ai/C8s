@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -22,11 +23,14 @@ import (
 const (
 	exitUsage = 2
 	usageText = `usage: armtls-dial [flags] <node-ip:port> <dest-ip:port>
+       armtls-dial --self-signed [flags] --write-cert FILE --write-key FILE
 
 Dials the armTLS mesh inbound proxy at <node-ip:port>, presents a client
 certificate, names <dest-ip:port> as the destination pod, sends GET / and
 prints one JSON report on stdout. Exactly one of --cert/--key or
---self-signed is required.
+--self-signed is required. With --write-cert/--write-key the minted
+certificate and key are written as PEM instead, for a later dial with
+--cert/--key, and nothing is dialed.
 
 Flags:
 `
@@ -34,14 +38,15 @@ Flags:
 
 // selfSignedOnly are the flags that shape a minted certificate; with --cert
 // they would silently do nothing, so they are refused.
-var selfSignedOnly = []string{"attestation-url", "platform", "not-before", "not-after", "issuer-differs"}
+var selfSignedOnly = []string{"attestation-url", "platform", "not-before", "not-after", "issuer-differs", "write-cert", "write-key"}
 
 func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// run parses args, builds the certificate, dials and writes the report. It
-// returns 0 whenever a report was produced, exitUsage otherwise.
+// run parses args, builds the certificate, then dials and writes the report,
+// or writes the certificate. It returns 0 whenever a report or the files were
+// produced, exitUsage otherwise.
 func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("armtls-dial", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -59,6 +64,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		notAfter       = fs.Duration("not-after", 24*time.Hour, "NotAfter = now + DUR for --self-signed")
 		issuerDiffers  = fs.Bool("issuer-differs", false, "issuer differs from subject and the certificate is signed by an unrelated key")
 		rewriteAfter   = fs.Duration("rewrite-not-after", 0, "after signing, rewrite NotAfter to now + DUR without re-signing")
+		writeCert      = fs.String("write-cert", "", "write the minted certificate here as PEM and exit without dialing (with --write-key)")
+		writeKey       = fs.String("write-key", "", "write the minted key here as PEM (with --write-cert)")
 		timeout        = fs.Duration("timeout", 10*time.Second, "dial, handshake and read timeout")
 	)
 	if err := fs.Parse(args); err != nil {
@@ -72,10 +79,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs.Usage()
 		return exitUsage
 	}
-	if fs.NArg() != 2 {
+	writing := *writeCert != "" || *writeKey != ""
+	if writing && (*writeCert == "" || *writeKey == "") {
+		return usage("--write-cert and --write-key go together")
+	}
+	if writing && fs.NArg() != 0 {
+		return usage("--write-cert dials nothing: no <node-ip:port> <dest-ip:port>")
+	}
+	if !writing && fs.NArg() != 2 {
 		return usage("expected <node-ip:port> <dest-ip:port>")
 	}
-	nodeAddr, dest := fs.Arg(0), fs.Arg(1)
 	if *timeout <= 0 {
 		return usage("--timeout must be positive")
 	}
@@ -126,8 +139,15 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return exitUsage
 		}
 	}
+	if writing {
+		if err := writePEM(cert, *writeCert, *writeKey); err != nil {
+			fmt.Fprintf(stderr, "armtls-dial: write certificate: %v\n", err)
+			return exitUsage
+		}
+		return 0
+	}
 
-	r := dial(ctx, nodeAddr, dest, cert, *timeout)
+	r := dial(ctx, fs.Arg(0), fs.Arg(1), cert, *timeout)
 	out, err := json.Marshal(r)
 	if err != nil {
 		fmt.Fprintf(stderr, "armtls-dial: encode report: %v\n", err)
@@ -135,6 +155,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, string(out))
 	return 0
+}
+
+// writePEM writes the chain and key as PEM, in the shape tls.LoadX509KeyPair
+// reads back.
+func writePEM(cert tls.Certificate, certFile, keyFile string) error {
+	var chain []byte
+	for _, der := range cert.Certificate {
+		chain = append(chain, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(certFile, chain, 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600)
 }
 
 // rewriteLeafNotAfter applies rewriteNotAfter to the chain's leaf and

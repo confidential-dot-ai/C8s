@@ -15,11 +15,14 @@ import (
 // maxBody bounds the body copied into the report.
 const maxBody = 4096
 
-// report is the one JSON object the tool prints. Handshake is true only once
-// the proxy relayed an application byte: in TLS 1.3 the client's Finished goes
-// first, so a server that rejects the client certificate alerts after
-// Handshake has returned, on the first read.
+// report is the one JSON object the tool prints. TLS is true once the
+// handshake returned without error, which in TLS 1.3 says nothing about the
+// client certificate yet: the client's Finished goes first, so a server that
+// rejects the certificate alerts afterwards, on the first read. Handshake is
+// true only once the proxy relayed an application byte. The conformance
+// steps mirror this struct (test/conformance/steps/mesh.go, dialReport).
 type report struct {
+	TLS       bool   `json:"tls"`
 	Handshake bool   `json:"handshake"`
 	Error     string `json:"error"`
 	Bytes     int    `json:"bytes"`
@@ -62,31 +65,24 @@ func dial(ctx context.Context, nodeAddr, dest string, cert tls.Certificate, time
 		r.Error = err.Error()
 		return r
 	}
+	r.TLS = true
 
 	// Header and request in one write; a rejecting server has sent its alert
 	// by now and the write may fail with EPIPE, but the alert still waits in
-	// the receive buffer, so read regardless.
+	// the receive buffer, so read regardless. A clean EOF before any byte is
+	// still named, so the report says why nothing came.
 	_, werr := fmt.Fprintf(conn, "%s\nGET / HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", dest, dest)
-	data, rerr := readAll(conn)
-	r.Bytes = len(data)
-	if len(data) == 0 {
-		if rerr == nil {
-			rerr = io.EOF
-		}
-		r.Error = joinErrors(werr, rerr)
-		return r
+	data, rerr := io.ReadAll(conn)
+	if len(data) == 0 && rerr == nil {
+		rerr = io.EOF
 	}
-	r.Handshake = true
+	r.Bytes = len(data)
 	r.Error = joinErrors(werr, rerr)
-	r.Status, r.Body = parseResponse(data)
+	r.Handshake = len(data) > 0
+	if r.Handshake {
+		r.Status, r.Body = parseResponse(data)
+	}
 	return r
-}
-
-// readAll reads until EOF or error; a clean EOF is not an error.
-func readAll(r io.Reader) ([]byte, error) {
-	var buf bytes.Buffer
-	_, err := buf.ReadFrom(r)
-	return buf.Bytes(), err
 }
 
 // parseResponse reads data as an HTTP response. Without one, the status is 0
