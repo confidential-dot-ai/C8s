@@ -2,6 +2,7 @@ package allowlistclient
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"net/http"
@@ -71,6 +72,28 @@ func TestFetchServedDigestsServedBytes(t *testing.T) {
 	}
 	if served.ETag != `W/"4"` || served.Allowlist == nil {
 		t.Errorf("FetchServed() = %+v, want ETag W/\"4\" and an allowlist", served)
+	}
+}
+
+// The digest covers the bytes on the wire, not a re-encoding of them.
+func TestFetchServedDigestsExactBytes(t *testing.T) {
+	const body = `{"schema":"c8s.allowlist/v1",  "workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	served, _, err := NewClient(srv.URL).FetchServed(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	if want := "sha256:" + hex.EncodeToString(sum[:]); served.Digest != want {
+		t.Errorf("FetchServed().Digest = %s, want %s", served.Digest, want)
+	}
+	if served.Allowlist == nil {
+		t.Error("FetchServed() returned no allowlist")
 	}
 }
 
