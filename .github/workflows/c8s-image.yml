@@ -445,10 +445,25 @@ jobs:
         # ~3.5G rke2 tarball + airgap bundles, sha256-verified on reuse.
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
+          path: |
+            confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s
+            !confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
           key: ${{ runner.os }}-c8s-artifacts-${{ hashFiles('c8s/node-guest-image/c8s/mkosi.sync') }}
           restore-keys: |
             ${{ runner.os }}-c8s-artifacts-
+
+      - name: Restore pinned core images
+        # OCI layouts of the digest-pinned core images. The C8s images change
+        # with the ref, so this keys on it rather than on mkosi.sync, whose
+        # exact-key hits would never save them. airgap-images.sh reuses a
+        # layout only after re-hashing every blob and prunes stale digests.
+        id: core-images
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
+          key: ${{ runner.os }}-c8s-core-images-${{ inputs.c8s_ref || github.event.workflow_run.head_sha || github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-c8s-core-images-
 
       - name: Cache NVIDIA driver downloads
         # ~500MB, sha-verified; keyed on the script that carries the pins.
@@ -562,6 +577,14 @@ jobs:
       - name: Check tools tree presence
         id: tools-built
         run: echo "built=$([ -d confidential-os-builder/mkosi/kernel-builder/mkosi.output/image ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Save pinned core images
+        # Gate builds copy a PR's own images, which no later ref pins.
+        if: inputs.gate != true && steps.core-images.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: confidential-os-builder/mkosi/base/mkosi.pkgcache/c8s/core-images
+          key: ${{ steps.core-images.outputs.cache-primary-key }}
 
       - name: Save kernel-builder tools tree
         if: steps.tools-tree.outputs.cache-hit != 'true' && steps.tools-built.outputs.built == 'true'

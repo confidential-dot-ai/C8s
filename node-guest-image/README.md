@@ -168,7 +168,9 @@ values merge or separate host nginx configuration.
 The renderer also emits the component allowlist seed and a list of pinned
 core images. `airgap-images.sh` preserves their complete OCI content under
 `/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
-role. Core pods use `imagePullPolicy: Never`. Before containerd starts,
+role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
+when every referenced blob is present and matches its digest, and copies the
+image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
 boot preparation merges the measured component seed into the NRI system
 floor, allowing CDS and its clients to start while CDS is unavailable.
 Signed tenant workload entries are added to CDS's served seed without
