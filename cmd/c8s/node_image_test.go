@@ -641,21 +641,22 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
 		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+env+`}`, 1)
 	for name, tc := range map[string]struct {
-		variable string
-		wantErr  bool
+		env     string
+		wantErr bool
 	}{
-		"listed variable":   {variable: "NODE_IP"},
-		"unlisted variable": {variable: "LD_PRELOAD", wantErr: true},
+		"listed variable":    {env: `env: [{name: NODE_IP, value: "1"}]`},
+		"unlisted variable":  {env: `env: [{name: LD_PRELOAD, value: "1"}]`, wantErr: true},
+		"imported variables": {env: `envFrom: [{configMapRef: {name: settings}}]`, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := strings.Replace(seeded, `          args: ["--platform", "snp"]`, `          args: ["--platform", "snp"]
-          env: [{name: `+tc.variable+`, value: "1"}]`, 1)
+          `+tc.env, 1)
 			if input == seeded {
 				t.Fatal("fixture did not change")
 			}
 			_, err := collectNodeImageArtifacts([]byte(input))
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("collectNodeImageArtifacts(manifest sets %s) = %v, want error %v", tc.variable, err, tc.wantErr)
+				t.Fatalf("collectNodeImageArtifacts(%s) = %v, want error %v", tc.env, err, tc.wantErr)
 			}
 		})
 	}
