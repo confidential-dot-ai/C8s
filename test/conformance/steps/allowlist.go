@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
@@ -123,79 +122,50 @@ func entryDeclaresInit(ctx context.Context, name, image string) error {
 
 // entryPinsArgv pins the whole argv: command exact, the words given, and
 // args denied, as the pod manifests here leave args empty.
-func entryPinsArgv(ctx context.Context, name, image, line string) error {
-	c, err := getWorld(ctx).find(name, image)
+// setPolicy applies set to the entry's declared container for image. Each
+// policy sentence sets what it names; what it leaves alone keeps the default
+// declare gave it, or the nil an earlier sentence set.
+func (w *world) setPolicy(name, image string, set func(*entryContainer)) error {
+	c, err := w.find(name, image)
 	if err != nil {
 		return err
 	}
-	c.Command, c.Args = exactArgv(strings.Fields(line)), denyArgv()
+	set(c)
 	return nil
+}
+
+func entryPinsArgv(ctx context.Context, name, image, line string) error {
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) {
+		c.Command, c.Args = exactArgv(strings.Fields(line)), denyArgv()
+	})
 }
 
 func entryAdmitsAnyArgv(ctx context.Context, name, image string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Command, c.Args = anyArgv(), anyArgv()
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Command, c.Args = anyArgv(), anyArgv() })
 }
 
-// The sentences below set one policy of a declared container each; what they
-// leave alone keeps the default declare gave it, or the nil an earlier
-// sentence set.
 func entryPinsCommand(ctx context.Context, name, image, line string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Command = exactArgv(strings.Fields(line))
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Command = exactArgv(strings.Fields(line)) })
 }
 
 func entryPinsArgs(ctx context.Context, name, image, line string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Args = exactArgv(strings.Fields(line))
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Args = exactArgv(strings.Fields(line)) })
 }
 
 func entryAdmitsAnyCommand(ctx context.Context, name, image string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Command = anyArgv()
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Command = anyArgv() })
 }
 
 func entryAdmitsAnyArgs(ctx context.Context, name, image string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Args = anyArgv()
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Args = anyArgv() })
 }
 
 func entryStatesNoArgvPolicy(ctx context.Context, name, image string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Command, c.Args = nil, nil
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Command, c.Args = nil, nil })
 }
 
 func entryStatesNoArgsPolicy(ctx context.Context, name, image string) error {
-	c, err := getWorld(ctx).find(name, image)
-	if err != nil {
-		return err
-	}
-	c.Args = nil
-	return nil
+	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Args = nil })
 }
 
 // entryPinsEntrypoint pins the whole argv to what the image starts with when
@@ -289,35 +259,41 @@ func someEntryAdmitsAnyArgv(ctx context.Context, image string) error {
 
 // writeEntries writes every described entry not yet at CDS.
 func (w *world) writeEntries() error {
-	for name, e := range w.entries {
-		written := w.writtenName(name)
-		if w.written[written] {
-			continue
-		}
-		body, err := json.Marshal(e)
-		if err != nil {
+	for name := range w.entries {
+		if err := w.writeEntry(name); err != nil {
 			return err
 		}
-		if err := w.putEntry(written, body); err != nil {
-			return err
-		}
-		w.written[written] = true
 	}
+	return nil
+}
+
+// writeEntry writes the described entry, once, through the signed path.
+func (w *world) writeEntry(name string) error {
+	e, err := w.entry(name)
+	if err != nil {
+		return err
+	}
+	written := w.writtenName(name)
+	if w.written[written] {
+		return nil
+	}
+	body, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	if err := w.putEntry(written, body); err != nil {
+		return err
+	}
+	w.written[written] = true
 	return nil
 }
 
 // putEntry writes body under name through the backend's signed path.
 func (w *world) putEntry(name string, body []byte) error {
-	f, err := os.CreateTemp("", "entry-*.json")
-	if err != nil {
+	err := withBodyFile(body, func(path string) error {
+		_, err := w.be.call("allowlist_put", name, path)
 		return err
-	}
-	defer os.Remove(f.Name())
-	_, werr := f.Write(body)
-	if err := errors.Join(werr, f.Close()); err != nil {
-		return err
-	}
-	_, err = w.be.call("allowlist_put", name, f.Name())
+	})
 	lastMutation = time.Now()
 	return err
 }

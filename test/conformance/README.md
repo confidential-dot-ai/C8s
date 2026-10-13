@@ -71,6 +71,18 @@ key, and for a chosen lifetime. It also answers whether the CDS holds an
 operator key, whether its seed names a digest, and what argv an image starts
 with.
 
+For scenarios about issuance, the backend renders two more pods: one carrying
+a workload ID, whose requester the webhook injects and which the steps watch
+through the files of its certificate volume and its requester's log, and a
+requester the steps drive themselves, a pod that relays HTTP from inside the
+cluster so the CDS sees the pod's own source address, and that can reach the
+node's sandbox inventory and local attestation service over the socket
+directory the admission plugin binds into it. The backend also fetches
+evidence over chosen report data (and, where the attestation is mocked, over
+a chosen launch digest), reads the CDS's flags, restarts it with IP SAN
+binding or an inventory address range changed, names a pod's runtime sandbox,
+and runs the operator's verifier as a relying party on a saved leaf.
+
 For scenarios about the CDS itself, the backend reads its documents and its
 serving certificate as any client would, says what it was started with,
 restarts it with one parameter changed and restores it, stops the local
@@ -88,8 +100,8 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec` | `C8S_IT_WORKDIR` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell and no TEE on the harness host, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start`, `cds_restart`, `cds_restart_with`, `attestation_service_stop`, `private_keys`, `attest_direct` and a plain-HTTP `cds_read` answer 77; `image_entrypoint` answers 77 without `crane`, `write_token` without Go | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` and `crane` for the write-token and entrypoint functions |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77 | `C8S_IT_WORKDIR` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell and no TEE on the harness host, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start`, `cds_restart`, `cds_restart_with`, `attestation_service_stop`, `private_keys`, `attest_direct`, `pod_sandbox_id`, `evidence` over a chosen launch digest and a plain-HTTP `cds_read` answer 77; `image_entrypoint` answers 77 without `crane`, `write_token` without Go; `pod_cert_file` reads through the pod's first container, so only once it runs; `node_refuses` answers yes at once, so `cds_block` returns before kube-proxy has reprogrammed the node | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` and `crane` for the write-token and entrypoint functions |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that

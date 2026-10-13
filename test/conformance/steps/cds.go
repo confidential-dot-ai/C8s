@@ -7,7 +7,6 @@ import (
 	"crypto/sha512"
 	"crypto/x509"
 	"encoding/asn1"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -18,13 +17,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/confidential-dot-ai/attestation-go/armtls"
-	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
-	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/cucumber/godog"
-	tdxabi "github.com/google/go-tdx-guest/abi"
-	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
 // Sentences about the CDS itself: the documents it serves to any client, its
@@ -88,11 +81,11 @@ type document struct {
 // reconfigured, which one restore undoes.
 type cdsState struct {
 	doc          *document
-	servingCert  *x509.Certificate
+	servingCert  *leaf
 	heldKeys     []string
 	heldPins     []string
 	found        []crypto.PublicKey
-	chain        []*x509.Certificate
+	issued       *leaf
 	reconfigured bool
 }
 
@@ -418,13 +411,22 @@ func holdsOperatorKeys(ctx context.Context) error {
 	return nil
 }
 
+// pins is the launch digests the CDS was started with, lowercased; none
+// when it pins nothing.
+func (w *world) pins() ([]string, error) {
+	out, err := w.be.call("cds_pins")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(strings.ToLower(out)), nil
+}
+
 func holdsPins(ctx context.Context) error {
 	w := getWorld(ctx)
-	out, err := w.be.call("cds_pins")
+	pins, err := w.pins()
 	if err != nil {
 		return err
 	}
-	pins := strings.Fields(strings.ToLower(out))
 	if len(pins) == 0 {
 		return errors.New("the backend knows no pins")
 	}
@@ -522,98 +524,38 @@ func readsServingCert(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	cert, err := firstCertificate([]byte(out))
+	l, err := parseLeaf([]byte(out))
 	if err != nil {
 		return fmt.Errorf("the serving certificate: %w", err)
 	}
-	w.cds.servingCert = cert
+	if l == nil {
+		return errors.New("the CDS presented no certificate")
+	}
+	w.cds.servingCert = l
 	return nil
 }
 
-// reportData is the report data of the evidence the serving certificate
-// carries.
-func (w *world) reportData() ([]byte, error) {
+func (w *world) servingCert() (*leaf, error) {
 	if w.cds.servingCert == nil {
 		return nil, errors.New("the client has read no serving certificate")
 	}
-	att, err := armtls.ExtractAttestation(w.cds.servingCert, oidARMTLSAttestation)
-	if err != nil {
-		return nil, fmt.Errorf("the serving certificate's evidence: %w", err)
-	}
-	return reportDataOf(att)
-}
-
-// reportDataOf is the 64 bytes of report data the evidence commits to. The
-// library reads them off a raw SEV-SNP report; evidence in an envelope, as
-// every other platform's is, carries them in a quote or report the library
-// leaves to its verifiers, read here instead.
-func reportDataOf(att *armtls.Attestation) ([]byte, error) {
-	if data, ok := att.ReportData(); ok {
-		return data, nil
-	}
-	envelope, ok := att.EmbeddedEvidence()
-	if !ok {
-		return nil, errors.New("the evidence carries no report data")
-	}
-	switch envelope.Platform.Family() {
-	case teetypes.FamilySNP:
-		var evidence snp.SnpEvidence
-		if err := json.Unmarshal(envelope.Evidence, &evidence); err != nil {
-			return nil, fmt.Errorf("the SEV-SNP evidence: %w", err)
-		}
-		raw, err := base64.StdEncoding.DecodeString(evidence.AttestationReport)
-		if err != nil {
-			return nil, fmt.Errorf("the SEV-SNP report: %w", err)
-		}
-		report, err := armtls.NormalizeSEVSNPReport(raw)
-		if err != nil {
-			return nil, err
-		}
-		if len(report) < snp.ReportDataOffset+64 {
-			return nil, fmt.Errorf("the SEV-SNP report is %d bytes, too short for report data", len(report))
-		}
-		return report[snp.ReportDataOffset : snp.ReportDataOffset+64], nil
-	case teetypes.FamilyTDX:
-		var evidence tdx.TdxEvidence
-		if err := json.Unmarshal(envelope.Evidence, &evidence); err != nil {
-			return nil, fmt.Errorf("the TDX evidence: %w", err)
-		}
-		raw, err := base64.StdEncoding.DecodeString(evidence.Quote)
-		if err != nil {
-			return nil, fmt.Errorf("the TDX quote: %w", err)
-		}
-		parsed, err := tdxabi.QuoteToProto(raw)
-		if err != nil {
-			return nil, fmt.Errorf("the TDX quote: %w", err)
-		}
-		quote, ok := parsed.(*tdxpb.QuoteV4)
-		if !ok {
-			return nil, fmt.Errorf("the TDX quote is a %T, whose report data this suite does not read", parsed)
-		}
-		return quote.GetTdQuoteBody().GetReportData(), nil
-	}
-	return nil, fmt.Errorf("the %s evidence carries report data this suite does not read", envelope.Platform)
+	return w.cds.servingCert, nil
 }
 
 func reportDataCommitsToKey(ctx context.Context) error {
-	w := getWorld(ctx)
-	data, err := w.reportData()
+	l, err := getWorld(ctx).servingCert()
 	if err != nil {
 		return err
 	}
-	want, err := armtls.ReportDataForKey(w.cds.servingCert.PublicKey, nil)
-	if err != nil {
-		return err
-	}
-	const anchor = sha512.Size384
-	if len(data) < anchor || !bytes.Equal(data[:anchor], want[:anchor]) {
-		return errors.New("the report data does not begin with SHA-384 of the serving certificate's public key")
-	}
-	return nil
+	return l.commitsToOwnKey()
 }
 
 func reportDataTailZero(ctx context.Context) error {
-	data, err := getWorld(ctx).reportData()
+	l, err := getWorld(ctx).servingCert()
+	if err != nil {
+		return err
+	}
+	data, err := l.certificateEvidence()
 	if err != nil {
 		return err
 	}
@@ -681,8 +623,7 @@ func noneHoldsKey(ctx context.Context) error {
 		return err
 	}
 	for _, pub := range w.cds.found {
-		der, err := x509.MarshalPKIXPublicKey(pub)
-		if err == nil && bytes.Equal(der, ca.RawSubjectPublicKeyInfo) {
+		if held, err := certifies(ca, pub); err == nil && held {
 			return errors.New("a private key found outside CDS process memory matches the mesh CA certificate")
 		}
 	}
@@ -699,27 +640,27 @@ func requesterAttests(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	chain, err := certificates([]byte(out))
+	l, err := parseLeaf([]byte(out))
 	if err != nil {
 		return fmt.Errorf("the chain the requester received: %w", err)
 	}
-	if len(chain) == 0 {
+	if l == nil {
 		return errors.New("the requester received no certificate")
 	}
-	w.cds.chain = chain
+	w.cds.issued = l
 	return nil
 }
 
 func receivesLeafSignedByMeshCA(ctx context.Context) error {
 	w := getWorld(ctx)
-	if len(w.cds.chain) == 0 {
+	if w.cds.issued == nil {
 		return errors.New("the requester has received no chain")
 	}
 	ca, err := w.meshCAServed()
 	if err != nil {
 		return err
 	}
-	leaf := w.cds.chain[0]
+	leaf := w.cds.issued.cert
 	if !bytes.Equal(leaf.RawIssuer, ca.RawSubject) {
 		return fmt.Errorf("the leaf's issuer %q is not the mesh CA %q", leaf.Issuer, ca.Subject)
 	}

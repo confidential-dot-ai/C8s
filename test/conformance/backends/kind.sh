@@ -84,8 +84,12 @@ cds_restart_with() {
         min-ca-validity) flag=--min-ca-validity ;;
         pins) flag=--measurements ;;
         operator-keys) flag=--operator-keys ;;
+        san-validation) flag=--san-validation ;;
+        inventory-cidr) flag=--sandbox-inventory-cidr ;;
         *) echo "backend: cds_restart_with: no parameter '$1'" >&2; return 2 ;;
     esac
+    # A change applies on top of the running args, so two in one scenario
+    # compose; one that changes nothing needs no new pod.
     if [ "$2" = none ]; then
         args="$(cds_arg_set "$current" "$flag")"
     elif [ -n "$flag" ]; then
@@ -126,7 +130,10 @@ cds_arg_set() {
 }
 
 # Wait for the one CDS pod that is none of the given UIDs (the pods before
-# the change) to run, then answer /healthz through the forward.
+# the change) to run and answer /healthz through the forward, then for the
+# Service to route to it: that takes its readiness probe, which runs some
+# seconds after the pod does. A CDS that reports itself not ready
+# (min-ca-validity) never joins the Service, and is not waited for.
 cds_await_running() {
     local deadline=$(($(date +%s) + 180)) pods uid phase
     while :; do
@@ -134,9 +141,14 @@ cds_await_running() {
         read -r uid phase <<<"$pods"
         if [ "$(printf '%s\n' "$pods" | grep -c .)" -eq 1 ] && [[ " $1 " != *" $uid "* ]] && [ "$phase" = Running ]; then
             cds_pf_start
-            return
+            break
         fi
         [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the reconfigured CDS is not running: $pods" >&2; return 1; }
+        sleep 2
+    done
+    while [ "$(curl -sk -o /dev/null -w '%{http_code}' "https://127.0.0.1:$CDS_LOCAL_PORT/readyz")" = 200 ]; do
+        [ -z "$(kubectl -n "$NS" get endpoints c8s-cds -o jsonpath='{.subsets[*].addresses[*].ip}')" ] || return 0
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the Service does not route to the ready CDS" >&2; return 1; }
         sleep 2
     done
 }
@@ -182,6 +194,58 @@ attest_direct() {
         --cds-measurements "$MOCK_MEASUREMENT" --san "requester.$NS.svc" 2>/dev/null
 }
 
+# The mock issues a version-2 SNP report over any report data, with an
+# all-zero launch measurement (the pin the CDS was installed with) and no
+# signature anyone checks. Evidence for another launch digest is the same
+# report with those bytes set; the mock's verifier reads the digest from the
+# report it is shown.
+evidence() {
+    python3 - "$(mock_attestation_url)" "$3" "${4:-}" <<'PYEOF'
+import base64, json, sys, urllib.request
+url, report_data, digest = sys.argv[1:4]
+if not digest:
+    body = json.dumps({"report_data": base64.b64encode(bytes.fromhex(report_data)).decode()}).encode()
+    req = urllib.request.Request(url + "/attest", body, {"Content-Type": "application/json"})
+    sys.stdout.write(urllib.request.urlopen(req, timeout=20).read().decode())
+    sys.exit()
+report = bytearray(1184)
+report[0] = 0x02    # report version 2
+report[0x0A] = 0x03 # SMT-allowed policy
+rd = bytes.fromhex(report_data)
+report[0x50:0x50 + len(rd)] = rd
+d = bytes.fromhex(digest)
+report[0x90:0x90 + len(d)] = d
+print(json.dumps({"platform": "snp", "evidence": {"attestation_report": base64.b64encode(bytes(report)).decode()}}))
+PYEOF
+}
+
+# The mock reports every signature valid, so nothing here is unsigned; and
+# its evidence verifies nowhere but at the mock, so no verifier on this host
+# can act as a relying party.
+evidence_unsigned() { return "$UNSUPPORTED"; }
+relying_party() { return "$UNSUPPORTED"; }
+
+pod_uid() { kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}'; }
+
+# The pod's certificate volume is the memory-backed emptyDir the webhook
+# adds, which the kubelet keeps under the pod's directory on the node; read
+# there, so the first leaf is seen before any workload container runs.
+pod_cert_file() {
+    if [ -n "${4:-}" ]; then
+        pod_cert_file_in "$1" "$2" "$4" "$3"
+        return
+    fi
+    local uid
+    uid="$(pod_uid "$1" "$2")" || return
+    node_exec cat "/var/lib/kubelet/pods/$uid/volumes/kubernetes.io~empty-dir/c8s-certs/$3" 2>/dev/null || true
+}
+
+pod_sandbox_id() {
+    local uid
+    uid="$(pod_uid "$1" "$2")" || return
+    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | head -1
+}
+
 # From the node's store, pulled when absent: the image's entrypoint, then its
 # cmd. The kind node image ships jq.
 image_entrypoint() {
@@ -217,6 +281,14 @@ base_declares() {
 # healthSocketName, both on the node.
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
 PLUGIN_HEALTH=/var/run/nri-image-policy/health.sock
+
+# Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
+# kind node image ships curl.
+node_refuses() {
+    local rc=0
+    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null || rc=$?
+    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
+}
 
 # The pids running the plugin binary; the kind node image ships procps.
 plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
