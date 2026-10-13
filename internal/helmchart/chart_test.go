@@ -7767,7 +7767,8 @@ func TestChartMeasurePolicies(t *testing.T) {
 
 		out, err = helmTemplate(t,
 			"--set-string", "attestationApi.cvmMode=bare-metal",
-			"--set", "attestationApi.enabled=false",
+			// Measuring needs the journal mount beside the attestation-api socket.
+			"--set", fmt.Sprintf("attestationApi.enabled=%t", measure),
 			"--set", "nriImagePolicy.baked=true",
 			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 			"--set-string", "nriImagePolicy.image.digest=sha256:"+strings.Repeat("d", 64),
@@ -7827,5 +7828,20 @@ func TestChartMeasurePoliciesNeedsDefaultRuntimeDir(t *testing.T) {
 	}
 	if got := parseValidationErrorKind(out); got != "measure_policies_runtime_dir" {
 		t.Fatalf("validation kind = %q, want measure_policies_runtime_dir\n%s", got, out)
+	}
+}
+
+// Producers mount the journal only beside the attestation-api socket, so the
+// chart refuses measuring on an unbaked node without attestation-api.
+func TestChartMeasurePoliciesNeedsJournalMount(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.measurePolicies=true",
+		"--set", "attestationApi.enabled=false",
+	)
+	if err == nil {
+		t.Fatalf("helm template succeeded, want a measure_policies_no_journal_mount failure\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "measure_policies_no_journal_mount" {
+		t.Fatalf("validation kind = %q, want measure_policies_no_journal_mount\n%s", got, out)
 	}
 }

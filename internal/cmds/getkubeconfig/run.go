@@ -188,7 +188,9 @@ func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platf
 	if port == "" {
 		port = "443"
 	}
-	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: cfg.Timeout}, Config: armTLSConfig(exp)}
+	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+	defer cancel()
+	dialer := tls.Dialer{Config: armTLSConfig(exp)}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
 	if err != nil {
 		return

@@ -595,8 +595,9 @@ enforcing the one it holds: at startup, the base allowlist alone.
 > it: armTLS verifiers built on attestation-go releases that predate runtime
 > extensions, and flat RTMR[3] pins (`--rtmrs 3=…`,
 > `allowlist.pull.cds_rtmrs`). Producers find the journal only under the
-> default `nriImagePolicy.hostPaths.runtimeDir`, so the chart refuses
-> `measurePolicies` with any other. A node stops measuring, and so stops
+> default `nriImagePolicy.hostPaths.runtimeDir`, mounted beside the
+> attestation-api socket, so the chart refuses `measurePolicies` with any
+> other directory, or without `attestationApi.enabled` or `node.baked`. A node stops measuring, and so stops
 > applying new policies, after 256 of them (the most a certificate carries)
 > until it reboots.
 

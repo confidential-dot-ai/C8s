@@ -936,3 +936,21 @@ func TestPolicyMeasurerRefusesOnDivergedRegister(t *testing.T) {
 		t.Errorf("register extended %d times, want 0", reg.extends)
 	}
 }
+
+// A refused initial policy ends the initial pull at once instead of retrying.
+func TestPullInitialStopsOnRefusal(t *testing.T) {
+	handler := &flippingHandler{versions: []string{"1"}, bodyByV: map[string][]byte{"1": canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))}}
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	_, err := pullInitial(t.Context(), pullArgs{
+		client:      allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		store:       newPolicyStore(anyAllowlist(map[string]string{})),
+		measure:     func(string) error { return fmt.Errorf("%w: cap reached", errPolicyRefused) },
+		timeout:     time.Second,
+		pluginErrCh: make(chan error),
+		logger:      discardLogger(),
+	})
+	if !errors.Is(err, errPolicyRefused) || handler.hits.Load() != 1 {
+		t.Fatalf("pullInitial = %v after %d fetches, want errPolicyRefused after 1", err, handler.hits.Load())
+	}
+}

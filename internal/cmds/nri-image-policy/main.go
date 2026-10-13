@@ -331,6 +331,9 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 		}
 
 		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
+		if errors.Is(err, errPolicyRefused) {
+			return "", err // retrying cannot succeed
+		}
 		if attempt >= allowlistApiMaxRetries {
 			return "", fmt.Errorf("allowlist fetch failed after %d attempts: %w", allowlistApiMaxRetries, err)
 		}
