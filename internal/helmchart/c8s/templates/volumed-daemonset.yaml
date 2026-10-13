@@ -71,7 +71,7 @@ spec:
             - --kubelet-root
             - {{ $kubeletRoot | quote }}
             - --cgroup-root
-            - {{ .Values.volumed.hostPaths.cgroupRoot | quote }}
+            - /cgroup
             - --reap-interval
             - {{ .Values.volumed.reapInterval | quote }}
             - --max-mounts
@@ -89,8 +89,10 @@ spec:
             - name: sys
               mountPath: /sys
               readOnly: true
+            # Beside /sys, not at the host path below it: the confined mount
+            # policy refuses a mount nested in another volume.
             - name: cgroup
-              mountPath: {{ .Values.volumed.hostPaths.cgroupRoot }}
+              mountPath: /cgroup
               readOnly: true
             # The daemon's socket must live in the inventory's socket directory:
             # that is the one directory nri-image-policy NRI-mounts into cw-pod

@@ -151,13 +151,27 @@ func TestChartPinnedSeedAdmitsLocalPathHelperArgv(t *testing.T) {
 	}
 	seed := renderedSeed(t, out)
 	helperDigest := localPathHelperDigest(t)
+	dataDir := localPathHelperDataDir(t)
 
 	for _, script := range []string{"/script/setup", "/script/teardown"} {
 		admitPlatformContainer(t, seed, helperDigest, corev1.Container{
 			Name: "local-path-helper", Command: []string{"/bin/sh", script},
-			Args:         []string{"-p", "/opt/local-path-provisioner/pvc-123", "-s", "1073741824", "-m", "Filesystem", "-a", "create"},
-			VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/opt/local-path-provisioner"}, {Name: "script", MountPath: "/script"}},
+			Args:         []string{"-p", dataDir + "/pvc-123", "-s", "1073741824", "-m", "Filesystem", "-a", "create"},
+			VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: dataDir}, {Name: "script", MountPath: "/script"}},
 		})
+	}
+	index := seed.BuildIndex()
+	for name, mounts := range map[string][]pkgallowlist.ObservedMount{
+		"writable host path elsewhere": {{Destination: "/opt/host", Class: pkgallowlist.MountHost}},
+		"volume over busybox":          {{Destination: "/bin", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}},
+		"volume nested in the data dir": {
+			{Destination: dataDir, Class: pkgallowlist.MountHost},
+			{Destination: dataDir + "/lib", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory},
+		},
+	} {
+		if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: helperDigest, Argv: []string{"/bin/sh", "/script/setup"}, Mounts: mounts, Env: &pkgallowlist.EnvObservation{}}) {
+			t.Errorf("seed admits the local-path helper with %s: %+v", name, mounts)
+		}
 	}
 	denyArgvs(t, seed, helperDigest, []string{"/bin/sh", "-c", "rm -rf /"})
 	denyArgvs(t, seed, helperDigest, []string{"/bin/sh", "/script/setup-evil"})
@@ -231,6 +245,29 @@ func localPathHelperDigest(t *testing.T) string {
 		}
 	}
 	return digest
+}
+
+// localPathHelperDataDir reads the helper data directory the chart lists as
+// unconfined and proves it is the node image's only provisioner node path.
+func localPathHelperDataDir(t *testing.T) string {
+	t.Helper()
+	raw, err := os.ReadFile("c8s/values.yaml")
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	m := regexp.MustCompile(`(?ms)localPathHelper:.*?\n\s*dataDir: (\S+)`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("rke2.localPathHelper.dataDir not found in values.yaml")
+	}
+	manifest, err := os.ReadFile(localPathHelperManifest)
+	if err != nil {
+		t.Fatalf("read node-image manifest: %v", err)
+	}
+	paths := regexp.MustCompile(`"paths":\s*\[([^\]]*)\]`).FindAllSubmatch(manifest, -1)
+	if len(paths) != 1 || string(paths[0][1]) != `"`+string(m[1])+`"` {
+		t.Fatalf("local-path node paths in %s = %q, want only %q — bump rke2.localPathHelper.dataDir", localPathHelperManifest, paths, m[1])
+	}
+	return string(m[1])
 }
 
 // An any-argv entry for a pinned digest voids the pin (admission is the union
@@ -549,6 +586,12 @@ func checkComponentEntries(t *testing.T, out string) {
 				for _, c := range w.Containers {
 					if c.Digest.String() != digest {
 						continue
+					}
+					// Every component image reads OpenSSL's configuration or
+					// its trust store there; nginx loads providers it names.
+					// The volumed teardown hook's script containers keep any.
+					if c.Mounts.Policy == pkgallowlist.PolicyConfined && !slices.Contains(c.Mounts.DenyBelow, "/etc/ssl") {
+						t.Errorf("%s %s denyBelow = %q, want /etc/ssl included", source, digest[:19], c.Mounts.DenyBelow)
 					}
 					for _, denied := range c.Mounts.DenyBelow {
 						overs = append(overs, []pkgallowlist.ObservedMount{{Destination: denied, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}})

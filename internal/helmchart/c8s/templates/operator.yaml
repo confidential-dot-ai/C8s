@@ -130,7 +130,9 @@ spec:
             # (controller-runtime cache tempfiles, the webhook serving
             # certificate, etc.) to land in this emptyDir rather than the
             # immutable image. Memory-backed, so the operator's confined
-            # mount policy admits it on any node.
+            # mount policy admits it on any node; with no sizeLimit its pages
+            # count against the container's memory limit instead of evicting
+            # the pod at a separate cap.
             - name: tmp
               mountPath: /tmp
             {{- include "c8s.nodeConfigMount" . | nindent 12 }}
@@ -143,7 +145,6 @@ spec:
         - name: tmp
           emptyDir:
             medium: Memory
-            sizeLimit: 64Mi
         {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
         {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
         - name: measurements-config

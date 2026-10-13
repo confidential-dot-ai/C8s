@@ -603,6 +603,7 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "dataDir": {},
             "image": {
               "type": [
                 "object",

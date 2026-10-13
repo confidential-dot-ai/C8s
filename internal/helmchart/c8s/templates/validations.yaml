@@ -84,7 +84,7 @@
 {{- end -}}
 {{- end -}}
 {{- if not $ok -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args and env unconstrained and mounts any or confined for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args and env unconstrained and mounts any or confined for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape; pin the entrypoint with mounts confined, as allowlist lint refuses a pinned entry with mounts any), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

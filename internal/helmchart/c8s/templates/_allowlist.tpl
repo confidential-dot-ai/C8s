@@ -125,9 +125,16 @@
 {{- else if eq .name "armtlsMesh.image" -}}
 {{- $unconfined = list "/run/xtables.lock" "/etc/c8s-measurements" -}}
 {{- else if eq .name "volumed.image" -}}
-{{- $unconfined = list $v.volumed.hostPaths.kubeletRoot "/dev" $runtimeDir -}}
+{{- /* /sys and a v1 /cgroup hold nested mounts, so their read-only binds are not recursive */ -}}
+{{- $unconfined = list $v.volumed.hostPaths.kubeletRoot "/dev" "/sys" "/cgroup" $runtimeDir -}}
 {{- else if eq .name "router.nginx" -}}
 {{- $unconfined = list "/etc/nginx/nginx.conf" (include "router.tlsSnippetDir" .root) -}}
+{{- end -}}
+{{- /* The plugin and CDS reject an unclean path at load; fail the render instead. */ -}}
+{{- range $p := concat .denyBelow $unconfined -}}
+{{- if or (not (kindIs "string" $p)) (not (isAbs $p)) (ne (clean $p) $p) -}}
+{{- fail (printf "%s mount path %v is not a clean absolute path (denyBelow, or a host path value such as nriImagePolicy.hostPaths.runtimeDir)" $.name $p) -}}
+{{- end -}}
 {{- end -}}
 {{- $mounts := dict "policy" "confined" "denyBelow" .denyBelow -}}
 {{- if $unconfined -}}{{- $_ := set $mounts "unconfined" (uniq $unconfined | sortAlpha) -}}{{- end -}}
@@ -294,8 +301,13 @@
 {{- if $img.digest -}}
 {{- $ref := printf "%s@%s" $img.repository $img.digest -}}
 {{- $containers := list -}}
+{{- $dataDir := toString .Values.rke2.localPathHelper.dataDir -}}
+{{- if or (not (isAbs $dataDir)) (ne (clean $dataDir) $dataDir) -}}
+{{- fail (printf "rke2.localPathHelper.dataDir %q is not a clean absolute path" $dataDir) -}}
+{{- end -}}
+{{- $mounts := dict "policy" "confined" "denyBelow" (list "/bin" "/lib" "/lib64" "/etc/ld.so.preload" "/etc/ld.so.cache" "/etc/ld.so.conf" "/etc/ld.so.conf.d") "unconfined" (list "/script" $dataDir) -}}
 {{- range $path := list "/script/setup" "/script/teardown" -}}
-{{- $containers = append $containers (dict "digest" $img.digest "image" $ref "mounts" (dict "policy" "any") "command" (dict "policy" "exact" "argv" (list "/bin/sh" $path)) "args" (dict "policy" "any")) -}}
+{{- $containers = append $containers (dict "digest" $img.digest "image" $ref "mounts" $mounts "command" (dict "policy" "exact" "argv" (list "/bin/sh" $path)) "args" (dict "policy" "any")) -}}
 {{- end -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $img.digest "image" $ref) -}}
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}

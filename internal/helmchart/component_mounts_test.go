@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -90,5 +91,26 @@ func TestChartBakedComponentMountsPassTheirPolicy(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("no baked component container was checked")
+	}
+}
+
+// The plugin and CDS refuse a seed with an unclean mount path when they load
+// it; the chart fails the render first.
+func TestChartRefusesUncleanMountPaths(t *testing.T) {
+	for name, args := range map[string][]string{
+		"runtimeDir with a trailing slash": {"--set-string", "nriImagePolicy.hostPaths.runtimeDir=/var/run/nri-image-policy/"},
+		"relative runtimeDir":              {"--set-string", "nriImagePolicy.hostPaths.runtimeDir=var/run/nri-image-policy"},
+		"unclean denyBelow":                {"--set-string", "router.nginx.denyBelow[0]=/usr/../usr"},
+		"empty local-path data dir":        {"--set-string", "rke2.localPathHelper.dataDir="},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(append([]string{}, bakedArgs...), args...)...)
+			if err == nil {
+				t.Fatalf("helm template %q rendered, want a failure", args)
+			}
+			if !strings.Contains(string(out), "clean absolute path") {
+				t.Fatalf("helm template %q failed without naming the path: %s", args, out)
+			}
+		})
 	}
 }

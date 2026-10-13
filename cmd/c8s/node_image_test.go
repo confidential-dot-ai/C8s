@@ -201,7 +201,11 @@ func TestNodeImageRender(t *testing.T) {
 			for _, script := range []string{"/script/setup", "/script/teardown"} {
 				if !index.AdmitsContainer(pkgallowlist.RunningContainer{
 					Digest: helperDigest,
-					Argv:   []string{"/bin/sh", script, "-p", "/opt/local-path-provisioner/pvc-123"},
+					Argv:   []string{"/bin/sh", script, "-p", "/var/lib/local-path-provisioner/pvc-123"},
+					Mounts: []pkgallowlist.ObservedMount{
+						{Destination: "/var/lib/local-path-provisioner", Class: pkgallowlist.MountHost},
+						{Destination: "/script", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown},
+					},
 				}) {
 					t.Errorf("seed denies local-path helper %s", script)
 				}
