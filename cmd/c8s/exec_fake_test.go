@@ -208,6 +208,7 @@ config)
   *cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":[` + fakePath + `,` + fakeCerts + `]}}' ;;
   *armtls-mesh*) echo '{"config":{"Entrypoint":["/app/c8s","armtls-mesh"],"Env":[` + fakePath + `]}}' ;;
   *volumed*) echo '{"config":{"Entrypoint":["/app/c8s","volumed"],"Env":[` + fakePath + `]}}' ;;
+  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":[` + fakePath + `,"NGINX_VERSION=1.30.5","PKG_RELEASE=1","DYNPKG_RELEASE=1"]}}' ;;
   *attestation-api*) echo '{"config":{"Entrypoint":["/attestation-api"],"Env":[` + fakePath + `]}}' ;;
   *) echo '{"config":{"Entrypoint":["/c8s"],"Env":[` + fakePath + `,` + fakeCerts + `]}}' ;;
   esac ;;
