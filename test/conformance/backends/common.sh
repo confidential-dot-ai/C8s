@@ -207,12 +207,13 @@ dialer_image() { return "$UNSUPPORTED"; }
 # wait this out rather than observe it.
 pull_interval() { echo 5s; }
 
-# The harness's Restricted-compatible pod, pinned to the node. Containers after
-# the first are the fixture's --container groups, one shell-quoted string each.
-# Options before -- are the fixture's own, named in the header; every pod may
-# send an echo request (a safe sysctl, which Restricted admits), except one in
-# the node's network namespace, where kubelet refuses every net.* sysctl.
-PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
+# The harness's pod, pinned to the node. Containers after the first are the
+# fixture's --container groups, one shell-quoted string each. Options before
+# -- are the fixture's own, named in the header. The fixture drops every
+# capability; every pod gets NET_RAW back so it can send an echo request
+# (busybox ping needs a raw socket: with the ping_group_range sysctl alone it
+# still reports "permission denied"), the one capability the runtime's default
+# set would have granted anyway.
 pod_manifest() {
     take_pod_opts "$@"
     shift "$POD_OPTS_TAKEN"
@@ -220,10 +221,9 @@ pod_manifest() {
 }
 
 # render_fixture <render flags...> -- <pod args...>: render_pod with the
-# flags, the ping sysctl where allowed, and the options take_pod_opts took.
+# flags, NET_RAW, and the options take_pod_opts took.
 render_fixture() {
-    local -a flags=(--sysctl "$PING_SYSCTL")
-    case " ${POD_OPTS[*]-} " in *" --host-network "*) flags=() ;; esac
+    local -a flags=(--add-capability NET_RAW)
     while [ "$1" != -- ]; do
         flags+=("$1")
         shift

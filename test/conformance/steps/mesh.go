@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1275,6 +1276,10 @@ func guardDropped(ctx context.Context, node string) error {
 	return nil
 }
 
+// pingSent matches ping's summary line; a ping that could not open its socket
+// prints none, and must not pass as "no reply".
+var pingSent = regexp.MustCompile(`([1-9]\d*) packets transmitted`)
+
 func noReply(ctx context.Context, name string) error {
 	a, err := getWorld(ctx).lastAnswer()
 	if err != nil {
@@ -1282,6 +1287,9 @@ func noReply(ctx context.Context, name string) error {
 	}
 	if a.rc == 0 {
 		return fmt.Errorf("%q received a reply:\n%s", name, a.out)
+	}
+	if !pingSent.MatchString(a.out) {
+		return fmt.Errorf("%q sent no echo request:\n%s", name, a.out)
 	}
 	return nil
 }
