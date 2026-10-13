@@ -72,7 +72,6 @@ func registerSecrets(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" holds no release challenge$`, holdsNoChallenge)
 	sc.Step(`^"([^"]*)" holds no sandbox token$`, holdsNoToken)
 	sc.Step(`^"([^"]*)" holds a release challenge (the CDS never issued|that has passed the release challenge lifetime|the CDS issued for certificate issuance|already spent by an authorized secret request|already spent by a secret request that failed authorization)$`, holdsFlawedChallenge)
-	sc.Step(`^"([^"]*)" holds a sandbox token from the sandbox inventory on node "([^"]*)"( for that release challenge)?$`, holdsSandboxToken)
 	sc.Step(`^"([^"]*)" holds the sandbox token issued to "([^"]*)" for that release challenge$`, holdsOthersToken)
 	sc.Step(`^"([^"]*)" holds a sandbox token bound to a release challenge already spent$`, holdsSpentToken)
 	sc.Step(`^"([^"]*)" holds a sandbox token naming an inventory host other than the one bound to its sandbox$`, holdsForeignHostToken)
@@ -834,6 +833,18 @@ func stillHoldsLeaf(ctx context.Context, name string) error {
 func (w *world) probe(p *pod, args ...string) (string, error) {
 	if !p.deployed || !p.workloadID {
 		return "", fmt.Errorf("%q is not a deployed pod carrying a workload ID", p.name)
+	}
+	// The leaf exists before the workload container does (the cert-wait init
+	// container gates on it), and until every main container has been
+	// admitted the inventory reports no workload containers, so the CDS
+	// denies by design; the real client retries through that window
+	// (internal/cmds/sidecar Retry). The probe makes one request, so it
+	// waits for the pod to be Ready once instead.
+	if !p.ready {
+		if _, err := kubectl(nil, "-n", w.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
+			return "", fmt.Errorf("%q did not become Ready before its first secret request: %w", p.name, err)
+		}
+		p.ready = true
 	}
 	url, err := w.be.call("cds_pod_url")
 	if err != nil {

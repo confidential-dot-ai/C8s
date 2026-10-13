@@ -48,7 +48,7 @@ func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" requests a leaf with that challenge( and that sandbox token)?$`, requestsLeaf)
 	sc.Step(`^"([^"]*)" repeats the same attest request$`, repeatsAttest)
 	sc.Step(`^the CDS refuses the attest request with "([^"]*)"$`, cdsRefusesAttest)
-	sc.Step(`^"([^"]*)" holds a sandbox token from the sandbox inventory on node "([^"]*)"( for a key other than its own)?$`, holdsInventoryToken)
+	sc.Step(`^"([^"]*)" holds a sandbox token from the sandbox inventory on node "([^"]*)"( for a key other than its own| for that release challenge)?$`, holdsToken)
 	sc.Step(`^"([^"]*)" has signed a sandbox token for its key with a signing key of its own$`, signsOwnToken)
 	sc.Step(`^the inventory host of that sandbox token is (.+)$`, forgedTokenHost)
 }
@@ -628,6 +628,18 @@ func cdsRefusesAttest(ctx context.Context, code string) error {
 
 // holdsInventoryToken asks the node's inventory, over its socket, for a
 // token binding a key and the current challenge to the requester's sandbox.
+// holdsToken is one sentence for two holders: a requester the scenario
+// drives signs the token with its own key (issuance), a deployed pod has its
+// sidecar redeem a release challenge (secrets). Registering it twice would
+// leave godog to pick one.
+func holdsToken(ctx context.Context, name, node, suffix string) error {
+	w := getWorld(ctx)
+	if _, ok := w.issuance.requesters[name]; ok || suffix == " for a key other than its own" {
+		return holdsInventoryToken(ctx, name, node, suffix)
+	}
+	return holdsSandboxToken(ctx, name, node, suffix)
+}
+
 func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error {
 	w := getWorld(ctx)
 	r, err := w.requester(name)

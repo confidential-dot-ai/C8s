@@ -82,6 +82,7 @@ type pod struct {
 	init     *container
 	initLast bool
 	secret   *secretReq
+	ready    bool // seen Ready once, so every main container has been admitted
 }
 
 type container struct {
