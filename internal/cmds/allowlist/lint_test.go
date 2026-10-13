@@ -299,6 +299,23 @@ func TestLintShadowedEntry(t *testing.T) {
 	}
 }
 
+// Swapping which container is the main and which the init makes two entries on
+// one digest distinguishable once the init has exited.
+func TestLintSwappedMainAndInitIsNotShadowed(t *testing.T) {
+	al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+		"alpha":{"containers":[`+ctrJSON(digA, "/serve")+`],"initContainers":[`+ctrJSON(digA, "/seed")+`]},
+		"beta":{"containers":[`+ctrJSON(digA, "/seed")+`],"initContainers":[`+ctrJSON(digA, "/serve")+`]}}}`)
+	if n := countErrors(lintOffline(al)); n != 0 {
+		t.Fatalf("lint reported %d errors for distinguishable entries: %v", n, lintOffline(al))
+	}
+	for want, argv := range map[string]string{"alpha": "/serve", "beta": "/seed"} {
+		running := []pkgallowlist.RunningContainer{{Digest: digA, Argv: []string{argv}, Mounts: []pkgallowlist.ObservedMount{}}}
+		if got, _, err := al.MatchWorkload(running); err != nil || got != want {
+			t.Fatalf("MatchWorkload(%s) = %q, %v, want %q", argv, got, err, want)
+		}
+	}
+}
+
 // --- indistinguishable entries ---
 
 // entryPair builds a document with two entries whose container lists are given
