@@ -1222,7 +1222,8 @@ router:
     # nothing. The chart fails the render on either mistake. Unset (null)
     # defaults to that entry's name when it is seeded, attest is enabled,
     # hostPort is off and the node inventory is reachable; otherwise the
-    # sidecar stays always-ready. "" turns the gate off.
+    # sidecar stays always-ready. "" turns the gate off. Naming an entry of
+    # nriImagePolicy.bootstrapAllowlist.workloads replaces the seeded one.
     expectedWorkload: null
     # -- Container resource requests/limits for the sidecar.
     resources: {}

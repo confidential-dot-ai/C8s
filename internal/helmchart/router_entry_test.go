@@ -24,6 +24,8 @@ const defaultGate = "<seeded entry>"
 
 var c8sDigest = "sha256:" + strings.Repeat("1", 64)
 
+var nginxByTag = []string{"--set-string", "router.nginx.image.digest=", "--set", "router.nginx.image.tag=1.30.5-alpine-slim"}
+
 // digestArgs pins the c8s image outside the baked shape. deriveComponents
 // gives it the any-argv entry that lets get-cert be dropped as injected.
 var digestArgs = []string{
@@ -204,6 +206,8 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		{name: "c8s image by digest", args: digestArgs, want: true},
 		{name: "components not derived", args: []string{"--set", "image.digest=" + c8sDigest, "--set", "nriImagePolicy.policy.mode=audit"}, want: false},
 		{name: "router disabled", args: append(slices.Clone(digestArgs), "--set", "router.enabled=false"), want: false},
+		{name: "nginx by tag", args: append(slices.Clone(digestArgs), nginxByTag...), want: false},
+		{name: "no c8s-image main", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: false},
 		{
 			// kubelet expands $(HOST_IP) in args, so the argv is node-specific.
 			name: "attestation api by host IP",
@@ -229,27 +233,37 @@ func TestChartRouterEntryPresence(t *testing.T) {
 func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 	noHostPort := []string{"--set", "router.hostPort.enabled=false"}
 	for _, tc := range []struct {
-		name string
-		args []string
-		want string
+		name    string
+		args    []string
+		want    string
+		wantErr string
 	}{
 		{name: "hostPort bound", args: digestArgs},
 		{name: "entry seeded", args: slices.Concat(digestArgs, noHostPort), want: defaultGate},
 		{name: "explicit name", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload=infer"}), want: "infer"},
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
+		{name: "nginx by tag", args: slices.Concat(digestArgs, noHostPort, nginxByTag)},
+		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"})},
+		// No inventory could stamp the leaf; the chart refuses the shape.
+		{name: "no inventory", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "nriImagePolicy.enabled=false", "--set", "attestationApi.cvmMode=gke"}), wantErr: "kind=require_host_image_policy"},
 		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: defaultGate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(out, tc.wantErr) {
+					t.Fatalf("helm template: err = %v, want %q\n%s", err, tc.wantErr, out)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 			var got string
-			for _, arg := range attest.Args {
-				if v, ok := strings.CutPrefix(arg, "--expected-workload="); ok {
-					got = v
+			for _, c := range renderedDeployment(t, out, "c8s-router").Spec.Template.Spec.Containers {
+				if c.Name == "cds-attest" {
+					got = expectedWorkloadArg(c)
 				}
 			}
 			want := tc.want
@@ -293,5 +307,82 @@ func TestChartRouterEntryNameTracksContent(t *testing.T) {
 		if got := name(args...); got == base {
 			t.Errorf("%v kept router entry name %q", args, got)
 		}
+	}
+}
+
+// gateArgs renders a router whose readiness gate can be on.
+var gateArgs = slices.Concat(digestArgs, []string{"--set", "router.hostPort.enabled=false"})
+
+func expectedWorkloadArg(c corev1.Container) string {
+	for _, arg := range c.Args {
+		if v, ok := strings.CutPrefix(arg, "--expected-workload="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// Freezing the rendered default gate must keep the entry's name.
+func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
+	out, err := helmTemplate(t, gateArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	derived := routerEntryName(t, renderedSeed(t, out))
+
+	out, err = helmTemplate(t, slices.Concat(gateArgs, []string{"--set-string", "router.attest.expectedWorkload=" + derived})...)
+	if err != nil {
+		t.Fatalf("helm template with expectedWorkload=%s: %v\n%s", derived, err, out)
+	}
+	if got := routerEntryName(t, renderedSeed(t, out)); got != derived {
+		t.Errorf("explicit gate %q seeded entry %q", derived, got)
+	}
+	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != derived {
+		t.Errorf("--expected-workload = %q, want %q", got, derived)
+	}
+	assertRouterMatches(t, out)
+
+	stale := routerPrefix + strings.Repeat("0", 12)
+	out, err = helmTemplate(t, slices.Concat(gateArgs, []string{"--set-string", "router.attest.expectedWorkload=" + stale})...)
+	if err == nil || !strings.Contains(out, "does not name the seeded router entry") {
+		t.Fatalf("expectedWorkload=%s: err = %v, want a render failure naming %s\n%s", stale, err, derived, out)
+	}
+}
+
+func TestChartRouterOperatorEntry(t *testing.T) {
+	nginxDigest := "sha256:" + strings.Repeat("5", 64)
+	container := func(digest string) string {
+		return `{"digest":"` + digest + `","image":"r@` + digest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
+	}
+	entry := []string{
+		"--set", "router.nginx.image.digest=" + nginxDigest,
+		"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.my-router={"label":"mine","initContainers":[],"containers":[` + container(nginxDigest) + `,` + container(c8sDigest) + `]}`,
+	}
+
+	out, err := helmTemplate(t, slices.Concat(gateArgs, entry)...)
+	if err == nil || !strings.Contains(out, "my-router lists both router.nginx.image.digest and image.digest") {
+		t.Fatalf("operator router entry without a gate: err = %v, want a collision failure\n%s", err, out)
+	}
+
+	out, err = helmTemplate(t, slices.Concat(gateArgs, entry, []string{"--set-string", "router.attest.expectedWorkload=my-router"})...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	seed := renderedSeed(t, out)
+	if got := routerEntryName(t, seed); got != "" {
+		t.Errorf("gate naming an operator entry still seeded %q", got)
+	}
+	if _, ok := seed.Workloads["my-router"]; !ok {
+		t.Errorf("seed lost the operator entry: %v", slices.Sorted(maps.Keys(seed.Workloads)))
+	}
+	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "my-router" {
+		t.Errorf("--expected-workload = %q, want my-router", got)
+	}
+}
+
+func TestChartRouterExpectedWorkloadType(t *testing.T) {
+	out, err := helmTemplate(t, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
+	if err == nil || !strings.Contains(out, "expectedWorkload") {
+		t.Fatalf("boolean expectedWorkload: err = %v, want a render failure\n%s", err, out)
 	}
 }

@@ -662,7 +662,11 @@ entry's SHA-256>`: nginx plus the c8s image pinned to the exact `cds-attest`,
 renders. It is the only entry the router pod matches, so the router's mesh leaf
 is stamped with that name. An upgrade that changes the router's images or
 arguments seeds a new entry beside the old one. Old entries persist like the
-digest-named ones; remove them with `c8s allowlist delete`.
+digest-named ones; remove them with `c8s allowlist delete`. To supply your own
+router entry instead, add it under `bootstrapAllowlist.workloads` and name it in
+`router.attest.expectedWorkload`; the chart then skips its own. An entry that
+lists both images without that gate fails the render, since the router would
+match two entries and get no stamp.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes

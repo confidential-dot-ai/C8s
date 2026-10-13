@@ -699,7 +699,14 @@ The cds-attest readiness gate's workload name. An explicit string wins, and
 */}}
 {{- define "router.expectedWorkload" -}}
 {{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- if not (or (kindIs "string" $explicit) (kindIs "invalid" $explicit)) -}}
+{{- fail (printf "router.attest.expectedWorkload must be a string or null, got %s %v" (kindOf $explicit) $explicit) -}}
+{{- end -}}
 {{- if kindIs "string" $explicit -}}
+{{- if and (hasPrefix "c8s-router-" $explicit) (eq (include "c8s.routerWorkloadSeeded" .) "true") -}}
+{{- /* Fails unless $explicit is the seeded entry's name. */ -}}
+{{- $_ := include "c8s.routerWorkloadName" . -}}
+{{- end -}}
 {{- $explicit -}}
 {{- else if eq (include "router.defaultGate" .) "true" -}}
 {{- include "c8s.routerWorkloadName" . -}}
