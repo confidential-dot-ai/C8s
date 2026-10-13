@@ -695,3 +695,51 @@ func TestShadowByEnvMatcherSubsumption(t *testing.T) {
 		})
 	}
 }
+
+func TestLintComponentEntryEnv(t *testing.T) {
+	const operator = "ghcr.io/confidential-dot-ai/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	pinned := `"command":{"policy":"exact","argv":["/c8s","operator"]},"args":{"policy":"any"},"mounts":{"policy":"confined","denyBelow":["/c8s","/usr"]}`
+	for _, tc := range []struct {
+		name, image, shape, env string
+		wantErr                 string
+	}{
+		{"matched env", operator, pinned, `{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"HOSTNAME":{"present":true}}}`, ""},
+		{"env any", operator, pinned, `{"policy":"any"}`, "env any"},
+		{"env absent", operator, pinned, "", "env any"},
+		{"present PATH", operator, pinned, `{"policy":"match","variables":{"PATH":{"present":true}}}`, "leaves PATH to the host"},
+		{"present LD_PRELOAD", operator, pinned, `{"policy":"match","variables":{"LD_PRELOAD":{"present":true}}}`, "leaves LD_PRELOAD to the host"},
+		{"present BASH_ENV", operator, pinned, `{"policy":"match","variables":{"BASH_ENV":{"present":true}}}`, "loader variable BASH_ENV"},
+		{"present GLIBC_TUNABLES", operator, pinned, `{"policy":"match","variables":{"GLIBC_TUNABLES":{"present":true}}}`, "loader variable GLIBC_TUNABLES"},
+		{"present nginx template dir", "docker.io/nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0", pinned, `{"policy":"match","variables":{"NGINX_ENVSUBST_TEMPLATE_DIR":{"present":true}}}`, "loader variable NGINX_ENVSUBST_TEMPLATE_DIR"},
+		{"exact loader variable", operator, pinned, `{"policy":"match","variables":{"LD_LIBRARY_PATH":{"exact":"/usr/lib"}}}`, ""},
+		{"application image", "registry.example.com/app@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, ""},
+		{"any command", operator, `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, ""},
+		{"pinned args", operator, `"command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":["operator"]},"mounts":{"policy":"any"}`, `{"policy":"any"}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := ""
+			if tc.env != "" {
+				env = `,"env":` + tc.env
+			}
+			al, err := pkgallowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","image":"` + tc.image + `",` + tc.shape + env + `}]}}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var errs []string
+			for _, f := range lintOffline(al) {
+				if f.err {
+					errs = append(errs, f.msg)
+				}
+			}
+			if tc.wantErr == "" {
+				if len(errs) != 0 {
+					t.Errorf("lintOffline(%s) errors = %q, want none", tc.name, errs)
+				}
+				return
+			}
+			if len(errs) != 1 || !strings.Contains(errs[0], tc.wantErr) {
+				t.Errorf("lintOffline(%s) errors = %q, want one naming %q", tc.name, errs, tc.wantErr)
+			}
+		})
+	}
+}
