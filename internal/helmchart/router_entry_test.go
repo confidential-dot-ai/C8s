@@ -414,6 +414,12 @@ func TestChartRouterOperatorEntry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template with a c8s-only operator entry: %v\n%s", err, out)
 	}
+	if got := routerEntryName(t, renderedSeed(t, out)); got != "" {
+		t.Errorf("gate naming an operator entry still seeded %q", got)
+	}
+	if got := certExpectedWorkload(t, out); got != "my-router" {
+		t.Errorf("c8s-cert --expected-workload = %q, want my-router", got)
+	}
 }
 
 func certExpectedWorkload(t *testing.T, out string) string {

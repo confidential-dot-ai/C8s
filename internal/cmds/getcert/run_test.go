@@ -554,11 +554,11 @@ func TestValidateConfigRejects(t *testing.T) {
 		{"ca watch without ca-out", func(c *config) {
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = time.Minute
-		}, nil},
+		}, errInvalidCAWatchInterval},
 		{"ca watch without renew interval", func(c *config) {
 			c.CAOutPath = "/tls/ca.pem"
 			c.CAWatchInterval = time.Minute
-		}, nil},
+		}, errInvalidCAWatchInterval},
 		{"expected workload without workload claims", func(c *config) {
 			c.RenewInterval = time.Hour
 			c.ExpectedWorkload = "api"
