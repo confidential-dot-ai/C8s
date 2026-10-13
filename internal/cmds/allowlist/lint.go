@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -210,6 +211,7 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	warnings = append(warnings, indistinguishableEntries(al)...)
 	warnings = append(warnings, shadowedEntries(al)...)
 	warnings = append(warnings, searchPathFindings(al)...)
+	warnings = append(warnings, componentEnvFindings(al)...)
 	return warnings
 }
 
@@ -224,6 +226,60 @@ func pinsNoEnvValue(env pkgallowlist.EnvPolicy) bool {
 		return len(env.Variables) > 0 && len(env.ExactValues()) == 0
 	}
 	return true
+}
+
+// componentRepositories are the last path segments of the C8s component
+// images the chart seeds with open args (c8sComponents and router.nginx).
+var componentRepositories = []string{"c8s-operator", "cds", "armtls-mesh", "volumed", "attestation-api", "nginx-unprivileged"}
+
+// componentEnvFindings rejects a component entry that leaves env to the host,
+// or matches with present a variable a component's loader, shell or
+// entrypoint reads code from (searchPathFindings covers loaderVariables for
+// every entry): the pinned entrypoint would load code the pod chooses. A component entry is the shape the chart seeds: a
+// component image pinned to an exact command with open args. An entry under
+// any command, as `c8s allowlist add` writes, pins no entrypoint to protect.
+func componentEnvFindings(al *pkgallowlist.Allowlist) []finding {
+	var out []finding
+	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
+		w := al.Workloads[name]
+		for _, c := range allContainers(w) {
+			if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyAny || !isComponentImage(cmp.Or(c.Image, w.Label)) {
+				continue
+			}
+			switch c.Env.Policy {
+			case pkgallowlist.PolicyAny, "":
+				out = append(out, errorf("workload %q container %s runs a C8s component image with env any; a pod could set LD_PRELOAD or PATH and load its own code (pin env with match, as the chart seeds it)", name, c.Digest))
+			case pkgallowlist.PolicyMatch:
+				pinned := c.Env.ExactValues()
+				for _, variable := range slices.Sorted(maps.Keys(c.Env.Variables)) {
+					if _, exact := pinned[variable]; !exact && componentLoaderVariable(variable) && !slices.Contains(loaderVariables, variable) {
+						out = append(out, errorf("workload %q container %s matches loader variable %s with present; a pod could point it at its own code (pin it exact or leave it unlisted)", name, c.Digest, variable))
+					}
+				}
+			}
+		}
+	}
+	return out
+}
+
+// isComponentImage reports whether image names a C8s component repository.
+func isComponentImage(image string) bool {
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return false
+	}
+	return slices.Contains(componentRepositories, path.Base(reference.Path(named)))
+}
+
+// componentLoaderVariable reports whether the dynamic loader, a shell or a
+// component entrypoint (nginx's envsubst templates) reads code, or where to
+// find it, from the variable.
+func componentLoaderVariable(name string) bool {
+	switch name {
+	case "BASH_ENV", "ENV", "GLIBC_TUNABLES":
+		return true
+	}
+	return strings.HasPrefix(name, "LD_") || strings.HasPrefix(name, "NGINX_ENVSUBST_")
 }
 
 // shadowedEntries reports entries that can never be the unique match because
