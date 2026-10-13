@@ -8,6 +8,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -244,12 +245,15 @@ func serveMeasuredPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 	policies, err := policymeasure.Read(measuredPoliciesPath)
 	if err != nil {
+		slog.Error("read measured policies", "path", measuredPoliciesPath, "error", err)
 		http.Error(w, "read measured policies", http.StatusInternalServerError)
 		return
 	}
 	if policies == nil {
 		policies = []string{}
 	}
+	// The list grows over the node's life.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(policies) // the client sees a short body
 }
