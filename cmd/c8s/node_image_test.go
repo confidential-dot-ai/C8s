@@ -287,7 +287,7 @@ func TestNodeImageRenderRejectsBadInputsBeforeHelm(t *testing.T) {
 
 func TestNodeImageCollectRejectsIncompleteOrUnexpectedChart(t *testing.T) {
 	for _, input := range []string{"", "kind: Deployment\nmetadata:\n  name: c8s-cds\n", "kind: DaemonSet\nmetadata:\n  name: armtls-mesh\n", "kind: HelmChart\nmetadata:\n  name: c8s\n"} {
-		if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+		if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 			t.Errorf("accepted incomplete or unexpected render %q", input)
 		}
 	}
@@ -402,7 +402,7 @@ func nodeImageCollectFixture() string {
 
 func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	fixture := nodeImageCollectFixture()
-	artifacts, err := collectNodeImageArtifacts([]byte(fixture))
+	artifacts, err := collectNodeImageArtifacts([]byte(fixture), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -450,7 +450,7 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := nodeImageCollectFixture() + "---\n" + tc.resource
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted an invalid resource alongside otherwise complete chart artifacts")
 			}
 		})
@@ -475,7 +475,7 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := strings.ReplaceAll(nodeImageCollectFixture(), tc.old, tc.replacement)
-			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+			if _, err := collectNodeImageArtifacts([]byte(input), nil); err == nil {
 				t.Fatal("accepted incomplete or unpinned measured workload inventory")
 			}
 		})
@@ -490,7 +490,7 @@ func TestNodeImageCollectCanonicalizesPreloadReferences(t *testing.T) {
 	} {
 		t.Run(tc.image, func(t *testing.T) {
 			input := strings.ReplaceAll(nodeImageCollectFixture(), "registry.example.com/operator", tc.image)
-			artifacts, err := collectNodeImageArtifacts([]byte(input))
+			artifacts, err := collectNodeImageArtifacts([]byte(input), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -594,7 +594,7 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	if input == nodeImageCollectFixture() {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(input), map[string][]string{testDigest: {"/app/c8s"}}); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
 	}
 }
@@ -611,7 +611,7 @@ func TestNodeImageCollectAcceptsConfinedMounts(t *testing.T) {
 	if confined == input {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(confined)); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(confined), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s"}}}); err != nil {
 		t.Fatalf("rejected a seed confining the baked image's mounts: %v", err)
 	}
 }
@@ -628,7 +628,7 @@ func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
 	if input == nodeImageCollectFixture() {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(input), map[string][]string{testDigest: {"/app/c8s", "armtls-mesh"}}); err != nil {
 		t.Fatalf("collectNodeImageArtifacts(matched env invocations) = %v, want nil", err)
 	}
 }
@@ -636,17 +636,23 @@ func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
 // A matched env must list every variable a baked manifest sets: a missing one
 // would deny the component on its own node before CDS serves.
 func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
-	env := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"NODE_IP":{"present":true}}}`
+	mesh := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"NODE_IP":{"present":true},"MODE":{"exact":"mesh"},"HOSTNAME":{"present":true}}}`
+	bare := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"}}}`
 	seeded := strings.Replace(nodeImageCollectFixture(),
 		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
-		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+env+`}`, 1)
+		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+mesh+`},`+
+			`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+bare+`}`, 1)
 	for name, tc := range map[string]struct {
 		env     string
 		wantErr bool
 	}{
-		"listed variable":    {env: `env: [{name: NODE_IP, value: "1"}]`},
-		"unlisted variable":  {env: `env: [{name: LD_PRELOAD, value: "1"}]`, wantErr: true},
-		"imported variables": {env: `envFrom: [{configMapRef: {name: settings}}]`, wantErr: true},
+		"listed variables":          {env: `env: [{name: NODE_IP, valueFrom: {fieldRef: {fieldPath: status.hostIP}}}, {name: MODE, value: mesh}]`},
+		"image variable left unset": {env: `env: [{name: NODE_IP, value: "1"}]`},
+		"unlisted variable":         {env: `env: [{name: NODE_IP, value: "1"}, {name: LD_PRELOAD, value: "1"}]`, wantErr: true},
+		"other exact value":         {env: `env: [{name: NODE_IP, value: "1"}, {name: MODE, value: other}]`, wantErr: true},
+		"exact value from a ref":    {env: `env: [{name: NODE_IP, value: "1"}, {name: MODE, valueFrom: {fieldRef: {fieldPath: metadata.name}}}]`, wantErr: true},
+		"present variable unset":    {env: `env: [{name: MODE, value: mesh}]`, wantErr: true},
+		"imported variables":        {env: `envFrom: [{configMapRef: {name: settings}}]`, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			input := strings.Replace(seeded, `          args: ["--platform", "snp"]`, `          args: ["--platform", "snp"]
@@ -654,9 +660,41 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 			if input == seeded {
 				t.Fatal("fixture did not change")
 			}
-			_, err := collectNodeImageArtifacts([]byte(input))
+			_, err := collectNodeImageArtifacts([]byte(input), map[string][]string{testDigest: {"/app/c8s"}})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("collectNodeImageArtifacts(%s) = %v, want error %v", tc.env, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A container that sets no command runs the image's entrypoint with its args:
+// the guard resolves that argv from the chart's entrypoint and checks it
+// against the seed's pins, and refuses it when the entrypoint is unknown.
+func TestNodeImageCollectChecksEntrypointInvocations(t *testing.T) {
+	input := strings.Replace(nodeImageCollectFixture(),
+		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
+		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/c8s","probe-file"]},"args":{"policy":"any"},"mounts":{"policy":"any"}},`+
+			`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"any"},"mounts":{"policy":"any"}}`, 1)
+	for _, name := range []string{"operator", "cds", "router"} {
+		container := "        - name: " + name + "\n          image: registry.example.com/operator@" + testDigest + "\n"
+		input = strings.Replace(input, container, container+"          args: [ARGS]\n", 1)
+	}
+	for name, tc := range map[string]struct {
+		args        string
+		entrypoints map[string][]string
+		wantErr     bool
+	}{
+		"pinned invocation":    {args: "probe-file, --path, /ready", entrypoints: map[string][]string{testDigest: {"/c8s"}}},
+		"unpinned invocation":  {args: "attest-proxy", entrypoints: map[string][]string{testDigest: {"/c8s"}}, wantErr: true},
+		"no known entrypoint":  {args: "probe-file", wantErr: true},
+		"bare entrypoint only": {args: "", entrypoints: map[string][]string{testDigest: {"/c8s"}}, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := strings.ReplaceAll(input, "ARGS", tc.args)
+			_, err := collectNodeImageArtifacts([]byte(fixture), tc.entrypoints)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("collectNodeImageArtifacts(args [%s]) = %v, want error %v", tc.args, err, tc.wantErr)
 			}
 		})
 	}
