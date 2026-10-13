@@ -126,7 +126,12 @@ func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, err
 	if err := yaml.Unmarshal(out, &tree); err != nil {
 		return nil, fmt.Errorf("parse chart values: %w", err)
 	}
+	return componentsFromValues(tree)
+}
 
+// componentsFromValues reads c8sComponents from a values tree, each
+// repository from its valuePath in the same tree.
+func componentsFromValues(tree map[string]any) ([]c8sComponent, error) {
 	list, ok := tree["c8sComponents"].([]any)
 	if !ok || len(list) == 0 {
 		return nil, fmt.Errorf("chart declares no c8sComponents")
@@ -2070,6 +2075,9 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 	if err != nil {
 		return nil, err
 	}
+	if components, err = withEffectivePins(ctx, chartPath, helmArgs, components); err != nil {
+		return nil, err
+	}
 	byRef := map[string]c8sComponent{}
 	for _, c := range components {
 		byRef[c.repository+":"+tag] = c
@@ -2095,6 +2103,32 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 		}
 		return digest, nil
 	}, enabled)
+}
+
+// withEffectivePins returns components with the entrypoint and imageEnv the
+// release renders, which a -f file or --set may override; the repository
+// stays the chart default the tag resolves against.
+func withEffectivePins(ctx context.Context, chartPath string, setArgs []string, components []c8sComponent) ([]c8sComponent, error) {
+	tree, err := effectiveValues(ctx, chartPath, setArgs)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := tree["c8sComponents"]; !ok {
+		return components, nil
+	}
+	effective, err := componentsFromValues(tree)
+	if err != nil {
+		return nil, err
+	}
+	out := slices.Clone(components)
+	for i, c := range out {
+		for _, e := range effective {
+			if e.valuePrefix == c.valuePrefix {
+				out[i].entrypoint, out[i].imageEnv = e.entrypoint, e.imageEnv
+			}
+		}
+	}
+	return out, nil
 }
 
 func boolAtPathOrFalse(enabled func(string) (bool, error), path string) bool {
