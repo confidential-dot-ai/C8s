@@ -519,6 +519,14 @@ document for up to one interval after CDS commits a write; a node has taken a
 write once its plugin logs `pull loop: allowlist refreshed` with a version at or
 above the one `c8s allowlist list` reports.
 
+The host NRI plugin also carries a **base enforcement allowlist** in
+`allowlist.base`, baked into its boot config and never changed by a pull.
+Either a base entry or a served entry must satisfy the launch constraints.
+Both sources check argv at preliminary admission, then argv, environment, and
+mounts at final admission; unavailable evidence fails constrained policies.
+Generated system-image entries explicitly allow mounts and leave the other
+launch fields unconstrained so the platform can start before CDS is reachable.
+
 ### Allowlist history
 
 CDS keeps an append-only history of every document it served, in the
@@ -559,15 +567,8 @@ To move from policy P to policy Q without stopping running workloads:
 3. Upload Q.
 
 Each step is one signed history entry, so a verifier that trusts the operator
-key accepts every policy a node enforced along the way.
-
-The host NRI plugin also carries a **base enforcement allowlist** in
-`allowlist.base`, baked into its boot config and never changed by a pull.
-Either a base entry or a served entry must satisfy the launch constraints.
-Both sources check argv at preliminary admission, then argv, environment, and
-mounts at final admission; unavailable evidence fails constrained policies.
-Generated system-image entries explicitly allow mounts and leave the other
-launch fields unconstrained so the platform can start before CDS is reachable.
+key accepts every policy a node enforced along the way: see
+[Check a node's policy history](operator.md#check-a-nodes-policy-history).
 
 ### Measured policy history
 
