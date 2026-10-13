@@ -2,16 +2,25 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -604,5 +613,221 @@ func TestParseVersion(t *testing.T) {
 		if got := parseVersion(tc.etag); got != tc.want {
 			t.Errorf("parseVersion(%q) = %d, want %d", tc.etag, got, tc.want)
 		}
+	}
+}
+
+func servedDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// The initial pull measures the served digest before applying it, and does
+// not apply a policy it could not measure.
+func TestPullInitialMeasuresBeforeApplying(t *testing.T) {
+	origRetries := allowlistApiMaxRetries
+	allowlistApiMaxRetries = 1
+	defer func() { allowlistApiMaxRetries = origRetries }()
+
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	for _, tc := range []struct {
+		name        string
+		measureErr  error
+		measureOff  bool
+		wantApplied bool
+	}{
+		{name: "measured", wantApplied: true},
+		{name: "measure fails", measureErr: errors.New("register write failed")},
+		{name: "measuring off", measureOff: true, wantApplied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(&flippingHandler{versions: []string{"1"}, bodyByV: map[string][]byte{"1": body}})
+			defer srv.Close()
+			store := newPolicyStore(anyAllowlist(map[string]string{}))
+			var measured []string
+			measure := func(d string) error {
+				if admitsDigest(store, pushDigestA) {
+					t.Error("policy applied before it was measured")
+				}
+				measured = append(measured, d)
+				return tc.measureErr
+			}
+			if tc.measureOff {
+				measure = nil
+			}
+			_, err := pullInitial(t.Context(), pullArgs{
+				client:      allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+				store:       store,
+				measure:     measure,
+				timeout:     time.Second,
+				pluginErrCh: make(chan error),
+				logger:      discardLogger(),
+			})
+			if (err == nil) != tc.wantApplied || admitsDigest(store, pushDigestA) != tc.wantApplied {
+				t.Fatalf("pullInitial = %v, applied %v, want applied %v", err, admitsDigest(store, pushDigestA), tc.wantApplied)
+			}
+			if !tc.measureOff && (len(measured) != 1 || measured[0] != servedDigest(body)) {
+				t.Fatalf("measured %v, want the served digest %s", measured, servedDigest(body))
+			}
+		})
+	}
+}
+
+// The pull loop skips a policy it could not measure and applies the next
+// one only after measuring it.
+func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
+	bodyA := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	bodyB := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{versions: []string{"1", "2"}, bodyByV: map[string][]byte{"1": bodyA, "2": bodyB}})
+	defer srv.Close()
+	store := newPolicyStore(anyAllowlist(map[string]string{}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var measured []string
+	measure := func(d string) error {
+		measured = append(measured, d)
+		if d == servedDigest(bodyA) {
+			return errors.New("register write failed")
+		}
+		if admitsDigest(store, pushDigestA) || admitsDigest(store, pushDigestB) {
+			t.Error("a policy was applied before it was measured")
+		}
+		cancel()
+		return nil
+	}
+	runPullLoop(ctx, pullLoopArgs{
+		client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		store:    store,
+		measure:  measure,
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		logger:   discardLogger(),
+	})
+
+	if want := []string{servedDigest(bodyA), servedDigest(bodyB)}; !slices.Equal(measured, want) {
+		t.Fatalf("measured %v, want %v", measured, want)
+	}
+	if admitsDigest(store, pushDigestA) || !admitsDigest(store, pushDigestB) {
+		t.Fatalf("applied A=%v B=%v, want only the measured B", admitsDigest(store, pushDigestA), admitsDigest(store, pushDigestB))
+	}
+}
+
+// Measuring is off unless configured and on a platform with a runtime
+// register; when it is on but cannot work, every measure fails so nothing
+// unmeasured is applied.
+func TestPolicyMeasurer(t *testing.T) {
+	orig := readOperatorKey
+	t.Cleanup(func() { readOperatorKey = orig })
+	readOperatorKey = func() ([]byte, error) { return nil, errors.New("no operator key staged") }
+
+	for _, tc := range []struct {
+		name     string
+		platform string
+		measure  bool
+		wantHook bool
+	}{
+		{name: "off by default", platform: "tdx"},
+		{name: "no runtime register", platform: "snp", measure: true},
+		{name: "on without an operator key", platform: "tdx", measure: true, wantHook: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := &config{
+				Platform:       tc.platform,
+				WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+				Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: tc.measure}},
+			}
+			hook := policyMeasurer(cfg, discardLogger())
+			if (hook != nil) != tc.wantHook {
+				t.Fatalf("policyMeasurer returned a hook: %v, want %v", hook != nil, tc.wantHook)
+			}
+			if hook != nil {
+				if err := hook("sha256:" + strings.Repeat("1", 64)); err == nil {
+					t.Fatal("hook = nil error, want a failure that keeps the policy unapplied")
+				}
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Fatalf("runtime directory holds %v, want no journal", entries)
+			}
+		})
+	}
+}
+
+// memRegister is an in-memory RTMR[3] seeded by the launch anchor.
+type memRegister struct {
+	val     [runtimemeasure.Size]byte
+	extends int
+	fail    error
+}
+
+func (r *memRegister) Extend(event []byte) error {
+	if r.fail != nil {
+		return r.fail
+	}
+	r.val = runtimemeasure.Extend(r.val, [runtimemeasure.Size]byte(event))
+	r.extends++
+	return nil
+}
+
+func (r *memRegister) Extension() ([]byte, error) { return slices.Clone(r.val[:]), nil }
+
+// The hook extends each digest once and leaves the journal readable by the
+// router's non-root cds-attest, also after a failed extend rewrote it 0600.
+func TestPolicyMeasurerMeasures(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+
+	digest := "sha256:" + strings.Repeat("1", 64)
+	for _, tc := range []struct {
+		name        string
+		fail        error
+		wantErr     bool
+		wantExtends int
+		wantJournal string
+	}{
+		{name: "extends once", wantExtends: 1, wantJournal: digest + "\n"},
+		{name: "extend fails", fail: errors.New("tsm write failed"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			reg := &memRegister{val: runtimemeasure.Seed(anchor), fail: tc.fail}
+			openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+				return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, policymeasure.JournalName), reg, runtimemeasure.Seed(anchor))
+			}
+			cfg := &config{
+				Platform:       "tdx",
+				WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+				Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+			}
+			hook := policyMeasurer(cfg, discardLogger())
+			for range 2 {
+				if err := hook(digest); (err != nil) != tc.wantErr {
+					t.Fatalf("hook(%s) = %v, want error %v", digest, err, tc.wantErr)
+				}
+			}
+			if reg.extends != tc.wantExtends {
+				t.Errorf("register extended %d times, want %d", reg.extends, tc.wantExtends)
+			}
+			path := filepath.Join(dir, policymeasure.JournalName)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if perm := info.Mode().Perm(); perm != 0o644 {
+				t.Errorf("journal mode = %v, want 0644", perm)
+			}
+			if b, _ := os.ReadFile(path); string(b) != tc.wantJournal {
+				t.Errorf("journal = %q, want %q", b, tc.wantJournal)
+			}
+		})
+	}
+}
+
+func TestValidateMeasurePoliciesNeedsSocketDir(t *testing.T) {
+	cfg := validConfig()
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want an error for measure_policies without workload_claims.socket_dir")
 	}
 }

@@ -3,14 +3,19 @@ package getkubeconfig
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 )
@@ -82,6 +87,9 @@ func Run(ctx context.Context, cfg Config) error {
 	exp, err := policyFor(cfg.ImageManifestPath, pubPEM, cfg.WorkloadImages)
 	if err != nil {
 		return err
+	}
+	if exp.identity.Family() == teetypes.FamilyTDX {
+		exp.policies = &policyList{fetch: func() []string { return fetchMeasuredPolicies(ctx, cfg.ReleaseBaseURL, cfg.Timeout) }}
 	}
 
 	// 1. Verify the channel and a fresh nonce-bound report before releasing
@@ -171,4 +179,27 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
+}
+
+// fetchMeasuredPolicies reads the allowlist policies the node measured into
+// RTMR[3]. The channel needs no authentication: checkIdentity accepts the list
+// only as far as an attested register replays it. An unreachable or older node
+// yields none, which keeps the bare workload chain.
+func fetchMeasuredPolicies(ctx context.Context, baseURL string, timeout time.Duration) []string {
+	client := &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
+	defer client.CloseIdleConnections()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+credrelease.MeasuredPoliciesPath, nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	var policies []string
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&policies) != nil {
+		return nil
+	}
+	return policies
 }

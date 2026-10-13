@@ -2,7 +2,8 @@
 // obtains a kube credential from a measured CVM: it attests the node,
 // confirms the full measured identity — on TDX the image tuple (MRTD,
 // RTMR[1], RTMR[2]) plus the RTMR[3] chain seeded by the operator's key and
-// extended by the expected workload images; on SEV-SNP the pinned per-SMP
+// extended by the expected workload images, then the node's measured
+// allowlist policies; on SEV-SNP the pinned per-SMP
 // launch digest plus the operator-key HOSTDATA binding — then exchanges a CSR
 // for a short-lived kube client cert over the cred-release endpoint and
 // assembles a kubeconfig.
@@ -18,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -51,6 +53,46 @@ type measuredPolicy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
+	// policies are the allowlist policies the node reports it measured after
+	// the workloads (credrelease.MeasuredPoliciesPath); nil on SNP. The list is
+	// untrusted: checkIdentity accepts it only as far as the quote's register
+	// replays.
+	policies *policyList
+}
+
+// policyList caches the node's measured-policy list across the run's gates.
+type policyList struct {
+	fetch   func() []string
+	mu      sync.Mutex
+	list    []string
+	fetched bool
+}
+
+// replays reports whether got is start extended by a prefix of the node's
+// list. A miss on the cached list refetches it: the node may have measured a
+// policy since the last gate.
+func (l *policyList) replays(got []byte, start [runtimemeasure.Size]byte) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.fetched && replaysPrefix(got, start, l.list) {
+		return true
+	}
+	l.list, l.fetched = l.fetch(), true
+	return replaysPrefix(got, start, l.list)
+}
+
+func replaysPrefix(got []byte, reg [runtimemeasure.Size]byte, policies []string) bool {
+	for _, p := range policies {
+		d, err := runtimemeasure.CanonicalDigest(p)
+		if err != nil {
+			return false
+		}
+		reg = runtimemeasure.Extend(reg, runtimemeasure.Event(d))
+		if bytes.Equal(got, reg[:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // platform is the bare-metal tag of the manifest's family. Cloud overlays are
@@ -121,11 +163,28 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 // workloadDigests is empty on SNP — it has no runtime-extend register, and
 // workloadChain refuses --workload-image there — so the binding checked is the
 // launch-committed HOSTDATA alone.
+//
+// A node that measures allowlist policies extends them after the workloads,
+// and the list may run ahead of the quote, so any prefix that replays is
+// accepted. Policy and workload extends share one event encoding, so an
+// extend after the workload chain passes whenever the node lists it as a
+// policy: the workload chain itself stays exact.
 func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
 	}
-	return runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
+	err := runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
+	if err == nil || exp.policies == nil {
+		return err
+	}
+	got, berr := runtimemeasure.Binding(res)
+	if berr != nil {
+		return err
+	}
+	if exp.policies.replays(got, runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)) {
+		return nil
+	}
+	return err
 }
 
 // verifyEvidence verifies an evidence envelope with attestation-go (HW chain +

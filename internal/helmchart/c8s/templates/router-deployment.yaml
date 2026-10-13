@@ -269,6 +269,11 @@ spec:
             {{- if .Values.router.attest.expectedWorkload }}
             - --expected-workload={{ .Values.router.attest.expectedWorkload }}
             {{- end }}
+            {{- if or .Values.node.baked (and .Values.nriImagePolicy.measurePolicies (include "c8s.attestationApiSocketPresent" .)) }}
+            # The NRI plugin's measured-policy journal, under the
+            # attestation-api-socket mount; absent until it measures.
+            - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+            {{- end }}
             # The identity-bound PQ flow must use the TEE-held mesh
             # credential, never the optional publicTLS Secret: report_data
             # commits the X-Wing key exchange to this leaf and the sidecar

@@ -747,7 +747,11 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
 - **RTMR[3] chain (TDX)** — the register must equal the operator-key seed
   (`runtimemeasure.Seed` over the exact pubkey PEM bytes)
   extended, in order, by each digest-pinned `--workload-image` ref (tags are
-  rejected). With no `--workload-image` the register must equal the bare seed;
+  rejected). With no `--workload-image` the register must equal the bare seed.
+  A node that measures allowlist policies extends them after that chain and
+  lists them at cred-release's unauthenticated `GET /measured-policies`; the
+  register may then also carry the longest prefix of that list that replays
+  (see [Measured policy history](allowlist-and-capabilities.md#measured-policy-history));
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator
@@ -1008,6 +1012,12 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 `front_door_mode`, and attest-lb — the transport binding to the exact serving
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
+
+On a node that measures allowlist policies, both bundles also carry
+`measured_policies`: the policy digests the node extended into RTMR[3], read
+after the quote and outside any transcript. A verifier trusts the longest
+prefix that replays against the quote's RTMR[3]; see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history).
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode and the upstream at boot. Mode `acme`
