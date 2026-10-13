@@ -225,9 +225,9 @@ func shadowedEntries(al *pkgallowlist.Allowlist) []finding {
 	return out
 }
 
-// shadowPairs returns every (wide, narrow) name pair where wide shadows narrow
-// and not the reverse — a mutual pair is the same shape, which
-// indistinguishableEntries already reports.
+// shadowPairs returns every (wide, narrow) name pair where wide shadows narrow.
+// A mutual pair is returned once, and not at all when the two share a shape,
+// which indistinguishableEntries already reports.
 func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 	var out [][2]string
 	names := slices.Sorted(maps.Keys(al.Workloads))
@@ -236,12 +236,22 @@ func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 			if wide == narrow {
 				continue
 			}
-			if shadows(al.Workloads[wide], al.Workloads[narrow]) && !shadows(al.Workloads[narrow], al.Workloads[wide]) {
-				out = append(out, [2]string{wide, narrow})
+			if !shadows(al.Workloads[wide], al.Workloads[narrow]) {
+				continue
 			}
+			if shadows(al.Workloads[narrow], al.Workloads[wide]) && (narrow < wide || sameShape(al.Workloads[wide], al.Workloads[narrow])) {
+				continue
+			}
+			out = append(out, [2]string{wide, narrow})
 		}
 	}
 	return out
+}
+
+func sameShape(a, b pkgallowlist.Workload) bool {
+	shapeA, errA := entryShape(a)
+	shapeB, errB := entryShape(b)
+	return errA != nil || errB != nil || shapeA == shapeB
 }
 
 func shadowFinding(wide, narrow string) finding {
@@ -272,8 +282,8 @@ func shadows(wide, narrow pkgallowlist.Workload) bool {
 }
 
 // subsumes reports whether every launch narrow admits, wide admits too: the
-// same digest, and for each of argv, mounts and env either wide leaves it to
-// the host or both pin it the same way. For argv, an exact command whose
+// same digest, argv and mounts either left to the host by wide or pinned the
+// same way by both, and an env policy wide covers. For argv, an exact command whose
 // arguments are open also subsumes any exact command it is a prefix of — the
 // seeded component shape, `/c8s` under any args, subsumes `/c8s cds-attest`
 // under any policy.
@@ -287,7 +297,7 @@ func subsumes(wide, narrow pkgallowlist.Container) bool {
 	if wide.Mounts.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Mounts, narrow.Mounts) {
 		return false
 	}
-	if wide.Env.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Env, narrow.Env) {
+	if !wide.Env.Covers(narrow.Env) {
 		return false
 	}
 	return true

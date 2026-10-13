@@ -17,6 +17,7 @@ type envMatcherBehavior interface {
 	valid() bool
 	matches(name, digest string) bool
 	exactValue() (string, bool)
+	covers(narrow envMatcherBehavior) bool
 }
 
 func (m EnvMatcher) behavior() (envMatcherBehavior, error) {
@@ -102,6 +103,10 @@ func (m exactEnvMatcher) matches(name, digest string) bool {
 func (m exactEnvMatcher) exactValue() (string, bool) {
 	return *m.Exact, true
 }
+func (m exactEnvMatcher) covers(narrow envMatcherBehavior) bool {
+	value, pinned := narrow.exactValue()
+	return pinned && value == *m.Exact
+}
 
 type presentEnvMatcher struct {
 	Present bool `json:"present" yaml:"present"`
@@ -115,4 +120,7 @@ func (presentEnvMatcher) matches(string, string) bool {
 }
 func (presentEnvMatcher) exactValue() (string, bool) {
 	return "", false
+}
+func (presentEnvMatcher) covers(envMatcherBehavior) bool {
+	return true
 }

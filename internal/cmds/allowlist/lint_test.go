@@ -546,3 +546,38 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 		})
 	}
 }
+
+func TestShadowByEnvMatcherSubsumption(t *testing.T) {
+	container := func(env string) string {
+		return `[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":` + env + `}]`
+	}
+	presentMode := `{"policy":"match","variables":{"MODE":{"present":true}}}`
+	for _, tc := range []struct {
+		name, alpha, beta string
+		shadowed          bool
+	}{
+		{"present covers exact", presentMode, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, true},
+		{"present covers exact policy", presentMode, `{"policy":"exact","values":{"MODE":"production"}}`, true},
+		{"exact policy equals all-exact match", `{"policy":"exact","values":{"MODE":"production"}}`, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, true},
+		{"different values", `{"policy":"match","variables":{"MODE":{"exact":"staging"}}}`, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, false},
+		{"different names", presentMode, `{"policy":"match","variables":{"MODE":{"exact":"production"},"X":{"present":true}}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := entryPair(t, container(tc.alpha), container(tc.beta))
+			var shadowErrors []string
+			for _, f := range lintOffline(al) {
+				if f.err && strings.Contains(f.msg, "can never be the unique match") {
+					shadowErrors = append(shadowErrors, f.msg)
+				}
+			}
+			if got := len(shadowErrors); got != map[bool]int{true: 1, false: 0}[tc.shadowed] {
+				t.Fatalf("lint shadow errors = %v, want shadowed %v", shadowErrors, tc.shadowed)
+			}
+			incoming := map[string]pkgallowlist.Workload{"beta": al.Workloads["beta"]}
+			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
+			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.shadowed {
+				t.Fatalf("apply collision = %v, want %v", got, tc.shadowed)
+			}
+		})
+	}
+}
