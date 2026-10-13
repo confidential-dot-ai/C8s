@@ -261,15 +261,12 @@ func shadowFinding(wide, narrow string) finding {
 }
 
 // shadows reports whether wide describes every running set narrow describes:
-// each of wide's mains is one of narrow's mains, and each container narrow
-// declares has a wide container of the same digest whose policy subsumes it.
+// each of wide's mains subsumes one of narrow's mains, so it is running whenever
+// narrow matches, and each container narrow declares is subsumed by one of
+// wide's.
 func shadows(wide, narrow pkgallowlist.Workload) bool {
-	narrowMains := map[string]bool{}
-	for _, c := range narrow.Containers {
-		narrowMains[c.Digest.String()] = true
-	}
-	for _, c := range wide.Containers {
-		if !narrowMains[c.Digest.String()] {
+	for _, w := range wide.Containers {
+		if !slices.ContainsFunc(narrow.Containers, func(n pkgallowlist.Container) bool { return subsumes(w, n) }) {
 			return false
 		}
 	}
