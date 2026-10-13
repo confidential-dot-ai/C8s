@@ -9,6 +9,7 @@ import (
 	"maps"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -28,8 +29,8 @@ const (
 	pinsUnchanged = "unchanged"
 )
 
-// runSetCDSPins writes this release's CDS pins into an existing plugin config,
-// leaving every other key as found.
+// runSetCDSPins writes this release's CDS pins and policy-measurement switch
+// into an existing plugin config, leaving every other key as found.
 //
 // A node-as-CVM bakes the config into the measured image, and its
 // allowlist.base carries the RKE2 system-image digests that only the image
@@ -39,6 +40,7 @@ func runSetCDSPins(stdout io.Writer, args []string) error {
 	path := fs.String("config", defaultConfigPath, "plugin config to patch in place")
 	rawMeasurements := fs.String("cds-measurements", "", "comma-separated SHA-384 hex CDS launch measurements; empty clears the pins")
 	rawRTMRs := fs.String("cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex>; empty clears the pins")
+	measurePolicies := fs.Bool("measure-policies", false, "set allowlist.pull.measure_policies: extend TDX RTMR[3] with each pulled allowlist before applying it")
 	if err := cmdsutil.ParseFlags(fs, args); err != nil {
 		return err
 	}
@@ -72,12 +74,13 @@ func runSetCDSPins(stdout io.Writer, args []string) error {
 		return fmt.Errorf("%s: %w", *path, err)
 	}
 	if slices.Equal(normalizeHex(cfg.Allowlist.Pull.CDSMeasurements), wantMeasurements) &&
-		slices.Equal(normalizeHex(cfg.Allowlist.Pull.CDSRTMRs), wantRTMRs) {
+		slices.Equal(normalizeHex(cfg.Allowlist.Pull.CDSRTMRs), wantRTMRs) &&
+		cfg.Allowlist.Pull.MeasurePolicies == *measurePolicies {
 		fmt.Fprintln(stdout, pinsUnchanged)
 		return nil
 	}
 
-	patched, err := patchCDSPins(data, wantMeasurements, wantRTMRs)
+	patched, err := patchCDSPins(data, wantMeasurements, wantRTMRs, *measurePolicies)
 	if err != nil {
 		return fmt.Errorf("%s: %w", *path, err)
 	}
@@ -105,10 +108,10 @@ func normalizeHex(vals []string) []string {
 	return out
 }
 
-// patchCDSPins replaces allowlist.pull.cds_measurements and cds_rtmrs in a
-// config document, editing the parsed node tree so every other key, and the
+// patchCDSPins replaces allowlist.pull.cds_measurements, cds_rtmrs and
+// measure_policies in a config document, editing the parsed node tree so every other key, and the
 // comments the node image ships, survive the round-trip.
-func patchCDSPins(data []byte, measurements, rtmrs []string) ([]byte, error) {
+func patchCDSPins(data []byte, measurements, rtmrs []string, measurePolicies bool) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
@@ -122,6 +125,7 @@ func patchCDSPins(data []byte, measurements, rtmrs []string) ([]byte, error) {
 	}
 	setMappingValue(pull, "cds_measurements", stringSeq(measurements))
 	setMappingValue(pull, "cds_rtmrs", stringSeq(rtmrs))
+	setMappingValue(pull, "measure_policies", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: strconv.FormatBool(measurePolicies)})
 
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

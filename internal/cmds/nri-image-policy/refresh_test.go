@@ -2,11 +2,15 @@ package nriimagepolicy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -604,5 +608,117 @@ func TestParseVersion(t *testing.T) {
 		if got := parseVersion(tc.etag); got != tc.want {
 			t.Errorf("parseVersion(%q) = %d, want %d", tc.etag, got, tc.want)
 		}
+	}
+}
+
+func servedDigest(body []byte) string {
+	sum := sha256.Sum256(body)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// The initial pull measures the served digest before applying it, and does
+// not apply a policy it could not measure.
+func TestPullInitialMeasuresBeforeApplying(t *testing.T) {
+	origRetries := allowlistApiMaxRetries
+	allowlistApiMaxRetries = 1
+	defer func() { allowlistApiMaxRetries = origRetries }()
+
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	for _, tc := range []struct {
+		name        string
+		measureErr  error
+		measureOff  bool
+		wantApplied bool
+	}{
+		{name: "measured", wantApplied: true},
+		{name: "measure fails", measureErr: errors.New("register write failed")},
+		{name: "measuring off", measureOff: true, wantApplied: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(&flippingHandler{versions: []string{"1"}, bodyByV: map[string][]byte{"1": body}})
+			defer srv.Close()
+			store := newPolicyStore(anyAllowlist(map[string]string{}))
+			var measured []string
+			measure := func(d string) error {
+				if admitsDigest(store, pushDigestA) {
+					t.Error("policy applied before it was measured")
+				}
+				measured = append(measured, d)
+				return tc.measureErr
+			}
+			if tc.measureOff {
+				measure = nil
+			}
+			_, err := pullInitial(t.Context(), pullArgs{
+				client:      allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+				store:       store,
+				measure:     measure,
+				timeout:     time.Second,
+				pluginErrCh: make(chan error),
+				logger:      discardLogger(),
+			})
+			if (err == nil) != tc.wantApplied || admitsDigest(store, pushDigestA) != tc.wantApplied {
+				t.Fatalf("pullInitial = %v, applied %v, want applied %v", err, admitsDigest(store, pushDigestA), tc.wantApplied)
+			}
+			if !tc.measureOff && (len(measured) != 1 || measured[0] != servedDigest(body)) {
+				t.Fatalf("measured %v, want the served digest %s", measured, servedDigest(body))
+			}
+		})
+	}
+}
+
+// The pull loop skips a policy it could not measure and applies the next
+// one only after measuring it.
+func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
+	bodyA := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	bodyB := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{versions: []string{"1", "2"}, bodyByV: map[string][]byte{"1": bodyA, "2": bodyB}})
+	defer srv.Close()
+	store := newPolicyStore(anyAllowlist(map[string]string{}))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	var measured []string
+	measure := func(d string) error {
+		measured = append(measured, d)
+		if d == servedDigest(bodyA) {
+			return errors.New("register write failed")
+		}
+		if admitsDigest(store, pushDigestA) || admitsDigest(store, pushDigestB) {
+			t.Error("a policy was applied before it was measured")
+		}
+		cancel()
+		return nil
+	}
+	runPullLoop(ctx, pullLoopArgs{
+		client:   allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		store:    store,
+		measure:  measure,
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		logger:   discardLogger(),
+	})
+
+	if want := []string{servedDigest(bodyA), servedDigest(bodyB)}; !slices.Equal(measured, want) {
+		t.Fatalf("measured %v, want %v", measured, want)
+	}
+	if admitsDigest(store, pushDigestA) || !admitsDigest(store, pushDigestB) {
+		t.Fatalf("applied A=%v B=%v, want only the measured B", admitsDigest(store, pushDigestA), admitsDigest(store, pushDigestB))
+	}
+}
+
+// Policy measuring stays off unless configured, and without a runtime
+// directory to keep the journal in.
+func TestPolicyMeasurerIsOffByDefault(t *testing.T) {
+	dir := t.TempDir()
+	for name, cfg := range map[string]*config{
+		"unset":         {Platform: "tdx", WorkloadClaims: workloadClaimsConfig{SocketDir: dir}},
+		"no socket dir": {Platform: "tdx", Allowlist: allowlistConfig{Pull: pullConfig{MeasurePolicies: true}}},
+	} {
+		if policyMeasurer(cfg, discardLogger()) != nil {
+			t.Errorf("%s: policyMeasurer returned a measurer, want nil", name)
+		}
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("runtime directory holds %v, want no journal", entries)
 	}
 }
