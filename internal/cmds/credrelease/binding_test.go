@@ -447,8 +447,13 @@ func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setMeasuredPolicies(t, tc.journal)
-			if err := verifyNodeBinding(tc.report, operatorPub); (err != nil) != tc.wantErr {
+			err := verifyNodeBinding(tc.report, operatorPub)
+			if (err != nil) != tc.wantErr {
 				t.Fatalf("verifyNodeBinding = %v, want error %v", err, tc.wantErr)
+			}
+			// The error names the journal only when it held policies.
+			if err != nil && strings.Contains(err.Error(), measuredPoliciesPath) != (tc.journal != "") {
+				t.Errorf("verifyNodeBinding = %v, want %s named only when the journal exists", err, measuredPoliciesPath)
 			}
 		})
 	}
