@@ -84,10 +84,13 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The token that wrote a canonical whole document is the operator's
-	// signature over it (docs/allowlist-and-capabilities.md).
+	// signature over it (docs/allowlist-and-capabilities.md). Re-uploading the
+	// same document with a fresh token is a no-op write that stores it.
 	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
 		if err := h.Store.SignPolicy(body, token); err != nil {
 			slog.Error("store the operator signature of the allowlist", "error", err)
+			http.Error(w, "allowlist replaced but its operator signature was not stored; upload it again", http.StatusInternalServerError)
+			return
 		}
 	}
 

@@ -238,14 +238,53 @@ func TestSignPolicyOnlyForCanonicalWholeDocument(t *testing.T) {
 	}
 }
 
+// A write whose signature cannot be stored reports failure, and re-uploading
+// the same document signs it.
+func TestReplaceAllReportsUnstoredSignature(t *testing.T) {
+	store := openJournaled(t)
+	h := Handler{Store: store, WriteAuthorizer: func(*http.Request, []byte) error { return nil }}
+	canonical := canonicalDoc(t, map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))})
+	put := func(token string) int {
+		r := httptest.NewRequest(http.MethodPut, "/allowlist", bytes.NewReader(canonical))
+		r.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		h.HandleReplaceAll(w, r)
+		return w.Code
+	}
+
+	if _, err := store.db.Exec("ALTER TABLE journal_signature RENAME TO broken"); err != nil {
+		t.Fatal(err)
+	}
+	if code := put("first"); code != http.StatusInternalServerError {
+		t.Fatalf("PUT /allowlist with the signature unstored = %d, want 500", code)
+	}
+	if _, err := store.db.Exec("ALTER TABLE broken RENAME TO journal_signature"); err != nil {
+		t.Fatal(err)
+	}
+	if code := put("second"); code != http.StatusNoContent {
+		t.Fatalf("re-upload = %d, want 204", code)
+	}
+	if token, ok, err := store.Signature(objectDigest(canonical)); err != nil || !ok || token != "second" {
+		t.Fatalf("Signature = %q, %v, %v; want the re-upload's token", token, ok, err)
+	}
+}
+
 func TestConsumeToken(t *testing.T) {
 	store := openJournaled(t)
 	until := time.Now().Add(time.Hour)
 	if err := store.ConsumeToken("t1", until); err != nil {
 		t.Fatalf("first use = %v", err)
 	}
-	if err := store.ConsumeToken("t1", until); !errors.Is(err, ErrTokenReused) {
-		t.Fatalf("reuse = %v, want ErrTokenReused", err)
+	if err := store.ConsumeToken("h.p1.s1", until); err != nil {
+		t.Fatalf("first use = %v", err)
+	}
+	for _, reuse := range []string{"t1", "h.p1.s1", "h.p1.s2"} {
+		if err := store.ConsumeToken(reuse, until); !errors.Is(err, ErrTokenReused) {
+			t.Fatalf("ConsumeToken(%q) = %v, want ErrTokenReused", reuse, err)
+		}
+	}
+	if err := store.ConsumeToken("h.p2.s1", until); err != nil {
+		t.Fatalf("other payload = %v, want accepted", err)
 	}
 	if err := store.ConsumeToken("t2", time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)

@@ -513,3 +513,28 @@ func TestOperatorSignatureVector(t *testing.T) {
 		t.Fatalf("vector policy is not canonical: %s, %v", canon, err)
 	}
 }
+
+func TestTokenExpiry(t *testing.T) {
+	keyPEM, _ := genKey(t, elliptic.P256())
+	exp := time.Now().Add(time.Minute).Truncate(time.Second)
+	noExp := baseClaims(nil)
+	delete(noExp, "exp")
+	for _, tc := range []struct {
+		name  string
+		token string
+		ok    bool
+	}{
+		{"exp", strings.TrimPrefix(mintCustom(t, keyPEM, jwt.MapClaims{"exp": exp.Unix()}), "Bearer "), true},
+		{"missing exp", strings.TrimPrefix(mintCustom(t, keyPEM, noExp), "Bearer "), false},
+		{"malformed", "not-a-jwt", false},
+	} {
+		got, err := TokenExpiry(tc.token)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: TokenExpiry = %v, %v; want ok=%v", tc.name, got, err, tc.ok)
+			continue
+		}
+		if tc.ok && !got.Equal(exp) {
+			t.Errorf("%s: TokenExpiry = %v, want %v", tc.name, got, exp)
+		}
+	}
+}

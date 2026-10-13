@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -206,11 +207,17 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 	return token, err == nil, err
 }
 
-// ConsumeToken records that token authorized a write, or returns
-// ErrTokenReused if one already did. Stored signatures make write tokens
-// public, so each must authorize one write only. The record survives restarts
-// and is pruned after until, when the token no longer verifies anyway.
+// ConsumeToken records that the JWT token authorized a write, or returns
+// ErrTokenReused if it or another encoding of it already did. Stored
+// signatures make write tokens public, so each must authorize one write only.
+// The record survives restarts of a persistent store and is pruned after
+// until, when the token no longer verifies anyway.
 func (s *Store) ConsumeToken(token string, until time.Time) error {
+	// Key on the signed header.payload: the signature segment has several
+	// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).
+	if i := strings.LastIndexByte(token, '.'); i >= 0 {
+		token = token[:i]
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.db.Exec("DELETE FROM used_token WHERE until_ms < ?", time.Now().UnixMilli()); err != nil {
