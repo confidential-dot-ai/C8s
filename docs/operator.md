@@ -980,6 +980,10 @@ get-cert \
 
 `--key-out` is idempotent: on a kubelet restart of the sidecar it reuses the
 key that's already on disk, so the previously-issued cert chain stays valid.
+The sidecar leaves `--ca-watch-interval` at get-cert's default, so it polls
+CDS's `/ca` once a minute, and `/allowlist` too when the pod requests workload
+claims, renewing early when either no longer matches the installed leaf.
+
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on

@@ -440,8 +440,8 @@ func TestPolicyRenewDelay(t *testing.T) {
 	}
 }
 
-// TestCDSWatchInterval covers the --ca-watch-interval default and its
-// validation together, as RunE applies them.
+// TestCDSWatchInterval parses --ca-watch-interval through NewCmd, then applies
+// the default and validation as RunE does.
 func TestCDSWatchInterval(t *testing.T) {
 	base := config{
 		CDSURL:            "https://cds:8443",
@@ -449,33 +449,41 @@ func TestCDSWatchInterval(t *testing.T) {
 		SAN:               "router.example.com",
 		RenewInterval:     time.Hour,
 		WorkloadClaims:    true,
-		CAWatchInterval:   defaultCDSWatchInterval,
 	}
 	tests := []struct {
-		name     string
-		explicit bool
-		mutate   func(*config)
-		want     time.Duration
-		wantErr  error
+		name    string
+		args    []string
+		mutate  func(*config)
+		want    time.Duration
+		wantErr error
 	}{
 		{name: "default with claims", mutate: func(*config) {}, want: time.Minute},
 		{name: "default with ca-out", mutate: func(c *config) { c.WorkloadClaims, c.CAOutPath = false, "/tls/ca.pem" }, want: time.Minute},
 		{name: "default with nothing to watch", mutate: func(c *config) { c.WorkloadClaims = false }, want: 0},
 		{name: "default without renew interval", mutate: func(c *config) { c.RenewInterval = 0 }, want: 0},
-		{name: "explicitly disabled", explicit: true, mutate: func(c *config) { c.CAWatchInterval = 0 }, want: 0},
-		{name: "explicit with nothing to watch", explicit: true, mutate: func(c *config) { c.WorkloadClaims = false }, want: time.Minute, wantErr: errInvalidCAWatchInterval},
-		{name: "explicit without renew interval", explicit: true, mutate: func(c *config) { c.RenewInterval = 0 }, want: time.Minute, wantErr: errInvalidCAWatchInterval},
-		{name: "one second", explicit: true, mutate: func(c *config) { c.CAWatchInterval = time.Second }, want: time.Second},
-		{name: "negative", explicit: true, mutate: func(c *config) { c.CAWatchInterval = -time.Minute }, want: -time.Minute, wantErr: errInvalidCAWatchInterval},
-		{name: "sub-second", explicit: true, mutate: func(c *config) { c.CAWatchInterval = 500 * time.Millisecond }, want: 500 * time.Millisecond, wantErr: errInvalidCAWatchInterval},
+		{name: "explicitly disabled", args: []string{"--ca-watch-interval=0"}, mutate: func(*config) {}, want: 0},
+		{name: "explicit with nothing to watch", args: []string{"--ca-watch-interval=30s"}, mutate: func(c *config) { c.WorkloadClaims = false }, want: 30 * time.Second, wantErr: errInvalidCAWatchInterval},
+		{name: "explicit without renew interval", args: []string{"--ca-watch-interval=30s"}, mutate: func(c *config) { c.RenewInterval = 0 }, want: 30 * time.Second, wantErr: errInvalidCAWatchInterval},
+		{name: "one second", args: []string{"--ca-watch-interval=1s"}, mutate: func(*config) {}, want: time.Second},
+		{name: "negative", args: []string{"--ca-watch-interval=-1m"}, mutate: func(*config) {}, want: -time.Minute, wantErr: errInvalidCAWatchInterval},
+		{name: "sub-second", args: []string{"--ca-watch-interval=500ms"}, mutate: func(*config) {}, want: 500 * time.Millisecond, wantErr: errInvalidCAWatchInterval},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			flags := NewCmd().Flags()
+			if err := flags.Parse(tt.args); err != nil {
+				t.Fatal(err)
+			}
+			interval, err := flags.GetDuration("ca-watch-interval")
+			if err != nil {
+				t.Fatal(err)
+			}
 			cfg := base
+			cfg.CAWatchInterval = interval
 			tt.mutate(&cfg)
-			applyCDSWatchDefault(&cfg, tt.explicit)
+			applyCDSWatchDefault(&cfg, flags)
 			if cfg.CAWatchInterval != tt.want {
-				t.Errorf("applyCDSWatchDefault(explicit=%t) interval = %v, want %v", tt.explicit, cfg.CAWatchInterval, tt.want)
+				t.Errorf("applyCDSWatchDefault(%v) interval = %v, want %v", tt.args, cfg.CAWatchInterval, tt.want)
 			}
 			if err := validateConfig(cfg); !errors.Is(err, tt.wantErr) {
 				t.Fatalf("validateConfig() = %v, want %v", err, tt.wantErr)

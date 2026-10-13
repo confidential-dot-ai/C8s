@@ -33,6 +33,7 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
@@ -123,7 +124,7 @@ This tool is designed to run as a Kubernetes init container or renewal sidecar
 alongside a workload that uses the obtained certificate.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			setupLogging(cfg.Verbose)
-			applyCDSWatchDefault(&cfg, cmd.Flags().Changed("ca-watch-interval"))
+			applyCDSWatchDefault(&cfg, cmd.Flags())
 			return run(cfg)
 		},
 		SilenceUsage: true,
@@ -365,6 +366,8 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			}
 			if cfg.CAOutPath != "" {
 				stale, err := servedCAStale(ctx, client, cfg.CAOutPath)
+				// On error, fall through: it may be local (an unreadable
+				// --ca-out), which must not mute the policy check.
 				if err != nil {
 					slog.Warn("mesh CA check failed", "error", err)
 				} else if stale {
@@ -714,10 +717,10 @@ func fetchSandboxToken(ctx context.Context, cfg config, pub crypto.PublicKey, no
 }
 
 // applyCDSWatchDefault turns off the implicit --ca-watch-interval default when
-// there is no renewal loop or nothing to watch; an explicit value is left for
-// validateConfig to judge.
-func applyCDSWatchDefault(cfg *config, explicit bool) {
-	if !explicit && (cfg.RenewInterval <= 0 || (cfg.CAOutPath == "" && !cfg.WorkloadClaims)) {
+// there is no renewal loop or nothing to watch; a value set in flags is left
+// for validateConfig to judge.
+func applyCDSWatchDefault(cfg *config, flags *pflag.FlagSet) {
+	if !flags.Changed("ca-watch-interval") && (cfg.RenewInterval <= 0 || (cfg.CAOutPath == "" && !cfg.WorkloadClaims)) {
 		cfg.CAWatchInterval = 0
 	}
 }
