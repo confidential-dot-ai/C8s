@@ -89,30 +89,23 @@ func checkComponentMounts(t *testing.T, args []string) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	seed := renderedSeed(t, out)
-	index := seed.BuildIndex()
-	entrypoints := map[string][]string{}
-	for _, w := range seed.Workloads {
-		for _, c := range w.Containers {
-			if c.PinsAtMostCommand() && c.Command.Policy == pkgallowlist.PolicyExact {
-				entrypoints[c.Digest.String()] = c.Command.Argv
-			}
-		}
-	}
+	index := renderedSeed(t, out).BuildIndex()
+	images := componentImages(t)
 	checked := 0
 	for _, w := range renderedPodSpecs(t, out) {
 		for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
 			digest := imageDigest(c.Image)
-			entrypoint, ok := entrypoints[digest]
-			if !ok {
+			repository, _, _ := strings.Cut(c.Image, "@")
+			image, ok := images[repository]
+			if !ok || !index.AdmitsDigest(digest) {
 				continue
 			}
 			argv := effectiveArgv(c)
 			if len(c.Command) == 0 {
-				argv = append(append([]string{}, entrypoint...), c.Args...)
+				argv = append(append([]string{}, image.entrypoint...), c.Args...)
 			}
 			mounts := observedMounts(t, w.spec, c)
-			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: &pkgallowlist.EnvObservation{}}
+			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: launchEnv(t, image.env, c)}
 			checked++
 			if !index.AdmitsContainer(running) {
 				t.Errorf("seed refuses %s/%s container %s with mounts %+v", w.kind, w.name, c.Name, mounts)

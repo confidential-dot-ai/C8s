@@ -531,6 +531,7 @@ func checkComponentEntries(t *testing.T, out string) {
 	}
 	pinned[nginxDigest] = pins["router.nginx"]
 
+	images := componentImages(t)
 	seen := map[string]bool{}
 	for _, w := range renderedPodSpecs(t, out) {
 		name := w.kind + "/" + w.name
@@ -545,7 +546,8 @@ func checkComponentEntries(t *testing.T, out string) {
 			if len(c.Command) == 0 {
 				argv = append(append([]string{}, entrypoint...), c.Args...)
 			}
-			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: observedMounts(t, w.spec, c), Env: &pkgallowlist.EnvObservation{}}
+			repository, _, _ := strings.Cut(c.Image, "@")
+			running := pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: observedMounts(t, w.spec, c), Env: launchEnv(t, images[repository].env, c)}
 			sources := map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base}
 			if name == "DaemonSet/c8s-volumed-teardown" {
 				// The pre-delete hook's script and pause are seed-only, like
@@ -830,7 +832,19 @@ func TestChartBaseKeepsComponentMountsBesideNarrowerOperatorEntry(t *testing.T) 
 	}
 	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
 	data := []pkgallowlist.ObservedMount{{Destination: "/data", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}
-	running := pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: []string{"/c8s", "cds", "--port=8443"}, Mounts: data, Env: &pkgallowlist.EnvObservation{}}
+	var cds *corev1.Container
+	for _, w := range renderedPodSpecs(t, out) {
+		for i, c := range w.spec.Containers {
+			if w.kind+"/"+w.name+"/"+c.Name == "Deployment/c8s-cds/cds" {
+				cds = &w.spec.Containers[i]
+			}
+		}
+	}
+	if cds == nil {
+		t.Fatal("no rendered CDS container")
+	}
+	env := launchEnv(t, componentImages(t)["ghcr.io/confidential-dot-ai/cds"].env, *cds)
+	running := pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: []string{"/c8s", "cds", "--port=8443"}, Mounts: data, Env: env}
 	if !base.BuildIndex().AdmitsContainer(running) {
 		t.Fatalf("base refuses CDS with its disk-backed /data beside a narrower operator entry: %v", base.Workloads)
 	}

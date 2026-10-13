@@ -34,6 +34,11 @@ node:
 ##                  `mounts: {policy: confined}`): the executable and every
 ##                  directory its entrypoint loads code from. Derive it from
 ##                  the image's Dockerfile. Required unless argvPinned.
+##   - imageEnv:    the image config's Env, as name: value. The derived
+##                  entry's env match pins each to its value; `c8s install
+##                  --resolve-digests` refuses an image whose config differs.
+##                  Bump with the image. Required unless argvPinned; {} for
+##                  an image that sets none.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
@@ -44,17 +49,25 @@ c8sComponents:
     # Subcommands exec helpers by name (mkfs.erofs, ipset, cryptsetup), so
     # the PATH directories are denied as well.
     denyBelow: [/c8s, /etc/ssl, /usr, /bin, /sbin]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: cds.image
     enabledPath: ""
     cdsExempt: true
     entrypoint: ["/c8s", "cds"]
     denyBelow: [/c8s, /etc/ssl, /usr, /bin, /sbin]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     cdsExempt: false
     entrypoint: ["/attestation-api"]
     denyBelow: [/attestation-api, /usr, /lib, /lib64, /bin, /sbin, /etc/ssl,
                 /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     ## Released by attestation-rs: the image built from .github/build-pins.json's
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
@@ -65,6 +78,8 @@ c8sComponents:
     entrypoint: ["/app/c8s", "armtls-mesh"]
     denyBelow: [/app, /usr, /lib, /lib64, /bin, /sbin, /etc/ssl, /etc/alternatives,
                 /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
     cdsExempt: false
@@ -78,6 +93,8 @@ c8sComponents:
     entrypoint: ["/app/c8s", "volumed"]
     denyBelow: [/app, /usr, /lib, /lib64, /bin, /sbin, /etc/ssl, /etc/alternatives,
                 /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -1272,6 +1289,13 @@ router:
     denyBelow: [/docker-entrypoint.sh, /docker-entrypoint.d, /usr, /lib, /lib64, /bin, /sbin,
                 /etc/nginx/modules, /etc/ssl, /etc/ld-musl-x86_64.path, /etc/ld-musl-aarch64.path,
                 /etc/ld.so.preload, /etc/ld.so.cache, /etc/ld.so.conf, /etc/ld.so.conf.d]
+    # The image config's Env, which the seeded entry's env match pins. Bump
+    # with the image.
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      NGINX_VERSION: "1.30.5"
+      PKG_RELEASE: "1"
+      DYNPKG_RELEASE: "1"
     # -- Number of nginx replicas.
     replicas: 1
     # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs
