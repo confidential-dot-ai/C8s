@@ -147,7 +147,7 @@ func anyEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
 }
 
 // componentEntry is the shape the chart seeds a C8s image in: the executable
-// pinned, everything else per-pod.
+// pinned, mounts confined away from the code it loads, everything else per-pod.
 func componentEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
 	t.Helper()
 	return pkgallowlist.Workload{Label: image, Containers: []pkgallowlist.Container{{
@@ -155,7 +155,7 @@ func componentEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
 		Image:   image,
 		Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s"}},
 		Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
-		Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+		Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyConfined, DenyBelow: []string{"/c8s", "/etc/ssl"}},
 		Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny},
 	}}}
 }
@@ -1120,6 +1120,33 @@ func TestSecretReleaseEnforcesMountEvidence(t *testing.T) {
 			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
 			if w.Code != tc.want {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body)
+			}
+		})
+	}
+}
+
+func TestSecretReleaseEnforcesConfinedMounts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mounts []pkgallowlist.ObservedMount
+		want   int
+	}{
+		{"memory volume", []pkgallowlist.ObservedMount{{Destination: "/cache", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}}, http.StatusCreated},
+		{"read-only host path", []pkgallowlist.ObservedMount{{Destination: "/config", Class: pkgallowlist.MountHost, ReadOnly: true}}, http.StatusCreated},
+		{"writable host path", []pkgallowlist.ObservedMount{{Destination: "/config", Class: pkgallowlist.MountHost}}, http.StatusForbidden},
+		{"disk-backed volume", []pkgallowlist.ObservedMount{{Destination: "/cache", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}, http.StatusForbidden},
+		{"below a denied path", []pkgallowlist.ObservedMount{{Destination: "/usr/lib", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}}, http.StatusForbidden},
+		{"old inventory", nil, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hn := newHarness(t)
+			al := hn.h.Policy.(fakePolicy).al
+			al.Workloads["api"].Containers[0].Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyConfined, DenyBelow: []string{"/usr"}}
+			hn.inv.containers[0].Mounts = tc.mounts
+			hn.inv.legacyMounts = tc.mounts == nil
+			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
+			if w.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.want, w.Body)
 			}
 		})
 	}

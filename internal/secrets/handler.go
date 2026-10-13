@@ -58,7 +58,7 @@ const InjectedBinary = "/c8s"
 // A pod author can also add the image in one of these modes, with arguments of
 // their own. That container is dropped too: the inventory reports no container
 // name, and matching keys on nothing the host writes. It is dropped only while
-// its mounts confine it to the node (confinedMount), so whatever it fetches or
+// its mounts confine it to the node (ObservedMount.Confined), so whatever it fetches or
 // writes cannot reach any location the host reads.
 var InjectedModes = []string{"get-cert", "get-secret", "get-volume", "probe-file"}
 
@@ -498,21 +498,5 @@ func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) b
 	if c.Mounts == nil {
 		return false
 	}
-	return !slices.ContainsFunc(c.Mounts, func(m pkgallowlist.ObservedMount) bool { return !confinedMount(m) })
-}
-
-// confinedMount reports whether a mount keeps what a container writes inside
-// the node's TEE boundary: a node-created platform mount, a read-only host
-// path, or a volume on memory or encrypted scratch. The host can read what a
-// container writes to a writable host path, or to a volume on storage the node
-// cannot vouch for (a disk-backed emptyDir, a PVC).
-func confinedMount(m pkgallowlist.ObservedMount) bool {
-	switch m.Class {
-	case pkgallowlist.MountPlatform:
-		return true
-	case pkgallowlist.MountHost:
-		return m.ReadOnly
-	default:
-		return m.Storage == pkgallowlist.MountMemory || m.Storage == pkgallowlist.MountEncrypted
-	}
+	return !slices.ContainsFunc(c.Mounts, func(m pkgallowlist.ObservedMount) bool { return !m.Confined() })
 }
