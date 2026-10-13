@@ -32,17 +32,27 @@ func (p leafProvider) Provision(context.Context) (*tls.Certificate, time.Duratio
 	return &cert, time.Hour, nil
 }
 
+// LoadLeaf reads the pod's leaf and key and returns the leaf's public key,
+// which a sandbox token is bound to.
+func LoadLeaf(certPath, keyPath string) (tls.Certificate, crypto.PublicKey, error) {
+	leaf, _, err := leafProvider{certPath: certPath, keyPath: keyPath}.Provision(context.Background())
+	if err != nil {
+		return tls.Certificate{}, nil, err
+	}
+	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
+	if err != nil {
+		return tls.Certificate{}, nil, fmt.Errorf("parse leaf %s: %w", certPath, err)
+	}
+	return *leaf, parsed.PublicKey, nil
+}
+
 // NewClient builds the mTLS client to CDS and returns the leaf's public key,
 // which the sandbox token is bound to.
 func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, error) {
 	provider := leafProvider{certPath: cfg.CertPath, keyPath: cfg.KeyPath}
-	leaf, _, err := provider.Provision(context.Background())
+	_, pub, err := LoadLeaf(cfg.CertPath, cfg.KeyPath)
 	if err != nil {
 		return nil, nil, err
-	}
-	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
-	if err != nil {
-		return nil, nil, fmt.Errorf("parse leaf: %w", err)
 	}
 	tlsCfg, _, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
 		Policy:       pins.VerifyPolicy(cfg.AttestationApiURL),
@@ -54,7 +64,7 @@ func NewClient(cfg Config, pins armtls.Pins) (*http.Client, crypto.PublicKey, er
 	return &http.Client{
 		Timeout:   cfg.RequestTimeout,
 		Transport: &http.Transport{TLSClientConfig: tlsCfg},
-	}, parsed.PublicKey, nil
+	}, pub, nil
 }
 
 // Do performs one store request: a fresh challenge, a sandbox token redeemed

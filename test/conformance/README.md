@@ -40,12 +40,20 @@ control. `challenge` fetches a fresh CDS challenge and prints it base64;
 inventory socket, bound to the leaf's key and to a given challenge, and prints
 the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
 request with `<path>` verbatim, a fresh or given challenge or none, and a fresh
-or given token or none, then prints the HTTP status (`000` when nothing
-answered) on the first line and the body after it, exactly as received. It
-exits 0 whenever an answer was printed and 2 when it could not ask, so a
-scenario about a missing or replayed challenge, another pod's token, or a
-non-canonical path reads the CDS's verdict rather than a sidecar's refusal to
-send it. `c8s secret-probe --help` has the flags.
+or given token or none, then prints one line with the HTTP status (`000`
+when nothing answered, a CDS that issued no challenge included) and the
+challenge and token it sent, base64 or `-` for a header it omitted, and the
+body after it, exactly as received. It exits 0 whenever an answer was printed
+and 2 when it could not ask, so a scenario about a missing or replayed
+challenge, another pod's token, or a non-canonical path reads the CDS's
+verdict rather than a sidecar's refusal to send it, and "that request's"
+challenge is known without a separate fetch. `c8s secret-probe --help` has
+the flags.
+
+An instrument that must run inside a container c8s owns (the certificate
+sidecar's image is the c8s image, with nothing else in it) is a hidden `c8s`
+subcommand; one that is a peer in a pod of its own is an image under
+[`tools/`](tools).
 
 ## Running
 

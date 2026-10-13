@@ -3,7 +3,6 @@ package steps
 import (
 	"bytes"
 	"context"
-	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -16,7 +15,6 @@ import (
 	"fmt"
 	"math/big"
 	"net/http"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -109,18 +107,19 @@ func registerSecrets(sc *godog.ScenarioContext) {
 
 // The CDS's secret routes and the §11 answers the sentences name.
 const (
-	secretsRoute       = "/secrets"
-	authenticateRoute  = "/authenticate"
-	msgNotAuthorized   = "not authorized for this secret"
-	msgNoSuchSecret    = "no such secret"
-	msgQuota           = "secret storage limit reached"
-	codeHolderQuota    = "secret_holder_quota"
-	originWorkload     = "workload"
-	secretClientDir    = "/run/c8s/secrets"
-	annotationSecrets  = "confidential.ai/c8s-secrets"
-	annotationRenewal  = "confidential.ai/c8s-renew-interval"
-	secretsRenewal     = "2h" // leaves the leaf a secrets scenario obtained in place
-	defaultHolderQuota = 64
+	secretsRoute        = "/secrets"
+	authenticateRoute   = "/authenticate"
+	msgNotAuthorized    = "not authorized for this secret"
+	msgNoSuchSecret     = "no such secret"
+	msgQuota            = "secret storage limit reached"
+	codeHolderQuota     = "secret_holder_quota"
+	originWorkload      = "workload"
+	secretClientDir     = "/run/c8s/secrets"
+	annotationSecrets   = "confidential.ai/c8s-secrets"
+	annotationRenewal   = "confidential.ai/c8s-renew-interval"
+	secretsRenewal      = "2h" // leaves the leaf a secrets scenario obtained in place
+	defaultHolderQuota  = 64
+	defaultJWTClockSkew = 30 // seconds the CDS's --jwt-clock-skew allows a token past its validity
 )
 
 // secretsGrant is the entry's `secrets` member in the document's shape.
@@ -275,26 +274,6 @@ func grantDoesNotAllowRead(ctx context.Context, name, p string) error {
 			return fmt.Errorf("the grant of %q allows read of %s through %s", name, p, glob)
 		}
 	}
-	return nil
-}
-
-// rewriteEntry writes the described entry as it is now, whether or not it
-// was written before; the served allowlist is read per request, so the
-// plugin's pull is not waited for.
-func (w *world) rewriteEntry(name string) error {
-	e, err := w.entry(name)
-	if err != nil {
-		return err
-	}
-	body, err := json.Marshal(e)
-	if err != nil {
-		return err
-	}
-	written := w.writtenName(name)
-	if err := w.putEntry(written, body); err != nil {
-		return err
-	}
-	w.written[written] = true
 	return nil
 }
 
@@ -633,20 +612,38 @@ func operatorSignsSecretWrite(ctx context.Context, logical string) error {
 }
 
 // operatorSignsExpiredSecretWrite signs with the shortest validity and waits
-// it out.
+// it out, and the clock skew the CDS's verifier allows on top of it.
 func operatorSignsExpiredSecretWrite(ctx context.Context, logical string) error {
-	if err := getWorld(ctx).signSecretWrite(logical, "1s"); err != nil {
+	w := getWorld(ctx)
+	if err := w.signSecretWrite(logical, "1s"); err != nil {
 		return err
 	}
-	time.Sleep(3 * time.Second)
+	skew := defaultJWTClockSkew
+	if out, err := w.be.call("cds_arg", "jwt-clock-skew"); err != nil {
+		return err
+	} else if out != "" {
+		if skew, err = strconv.Atoi(out); err != nil {
+			return fmt.Errorf("the CDS's clock skew %q: %w", out, err)
+		}
+	}
+	time.Sleep(time.Second + time.Duration(skew)*time.Second + 2*time.Second)
 	return nil
 }
 
-func (w *world) sendSigned(route string, body []byte) error {
+// signedWrite is the write the operator signed and has not sent.
+func (w *world) signedWrite() (*pendingWrite, error) {
 	if w.secrets.signed == nil {
-		return errors.New("the operator has signed no write")
+		return nil, errors.New("the operator has signed no write")
 	}
-	a, err := w.cdsRequest(http.MethodPut, route, body, w.secrets.signed.token, "", "")
+	return w.secrets.signed, nil
+}
+
+func (w *world) sendSigned(route string, body []byte) error {
+	signed, err := w.signedWrite()
+	if err != nil {
+		return err
+	}
+	a, err := w.cdsRequest(http.MethodPut, route, body, signed.token, "", "")
 	if err != nil {
 		return err
 	}
@@ -656,30 +653,33 @@ func (w *world) sendSigned(route string, body []byte) error {
 
 func sendsTokenToOtherPath(ctx context.Context, logical string) error {
 	w := getWorld(ctx)
-	if w.secrets.signed == nil {
-		return errors.New("the operator has signed no write")
+	signed, err := w.signedWrite()
+	if err != nil {
+		return err
 	}
-	return w.sendSigned(secretsRoute+w.secretPath(logical), w.secrets.signed.body)
+	return w.sendSigned(secretsRoute+w.secretPath(logical), signed.body)
 }
 
 func sendsTokenWithOtherValue(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.secrets.signed == nil {
-		return errors.New("the operator has signed no write")
+	signed, err := w.signedWrite()
+	if err != nil {
+		return err
 	}
 	v, err := randomValue()
 	if err != nil {
 		return err
 	}
-	return w.sendSigned(w.secrets.signed.path, putBody(v, false))
+	return w.sendSigned(signed.path, putBody(v, false))
 }
 
 func sendsTokenAsSigned(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.secrets.signed == nil {
-		return errors.New("the operator has signed no write")
+	signed, err := w.signedWrite()
+	if err != nil {
+		return err
 	}
-	return w.sendSigned(w.secrets.signed.path, w.secrets.signed.body)
+	return w.sendSigned(signed.path, signed.body)
 }
 
 func operatorDeletes(ctx context.Context, logical string) error {
@@ -839,16 +839,12 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	paths, err := w.be.call("cert_paths")
+	certFile, keyFile, err := w.certPaths()
 	if err != nil {
 		return "", err
 	}
-	files := strings.Fields(paths)
-	if len(files) != 2 {
-		return "", fmt.Errorf("the backend named %d certificate paths, not two", len(files))
-	}
 	cmd := append([]string{"-n", w.namespace, "exec", p.name, "-c", certContainer, "--", "/c8s", "secret-probe",
-		"--cds-url", url, "--cert", files[0], "--key", files[1]}, args...)
+		"--cds-url", url, "--cert", certFile, "--key", keyFile}, args...)
 	return kubectl(nil, cmd...)
 }
 
@@ -881,45 +877,40 @@ func (w *world) redeemToken(p *pod, challenge []byte) ([]byte, error) {
 }
 
 // request sends the pod's next request as the scenario shaped it and
-// records the answer. What the scenario did not shape, the pod obtains as a
-// well-behaved requester would: a fresh challenge and a token bound to it,
-// fetched here so "that request" can name them. The challenge is spent by
-// the request, the token with it; the next request starts fresh unless a
-// sentence says otherwise.
+// records the answer. What the scenario did not shape, the probe obtains as
+// a well-behaved requester would: a fresh challenge and a token bound to it,
+// and it names both on its first line so "that request" can refer to them.
+// The challenge is spent by the request, the token with it; the next request
+// starts fresh unless a sentence says otherwise.
 func (w *world) request(p *pod, method, logical string) (*answer, error) {
 	s := w.secretState(p)
-	var err error
-	if !s.noChallenge && s.challenge == nil {
-		if s.challenge, err = w.fetchChallenge(p); err != nil {
-			return nil, err
-		}
-	}
-	if !s.noToken && s.token == nil {
-		if s.token, err = w.redeemToken(p, s.challenge); err != nil {
-			return nil, err
-		}
-	}
 	args := []string{"request", method, w.secretPath(logical)}
-	if s.noChallenge {
+	switch {
+	case s.noChallenge:
 		args = append(args, "--no-challenge")
-	} else {
+	case s.challenge != nil:
 		args = append(args, "--challenge", base64.StdEncoding.EncodeToString(s.challenge))
 	}
-	if s.noToken {
+	switch {
+	case s.noToken:
 		args = append(args, "--no-token")
-	} else {
+	case s.token != nil:
 		args = append(args, "--token", string(s.token))
 	}
 	out, err := w.probe(p, args...)
 	if err != nil {
 		return nil, err
 	}
-	status, _, body, err := statusLine(out)
+	status, sent, body, err := statusLine(out)
 	if err != nil {
 		return nil, fmt.Errorf("the probe in %q printed no answer: %q", p.name, out)
 	}
+	challenge, token, err := sentCredentials(sent)
+	if err != nil {
+		return nil, fmt.Errorf("the probe in %q: %w", p.name, err)
+	}
 	a := &answer{status: status, body: body}
-	s.lastChallenge, s.lastToken, s.lastPath, s.last = s.challenge, s.token, logical, a
+	s.lastChallenge, s.lastToken, s.lastPath, s.last = challenge, token, logical, a
 	s.answers[logical] = a
 	s.challenge, s.token, s.noChallenge, s.noToken = nil, nil, false, false
 	if v, ok := a.value(); ok && a.ok() {
@@ -927,6 +918,32 @@ func (w *world) request(p *pod, method, logical string) (*answer, error) {
 	}
 	w.secrets.last = p
 	return a, nil
+}
+
+// sentCredentials decodes the probe's "<challenge> <token>", base64 each or
+// - for a header the request omitted.
+func sentCredentials(fields string) (challenge, token []byte, err error) {
+	parts := strings.Fields(fields)
+	if len(parts) != 2 {
+		return nil, nil, fmt.Errorf("named %d credentials, not two: %q", len(parts), fields)
+	}
+	decode := func(what, v string) ([]byte, error) {
+		if v == "-" {
+			return nil, nil
+		}
+		b, err := base64.StdEncoding.DecodeString(v)
+		if err != nil {
+			return nil, fmt.Errorf("the %s sent is not base64: %w", what, err)
+		}
+		return b, nil
+	}
+	if challenge, err = decode("challenge", parts[0]); err != nil {
+		return nil, nil, err
+	}
+	if token, err = decode("token", parts[1]); err != nil {
+		return nil, nil, err
+	}
+	return challenge, token, nil
 }
 
 func holdsChallenge(ctx context.Context, name string) error {
@@ -1009,16 +1026,7 @@ func holdsFlawedChallenge(ctx context.Context, name, flaw string) error {
 		if s.challenge, err = w.fetchChallenge(p); err != nil {
 			return err
 		}
-		out, err := w.be.call("challenge_ttl")
-		if err != nil {
-			return err
-		}
-		ttl, err := time.ParseDuration(out)
-		if err != nil {
-			return fmt.Errorf("challenge ttl %q: %w", out, err)
-		}
-		time.Sleep(ttl + 2*time.Second)
-		return nil
+		return challengeExpired(ctx)
 	case "the CDS issued for certificate issuance":
 		a, err := w.cdsRequest(http.MethodPost, authenticateRoute, []byte("{}"), "", "", "")
 		if err != nil {
@@ -1027,13 +1035,7 @@ func holdsFlawedChallenge(ctx context.Context, name, flaw string) error {
 		if a.status != http.StatusOK {
 			return fmt.Errorf("the CDS answered %s to an issuance challenge request", a)
 		}
-		var doc struct {
-			Challenge string `json:"challenge"`
-		}
-		if err := json.Unmarshal(a.body, &doc); err != nil {
-			return fmt.Errorf("the issuance challenge response: %w", err)
-		}
-		s.challenge, err = base64.StdEncoding.DecodeString(doc.Challenge)
+		s.challenge, err = parseChallenge(a.body)
 		return err
 	case "already spent by an authorized secret request":
 		if s.challenge, err = w.fetchChallenge(p); err != nil {
@@ -1156,7 +1158,7 @@ func holdsForeignHostToken(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	s.token, err = forgeSandboxToken(signer, id, p.leaf.cert.PublicKey, s.challenge, otherInventoryHost)
+	s.token, err = signSandboxToken(signer, id, p.leaf.cert.PublicKey, s.challenge, otherInventoryHost)
 	s.noToken = false
 	return err
 }
@@ -1205,16 +1207,12 @@ func selfSignedRequester(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp("", "self-signed-*")
+	certFile, err := w.writeFile("self-signed.crt", pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	if err != nil {
 		return err
 	}
-	w.onUndo(func() error { return os.RemoveAll(dir) })
-	certFile, keyFile := dir+"/tls.crt", dir+"/tls.key"
-	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
-		return err
-	}
-	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
+	keyFile, err := w.writeFile("self-signed.key", pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
+	if err != nil {
 		return err
 	}
 	w.secrets.self = &outsideRequester{certFile: certFile, keyFile: keyFile}
@@ -1263,7 +1261,12 @@ func requestsSecret(ctx context.Context, name, what, logical string) error {
 }
 
 func hasRequestedRead(ctx context.Context, name, logical, got string) error {
-	if err := requestsSecret(ctx, name, "a read of", logical); err != nil {
+	w := getWorld(ctx)
+	p, err := w.pod(name)
+	if err != nil {
+		return err
+	}
+	if _, err := w.request(p, http.MethodGet, logical); err != nil {
 		return err
 	}
 	if got == "no secret value" {
@@ -1336,7 +1339,7 @@ func (w *world) lastOf(name string) (*pod, *secretReq, *answer, error) {
 
 func receivesStoredValue(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	_, s, a, err := w.lastOf(name)
+	_, s, _, err := w.lastOf(name)
 	if err != nil {
 		return err
 	}
@@ -1344,12 +1347,21 @@ func receivesStoredValue(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("the scenario stored no value at %s", s.lastPath)
 	}
+	return w.expectValue(name, want, "the one stored at "+s.lastPath)
+}
+
+// expectValue checks the pod's last answer carried want, described as source.
+func (w *world) expectValue(name string, want []byte, source string) error {
+	_, _, a, err := w.lastOf(name)
+	if err != nil {
+		return err
+	}
 	got, has := a.value()
 	if a.status != http.StatusOK || !has {
-		return fmt.Errorf("%q was answered %s, not the stored value", name, a)
+		return fmt.Errorf("%q was answered %s, not %s", name, a, source)
 	}
 	if !bytes.Equal(got, want) {
-		return fmt.Errorf("%q received a value other than the one stored at %s", name, s.lastPath)
+		return fmt.Errorf("%q received a value other than %s", name, source)
 	}
 	return nil
 }
@@ -1424,13 +1436,23 @@ func answersQuota(ctx context.Context, name string) error {
 	return nil
 }
 
-// lastValue is the value the last request of any pod received.
-func (w *world) lastValue() (*pod, []byte, error) {
+// lastRequester is the pod whose secret request was the last, and that
+// request's record.
+func (w *world) lastRequester() (*pod, *secretReq, error) {
 	p := w.secrets.last
 	if p == nil || p.secret == nil || p.secret.last == nil {
-		return nil, nil, errors.New("no secret request has been answered")
+		return nil, nil, errors.New("no secret request has been made")
 	}
-	v, ok := p.secret.last.value()
+	return p, p.secret, nil
+}
+
+// lastValue is the value the last request of any pod received.
+func (w *world) lastValue() (*pod, []byte, error) {
+	p, s, err := w.lastRequester()
+	if err != nil {
+		return nil, nil, err
+	}
+	v, ok := s.last.value()
 	if !ok {
 		return nil, nil, fmt.Errorf("the last answer carried no value: %s", p.secret.last)
 	}
@@ -1489,10 +1511,6 @@ func valueDiffersFromBefore(ctx context.Context, name string) error {
 
 func receivesHeldValue(ctx context.Context, name, other, logical string) error {
 	w := getWorld(ctx)
-	_, _, a, err := w.lastOf(name)
-	if err != nil {
-		return err
-	}
 	o, err := w.pod(other)
 	if err != nil {
 		return err
@@ -1501,14 +1519,7 @@ func receivesHeldValue(ctx context.Context, name, other, logical string) error {
 	if !ok {
 		return fmt.Errorf("%q holds no value for %s", other, logical)
 	}
-	got, has := a.value()
-	if a.status != http.StatusOK || !has {
-		return fmt.Errorf("%q was answered %s", name, a)
-	}
-	if !bytes.Equal(got, held) {
-		return fmt.Errorf("%q received a value other than the one %q holds", name, other)
-	}
-	return nil
+	return w.expectValue(name, held, fmt.Sprintf("the one %q holds for %s", other, logical))
 }
 
 func sameAnswerAs(ctx context.Context, name, logical string) error {
@@ -1531,11 +1542,10 @@ func sameAnswerAs(ctx context.Context, name, logical string) error {
 // challenge and token; a spent challenge would be refused.
 func challengeNotSpent(ctx context.Context) error {
 	w := getWorld(ctx)
-	p := w.secrets.last
-	if p == nil || p.secret == nil || p.secret.last == nil {
-		return errors.New("no secret request has been made")
+	p, s, err := w.lastRequester()
+	if err != nil {
+		return err
 	}
-	s := p.secret
 	if s.lastChallenge == nil || s.lastToken == nil {
 		return errors.New("the last request carried no challenge or no token")
 	}
@@ -1592,8 +1602,8 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 
 func fileHoldsSupplied(ctx context.Context) error {
 	w := getWorld(ctx)
-	p := w.secrets.last
-	if p == nil || p.secret == nil || p.secret.files[p.secret.lastPath] == nil {
+	p, s, err := w.lastRequester()
+	if err != nil || s.files[s.lastPath] == nil {
 		return errors.New("no file of a secret client has been read")
 	}
 	want, ok := w.secrets.stored[p.secret.lastPath]
@@ -1642,14 +1652,4 @@ func outputOnMemory(ctx context.Context, name string) error {
 		return fmt.Errorf("the output directory of %q is on %q, not tmpfs", name, fs)
 	}
 	return nil
-}
-
-// forgeSandboxToken signs a sandbox token over a key and sandbox ID with a
-// key that is no inventory's, naming host as the inventory.
-func forgeSandboxToken(signer *ecdsa.PrivateKey, sandboxID string, pub any, nonce []byte, host string) ([]byte, error) {
-	pubDER, err := x509.MarshalPKIXPublicKey(pub)
-	if err != nil {
-		return nil, err
-	}
-	return signSandboxToken(signer, sandboxID, pubDER, nonce, host)
 }

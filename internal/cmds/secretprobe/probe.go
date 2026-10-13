@@ -11,7 +11,6 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,13 +31,9 @@ type probe struct {
 }
 
 func newProbe(o options) (*probe, error) {
-	leaf, err := tls.LoadX509KeyPair(o.certPath, o.keyPath)
+	leaf, pub, err := sidecar.LoadLeaf(o.certPath, o.keyPath)
 	if err != nil {
-		return nil, fmt.Errorf("load leaf: %w", err)
-	}
-	parsed, err := x509.ParseCertificate(leaf.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("parse leaf %s: %w", o.certPath, err)
+		return nil, err
 	}
 	return &probe{
 		client: &http.Client{
@@ -53,7 +48,7 @@ func newProbe(o options) (*probe, error) {
 				InsecureSkipVerify: true,
 			}},
 		},
-		pub:      parsed.PublicKey,
+		pub:      pub,
 		cdsURL:   o.cdsURL,
 		endpoint: "unix://" + o.socket,
 		timeout:  o.timeout,

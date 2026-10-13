@@ -87,14 +87,16 @@ missing or replayed challenge, another pod's token, a non-canonical path.
               and to --challenge (32 random bytes when none is given); prints
               the JSON the Authorization header carries, one line
   request     send GET or POST <path> to <cds-url>/secrets<path>, verbatim;
-              prints the HTTP status (000 when nothing answered) on the first
-              line and the body after it, exactly as received
+              prints one line with the HTTP status (000 when nothing
+              answered), the challenge sent and the token sent, the last two
+              base64 or - when the header was omitted, then the body exactly
+              as received
 
 The CDS's certificate is not verified: the scenarios test its authorization of
 this client, and a probe that could not reach a reconfigured CDS would fail
-for the wrong reason. Exit 0 whenever an answer was printed; 2 on a usage
-error, an unreadable file, or a challenge or token that could not be fetched,
-with the reason on stderr.`,
+for the wrong reason. Exit 0 whenever an answer was printed, a CDS that
+issued no challenge included (status 000); 2 on a usage error, an unreadable
+file, or a token the inventory did not redeem, with the reason on stderr.`,
 		Args:          cobra.ArbitraryArgs,
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -118,7 +120,7 @@ with the reason on stderr.`,
 	pf.StringVar(&o.cdsURL, "cds-url", "", "base URL of CDS (required)")
 	pf.StringVar(&o.certPath, "cert", "", "the pod's CDS-issued certificate, presented to CDS (required)")
 	pf.StringVar(&o.keyPath, "key", "", "private key for --cert (required)")
-	pf.StringVar(&o.socket, "socket", workloadclaims.SidecarSocketDir+"/"+workloadclaims.SocketName, "the inventory's token socket")
+	pf.StringVar(&o.socket, "socket", strings.TrimPrefix(workloadclaims.InventoryEndpoint(), "unix://"), "the inventory's token socket")
 	pf.DurationVar(&o.timeout, "timeout", 20*time.Second, "per-request timeout")
 
 	root.AddCommand(&cobra.Command{
@@ -248,7 +250,8 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 
 	// The challenge header's bytes, and the nonce a fresh token binds to. A
 	// header the request omits still leaves a token to bind: to random bytes,
-	// as the token action does.
+	// as the token action does. A CDS that issues no challenge has answered
+	// the request: nothing.
 	var challenge, nonce []byte
 	var err error
 	switch {
@@ -258,7 +261,11 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 		challenge, err = nonceFor(ro.challenge)
 		nonce = challenge
 	default:
-		challenge, err = p.challenge(ctx)
+		if challenge, err = p.challenge(ctx); err != nil {
+			fmt.Fprintln(out, answerLine(0, nil, nil))
+			fmt.Fprintln(errOut, "secret-probe:", err)
+			return exitOK
+		}
 		nonce = challenge
 	}
 	if err != nil {
@@ -286,7 +293,7 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 	}
 	// From here on the answer is printed and the exit is 0: the scenario asked
 	// what CDS does, and a connection it refused or dropped is what it did.
-	fmt.Fprintf(out, "%03d\n", status)
+	fmt.Fprintln(out, answerLine(status, challenge, tokenJSON))
 	if _, werr := out.Write(body); werr != nil {
 		fmt.Fprintln(errOut, "secret-probe: write answer:", werr)
 		return exitUsage
@@ -295,6 +302,19 @@ func runRequest(ctx context.Context, o options, ro requestOptions, args []string
 		fmt.Fprintln(errOut, "secret-probe:", err)
 	}
 	return exitOK
+}
+
+// answerLine is the request's first output line: the status, then the
+// challenge and the token the request carried, base64, or - for a header it
+// omitted, so the caller can name "that request's" credentials.
+func answerLine(status int, challenge, tokenJSON []byte) string {
+	field := func(b []byte) string {
+		if b == nil {
+			return "-"
+		}
+		return base64.StdEncoding.EncodeToString(b)
+	}
+	return fmt.Sprintf("%03d %s %s", status, field(challenge), field(tokenJSON))
 }
 
 // givenToken is the --token value's bytes, untouched so a deliberately altered

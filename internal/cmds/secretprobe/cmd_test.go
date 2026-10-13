@@ -240,9 +240,21 @@ func TestRequestHeadersMatchDo(t *testing.T) {
 	if byProbe.challenge != byDo.challenge || byProbe.token != byDo.token || byProbe.uri != byDo.uri || byProbe.method != byDo.method {
 		t.Fatalf("probe sent %+v, Do sent %+v", byProbe, byDo)
 	}
-	if !strings.HasPrefix(out, "200\n") {
+	if !strings.HasPrefix(out, "200 ") {
 		t.Fatalf("stdout = %q, want the status first", out)
 	}
+}
+
+// answerFields splits the first output line into status, challenge and token
+// as the probe sent them; "-" stays "-".
+func answerFields(t *testing.T, out string) (status, challenge, token string) {
+	t.Helper()
+	line, _, _ := strings.Cut(out, "\n")
+	f := strings.Fields(line)
+	if len(f) != 3 {
+		t.Fatalf("first line %q is not <status> <challenge> <token>", line)
+	}
+	return f[0], f[1], f[2]
 }
 
 // With nothing given, the probe does what a sidecar does: one fresh challenge,
@@ -251,7 +263,7 @@ func TestRequestDefaultsToFreshChallengeAndToken(t *testing.T) {
 	cds := newFakeCDS(http.StatusForbidden, "")
 	h := newHarness(t, cds)
 	code, out, errOut := h.run(t, "request", "POST", "/api/db")
-	if code != 0 || out != "403\n" {
+	if code != 0 || !strings.HasPrefix(out, "403 ") || strings.Count(out, "\n") != 1 {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 	got := cds.only(t)
@@ -264,7 +276,20 @@ func TestRequestDefaultsToFreshChallengeAndToken(t *testing.T) {
 	if got.method != http.MethodPost {
 		t.Fatalf("method = %q", got.method)
 	}
-	decodeToken(t, got.token)
+	sent := decodeToken(t, got.token)
+	// The line names what went out: the challenge as sent, the token's JSON.
+	_, challenge, token := answerFields(t, out)
+	if challenge != got.challenge {
+		t.Fatalf("line names challenge %q, header carried %q", challenge, got.challenge)
+	}
+	tokenJSON, err := base64.StdEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatalf("token field is not base64: %v", err)
+	}
+	var named workloadclaims.SignedSandboxToken
+	if err := json.Unmarshal(tokenJSON, &named); err != nil || !bytes.Equal(named.Token, sent.Token) {
+		t.Fatalf("line names token %s, header carried %+v", tokenJSON, sent)
+	}
 }
 
 // Each omission flag drops exactly its header; a request with no challenge
@@ -285,13 +310,17 @@ func TestRequestOmissions(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			cds := newFakeCDS(http.StatusUnauthorized, "")
 			h := newHarness(t, cds)
-			code, _, errOut := h.run(t, append([]string{"request", "GET", "/api/db"}, tc.flags...)...)
+			code, out, errOut := h.run(t, append([]string{"request", "GET", "/api/db"}, tc.flags...)...)
 			if code != 0 {
 				t.Fatalf("exit %d, stderr %q", code, errOut)
 			}
 			got := cds.only(t)
 			if got.hasChallenge != tc.wantChallenge || got.hasToken != tc.wantTok {
 				t.Fatalf("challenge header present=%v token present=%v, want %v/%v", got.hasChallenge, got.hasToken, tc.wantChallenge, tc.wantTok)
+			}
+			_, challenge, token := answerFields(t, out)
+			if (challenge == "-") == tc.wantChallenge || (token == "-") == tc.wantTok {
+				t.Fatalf("line %q does not name what was sent", out)
 			}
 			if cds.fetched() != tc.wantFetches {
 				t.Fatalf("fetched %d challenges, want %d", cds.fetched(), tc.wantFetches)
@@ -325,7 +354,7 @@ func TestRequestPrintsStatusThenBody(t *testing.T) {
 	const body = "{\"error\":\"denied\"}\n\nmore"
 	h := newHarness(t, newFakeCDS(http.StatusForbidden, body))
 	code, out, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--no-token")
-	if code != 0 || out != "403\n"+body {
+	if code != 0 || out != "403 - -\n"+body {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 }
@@ -340,7 +369,7 @@ func TestRequestReportsNoAnswerAs000(t *testing.T) {
 	l.Close()
 	h := newHarnessAt(t, newFakeCDS(0, ""), closedURL)
 	code, out, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--no-token")
-	if code != 0 || out != "000\n" {
+	if code != 0 || out != "000 - -\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 	if !strings.Contains(errOut, "connect") {
@@ -472,9 +501,9 @@ func TestUsageErrorsExit2(t *testing.T) {
 	}
 }
 
-// A CDS that cannot be reached for the challenge is a failure to ask, not an
-// answer: the default request exits 2 rather than printing 000.
-func TestRequestExits2WhenTheChallengeCannotBeFetched(t *testing.T) {
+// A CDS that issues no challenge has answered the request: nothing. The
+// default request prints 000 with no credentials and says why on stderr.
+func TestRequestReportsNoChallengeAs000(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -483,7 +512,7 @@ func TestRequestExits2WhenTheChallengeCannotBeFetched(t *testing.T) {
 	l.Close()
 	h := newHarnessAt(t, newFakeCDS(0, ""), closedURL)
 	code, out, errOut := h.run(t, "request", "GET", "/api/db")
-	if code != exitUsage || out != "" || !strings.Contains(errOut, "challenge") {
+	if code != 0 || out != "000 - -\n" || !strings.Contains(errOut, "challenge") {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out, errOut)
 	}
 }

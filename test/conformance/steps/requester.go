@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -257,18 +258,27 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if status != 200 {
 		return fmt.Errorf("the CDS answered %d to a challenge request: %s", status, body)
 	}
+	challenge, err := parseChallenge(body)
+	if err != nil {
+		return err
+	}
+	r.previous, r.challenge = r.challenge, challenge
+	return nil
+}
+
+// parseChallenge is the challenge bytes of a CDS challenge response.
+func parseChallenge(body []byte) ([]byte, error) {
 	var doc struct {
 		Challenge string `json:"challenge"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return fmt.Errorf("the challenge response: %w", err)
+		return nil, fmt.Errorf("the challenge response: %w", err)
 	}
 	challenge, err := base64.StdEncoding.DecodeString(doc.Challenge)
 	if err != nil {
-		return fmt.Errorf("the challenge is not base64: %w", err)
+		return nil, fmt.Errorf("the challenge is not base64: %w", err)
 	}
-	r.previous, r.challenge = r.challenge, challenge
-	return nil
+	return challenge, nil
 }
 
 func challengesDiffer(ctx context.Context, name string) error {
@@ -470,17 +480,17 @@ func (r *requester) sandboxToken() (json.RawMessage, error) {
 	if r.forged.host == "" {
 		return nil, errors.New("the scenario has not said which inventory host the forged token names")
 	}
-	pub, err := x509.MarshalPKIXPublicKey(&r.key.PublicKey)
+	return signSandboxToken(r.forged.key, "forged-sandbox", &r.key.PublicKey, r.challenge, r.forged.host)
+}
+
+// signSandboxToken builds the inventory's token over a key and sandbox ID,
+// bound to nonce and naming host, signed by signer, as the JSON the
+// Authorization header carries.
+func signSandboxToken(signer *ecdsa.PrivateKey, sandboxID string, pub crypto.PublicKey, nonce []byte, host string) (json.RawMessage, error) {
+	pubDER, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
 		return nil, err
 	}
-	return signSandboxToken(r.forged.key, "forged-sandbox", pub, r.challenge, r.forged.host)
-}
-
-// signSandboxToken builds the inventory's token over a key (DER) and sandbox
-// ID, bound to nonce and naming host, signed by signer, as the JSON the
-// Authorization header carries.
-func signSandboxToken(signer *ecdsa.PrivateKey, sandboxID string, pubDER, nonce []byte, host string) (json.RawMessage, error) {
 	digest := sha256.Sum256(pubDER)
 	der, err := asn1.Marshal(sandboxTokenDER{
 		Version: 2, SandboxID: sandboxID, KeyDigest: digest[:], Nonce: nonce, InventoryHost: host,

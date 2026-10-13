@@ -453,15 +453,11 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
-# Always exit 0: curl prints 000 on transport failure, and the steps assert on
-# the code itself.
+# The status alone: 000 on transport failure, which the steps assert on.
 allowlist_request() {
-    local url
-    url="$(cds_url)" || return
-    local -a auth=()
-    [ -z "${4:-}" ] || auth=(-H "Authorization: $4")
-    curl -sSk -o /dev/null -w '%{http_code}' -X "$1" -H 'Content-Type: application/json' \
-        --data-binary "@$3" ${auth[@]+"${auth[@]}"} "$url$2" || true
+    local answer
+    answer="$(cds_request "$1" "$2" "$3" "${4:-}")" || return
+    echo "${answer%%$'\n'*}"
 }
 
 allowlist_get() {
@@ -491,9 +487,9 @@ cds_document_path() {
     esac
 }
 
-# curl appends the status to the body; it moves to the first line here.
 # The request as the scenario shaped it: a body, an Authorization and a
-# client certificate only when given.
+# client certificate only when given. curl appends the status to the body; it
+# moves to the first line here, as in cds_read.
 cds_request() {
     local method="$1" route="$2" body="${3:-}" authorization="${4:-}" cert="${5:-}" key="${6:-}" url answer
     url="$(cds_url)" || return
