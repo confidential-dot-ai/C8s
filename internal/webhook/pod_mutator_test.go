@@ -176,6 +176,20 @@ func TestMutatePodDisablesServiceLinks(t *testing.T) {
 	}
 }
 
+// The chart's seeded entry for the C8s image matches the injected sidecars'
+// env by name (c8s.componentInvocations in templates/_allowlist.tpl): a
+// variable added here without it denies every injected pod.
+func TestGetCertEnvNamesMatchChartSeed(t *testing.T) {
+	var got []string
+	for _, e := range getCertEnv(&injection{WorkloadID: "api"}) {
+		got = append(got, e.Name)
+	}
+	want := []string{"C8S_WORKLOAD_ID", "C8S_POD_NAME", "C8S_POD_UID", "HOST_IP"}
+	if !slices.Equal(got, want) {
+		t.Errorf("getCertEnv() names = %v, want %v", got, want)
+	}
+}
+
 func TestMutatePodPreservesExistingFSGroup(t *testing.T) {
 	existing := int64(1234)
 	pod := &corev1.Pod{
