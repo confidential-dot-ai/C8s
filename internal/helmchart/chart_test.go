@@ -5468,13 +5468,12 @@ func podVolume(spec corev1.PodSpec, name string) (corev1.Volume, bool) {
 	return corev1.Volume{}, false
 }
 
-// seedEntry finds the seed entry whose single container carries digest.
+// seedEntry finds a seed entry whose containers all carry digest.
 func seedEntry(seed *pkgallowlist.Allowlist, digest string) (pkgallowlist.Workload, bool) {
 	for _, w := range seed.Workloads {
-		for _, c := range w.Containers {
-			if c.Digest.String() == digest {
-				return w, true
-			}
+		// Multi-image entries such as the router's also list the digest.
+		if len(w.Containers) > 0 && !slices.ContainsFunc(w.Containers, func(c pkgallowlist.Container) bool { return c.Digest.String() != digest }) {
+			return w, true
 		}
 	}
 	return pkgallowlist.Workload{}, false

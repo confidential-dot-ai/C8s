@@ -703,9 +703,25 @@ The cds-attest readiness gate's workload name. An explicit string wins, and
 {{- fail (printf "router.attest.expectedWorkload must be a string or null, got %s %v" (kindOf $explicit) $explicit) -}}
 {{- end -}}
 {{- if kindIs "string" $explicit -}}
-{{- if and (hasPrefix "c8s-router-" $explicit) (eq (include "c8s.routerWorkloadSeeded" .) "true") -}}
+{{- if and .Values.router.enabled (hasPrefix "c8s-router-" $explicit) -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
 {{- /* Fails unless $explicit is the seeded entry's name. */ -}}
 {{- $_ := include "c8s.routerWorkloadName" . -}}
+{{- else if hasKey (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) $explicit -}}
+{{- include "c8s.routerGateCannotMatch" . -}}
+{{- else -}}
+{{- $cause := "the router's argv holds a $ reference kubelet expands" -}}
+{{- if not .Values.router.nginx.image.digest -}}
+{{- $cause = "router.nginx.image.digest is unset" -}}
+{{- else if not .Values.image.digest -}}
+{{- $cause = "image.digest is unset" -}}
+{{- else if not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents -}}
+{{- $cause = "nriImagePolicy.bootstrapAllowlist.deriveComponents is false" -}}
+{{- else if not (or .Values.router.attest.enabled (eq (include "router.renderAllowlistRoute" .) "true")) -}}
+{{- $cause = "no router container runs the c8s image" -}}
+{{- end -}}
+{{- fail (printf "router.attest.expectedWorkload=%s names the seeded router entry, but these values seed none because %s, so the router is never stamped with it: leave it unset, or name an entry in nriImagePolicy.bootstrapAllowlist.workloads" $explicit $cause) -}}
+{{- end -}}
 {{- end -}}
 {{- $explicit -}}
 {{- else if eq (include "router.defaultGate" .) "true" -}}

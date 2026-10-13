@@ -113,15 +113,33 @@ local attestation-api) is not known at render time. `c8s.routerArgv` takes
 `(dict "root" $ "expectedWorkload" <name>)` and returns the rendered argv per
 container name; `c8s.routerEntry` takes the same and returns the entry.
 
-An operator router entry is a `bootstrapAllowlist.workloads` entry listing both
-`router.nginx.image.digest` and `image.digest` (`c8s.operatorRouterEntries`).
-A gate naming one replaces the seeded entry. `c8s.routerWorkload` fails the
-render when the router pod would match more than one entry, seeded or operator,
-or when the gate names a `bootstrapAllowlist.workloads` entry that is not an
-operator router entry: either way the leaf never carries the gated name.
-`c8s.routerEntryName` returns the entry the router pod should match, seeded or
-gated operator entry, which the router's `c8s-cert` receives as
-`--expected-workload` whenever workload claims are wired.
+An operator router entry is a `bootstrapAllowlist.workloads` entry the router
+pod could match (`c8s.operatorRouterEntries`), judged as `MatchWorkload` would
+from the argv the chart renders: it declares `router.nginx.image.digest`, every
+c8s-image router container is admitted by a declared c8s-image container, and
+every main is nginx or a c8s-image container some router container satisfies.
+A gate may name it only when get-cert is droppable as injected: the seed admits
+`image.digest` under any argv, as `deriveComponents` or a
+`bootstrapAllowlist.workloads` container does.
+Init containers only admit. Some policies are not judged at render time: an
+exact pin on nginx, whose image supplies its argv; a mount or env policy
+narrower than `any` (the router's containers carry non-platform mounts and env);
+and an exact pin on argv holding a `$` reference kubelet expands, beyond its
+length and its other args. Such a container counts as admitting for the
+collision check, and as admitting nothing when a gate names its entry, so both
+fail the render rather than leave the router unstamped. With the gate unset, a
+`--expected-workload=c8s-router-*` pin arg is dropped before comparing, since
+the seeded name cannot be derived there; a stale name then fails closed as a
+collision.
+
+A gate naming an operator router entry replaces the seeded entry.
+`c8s.routerWorkload` fails the render when the router pod would match more than
+one entry, seeded or operator, or when the gate names a
+`bootstrapAllowlist.workloads` entry that is not an operator router entry:
+either way the leaf never carries the gated name. `c8s.routerEntryName` returns
+the entry the router pod should match, seeded or gated operator entry, which the
+router's `c8s-cert` receives as `--expected-workload` whenever workload claims
+are wired.
 
 `c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
 the SHA-256 of the rendered entry, so a changed digest or argv yields a new name.
@@ -136,7 +154,10 @@ the render. Any other explicit gate is hashed as written.
 `c8s.routerWorkloadName` when `router.defaultGate` holds: the gate is unset, the
 entry is seeded, `router.attest.enabled` is true, `router.hostPort.enabled` is
 false, and the inventory is reachable. An explicit string, including `""`, wins;
-any other non-null value fails the render.
+any other non-null value fails the render. An explicit `c8s-router-*` value
+fails the render when no entry is seeded, unless a `bootstrapAllowlist.workloads`
+entry has that name. A gate naming such an entry is judged only when both router
+digests are set; with either unset it is not checked.
 The seeded cds-attest argv includes the resulting `--expected-workload`.
 
 [router_entry_test.go](../../../router_entry_test.go) feeds the rendered router,

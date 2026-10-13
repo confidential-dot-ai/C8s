@@ -1223,7 +1223,8 @@ router:
     # defaults to that entry's name when it is seeded, attest is enabled,
     # hostPort is off and the node inventory is reachable; otherwise the
     # sidecar stays always-ready. "" turns the gate off. Naming an entry of
-    # nriImagePolicy.bootstrapAllowlist.workloads replaces the seeded one.
+    # nriImagePolicy.bootstrapAllowlist.workloads replaces the seeded one. A
+    # c8s-router-* value fails the render when the chart seeds no entry.
     expectedWorkload: null
     # -- Container resource requests/limits for the sidecar.
     resources: {}
