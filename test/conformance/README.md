@@ -101,8 +101,9 @@ whether its verify set has taken the mesh CA. It renders pods with the options
 the mesh scenarios need (the node's network namespace, a chosen UID, a
 capability, a label, an init container), serves a hello API at an address
 outside the cluster, and blocks the node's local attestation service. Every
-pod it renders may ping: the fixture drops all capabilities and the backend
-adds `NET_RAW` back, the one the runtime's default set would have granted. A peer that connects to the inbound
+pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
+sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
+under it, which the library busybox image's does not. A peer that connects to the inbound
 proxy itself, presenting a certificate the scenario shaped, is
 [`tools/armtls-dial`](tools/armtls-dial/README.md), run inside a pod of the
 image the backend builds for the logical image `mesh-dialer`.

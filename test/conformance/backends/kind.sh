@@ -69,7 +69,7 @@ external_endpoint() {
     local addr
     if ! docker inspect "$EXTERNAL_HELLO" >/dev/null 2>&1; then
         docker run -d --name "$EXTERNAL_HELLO" --network kind "$(image_ref tenant-app)" \
-            sh -c 'mkdir -p /www && echo hello > /www/index.html && exec httpd -f -p 8080 -h /www' >/dev/null || return 1
+            sh -c 'mkdir -p /www && echo hello > /www/index.html && exec python3 -m http.server -b :: -d /www 8080' >/dev/null || return 1
     fi
     addr="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$EXTERNAL_HELLO")"
     [ -n "$addr" ] || { echo "backend: the external hello container has no address" >&2; return 1; }

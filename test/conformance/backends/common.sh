@@ -184,7 +184,7 @@ image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/$WORKLOAD_IMAGE" ;;
-        tenant-app) echo "docker.io/library/busybox:1.36.1" ;;
+        tenant-app) echo "docker.io/library/python:3.12-alpine" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
@@ -204,13 +204,15 @@ dialer_image() { return "$UNSUPPORTED"; }
 # wait this out rather than observe it.
 pull_interval() { echo 5s; }
 
-# The harness's pod, pinned to the node. Containers after the first are the
-# fixture's --container groups, one shell-quoted string each. Options before
-# -- are the fixture's own, named in the header. The fixture drops every
-# capability; every pod gets NET_RAW back so it can send an echo request
-# (busybox ping needs a raw socket: with the ping_group_range sysctl alone it
-# still reports "permission denied"), the one capability the runtime's default
-# set would have granted anyway.
+# The harness's Restricted-compatible pod, pinned to the node. Containers after
+# the first are the fixture's --container groups, one shell-quoted string each.
+# Options before -- are the fixture's own, named in the header; every pod may
+# send an echo request over an ICMP datagram socket (a safe sysctl, which the
+# chart's admission policy admits where NET_RAW is refused), except one in
+# the node's network namespace, where kubelet refuses every net.* sysctl.
+# The tenant-app image is Alpine's python, whose ping uses that socket; the
+# library busybox image's cannot.
+PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
 pod_manifest() {
     take_pod_opts "$@"
     shift "$POD_OPTS_TAKEN"
@@ -218,9 +220,10 @@ pod_manifest() {
 }
 
 # render_fixture <render flags...> -- <pod args...>: render_pod with the
-# flags, NET_RAW, and the options take_pod_opts took.
+# flags, the ping sysctl where allowed, and the options take_pod_opts took.
 render_fixture() {
-    local -a flags=(--add-capability NET_RAW)
+    local -a flags=(--sysctl "$PING_SYSCTL")
+    case " ${POD_OPTS[*]-} " in *" --host-network "*) flags=() ;; esac
     while [ "$1" != -- ]; do
         flags+=("$1")
         shift
