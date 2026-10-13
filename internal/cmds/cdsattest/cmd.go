@@ -30,6 +30,7 @@ type config struct {
 	meshIdentityKeyFile  string
 	meshIdentityCAFile   string
 	expectedWorkload     string
+	measuredPolicies     string
 	evidenceFixture      string
 	attestationAPIURL    string
 	platform             string
@@ -74,6 +75,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.meshIdentityKeyFile, "mesh-identity-key-file", "", "TEE-held mesh leaf private key matching --mesh-identity-cert-file (re-read per request)")
 	f.StringVar(&cfg.meshIdentityCAFile, "mesh-identity-ca-file", "", "mesh CA bundle that issued the identity leaf (re-read per request)")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
+	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
 	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")
 	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)")
 	f.StringVar(&cfg.platform, "platform", "", "REQUIRED: TEE platform: snp|az-snp|az-tdx|tdx")
@@ -192,6 +194,7 @@ func run(cfg config) error {
 		MeshIdentityKeyFile:  cfg.meshIdentityKeyFile,
 		MeshIdentityCAFile:   cfg.meshIdentityCAFile,
 		ExpectedWorkload:     cfg.expectedWorkload,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
 		Backend:              backend,
 		SessionTTL:           cfg.sessionTTL,
 		SessionMaxAge:        cfg.sessionMaxAge,
