@@ -42,7 +42,8 @@ Keep this naming rule aligned with `pkg/allowlist.DigestEntryName`.
 
 `c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived image
 digest outside `c8s.argvPinnedDigests`, with command, args, environment, and mount
-policies set to `any`, followed by `c8s.argvPinnedEntries` and `bootstrapAllowlist.workloads`.
+policies set to `any`, followed by `c8s.argvPinnedEntries`, the
+[router entry](#router-entry) and `bootstrapAllowlist.workloads`.
 A supplied workload replaces the entire derived entry of the same name. The document must satisfy `pkg/allowlist.ParseJSON`.
 
 ## Argv-pinned entries
@@ -79,3 +80,41 @@ boot config. Keep the inclusion conditions of both helpers aligned.
 rejection of different argv, and exclusion from the boot config's local base.
 The operator-facing bootstrap behavior is described in
 [Allowlist and capabilities](../../../../../docs/allowlist-and-capabilities.md#bootstrap).
+
+## Router entry
+
+The router pod's non-injected containers span two images, so no single-image
+entry matches it. `c8s.routerWorkload` returns the `c8s-router` entry that does:
+
+| Container | Declared as | Policy |
+|---|---|---|
+| nginx | main | `router.nginx.image.digest`, everything `any` |
+| cds-attest | main, when `router.attest.enabled` | c8s image digest, command `/c8s`, args exactly `router.cdsAttestArgs` |
+| allowlist-proxy | main, when `router.renderAllowlistRoute` | c8s image digest, command `/c8s`, args exactly `router.allowlistProxyArgs` |
+| acme | init, when `router.acmeSidecar` | c8s image digest, command `/c8s`, args exactly `router.acmeArgs` |
+
+The deployment renders its args from the same helpers in
+[router-helpers.tpl](../../templates/router-helpers.tpl), so the pins cannot
+drift. `/c8s` is the c8s image's entrypoint, which the pod spec does not
+override. acme is a native sidecar: as a declared init container it is admitted
+but not required. Mounts and environment stay `any`, as in the c8s image's own
+any-argv entry; that entry is what lets get-cert be dropped as injected before
+matching.
+
+`c8s.routerWorkloadSeeded` returns `true` when the router is enabled,
+`bootstrapAllowlist.deriveComponents` is true (it seeds the c8s image's
+any-argv entry), both `router.nginx.image.digest` and `image.digest` are set,
+at least one c8s-image main container renders, and no pinned argument
+contains `$`. Kubelet expands
+`$(VAR)` and `$$` in args, so such argv (`$(HOST_IP)` in the attestation-api
+URL when `cvmMode=bare-metal` without a local attestation-api) is not known at
+render time. `c8s.routerArgv` takes `(dict "root" $ "expectedWorkload" <name>)`
+and returns the rendered argv per container name; the seeded cds-attest argv
+includes `--expected-workload` when the gate is set.
+
+The entry name is fixed, and CDS seeds additively by name: a store that already
+holds `c8s-router` keeps it across a chart upgrade.
+
+[router_entry_test.go](../../../router_entry_test.go) feeds the rendered router,
+CDS, operator and mesh pods through `secrets.WorkloadContainers` and
+`MatchWorkload`.

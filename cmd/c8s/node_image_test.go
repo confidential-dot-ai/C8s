@@ -183,8 +183,11 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(allowlist.Workloads) != 5 {
-				t.Errorf("seed has %d workloads, want four core images and the local-path helper", len(allowlist.Workloads))
+			if len(allowlist.Workloads) != 6 {
+				t.Errorf("seed has %d workloads, want four core images, the local-path helper and the router pod", len(allowlist.Workloads))
+			}
+			if _, ok := allowlist.Workloads["c8s-router"]; !ok {
+				t.Error("router pod entry missing from the baked CDS seed")
 			}
 			var helperDigest string
 			for _, workload := range allowlist.Workloads {

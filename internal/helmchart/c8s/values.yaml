@@ -1210,7 +1210,10 @@ router:
     # supplemental group on node-CVM) — without that
     # no stamp could ever arrive and the gate would hold the front door at 503
     # forever. The named entry must match the router pod's own non-injected
-    # container set (nginx).
+    # container set: nginx plus the c8s image as cds-attest, allowlist-proxy
+    # and, when enabled, the acme sidecar. The chart seeds that entry as
+    # c8s-router when router.nginx.image.digest and image.digest are set and
+    # nriImagePolicy.bootstrapAllowlist.deriveComponents is true.
     #
     # Requires attest.enabled and hostPort.enabled: false — readiness only
     # withdraws Service endpoints, while a hostPort is published by the CNI
