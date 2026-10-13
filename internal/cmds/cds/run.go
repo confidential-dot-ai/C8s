@@ -180,6 +180,14 @@ func run(cfg config) error {
 		}
 	}
 
+	if err := allowlistStore.StartJournal(); err != nil {
+		return fmt.Errorf("start allowlist history: %w", err)
+	}
+	allowlistWriteAuthorizer := writeAuthorizer
+	if cfg.operatorKeys != "" {
+		allowlistWriteAuthorizer = singleUse(writeAuthorizer, &allowlistStore, time.Duration(cfg.jwtClockSkew)*time.Second)
+	}
+
 	if !cfg.allowlistPersistent {
 		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests do not survive")
 	}
@@ -298,7 +306,7 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   writeAuthorizer,
+			WriteAuthorizer:   allowlistWriteAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),

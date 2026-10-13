@@ -7,7 +7,9 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
+	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -25,7 +27,10 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 func TestCompilePattern(t *testing.T) {
@@ -257,6 +262,28 @@ func TestRun_ErrorPaths(t *testing.T) {
 				cfg.allowlistDB = filepath.Join(t.TempDir(), "no-such-dir", "allowlist.db")
 			},
 			wantSub: "allowlist database",
+		},
+		{
+			name: "tampered allowlist history fails closed",
+			mutate: func(t *testing.T, cfg *config) {
+				store, err := allowlist.OpenStore(cfg.allowlistDB)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := store.StartJournal(); err != nil {
+					t.Fatal(err)
+				}
+				store.Close()
+				db, err := sql.Open("sqlite", cfg.allowlistDB)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer db.Close()
+				if _, err := db.Exec("UPDATE journal_object SET body = CAST('{}' AS BLOB)"); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantSub: "allowlist history",
 		},
 		{
 			name:    "invalid dns san pattern",
@@ -505,6 +532,100 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("PUT /allowlist = %d (%s), want 204", resp.StatusCode, respBody)
 	}
+}
+
+// A whole-document write stores its token as the document's signature, so the
+// token must not authorize a second write.
+func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
+	api := newHealthyAttestationApi(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg := validRunConfig(t, api.URL)
+	cfg.port = freePort(t)
+	cfg.operatorKeys = keysPath
+	base := startRunServer(t, cfg)
+
+	doc, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := doc.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	hexDigest := hex.EncodeToString(sum[:])
+	token, err := jwt.NewWithClaims(jwt.SigningMethodES256, jwt.MapClaims{
+		"iat": time.Now().Unix(),
+		"exp": time.Now().Add(time.Minute).Unix(),
+		"htm": http.MethodPut,
+		"htu": "/allowlist",
+		"pbh": base64.RawURLEncoding.EncodeToString(sum[:]),
+	}).SignedString(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	put := func() int {
+		req, err := http.NewRequest(http.MethodPut, base+"/allowlist", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	get := func(path string) []byte {
+		resp, err := http.Get(base + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", path, resp.StatusCode, b)
+		}
+		return b
+	}
+
+	if code := put(); code != http.StatusNoContent {
+		t.Fatalf("PUT /allowlist = %d, want 204", code)
+	}
+	if code := put(); code != http.StatusConflict {
+		t.Fatalf("PUT /allowlist replaying the token = %d, want 409", code)
+	}
+
+	var history struct {
+		Entries []allowlist.HistoryEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(get("/allowlist/history"), &history); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(history.Entries); n != 2 || history.Entries[1].Digest != "sha256:"+hexDigest || !history.Entries[1].Signed {
+		t.Fatalf("history = %+v, want the startup document then the signed write", history.Entries)
+	}
+	if got := get("/allowlist/objects/sha256/" + hexDigest); !bytes.Equal(got, body) {
+		t.Fatalf("object = %s, want %s", got, body)
+	}
+	keys, err := operatorauth.ParsePublicKeysPEM(mustRead(t, keysPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := string(get("/allowlist/objects/sha256/" + hexDigest + "/signature"))
+	if err := operatorauth.VerifyStored(keys, stored, http.MethodPut, "/allowlist", body); err != nil {
+		t.Fatalf("VerifyStored(served signature) = %v", err)
+	}
+}
+
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }
 
 // TestRun_ARMTLSWarmupFailureFailsClosed: with armTLS enabled, a failed serving
