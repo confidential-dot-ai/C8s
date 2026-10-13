@@ -66,10 +66,11 @@ func decodeEnvMatcher(data []byte, matcher envMatcherBehavior) bool {
 // UnmarshalYAML takes an unquoted numeric exact value by its literal text, so
 // `exact: 8080` pins "8080" rather than failing as a non-string.
 func (m *EnvMatcher) UnmarshalYAML(node *yaml.Node) error {
+	node = resolveAlias(node)
 	if node.Kind != yaml.MappingNode || len(node.Content) != 2 {
 		return fmt.Errorf("environment matcher requires exactly one of exact or present: true")
 	}
-	key, value := node.Content[0], node.Content[1]
+	key, value := resolveAlias(node.Content[0]), resolveAlias(node.Content[1])
 	if key.Value == "exact" && value.Kind == yaml.ScalarNode {
 		switch value.Tag {
 		case "!!str", "!!int", "!!float":
@@ -88,6 +89,13 @@ func (m *EnvMatcher) UnmarshalYAML(node *yaml.Node) error {
 	}
 	m.matcher = present
 	return nil
+}
+
+func resolveAlias(node *yaml.Node) *yaml.Node {
+	for node.Kind == yaml.AliasNode {
+		node = node.Alias
+	}
+	return node
 }
 
 type exactEnvMatcher struct {
