@@ -142,3 +142,42 @@ func TestExactHostMountAdmissionUsesFinalStartSpec(t *testing.T) {
 		})
 	}
 }
+
+func TestConfinedMountAdmissionUsesFinalStartSpec(t *testing.T) {
+	policy := allowlist.MountPolicy{Policy: allowlist.PolicyConfined, DenyBelow: []string{"/bin", "/etc/ld.so.preload"}, Unconfined: []string{"/run/xtables.lock"}}
+	for _, tc := range []struct {
+		name    string
+		mount   *api.Mount
+		allowed bool
+	}{
+		{"read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "ro"}}, true},
+		{"writable host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "rw"}}, false},
+		{"writable host path at an unconfined destination", &api.Mount{Type: "bind", Source: "/run/xtables.lock", Destination: "/run/xtables.lock", Options: []string{"rw"}}, true},
+		{"read-only host path over a denied directory", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/bin", Options: []string{"ro"}}, false},
+		{"read-only host path over the loader preload list", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/etc", Options: []string{"ro"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			al.Workloads["w"].Containers[0].Mounts = policy
+			if err := al.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			p, _ := newCachedPlugin(&config{
+				Policy:    policyConfig{Mode: ModeFailClosed},
+				Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}},
+			}, al)
+			p.SetReady()
+			p.inventory = newAdmissionInventory(t.TempDir())
+			pod := makePod("default", "pod")
+			ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestB)
+			ctr.Args = []string{"/bin/app", "--serve"}
+			if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err != nil {
+				t.Fatalf("preliminary admission: %v", err)
+			}
+			ctr.Mounts = []*api.Mount{tc.mount}
+			if err := p.StartContainer(t.Context(), pod, ctr); (err == nil) != tc.allowed {
+				t.Fatalf("StartContainer(%s) error = %v, want allowed = %v", tc.mount.Destination, err, tc.allowed)
+			}
+		})
+	}
+}

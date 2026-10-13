@@ -309,3 +309,27 @@ func TestAttest_WorkloadStampRequiresMountEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestAttest_WorkloadStampEnforcesConfinedMounts(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mounts []pkgallowlist.ObservedMount
+		want   bool
+	}{
+		{"memory volume", []pkgallowlist.ObservedMount{{Destination: "/cache", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}}, true},
+		{"writable host path", []pkgallowlist.ObservedMount{{Destination: "/cache", Class: pkgallowlist.MountHost}}, false},
+		{"over a denied path", []pkgallowlist.ObservedMount{{Destination: "/usr", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountEncrypted}}, false},
+		{"unobserved", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := completeAPIStore(t)
+			store.workloads["api"].Containers[0].Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyConfined, DenyBelow: []string{"/usr"}}
+			containers := containersView(wlDigestA)
+			containers[0].Mounts = tc.mounts
+			matched := issueWithInventory(t, store, []string{wlDigestA}, containers, nil)
+			if (matched != nil) != tc.want {
+				t.Fatalf("stamp = %v, want stamped = %v", matched, tc.want)
+			}
+		})
+	}
+}
