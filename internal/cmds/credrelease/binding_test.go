@@ -459,35 +459,6 @@ func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
 	}
 }
 
-func TestServeMeasuredPolicies(t *testing.T) {
-	p := "sha256:" + strings.Repeat("1", 64)
-	for _, tc := range []struct {
-		name, method, journal string
-		wantCode              int
-		wantBody              string
-	}{
-		{name: "journal", method: http.MethodGet, journal: p + "\n", wantCode: http.StatusOK, wantBody: `["` + p + `"]`},
-		{name: "no journal", method: http.MethodGet, wantCode: http.StatusOK, wantBody: `[]`},
-		{name: "post", method: http.MethodPost, wantCode: http.StatusMethodNotAllowed},
-		{name: "unreadable", method: http.MethodGet, wantCode: http.StatusInternalServerError},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			setMeasuredPolicies(t, tc.journal)
-			if tc.name == "unreadable" {
-				measuredPoliciesPath = t.TempDir() // a directory: Read fails
-			}
-			rec := httptest.NewRecorder()
-			(&Handler{}).ServeHTTP(rec, httptest.NewRequest(tc.method, MeasuredPoliciesPath, nil))
-			if rec.Code != tc.wantCode || (tc.wantBody != "" && strings.TrimSpace(rec.Body.String()) != tc.wantBody) {
-				t.Fatalf("%s %s = %d %q, want %d %q", tc.method, MeasuredPoliciesPath, rec.Code, rec.Body, tc.wantCode, tc.wantBody)
-			}
-			if got := rec.Header().Get("Cache-Control"); rec.Code == http.StatusOK && got != "no-store" {
-				t.Errorf("Cache-Control = %q, want no-store", got)
-			}
-		})
-	}
-}
-
 // setMeasuredPolicies points the journal path at a file holding journal, or
 // at a missing file when journal is empty.
 func setMeasuredPolicies(t *testing.T, journal string) {

@@ -5,11 +5,9 @@ import (
 	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
-	"net/http"
+	"net"
 	"net/url"
 	"os"
 	"strings"
@@ -89,7 +87,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	if exp.identity.Family() == teetypes.FamilyTDX {
-		exp.policies = &policyList{fetch: func() []string { return fetchMeasuredPolicies(ctx, cfg.ReleaseBaseURL, cfg.Timeout) }}
+		exp.policies = &policyList{}
+		exp.policies.refresh = func() { dialRelease(ctx, cfg, releaseURL, exp) }
 	}
 
 	// 1. Verify the channel and a fresh nonce-bound report before releasing
@@ -181,25 +180,18 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
 }
 
-// fetchMeasuredPolicies reads the allowlist policies the node measured into
-// RTMR[3]. The channel needs no authentication: checkIdentity accepts the list
-// only as far as an attested register replays it. An unreachable or older node
-// yields none, which keeps the bare workload chain.
-func fetchMeasuredPolicies(ctx context.Context, baseURL string, timeout time.Duration) []string {
-	client := &http.Client{Timeout: timeout, Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	defer client.CloseIdleConnections()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+credrelease.MeasuredPoliciesPath, nil)
+// dialRelease completes one armTLS handshake with cred-release, so the
+// verified leaf records its runtime extensions. A failed dial records
+// nothing and leaves the gate to fail on the list it has.
+func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platformVerifier) {
+	port := releaseURL.Port()
+	if port == "" {
+		port = "443"
+	}
+	dialer := tls.Dialer{NetDialer: &net.Dialer{Timeout: cfg.Timeout}, Config: armTLSConfig(exp)}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
 	if err != nil {
-		return nil
+		return
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil
-	}
-	defer resp.Body.Close()
-	var policies []string
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&policies) != nil {
-		return nil
-	}
-	return policies
+	_ = conn.Close() // the handshake was the point
 }

@@ -668,7 +668,9 @@ still requires `--mesh-ca` (the document publishes `cds_tls.mesh_ca_url`).
 Exit codes are a CI contract: `0` verified, `1` usage error, `2`
 verification/policy failed (e.g. wrong measurement), `3` evidence unavailable
 (unreachable/unparseable), `4` partially verified — the evidence verified, but
-a property it presents is not proven. The three partial cases today: the
+a property it presents is not proven. The partial cases today: a non-empty
+policy history that neither `--pin-policy` nor `--trust-operator` checked (see
+[Check a node's policy history](#check-a-nodes-policy-history)), the
 front door's live TLS handshake presenting a serving certificate the discovery
 evidence does not attest (a WebPKI front door, whatever the document's
 `public_tls.mode` declares — the verdict keys on the handshake observed on the
@@ -701,7 +703,10 @@ carry them as runtime extensions. With `--operator-pkey`, or an
 `--image-policy-file` pinning an `approver_key`, `verify` replays that list
 against RTMR[3] and reports the longest prefix that matches as `history:`
 (`measured_policies` in JSON). Without either, a listed history is not
-replayed and the verdict warns. Choose how to accept the history:
+replayed and the verdict warns. A non-empty replayed history leaves the verdict
+partial until `--pin-policy` or `--trust-operator` checks it: the replay proves
+which policies the node enforced, not that they are acceptable. Choose how to
+accept the history:
 
 | Flag | Accepts | Failure |
 |---|---|---|
@@ -799,7 +804,7 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
   extended, in order, by each digest-pinned `--workload-image` ref (tags are
   rejected). With no `--workload-image` the register must equal the bare seed.
   A node that measures allowlist policies extends them after that chain and
-  lists them at cred-release's unauthenticated `GET /measured-policies`; the
+  lists them in cred-release's armTLS certificate; the
   register may then also carry the longest prefix of that list that replays
   (see [Measured policy history](allowlist-and-capabilities.md#measured-policy-history));
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be

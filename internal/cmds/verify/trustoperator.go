@@ -96,6 +96,17 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 	}
 }
 
+// applyUncheckedHistoryPolicy demotes a verdict whose RTMR[3] replayed a
+// non-empty policy history that neither --pin-policy nor --trust-operator
+// judged: the replay proves which policies the node enforced, not that any of
+// them is acceptable, and the list it replays may be host-supplied.
+func applyUncheckedHistoryPolicy(oc *Outcome, cfg config) {
+	if len(oc.MeasuredPolicies) == 0 || len(cfg.pinPolicies) > 0 || cfg.trustOperator {
+		return
+	}
+	demoteToPartial(oc, fmt.Sprintf("the node's policy history: RTMR[3] replayed %d measured policies, but no policy over them was checked (pass --pin-policy or --trust-operator)", len(oc.MeasuredPolicies)))
+}
+
 // leafPolicy returns the digest of the policy the leaf was issued under, ""
 // when the evidence speaks for no leaf.
 func leafPolicy(ev *evidence) (string, error) {

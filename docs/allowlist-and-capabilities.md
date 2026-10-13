@@ -620,11 +620,14 @@ verifier trusts it only as far as it replays against a quote's RTMR[3]:
   `cds-attest --measured-policies-file` adds the list to attest-pq and
   attest-lb bundles as `measured_policies`. An unreadable journal omits it.
 - **cred-release.** It accepts its own binding as the seed followed by a
-  prefix of the list, and serves the list at `GET /measured-policies`.
-- **`c8s get-kubeconfig`.** On TDX it fetches that list and accepts RTMR[3] as
-  the seed extended by the `--workload-image` chain, optionally followed by a
-  prefix of the list that replays. The list arrives unauthenticated, so an
-  extend after the workload chain passes whenever the node lists it.
+  prefix of the list, and carries the list in its armTLS certificate.
+- **`c8s get-kubeconfig`.** On TDX it takes the list from the verified
+  cred-release certificate, whose self-signature under the attested key
+  covers it, and accepts RTMR[3] as the seed extended by the
+  `--workload-image` chain, optionally followed by a prefix of the list that
+  replays. An extend after the workload chain passes whenever the node lists
+  it. A list the certificate predates fails the fresh gate until cred-release
+  renews its certificate.
 
 The list is read after the quote is produced, so it may hold extends the
 quote does not. Verifiers use the longest prefix that replays.

@@ -358,12 +358,15 @@ type pullLoopArgs struct {
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
 // pulled document and advances the ETag — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 and errors leave the index untouched.
+// forward version arrives. 304 and errors leave the index untouched. A
+// version the measurer refuses for good also advances the ETag and is logged
+// once per digest.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	ticker := time.NewTicker(args.interval)
 	defer ticker.Stop()
 
 	etag := args.etag
+	var refused string // digest last logged as refused
 	for {
 		select {
 		case <-ctx.Done():
@@ -395,8 +398,19 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		if err := measureWith(args.measure, served.Digest); err != nil {
-			args.logger.Error("pull loop: not applying an allowlist this node could not measure",
-				"digest", served.Digest, "error", err)
+			if !errors.Is(err, errPolicyRefused) {
+				args.logger.Error("pull loop: not applying an allowlist this node could not measure",
+					"digest", served.Digest, "error", err)
+				continue
+			}
+			// Advance past the refused version so later ticks get 304
+			// instead of downloading it again.
+			etag = newETag
+			if served.Digest != refused {
+				refused = served.Digest
+				args.logger.Error("pull loop: allowlist refused; keeping current policy",
+					"digest", served.Digest, "etag", etag, "error", err)
+			}
 			continue
 		}
 		args.store.apply(wl, version)
@@ -613,7 +627,9 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 	}
 	if journal == nil {
 		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", err)
-		return func(string) error { return fmt.Errorf("allowlist policy measurement unavailable: %w", err) }
+		return func(string) error {
+			return fmt.Errorf("%w: allowlist policy measurement unavailable: %w", errPolicyRefused, err)
+		}
 	}
 	if err != nil {
 		// A diverged journal refuses every extend, so policy updates stop.
@@ -651,8 +667,12 @@ func checkJournalRoom(journal *runtimemeasure.Journal, digest string) error {
 	if d, err := runtimemeasure.CanonicalDigest(digest); err == nil && slices.Contains(measured, d) {
 		return nil
 	}
-	return fmt.Errorf("allowlist policy %s not applied: the node measured %d policies since boot, the most its certificates can carry; reboot to take further updates", digest, len(measured))
+	return fmt.Errorf("%w: allowlist policy %s not applied: the node measured %d policies since boot, the most its certificates can carry; reboot to take further updates", errPolicyRefused, digest, len(measured))
 }
+
+// errPolicyRefused marks a measure failure that persists until the plugin
+// restarts, so retrying the same policy cannot succeed.
+var errPolicyRefused = errors.New("policy refused")
 
 // createReadable creates path empty and world-readable unless it exists.
 func createReadable(path string) error {

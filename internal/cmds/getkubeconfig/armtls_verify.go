@@ -34,16 +34,18 @@ func newARMTLSClient(cfg Config, exp platformVerifier) *http.Client {
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: true, //nolint:gosec // armTLS in VerifyConnection is the real check
-				VerifyConnection: func(cs tls.ConnectionState) error {
-					if len(cs.PeerCertificates) == 0 {
-						return fmt.Errorf("armtls: server presented no certificate")
-					}
-					return verifyServerCert(cs.PeerCertificates[0], exp)
-				},
-			},
+		Transport: &http.Transport{TLSClientConfig: armTLSConfig(exp)},
+	}
+}
+
+func armTLSConfig(exp platformVerifier) *tls.Config {
+	return &tls.Config{
+		InsecureSkipVerify: true, //nolint:gosec // armTLS in VerifyConnection is the real check
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			if len(cs.PeerCertificates) == 0 {
+				return fmt.Errorf("armtls: server presented no certificate")
+			}
+			return verifyServerCert(cs.PeerCertificates[0], exp)
 		},
 	}
 }
@@ -113,9 +115,17 @@ func (exp measuredPolicy) verifyTDXCertificate(leaf *x509.Certificate) error {
 		return fmt.Errorf("armtls: marshal embedded evidence: %w", err)
 	}
 
-	// Reuse the exact verifier the attest gate uses — one funnel, one policy.
-	if _, err := verifyEvidence(envJSON, rd[:], exp); err != nil {
+	// Reuse the exact verifier the attest gate uses — one funnel, one policy —
+	// replaying the leaf's own list, which its self-signature covers.
+	own := exp
+	if exp.policies != nil {
+		own.policies = &policyList{list: att.RuntimeExtensions}
+	}
+	if _, err := verifyEvidence(envJSON, rd[:], own); err != nil {
 		return fmt.Errorf("armtls: %w", err)
+	}
+	if exp.policies != nil {
+		exp.policies.record(att.RuntimeExtensions)
 	}
 	return nil
 }

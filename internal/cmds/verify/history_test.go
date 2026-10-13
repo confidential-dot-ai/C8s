@@ -498,3 +498,39 @@ func TestImagePolicyFileReplaysHistory(t *testing.T) {
 		})
 	}
 }
+
+// A replayed history no flag judged demotes the verdict; an empty one, or one
+// a flag judged, does not.
+func TestUncheckedHistoryIsPartial(t *testing.T) {
+	measured := []string{testPolicyP}
+	for _, tc := range []struct {
+		name        string
+		cfg         config
+		history     bool
+		wantPartial bool
+	}{
+		{"unchecked history", config{}, true, true},
+		{"empty history", config{}, false, false},
+		{"pinned history", config{pinPolicies: measured}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, seed := historyPlan(t, tc.cfg)
+			reg := seed
+			if tc.history {
+				reg = runtimemeasure.FromDigestsSeeded(seed, measured)
+			}
+			ev := &evidence{platform: "tdx", measured: measured}
+			oc := newOutcome(tc.cfg, ev, tdxResult(testMRTD, rtmr3Claims(reg)), nil, plan)
+			applyVerdictPolicies(&oc, tc.cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
+			if oc.Partial != tc.wantPartial || oc.Verified == tc.wantPartial || oc.Error != "" {
+				t.Fatalf("verdict = verified %v, partial %v, error %q; want partial %v", oc.Verified, oc.Partial, oc.Error, tc.wantPartial)
+			}
+			named := slices.ContainsFunc(oc.NotProven, func(n string) bool {
+				return strings.Contains(n, "--pin-policy") && strings.Contains(n, "--trust-operator")
+			})
+			if named != tc.wantPartial {
+				t.Errorf("NotProven = %v; want a note naming both flags: %v", oc.NotProven, tc.wantPartial)
+			}
+		})
+	}
+}

@@ -27,8 +27,8 @@ func NewCmd() *cobra.Command {
 			"measured identity. The build-artifact manifest selects the platform:\n" +
 			"on TDX the image tuple (MRTD, RTMR[1], RTMR[2]) plus the RTMR[3] chain\n" +
 			"seeded by the operator's key and extended by the expected workload\n" +
-			"images, then by any allowlist policies the node reports at\n" +
-			"/measured-policies (accepted only as far as they replay); on SEV-SNP the pinned per-SMP launch digest plus the\n" +
+			"images, then by any allowlist policies cred-release's armTLS certificate\n" +
+			"lists (accepted only as far as they replay); on SEV-SNP the pinned per-SMP launch digest plus the\n" +
 			"operator-key HOSTDATA binding. It then exchanges a CSR for a\n" +
 			"short-lived kube client cert over the cred-release endpoint and writes\n" +
 			"a kubeconfig. Fresh attestation uses the authenticated armTLS release\n" +

@@ -1,6 +1,7 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -743,8 +744,8 @@ func TestPolicyMeasurer(t *testing.T) {
 				t.Fatalf("policyMeasurer returned a hook: %v, want %v", hook != nil, tc.wantHook)
 			}
 			if hook != nil {
-				if err := hook("sha256:" + strings.Repeat("1", 64)); err == nil {
-					t.Fatal("hook = nil error, want a failure that keeps the policy unapplied")
+				if err := hook("sha256:" + strings.Repeat("1", 64)); !errors.Is(err, errPolicyRefused) {
+					t.Fatalf("hook = %v, want errPolicyRefused, which keeps the policy unapplied", err)
 				}
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
@@ -850,8 +851,8 @@ func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
 			t.Fatalf("hook(policy %d) = %v", i, err)
 		}
 	}
-	if err := hook(digest(armtls.MaxRuntimeExtensions)); err == nil {
-		t.Errorf("hook(policy %d) = nil, want a refusal past the cap", armtls.MaxRuntimeExtensions)
+	if err := hook(digest(armtls.MaxRuntimeExtensions)); !errors.Is(err, errPolicyRefused) {
+		t.Errorf("hook(policy %d) = %v, want errPolicyRefused past the cap", armtls.MaxRuntimeExtensions, err)
 	}
 	if err := hook(digest(0)); err != nil {
 		t.Errorf("hook(measured policy 0) = %v, want nil", err)
@@ -866,5 +867,48 @@ func TestValidateMeasurePoliciesNeedsSocketDir(t *testing.T) {
 	cfg.Allowlist.Pull.MeasurePolicies = true
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("Validate() = nil, want an error for measure_policies without workload_claims.socket_dir")
+	}
+}
+
+// A version the measurer refuses for good is fetched, measured and logged
+// once; later ticks get 304 and the current policy stays applied.
+func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	ctx, cancel := context.WithCancel(t.Context())
+	handler := &flippingHandler{versions: []string{"2"}, bodyByV: map[string][]byte{"2": body}}
+	var bodies atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("If-None-Match") == "" {
+			bodies.Add(1)
+		}
+		handler.ServeHTTP(w, r)
+		if handler.hits.Load() >= 5 {
+			cancel()
+		}
+	}))
+	defer srv.Close()
+	store := newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	measures := 0
+	var logs bytes.Buffer
+	runPullLoop(ctx, pullLoopArgs{
+		client: allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		store:  store,
+		measure: func(string) error {
+			measures++
+			return fmt.Errorf("%w: cap reached", errPolicyRefused)
+		},
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	if measures != 1 || bodies.Load() != 1 {
+		t.Errorf("measured %d times, fetched the body %d times; want 1 and 1", measures, bodies.Load())
+	}
+	if n := strings.Count(logs.String(), "allowlist refused"); n != 1 {
+		t.Errorf("refusal logged %d times, want 1:\n%s", n, logs.String())
+	}
+	if !admitsDigest(store, pushDigestA) || admitsDigest(store, pushDigestB) {
+		t.Errorf("applied A=%v B=%v, want the current policy A only", admitsDigest(store, pushDigestA), admitsDigest(store, pushDigestB))
 	}
 }

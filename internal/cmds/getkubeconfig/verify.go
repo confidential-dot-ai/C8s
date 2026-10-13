@@ -53,32 +53,48 @@ type measuredPolicy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
-	// policies are the allowlist policies the node reports it measured after
-	// the workloads (credrelease.MeasuredPoliciesPath); nil on SNP. The list is
-	// untrusted: checkIdentity accepts it only as far as the quote's register
-	// replays.
+	// policies are the allowlist policies the node measured after the
+	// workloads, as the runtime extensions of its last verified cred-release
+	// leaf; nil on SNP. checkIdentity accepts the list only as far as the
+	// quote's register replays it.
 	policies *policyList
 }
 
-// policyList caches the node's measured-policy list across the run's gates.
+// policyList holds the runtime extension list of the latest verified
+// cred-release leaf. The leaf's self-signature under its attested key covers
+// the list, so the host cannot rewrite it.
 type policyList struct {
-	fetch   func() []string
-	mu      sync.Mutex
-	list    []string
-	fetched bool
+	mu   sync.Mutex
+	list []string
+	// refresh opens a new armTLS connection, whose verified leaf records its
+	// list; nil for a fixed list.
+	refresh func()
+}
+
+func (l *policyList) record(list []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.list = list
+}
+
+func (l *policyList) current() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.list
 }
 
 // replays reports whether got is start extended by a prefix of the node's
-// list. A miss on the cached list refetches it: the node may have measured a
-// policy since the last gate.
+// list. A miss refreshes the list once: no leaf may have been verified yet,
+// or the node may have reissued its leaf since.
 func (l *policyList) replays(got []byte, start [runtimemeasure.Size]byte) bool {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	if l.fetched && replaysPrefix(got, start, l.list) {
+	if replaysPrefix(got, start, l.current()) {
 		return true
 	}
-	l.list, l.fetched = l.fetch(), true
-	return replaysPrefix(got, start, l.list)
+	if l.refresh == nil {
+		return false
+	}
+	l.refresh()
+	return replaysPrefix(got, start, l.current())
 }
 
 func replaysPrefix(got []byte, reg [runtimemeasure.Size]byte, policies []string) bool {

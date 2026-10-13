@@ -45,11 +45,18 @@ func newAttestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 
 func newPlatformAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, handler http.Handler) *httptest.Server {
 	t.Helper()
+	return newAttestedTLSServerWithExtensions(t, platform, nil, handler)
+}
+
+// newAttestedTLSServerWithExtensions serves a leaf whose TDX attestation
+// carries extensions as its runtime extension list.
+func newAttestedTLSServerWithExtensions(t *testing.T, platform teetypes.PlatformType, extensions []string, handler http.Handler) *httptest.Server {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &armtls.Attestation{Family: armtls.TEETypeTDX, Report: []byte(tdxEnvelope)}
+	att := &armtls.Attestation{Family: armtls.TEETypeTDX, Report: []byte(tdxEnvelope), RuntimeExtensions: extensions}
 	if platform == teetypes.PlatformSNP {
 		rd, err := armtls.ReportDataForKey(&key.PublicKey, nil)
 		if err != nil {
@@ -97,10 +104,6 @@ func failingAttest(t *testing.T, status int) *httptest.Server {
 func releaseHandler(t *testing.T, status int, respBody string, gotRole *atomic.Value) http.Handler {
 	t.Helper()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == credrelease.MeasuredPoliciesPath {
-			http.NotFound(w, r) // a node that measures no policies
-			return
-		}
 		if r.URL.Path != credrelease.ReleasePath {
 			t.Errorf("release path = %s, want %s", r.URL.Path, credrelease.ReleasePath)
 		}
@@ -288,9 +291,7 @@ func TestRunRejectsWrongRTMR3(t *testing.T) {
 	// A failure of the explicit nonce gate must prevent the release request.
 	var releaseHits atomic.Int32
 	release := newAttestedTLSServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != credrelease.MeasuredPoliciesPath {
-			releaseHits.Add(1)
-		}
+		releaseHits.Add(1)
 		releaseHandler(t, http.StatusOK, goodRelease, nil).ServeHTTP(w, r)
 	}))
 	t.Cleanup(release.Close)
