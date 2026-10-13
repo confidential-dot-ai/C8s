@@ -169,8 +169,10 @@ func ListenUnix(socketPath string, gid int) (net.Listener, error) {
 	return l, nil
 }
 
-// maxResponseBytes bounds an inventory response; a pod has a handful of
-// containers, each digest 71 bytes.
+// maxResponseBytes bounds an inventory response. It fits a sandbox with 64
+// distinct admissions, each with 64 environment variables, 16 mounts and 1 KiB
+// of argv. A larger history fails to decode, so CDS refuses the sandbox rather
+// than judging a truncated one.
 const maxResponseBytes = 1 << 20
 
 // SandboxTokenRequest is the SandboxPath request body: the requester's PKIX
