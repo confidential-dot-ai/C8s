@@ -101,12 +101,9 @@ func validEnvDigest(digest string) bool {
 	return err == nil && hex.EncodeToString(b) == digest
 }
 
-// Valid reports whether the observation is well formed.
+// Valid reports whether o is non-nil, in EnvFormat, and carries well-formed
+// digests. It says nothing about whether any policy admits o.
 func (o *EnvObservation) Valid() bool {
-	return o.WellFormed()
-}
-
-func (o *EnvObservation) WellFormed() bool {
 	if o == nil || o.Format != EnvFormat || !validEnvDigest(o.Digest) {
 		return false
 	}
