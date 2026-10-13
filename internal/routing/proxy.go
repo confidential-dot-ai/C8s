@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -26,6 +27,9 @@ const (
 	// to four copies of its response (body, CBOR, sealed, written) and three
 	// of its 8 MiB request, about 150 MiB.
 	defaultTunnelSlots = 32
+	// clientSlotShare is the fraction of the tunnel slots one client may hold,
+	// so a client holding slow requests cannot take every slot.
+	clientSlotShare = 4
 )
 
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
@@ -52,8 +56,12 @@ type Proxy struct {
 	transports *Transports
 	timeout    time.Duration
 	log        *slog.Logger
-	// tunnelSlots holds one token per tunnelled request in flight.
-	tunnelSlots chan struct{}
+
+	slotsMu        sync.Mutex
+	slots          int            // tunnelled requests allowed in flight
+	slotsPerClient int            // of those, what one client may hold
+	inFlight       int            // tunnelled requests in flight
+	held           map[string]int // client -> its requests in flight
 }
 
 // NewProxy returns a Proxy.
@@ -67,27 +75,39 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		slots = defaultTunnelSlots
 	}
 	return &Proxy{
-		state:       cfg.State,
-		transports:  cfg.Transports,
-		timeout:     cfg.Timeout,
-		log:         logger,
-		tunnelSlots: make(chan struct{}, slots),
+		state:          cfg.State,
+		transports:     cfg.Transports,
+		timeout:        cfg.Timeout,
+		log:            logger,
+		slots:          slots,
+		slotsPerClient: max(slots/clientSlotShare, 1),
+		held:           make(map[string]int),
 	}
 }
 
 // State returns the state the proxy routes by.
 func (p *Proxy) State() *State { return p.state }
 
-// Acquire takes a tunnel slot, or reports false when every slot is taken.
-// The caller holds it from reading the sealed request until the sealed
-// response is written, then calls release once.
-func (p *Proxy) Acquire() (release func(), ok bool) {
-	select {
-	case p.tunnelSlots <- struct{}{}:
-		return func() { <-p.tunnelSlots }, true
-	default:
+// Acquire takes a tunnel slot for client, or reports false when every slot
+// is taken or client holds its share of them. The caller holds it from
+// reading the sealed request until the sealed response is written, then calls
+// release once.
+func (p *Proxy) Acquire(client string) (release func(), ok bool) {
+	p.slotsMu.Lock()
+	defer p.slotsMu.Unlock()
+	if p.inFlight >= p.slots || p.held[client] >= p.slotsPerClient {
 		return nil, false
 	}
+	p.inFlight++
+	p.held[client]++
+	return func() {
+		p.slotsMu.Lock()
+		defer p.slotsMu.Unlock()
+		p.inFlight--
+		if p.held[client]--; p.held[client] == 0 {
+			delete(p.held, client)
+		}
+	}, true
 }
 
 // ServeHTTP routes r by its Host (M1) and the path bytes it arrived with

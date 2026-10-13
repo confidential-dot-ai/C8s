@@ -659,7 +659,7 @@ with or without it.
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
 | `--backend-timeout` | `1h` | Limit on one forwarded request, body included. Must be positive. |
 | `--tunnel-io-timeout` | `30s` | Limit on reading one tunnel request body, and separately on writing its sealed response. Must be positive. |
-| `--tunnel-slots` | `32` | Tunnelled requests in flight in one replica, shared by all clients. Must be positive. |
+| `--tunnel-slots` | `32` | Tunnelled requests in flight in one replica, shared by all clients; one client holds at most a quarter of them. Must be positive. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
 | `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--cds-url` and `--routing-port`. |
 
@@ -713,7 +713,8 @@ withdraw a staged revision, publish a higher one; restoring the previous
 manifest is refused.
 
 With `--cds-url`, each `cds-attest` replica holds at most `--tunnel-slots`
-tunnelled requests at once, shared by all clients, from reading the sealed
+tunnelled requests at once, shared by all clients (one client holds at most a
+quarter of them), from reading the sealed
 request to writing the sealed response, and answers further ones with 503
 `tunnel_busy`. Each request buffers up to about 150 MiB (three copies of an 8 MiB request and four of a
 32 MiB response), so budget about 150 MiB per slot, 5 GiB at the default,

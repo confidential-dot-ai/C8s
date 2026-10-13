@@ -385,16 +385,39 @@ func TestA7TunnelSealedHeaders(t *testing.T) {
 
 func TestAcquireBoundsTunnelSlots(t *testing.T) {
 	p := NewProxy(ProxyConfig{TunnelSlots: 1})
-	release, ok := p.Acquire()
+	release, ok := p.Acquire("a")
 	if !ok {
 		t.Fatal("Acquire() on a free proxy = false, want true")
 	}
-	if _, ok := p.Acquire(); ok {
+	if _, ok := p.Acquire("b"); ok {
 		t.Fatal("Acquire() with every slot taken = true, want false")
 	}
 	release()
-	if _, ok := p.Acquire(); !ok {
+	if _, ok := p.Acquire("b"); !ok {
 		t.Fatal("Acquire() after release = false, want true")
+	}
+}
+
+// One client holds at most its share of the slots, so the others still get in.
+func TestAcquireBoundsOneClientsShare(t *testing.T) {
+	p := NewProxy(ProxyConfig{TunnelSlots: 8})
+	var releases []func()
+	for range 2 {
+		release, ok := p.Acquire("greedy")
+		if !ok {
+			t.Fatal("Acquire(greedy) within its share = false, want true")
+		}
+		releases = append(releases, release)
+	}
+	if _, ok := p.Acquire("greedy"); ok {
+		t.Fatal("Acquire(greedy) over its share = true, want false")
+	}
+	if _, ok := p.Acquire("other"); !ok {
+		t.Fatal("Acquire(other) with free slots = false, want true")
+	}
+	releases[0]()
+	if _, ok := p.Acquire("greedy"); !ok {
+		t.Fatal("Acquire(greedy) after a release = false, want true")
 	}
 }
 

@@ -731,7 +731,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.Routing != nil {
-		release, ok := s.cfg.Routing.Acquire()
+		release, ok := s.cfg.Routing.Acquire(clientBucket(r))
 		if !ok {
 			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 			return
