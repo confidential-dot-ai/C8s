@@ -45,8 +45,8 @@ func checkHistoryFlags(cfg config) ([]*ecdsa.PublicKey, error) {
 	default:
 		return nil, nil
 	}
-	if cfg.operatorPubkey == "" {
-		return nil, fmt.Errorf("%s requires --operator-pkey: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
+	if cfg.operatorPubkey == "" && cfg.measurementsConfig == "" {
+		return nil, fmt.Errorf("%s requires --operator-pkey or --image-policy-file: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
 	}
 	if !cfg.trustOperator {
 		return nil, nil

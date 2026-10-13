@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"slices"
 
-	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 )
@@ -25,10 +24,10 @@ func (p Pins) VerifyPolicy(url string) *VerifyPolicy {
 // whose measured policy history replays against RTMR[3], and judging that
 // history is an external verifier's job (c8s verify --pin-policy,
 // --trust-operator). claimed is the peer's list, nil for none, and is refused
-// beyond [agarmtls.MaxRuntimeExtensions] entries since each costs a hash.
+// beyond [MaxRuntimeExtensions] entries since each costs a hash.
 func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, claimed []string) error {
-	if len(claimed) > agarmtls.MaxRuntimeExtensions {
-		return fmt.Errorf("%w: %d runtime extensions, at most %d allowed", remote.ErrAnchorNotAllowed, len(claimed), agarmtls.MaxRuntimeExtensions)
+	if len(claimed) > MaxRuntimeExtensions {
+		return fmt.Errorf("%w: %d runtime extensions, at most %d allowed", remote.ErrAnchorNotAllowed, len(claimed), MaxRuntimeExtensions)
 	}
 	return remote.EnforceImagesWithRuntimeLog(resp, acceptReplayed(images), platform, claimed)
 }

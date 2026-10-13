@@ -7783,17 +7783,19 @@ func TestChartMeasurePolicies(t *testing.T) {
 		}
 	}
 
-	const dir = "/run/custom-nri"
+	const custom, defaultDir = "/run/custom-nri", "/var/run/nri-image-policy"
 	for _, tc := range []struct {
 		name     string
 		args     []string
+		dir      string
 		wantFlag bool
 	}{
-		{name: "unbaked", args: []string{"--set", "attestationApi.enabled=true"}},
-		{name: "unbaked, measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, wantFlag: true},
-		{name: "baked", args: bakedArgs, wantFlag: true},
+		{name: "unbaked", args: []string{"--set", "attestationApi.enabled=true"}, dir: custom},
+		{name: "unbaked, measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, dir: defaultDir, wantFlag: true},
+		{name: "baked", args: bakedArgs, dir: custom, wantFlag: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			dir := tc.dir
 			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
@@ -7810,5 +7812,20 @@ func TestChartMeasurePolicies(t *testing.T) {
 				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
 			}
 		})
+	}
+}
+
+// Producers read the journal at the default runtime directory only, so the
+// chart refuses measuring with another one.
+func TestChartMeasurePoliciesNeedsDefaultRuntimeDir(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.measurePolicies=true",
+		"--set-string", "nriImagePolicy.hostPaths.runtimeDir=/run/custom-nri",
+	)
+	if err == nil {
+		t.Fatalf("helm template succeeded, want a measure_policies_runtime_dir failure\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "measure_policies_runtime_dir" {
+		t.Fatalf("validation kind = %q, want measure_policies_runtime_dir\n%s", got, out)
 	}
 }

@@ -59,6 +59,10 @@ type CertificateResult struct {
 	RuntimeExtensions []string
 }
 
+// runtimeExtensions reads this node's measured-policy journal. Var so tests
+// can supply a list.
+var runtimeExtensions = armtls.RuntimeExtensions
+
 // NewClient creates a new attestation flow client.
 func NewClient(baseURL string) Client {
 	return Client{
@@ -167,7 +171,7 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 	}
 	var extensions []string
 	if asResp.Platform.IsTDX() {
-		if extensions, err = armtls.RuntimeExtensions(); err != nil {
+		if extensions, err = runtimeExtensions(); err != nil {
 			return CertificateResult{}, err
 		}
 	}

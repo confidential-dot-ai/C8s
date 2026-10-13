@@ -36,6 +36,10 @@ const (
 	// SNPMeasurementSize is the size of an SEV-SNP launch measurement
 	// (SHA-384 digest = 48 bytes).
 	SNPMeasurementSize = runtimemeasure.Size
+
+	// MaxRuntimeExtensions caps Attestation.RuntimeExtensions: a longer list
+	// cannot be encoded, and verifiers refuse it.
+	MaxRuntimeExtensions = agarmtls.MaxRuntimeExtensions
 )
 
 // OID arc: 1.3.6.1.4.1.66378 is the C8s Private Enterprise Number. The library

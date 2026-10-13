@@ -767,7 +767,8 @@ nriImagePolicy:
   # the baked plugin too. c8s's own checks accept a node that measures;
   # external armTLS verifiers on attestation-go predating runtime extensions,
   # and flat RTMR[3] pins, still require the bare operator-key seed. Needs the
-  # default hostPaths.runtimeDir.
+  # default hostPaths.runtimeDir. After 256 policies the node applies no new
+  # one until it reboots.
   measurePolicies: false
 
   # --- Bootstrap allowlist ---

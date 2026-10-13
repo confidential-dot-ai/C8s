@@ -18,6 +18,13 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 )
 
+// TestMain keeps the host's measured-policy journal out of every certificate
+// the package's tests build.
+func TestMain(m *testing.M) {
+	runtimeJournals = nil
+	os.Exit(m.Run())
+}
+
 func TestMarshalExtensionRuntimeExtensions(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
@@ -129,9 +136,6 @@ func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	orig := runtimeJournals
-	t.Cleanup(func() { runtimeJournals = orig })
-	runtimeJournals = nil
 	for _, tc := range []struct {
 		name    string
 		list    []string

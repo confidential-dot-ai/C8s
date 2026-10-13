@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -23,6 +24,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -821,6 +823,41 @@ func TestPolicyMeasurerMeasures(t *testing.T) {
 				t.Errorf("journal = %q, want %q", b, tc.wantJournal)
 			}
 		})
+	}
+}
+
+// Past armtls.MaxRuntimeExtensions the hook refuses a new policy without
+// extending, so the node keeps a certificate-sized history, and still accepts
+// one it already measured.
+func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, policymeasure.JournalName), reg, runtimemeasure.Seed(anchor))
+	}
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	hook := policyMeasurer(cfg, discardLogger())
+	digest := func(i int) string { return fmt.Sprintf("sha256:%064x", i) }
+	for i := range armtls.MaxRuntimeExtensions {
+		if err := hook(digest(i)); err != nil {
+			t.Fatalf("hook(policy %d) = %v", i, err)
+		}
+	}
+	if err := hook(digest(armtls.MaxRuntimeExtensions)); err == nil {
+		t.Errorf("hook(policy %d) = nil, want a refusal past the cap", armtls.MaxRuntimeExtensions)
+	}
+	if err := hook(digest(0)); err != nil {
+		t.Errorf("hook(measured policy 0) = %v, want nil", err)
+	}
+	if reg.extends != armtls.MaxRuntimeExtensions {
+		t.Errorf("register extended %d times, want %d", reg.extends, armtls.MaxRuntimeExtensions)
 	}
 }
 

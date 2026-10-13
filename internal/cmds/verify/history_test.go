@@ -3,10 +3,14 @@ package verify
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +21,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
@@ -434,6 +441,59 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 			checkPolicyHistory(context.Background(), &oc, cfg, tc.ev, plan.trustKeys)
 			if oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, tc.wantErr)
+			}
+		})
+	}
+}
+
+// An --image-policy-file pinning an approver_key replays the node's history
+// as --operator-pkey does, so --pin-policy can judge it.
+func TestImagePolicyFileReplaysHistory(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
+	reg := func(h string) []byte {
+		b, err := hex.DecodeString(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
+		Family: teetypes.FamilyTDX,
+		Images: []remote.ImagePin{{Name: "node", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}, Anchor: pubPEM}},
+	})
+	cfg := config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}}
+	plan := mustPlan(t, cfg)
+	seed := runtimemeasure.Seed(pubPEM)
+	measured := []string{testPolicyP, testPolicyQ}
+	for _, tc := range []struct {
+		name  string
+		rtmr3 [runtimemeasure.Size]byte
+		want  []string
+		ok    bool
+	}{
+		{"bare seed", seed, nil, true},
+		{"prefix", runtimemeasure.FromDigestsSeeded(seed, measured[:1]), measured[:1], true},
+		{"extend outside the list", runtimemeasure.FromDigestsSeeded(seed, []string{testPolicyR}), nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := &evidence{platform: "tdx", measured: measured}
+			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(tc.rtmr3)), nil, plan)
+			if oc.Verified != tc.ok {
+				t.Fatalf("newOutcome verified = %v (%s), want %v", oc.Verified, oc.Error, tc.ok)
+			}
+			if !slices.Equal(oc.MeasuredPolicies, tc.want) {
+				t.Errorf("MeasuredPolicies = %v, want %v", oc.MeasuredPolicies, tc.want)
+			}
+			if slices.ContainsFunc(oc.Warnings, func(w string) bool { return strings.Contains(w, "not replayed") }) {
+				t.Errorf("Warnings = %v, want no unreplayed-history warning", oc.Warnings)
 			}
 		})
 	}

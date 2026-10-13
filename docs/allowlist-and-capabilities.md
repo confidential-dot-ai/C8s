@@ -594,7 +594,10 @@ enforcing the one it holds: at startup, the base allowlist alone.
 > it: armTLS verifiers built on attestation-go releases that predate runtime
 > extensions, and flat RTMR[3] pins (`--rtmrs 3=…`,
 > `allowlist.pull.cds_rtmrs`). Producers find the journal only under the
-> default `nriImagePolicy.hostPaths.runtimeDir`.
+> default `nriImagePolicy.hostPaths.runtimeDir`, so the chart refuses
+> `measurePolicies` with any other. A node stops measuring, and so stops
+> applying new policies, after 256 of them (the most a certificate carries)
+> until it reboots.
 
 The plugin journals the digests, one per line in extend order, at
 `<nriImagePolicy.hostPaths.runtimeDir>/measured-policies`, a tmpfs that dies
