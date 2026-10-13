@@ -1,6 +1,8 @@
 package admissionhistory
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -144,5 +146,29 @@ func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 		if c.Mounts != nil && c.Mounts[0].Destination != "/config" {
 			t.Fatal("snapshot borrowed history's mount slice")
 		}
+	}
+}
+
+func TestHistoryClosesPastBudget(t *testing.T) {
+	var h History
+	var crossed error
+	for i := 0; crossed == nil; i++ {
+		if i > workloadclaims.MaxResponseBytes {
+			t.Fatal("history never reported the budget")
+		}
+		env, _ := allowlist.ObserveEnv([]string{fmt.Sprintf("STARTED_AT=%d", i)})
+		crossed = h.Record(fmt.Sprint(i), "sha256:a", []string{"run"}, env)
+	}
+	if !errors.Is(crossed, ErrOverBudget) {
+		t.Fatalf("Record past budget = %v, want %v", crossed, ErrOverBudget)
+	}
+	if err := h.Record("later", "sha256:b", nil, nil); err != nil {
+		t.Fatalf("Record after budget = %v, want nil", err)
+	}
+	if len(h.byKey) != 0 || len(h.unresolved) != 0 {
+		t.Fatalf("history kept %d records past the budget", len(h.byKey)+len(h.unresolved))
+	}
+	if digests, containers, err := h.Snapshot(); !errors.Is(err, ErrOverBudget) || digests != nil || containers != nil {
+		t.Fatalf("Snapshot past budget = %v, %v, %v, want %v", digests, containers, err, ErrOverBudget)
 	}
 }

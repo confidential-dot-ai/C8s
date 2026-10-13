@@ -40,14 +40,14 @@ func encodedInventory(t *testing.T, nameBytes int) int {
 	return len(b)
 }
 
-// The supported sandbox size documented on maxResponseBytes must fit in it,
+// The supported sandbox size documented on MaxResponseBytes must fit in it,
 // and the cap is on encoded bytes: the same counts with long paths do not fit.
 func TestSupportedSandboxFitsResponseCap(t *testing.T) {
-	if n := encodedInventory(t, 64); n > maxResponseBytes {
-		t.Fatalf("supported sandbox encodes to %d bytes, over the %d-byte cap", n, maxResponseBytes)
+	if n := encodedInventory(t, 64); n > MaxResponseBytes {
+		t.Fatalf("supported sandbox encodes to %d bytes, over the %d-byte cap", n, MaxResponseBytes)
 	}
-	if n := encodedInventory(t, 1<<10); n <= maxResponseBytes {
-		t.Fatalf("sandbox with 1 KiB mount destinations encodes to %d bytes, within the %d-byte cap", n, maxResponseBytes)
+	if n := encodedInventory(t, 1<<10); n <= MaxResponseBytes {
+		t.Fatalf("sandbox with 1 KiB mount destinations encodes to %d bytes, within the %d-byte cap", n, MaxResponseBytes)
 	}
 }
 
@@ -56,7 +56,7 @@ func TestFetchSandboxRefusesOversizedHistory(t *testing.T) {
 	c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(SandboxDigestsResponse{
 			Digests:    []string{digestA},
-			Containers: []SandboxContainer{{Digest: digestA, Argv: []string{strings.Repeat("a", maxResponseBytes)}}},
+			Containers: []SandboxContainer{{Digest: digestA, Argv: []string{strings.Repeat("a", MaxResponseBytes)}}},
 		})
 	}))
 	c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"

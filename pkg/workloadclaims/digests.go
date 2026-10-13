@@ -353,7 +353,7 @@ func (c *DigestsClient) InventoryKey(ctx context.Context, host string) (*ecdsa.P
 		return nil, fmt.Errorf("workloadclaims: inventory %s identity returned %d", host, resp.StatusCode)
 	}
 	var out InventoryIdentity
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("workloadclaims: decode inventory identity: %w", err)
 	}
 	pubAny, err := x509.ParsePKIXPublicKey(out.PublicKey)
@@ -423,7 +423,7 @@ func (c *DigestsClient) FetchSandbox(ctx context.Context, host, sandboxID string
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return out, fmt.Errorf("workloadclaims: inventory %s returned %d: %s", host, resp.StatusCode, strings.TrimSpace(string(body)))
 	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(&out); err != nil {
 		return out, fmt.Errorf("workloadclaims: decode inventory response: %w", err)
 	}
 	return out, nil

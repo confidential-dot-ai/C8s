@@ -169,13 +169,13 @@ func ListenUnix(socketPath string, gid int) (net.Listener, error) {
 	return l, nil
 }
 
-// maxResponseBytes bounds the JSON-encoded inventory response. It fits 64
+// MaxResponseBytes bounds the JSON-encoded inventory response. It fits 64
 // distinct admissions, each with 64 environment variables, 16 mounts and 1 KiB
 // of argv, when variable names and mount destinations are at most 64 bytes that
 // JSON does not escape; longer strings fit fewer admissions. A larger response
 // fails to decode, so CDS refuses the sandbox rather than judging a truncated
 // history.
-const maxResponseBytes = 1 << 20
+const MaxResponseBytes = 1 << 20
 
 // SandboxTokenRequest is the SandboxPath request body: the requester's PKIX
 // public-key DER, which the inventory binds into the signed token so only the
@@ -442,7 +442,7 @@ func FetchSandboxToken(ctx context.Context, endpoint string, timeout time.Durati
 		return nil, fmt.Errorf("workloadclaims: inventory returned %d: %s", resp.StatusCode, strings.TrimSpace(string(errBody)))
 	}
 	var out SignedSandboxToken
-	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, MaxResponseBytes)).Decode(&out); err != nil {
 		return nil, fmt.Errorf("workloadclaims: decode inventory response: %w", err)
 	}
 	if len(out.Token) == 0 || len(out.Signature) == 0 {

@@ -510,8 +510,10 @@ value for a variable matched with `present`, adds a record. CDS reads at most
 environment variables, 16 mounts and 1 KiB of argv each, when variable names
 and mount destinations are at most 64 ASCII characters; longer names, paths or
 characters JSON escapes fit fewer. The limit is on encoded bytes, not on the
-number of admissions: past 1 MiB, CDS refuses release and workload identity for
-the sandbox; recreate the pod to start a new record.
+number of admissions: past 1 MiB, the NRI plugin stops recording, logs the
+sandbox, and reports its history as unavailable for the rest of the sandbox's
+life, so CDS refuses release and workload identity for it. Recreate the pod to
+start a new record.
 
 ## Restarts
 

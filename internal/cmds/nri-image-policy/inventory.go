@@ -2,6 +2,7 @@ package nriimagepolicy
 
 import (
 	"fmt"
+	"log/slog"
 	"sync"
 
 	"github.com/confidential-dot-ai/c8s/internal/admissionhistory"
@@ -60,7 +61,9 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: digest, argv: argv}
 
 	rec := b.admitted[sandboxID]
-	rec.Record(containerID, digest, argv, env, mounts...)
+	if err := rec.Record(containerID, digest, argv, env, mounts...); err != nil {
+		slog.Warn("sandbox admission history closed; CDS refuses release and workload identity until the pod is recreated", "sandbox", sandboxID, "container", containerID, "error", err)
+	}
 	b.admitted[sandboxID] = rec
 
 	// A container implies its sandbox, so a record arriving before (or without)
