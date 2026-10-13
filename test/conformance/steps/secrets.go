@@ -805,6 +805,32 @@ func obtainedSandboxLeaf(ctx context.Context, name string) error {
 	if id == "" {
 		return fmt.Errorf("the leaf %q holds carries no sandbox ID", name)
 	}
+	// The first leaf is minted before the workload container is admitted,
+	// so it names no workload and the requester renews it on the fast
+	// unnamed schedule (getcert --unnamed-renew-interval) until one does;
+	// only then does the two-hour interval hold. The leaf the scenario goes
+	// on to speak of is the named one, except for a pod whose init
+	// container keeps the workload from starting.
+	if p.init != nil {
+		return nil
+	}
+	named, err := poll(observe, func() (bool, error) {
+		l, err := w.podLeaf(p)
+		if err != nil || l == nil {
+			return false, err
+		}
+		if _, err := l.matched(); err != nil {
+			return false, nil
+		}
+		p.leaf = l
+		return true, nil
+	})
+	if err != nil {
+		return err
+	}
+	if !named {
+		return fmt.Errorf("the leaf %q holds still names no workload after %s", name, observe)
+	}
 	return nil
 }
 
