@@ -24,13 +24,13 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 	exp.workloadDigests = []string{"sha256:" + strings.Repeat("a", 64)}
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
-	quote := func(policies ...string) func() []string {
-		return func() []string { return policies }
+	quote := func(policies ...string) *policyList {
+		return &policyList{fetch: func() []string { return policies }}
 	}
 	for _, tc := range []struct {
 		name     string
 		measured []string // extended after the workloads in the quote
-		policies func() []string
+		policies *policyList
 		wantErr  bool
 	}{
 		{name: "no policies measured, no list", wantErr: false},
@@ -51,6 +51,40 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 				t.Fatalf("checkIdentity = %v, want error %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// A node that measures a policy between two gates passes the later gate: the
+// stale cached list is refetched once it replays nothing, and a list that
+// still replays is not fetched again.
+func TestPolicyListRefetchesOnMiss(t *testing.T) {
+	exp := testPolicy(t, operatorPub(t))
+	p := "sha256:" + strings.Repeat("1", 64)
+	q := "sha256:" + strings.Repeat("2", 64)
+	served := [][]string{{p}, {p, q}}
+	fetches := 0
+	exp.policies = &policyList{fetch: func() []string {
+		list := served[min(fetches, len(served)-1)]
+		fetches++
+		return list
+	}}
+	for _, step := range []struct {
+		measured    []string
+		wantFetches int
+	}{
+		{measured: []string{p}, wantFetches: 1},
+		{measured: []string{p, q}, wantFetches: 2},
+		{measured: []string{p}, wantFetches: 2},
+	} {
+		res := verifiedResultFor(exp)
+		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), append(slices.Clone(exp.workloadDigests), step.measured...))
+		res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
+		if err := exp.checkIdentity(res); err != nil {
+			t.Fatalf("checkIdentity(seed+%v) = %v, want nil", step.measured, err)
+		}
+		if fetches != step.wantFetches {
+			t.Fatalf("after seed+%v: list fetched %d times, want %d", step.measured, fetches, step.wantFetches)
+		}
 	}
 }
 
@@ -123,8 +157,8 @@ func TestRunReplaysMeasuredPolicies(t *testing.T) {
 			if tc.wantErr && releaseHits.Load() != 0 {
 				t.Fatalf("cred-release hits = %d, want 0", releaseHits.Load())
 			}
-			if n := listHits.Load(); n != 1 {
-				t.Fatalf("%s fetched %d times, want once per run", credrelease.MeasuredPoliciesPath, n)
+			if n := listHits.Load(); !tc.wantErr && n != 1 {
+				t.Fatalf("%s fetched %d times, want once while it replays", credrelease.MeasuredPoliciesPath, n)
 			}
 		})
 	}

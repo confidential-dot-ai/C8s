@@ -582,9 +582,13 @@ func measureWith(measure func(string) error, digest string) error {
 	return measure(digest)
 }
 
-// readOperatorKey reads the launch operator key that seeded RTMR[3]. A var so
-// tests can supply one.
-var readOperatorKey = credrelease.ReadOperatorPubkey
+// readOperatorKey reads the launch operator key that seeded RTMR[3], and
+// openPolicyJournal opens the journal over the hardware register. Vars so tests
+// can supply a key and a register.
+var (
+	readOperatorKey   = credrelease.ReadOperatorPubkey
+	openPolicyJournal = policymeasure.Open
+)
 
 // policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
 // before the node applies it, so the register records every policy the node
@@ -604,7 +608,7 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 	anchor, err := readOperatorKey()
 	var journal *runtimemeasure.Journal
 	if err == nil {
-		journal, err = policymeasure.Open(cfg.WorkloadClaims.SocketDir, platform, anchor)
+		journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
 	}
 	if journal == nil {
 		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", err)

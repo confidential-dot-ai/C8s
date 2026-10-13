@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -52,11 +53,46 @@ type measuredPolicy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
-	// policies returns the allowlist policies the node reports it measured
-	// after the workloads (credrelease.MeasuredPoliciesPath); nil on SNP. The
-	// list is untrusted: checkIdentity accepts it only as far as the quote's
-	// register replays.
-	policies func() []string
+	// policies are the allowlist policies the node reports it measured after
+	// the workloads (credrelease.MeasuredPoliciesPath); nil on SNP. The list is
+	// untrusted: checkIdentity accepts it only as far as the quote's register
+	// replays.
+	policies *policyList
+}
+
+// policyList caches the node's measured-policy list across the run's gates.
+type policyList struct {
+	fetch   func() []string
+	mu      sync.Mutex
+	list    []string
+	fetched bool
+}
+
+// replays reports whether got is start extended by a prefix of the node's
+// list. A miss on the cached list refetches it: the node may have measured a
+// policy since the last gate.
+func (l *policyList) replays(got []byte, start [runtimemeasure.Size]byte) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.fetched && replaysPrefix(got, start, l.list) {
+		return true
+	}
+	l.list, l.fetched = l.fetch(), true
+	return replaysPrefix(got, start, l.list)
+}
+
+func replaysPrefix(got []byte, reg [runtimemeasure.Size]byte, policies []string) bool {
+	for _, p := range policies {
+		d, err := runtimemeasure.CanonicalDigest(p)
+		if err != nil {
+			return false
+		}
+		reg = runtimemeasure.Extend(reg, runtimemeasure.Event(d))
+		if bytes.Equal(got, reg[:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // platform is the bare-metal tag of the manifest's family. Cloud overlays are
@@ -145,16 +181,8 @@ func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error 
 	if berr != nil {
 		return err
 	}
-	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)
-	for _, p := range exp.policies() {
-		d, derr := runtimemeasure.CanonicalDigest(p)
-		if derr != nil {
-			return err
-		}
-		reg = runtimemeasure.Extend(reg, runtimemeasure.Event(d))
-		if bytes.Equal(got, reg[:]) {
-			return nil
-		}
+	if exp.policies.replays(got, runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)) {
+		return nil
 	}
 	return err
 }

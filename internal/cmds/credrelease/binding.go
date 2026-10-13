@@ -133,7 +133,8 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 // other extension means an unexpected measurer ran, and the comparison fails
 // closed.
 //
-// Called once at service start; the binding is fixed for the life of the guest.
+// Called once at service start: it accepts the policies the node had measured
+// by then, and does not see later extends.
 func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]byte, error) {
 	pub, err := ReadOperatorPubkey()
 	if err != nil {

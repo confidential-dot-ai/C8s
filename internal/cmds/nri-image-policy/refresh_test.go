@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +18,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -743,6 +747,78 @@ func TestPolicyMeasurer(t *testing.T) {
 			}
 			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 				t.Fatalf("runtime directory holds %v, want no journal", entries)
+			}
+		})
+	}
+}
+
+// memRegister is an in-memory RTMR[3] seeded by the launch anchor.
+type memRegister struct {
+	val     [runtimemeasure.Size]byte
+	extends int
+	fail    error
+}
+
+func (r *memRegister) Extend(event []byte) error {
+	if r.fail != nil {
+		return r.fail
+	}
+	r.val = runtimemeasure.Extend(r.val, [runtimemeasure.Size]byte(event))
+	r.extends++
+	return nil
+}
+
+func (r *memRegister) Extension() ([]byte, error) { return slices.Clone(r.val[:]), nil }
+
+// The hook extends each digest once and leaves the journal readable by the
+// router's non-root cds-attest, also after a failed extend rewrote it 0600.
+func TestPolicyMeasurerMeasures(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+
+	digest := "sha256:" + strings.Repeat("1", 64)
+	for _, tc := range []struct {
+		name        string
+		fail        error
+		wantErr     bool
+		wantExtends int
+		wantJournal string
+	}{
+		{name: "extends once", wantExtends: 1, wantJournal: digest + "\n"},
+		{name: "extend fails", fail: errors.New("tsm write failed"), wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			reg := &memRegister{val: runtimemeasure.Seed(anchor), fail: tc.fail}
+			openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+				return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, policymeasure.JournalName), reg, runtimemeasure.Seed(anchor))
+			}
+			cfg := &config{
+				Platform:       "tdx",
+				WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+				Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+			}
+			hook := policyMeasurer(cfg, discardLogger())
+			for range 2 {
+				if err := hook(digest); (err != nil) != tc.wantErr {
+					t.Fatalf("hook(%s) = %v, want error %v", digest, err, tc.wantErr)
+				}
+			}
+			if reg.extends != tc.wantExtends {
+				t.Errorf("register extended %d times, want %d", reg.extends, tc.wantExtends)
+			}
+			path := filepath.Join(dir, policymeasure.JournalName)
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if perm := info.Mode().Perm(); perm != 0o644 {
+				t.Errorf("journal mode = %v, want 0644", perm)
+			}
+			if b, _ := os.ReadFile(path); string(b) != tc.wantJournal {
+				t.Errorf("journal = %q, want %q", b, tc.wantJournal)
 			}
 		})
 	}
