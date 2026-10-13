@@ -704,13 +704,13 @@ not replayed and the verdict warns. Choose how to accept the history:
 | Flag | Accepts | Failure |
 |---|---|---|
 | `--pin-policy sha256:<hex>` (repeatable) | Only these digests, for every history entry and for the policy the leaf was issued under | `policy_history_not_pinned` |
-| `--trust-operator --trust-operator-keys <pem>` | Every history entry whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
+| `--trust-operator --trust-operator-keys <pem>` | Every history entry, and the policy the leaf was issued under, whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
 
 Both flags require `--operator-pkey` and exclude each other. Both fail with
 `policy_history_absent` when nothing replays: a node that does not measure
-proves nothing about the policies it enforced. `--pin-policy` also fails when
-the leaf carries no readable issuing policy; that stamp is CA-vouched, so
-without `--mesh-ca` the verdict stays partial.
+proves nothing about the policies it enforced. Both also fail when the leaf
+carries no readable issuing policy; that stamp is CA-vouched, so without
+`--mesh-ca` the verdict stays partial.
 
 `--trust-operator` fetches each document from
 `<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest

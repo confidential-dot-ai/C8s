@@ -237,7 +237,7 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
 	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey; excludes --trust-operator")
-	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history that carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. Requires --operator-pkey and --trust-operator-keys")
+	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. Requires --operator-pkey and --trust-operator-keys")
 	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from. Requires --trust-operator; --operator-keys does not feed it")
 	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. A failed fetch or write fails the verdict (allowlist_fetch_failed). Requires --operator-pkey")
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer)")
@@ -394,7 +394,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
-	checkPolicyHistory(ctx, &oc, cfg, plan.trustKeys)
+	checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
 	applyInitDataNote(&oc, result, plan)
 	render(cfg, oc, out)
 	return verdictExitCode(oc)

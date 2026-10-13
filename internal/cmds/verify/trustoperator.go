@@ -88,16 +88,26 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 			return
 		}
 	}
+	switch d, err := leafPolicy(ev); {
+	case err != nil:
+		fail("policy_history_not_pinned: %v", err)
+	case d != "" && !slices.Contains(cfg.pinPolicies, d):
+		fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned", d)
+	}
+}
+
+// leafPolicy returns the digest of the policy the leaf was issued under, ""
+// when the evidence speaks for no leaf.
+func leafPolicy(ev *evidence) (string, error) {
 	switch {
 	case ev.workload != nil:
-		if d := "sha256:" + hex.EncodeToString(ev.workload.AllowlistDigest); !slices.Contains(cfg.pinPolicies, d) {
-			fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned", d)
-		}
+		return "sha256:" + hex.EncodeToString(ev.workload.AllowlistDigest), nil
 	case ev.workloadErr != nil:
-		fail("policy_history_not_pinned: the leaf's issuing policy cannot be read: %v", ev.workloadErr)
+		return "", fmt.Errorf("the leaf's issuing policy cannot be read: %w", ev.workloadErr)
 	case ev.leaf != nil:
-		fail("policy_history_not_pinned: the leaf carries no issuing policy to check against the pins")
+		return "", errors.New("the leaf carries no issuing policy to check")
 	}
+	return "", nil
 }
 
 // noHistory explains an empty replayed history: a node that does not measure
@@ -107,10 +117,10 @@ const noHistory = "no measured policy replayed against RTMR[3]; target a node th
 // checkPolicyHistory fetches each policy in the replayed history from the
 // target and checks it hashes to its digest, then saves it (--fetch-allowlists)
 // and requires its stored operator signature to verify under keys
-// (--trust-operator). The bytes authenticate themselves against the replayed
+// (--trust-operator), which also covers the policy the leaf was issued under. The bytes authenticate themselves against the replayed
 // digest and the token against keys, so the fetch needs no attested channel:
 // binding it to one serving leaf would only fail on a different replica.
-func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, keys []*ecdsa.PublicKey) {
+func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) {
 	if (!cfg.trustOperator && cfg.fetchAllowlists == "") || (!oc.Verified && !oc.Partial) {
 		return
 	}
@@ -130,6 +140,17 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, keys []*ec
 		oc.Warnings = append(oc.Warnings, "--fetch-allowlists saved nothing: "+noHistory)
 		return
 	}
+	digests := oc.MeasuredPolicies
+	if cfg.trustOperator {
+		d, err := leafPolicy(ev)
+		if err != nil {
+			fail("policy_history_unsigned: %v", err)
+			return
+		}
+		if d != "" && !slices.Contains(digests, d) {
+			digests = append(slices.Clone(digests), d)
+		}
+	}
 	if cfg.url == "" {
 		fail("%s: fetching the policy history needs a target URL", code)
 		return
@@ -145,7 +166,7 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, keys []*ec
 			return
 		}
 	}
-	for _, digest := range oc.MeasuredPolicies {
+	for _, digest := range digests {
 		hexDigest, ok := strings.CutPrefix(digest, "sha256:")
 		if !ok || !policyDigestRE.MatchString(digest) {
 			fail("%s: malformed digest %q in the node's policy history", code, digest)

@@ -178,7 +178,7 @@ func TestPinPolicyThroughVerdictPolicies(t *testing.T) {
 			ev := &evidence{platform: "tdx", measured: measured, leafChainDerived: true}
 			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, measured))), nil, plan)
 			applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
-			checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+			checkPolicyHistory(context.Background(), &oc, cfg, ev, plan.trustKeys)
 			if oc.Verified || oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("verdict = verified %v, partial %v, error %q; want partial only without error containing %q", oc.Verified, oc.Partial, oc.Error, tc.wantErr)
 			}
@@ -250,7 +250,7 @@ func TestTrustOperator(t *testing.T) {
 			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: tc.keys, timeout: 5 * time.Second}
 			plan, _ := historyPlan(t, cfg)
 			oc := Outcome{Partial: true, MeasuredPolicies: tc.history}
-			checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+			checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, plan.trustKeys)
 			if oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, tc.wantErr)
 			}
@@ -301,7 +301,7 @@ func TestFetchAllowlists(t *testing.T) {
 			}
 			plan, _ := historyPlan(t, cfg)
 			oc := Outcome{Verified: true, MeasuredPolicies: []string{"sha256:" + hexDigest}}
-			checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+			checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, plan.trustKeys)
 			if oc.Verified != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("checkPolicyHistory = verified %v, error %q; want error containing %q", oc.Verified, oc.Error, tc.wantErr)
 			}
@@ -316,7 +316,7 @@ func TestFetchAllowlists(t *testing.T) {
 func TestFetchAllowlistsEmptyHistoryWarns(t *testing.T) {
 	cfg := config{url: "https://unused.example", fetchAllowlists: t.TempDir()}
 	oc := Outcome{Verified: true}
-	checkPolicyHistory(context.Background(), &oc, cfg, nil)
+	checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, nil)
 	if !oc.Verified || !slices.ContainsFunc(oc.Warnings, func(w string) bool { return strings.Contains(w, "--fetch-allowlists saved nothing") }) {
 		t.Errorf("checkPolicyHistory = verified %v, warnings %v; want verified with a warning naming --fetch-allowlists", oc.Verified, oc.Warnings)
 	}
@@ -348,7 +348,7 @@ func TestTrustOperatorTwoEntries(t *testing.T) {
 	cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, fetchAllowlists: dir, timeout: 5 * time.Second}
 	plan, _ := historyPlan(t, cfg)
 	oc := Outcome{Partial: true, MeasuredPolicies: history}
-	checkPolicyHistory(context.Background(), &oc, cfg, plan.trustKeys)
+	checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, plan.trustKeys)
 	if want := "policy_history_unsigned: policy " + history[1] + " carries no operator signature"; oc.Partial || !strings.Contains(oc.Error, want) {
 		t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, want)
 	}
@@ -391,5 +391,50 @@ func TestMeasuredPoliciesOutput(t *testing.T) {
 	render(config{}, oc, &text)
 	if want := "history:      " + testPolicyP + ", " + testPolicyQ; !strings.Contains(text.String(), want) {
 		t.Errorf("text output lacks %q:\n%s", want, text.String())
+	}
+}
+
+// --trust-operator also requires the policy the leaf was issued under to be
+// signed, as --pin-policy requires it pinned.
+func TestTrustOperatorLeafPolicy(t *testing.T) {
+	v := loadSignatureVector(t)
+	signedSum := sha256.Sum256(v.Policy)
+	unsignedBody := []byte(`{"version":"2"}`)
+	unsignedSum := sha256.Sum256(unsignedBody)
+	signed, unsigned := "sha256:"+hex.EncodeToString(signedSum[:]), "sha256:"+hex.EncodeToString(unsignedSum[:])
+	signedObjects := objectServer(signed, v.Policy, v.Token)
+	unsignedObjects := objectServer(unsigned, unsignedBody, "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, hex.EncodeToString(signedSum[:])) {
+			signedObjects.ServeHTTP(w, r)
+			return
+		}
+		unsignedObjects.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, []byte(v.KeysPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	leaf := &x509.Certificate{}
+	for _, tc := range []struct {
+		name    string
+		ev      *evidence
+		wantErr string
+	}{
+		{"signed stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, ""},
+		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, "policy_history_unsigned: policy " + unsigned + " carries no operator signature"},
+		{"no stamp", &evidence{leaf: leaf}, "policy_history_unsigned: the leaf carries no issuing policy"},
+		{"unreadable stamp", &evidence{leaf: leaf, workloadErr: errors.New("bad stamp")}, "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
+			plan, _ := historyPlan(t, cfg)
+			oc := Outcome{Partial: true, MeasuredPolicies: []string{signed}}
+			checkPolicyHistory(context.Background(), &oc, cfg, tc.ev, plan.trustKeys)
+			if oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
+				t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, tc.wantErr)
+			}
+		})
 	}
 }
