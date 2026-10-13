@@ -243,7 +243,7 @@ pod_cert_file() {
 pod_sandbox_id() {
     local uid
     uid="$(pod_uid "$1" "$2")" || return
-    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | head -1
+    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | awk 'NR == 1'
 }
 
 # From the node's store, pulled when absent: the image's entrypoint, then its
