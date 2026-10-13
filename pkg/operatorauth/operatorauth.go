@@ -21,6 +21,7 @@ package operatorauth
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/x509"
@@ -109,9 +110,16 @@ func NewSignerFromKeyPEM(keyPEM []byte) (*Signer, error) {
 // allowlistclient.Authorizer; the caller must pass the exact method, URL path,
 // and body bytes it will send so the htm/htu/pbh claims match server-side.
 func (s *Signer) Authorization(method, path string, body []byte) (string, error) {
+	// CDS spends each token once, keyed on its signed claims; the jti keeps two
+	// identical writes in the same second from colliding.
+	var jti [16]byte
+	if _, err := rand.Read(jti[:]); err != nil {
+		return "", fmt.Errorf("generate operator token id: %w", err)
+	}
 	now := time.Now()
 	sum := sha256.Sum256(body)
 	claims := jwt.MapClaims{
+		"jti":                base64.RawURLEncoding.EncodeToString(jti[:]),
 		"iat":                now.Unix(),
 		"exp":                now.Add(s.ttl).Unix(),
 		claimHTTPMethod:      method,

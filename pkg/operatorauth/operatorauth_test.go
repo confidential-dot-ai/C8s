@@ -514,6 +514,35 @@ func TestOperatorSignatureVector(t *testing.T) {
 	}
 }
 
+// CDS keys spent tokens on header.payload, so two writes of the same body in
+// the same second must still mint distinct tokens.
+func TestSignerTokensAreDistinct(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	signer, err := NewSignerFromKeyPEM(keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"a":1}`)
+	signed := map[string]bool{}
+	for range 2 {
+		auth, err := signer.Authorization(http.MethodPost, "/allowlist", body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := (Verifier{Keys: []*ecdsa.PublicKey{pub}}).Authorize(reqWith(auth), body); err != nil {
+			t.Fatalf("Authorize = %v", err)
+		}
+		token := strings.TrimPrefix(auth, "Bearer ")
+		if err := VerifyStored([]*ecdsa.PublicKey{pub}, token, http.MethodPost, "/allowlist", body); err != nil {
+			t.Fatalf("VerifyStored = %v", err)
+		}
+		signed[token[:strings.LastIndexByte(token, '.')]] = true
+	}
+	if len(signed) != 2 {
+		t.Fatalf("two Authorization calls signed %d distinct header.payload, want 2", len(signed))
+	}
+}
+
 func TestTokenIssuedAt(t *testing.T) {
 	keyPEM, _ := genKey(t, elliptic.P256())
 	iat := time.Now().Add(-time.Minute).Truncate(time.Second)

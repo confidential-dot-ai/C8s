@@ -495,7 +495,8 @@ cannot be replayed against a different payload) and CDS verifies it against the
 operator public keys it pins. Each token authorizes one allowlist write: CDS
 remembers every spent token and answers a replay with 409. Without
 `cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
-token issued before it started; mint a fresh one after a restart.
+token issued before its start plus `--jwt-clock-skew`; after a restart, wait
+that long and mint a fresh token.
 
 ### Refresh and anti-rollback
 

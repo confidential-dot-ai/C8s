@@ -502,6 +502,7 @@ func TestRun_AllowlistWriteAcceptsClockSkewedToken(t *testing.T) {
 	cfg := validRunConfig(t, api.URL) // jwtClockSkew: 30
 	cfg.port = freePort(t)
 	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base := startRunServer(t, cfg)
 
 	body := []byte(anySeed(map[string]string{"cds": digestA}))
@@ -542,6 +543,7 @@ func TestRun_AllowlistWriteTokenSignsOnce(t *testing.T) {
 	cfg := validRunConfig(t, api.URL)
 	cfg.port = freePort(t)
 	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
 	base := startRunServer(t, cfg)
 
 	doc, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))

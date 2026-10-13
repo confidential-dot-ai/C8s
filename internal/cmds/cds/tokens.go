@@ -13,9 +13,14 @@ import (
 // singleUse lets each operator token authorize one write. CDS serves the token
 // of a whole-document write as that document's signature, so without this
 // anyone who fetched it could replay the write until it expires. A non-zero
-// notBefore refuses tokens issued earlier: a store that does not persist
-// forgets the tokens spent before CDS started.
-func singleUse(authorize allowlist.WriteAuthorizer, store *allowlist.Store, notBefore time.Time) allowlist.WriteAuthorizer {
+// started refuses tokens that could have been spent before CDS started, since
+// a store that does not persist forgets them. authorize accepts an iat up to
+// clockSkew in the future, so the cutoff is started plus clockSkew.
+func singleUse(authorize allowlist.WriteAuthorizer, store *allowlist.Store, started time.Time, clockSkew time.Duration) allowlist.WriteAuthorizer {
+	var notBefore time.Time
+	if !started.IsZero() {
+		notBefore = started.Add(clockSkew)
+	}
 	return func(r *http.Request, body []byte) error {
 		if err := authorize(r, body); err != nil {
 			return err
@@ -27,7 +32,7 @@ func singleUse(authorize allowlist.WriteAuthorizer, store *allowlist.Store, notB
 				return err
 			}
 			if iat.Before(notBefore) {
-				return fmt.Errorf("operator token issued at %s, before CDS started on a non-persistent store at %s", iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
+				return fmt.Errorf("operator token issued at %s, before %s: CDS start on a non-persistent store plus clock skew", iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
 			}
 		}
 		return store.ConsumeToken(token)
