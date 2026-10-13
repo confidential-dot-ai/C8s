@@ -1161,6 +1161,11 @@ type Outcome struct {
 	// failures land in Error (policy_history_absent,
 	// policy_history_not_pinned, policy_history_unsigned).
 	MeasuredPolicies []string `json:"measured_policies,omitempty"`
+
+	// LeafStamped is true when the leaf carries a readable matched-workload
+	// stamp. Always serialized: an unstamped leaf caps --pin-policy and
+	// --trust-operator at partial.
+	LeafStamped bool `json:"leaf_stamped"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1352,6 +1357,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		CertSHA256:        ev.certSHA256,
 		ServingLeafSHA256: ev.servingLeafSHA256,
 		Pinned:            pinned,
+		LeafStamped:       ev.workload != nil,
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)

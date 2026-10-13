@@ -89,6 +89,8 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 		}
 	}
 	switch d, err := leafPolicy(ev); {
+	case errors.Is(err, errLeafUnstamped):
+		demoteUnstamped(oc, "pinned")
 	case err != nil:
 		fail("policy_history_not_pinned: %v", err)
 	case d != "" && !slices.Contains(cfg.pinPolicies, d):
@@ -107,8 +109,13 @@ func applyUncheckedHistoryPolicy(oc *Outcome, cfg config) {
 	demoteToPartial(oc, fmt.Sprintf("the node's policy history: RTMR[3] replayed %d measured policies, but no policy over them was checked (pass --pin-policy or --trust-operator)", len(oc.MeasuredPolicies)))
 }
 
+// errLeafUnstamped reports a leaf without a matched-workload stamp: CDS
+// issues one whenever the pod matches no single allowlist entry.
+var errLeafUnstamped = errors.New("the leaf carries no matched-workload stamp")
+
 // leafPolicy returns the digest of the policy the leaf was issued under, ""
-// when the evidence speaks for no leaf.
+// when the evidence speaks for no leaf, and errLeafUnstamped for a leaf
+// without a stamp.
 func leafPolicy(ev *evidence) (string, error) {
 	switch {
 	case ev.workload != nil:
@@ -116,9 +123,22 @@ func leafPolicy(ev *evidence) (string, error) {
 	case ev.workloadErr != nil:
 		return "", fmt.Errorf("the leaf's issuing policy cannot be read: %w", ev.workloadErr)
 	case ev.leaf != nil:
-		return "", errors.New("the leaf carries no issuing policy to check")
+		return "", errLeafUnstamped
 	}
 	return "", nil
+}
+
+// demoteUnstamped leaves a verdict whose history was judged but whose leaf is
+// unstamped partial at best: an unstamped leaf is indistinguishable from one
+// issued to a pod that presented no sandbox token. Unlike demoteToPartial it
+// also names the gap on an already partial verdict.
+func demoteUnstamped(oc *Outcome, judged string) {
+	note := fmt.Sprintf("the policy the leaf was issued under: the policy history is %s, but the leaf carries no matched-workload stamp, so its issuing policy was not checked", judged)
+	if oc.Partial {
+		oc.NotProven = append(oc.NotProven, note)
+		return
+	}
+	demoteToPartial(oc, note)
 }
 
 // noHistory explains an empty replayed history: a node that does not measure
@@ -153,9 +173,11 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		return
 	}
 	digests := oc.MeasuredPolicies
+	unstamped := false
 	if cfg.trustOperator {
 		d, err := leafPolicy(ev)
-		if err != nil {
+		unstamped = errors.Is(err, errLeafUnstamped)
+		if err != nil && !unstamped {
 			fail("policy_history_unsigned: %v", err)
 			return
 		}
@@ -216,5 +238,8 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 			fail("policy_history_unsigned: policy %s: %v", digest, err)
 			return
 		}
+	}
+	if unstamped {
+		demoteUnstamped(oc, "signed")
 	}
 }

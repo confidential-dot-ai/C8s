@@ -139,14 +139,16 @@ func TestPinPolicy(t *testing.T) {
 		leaf        bool
 		workloadErr error
 		wantErr     string
+		wantPartial bool
 	}{
-		{"history pinned", []string{testPolicyP, testPolicyQ}, nil, false, nil, ""},
-		{"stamp pinned", []string{testPolicyP}, stampP, true, nil, ""},
-		{"history not pinned", []string{testPolicyP, testPolicyR}, nil, false, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR},
-		{"stamp not pinned", []string{testPolicyP}, stampR, true, nil, "policy_history_not_pinned: the leaf was issued under policy " + testPolicyR},
-		{"leaf without stamp", []string{testPolicyP}, nil, true, nil, "policy_history_not_pinned: the leaf carries no issuing policy"},
-		{"unreadable stamp", []string{testPolicyP}, nil, true, errors.New("bad extension"), "policy_history_not_pinned: the leaf's issuing policy cannot be read: bad extension"},
-		{"no history", nil, nil, false, nil, "policy_history_absent"},
+		{"history pinned", []string{testPolicyP, testPolicyQ}, nil, false, nil, "", false},
+		{"stamp pinned", []string{testPolicyP}, stampP, true, nil, "", false},
+		{"history not pinned", []string{testPolicyP, testPolicyR}, nil, false, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR, false},
+		{"stamp not pinned", []string{testPolicyP}, stampR, true, nil, "policy_history_not_pinned: the leaf was issued under policy " + testPolicyR, false},
+		{"leaf without stamp", []string{testPolicyP}, nil, true, nil, "", true},
+		{"leaf without stamp, history not pinned", []string{testPolicyR}, nil, true, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR, false},
+		{"unreadable stamp", []string{testPolicyP}, nil, true, errors.New("bad extension"), "policy_history_not_pinned: the leaf's issuing policy cannot be read: bad extension", false},
+		{"no history", nil, nil, false, nil, "policy_history_absent", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{workloadErr: tc.workloadErr}
@@ -162,9 +164,26 @@ func TestPinPolicy(t *testing.T) {
 				if passed := oc.Verified || oc.Partial; passed != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 					t.Errorf("applyPinPolicy(partial %v) = passed %v, error %q; want error containing %q", partial, passed, oc.Error, tc.wantErr)
 				}
+				if tc.wantErr != "" {
+					continue
+				}
+				if wantPartial := partial || tc.wantPartial; oc.Partial != wantPartial || oc.Verified == wantPartial {
+					t.Errorf("applyPinPolicy(partial %v) = verified %v, partial %v; want partial %v", partial, oc.Verified, oc.Partial, wantPartial)
+				}
+				if noted := notesUnstamped(oc, "pinned"); noted != tc.wantPartial {
+					t.Errorf("applyPinPolicy(partial %v) NotProven = %v; want the unstamped leaf named: %v", partial, oc.NotProven, tc.wantPartial)
+				}
 			}
 		})
 	}
+}
+
+// notesUnstamped reports whether oc names an unstamped leaf under a history
+// that was judged.
+func notesUnstamped(oc Outcome, judged string) bool {
+	return slices.ContainsFunc(oc.NotProven, func(n string) bool {
+		return strings.Contains(n, "the policy history is "+judged+", but the leaf carries no matched-workload stamp")
+	})
 }
 
 // Without --mesh-ca every attest-pq and attest-lb verdict is demoted to
@@ -394,6 +413,15 @@ func TestMeasuredPoliciesOutput(t *testing.T) {
 	if err := json.Unmarshal(js.Bytes(), &decoded); err != nil || !slices.Equal(decoded.MeasuredPolicies, oc.MeasuredPolicies) {
 		t.Errorf("JSON measured_policies = %v, %v; want %v", decoded.MeasuredPolicies, err, oc.MeasuredPolicies)
 	}
+	if !strings.Contains(js.String(), `"leaf_stamped": false`) {
+		t.Errorf("JSON lacks leaf_stamped false:\n%s", js.String())
+	}
+	oc.LeafStamped = true
+	js.Reset()
+	render(config{output: "json"}, oc, &js)
+	if !strings.Contains(js.String(), `"leaf_stamped": true`) {
+		t.Errorf("JSON lacks leaf_stamped true:\n%s", js.String())
+	}
 	var text bytes.Buffer
 	render(config{}, oc, &text)
 	if want := "history:      " + testPolicyP + ", " + testPolicyQ; !strings.Contains(text.String(), want) {
@@ -425,22 +453,36 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 	}
 	leaf := &x509.Certificate{}
 	for _, tc := range []struct {
-		name    string
-		ev      *evidence
-		wantErr string
+		name        string
+		ev          *evidence
+		history     string
+		wantErr     string
+		wantPartial bool
 	}{
-		{"signed stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, ""},
-		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, "policy_history_unsigned: policy " + unsigned + " carries no operator signature"},
-		{"no stamp", &evidence{leaf: leaf}, "policy_history_unsigned: the leaf carries no issuing policy"},
-		{"unreadable stamp", &evidence{leaf: leaf, workloadErr: errors.New("bad stamp")}, "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp"},
+		{"signed stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", false},
+		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
+		{"no stamp", &evidence{leaf: leaf}, signed, "", true},
+		{"no stamp, unsigned history", &evidence{leaf: leaf}, unsigned, "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
+		{"unreadable stamp", &evidence{leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
 			plan, _ := historyPlan(t, cfg)
-			oc := Outcome{Partial: true, MeasuredPolicies: []string{signed}}
-			checkPolicyHistory(context.Background(), &oc, cfg, tc.ev, plan.trustKeys)
-			if oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
-				t.Errorf("checkPolicyHistory = partial %v, error %q; want error containing %q", oc.Partial, oc.Error, tc.wantErr)
+			for _, partial := range []bool{false, true} {
+				oc := Outcome{Verified: !partial, Partial: partial, MeasuredPolicies: []string{tc.history}}
+				checkPolicyHistory(context.Background(), &oc, cfg, tc.ev, plan.trustKeys)
+				if passed := oc.Verified || oc.Partial; passed != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
+					t.Errorf("checkPolicyHistory(partial %v) = passed %v, error %q; want error containing %q", partial, passed, oc.Error, tc.wantErr)
+				}
+				if tc.wantErr != "" {
+					continue
+				}
+				if wantPartial := partial || tc.wantPartial; oc.Partial != wantPartial || oc.Verified == wantPartial {
+					t.Errorf("checkPolicyHistory(partial %v) = verified %v, partial %v; want partial %v", partial, oc.Verified, oc.Partial, wantPartial)
+				}
+				if noted := notesUnstamped(oc, "signed"); noted != tc.wantPartial {
+					t.Errorf("checkPolicyHistory(partial %v) NotProven = %v; want the unstamped leaf named: %v", partial, oc.NotProven, tc.wantPartial)
+				}
 			}
 		})
 	}

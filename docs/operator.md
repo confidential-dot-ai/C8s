@@ -715,9 +715,13 @@ accept the history:
 
 Both flags require `--operator-pkey` or `--image-policy-file`, and exclude each other. Both fail with
 `policy_history_absent` when nothing replays: a node that does not measure
-proves nothing about the policies it enforced. Both also fail when the leaf
-carries no readable issuing policy; that stamp is CA-vouched, so without
-`--mesh-ca` the verdict stays partial.
+proves nothing about the policies it enforced. Both also fail when the leaf's
+matched-workload stamp is unreadable; that stamp is CA-vouched, so without
+`--mesh-ca` the verdict stays partial. A leaf with no stamp, which CDS issues
+when the pod matches no single allowlist entry, leaves the verdict partial: it
+is indistinguishable from a leaf issued to a pod that presented no sandbox
+token, so the policy it was issued under is not checked (`leaf_stamped` is
+`false` in JSON).
 
 `--trust-operator` fetches each document from
 `<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
