@@ -117,16 +117,24 @@ type c8sComponent struct {
 // the single source shared with the chart's c8s.components helper; the Go side
 // does not duplicate the list.
 func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, error) {
+	tree, err := chartValues(ctx, chartPath)
+	if err != nil {
+		return nil, err
+	}
+	return componentsFromValues(tree)
+}
+
+// chartValues decodes the chart's values.yaml via `helm show values`.
+func chartValues(ctx context.Context, chartPath string) (map[string]any, error) {
 	out, err := exec.CommandContext(ctx, "helm", "show", "values", chartPath).Output()
 	if err != nil {
 		return nil, fmt.Errorf("helm show values %q: %w", chartPath, err)
 	}
-
 	var tree map[string]any
 	if err := yaml.Unmarshal(out, &tree); err != nil {
 		return nil, fmt.Errorf("parse chart values: %w", err)
 	}
-	return componentsFromValues(tree)
+	return tree, nil
 }
 
 // componentsFromValues reads c8sComponents from a values tree, each
@@ -155,25 +163,47 @@ func componentsFromValues(tree map[string]any) ([]c8sComponent, error) {
 		enabledPath, _ := m["enabledPath"].(string)
 		// pinnedDigest is optional; absent/empty means resolve at the install tag.
 		pinnedDigest, _ := m["pinnedDigest"].(string)
-		var entrypoint []string
-		if raw, ok := m["entrypoint"].([]any); ok {
-			for _, tok := range raw {
-				tok, ok := tok.(string)
-				if !ok {
-					return nil, fmt.Errorf("component %q: entrypoint must be a list of strings: %v", valuePath, raw)
-				}
-				entrypoint = append(entrypoint, tok)
-			}
-		}
-		imageEnv := map[string]string{}
-		if raw, ok := m["imageEnv"].(map[string]any); ok {
-			for name, value := range raw {
-				imageEnv[name] = fmt.Sprint(value)
-			}
+		entrypoint, imageEnv, err := seedPins(m)
+		if err != nil {
+			return nil, fmt.Errorf("component %q: %w", valuePath, err)
 		}
 		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest, entrypoint: entrypoint, imageEnv: imageEnv})
 	}
 	return comps, nil
+}
+
+// routerNginxComponent reads the router's nginx image from a values tree as a
+// component: the chart seeds it like one, outside c8sComponents because it is
+// versioned apart from C8s. pinnedDigest is the digest the release renders.
+func routerNginxComponent(tree map[string]any) (c8sComponent, error) {
+	nginx, _ := nestedMap(tree, "router", "nginx")
+	entrypoint, imageEnv, err := seedPins(nginx)
+	if err != nil {
+		return c8sComponent{}, fmt.Errorf("router.nginx: %w", err)
+	}
+	repository, _ := stringAtPath(tree, "router.nginx.image.repository")
+	digest, _ := stringAtPath(tree, "router.nginx.image.digest")
+	return c8sComponent{valuePrefix: "router.nginx.image", repository: repository, enabledPath: "router.enabled", pinnedDigest: digest, entrypoint: entrypoint, imageEnv: imageEnv}, nil
+}
+
+// seedPins reads the entrypoint and imageEnv a component's values declare.
+func seedPins(m map[string]any) (entrypoint []string, imageEnv map[string]string, err error) {
+	if raw, ok := m["entrypoint"].([]any); ok {
+		for _, tok := range raw {
+			tok, ok := tok.(string)
+			if !ok {
+				return nil, nil, fmt.Errorf("entrypoint must be a list of strings: %v", raw)
+			}
+			entrypoint = append(entrypoint, tok)
+		}
+	}
+	imageEnv = map[string]string{}
+	if raw, ok := m["imageEnv"].(map[string]any); ok {
+		for name, value := range raw {
+			imageEnv[name] = fmt.Sprint(value)
+		}
+	}
+	return entrypoint, imageEnv, nil
 }
 
 // operatorKeysPreflight enforces that installing without pinned operator keys is
@@ -2075,12 +2105,24 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 	if err != nil {
 		return nil, err
 	}
-	if components, err = withEffectivePins(ctx, chartPath, helmArgs, components); err != nil {
+	tree, err := effectiveValues(ctx, chartPath, helmArgs)
+	if err != nil {
+		return nil, err
+	}
+	if components, err = withEffectivePins(tree, components); err != nil {
+		return nil, err
+	}
+	// nginx is seeded like a component but versioned apart from C8s: check
+	// the digest the release renders, never one resolved at the C8s tag.
+	nginx, err := routerNginxComponent(tree)
+	if err != nil {
 		return nil, err
 	}
 	byRef := map[string]c8sComponent{}
-	for _, c := range components {
-		byRef[c.repository+":"+tag] = c
+	for _, c := range append(slices.Clone(components), nginx) {
+		if c.valuePrefix != nginx.valuePrefix {
+			byRef[c.repository+":"+tag] = c
+		}
 		if c.pinnedDigest == "" || c.enabledPath != "" && !boolAtPathOrFalse(enabled, c.enabledPath) {
 			continue
 		}
@@ -2106,13 +2148,9 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 }
 
 // withEffectivePins returns components with the entrypoint and imageEnv the
-// release renders, which a -f file or --set may override; the repository
+// release renders (tree, from effectiveValues), which a -f file or --set may override; the repository
 // stays the chart default the tag resolves against.
-func withEffectivePins(ctx context.Context, chartPath string, setArgs []string, components []c8sComponent) ([]c8sComponent, error) {
-	tree, err := effectiveValues(ctx, chartPath, setArgs)
-	if err != nil {
-		return nil, err
-	}
+func withEffectivePins(tree map[string]any, components []c8sComponent) ([]c8sComponent, error) {
 	if _, ok := tree["c8sComponents"]; !ok {
 		return components, nil
 	}
@@ -2188,13 +2226,9 @@ func componentEnabledPredicate(ctx context.Context, chartPath string, setArgs []
 // --set. Callers that decide on a value the operator may have overridden (the
 // digest resolver, the TEE-node preflight) must read this, not the defaults.
 func effectiveValues(ctx context.Context, chartPath string, setArgs []string) (map[string]any, error) {
-	out, err := exec.CommandContext(ctx, "helm", "show", "values", chartPath).Output()
+	tree, err := chartValues(ctx, chartPath)
 	if err != nil {
-		return nil, fmt.Errorf("helm show values %q: %w", chartPath, err)
-	}
-	var tree map[string]any
-	if err := yaml.Unmarshal(out, &tree); err != nil {
-		return nil, fmt.Errorf("parse chart values: %w", err)
+		return nil, err
 	}
 	for _, vf := range installValues {
 		raw, err := os.ReadFile(vf)

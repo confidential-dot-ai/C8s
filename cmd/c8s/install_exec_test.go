@@ -680,6 +680,42 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		}
 	})
 
+	t.Run("checks the router's nginx image at its rendered digest", func(t *testing.T) {
+		const nginxDigest = "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+		chart := writeChart(t, "c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv: {PATH: /bin}\ncds:\n  image:\n    repository: ghcr.io/x/cds\nrouter:\n  enabled: true\n  nginx:\n    image: {repository: docker.io/nginxinc/nginx-unprivileged, digest: \""+nginxDigest+"\"}\n    entrypoint: [/docker-entrypoint.sh, nginx]\n    imageEnv: {PATH: /bin, NGINX_VERSION: \"1.30.5\"}\n")
+		pinned := []c8sComponent{{valuePrefix: "cds.image", repository: "ghcr.io/x/cds", entrypoint: []string{"/c8s", "cds"}, imageEnv: map[string]string{"PATH": "/bin"}}}
+		const cds = `*cds*) echo '{"config":{"Entrypoint":["/c8s","cds"],"Env":["PATH=/bin"]}}' ;;`
+		for name, tc := range map[string]struct {
+			nginxEnv string
+			wantErr  bool
+		}{
+			"image matches imageEnv": {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.30.5"`},
+			"image env differs":      {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`, wantErr: true},
+		} {
+			t.Run(name, func(t *testing.T) {
+				resetCLIState(t)
+				f := newFakeBin(t)
+				f.tool(t, "helm", helmShowValuesBody)
+				f.tool(t, "crane", `case "$1" in
+config)
+  case "$2" in
+  `+cds+`
+  *nginx*) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx"],"Env":[`+tc.nginxEnv+`]}}' ;;
+  esac ;;
+*) echo `+testDigest+` ;;
+esac`)
+				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", pinned)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("appendResolvedDigestArgs(%s) = %v, want error %v", name, err, tc.wantErr)
+				}
+				if tc.wantErr && !strings.Contains(err.Error(), "router.nginx.image") {
+					t.Fatalf("appendResolvedDigestArgs(%s) = %v, want an error naming router.nginx.image", name, err)
+				}
+				mustContainLine(t, f.calls(t), "crane config docker.io/nginxinc/nginx-unprivileged@"+nginxDigest)
+			})
+		}
+	})
+
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
