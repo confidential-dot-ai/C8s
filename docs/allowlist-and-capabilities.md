@@ -139,7 +139,7 @@ exact + args any` pins the executable and lets flags vary; `command exact + args
 exact` pins the whole argv; `args deny` means "no arguments beyond the command".
 
 An exact command names bytes in the image, and that only holds while no mount
-the pod chose covers them. So when `mounts` is `any`, a container is admitted
+the pod chose covers them. So when `mounts` is `any` or `confined`, a container is admitted
 only if no non-platform mount sits at or above the pinned executable's absolute
 path: a volume bound over `/c8s`, or over `/app` for `/app/c8s`, would run the
 pod author's bytes under the pinned name. Under `deny` there is no such mount
@@ -212,8 +212,17 @@ source ownership against this baseline:
 | `/dev/termination-log` | A file in the current pod and container's kubelet `containers` directory. |
 | `/var/run/secrets/kubernetes.io/serviceaccount` | The current pod's kubelet projected volume named `kube-api-access-*`. |
 
-These mounts are also permitted implicitly by `exact`. A matching destination
-alone does not establish platform ownership. `any` leaves mounts unconstrained;
+These mounts are also permitted implicitly by `exact` and `confined`. A
+matching destination alone does not establish platform ownership. Each policy
+treats the non-platform mounts differently:
+
+| Policy | Non-platform mounts admitted | Missing evidence |
+| --- | --- | --- |
+| `deny` (default) | none | denied |
+| `exact` | exactly the set its `rules` name | denied |
+| `confined` | any confined mount, and any mount at an `unconfined` destination, provided none covers a `denyBelow` path | denied |
+| `any` | any | admitted |
+
 `exact` requires the observed non-platform set to equal its concrete rules:
 
 ```json
@@ -226,14 +235,47 @@ alone does not establish platform ownership. `any` leaves mounts unconstrained;
 }
 ```
 
-When deriving an entry, `--mounts=any|deny` applies one policy to every
+### Confined mounts
+
+A mount is **confined** when what a container writes through it stays inside
+the node's TEE boundary: a platform mount, a read-only host path, or an
+`emptyDir` or `data` volume on memory or encrypted storage. A writable host
+path, a disk-backed `emptyDir`, or a PVC the node cannot vouch for is not.
+`confined` admits any set of confined mounts, so the pod keeps choosing its
+own volumes, with two lists to adjust it:
+
+- `denyBelow` names image paths no non-platform mount may sit at, below, or
+  above: the executable and every directory its entrypoint loads code from.
+  A volume there would replace the code the pinned command runs.
+- `unconfined` names exact destinations where a mount need not be confined:
+  a writable host path or a volume on unprotected storage that the workload
+  needs. An `unconfined` destination may not overlap a `denyBelow` path.
+
+```json
+"mounts": {
+  "policy": "confined",
+  "denyBelow": ["/app", "/usr", "/lib", "/etc/ld.so.preload"],
+  "unconfined": ["/run/xtables.lock"]
+}
+```
+
+Both lists take clean absolute paths. The pinned executable is checked as
+under `any`, whether `denyBelow` lists it or not. `confined` is constrained but
+host-dependent: a read-only host path admits whatever the host keeps there.
+The [injected drop set](secrets.md#the-injected-drop-set) uses the same
+confinement test (`ObservedMount.Confined` in `pkg/allowlist`).
+
+### Derive mount policies
+
+When deriving an entry, `--mounts=any|deny|confined` applies one policy to every
 container it derives:
 
 ```sh
 c8s allowlist derive app pod.json --env=any --mounts=any > entry.json
 ```
 
-`--mounts-file` takes explicit per-container policies instead: the file maps
+`--mounts-file` takes explicit per-container policies instead, including a
+`confined` policy's `denyBelow` and `unconfined` lists: the file maps
 container names to policies and must include every init and main container the
 entry declares; missing or unknown names are rejected. `derive` drops C8s's own
 injected containers from its input and names them on stderr, so a pod read back
@@ -267,7 +309,10 @@ Omitting both flags leaves each container's mount policy at `deny`.
 Lint includes mount rules when checking whether workload entries are
 indistinguishable. It also rejects exact `PATH`, `LD_LIBRARY_PATH`, `PYTHONPATH`,
 or `NODE_PATH` values whose search directories overlap a declared `data` mount:
-those directories could load mounted content as code. The deprecated
+those directories could load mounted content as code. A component entry — a
+container with an `exact` command and `args: any` — whose mounts are `any` is
+an error, and one whose `confined` policy lists no `denyBelow` path is a
+warning. The deprecated
 `lint --cvm-mode` flag has no effect; NRI observes both environment and mounts.
 
 A `host` rule pins an exact source path and mount-level access mode:
@@ -420,12 +465,17 @@ would refuse everything there.
 
 The exemption is only as narrow as the base entry. The chart's component
 entries pin each image to its entrypoint, so restaging one with another
-executable, or with a volume mounted over the pinned path, is refused. That is
-all the pin covers: with `mounts` and `env` left `any`, an entrypoint that
-loads further code — nginx's `docker-entrypoint.d` scripts and its `PATH`
-lookup of `nginx`, the mesh's `ipset`, any dynamically linked binary's
-`LD_PRELOAD` — can still be pointed at a volume. Closing that needs `mounts`
-and `env` rules for those entries. The node image's generated RKE2 system
+executable, or with a volume mounted over the pinned path, is refused. Their
+mounts are `confined`, with `denyBelow` covering every directory the
+entrypoint loads code from — nginx's `docker-entrypoint.d` scripts and the
+system binaries it runs, the mesh's `ipset` and `iptables` and their
+`/etc/alternatives` links, the loader's configuration — so a volume can no
+longer replace that code. That closes the mounts half. The env half stays
+open: with `env` left `any`, the environment can still redirect what the
+entrypoint loads (`PATH`, `LD_PRELOAD`) to code already in the image or on a
+confined volume. Nginx has one more: its `nginx.conf` is a ConfigMap the
+control plane writes, and a `load_module` directive there can load a module
+from any confined volume the pod mounts. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
@@ -542,9 +592,9 @@ The host NRI plugin also carries a **base enforcement allowlist** in
 Either a base entry or a served entry must satisfy the launch constraints.
 Both sources check argv at preliminary admission, then argv, environment, and
 mounts at final admission; unavailable evidence fails constrained policies.
-The chart's component entries pin the executable and explicitly allow mounts,
-leaving the arguments and environment unconstrained so the platform can start
-before CDS is reachable; the node image's generated RKE2 system entries leave
+The chart's component entries pin the executable and confine mounts, leaving
+the arguments and environment unconstrained so the platform can start before
+CDS is reachable; the node image's generated RKE2 system entries leave
 command and args open as well.
 
 ## Bootstrap
@@ -553,12 +603,16 @@ The chart renders the seed (`--allowlist-seed`) from the resolved component
 digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
 component digest becomes one entry named `<image basename>-<first 12 hex of
 digest>` with a single container under `command: exact` at the image's
-entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`) and
-`args: any, env: any, mounts: any`; an operator-authored `workloads` entry of
+entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`),
+`args: any, env: any`, and `mounts: confined` with the image's `denyBelow`
+list (`c8sComponents[].denyBelow`, `router.nginx.denyBelow`) and, as
+`unconfined`, the destinations where the chart itself mounts a writable host
+path, a PVC or a ConfigMap; an operator-authored `workloads` entry of
 the same name replaces it whole in the rendered seed. The same component
 entries feed the host plugin's base allowlist, as does every operator entry
-that leaves args, environment and mounts unconstrained, whether its command is
-`any` or pinned; other operator entries are seed-only. The
+that leaves args and environment unconstrained and mounts `any` or
+`confined`, whether its command is `any` or pinned; other operator entries are
+seed-only. The
 name is a function of the digest because CDS seeds **additively by name**: an
 image bump adds the new digest's entry beside the old one, which pods still
 running the old image keep matching while they recycle. The seed never
@@ -569,6 +623,11 @@ with it gone. The same rule means a cluster installed before the component
 entries pinned their entrypoints keeps serving its stored `command: any`
 entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
+The `confined` mount policy reaches a cluster the same way: a digest the chart
+already seeded keeps its stored `mounts: any` entry until the next image bump
+or an edit. A plugin built before the policy rejects a served document that
+carries it, so roll a node image's baked plugin forward before, or with, the
+chart that seeds it.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
@@ -633,7 +692,8 @@ confirm loop, and the signed write is always a separate, reviewed `apply`.
 (both lists empty), a `command: deny` container that can never start, a
 shared digest whose union is widened to `any` by some entry — an `any`-policy
 entry for a digest silently makes every narrower entry for it unenforced at the
-per-container gate — and tag-form labels (which can move under the operator).
+per-container gate — tag-form labels (which can move under the operator), and a
+component entry whose mounts are not confined (an error under `any`).
 `--online` cross-checks digests against the registry with
 `crane`; `--strict` turns warnings into a non-zero exit for CI.
 

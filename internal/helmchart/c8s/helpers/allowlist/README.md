@@ -4,9 +4,10 @@ Source: [templates/_allowlist.tpl](../../templates/_allowlist.tpl).
 [All helpers](../README.md).
 
 `c8s.components` resolves `Values.c8sComponents` into a JSON list of
-`{name, image, enabled, cdsExempt, argvPinned, entrypoint}` records. `valuePath` selects the image object;
+`{name, image, enabled, cdsExempt, argvPinned, entrypoint, denyBelow}` records. `valuePath` selects the image object;
 `enabledPath` selects its boolean gate, with an empty path enabling the component;
-`entrypoint` is the argv prefix every container running the image starts with.
+`entrypoint` is the argv prefix every container running the image starts with;
+`denyBelow` lists the image paths no pod volume may cover.
 The derived name is the component's `valuePath`. `c8s.valueAtPath` takes
 `(dict "root" <dict> "path" "a.b.c")` and returns the resolved value as JSON.
 Boolean gates compare that JSON text to `true`: Helm's `fromJson` expects an
@@ -18,14 +19,21 @@ it from chart values. CDS is exempt from that guard because its self-entry is
 seeded independently. Components marked `argvPinned` are covered by argv-pinned
 seed entries and excluded from any-argv derivation.
 
-`c8s.imageAllowlist` returns a digest-to-`{image, entrypoint}` map containing enabled,
+`c8s.imageAllowlist` returns a digest-to-`{image, entrypoint, mounts}` map containing enabled,
 digest-pinned components when `bootstrapAllowlist.deriveComponents` is true,
 plus the CDS self-entry and enabled router nginx. Nginx is independently versioned
-and derives from its own image values (`router.nginx.entrypoint`). A derived
-component without an entrypoint fails the render. `c8s.componentContainer`
-renders one such image as an allowlist container: `command` exact at the
-entrypoint, `args` and `mounts` any, and `env` any when asked for (the seed;
-the base leaves it absent). Argv-pinned components and RKE2
+and derives from its own image values (`router.nginx.entrypoint`,
+`router.nginx.denyBelow`). A derived component without an entrypoint or a
+`denyBelow` list fails the render. `c8s.componentMounts` builds the
+component's `confined` mount policy: its `denyBelow` list, and as
+`unconfined` the destinations where the chart mounts a writable host path, a
+PVC or a ConfigMap for that image, computed from the values that place them.
+Keep those lists in step with the component templates;
+[pinned_seed_test.go](../../../pinned_seed_test.go) checks every rendered
+mount against them, classifying ConfigMaps and PVCs as unprotected storage.
+`c8s.componentContainer` renders one such image as an allowlist container:
+`command` exact at the entrypoint, `args` any, the entry's `mounts`, and `env`
+any when asked for (the seed; the base leaves it absent). Argv-pinned components and RKE2
 containerd-prep images are seeded through `c8s.argvPinnedEntries`.
 With `node.baked=true`, the same derivation covers the operator/get-cert,
 CDS, mesh and nginx images rendered into the measured guest. The host stages
@@ -33,18 +41,20 @@ this seed merged with signed workload entries for CDS; the image also admits
 the core images in its NRI bootstrap floor. The local-path helper remains
 argv-pinned in the seed for baked nodes.
 
-`c8s.openArgsEntries` extracts workload digests whose args, environment and
-mount policies are unconstrained and whose command is `any` or `exact`, as
-digest-to-`{image, entrypoint}` with an empty entrypoint for `any`. An omitted
-mount policy is `deny` and prevents inclusion. `c8s.baseWorkloads` renders the
+`c8s.openArgsEntries` extracts workload digests whose args and environment
+policies are unconstrained, whose mount policy is `any` or `confined`, and
+whose command is `any` or `exact`, as digest-to-`{image, entrypoint, mounts}`
+with an empty entrypoint for `any`. An omitted mount policy is `deny` and
+prevents inclusion; of two entries for one digest, `any` mounts win over
+`confined`, and two different `confined` policies fail the render. `c8s.baseWorkloads` renders the
 host plugin's boot base, excluding `c8s.argvPinnedDigests`: each
 `c8s.imageAllowlist` image as a `c8s.componentContainer` entry, and each
 `c8s.openArgsEntries` digest under the command it pins or under any
 (`c8s.openArgsContainer`). For a system image an operator also wrote an
 open-args entry for, a wider operator pin (any, or a prefix of the
 entrypoint) replaces the component's container and a different one is
-admitted beside it. Workloads that pin args, env or mounts remain in the
-served seed without reaching the base.
+admitted beside it. Workloads that pin args or env, or set mounts to `deny`
+or `exact`, remain in the served seed without reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes
