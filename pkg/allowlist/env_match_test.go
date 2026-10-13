@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"encoding/json"
+	"maps"
 	"os"
 	"regexp"
 	"strings"
@@ -119,6 +120,27 @@ func TestEnvMatcherYAMLScalars(t *testing.T) {
 		if strings.HasPrefix(input, "exact: t") && !strings.Contains(err.Error(), "must be a string") {
 			t.Fatalf("yaml.Unmarshal(%q) error = %v, want a type error", input, err)
 		}
+	}
+}
+
+func TestEnvMatcherYAMLAliases(t *testing.T) {
+	var variables map[string]EnvMatcher
+	input := "A: {exact: &mode production}\nB: {exact: *mode}\nC: {exact: &port 8080}\nD: {exact: *port}\nE: &matcher {present: true}\nF: *matcher\n"
+	if err := yaml.Unmarshal([]byte(input), &variables); err != nil {
+		t.Fatalf("yaml.Unmarshal(%q) error = %v", input, err)
+	}
+	p := EnvPolicy{Policy: PolicyMatch, Variables: variables}
+	want := map[string]string{"A": "production", "B": "production", "C": "8080", "D": "8080"}
+	if got := p.ExactValues(); !maps.Equal(got, want) {
+		t.Fatalf("ExactValues() = %v, want %v", got, want)
+	}
+	matching, _ := ObserveEnv([]string{"A=production", "B=production", "C=8080", "D=8080", "E=x", "F=y"})
+	if !p.admitsObservation(matching) {
+		t.Fatal("aliased matchers rejected their resolved values")
+	}
+	changed, _ := ObserveEnv([]string{"A=production", "B=debug", "C=8080", "D=8080", "E=x", "F=y"})
+	if p.admitsObservation(changed) {
+		t.Fatal("aliased exact matcher admitted another value")
 	}
 }
 
