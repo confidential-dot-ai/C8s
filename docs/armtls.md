@@ -678,8 +678,9 @@ Poll timing never changes the match decision.
 A pod renewing while its sandbox is still starting can be stamped with a
 smaller entry that its running containers already satisfy, such as the c8s
 image's own entry while only the router's `acme` sidecar runs. With
-`--expected-workload=<name>`, get-cert treats a leaf stamped with any other name
-as unnamed for pacing: it keeps the fast poll and backoff above, and logs one
+`--expected-workload=<name>`, which requires `--workload-claims` and
+`--renew-interval`, get-cert treats a leaf stamped with any other name as
+unnamed for pacing: it keeps the fast poll and backoff above, and logs one
 warning per distinct wrong name. It never fails issuance or exits on a
 mismatch. The chart passes the seeded router entry's name to the router's
 `c8s-cert` container whenever it seeds that entry and wires

@@ -468,6 +468,17 @@ func TestValidateConfigAccepts(t *testing.T) {
 			},
 		},
 		{
+			name: "expected workload with claims and renew",
+			cfg: config{
+				CDSURL:            "https://cds:8443",
+				AttestationApiURL: "http://attestation-api:8400",
+				SAN:               "host.example.com",
+				RenewInterval:     time.Hour,
+				WorkloadClaims:    true,
+				ExpectedWorkload:  "api",
+			},
+		},
+		{
 			name: "reload watch with renew",
 			cfg: config{
 				CDSURL:              "http://cds:8443",
@@ -546,6 +557,14 @@ func TestValidateConfigRejects(t *testing.T) {
 		{"ca watch without renew interval", func(c *config) {
 			c.CAOutPath = "/tls/ca.pem"
 			c.CAWatchInterval = time.Minute
+		}},
+		{"expected workload without workload claims", func(c *config) {
+			c.RenewInterval = time.Hour
+			c.ExpectedWorkload = "api"
+		}},
+		{"expected workload without renew interval", func(c *config) {
+			c.WorkloadClaims = true
+			c.ExpectedWorkload = "api"
 		}},
 	}
 	for _, tt := range tests {
