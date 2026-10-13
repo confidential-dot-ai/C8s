@@ -3,6 +3,7 @@ package verify
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -132,6 +133,10 @@ type config struct {
 	minTCBSNP          uint
 	minTCBMicrocode    uint
 	expectedRDHex      string
+	pinPolicies        []string
+	trustOperator      bool
+	trustOperatorKeys  string
+	fetchAllowlists    string
 
 	output       string
 	showEvidence bool
@@ -231,6 +236,10 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBTEE, "min-tcb-tee", 0, "minimum TEE TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. Requires --operator-pkey; excludes --trust-operator")
+	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history that carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Requires --operator-pkey and --trust-operator-keys")
+	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from")
+	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. Requires --operator-pkey")
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer)")
 
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
@@ -385,6 +394,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
+	checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
 	applyInitDataNote(&oc, result, plan)
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
@@ -398,6 +408,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
 	applySandboxPolicy(oc, cfg, ev, opKeys, plan, servedMeasurements)
 	applyWorkloadPolicy(oc, cfg, ev, held)
+	applyPinPolicy(oc, cfg, ev)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
 	applyCDSIdentityWarning(oc, cfg, plan.refValues)
@@ -517,6 +528,8 @@ type verifyPlan struct {
 	// --served-policy-file nor --image-policy-file asked for the check. It
 	// never feeds the target's own identity pin (refValues above).
 	served *servedSet
+	// trustKeys is the parsed --trust-operator-keys bundle, nil when unset.
+	trustKeys []*ecdsa.PublicKey
 }
 
 // servedSet pairs the policy the target must serve and enforce at
@@ -651,6 +664,11 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
 	}
 
+	trustKeys, err := checkHistoryFlags(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	initDataHash, err := parseInitDataPin(cfg.initDataHex)
 	if err != nil {
 		return nil, err
@@ -671,6 +689,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		initDataHash: initDataHash,
 		refValues:    refValues,
 		served:       served,
+		trustKeys:    trustKeys,
 	}, nil
 }
 
