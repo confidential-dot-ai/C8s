@@ -6,8 +6,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -42,25 +45,25 @@ func (f *fakeAllowlist) snapshot() (string, string) {
 
 func (f *fakeAllowlist) serve(t *testing.T) string {
 	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/allowlist" {
-			http.NotFound(w, r)
-			return
-		}
-		f.requests.Add(1)
-		version, body := f.snapshot()
-		etag := `W/"` + version + `"`
-		w.Header().Set("ETag", etag)
-		if r.Header.Get("If-None-Match") == etag {
-			f.notModified.Add(1)
-			w.WriteHeader(http.StatusNotModified)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(body))
-	}))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/allowlist", f.handle)
+	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
+}
+
+func (f *fakeAllowlist) handle(w http.ResponseWriter, r *http.Request) {
+	f.requests.Add(1)
+	version, body := f.snapshot()
+	etag := `W/"` + version + `"`
+	w.Header().Set("ETag", etag)
+	if r.Header.Get("If-None-Match") == etag {
+		f.notModified.Add(1)
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write([]byte(body))
 }
 
 // stampedLeaf is a leaf CDS issued under the given policy snapshot.
@@ -92,7 +95,7 @@ func policyWatchConfig() config {
 	cfg := unreachableRenewalConfig()
 	cfg.WorkloadClaims = true
 	cfg.UnnamedRenewInterval = 0
-	cfg.PolicyWatchInterval = 10 * time.Millisecond
+	cfg.CAWatchInterval = 10 * time.Millisecond
 	cfg.ReloadNginx = false
 	return cfg
 }
@@ -171,6 +174,43 @@ func TestRenewLoopRenewsWhenAllowlistPolicyChanges(t *testing.T) {
 	if got := len(attempts()); got != 2 {
 		t.Fatalf("%d renewals after two allowlist writes, want 2", got)
 	}
+}
+
+// One watch tick runs both checks: a matching mesh CA does not stop the policy
+// check, and a policy change alone still renews.
+func TestRenewLoopWatchesCAAndPolicyOnOneTick(t *testing.T) {
+	ca := testCertificatePEM(t)
+	caPath := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(caPath, []byte(ca), 0644); err != nil {
+		t.Fatal(err)
+	}
+	cds := &fakeAllowlist{}
+	cds.set(4, policyTwoWorkloads)
+	var caRequests atomic.Int64
+	mux := http.NewServeMux()
+	mux.HandleFunc("/allowlist", cds.handle)
+	mux.HandleFunc("/ca", func(w http.ResponseWriter, _ *http.Request) {
+		caRequests.Add(1)
+		_, _ = io.WriteString(w, ca)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	attempts := stubIssueUnderCurrentPolicy(t, cds)
+
+	cfg := policyWatchConfig()
+	cfg.CAOutPath = caPath
+	startRenewLoop(t, cfg, srv.URL, stampedLeaf(t, "4", policyTwoWorkloads))
+
+	cds.waitForRequests(t, 3)
+	if got := len(attempts()); got != 0 {
+		t.Fatalf("%d renewals while the CA and policy matched, want 0", got)
+	}
+	if got := caRequests.Load(); got < 3 {
+		t.Fatalf("%d /ca requests over three watch ticks, want at least 3", got)
+	}
+
+	cds.set(5, policyRouterOnly)
+	waitForAttempts(t, attempts, 1)
 }
 
 // A write that bumps the version but keeps the bytes renews nothing, and the
@@ -400,34 +440,43 @@ func TestPolicyRenewDelay(t *testing.T) {
 	}
 }
 
-func TestValidateConfigPolicyWatchInterval(t *testing.T) {
+// TestCDSWatchInterval covers the --ca-watch-interval default and its
+// validation together, as RunE applies them.
+func TestCDSWatchInterval(t *testing.T) {
 	base := config{
-		CDSURL:              "https://cds:8443",
-		AttestationApiURL:   "http://localhost:8400",
-		SAN:                 "router.example.com",
-		RenewInterval:       time.Hour,
-		WorkloadClaims:      true,
-		PolicyWatchInterval: time.Minute,
+		CDSURL:            "https://cds:8443",
+		AttestationApiURL: "http://localhost:8400",
+		SAN:               "router.example.com",
+		RenewInterval:     time.Hour,
+		WorkloadClaims:    true,
+		CAWatchInterval:   defaultCDSWatchInterval,
 	}
 	tests := []struct {
-		name    string
-		mutate  func(*config)
-		wantErr error
+		name     string
+		explicit bool
+		mutate   func(*config)
+		want     time.Duration
+		wantErr  error
 	}{
-		{name: "valid", mutate: func(*config) {}},
-		{name: "disabled without claims", mutate: func(c *config) { c.PolicyWatchInterval, c.WorkloadClaims = 0, false }},
-		{name: "missing workload claims", mutate: func(c *config) { c.WorkloadClaims = false }, wantErr: errInvalidPolicyWatchInterval},
-		{name: "missing renew interval", mutate: func(c *config) { c.RenewInterval = 0 }, wantErr: errInvalidPolicyWatchInterval},
-		{name: "one second", mutate: func(c *config) { c.PolicyWatchInterval = time.Second }},
-		{name: "negative", mutate: func(c *config) { c.PolicyWatchInterval = -time.Minute }, wantErr: errInvalidPolicyWatchInterval},
-		{name: "sub-second", mutate: func(c *config) { c.PolicyWatchInterval = 500 * time.Millisecond }, wantErr: errInvalidPolicyWatchInterval},
-		{name: "ca watch one second", mutate: func(c *config) { c.CAOutPath, c.CAWatchInterval = "/tls/ca.pem", time.Second }},
-		{name: "ca watch sub-second", mutate: func(c *config) { c.CAOutPath, c.CAWatchInterval = "/tls/ca.pem", 500*time.Millisecond }, wantErr: errInvalidCAWatchInterval},
+		{name: "default with claims", mutate: func(*config) {}, want: time.Minute},
+		{name: "default with ca-out", mutate: func(c *config) { c.WorkloadClaims, c.CAOutPath = false, "/tls/ca.pem" }, want: time.Minute},
+		{name: "default with nothing to watch", mutate: func(c *config) { c.WorkloadClaims = false }, want: 0},
+		{name: "default without renew interval", mutate: func(c *config) { c.RenewInterval = 0 }, want: 0},
+		{name: "explicitly disabled", explicit: true, mutate: func(c *config) { c.CAWatchInterval = 0 }, want: 0},
+		{name: "explicit with nothing to watch", explicit: true, mutate: func(c *config) { c.WorkloadClaims = false }, want: time.Minute, wantErr: errInvalidCAWatchInterval},
+		{name: "explicit without renew interval", explicit: true, mutate: func(c *config) { c.RenewInterval = 0 }, want: time.Minute, wantErr: errInvalidCAWatchInterval},
+		{name: "one second", explicit: true, mutate: func(c *config) { c.CAWatchInterval = time.Second }, want: time.Second},
+		{name: "negative", explicit: true, mutate: func(c *config) { c.CAWatchInterval = -time.Minute }, want: -time.Minute, wantErr: errInvalidCAWatchInterval},
+		{name: "sub-second", explicit: true, mutate: func(c *config) { c.CAWatchInterval = 500 * time.Millisecond }, want: 500 * time.Millisecond, wantErr: errInvalidCAWatchInterval},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			tt.mutate(&cfg)
+			applyCDSWatchDefault(&cfg, tt.explicit)
+			if cfg.CAWatchInterval != tt.want {
+				t.Errorf("applyCDSWatchDefault(explicit=%t) interval = %v, want %v", tt.explicit, cfg.CAWatchInterval, tt.want)
+			}
 			if err := validateConfig(cfg); !errors.Is(err, tt.wantErr) {
 				t.Fatalf("validateConfig() = %v, want %v", err, tt.wantErr)
 			}

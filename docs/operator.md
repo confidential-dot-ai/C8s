@@ -497,12 +497,11 @@ must still re-fetch it from the discovery endpoint.
 
 An allowlist write has a similar effect on a router that requests workload
 claims: its leaf stamps the policy snapshot it was issued under, and strict
-clients reject a leaf naming a superseded policy. The sidecar polls CDS's
-`/allowlist` every `router.certProvisioning.policyWatchInterval` (default 1m;
-values below 1s are rejected, `"0"` disables) and re-issues its leaf when the
-served policy moves. CDS answers 304 while nothing changed, so an idle poll is
-cheap. Strict clients recover without a router restart within one poll
-interval, plus up to half an interval of jitter, plus one issuance.
+clients reject a leaf naming a superseded policy. The same watch tick also
+polls CDS's `/allowlist` and re-issues the leaf when the served policy moves.
+CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
+clients recover without a router restart within one poll interval, plus up to
+half an interval of jitter, plus one issuance.
 
 There is **no scheduled in-process CA rotation today** — no cds flag or
 loop drives it, so every CA fingerprint change is a restart-shaped

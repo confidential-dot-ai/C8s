@@ -196,9 +196,6 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 		// until the next scheduled renewal.
 		"--ca-watch-interval=1m",
 	)
-	// Without --workload-claims the leaf carries no policy stamp, and get-cert
-	// refuses the policy watch.
-	assertContainerNoArgPrefix(t, cert.Name, cert.Args, "--policy-watch-interval")
 	if cert.RestartPolicy == nil || *cert.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("c8s-cert restartPolicy = %v, want Always", cert.RestartPolicy)
 	}
@@ -2729,7 +2726,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims", "--policy-watch-interval=1m")
+	assertContainerArgs(t, cert, "--workload-claims", "--ca-watch-interval=1m")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -2974,7 +2971,6 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	}
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert, "--verbose", "--renew-interval=30m", "--ca-watch-interval=2m")
-	assertContainerNoArgPrefix(t, cert.Name, cert.Args, "--policy-watch-interval")
 	if got := cert.SecurityContext.RunAsUser; got == nil || *got != 201 {
 		t.Fatalf("c8s-cert runAsUser = %v, want 201", got)
 	}
@@ -3002,13 +2998,13 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	claimsOut, err := helmTemplate(t,
 		"--set-string", "router.attest.expectedWorkload=infer",
 		"--set", "router.hostPort.enabled=false",
-		"--set-string", "router.certProvisioning.policyWatchInterval=3m",
+		"--set-string", "router.certProvisioning.caWatchInterval=3m",
 	)
 	if err != nil {
 		t.Fatalf("helm template (workload claims): %v\n%s", err, claimsOut)
 	}
 	claimsCert := routerGetCertContainer(t, claimsOut, "c8s-cert")
-	assertContainerArgs(t, claimsCert, "--workload-claims", "--policy-watch-interval=3m")
+	assertContainerArgs(t, claimsCert, "--workload-claims", "--ca-watch-interval=3m")
 }
 
 // TestChartDefaultRouterUpstreamIsWorkloadDirect pins the default front-door

@@ -382,7 +382,6 @@
           "additionalProperties": false,
           "properties": {
             "caWatchInterval": {},
-            "policyWatchInterval": {},
             "renewInterval": {},
             "verbose": {}
           }

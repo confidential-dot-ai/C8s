@@ -1174,24 +1174,18 @@ router:
     # -- How often the c8s-cert sidecar renews the TLS certificate and SIGHUPs
     #    nginx. Must be shorter than the cert TTL issued by CDS.
     renewInterval: "1h"
-    # -- How often the c8s-cert sidecar checks that the mesh CA it serves at
-    #    the discovery endpoints still matches the CA CDS currently holds,
-    #    renewing immediately when it does not. A CDS restart regenerates the
-    #    mesh CA in-memory, so without this the pod serves the dead CA (and a
-    #    discovery document chained to it) until the next scheduled renewal.
-    #    "0" disables the check; otherwise the minimum is 1s.
+    # -- How often the c8s-cert sidecar polls CDS for changes that make its
+    #    leaf stale, renewing when it finds one:
+    #    - the mesh CA served at the discovery endpoints no longer matches the
+    #      CA CDS holds (a CDS restart regenerates it in-memory): renews
+    #      immediately;
+    #    - when the router requests workload claims (node.baked or
+    #      router.attest.expectedWorkload), the allowlist policy CDS serves no
+    #      longer matches the snapshot stamped in the leaf, which strict
+    #      clients reject: renews after up to half an interval of jitter.
+    #    Without it both last until the next scheduled renewal. "0" disables
+    #    the watch; otherwise the minimum is 1s.
     caWatchInterval: "1m"
-    # -- How often the c8s-cert sidecar checks that the allowlist policy CDS
-    #    serves still matches the snapshot stamped in the router's leaf, and
-    #    renews when it does not. Strict clients reject a leaf whose stamp
-    #    names a superseded policy, so without this an allowlist write breaks
-    #    them until the next scheduled renewal. Worst case after a write: up to
-    #    one interval to detect it, up to half an interval of jitter, then one
-    #    issuance.
-    #    Applies only when the router requests workload claims (node.baked or
-    #    router.attest.expectedWorkload). "0" disables the check; otherwise
-    #    the minimum is 1s.
-    policyWatchInterval: "1m"
 
   # -- Attestation + over-encryption sidecar (the c8s-verify protocol). When
   # enabled, an in-pod `c8s cds-attest` container serves the *dynamic*
