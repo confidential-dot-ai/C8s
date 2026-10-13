@@ -66,7 +66,8 @@ func TestEnvMatcherRejectsMalformedPolicies(t *testing.T) {
 		t.Run(matcher, func(t *testing.T) {
 			env := `{"policy":"match","variables":{"A":` + matcher + `}}`
 			var policy EnvPolicy
-			if err := yaml.Unmarshal([]byte(env), &policy); err == nil && normalizeEnv(&policy) == nil {
+			// YAML takes an unquoted number by its literal text; JSON does not.
+			if err := yaml.Unmarshal([]byte(env), &policy); err == nil && normalizeEnv(&policy) == nil && matcher != `{"exact":1}` {
 				t.Fatal("YAML accepted malformed matcher")
 			}
 			if _, err := ParseEnvPoliciesJSON([]byte(`{"app":` + env + `}`)); err == nil {
@@ -87,6 +88,34 @@ func TestEnvMatcherRejectsMalformedPolicies(t *testing.T) {
 	} {
 		if _, err := ParseEnvPoliciesJSON([]byte(`{"app":` + env + `}`)); err == nil {
 			t.Fatalf("accepted %s", env)
+		}
+	}
+}
+
+func TestEnvMatcherYAMLScalars(t *testing.T) {
+	for _, tc := range []struct{ input, want string }{
+		{"exact: 8080", `{"exact":"8080"}`},
+		{"exact: 1.0", `{"exact":"1.0"}`},
+		{"exact: 0x1F", `{"exact":"0x1F"}`},
+		{`exact: "007"`, `{"exact":"007"}`},
+		{"present: true", `{"present":true}`},
+	} {
+		var m EnvMatcher
+		if err := yaml.Unmarshal([]byte(tc.input), &m); err != nil {
+			t.Fatalf("yaml.Unmarshal(%q) error = %v", tc.input, err)
+		}
+		if got, err := json.Marshal(m); err != nil || string(got) != tc.want {
+			t.Fatalf("yaml.Unmarshal(%q) = %s, %v, want %s", tc.input, got, err, tc.want)
+		}
+	}
+	for _, input := range []string{"exact: true", "exact: ~", "exact: [a]", "present: false", "present: yes", "other: x"} {
+		var m EnvMatcher
+		err := yaml.Unmarshal([]byte(input), &m)
+		if err == nil {
+			t.Fatalf("yaml.Unmarshal(%q) accepted", input)
+		}
+		if strings.HasPrefix(input, "exact: t") && !strings.Contains(err.Error(), "must be a string") {
+			t.Fatalf("yaml.Unmarshal(%q) error = %v, want a type error", input, err)
 		}
 	}
 }
