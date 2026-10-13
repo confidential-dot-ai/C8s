@@ -363,17 +363,34 @@ func TestChartRouterOperatorEntry(t *testing.T) {
 	container := func(digest string) string {
 		return `{"digest":"` + digest + `","image":"r@` + digest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
 	}
-	entry := []string{
-		"--set", "router.nginx.image.digest=" + nginxDigest,
-		"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.my-router={"label":"mine","initContainers":[],"containers":[` + container(nginxDigest) + `,` + container(c8sDigest) + `]}`,
+	workload := func(name string, digests ...string) []string {
+		var cs []string
+		for _, d := range digests {
+			cs = append(cs, container(d))
+		}
+		return []string{"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.` + name + `={"label":"mine","initContainers":[],"containers":[` + strings.Join(cs, ",") + `]}`}
+	}
+	entry := slices.Concat([]string{"--set", "router.nginx.image.digest=" + nginxDigest}, workload("my-router", nginxDigest, c8sDigest))
+	gate := func(name string) []string { return []string{"--set-string", "router.attest.expectedWorkload=" + name} }
+
+	for _, tc := range []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{name: "beside the seeded entry", args: entry, wantErr: "would match each of c8s-router-"},
+		{name: "two operator entries", args: slices.Concat(entry, workload("other-router", nginxDigest, c8sDigest), gate("my-router")), wantErr: "would match each of my-router, other-router"},
+		{name: "gate on an entry without nginx", args: slices.Concat(entry[:2], workload("c8s-only", c8sDigest), gate("c8s-only")), wantErr: "router.attest.expectedWorkload=c8s-only names a nriImagePolicy.bootstrapAllowlist.workloads entry that does not list both"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, slices.Concat(gateArgs, tc.args)...)
+			if err == nil || !strings.Contains(out, tc.wantErr) {
+				t.Fatalf("helm template: err = %v, want %q\n%s", err, tc.wantErr, out)
+			}
+		})
 	}
 
-	out, err := helmTemplate(t, slices.Concat(gateArgs, entry)...)
-	if err == nil || !strings.Contains(out, "my-router lists both router.nginx.image.digest and image.digest") {
-		t.Fatalf("operator router entry without a gate: err = %v, want a collision failure\n%s", err, out)
-	}
-
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry, []string{"--set-string", "router.attest.expectedWorkload=my-router"})...)
+	out, err := helmTemplate(t, slices.Concat(gateArgs, entry, gate("my-router"))...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -401,9 +418,12 @@ func certExpectedWorkload(t *testing.T, out string) string {
 	return expectedWorkloadArg(cert)
 }
 
+// The schema rejects the type before rendering; router.expectedWorkload
+// repeats the check for renders that skip schema validation.
 func TestChartRouterExpectedWorkloadType(t *testing.T) {
 	out, err := helmTemplate(t, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
-	if err == nil || !strings.Contains(out, "expectedWorkload") {
-		t.Fatalf("boolean expectedWorkload: err = %v, want a render failure\n%s", err, out)
+	// Helm's schema error wording changes across releases.
+	if err == nil || !strings.Contains(out, "don't meet the specifications of the schema") || !strings.Contains(out, "expectedWorkload") {
+		t.Fatalf("boolean expectedWorkload: err = %v, want the schema's type error\n%s", err, out)
 	}
 }
