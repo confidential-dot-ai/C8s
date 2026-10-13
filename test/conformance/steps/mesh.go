@@ -693,8 +693,7 @@ func verifySetHoldsCA(ctx context.Context, node string) error {
 // evidence, so one described but not yet minted is minted first.
 func attestationUnreachable(ctx context.Context, node string) error {
 	w := getWorld(ctx)
-	k8sNode, err := w.node(node)
-	if err != nil {
+	if _, err := w.node(node); err != nil {
 		return err
 	}
 	for _, p := range w.pods {
@@ -704,8 +703,8 @@ func attestationUnreachable(ctx context.Context, node string) error {
 			}
 		}
 	}
-	w.onUndo(func() error { _, err := w.be.call("attestation_service_start", k8sNode); return err })
-	_, err = w.be.call("attestation_service_stop", k8sNode)
+	w.onUndo(func() error { _, err := w.be.call("attestation_service_start"); return err })
+	_, err := w.be.call("attestation_service_stop")
 	return err
 }
 

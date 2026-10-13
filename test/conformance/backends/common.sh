@@ -144,9 +144,6 @@
 #   external_endpoint                <address>:<port> of a hello API outside
 #                                    the cluster, or 77
 #   attestation_endpoint             the URL a pod obtains evidence from, or 77
-#   attestation_block / attestation_unblock <node>
-#                                    make the node's local attestation service
-#                                    unreachable, and undo it
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
 # node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
