@@ -139,6 +139,7 @@ func TestAdmitsAnyArgs(t *testing.T) {
 
 func TestPinsAtMostCommand(t *testing.T) {
 	any := ArgvPolicy{Policy: PolicyAny}
+	matched := parseMatchEnv(t, `{"PATH":{"exact":"/bin"},"HOSTNAME":{"present":true}}`)
 	for name, tc := range map[string]struct {
 		c    Container
 		want bool
@@ -151,6 +152,8 @@ func TestPinsAtMostCommand(t *testing.T) {
 		"pinned command, confined":   {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyConfined, DenyBelow: []string{"/c8s"}}, Env: EnvPolicy{Policy: PolicyAny}}, true},
 		"exact mounts":               {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyExact, Rules: emptyDirRules("/x")}}, false},
 		"exact env":                  {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, false},
+		"matched env":                {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: matched}, true},
+		"denied env":                 {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyDeny}}, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := tc.c.PinsAtMostCommand(); got != tc.want {
