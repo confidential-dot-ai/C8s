@@ -5,7 +5,6 @@ import (
 	"slices"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
-
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 )

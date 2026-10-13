@@ -117,9 +117,10 @@ const noHistory = "no measured policy replayed against RTMR[3]; target a node th
 // checkPolicyHistory fetches each policy in the replayed history from the
 // target and checks it hashes to its digest, then saves it (--fetch-allowlists)
 // and requires its stored operator signature to verify under keys
-// (--trust-operator), which also covers the policy the leaf was issued under. The bytes authenticate themselves against the replayed
-// digest and the token against keys, so the fetch needs no attested channel:
-// binding it to one serving leaf would only fail on a different replica.
+// (--trust-operator), which also covers the policy the leaf was issued under.
+// The bytes authenticate themselves against the replayed digest and the token
+// against keys, so the fetch needs no attested channel: binding it to one
+// serving leaf would only fail on a different replica.
 func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) {
 	if (!cfg.trustOperator && cfg.fetchAllowlists == "") || (!oc.Verified && !oc.Partial) {
 		return
