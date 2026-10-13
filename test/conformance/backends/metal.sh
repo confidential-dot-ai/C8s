@@ -76,12 +76,13 @@ cds_plain_url() { return "$UNSUPPORTED"; }
 cds_pins() {
     if [ -n "${C8S_MEASUREMENTS:-}" ]; then
         printf '%s\n' "$C8S_MEASUREMENTS" | tr ',' '\n'
-    else
+    elif [ -n "${C8S_MEASUREMENTS_CONFIG:-}" ]; then
         jq -r '.measurements[].measurement // empty' "$C8S_MEASUREMENTS_CONFIG"
+    else
+        echo "backend: neither C8S_MEASUREMENTS nor C8S_MEASUREMENTS_CONFIG names the CDS's pins" >&2
+        return 1
     fi
 }
-
-operator_key_set() { openssl ec -in "$C8S_OPERATOR_KEY" -pubout 2>/dev/null; }
 
 # Reconfiguring or stopping node services, and searching the node, need a
 # shell on it; an issuance from the harness host needs a TEE it has not.

@@ -50,10 +50,10 @@
 #                                    certificate (mesh-ca, reference-values,
 #                                    operator-key-set, allowlist, readiness),
 #                                    over plain HTTP when asked; prints the
-#                                    status, then the body
+#                                    status (000 when nothing answered), then
+#                                    the body
 #   cds_serving_cert                 the certificate the CDS presents in the
 #                                    TLS handshake, PEM
-#   cds_ready                        yes/no: the CDS reports itself ready
 #   cds_pins                         the launch digests the CDS was started
 #                                    with, one per line
 #   operator_key_set                 the operator public keys the CDS loaded at
@@ -184,15 +184,16 @@ cds_volatile() {
 #   scratch        a directory kept for the run
 
 operator_keys() {
-    local url code
-    url="$(cds_url)" || return
-    code="$(curl -sSk -o /dev/null -w '%{http_code}' "$url/operator-keys")" || code=000
+    local code
+    code="$(cds_read operator-key-set | head -1)" || return
     case "$code" in
         200) echo yes ;;
         404) echo no ;;
         *) echo "backend: GET /operator-keys: HTTP $code" >&2; return 1 ;;
     esac
 }
+
+operator_key_set() { openssl ec -in "$(operator_key)" -pubout 2>/dev/null; }
 
 # The chart's seed ConfigMap, where the chart installed one.
 seed_declares() {
@@ -261,20 +262,18 @@ cds_document_path() {
     esac
 }
 
-# Status 000 when nothing answered, as for a TLS-only listener dialled plain.
+# curl appends the status to the body; it moves to the first line here.
 cds_read() {
-    local url path body status
+    local url path answer
     path="$(cds_document_path "$1")" || return
     if [ "${2:-}" = plain ]; then
         url="$(cds_plain_url)" || return
     else
         url="$(cds_url)" || return
     fi
-    body="$(mktemp)"
-    status="$(curl -sk -o "$body" -w '%{http_code}' --max-time 20 "$url$path" 2>/dev/null)" || status=000
-    echo "$status"
-    cat "$body"
-    rm -f "$body"
+    answer="$(curl -sk -w $'\n%{http_code}' --max-time 20 "$url$path" 2>/dev/null)" || answer=$'\n000'
+    echo "${answer##*$'\n'}"
+    printf '%s' "${answer%$'\n'*}"
 }
 
 cds_serving_cert() {
@@ -283,10 +282,6 @@ cds_serving_cert() {
     host="${url#https://}"
     host="${host%%/*}"
     openssl s_client -connect "$host" </dev/null 2>/dev/null | openssl x509
-}
-
-cds_ready() {
-    if [ "$(cds_read readiness | head -1)" = 200 ]; then echo yes; else echo no; fi
 }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.

@@ -4,20 +4,27 @@ import (
 	"bytes"
 	"context"
 	"crypto"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/asn1"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"iter"
 	"net/http"
-	"strconv"
+	"slices"
 	"strings"
-	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/armtls"
+	"github.com/confidential-dot-ai/attestation-go/attestation/snp"
+	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/cucumber/godog"
+	tdxabi "github.com/google/go-tdx-guest/abi"
+	tdxpb "github.com/google/go-tdx-guest/proto/tdx"
 )
 
 // Sentences about the CDS itself: the documents it serves to any client, its
@@ -65,6 +72,7 @@ var documents = map[string]string{
 	"reference values":    "reference-values",
 	"operator key set":    "operator-key-set",
 	"allowlist":           "allowlist",
+	"readiness state":     "readiness",
 }
 
 // document is what a client got back from a read of the CDS.
@@ -74,17 +82,18 @@ type document struct {
 	body   []byte
 }
 
-// cdsState is the scenario's view of the CDS (cds.go): the last document
-// read, the certificates it holds, and what it searched or was issued.
+// cdsState is the scenario's view of the CDS: the last document a client
+// read, the serving certificate it read, what the client holds, what a
+// search found, what a requester was issued, and whether the CDS has been
+// reconfigured, which one restore undoes.
 type cdsState struct {
-	doc         *document
-	meshCA      *x509.Certificate
-	servingCert *x509.Certificate
-	heldKeySet  []byte
-	heldPins    []string
-	found       []crypto.PublicKey
-	chain       []*x509.Certificate
-	readiness   string
+	doc          *document
+	servingCert  *x509.Certificate
+	heldKeys     []string
+	heldPins     []string
+	found        []crypto.PublicKey
+	chain        []*x509.Certificate
+	reconfigured bool
 }
 
 // readDocument reads one of the CDS's documents, over plain HTTP when asked.
@@ -97,32 +106,53 @@ func (w *world) readDocument(name string, plain bool) (*document, error) {
 	if err != nil {
 		return nil, err
 	}
-	first, body, _ := strings.Cut(out, "\n")
-	status, err := strconv.Atoi(strings.TrimSpace(first))
+	status, _, body, err := statusLine(out)
 	if err != nil {
-		return nil, fmt.Errorf("cds_read status %q: %w", first, err)
+		return nil, fmt.Errorf("cds_read: %w", err)
 	}
-	return &document{name: name, status: status, body: []byte(body)}, nil
+	return &document{name: name, status: status, body: body}, nil
+}
+
+// pemBlocks yields the blocks of the given types in a PEM body, in order,
+// skipping the text around them.
+func pemBlocks(body []byte, types ...string) iter.Seq[*pem.Block] {
+	return func(yield func(*pem.Block) bool) {
+		for rest := body; ; {
+			var block *pem.Block
+			if block, rest = pem.Decode(rest); block == nil {
+				return
+			}
+			if slices.Contains(types, block.Type) && !yield(block) {
+				return
+			}
+		}
+	}
 }
 
 // certificates parses every CERTIFICATE block of a PEM body.
 func certificates(body []byte) ([]*x509.Certificate, error) {
 	var certs []*x509.Certificate
-	for rest := body; ; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			return certs, nil
-		}
-		if block.Type != "CERTIFICATE" {
-			continue
-		}
+	for block := range pemBlocks(body, "CERTIFICATE") {
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
 			return nil, err
 		}
 		certs = append(certs, cert)
 	}
+	return certs, nil
+}
+
+// firstCertificate is the first certificate of a PEM body, which must hold
+// one.
+func firstCertificate(body []byte) (*x509.Certificate, error) {
+	certs, err := certificates(body)
+	if err != nil {
+		return nil, err
+	}
+	if len(certs) == 0 {
+		return nil, errors.New("the body holds no certificate")
+	}
+	return certs[0], nil
 }
 
 // meshCAServed reads the mesh CA the CDS serves now.
@@ -134,14 +164,11 @@ func (w *world) meshCAServed() (*x509.Certificate, error) {
 	if doc.status != http.StatusOK {
 		return nil, fmt.Errorf("the mesh CA certificate was answered %d", doc.status)
 	}
-	certs, err := certificates(doc.body)
+	ca, err := firstCertificate(doc.body)
 	if err != nil {
-		return nil, fmt.Errorf("the mesh CA certificate body: %w", err)
+		return nil, fmt.Errorf("the mesh CA certificate: %w", err)
 	}
-	if len(certs) == 0 {
-		return nil, errors.New("the mesh CA certificate body holds no certificate")
-	}
-	return certs[0], nil
+	return ca, nil
 }
 
 func clientReads(ctx context.Context, name string) error {
@@ -151,43 +178,61 @@ func clientReads(ctx context.Context, name string) error {
 		return err
 	}
 	w.cds.doc = doc
-	if name == "mesh CA certificate" && doc.status == http.StatusOK {
-		certs, err := certificates(doc.body)
-		if err == nil && len(certs) > 0 {
-			w.cds.meshCA = certs[0]
-		}
-	}
 	return nil
 }
 
-func (w *world) lastDocument() (*document, error) {
+// lastRead is the client's last read, which must have been of name.
+func (w *world) lastRead(name string) (*document, error) {
 	if w.cds.doc == nil {
 		return nil, errors.New("the client has read nothing")
+	}
+	if w.cds.doc.name != name {
+		return nil, fmt.Errorf("the client read the %s, not the %s", w.cds.doc.name, name)
 	}
 	return w.cds.doc, nil
 }
 
-func singleCertificate(ctx context.Context) error {
-	doc, err := getWorld(ctx).lastDocument()
+// lastServed is the client's last read, which must have got name with a 200.
+func (w *world) lastServed(name string) (*document, error) {
+	doc, err := w.lastRead(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	certs, err := certificates(doc.body)
+	if doc.status != http.StatusOK {
+		return nil, fmt.Errorf("the %s was answered %d", name, doc.status)
+	}
+	return doc, nil
+}
+
+// heldMeshCA is the mesh CA certificate the client last read.
+func (w *world) heldMeshCA() (*x509.Certificate, error) {
+	doc, err := w.lastServed("mesh CA certificate")
 	if err != nil {
-		return fmt.Errorf("the %s body: %w", doc.name, err)
+		return nil, err
+	}
+	return firstCertificate(doc.body)
+}
+
+func singleCertificate(ctx context.Context) error {
+	w := getWorld(ctx)
+	if w.cds.doc == nil {
+		return errors.New("the client has read nothing")
+	}
+	certs, err := certificates(w.cds.doc.body)
+	if err != nil {
+		return fmt.Errorf("the %s body: %w", w.cds.doc.name, err)
 	}
 	if len(certs) != 1 {
-		return fmt.Errorf("the %s body holds %d certificates, not one", doc.name, len(certs))
+		return fmt.Errorf("the %s body holds %d certificates, not one", w.cds.doc.name, len(certs))
 	}
 	return nil
 }
 
 func selfSigned(ctx context.Context) error {
-	w := getWorld(ctx)
-	if w.cds.meshCA == nil {
-		return errors.New("the client has read no mesh CA certificate")
+	ca, err := getWorld(ctx).heldMeshCA()
+	if err != nil {
+		return err
 	}
-	ca := w.cds.meshCA
 	if !bytes.Equal(ca.RawIssuer, ca.RawSubject) {
 		return fmt.Errorf("the issuer %q is not the subject %q", ca.Issuer, ca.Subject)
 	}
@@ -199,14 +244,15 @@ func selfSigned(ctx context.Context) error {
 
 func meshCADifferentKey(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.meshCA == nil {
-		return errors.New("the client has read no mesh CA certificate")
+	before, err := w.heldMeshCA()
+	if err != nil {
+		return err
 	}
 	now, err := w.meshCAServed()
 	if err != nil {
 		return err
 	}
-	if bytes.Equal(now.RawSubjectPublicKeyInfo, w.cds.meshCA.RawSubjectPublicKeyInfo) {
+	if bytes.Equal(now.RawSubjectPublicKeyInfo, before.RawSubjectPublicKeyInfo) {
 		return errors.New("the mesh CA certificate the CDS serves carries the same public key as before")
 	}
 	return nil
@@ -215,49 +261,30 @@ func meshCADifferentKey(ctx context.Context) error {
 // cdsServes checks the last read got the document: a 200 and a body of its
 // kind.
 func cdsServes(ctx context.Context, name string) error {
-	doc, err := getWorld(ctx).lastDocument()
+	doc, err := getWorld(ctx).lastServed(name)
 	if err != nil {
 		return err
-	}
-	if doc.name != name {
-		return fmt.Errorf("the client read the %s, not the %s", doc.name, name)
-	}
-	if doc.status != http.StatusOK {
-		return fmt.Errorf("the %s was answered %d", name, doc.status)
 	}
 	switch name {
 	case "mesh CA certificate":
-		certs, err := certificates(doc.body)
-		if err != nil || len(certs) == 0 {
-			return fmt.Errorf("the body holds no certificate (%v)", err)
-		}
+		_, err = firstCertificate(doc.body)
 	case "operator key set":
-		if _, err := publicKeys(doc.body); err != nil {
-			return err
-		}
+		_, err = publicKeys(doc.body)
 	case "reference values":
-		if _, err := referenceValues(doc.body); err != nil {
-			return err
-		}
+		_, err = referenceValues(doc.body)
 	case "allowlist":
-		s, err := parseServed(string(doc.body))
-		if err != nil {
-			return err
-		}
-		if s.schema != "c8s.allowlist/v1" {
-			return fmt.Errorf("the body's schema is %q, not an allowlist", s.schema)
+		var s served
+		if s, err = parseServed(string(doc.body)); err == nil && s.schema != "c8s.allowlist/v1" {
+			err = fmt.Errorf("the body's schema is %q, not an allowlist", s.schema)
 		}
 	}
-	return nil
+	return err
 }
 
 func reportsNoOperatorKeys(ctx context.Context) error {
-	doc, err := getWorld(ctx).lastDocument()
+	doc, err := getWorld(ctx).lastRead("operator key set")
 	if err != nil {
 		return err
-	}
-	if doc.name != "operator key set" {
-		return fmt.Errorf("the client read the %s, not the operator key set", doc.name)
 	}
 	if doc.status != http.StatusNotFound {
 		return fmt.Errorf("the operator key set was answered %d, not 404", doc.status)
@@ -269,15 +296,7 @@ func reportsNoOperatorKeys(ctx context.Context) error {
 // forms, sorted, so two bundles compare as sets.
 func publicKeys(body []byte) ([]string, error) {
 	var keys []string
-	for rest := body; ; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			break
-		}
-		if block.Type != "PUBLIC KEY" {
-			continue
-		}
+	for block := range pemBlocks(body, "PUBLIC KEY") {
 		if _, err := x509.ParsePKIXPublicKey(block.Bytes); err != nil {
 			return nil, fmt.Errorf("a PUBLIC KEY block does not parse: %w", err)
 		}
@@ -290,44 +309,25 @@ func publicKeys(body []byte) ([]string, error) {
 }
 
 func sortedUnique(in []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, s := range in {
-		if !seen[s] {
-			seen[s] = true
-			out = append(out, s)
-		}
-	}
-	for i := 1; i < len(out); i++ {
-		for j := i; j > 0 && out[j] < out[j-1]; j-- {
-			out[j], out[j-1] = out[j-1], out[j]
-		}
-	}
-	return out
+	slices.Sort(in)
+	return slices.Compact(in)
 }
 
 func matchesHeldKeys(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.heldKeySet == nil {
+	if w.cds.heldKeys == nil {
 		return errors.New("the client holds no operator keys")
 	}
-	doc, err := w.lastDocument()
+	doc, err := w.lastServed("operator key set")
 	if err != nil {
 		return err
-	}
-	if doc.status != http.StatusOK {
-		return fmt.Errorf("the %s was answered %d", doc.name, doc.status)
 	}
 	served, err := publicKeys(doc.body)
 	if err != nil {
 		return err
 	}
-	held, err := publicKeys(w.cds.heldKeySet)
-	if err != nil {
-		return fmt.Errorf("the keys the client holds: %w", err)
-	}
-	if strings.Join(served, ",") != strings.Join(held, ",") {
-		return fmt.Errorf("the served key set (%d keys) is not the one the client holds (%d keys)", len(served), len(held))
+	if !slices.Equal(served, w.cds.heldKeys) {
+		return fmt.Errorf("the served key set (%d keys) is not the one the client holds (%d keys)", len(served), len(w.cds.heldKeys))
 	}
 	return nil
 }
@@ -359,25 +359,21 @@ func matchesHeldPins(ctx context.Context, negated string) error {
 	if w.cds.heldPins == nil {
 		return errors.New("the client holds no pins")
 	}
-	doc, err := w.lastDocument()
+	doc, err := w.lastServed("reference values")
 	if err != nil {
 		return err
-	}
-	if doc.name != "reference values" {
-		return fmt.Errorf("the client read the %s, not the reference values", doc.name)
-	}
-	if doc.status != http.StatusOK {
-		return fmt.Errorf("the reference values were answered %d", doc.status)
 	}
 	served, err := referenceValues(doc.body)
 	if err != nil {
 		return err
 	}
-	match := strings.Join(served, ",") == strings.Join(sortedUnique(w.cds.heldPins), ",")
-	if negated != "" && match {
+	match := slices.Equal(served, sortedUnique(slices.Clone(w.cds.heldPins)))
+	switch {
+	case negated != "" && match:
 		return errors.New("the reference values match the pins the client holds")
-	}
-	if negated == "" && !match {
+	case negated != "" && len(served) == 0:
+		return errors.New("the CDS serves no reference values at all")
+	case negated == "" && !match:
 		return fmt.Errorf("the reference values %v are not the pins the client holds %v", served, w.cds.heldPins)
 	}
 	return nil
@@ -397,7 +393,7 @@ func requestsPlainHTTP(ctx context.Context) error {
 }
 
 func receivesNoMeshCA(ctx context.Context) error {
-	doc, err := getWorld(ctx).lastDocument()
+	doc, err := getWorld(ctx).lastRead("mesh CA certificate")
 	if err != nil {
 		return err
 	}
@@ -414,7 +410,11 @@ func holdsOperatorKeys(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.cds.heldKeySet = []byte(out)
+	keys, err := publicKeys([]byte(out))
+	if err != nil {
+		return fmt.Errorf("the keys the client holds: %w", err)
+	}
+	w.cds.heldKeys = keys
 	return nil
 }
 
@@ -424,31 +424,29 @@ func holdsPins(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	w.cds.heldPins = nil
-	for _, line := range strings.Split(out, "\n") {
-		if line = strings.ToLower(strings.TrimSpace(line)); line != "" {
-			w.cds.heldPins = append(w.cds.heldPins, line)
-		}
-	}
-	if len(w.cds.heldPins) == 0 {
+	pins := strings.Fields(strings.ToLower(out))
+	if len(pins) == 0 {
 		return errors.New("the backend knows no pins")
 	}
+	w.cds.heldPins = pins
 	return nil
 }
 
-// reconfigure restarts the CDS with one parameter changed and records the
-// restore. A restart is also what cdsRestarted says: the served allowlist
-// starts over, and the plugins need a start of their own.
+// reconfigure restarts the CDS with one parameter changed. The first change
+// of a scenario records the one restore of the installed configuration; a
+// restart is also what cdsRestarted notes.
 func (w *world) reconfigure(parameter, value string) error {
+	if !w.cds.reconfigured {
+		w.cds.reconfigured = true
+		w.onUndo(func() error {
+			_, err := w.be.call("cds_restart_with", "default", "")
+			return err
+		})
+	}
 	if _, err := w.be.call("cds_restart_with", parameter, value); err != nil {
 		return err
 	}
-	w.onUndo(func() error {
-		_, err := w.be.call("cds_restart_with", "default", "")
-		return err
-	})
-	w.cdsRestarted = true
-	lastMutation = time.Now()
+	w.noteCDSRestart()
 	return nil
 }
 
@@ -464,14 +462,7 @@ func meshCANearExpiry(ctx context.Context) error {
 
 // restartedDifferentPins pins a launch digest no evidence carries.
 func restartedDifferentPins(ctx context.Context) error {
-	w := getWorld(ctx)
-	other := strings.Repeat("a", 96)
-	for _, pin := range w.cds.heldPins {
-		if pin == other {
-			other = strings.Repeat("b", 96)
-		}
-	}
-	return w.reconfigure("pins", other)
+	return getWorld(ctx).reconfigure("pins", strings.Repeat("a", 96))
 }
 
 func cdsServing(ctx context.Context) error {
@@ -481,42 +472,46 @@ func cdsServing(ctx context.Context) error {
 
 func attestationServiceStops(ctx context.Context) error {
 	w := getWorld(ctx)
-	if _, err := w.be.call("attestation_service_stop"); err != nil {
-		return err
-	}
 	w.onUndo(func() error {
 		_, err := w.be.call("attestation_service_start")
 		return err
 	})
-	return nil
+	_, err := w.be.call("attestation_service_stop")
+	return err
 }
 
 func readinessRead(ctx context.Context) error {
-	w := getWorld(ctx)
-	out, err := w.be.call("cds_ready")
-	if err != nil {
-		return err
-	}
-	w.cds.readiness = out
-	return nil
+	return clientReads(ctx, "readiness state")
 }
 
 // cdsNotReady allows the CDS a few readiness intervals to notice what the
-// scenario changed, re-reading until it reports not ready.
+// scenario changed, re-reading while it reports ready. An answer that is
+// neither ready nor not ready is a CDS that is not serving.
 func cdsNotReady(ctx context.Context) error {
 	w := getWorld(ctx)
-	if w.cds.readiness == "" {
-		return errors.New("the readiness state has not been read")
+	doc, err := w.lastRead("readiness state")
+	if err != nil {
+		return err
 	}
-	deadline := time.Now().Add(observe)
-	for w.cds.readiness != "no" {
-		if time.Now().After(deadline) {
-			return errors.New("the CDS still reports ready")
+	notReady, err := poll(observe, func() (bool, error) {
+		switch doc.status {
+		case http.StatusServiceUnavailable:
+			return true, nil
+		case http.StatusOK:
+			if err := readinessRead(ctx); err != nil {
+				return false, err
+			}
+			doc = w.cds.doc
+			return false, nil
+		default:
+			return false, fmt.Errorf("the readiness state was answered %d, neither ready nor not ready", doc.status)
 		}
-		time.Sleep(5 * time.Second)
-		if err := readinessRead(ctx); err != nil {
-			return err
-		}
+	})
+	if err != nil {
+		return err
+	}
+	if !notReady {
+		return errors.New("the CDS still reports ready")
 	}
 	return nil
 }
@@ -527,14 +522,11 @@ func readsServingCert(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	certs, err := certificates([]byte(out))
+	cert, err := firstCertificate([]byte(out))
 	if err != nil {
 		return fmt.Errorf("the serving certificate: %w", err)
 	}
-	if len(certs) == 0 {
-		return errors.New("the CDS presented no certificate")
-	}
-	w.cds.servingCert = certs[0]
+	w.cds.servingCert = cert
 	return nil
 }
 
@@ -544,21 +536,63 @@ func (w *world) reportData() ([]byte, error) {
 	if w.cds.servingCert == nil {
 		return nil, errors.New("the client has read no serving certificate")
 	}
-	for _, ext := range w.cds.servingCert.Extensions {
-		if !ext.Id.Equal(oidARMTLSAttestation) {
-			continue
-		}
-		att, err := armtls.UnmarshalExtension(ext.Value)
-		if err != nil {
-			return nil, fmt.Errorf("the evidence extension: %w", err)
-		}
-		data, ok := att.ReportData()
-		if !ok {
-			return nil, errors.New("the evidence carries no report data")
-		}
+	att, err := armtls.ExtractAttestation(w.cds.servingCert, oidARMTLSAttestation)
+	if err != nil {
+		return nil, fmt.Errorf("the serving certificate's evidence: %w", err)
+	}
+	return reportDataOf(att)
+}
+
+// reportDataOf is the 64 bytes of report data the evidence commits to. The
+// library reads them off a raw SEV-SNP report; evidence in an envelope, as
+// every other platform's is, carries them in a quote or report the library
+// leaves to its verifiers, read here instead.
+func reportDataOf(att *armtls.Attestation) ([]byte, error) {
+	if data, ok := att.ReportData(); ok {
 		return data, nil
 	}
-	return nil, errors.New("the serving certificate carries no evidence extension")
+	envelope, ok := att.EmbeddedEvidence()
+	if !ok {
+		return nil, errors.New("the evidence carries no report data")
+	}
+	switch envelope.Platform.Family() {
+	case teetypes.FamilySNP:
+		var evidence snp.SnpEvidence
+		if err := json.Unmarshal(envelope.Evidence, &evidence); err != nil {
+			return nil, fmt.Errorf("the SEV-SNP evidence: %w", err)
+		}
+		raw, err := base64.StdEncoding.DecodeString(evidence.AttestationReport)
+		if err != nil {
+			return nil, fmt.Errorf("the SEV-SNP report: %w", err)
+		}
+		report, err := armtls.NormalizeSEVSNPReport(raw)
+		if err != nil {
+			return nil, err
+		}
+		if len(report) < snp.ReportDataOffset+64 {
+			return nil, fmt.Errorf("the SEV-SNP report is %d bytes, too short for report data", len(report))
+		}
+		return report[snp.ReportDataOffset : snp.ReportDataOffset+64], nil
+	case teetypes.FamilyTDX:
+		var evidence tdx.TdxEvidence
+		if err := json.Unmarshal(envelope.Evidence, &evidence); err != nil {
+			return nil, fmt.Errorf("the TDX evidence: %w", err)
+		}
+		raw, err := base64.StdEncoding.DecodeString(evidence.Quote)
+		if err != nil {
+			return nil, fmt.Errorf("the TDX quote: %w", err)
+		}
+		parsed, err := tdxabi.QuoteToProto(raw)
+		if err != nil {
+			return nil, fmt.Errorf("the TDX quote: %w", err)
+		}
+		quote, ok := parsed.(*tdxpb.QuoteV4)
+		if !ok {
+			return nil, fmt.Errorf("the TDX quote is a %T, whose report data this suite does not read", parsed)
+		}
+		return quote.GetTdQuoteBody().GetReportData(), nil
+	}
+	return nil, fmt.Errorf("the %s evidence carries report data this suite does not read", envelope.Platform)
 }
 
 func reportDataCommitsToKey(ctx context.Context) error {
@@ -571,7 +605,8 @@ func reportDataCommitsToKey(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if len(data) < 48 || !bytes.Equal(data[:48], want[:48]) {
+	const anchor = sha512.Size384
+	if len(data) < anchor || !bytes.Equal(data[:anchor], want[:anchor]) {
 		return errors.New("the report data does not begin with SHA-384 of the serving certificate's public key")
 	}
 	return nil
@@ -585,7 +620,7 @@ func reportDataTailZero(ctx context.Context) error {
 	if len(data) != 64 {
 		return fmt.Errorf("the report data is %d bytes, not 64", len(data))
 	}
-	if !bytes.Equal(data[48:], make([]byte, 16)) {
+	if !bytes.Equal(data[sha512.Size384:], make([]byte, 64-sha512.Size384)) {
 		return errors.New("the last 16 bytes of the report data are not zero")
 	}
 	return nil
@@ -595,12 +630,7 @@ func reportDataTailZero(ctx context.Context) error {
 // public halves; blocks of a kind it cannot parse are skipped.
 func privateKeys(body []byte) []crypto.PublicKey {
 	var keys []crypto.PublicKey
-	for rest := body; ; {
-		var block *pem.Block
-		block, rest = pem.Decode(rest)
-		if block == nil {
-			return keys
-		}
+	for block := range pemBlocks(body, "EC PRIVATE KEY", "RSA PRIVATE KEY", "PRIVATE KEY") {
 		var key any
 		var err error
 		switch block.Type {
@@ -608,18 +638,14 @@ func privateKeys(body []byte) []crypto.PublicKey {
 			key, err = x509.ParseECPrivateKey(block.Bytes)
 		case "RSA PRIVATE KEY":
 			key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
-		case "PRIVATE KEY":
-			key, err = x509.ParsePKCS8PrivateKey(block.Bytes)
 		default:
-			continue
+			key, err = x509.ParsePKCS8PrivateKey(block.Bytes)
 		}
-		if err != nil {
-			continue
-		}
-		if signer, ok := key.(crypto.Signer); ok {
+		if signer, ok := key.(crypto.Signer); err == nil && ok {
 			keys = append(keys, signer.Public())
 		}
 	}
+	return keys
 }
 
 // searchPrivateKeys collects every private key held outside the CDS's
@@ -627,8 +653,8 @@ func privateKeys(body []byte) []crypto.PublicKey {
 // node holds its own control-plane keys.
 func searchPrivateKeys(ctx context.Context, node string) error {
 	w := getWorld(ctx)
-	if w.cds.meshCA == nil {
-		return errors.New("the client has read no mesh CA certificate")
+	if _, err := w.heldMeshCA(); err != nil {
+		return err
 	}
 	k8sNode, err := w.be.call("node_name", node)
 	if err != nil {
@@ -650,12 +676,13 @@ func noneHoldsKey(ctx context.Context) error {
 	if w.cds.found == nil {
 		return errors.New("nothing has been searched")
 	}
+	ca, err := w.heldMeshCA()
+	if err != nil {
+		return err
+	}
 	for _, pub := range w.cds.found {
 		der, err := x509.MarshalPKIXPublicKey(pub)
-		if err != nil {
-			continue
-		}
-		if bytes.Equal(der, w.cds.meshCA.RawSubjectPublicKeyInfo) {
+		if err == nil && bytes.Equal(der, ca.RawSubjectPublicKeyInfo) {
 			return errors.New("a private key found outside CDS process memory matches the mesh CA certificate")
 		}
 	}
