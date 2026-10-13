@@ -1,9 +1,12 @@
 package allowlist
 
 import (
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -80,6 +83,13 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
+	// The token that wrote a canonical whole document is the operator's
+	// signature over it (docs/allowlist-and-capabilities.md).
+	if token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer "); ok {
+		if err := h.Store.SignPolicy(body, token); err != nil {
+			slog.Error("store the operator signature of the allowlist", "error", err)
+		}
+	}
 
 	slog.Info("allowlist replaced", "workloads", len(al.Workloads))
 	w.WriteHeader(http.StatusNoContent)
@@ -152,8 +162,64 @@ func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool
 	}
 	if err := h.WriteAuthorizer(r, body); err != nil {
 		slog.Warn("allowlist write rejected", "method", r.Method, "remote", r.RemoteAddr, "reason", err)
+		if errors.Is(err, ErrTokenReused) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return nil, false
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil, false
 	}
 	return body, true
+}
+
+// HandleHistory handles GET /allowlist/history: every document CDS served,
+// oldest first.
+func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
+	entries, err := h.Store.History()
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Entries []HistoryEntry `json:"entries"`
+	}{entries})
+}
+
+var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// HandleObject handles GET /allowlist/objects/sha256/{hex}: the exact bytes
+// of a document in the history.
+func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
+	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
+		return h.Store.Object(digest)
+	})
+}
+
+// HandleSignature handles GET /allowlist/objects/sha256/{hex}/signature: the
+// operator write token that signed that document.
+func (h Handler) HandleSignature(w http.ResponseWriter, r *http.Request) {
+	h.serveByDigest(w, r, "text/plain", func(digest string) ([]byte, bool, error) {
+		token, ok, err := h.Store.Signature(digest)
+		return []byte(token), ok, err
+	})
+}
+
+func (h Handler) serveByDigest(w http.ResponseWriter, r *http.Request, contentType string, lookup func(string) ([]byte, bool, error)) {
+	hex := chi.URLParam(r, "hex")
+	if !objectHex.MatchString(hex) {
+		http.Error(w, "digest must be 64 lowercase hex characters", http.StatusBadRequest)
+		return
+	}
+	body, ok, err := lookup("sha256:" + hex)
+	if err != nil {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Write(body)
 }
