@@ -298,9 +298,9 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		return nil, fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
 	// A baked component must start before CDS serves policy, with the
-	// arguments, environment and mounts its manifest gives it: the seed must
-	// leave those to the pod and pin at most the executable, and a pin must
-	// admit every invocation the manifests spell out.
+	// arguments and mounts its manifest gives it: the seed must leave those to
+	// the pod, pin at most the executable and match env by name at most, and a
+	// pin must admit every invocation the manifests spell out.
 	seedDigests := make(map[string]bool)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
@@ -312,7 +312,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	index := seed.BuildIndex()
 	for image, baked := range images {
 		if !seedDigests[baked.digest] {
-			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args, env and mounts unconstrained", image)
+			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args and mounts unconstrained and its env any or matched by name", image)
 		}
 		for _, argv := range baked.argvs {
 			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: argv}) {
