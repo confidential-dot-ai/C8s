@@ -3,6 +3,7 @@ package allowlist
 import (
 	"fmt"
 	"maps"
+	"reflect"
 )
 
 func (p EnvPolicy) MarshalYAML() (any, error) {
@@ -67,6 +68,56 @@ func (p EnvPolicy) ExactValues() map[string]string {
 		return nil
 	}
 	return behavior.exactValues()
+}
+
+// Covers reports whether p admits every environment narrow admits, given
+// per-variable evidence: p is any, both are equal, or both constrain the same
+// names and each of p's matchers accepts every value narrow's does. An exact or
+// deny narrow counts as exact matchers for its values.
+func (p EnvPolicy) Covers(narrow EnvPolicy) bool {
+	if reflect.DeepEqual(p, narrow) {
+		return true
+	}
+	wide, err := p.behavior()
+	if err != nil {
+		return false
+	}
+	if wide.isUnconstrained() {
+		return true
+	}
+	narrowBehavior, err := narrow.behavior()
+	if err != nil {
+		return false
+	}
+	wideVariables, narrowVariables := variableMatchers(wide), variableMatchers(narrowBehavior)
+	if wideVariables == nil || narrowVariables == nil || len(wideVariables) != len(narrowVariables) {
+		return false
+	}
+	for name, matcher := range wideVariables {
+		n, listed := narrowVariables[name]
+		if !listed || !matcher.covers(n) {
+			return false
+		}
+	}
+	return true
+}
+
+// variableMatchers views a constrained policy as one matcher per variable, or
+// nil for any.
+func variableMatchers(b envPolicyBehavior) map[string]envMatcherBehavior {
+	switch p := b.(type) {
+	case matchEnvPolicy:
+		return p.variables
+	case exactEnvPolicy:
+		out := make(map[string]envMatcherBehavior, len(p.values))
+		for name, value := range p.values {
+			out[name] = exactEnvMatcher{Exact: &value}
+		}
+		return out
+	case denyEnvPolicy:
+		return map[string]envMatcherBehavior{}
+	}
+	return nil
 }
 
 type anyEnvPolicy struct{}
