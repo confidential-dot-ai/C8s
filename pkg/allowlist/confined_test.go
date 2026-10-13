@@ -69,6 +69,12 @@ func TestConfinedMountPolicyAdmits(t *testing.T) {
 		{"unclean destination below a denied path", []ObservedMount{memory("/app//lib/")}, false},
 		{"relative destination", []ObservedMount{memory("app")}, false},
 		{"platform class at a denied path", []ObservedMount{{Destination: "/app", Class: MountPlatform}}, true},
+		{"volume nested in a volume", []ObservedMount{memory("/h"), memory("/h/lib")}, false},
+		{"volume nested in a volume listed first", []ObservedMount{memory("/h/lib"), memory("/h")}, false},
+		{"two volumes at one destination", []ObservedMount{memory("/h"), memory("/h")}, false},
+		{"platform mount nested in a volume", []ObservedMount{memory("/etcx"), {Destination: "/etcx/hosts", Class: MountPlatform}}, false},
+		{"volume nested in a platform mount", []ObservedMount{{Destination: "/var/run/secrets/kubernetes.io/serviceaccount", Class: MountPlatform}, memory("/var/run/secrets/kubernetes.io/serviceaccount/x")}, true},
+		{"sibling volumes", []ObservedMount{memory("/h"), memory("/h2")}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := policy.admits(tc.mounts); got != tc.want {

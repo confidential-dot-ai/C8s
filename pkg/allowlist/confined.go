@@ -11,9 +11,9 @@ import (
 // node's TEE boundary: a node-created platform mount, a read-only host path, or
 // an emptyDir or data volume on memory or encrypted storage. The host can read
 // what a container writes to a writable host path, or to a volume on storage
-// the node cannot vouch for (a disk-backed emptyDir, a PVC). A host path also
-// needs its source commitment: the observer withholds it when recursive mount
-// options (rro, rrw) leave the access mode of nested mounts unknown.
+// the node cannot vouch for (a disk-backed emptyDir, a PVC). The node reports
+// a host path read-only only when nothing below it is writable (see ReadOnly),
+// and it must carry its source commitment.
 func (m ObservedMount) Confined() bool {
 	switch m.Class {
 	case MountPlatform:
@@ -62,18 +62,28 @@ func normalizePaths(field string, paths []string) ([]string, error) {
 
 // admitsConfined checks a confined policy against classified mount evidence.
 // Unavailable evidence fails closed, as under exact.
+//
+// No mount may sit at or below another mount's non-platform destination: the
+// runtime follows symlinks inside earlier volumes when it creates a later
+// mount, so a volume holding a symlink to a denyBelow path would carry the
+// nested mount there.
 func (p MountPolicy) admitsConfined(mounts []ObservedMount) bool {
 	if mounts == nil {
 		return false
 	}
-	for _, m := range mounts {
-		if m.Class == MountPlatform {
-			continue
-		}
+	for i, m := range mounts {
 		if !path.IsAbs(m.Destination) {
 			return false
 		}
 		destination := path.Clean(m.Destination)
+		for j, other := range mounts {
+			if j != i && other.Class != MountPlatform && within(destination, path.Clean(other.Destination)) {
+				return false
+			}
+		}
+		if m.Class == MountPlatform {
+			continue
+		}
 		if slices.ContainsFunc(p.DenyBelow, func(denied string) bool { return pathsOverlap(destination, denied) }) {
 			return false
 		}
