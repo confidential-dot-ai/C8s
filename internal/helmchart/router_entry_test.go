@@ -3,6 +3,7 @@ package helmchart
 import (
 	"errors"
 	"maps"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -15,7 +16,11 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-const routerEntry = "c8s-router"
+// routerPrefix starts the seeded router entry's name; the rest hashes its content.
+const routerPrefix = "c8s-router-"
+
+// defaultGate stands for the seeded router entry's name in gate expectations.
+const defaultGate = "<seeded entry>"
 
 var c8sDigest = "sha256:" + strings.Repeat("1", 64)
 
@@ -51,19 +56,43 @@ func running(pod corev1.PodSpec) []workloadclaims.SandboxContainer {
 	return out
 }
 
+// routerEntryName returns the seeded router entry's name, or "" when none is seeded.
+func routerEntryName(t *testing.T, seed *pkgallowlist.Allowlist) string {
+	t.Helper()
+	var names []string
+	for name := range seed.Workloads {
+		if strings.HasPrefix(name, routerPrefix) {
+			names = append(names, name)
+		}
+	}
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		if !regexp.MustCompile(`^c8s-router-[0-9a-f]{12}$`).MatchString(names[0]) {
+			t.Fatalf("router entry name %q is not c8s-router-<12 hex>", names[0])
+		}
+		return names[0]
+	default:
+		t.Fatalf("seed has several router entries: %v", names)
+		return ""
+	}
+}
+
 func match(seed *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContainer) (string, error) {
 	name, _, err := seed.MatchWorkload(secrets.WorkloadContainers(seed, reported))
 	return name, err
 }
 
 // assertRouterMatches checks that the rendered router pod resolves to the
-// seeded c8s-router entry and that the CDS, operator and mesh pods still
+// seeded router entry and that the CDS, operator and mesh pods still
 // resolve to their own single-image entries.
 func assertRouterMatches(t *testing.T, out string) {
 	t.Helper()
 	seed := renderedSeed(t, out)
-	if _, ok := seed.Workloads[routerEntry]; !ok {
-		t.Fatalf("seed has no %s entry: %v", routerEntry, slices.Sorted(maps.Keys(seed.Workloads)))
+	routerEntry := routerEntryName(t, seed)
+	if routerEntry == "" {
+		t.Fatalf("seed has no router entry: %v", slices.Sorted(maps.Keys(seed.Workloads)))
 	}
 	for _, w := range renderedPodSpecs(t, out) {
 		if !slices.Contains([]string{"c8s-router", "c8s-cds", "c8s-operator", "c8s-armtls-mesh"}, w.name) {
@@ -104,7 +133,9 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 	assertRouterMatches(t, out)
 
 	pod := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
-	entry := renderedSeed(t, out).Workloads[routerEntry]
+	seed := renderedSeed(t, out)
+	routerEntry := routerEntryName(t, seed)
+	entry := seed.Workloads[routerEntry]
 	if len(entry.InitContainers) != 1 || entry.InitContainers[0].Args.Argv[0] != "acme" {
 		t.Errorf("acme must be declared as the entry's only init container, got %+v", entry.InitContainers)
 	}
@@ -112,7 +143,6 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 		t.Errorf("entry mains = %d, want nginx, cds-attest and allowlist-proxy", len(entry.Containers))
 	}
 
-	seed := renderedSeed(t, out)
 	reported := running(pod)
 	for _, tc := range []struct {
 		name   string
@@ -186,8 +216,8 @@ func TestChartRouterEntryPresence(t *testing.T) {
 			if err != nil {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
-			if _, got := renderedSeed(t, out).Workloads[routerEntry]; got != tc.want {
-				t.Fatalf("seed has %s = %v, want %v", routerEntry, got, tc.want)
+			if got := routerEntryName(t, renderedSeed(t, out)) != ""; got != tc.want {
+				t.Fatalf("router entry seeded = %v, want %v", got, tc.want)
 			}
 			if tc.want {
 				assertRouterMatches(t, out)
@@ -204,11 +234,11 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 		want string
 	}{
 		{name: "hostPort bound", args: digestArgs},
-		{name: "entry seeded", args: slices.Concat(digestArgs, noHostPort), want: routerEntry},
+		{name: "entry seeded", args: slices.Concat(digestArgs, noHostPort), want: defaultGate},
 		{name: "explicit name", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload=infer"}), want: "infer"},
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
-		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: routerEntry},
+		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: defaultGate},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -222,16 +252,46 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 					got = v
 				}
 			}
-			if got != tc.want {
-				t.Fatalf("--expected-workload = %q, want %q", got, tc.want)
+			want := tc.want
+			if want == defaultGate {
+				want = routerEntryName(t, renderedSeed(t, out))
 			}
-			if tc.want == "" {
+			if got != want || (tc.want == defaultGate && want == "") {
+				t.Fatalf("--expected-workload = %q, want %q", got, want)
+			}
+			if want == "" {
 				return
 			}
 			assertRouterReadyzProbe(t, out)
-			if tc.want == routerEntry {
+			if tc.want == defaultGate {
 				assertRouterMatches(t, out)
 			}
 		})
+	}
+}
+
+// A changed digest or argv must seed a new entry: CDS skips a name it holds.
+func TestChartRouterEntryNameTracksContent(t *testing.T) {
+	name := func(args ...string) string {
+		t.Helper()
+		out, err := helmTemplate(t, slices.Concat(bakedArgs, args)...)
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		return routerEntryName(t, renderedSeed(t, out))
+	}
+	base := name()
+	if again := name(); again != base {
+		t.Fatalf("router entry name is not stable: %q then %q", base, again)
+	}
+	for _, args := range [][]string{
+		{"--set", "image.digest=sha256:" + strings.Repeat("3", 64)},
+		{"--set", "router.nginx.image.digest=sha256:" + strings.Repeat("4", 64)},
+		{"--set", "router.attest.port=8900"},
+		{"--set", "router.hostPort.enabled=false", "--set", "router.service.type=LoadBalancer", "--set-string", "router.attest.expectedWorkload=infer"},
+	} {
+		if got := name(args...); got == base {
+			t.Errorf("%v kept router entry name %q", args, got)
+		}
 	}
 }

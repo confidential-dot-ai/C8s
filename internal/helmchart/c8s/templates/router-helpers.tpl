@@ -694,16 +694,26 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 
 {{/*
 The cds-attest readiness gate's workload name. An explicit string wins, and
-"" turns the gate off. Unset defaults to c8s-router where the gate can render
-and be satisfied: the entry is seeded, cds-attest runs, hostPort is off, and
-the node inventory is reachable.
+"" turns the gate off. Unset defaults to the seeded router entry
+(c8s.routerWorkloadName) where router.defaultGate holds.
 */}}
 {{- define "router.expectedWorkload" -}}
 {{- $explicit := .Values.router.attest.expectedWorkload -}}
 {{- if kindIs "string" $explicit -}}
 {{- $explicit -}}
-{{- else if and (eq (include "c8s.routerWorkloadSeeded" .) "true") .Values.router.attest.enabled (not .Values.router.hostPort.enabled) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
-c8s-router
+{{- else if eq (include "router.defaultGate" .) "true" -}}
+{{- include "c8s.routerWorkloadName" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when an unset gate defaults on: it can render and be satisfied. The
+entry is seeded, cds-attest runs, hostPort is off, and the node inventory is
+reachable.
+*/}}
+{{- define "router.defaultGate" -}}
+{{- if and (not (kindIs "string" .Values.router.attest.expectedWorkload)) (eq (include "c8s.routerWorkloadSeeded" .) "true") .Values.router.attest.enabled (not .Values.router.hostPort.enabled) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+true
 {{- end -}}
 {{- end -}}
 

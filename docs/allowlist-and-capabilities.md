@@ -656,13 +656,13 @@ with it gone. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
 When the router runs with digest-pinned nginx and c8s images and
-`deriveComponents` is on, the seed also carries `c8s-router`: nginx plus the c8s
-image pinned to the exact `cds-attest`, `allowlist-proxy` and (as an init
-container) `acme` command lines the chart renders. It is the only entry the
-router pod matches, so the router's mesh leaf is stamped with that name. The
-name is fixed, so a CDS that already holds `c8s-router` keeps the old entry
-across a chart upgrade. After an upgrade that changes the router's images or
-arguments, apply the entry from the rendered seed with `c8s allowlist apply`.
+`deriveComponents` is on, the seed also carries `c8s-router-<first 12 hex of the
+entry's SHA-256>`: nginx plus the c8s image pinned to the exact `cds-attest`,
+`allowlist-proxy` and (as an init container) `acme` command lines the chart
+renders. It is the only entry the router pod matches, so the router's mesh leaf
+is stamped with that name. An upgrade that changes the router's images or
+arguments seeds a new entry beside the old one. Old entries persist like the
+digest-named ones; remove them with `c8s allowlist delete`.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes

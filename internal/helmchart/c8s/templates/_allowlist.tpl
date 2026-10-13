@@ -182,17 +182,18 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "c8s.routerWorkload" -}}
-{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
+{{- /* Takes (dict "root" $ "expectedWorkload" <name>). */ -}}
+{{- define "c8s.routerEntry" -}}
+{{- $root := .root -}}
 {{- $any := dict "policy" "any" -}}
-{{- $nginx := .Values.router.nginx.image -}}
+{{- $nginx := $root.Values.router.nginx.image -}}
 {{- $containers := list (dict "digest" $nginx.digest "image" (printf "%s@%s" $nginx.repository $nginx.digest) "command" $any "args" $any "mounts" $any "env" $any) -}}
 {{- $inits := list -}}
-{{- $ref := printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- $ref := printf "%s@%s" $root.Values.image.repository $root.Values.image.digest -}}
 {{- /* The c8s image's ENTRYPOINT, like secrets.InjectedBinary. */ -}}
 {{- $entrypoint := dict "policy" "exact" "argv" (list "/c8s") -}}
-{{- range $name, $args := (include "c8s.routerArgv" (dict "root" . "expectedWorkload" (include "router.expectedWorkload" .)) | fromJson) -}}
-{{- $c := dict "digest" $.Values.image.digest "image" $ref "command" $entrypoint "args" (dict "policy" "exact" "argv" $args) "mounts" $any "env" $any -}}
+{{- range $name, $args := (include "c8s.routerArgv" . | fromJson) -}}
+{{- $c := dict "digest" $root.Values.image.digest "image" $ref "command" $entrypoint "args" (dict "policy" "exact" "argv" $args) "mounts" $any "env" $any -}}
 {{- /* acme is a native sidecar: declared init, so present but not required. */ -}}
 {{- if eq $name "acme" -}}
 {{- $inits = append $inits $c -}}
@@ -201,6 +202,25 @@
 {{- end -}}
 {{- end -}}
 {{ dict "initContainers" $inits "containers" $containers | toJson }}
+{{- end -}}
+
+{{- /* c8s-router-<12 hex of sha256 over the entry>, so a changed digest or
+       argv seeds a new entry. A defaulted gate names this entry, so its
+       --expected-workload is hashed as a fixed placeholder. */ -}}
+{{- define "c8s.routerWorkloadName" -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- $gate := "" -}}
+{{- if kindIs "string" $explicit -}}
+{{- $gate = $explicit -}}
+{{- else if eq (include "router.defaultGate" .) "true" -}}
+{{- $gate = "<default>" -}}
+{{- end -}}
+{{- printf "c8s-router-%s" (include "c8s.routerEntry" (dict "root" . "expectedWorkload" $gate) | sha256sum | trunc 12) -}}
+{{- end -}}
+
+{{- define "c8s.routerWorkload" -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
+{{ include "c8s.routerEntry" (dict "root" . "expectedWorkload" (include "router.expectedWorkload" .)) }}
 {{- end -}}
 {{- end -}}
 
@@ -218,7 +238,7 @@
 {{- $_ := set $workloads $name $entry -}}
 {{- end -}}
 {{- with (include "c8s.routerWorkload" .) -}}
-{{- $_ := set $workloads "c8s-router" (fromJson .) -}}
+{{- $_ := set $workloads (include "c8s.routerWorkloadName" $) (fromJson .) -}}
 {{- end -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- $_ := set $workloads $name $entry -}}

@@ -84,7 +84,8 @@ The operator-facing bootstrap behavior is described in
 ## Router entry
 
 The router pod's non-injected containers span two images, so no single-image
-entry matches it. `c8s.routerWorkload` returns the `c8s-router` entry that does:
+entry matches it. `c8s.routerWorkload` returns the entry that does, which the
+seed names `c8s.routerWorkloadName`:
 
 | Container | Declared as | Policy |
 |---|---|---|
@@ -107,17 +108,22 @@ any-argv entry), both `router.nginx.image.digest` and `image.digest` are set,
 at least one c8s-image main container renders, and no pinned argument
 contains `$`. Kubelet expands `$(VAR)` and `$$` in args, so such argv
 (`$(HOST_IP)` in the attestation-api URL when `cvmMode=bare-metal` without a
-local attestation-api) is not known at render time. `c8s.routerArgv` takes `(dict "root" $ "expectedWorkload" <name>)`
-and returns the rendered argv per container name.
+local attestation-api) is not known at render time. `c8s.routerArgv` takes
+`(dict "root" $ "expectedWorkload" <name>)` and returns the rendered argv per
+container name; `c8s.routerEntry` takes the same and returns the entry.
+
+`c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
+the SHA-256 of the rendered entry, so a changed digest or argv yields a new name.
+CDS seeds additively by name, so the new entry lands beside the old one, as with
+the digest-named entries. A defaulted gate names this entry from inside its own
+cds-attest argv, so the hash takes that `--expected-workload` as a fixed
+placeholder; an explicit gate is hashed as written.
 
 `router.expectedWorkload` defaults the cds-attest readiness gate to
-`c8s-router` when the entry is seeded, `router.attest.enabled` is true,
-`router.hostPort.enabled` is false, and the inventory is reachable. An explicit
-string, including `""`, wins. The seeded cds-attest argv includes the resulting
-`--expected-workload`.
-
-The entry name is fixed, and CDS seeds additively by name: a store that already
-holds `c8s-router` keeps it across a chart upgrade.
+`c8s.routerWorkloadName` when `router.defaultGate` holds: the gate is unset, the
+entry is seeded, `router.attest.enabled` is true, `router.hostPort.enabled` is
+false, and the inventory is reachable. An explicit string, including `""`, wins.
+The seeded cds-attest argv includes the resulting `--expected-workload`.
 
 [router_entry_test.go](../../../router_entry_test.go) feeds the rendered router,
 CDS, operator and mesh pods through `secrets.WorkloadContainers` and

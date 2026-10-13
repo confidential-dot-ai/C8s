@@ -1212,14 +1212,15 @@ router:
     # forever. The named entry must match the router pod's own non-injected
     # container set: nginx plus the c8s image as cds-attest, allowlist-proxy
     # and, when enabled, the acme sidecar. The chart seeds that entry as
-    # c8s-router when router.nginx.image.digest and image.digest are set and
+    # c8s-router-<12 hex of its content hash> when router.nginx.image.digest
+    # and image.digest are set and
     # nriImagePolicy.bootstrapAllowlist.deriveComponents is true.
     #
     # Requires attest.enabled and hostPort.enabled: false — readiness only
     # withdraws Service endpoints, while a hostPort is published by the CNI
     # portmap plugin independently of pod readiness, so the gate would withhold
     # nothing. The chart fails the render on either mistake. Unset (null)
-    # defaults to c8s-router when that entry is seeded, attest is enabled,
+    # defaults to that entry's name when it is seeded, attest is enabled,
     # hostPort is off and the node inventory is reachable; otherwise the
     # sidecar stays always-ready. "" turns the gate off.
     expectedWorkload: null
