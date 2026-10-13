@@ -8,6 +8,7 @@ import (
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 )
 
 // The armTLS extension, its wire format and its verification live in
@@ -54,8 +55,36 @@ var (
 )
 
 // MarshalExtension encodes att as the X.509 extension under OIDARMTLSAttestation.
+// TDX evidence without RuntimeExtensions carries this node's
+// ([RuntimeExtensions]), so peers can replay RTMR[3].
 func MarshalExtension(att *Attestation) (pkix.Extension, error) {
+	if att.Family == TEETypeTDX && att.RuntimeExtensions == nil {
+		list, err := RuntimeExtensions()
+		if err != nil {
+			return pkix.Extension{}, err
+		}
+		withList := *att
+		withList.RuntimeExtensions = list
+		att = &withList
+	}
 	return att.MarshalExtension(OIDARMTLSAttestation)
+}
+
+// runtimeJournals are where this node's measured-policy journal may be; the
+// first that exists wins. Var so tests can move it.
+var runtimeJournals = []string{policymeasure.NodeJournal, policymeasure.SidecarJournal}
+
+// RuntimeExtensions returns the RTMR[3] runtime extensions this node
+// journaled, nil when it journals none. Call it after obtaining the evidence:
+// the journal records before it extends, so it may run ahead of the quote,
+// which verifiers allow for, but must not lag it.
+func RuntimeExtensions() ([]string, error) {
+	for _, path := range runtimeJournals {
+		if list, err := runtimemeasure.ReadJournal(path); err != nil || list != nil {
+			return list, err
+		}
+	}
+	return nil, nil
 }
 
 // ExtractAttestation parses the extension under OIDARMTLSAttestation out of a
