@@ -24,7 +24,7 @@ func registerNode(sc *godog.ScenarioContext) {
 	sc.Step(`^the first pull of the admission plugin on node "([^"]*)" has not succeeded$`, firstPullNotSucceeded)
 	sc.Step(`^the admission plugin on node "([^"]*)" pulls the served allowlist$`, pluginPulls)
 	sc.Step(`^the database of the CDS does not survive a restart$`, cdsVolatile)
-	sc.Step(`^the CDS has restarted$`, cdsRestarted)
+	sc.Step(`^the CDS (?:restarts|has restarted)$`, cdsRestarted)
 	sc.Step(`^the version of the served allowlist is below the version the admission plugin on node "([^"]*)" applied$`, versionBelowApplied)
 }
 
@@ -143,9 +143,16 @@ func cdsRestarted(ctx context.Context) error {
 	if _, err := w.be.call("cds_restart"); err != nil {
 		return err
 	}
+	w.noteCDSRestart()
+	return nil
+}
+
+// noteCDSRestart records a CDS restart, however it came about: what it serves
+// afterwards is a change the plugin has yet to pull, and restoring the node
+// means starting the plugin again.
+func (w *world) noteCDSRestart() {
 	w.cdsRestarted = true
 	lastMutation = time.Now()
-	return nil
 }
 
 func versionBelowApplied(ctx context.Context, node string) error {

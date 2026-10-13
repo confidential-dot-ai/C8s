@@ -17,6 +17,11 @@ CDS_LOCAL_PORT=18443
 # cds.measurements / armtlsMesh.measurements so every armTLS hop is verified
 # against it, exactly as a pinned production measurement.
 MOCK_MEASUREMENT="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+# Its Deployment (manifests/mock-attestation.yaml) and the node address every
+# component dials it at.
+MOCK_ATTESTATION_NS=kube-system
+MOCK_ATTESTATION_NAME=mock-attestation
+mock_attestation_url() { echo "http://$NODE_IP:8400"; }
 # Test-client and workload images. The workload image joins the install-time
 # floor; the test-client image stays out of it so the admission test can
 # drive a deny-then-allow transition through the signed CDS API.
@@ -95,12 +100,13 @@ cds_healthy() { curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/healthz" >/dev/null
 
 # cds_pf_start opens the CDS port-forward, or reuses the one this WORKDIR
 # opened (its pid file), so drivers running each helper in its own process
-# share one.
+# share one. It forwards to the Deployment's pod rather than the Service: a
+# CDS that is not ready has no Service endpoint, and some callers read one.
 cds_pf_start() {
     local pid
     pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && cds_healthy && return 0
-    kubectl -n "$NS" port-forward svc/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
+    kubectl -n "$NS" port-forward deploy/c8s-cds "$CDS_LOCAL_PORT:8443" >/dev/null 2>&1 &
     echo "$!" > "$WORKDIR/cds-pf.pid"
     for _ in $(seq 1 30); do
         cds_healthy && return 0

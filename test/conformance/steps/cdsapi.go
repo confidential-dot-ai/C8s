@@ -18,8 +18,8 @@ import (
 // their write tokens, writes by callers holding none or the wrong one, and
 // reads by a relying party, with the version every answer carries. A write
 // here is sent as the sentence says, not through the harness's signed path.
-func registerCDS(sc *godog.ScenarioContext) {
-	sc.Step(`^the CDS has an operator key$`, cdsHasOperatorKey)
+func registerCDSAPI(sc *godog.ScenarioContext) {
+	sc.Step(`^the CDS has (?:an operator key|operator keys)$`, cdsHasOperatorKey)
 	sc.Step(`^the seed of the CDS declares image "([^"]*)"$`, seedDeclares)
 	sc.Step(`^the served allowlist has a workload entry "([^"]*)"$`, servedHasEntry)
 	sc.Step(`^the served allowlist has no workload entry "([^"]*)"$`, servedLacksEntry)

@@ -228,7 +228,7 @@ done < "$WORKDIR/floor.tsv"
 
 log "Deploying the mock attestation-api"
 kubectl apply -f test/integration/cluster/manifests/mock-attestation.yaml
-kubectl -n kube-system rollout status deploy/mock-attestation --timeout=120s
+kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME" --timeout=120s
 
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/operator.key" 2>/dev/null
 openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 2>/dev/null
