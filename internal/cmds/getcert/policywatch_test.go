@@ -325,6 +325,25 @@ func TestStampedPolicyStale(t *testing.T) {
 		})
 	}
 
+	t.Run("304 on a matched newer version", func(t *testing.T) {
+		cds := &fakeAllowlist{}
+		cds.set(5, policyTwoWorkloads)
+		stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
+		if err != nil {
+			t.Fatal(err)
+		}
+		served, stale, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(cds.serve(t)), "5", stamp.AllowlistDigest)
+		if err != nil {
+			t.Fatalf("stampedPolicyStale: %v", err)
+		}
+		if served != "5" || stale {
+			t.Fatalf("stampedPolicyStale = %q, %v, want \"5\", false", served, stale)
+		}
+		if got := cds.notModified.Load(); got != 1 {
+			t.Fatalf("304s served = %d, want 1", got)
+		}
+	})
+
 	t.Run("same version, different digest", func(t *testing.T) {
 		// A 200 can carry the stamped version when CDS's version read fails
 		// and it falls back to the full load; only the digest tells then.

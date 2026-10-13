@@ -499,7 +499,7 @@ An allowlist write has a similar effect on a router that requests workload
 claims: its leaf stamps the policy snapshot it was issued under, and strict
 clients reject a leaf naming a superseded policy. The sidecar polls CDS's
 `/allowlist` every `router.certProvisioning.policyWatchInterval` (default 1m;
-a 304 while nothing changed) and re-issues its leaf when the served policy
+values below 1s are rejected, `"0"` disables; a 304 while nothing changed) and re-issues its leaf when the served policy
 moves. Strict clients recover without a router restart within one poll
 interval, plus up to half an interval of jitter, plus one issuance.
 

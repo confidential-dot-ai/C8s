@@ -90,9 +90,8 @@ func (c Client) FetchCanonical(ctx context.Context, ifNoneMatch string) ([]byte,
 	if err != nil || notModified {
 		return nil, "", notModified, err
 	}
-	version, ok := strings.CutPrefix(etag, `W/"`)
-	version, closed := strings.CutSuffix(version, `"`)
-	if !ok || !closed || version == "" {
+	version, ok := weakVersion(etag)
+	if !ok {
 		return nil, "", false, fmt.Errorf("fetch allowlist: ETag %q is not a weak ETag W/\"N\"", etag)
 	}
 	return body, version, false, nil
@@ -196,10 +195,21 @@ func (c Client) mutate(ctx context.Context, method, path string, body []byte, au
 // header is missing or malformed. Exported because enforcers polling the
 // allowlist track the same counter for epoch anti-rollback.
 func VersionFromETag(etag string) string {
-	v := strings.TrimPrefix(etag, "W/")
-	v = strings.TrimPrefix(v, `"`)
-	v = strings.TrimSuffix(v, `"`)
+	v, _ := weakVersion(etag)
 	return v
+}
+
+// weakVersion returns N from a weak ETag W/"N" with a non-empty N.
+func weakVersion(etag string) (string, bool) {
+	v, ok := strings.CutPrefix(etag, `W/"`)
+	if !ok {
+		return "", false
+	}
+	v, ok = strings.CutSuffix(v, `"`)
+	if !ok || v == "" {
+		return "", false
+	}
+	return v, true
 }
 
 // maxAllowlistResponseBytes caps CDS response bodies. Generous for a realistic

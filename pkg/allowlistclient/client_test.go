@@ -101,6 +101,27 @@ func TestFetchCanonical(t *testing.T) {
 	}
 }
 
+func TestVersionFromETag(t *testing.T) {
+	tests := []struct {
+		name string
+		etag string
+		want string
+	}{
+		{name: "weak", etag: `W/"7"`, want: "7"},
+		{name: "strong", etag: `"7"`, want: ""},
+		{name: "empty weak", etag: `W/""`, want: ""},
+		{name: "missing", etag: "", want: ""},
+		{name: "unclosed", etag: `W/"7`, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VersionFromETag(tt.etag); got != tt.want {
+				t.Errorf("VersionFromETag(%q) = %q, want %q", tt.etag, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPutWorkloadBindsBody(t *testing.T) {
 	var gotPath, gotMethod string
 	var gotBody []byte

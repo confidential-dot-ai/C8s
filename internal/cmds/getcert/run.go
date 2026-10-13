@@ -404,8 +404,8 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 				continue
 			}
 			delay := policyRenewDelayFn(cfg.PolicyWatchInterval, time.Until(renewDue))
-			if served == stamp.AllowlistVersion {
-				slog.Warn("cds serves different allowlist bytes at the stamped version, renewing", "version", served, "delay", delay)
+			if served == policyVersion {
+				slog.Warn("cds serves different allowlist bytes at a version that matched the stamp, renewing", "stamped_version", stamp.AllowlistVersion, "matched_version", policyVersion, "delay", delay)
 			} else {
 				slog.Info("cds serves a newer allowlist policy than the leaf names, renewing", "stamped_version", stamp.AllowlistVersion, "served_version", served, "delay", delay)
 			}
