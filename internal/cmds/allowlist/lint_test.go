@@ -631,7 +631,7 @@ func TestShadowByEnvMatcherSubsumption(t *testing.T) {
 		shadowed          bool
 	}{
 		{"present covers exact", presentMode, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, true},
-		{"present covers exact policy", presentMode, `{"policy":"exact","values":{"MODE":"production"}}`, true},
+		{"match does not cover exact policy", presentMode, `{"policy":"exact","values":{"MODE":"production"}}`, false},
 		{"exact policy equals all-exact match", `{"policy":"exact","values":{"MODE":"production"}}`, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, true},
 		{"different values", `{"policy":"match","variables":{"MODE":{"exact":"staging"}}}`, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, false},
 		{"different names", presentMode, `{"policy":"match","variables":{"MODE":{"exact":"production"},"X":{"present":true}}}`, false},
