@@ -586,8 +586,7 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 
 // An open-args entry pinned to another executable does not cover the
 // component: it would reach the base and still deny the component on its
-// own node. Two open-args entries pinning one digest differently cannot both
-// reach the base, so the render fails.
+// own node. Beside one that covers it, both reach the base.
 func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	entry := func(name, argv0 string) []string {
@@ -609,8 +608,74 @@ func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
 	}
 	out, err = helmTemplate(t, append(append(base, entry("c8s-operator", "/c8s")...), entry("c8s-operator-sh", "/bin/sh")...)...)
-	if err == nil || !strings.Contains(out, "incomparable commands") {
-		t.Fatalf("incomparable pins for one digest must fail the render: err=%v\n%s", err, out)
+	if err != nil {
+		t.Fatalf("helm template with two open-args pins for one digest: %v\n%s", err, out)
+	}
+	allowlist := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	index := allowlist.BuildIndex()
+	for _, argv := range [][]string{{"/c8s", "operator"}, {"/bin/sh"}} {
+		if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: argv}) {
+			t.Errorf("base AdmitsProcess(%q) = false, want true", argv)
+		}
+	}
+}
+
+// An operator entry in the shape the chart seeds — one container per
+// invocation, command pinned, env matched — covers the component for the
+// fail-closed guard and reaches the base with its env match intact. One that
+// leaves an invocation out does not cover it.
+func TestChartOperatorMatchedEntryCoversComponent(t *testing.T) {
+	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	matched := func(subcommands ...string) []string {
+		args := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
+		for i, subcommand := range subcommands {
+			p := fmt.Sprintf("nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[%d].", i)
+			args = append(args,
+				"--set-string", p+"digest="+opD,
+				"--set-string", p+"command.policy=exact",
+				"--set-string", p+"command.argv[0]=/c8s",
+				"--set-string", p+"command.argv[1]="+subcommand,
+				"--set-string", p+"args.policy=any",
+				"--set-string", p+"mounts.policy=any",
+				"--set-string", p+"env.policy=match",
+				"--set-string", p+"env.variables.PATH.exact=/usr/bin:/bin",
+			)
+		}
+		return args
+	}
+	invocations := []string{"operator", "attest-proxy", "acme", "cds-attest", "allowlist-proxy", "get-cert", "probe-file", "get-secret", "get-volume"}
+	out, err := helmTemplate(t, matched(invocations[1:]...)...)
+	if err == nil {
+		t.Fatalf("helm template succeeded with the operator invocation uncovered\n%s", out)
+	}
+	if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
+		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
+	}
+	out, err = helmTemplate(t, matched(invocations...)...)
+	if err != nil {
+		t.Fatalf("helm template with the component covered by a matched entry: %v\n%s", err, out)
+	}
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	index := base.BuildIndex()
+	launch := func(argv []string, env ...string) pkgallowlist.RunningContainer {
+		observed, err := pkgallowlist.ObserveEnv(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pkgallowlist.RunningContainer{Digest: opD, Argv: argv, Env: observed, Mounts: []pkgallowlist.ObservedMount{}}
+	}
+	for name, tc := range map[string]struct {
+		launch pkgallowlist.RunningContainer
+		want   bool
+	}{
+		"operator":           {launch([]string{"/c8s", "operator"}, "PATH=/usr/bin:/bin"), true},
+		"probe-file":         {launch([]string{"/c8s", "probe-file", "/ready"}, "PATH=/usr/bin:/bin"), true},
+		"preloaded operator": {launch([]string{"/c8s", "operator"}, "PATH=/usr/bin:/bin", "LD_PRELOAD=/tmp/x.so"), false},
+		"another subcommand": {launch([]string{"/c8s", "render-values"}, "PATH=/usr/bin:/bin"), false},
+	} {
+		if got := index.AdmitsContainer(tc.launch); got != tc.want {
+			t.Errorf("base AdmitsContainer(%s) = %v, want %v", name, got, tc.want)
+		}
 	}
 }
 
@@ -660,8 +725,8 @@ func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
-	index := base.BuildIndex()
+	allowlist := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	index := allowlist.BuildIndex()
 	for _, argv := range [][]string{{"/c8s", "operator"}, {"/c8s", "cds-attest", "--port=1"}} {
 		if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: argv}) {
 			t.Errorf("base does not admit %q", argv)

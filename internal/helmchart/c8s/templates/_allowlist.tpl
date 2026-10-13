@@ -197,58 +197,62 @@
 {{ $containers | toJson }}
 {{- end -}}
 
-{{/* One allowlist container for a system image from c8s.imageAllowlist:
-     command pinned to the entrypoint, args and mounts any. The seed adds an
-     explicit env any; the base leaves env absent, which normalizes to any. */ -}}
-{{- define "c8s.componentContainer" -}}
-{{- $command := dict "policy" "exact" "argv" (get .entry "entrypoint") -}}
-{{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" $command "args" (dict "policy" "any") -}}
-{{- if .env -}}{{- $_ := set $container "env" (dict "policy" "any") -}}{{- end -}}
-{{ $container | toJson }}
-{{- end -}}
-
-{{/* Operator entries that pin at most the command — args, env and mounts any,
-     command any or exact — as digest -> {image, entrypoint}, entrypoint empty
-     for command any. Both shapes can start a component before CDS is
-     reachable, so both feed the base and cover a component for the render
-     guard. An entry that pins args, env or mounts is seed-only. */ -}}
+{{/* Operator entries that pin at most the command — command any or exact,
+     args any, mounts any, env any or match — as digest -> {image,
+     containers}, each container the base form of one such entry. These can
+     start a component before CDS is reachable, so they feed the base and
+     cover a component for the render guard. An entry that pins args, env
+     exact, or mounts is seed-only. */ -}}
 {{- define "c8s.openArgsEntries" -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
 {{- $command := dig "command" "policy" "" $c -}}
-{{- if and (or (eq $command "any") (eq $command "exact")) (eq (dig "args" "policy" "" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (eq (dig "mounts" "policy" "deny" $c) "any") -}}
-{{- $entrypoint := list -}}
+{{- $env := dig "env" "policy" "any" $c -}}
+{{- if and (or (eq $command "any") (eq $command "exact")) (eq (dig "args" "policy" "" $c) "any") (or (eq $env "any") (eq $env "match")) (eq (dig "mounts" "policy" "deny" $c) "any") -}}
+{{- $container := dict "digest" $c.digest "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") -}}
 {{- if eq $command "exact" -}}
-{{- $entrypoint = dig "command" "argv" list $c -}}
-{{- if not $entrypoint -}}
+{{- $argv := dig "command" "argv" list $c -}}
+{{- if not $argv -}}
 {{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads entry %s pins %s to an exact command with no argv" $name $c.digest) -}}
 {{- end -}}
+{{- $_ := set $container "command" (dict "policy" "exact" "argv" $argv) -}}
 {{- end -}}
-{{- /* Two open-args entries for one digest: the base carries the wider pin —
-       any over a pin, a prefix over what extends it. Two pins neither of
-       which extends the other cannot both reach the base. */ -}}
-{{- if hasKey $digests $c.digest -}}
-{{- $prior := get (get $digests $c.digest) "entrypoint" -}}
-{{- $short := $entrypoint -}}{{- $long := $prior -}}
-{{- if gt (len $entrypoint) (len $prior) -}}{{- $short = $prior -}}{{- $long = $entrypoint -}}{{- end -}}
-{{- if and $short (ne ($short | toJson) (slice $long 0 (len $short) | toJson)) -}}
-{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads pin %s to incomparable commands (%s and %s); the base carries one pin per digest, so give the digest one open-args entry" $c.digest ($prior | toJson) ($entrypoint | toJson)) -}}
+{{- if eq $env "match" -}}{{- $_ := set $container "env" $c.env -}}{{- end -}}
+{{- $prior := get $digests $c.digest | default (dict "image" (default $entry.label $c.image | default "") "containers" list) -}}
+{{- $_ := set $container "image" (get $prior "image") -}}
+{{- if not (has $container (get $prior "containers")) -}}
+{{- $_ := set $prior "containers" (append (get $prior "containers") $container) -}}
 {{- end -}}
-{{- $entrypoint = $short -}}
-{{- end -}}
-{{- $_ := set $digests $c.digest (dict "image" (default $entry.label $c.image | default "") "entrypoint" $entrypoint) -}}
+{{- $_ := set $digests $c.digest $prior -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
 {{- end -}}
 
+{{/* "true" when the base container .container admits every invocation of
+     .entrypoint: its command is any or a prefix of the entrypoint, and its
+     env is any. */ -}}
+{{- define "c8s.coversEntrypoint" -}}
+{{- $command := get .container "command" -}}
+{{- $pin := get $command "argv" | default list -}}
+{{- $ok := and (not (hasKey .container "env")) (le (len $pin) (len .entrypoint)) -}}
+{{- range $i, $tok := $pin -}}{{- if and $ok (ne $tok (index $.entrypoint $i)) -}}{{- $ok = false -}}{{- end -}}{{- end -}}
+{{- if $ok -}}true{{- end -}}
+{{- end -}}
+
+{{/* "true" when the base container .container starts .entrypoint: its
+     command is any or a prefix of the entrypoint, whatever its env. */ -}}
+{{- define "c8s.startsEntrypoint" -}}
+{{- include "c8s.coversEntrypoint" (dict "container" (omit .container "env") "entrypoint" .entrypoint) -}}
+{{- end -}}
+
 {{/* The plugin boot base, as allowlist workloads keyed by DigestEntryName:
-     the chart's system images pinned to their entrypoints, and every digest
-     an operator entry admits with open args (c8s.openArgsEntries), under the
-     command that entry pins or under any. The boot config excludes
-     argv-pinned images, which are admitted by the served seed. */ -}}
+     the chart's system images pinned to their entrypoints, and every
+     container an operator entry admits with open args (c8s.openArgsEntries).
+     The boot config excludes argv-pinned images, which are admitted by the
+     served seed. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
@@ -259,18 +263,17 @@
 {{- $image := get $entry "image" -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
 {{- $containers := get $entry "containers" -}}
-{{- /* An operator's open-args entry for the same digest: a wider pin (any, or
-       a prefix of the entrypoint) replaces the component's; one that pins
-       another invocation is admitted beside it, so neither the component nor
-       the operator's invocation is refused on a cold node. */ -}}
+{{- /* Operator open-args containers for the same digest are admitted beside
+       the component's, so neither the component nor the operator's
+       invocations are refused on a cold node. One that admits every
+       invocation of the entrypoint with any env replaces the component's. */ -}}
 {{- if hasKey $openArgs $digest -}}
-{{- $operator := get $openArgs $digest -}}
-{{- $pin := get $operator "entrypoint" -}}
-{{- $entrypoint := get $entry "entrypoint" -}}
-{{- $wider := le (len $pin) (len $entrypoint) -}}
-{{- range $i, $tok := $pin -}}{{- if and $wider (ne $tok (index $entrypoint $i)) -}}{{- $wider = false -}}{{- end -}}{{- end -}}
-{{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $operator) | fromJson -}}
-{{- if $wider -}}{{- $containers = list $container -}}{{- else -}}{{- $containers = append $containers $container -}}{{- end -}}
+{{- $operator := get (get $openArgs $digest) "containers" -}}
+{{- $wider := false -}}
+{{- range $o := $operator -}}
+{{- if include "c8s.coversEntrypoint" (dict "container" $o "entrypoint" (get $entry "entrypoint")) -}}{{- $wider = true -}}{{- end -}}
+{{- end -}}
+{{- if $wider -}}{{- $containers = $operator -}}{{- else -}}{{- $containers = concat $containers $operator -}}{{- end -}}
 {{- end -}}
 {{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
@@ -279,21 +282,10 @@
 {{- if and (not (has $digest $pinnedDigests)) (not (hasKey $components $digest)) -}}
 {{- $image := get $entry "image" -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
-{{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $entry) | fromJson -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (list $container)) -}}
+{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" (get $entry "containers")) -}}
 {{- end -}}
 {{- end -}}
 {{ $workloads | toJson }}
-{{- end -}}
-
-{{/* The base container for an operator open-args entry: pinned to its
-     command when it has one, under any command otherwise. */ -}}
-{{- define "c8s.openArgsContainer" -}}
-{{- if get .entry "entrypoint" -}}
-{{- include "c8s.componentContainer" (dict "digest" .digest "entry" .entry "env" false) -}}
-{{- else -}}
-{{ dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" (dict "policy" "any") "args" (dict "policy" "any") | toJson }}
-{{- end -}}
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}
