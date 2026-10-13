@@ -299,25 +299,30 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	}
 	// A baked component must start before CDS serves policy, with the
 	// arguments, environment and mounts its manifest gives it: the seed must
-	// leave arguments to the pod, match env by name at most, keep mounts any or
-	// confined, and pin at most the executable, and a pin must admit every
-	// invocation the manifests spell out.
-	seedDigests := make(map[string]bool)
+	// leave args to the pod, keep mounts any or confined, pin at most the
+	// executable, and match env at most by name; a pin must admit every
+	// invocation the manifests spell out, and a match must list every variable
+	// they set. The image's and the runtime's variables are not known here;
+	// the chart tests check those.
+	seedContainers := make(map[string][]pkgallowlist.Container)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
 			if c.PinsAtMostCommand() {
-				seedDigests[c.Digest.String()] = true
+				seedContainers[c.Digest.String()] = append(seedContainers[c.Digest.String()], c)
 			}
 		}
 	}
 	index := seed.BuildIndex()
 	for image, baked := range images {
-		if !seedDigests[baked.digest] {
+		if len(seedContainers[baked.digest]) == 0 {
 			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args unconstrained, its env any or matched by name and its mounts any or confined", image)
 		}
-		for _, argv := range baked.argvs {
-			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: argv}) {
-				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, argv)
+		for _, c := range baked.containers {
+			if c.argv != nil && !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: c.argv}) {
+				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, c.argv)
+			}
+			if !slices.ContainsFunc(seedContainers[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c) }) {
+				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q lists the variables its manifest sets %q", image, c.argv, c.env)
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -347,12 +352,35 @@ func setNodeImageNamespace(object *unstructured.Unstructured) error {
 }
 
 // bakedImage is one container image a baked workload runs: its digest, and
-// every argv a manifest spells out for it with an explicit command. A container
-// that runs the image's entrypoint records no argv; its executable is the
-// image's own.
+// each container running it.
 type bakedImage struct {
-	digest string
-	argvs  [][]string
+	digest     string
+	containers []bakedContainer
+}
+
+// bakedContainer is the argv a manifest spells out with an explicit command,
+// nil for a container that runs the image's entrypoint, and the names of the
+// variables the manifest sets.
+type bakedContainer struct {
+	argv []string
+	env  []string
+}
+
+// seedLaunches reports whether seed, an entry container that pins at most the
+// command, admits c's command and lists every variable c's manifest sets.
+func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
+	if c.argv != nil && seed.Command.Policy == pkgallowlist.PolicyExact {
+		if len(c.argv) < len(seed.Command.Argv) || !slices.Equal(c.argv[:len(seed.Command.Argv)], seed.Command.Argv) {
+			return false
+		}
+	}
+	if seed.Env.Policy != pkgallowlist.PolicyMatch {
+		return true
+	}
+	return !slices.ContainsFunc(c.env, func(name string) bool {
+		_, listed := seed.Env.Variables[name]
+		return !listed
+	})
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
@@ -384,9 +412,14 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
+		container := bakedContainer{}
 		if len(c.Command) > 0 {
-			baked.argvs = append(baked.argvs, slices.Concat(c.Command, c.Args))
+			container.argv = slices.Concat(c.Command, c.Args)
 		}
+		for _, e := range c.Env {
+			container.env = append(container.env, e.Name)
+		}
+		baked.containers = append(baked.containers, container)
 	}
 	return nil
 }

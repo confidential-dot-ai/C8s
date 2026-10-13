@@ -632,3 +632,31 @@ func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
 		t.Fatalf("collectNodeImageArtifacts(matched env invocations) = %v, want nil", err)
 	}
 }
+
+// A matched env must list every variable a baked manifest sets: a missing one
+// would deny the component on its own node before CDS serves.
+func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
+	env := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"NODE_IP":{"present":true}}}`
+	seeded := strings.Replace(nodeImageCollectFixture(),
+		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
+		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+env+`}`, 1)
+	for name, tc := range map[string]struct {
+		variable string
+		wantErr  bool
+	}{
+		"listed variable":   {variable: "NODE_IP"},
+		"unlisted variable": {variable: "LD_PRELOAD", wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := strings.Replace(seeded, `          args: ["--platform", "snp"]`, `          args: ["--platform", "snp"]
+          env: [{name: `+tc.variable+`, value: "1"}]`, 1)
+			if input == seeded {
+				t.Fatal("fixture did not change")
+			}
+			_, err := collectNodeImageArtifacts([]byte(input))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("collectNodeImageArtifacts(manifest sets %s) = %v, want error %v", tc.variable, err, tc.wantErr)
+			}
+		})
+	}
+}
