@@ -87,7 +87,7 @@ func (anyEnvPolicy) isUnconstrained() bool {
 type denyEnvPolicy struct{}
 
 func (denyEnvPolicy) admits(o *EnvObservation) bool {
-	return o.WellFormed() && o.Digest == fingerprintEnv(nil).Digest
+	return o.Valid() && o.Digest == fingerprintEnv(nil).Digest
 }
 func (denyEnvPolicy) exactValues() map[string]string {
 	return nil
@@ -102,7 +102,7 @@ func (denyEnvPolicy) isUnconstrained() bool {
 type exactEnvPolicy struct{ values map[string]string }
 
 func (p exactEnvPolicy) admits(o *EnvObservation) bool {
-	return o.WellFormed() && o.Digest == fingerprintEnv(p.values).Digest
+	return o.Valid() && o.Digest == fingerprintEnv(p.values).Digest
 }
 func (p exactEnvPolicy) exactValues() map[string]string {
 	return maps.Clone(p.values)
@@ -132,7 +132,7 @@ func newMatchEnvPolicy(variables map[string]EnvMatcher) (matchEnvPolicy, error) 
 }
 
 func (p matchEnvPolicy) admits(o *EnvObservation) bool {
-	if !o.WellFormed() || o.VariableDigests == nil || len(o.VariableDigests) != len(p.variables) {
+	if !o.Valid() || o.VariableDigests == nil || len(o.VariableDigests) != len(p.variables) {
 		return false
 	}
 	for name, matcher := range p.variables {
