@@ -692,9 +692,9 @@ The host NRI plugin also carries a **base enforcement allowlist** in
 Either a base entry or a served entry must satisfy the launch constraints.
 Both sources check argv at preliminary admission, then argv, environment, and
 mounts at final admission; unavailable evidence fails constrained policies.
-The chart's component entries pin the executable and confine mounts, leaving
-the arguments and environment unconstrained so the platform can start before
-CDS is reachable; the node image's generated RKE2 system entries leave
+The chart's component entries pin the executable, confine mounts and match
+the environment by name, leaving the arguments to the pod so the platform can
+start before CDS is reachable; the node image's generated RKE2 system entries leave
 command and args open as well.
 
 ## Bootstrap
@@ -720,8 +720,9 @@ a component entry whose `env` is `any`, or whose `match` lists a loader
 variable as `present`, as an error. An operator-authored `workloads` entry of
 the same name replaces it whole in the rendered seed. The same component
 entries feed the host plugin's base allowlist, as does every operator entry
-that leaves args and environment unconstrained and mounts `any` or
-`confined`, whether its command is `any` or pinned; other operator entries are
+that leaves args unconstrained, mounts `any` or `confined` and its
+environment `any` or `match`, whether its command is `any` or pinned; other
+operator entries are
 seed-only. The
 name is a function of the digest because CDS seeds **additively by name**: an
 image bump adds the new digest's entry beside the old one, which pods still
@@ -733,26 +734,34 @@ with it gone. The same rule means a cluster installed before the component
 entries pinned their entrypoints keeps serving its stored `command: any`
 entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
-The `confined` mount policy and the env match reach a cluster the same way: a
-digest the chart already seeded keeps its stored `mounts: any` or `env: any`
-entry until the next image bump or an edit. `lint`, `upload` and `apply`
-refuse every entry that pins its command, leaves args open and keeps
-`mounts: any`, whoever wrote it: a stored component entry, an operator
-`bootstrapAllowlist` entry, or a hand-written workload entry of that shape.
-Edit each to `mounts: confined` with a `denyBelow` list before the next
-upload. A plugin built before the policy cannot parse a served document that
-carries one `confined` entry, and it does not stop admission. A running
-plugin keeps enforcing the last document it pulled, which may admit more than
-the new one: the store's older entries, with `mounts: any`. A plugin
-restarted in that state enforces only its bootstrap base until a pull
-succeeds. Roll every enforcing node's plugin forward first, and upgrade the
-chart only after the last node runs it. To roll a node back to an older
-plugin, first edit the `confined` entries away (or roll the chart back):
-until then that node runs on a stale document or its base. After each step,
-check that every enforcing node applied the intended document: its plugin
-logs `pull loop: allowlist refreshed` with the store's current version, while
-a node that cannot parse it logs a fetch failure on every poll.
-A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
+The `confined` mount policy and the env match reach such a cluster the same
+way: a digest the chart already seeded keeps its stored `mounts: any` or
+`env: any` entry until the next image bump or an edit. The stored entry and
+the base are separate: admission accepts either, so the gap closes on a node
+only once both carry the policy. The plugin's base is rendered by the chart,
+so a chart upgrade replaces it on a cluster node, and a measured node image
+carries the pins, the confined mounts and the match in its base as soon as it
+is rebuilt. After an image bump, delete the old digest's entry
+(`c8s allowlist delete`) once no pod runs the old image. `lint` reports a
+stored component entry with `env: any` as an error, and refuses every entry
+that pins its command, leaves args open and keeps `mounts: any`, whoever
+wrote it: a stored component entry, an operator `bootstrapAllowlist` entry,
+or a hand-written workload entry of that shape. `upload`, `apply` and `edit`
+refuse a document that still holds one: replace its `env` with the match
+from the rendered seed (ConfigMap `c8s-cds-allowlist-seed`) and edit its
+mounts to `confined` with a `denyBelow` list first. A plugin built before the
+`confined` policy cannot parse a served document that carries one such
+entry, and it does not stop admission. A running plugin keeps enforcing the
+last document it pulled, which may admit more than the new one: the store's
+older entries, with `mounts: any`. A plugin restarted in that state enforces
+only its bootstrap base until a pull succeeds. Roll every enforcing node's
+plugin forward first, and upgrade the chart only after the last node runs
+it. To roll a node back to an older plugin, first edit the `confined`
+entries away (or roll the chart back): until then that node runs on a stale
+document or its base. After each step, check that every enforcing node
+applied the intended document: its plugin logs `pull loop: allowlist
+refreshed` with the store's current version, while a node that cannot parse
+it logs a fetch failure on every poll. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart
