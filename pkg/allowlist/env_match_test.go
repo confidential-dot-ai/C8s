@@ -333,15 +333,36 @@ func TestEnvPolicyCovers(t *testing.T) {
 	}{
 		{"any covers exact", EnvPolicy{Policy: PolicyAny}, exact, true},
 		{"present covers exact matcher", present, exactMatch, true},
-		{"present covers exact policy", present, exact, true},
+		{"match does not cover exact policy", present, exact, false},
 		{"exact matcher does not cover present", exactMatch, present, false},
 		{"exact policy covers equal matcher", exact, exactMatch, true},
-		{"empty match covers deny", empty, EnvPolicy{Policy: PolicyDeny}, true},
+		{"empty match does not cover deny", empty, EnvPolicy{Policy: PolicyDeny}, false},
 		{"other names", present, parseMatchEnv(t, `{"OTHER":{"present":true}}`), false},
 		{"constrained does not cover any", present, EnvPolicy{Policy: PolicyAny}, false},
 	} {
 		if got := tc.wide.Covers(tc.narrow); got != tc.want {
 			t.Errorf("%s: Covers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Exact and deny admit aggregate-only evidence from pre-upgrade enforcers; match
+// refuses it, so a match policy cannot cover them.
+func TestMatchEnvDoesNotCoverAggregateOnlyEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		wide, narrow EnvPolicy
+		values       map[string]string
+	}{
+		{"exact", parseMatchEnv(t, `{"MODE":{"present":true}}`), EnvPolicy{Policy: PolicyExact, Values: map[string]string{"MODE": "production"}}, map[string]string{"MODE": "production"}},
+		{"deny", parseMatchEnv(t, `{}`), EnvPolicy{Policy: PolicyDeny}, nil},
+	} {
+		aggregateOnly := fingerprintEnv(tc.values)
+		if !tc.narrow.admitsObservation(aggregateOnly) || tc.wide.admitsObservation(aggregateOnly) {
+			t.Fatalf("%s: aggregate-only evidence must be admitted only by the narrow policy", tc.name)
+		}
+		if tc.wide.Covers(tc.narrow) {
+			t.Errorf("%s: match Covers a policy admitting evidence it refuses", tc.name)
 		}
 	}
 }

@@ -70,10 +70,10 @@ func (p EnvPolicy) ExactValues() map[string]string {
 	return behavior.exactValues()
 }
 
-// Covers reports whether p admits every environment narrow admits, given
-// per-variable evidence: p is any, both are equal, or both constrain the same
-// names and each of p's matchers accepts every value narrow's does. An exact or
-// deny narrow counts as exact matchers for its values.
+// Covers reports whether p admits every environment narrow admits: p is any,
+// both are equal, or both constrain the same names and each of p's matchers
+// accepts every value narrow's does. A match p never covers an exact or deny
+// narrow, which also admits aggregate-only evidence that match refuses.
 func (p EnvPolicy) Covers(narrow EnvPolicy) bool {
 	if reflect.DeepEqual(p, narrow) {
 		return true
@@ -88,6 +88,11 @@ func (p EnvPolicy) Covers(narrow EnvPolicy) bool {
 	narrowBehavior, err := narrow.behavior()
 	if err != nil {
 		return false
+	}
+	if _, perVariable := wide.(matchEnvPolicy); perVariable {
+		if _, narrowPerVariable := narrowBehavior.(matchEnvPolicy); !narrowPerVariable {
+			return false
+		}
 	}
 	wideVariables, narrowVariables := variableMatchers(wide), variableMatchers(narrowBehavior)
 	if wideVariables == nil || narrowVariables == nil || len(wideVariables) != len(narrowVariables) {
