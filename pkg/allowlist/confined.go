@@ -11,13 +11,15 @@ import (
 // node's TEE boundary: a node-created platform mount, a read-only host path, or
 // an emptyDir or data volume on memory or encrypted storage. The host can read
 // what a container writes to a writable host path, or to a volume on storage
-// the node cannot vouch for (a disk-backed emptyDir, a PVC).
+// the node cannot vouch for (a disk-backed emptyDir, a PVC). A host path also
+// needs its source commitment: the observer withholds it when recursive mount
+// options (rro, rrw) leave the access mode of nested mounts unknown.
 func (m ObservedMount) Confined() bool {
 	switch m.Class {
 	case MountPlatform:
 		return true
 	case MountHost:
-		return m.ReadOnly
+		return m.ReadOnly && m.HostSourceDigest != ""
 	case MountEmptyDir, MountData:
 		return m.Storage == MountMemory || m.Storage == MountEncrypted
 	default:

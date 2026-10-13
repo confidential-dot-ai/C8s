@@ -238,7 +238,8 @@ treats the non-platform mounts differently:
 ### Confined mounts
 
 A mount is **confined** when what a container writes through it stays inside
-the node's TEE boundary: a platform mount, a read-only host path, or an
+the node's TEE boundary: a platform mount, a read-only host path whose source
+commitment the node recorded (recursive `rro`/`rrw` options withhold it), or an
 `emptyDir` or `data` volume on memory or encrypted storage. A writable host
 path, a disk-backed `emptyDir`, or a PVC the node cannot vouch for is not.
 `confined` admits any set of confined mounts, so the pod keeps choosing its
@@ -259,8 +260,12 @@ own volumes, with two lists to adjust it:
 }
 ```
 
-Both lists take clean absolute paths. The pinned executable is checked as
-under `any`, whether `denyBelow` lists it or not. `confined` is constrained but
+Both lists take clean absolute paths and are compared as written, the way
+the destination appears in the OCI specification; the runtime resolves image
+symlinks in a destination when it mounts. So `denyBelow` must also list every
+symlink that leads into a denied directory, such as `/lib`, `/bin` and `/sbin`
+on a merged-`/usr` image. The pinned executable is checked as under `any`,
+whether `denyBelow` lists it or not. `confined` is constrained but
 host-dependent: a read-only host path admits whatever the host keeps there.
 The [injected drop set](secrets.md#the-injected-drop-set) uses the same
 confinement test (`ObservedMount.Confined` in `pkg/allowlist`).
@@ -625,7 +630,8 @@ entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
 The `confined` mount policy reaches a cluster the same way: a digest the chart
 already seeded keeps its stored `mounts: any` entry until the next image bump
-or an edit. A plugin built before the policy rejects a served document that
+or an edit, and `lint`, `upload` and `apply` refuse such an entry until it is
+edited. A plugin built before the policy rejects a served document that
 carries it, so roll a node image's baked plugin forward before, or with, the
 chart that seeds it.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape

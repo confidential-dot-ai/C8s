@@ -152,6 +152,7 @@ func TestConfinedMountAdmissionUsesFinalStartSpec(t *testing.T) {
 	}{
 		{"read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "ro"}}, true},
 		{"writable host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "rw"}}, false},
+		{"read-only host path with recursively writable submounts", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"ro", "rrw"}}, false},
 		{"writable host path at an unconfined destination", &api.Mount{Type: "bind", Source: "/run/xtables.lock", Destination: "/run/xtables.lock", Options: []string{"rw"}}, true},
 		{"read-only host path over a denied directory", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/bin", Options: []string{"ro"}}, false},
 		{"read-only host path over the loader preload list", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/etc", Options: []string{"ro"}}, false},

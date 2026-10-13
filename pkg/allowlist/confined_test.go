@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// hostDigest stands in for the source commitment the observer records for a
+// host path whose mount options it fully read.
+const hostDigest = "3b2e1f"
+
 func TestObservedMountConfined(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -12,8 +16,9 @@ func TestObservedMountConfined(t *testing.T) {
 		want  bool
 	}{
 		{"platform", ObservedMount{Class: MountPlatform, Storage: MountUnknown}, true},
-		{"read-only host path", ObservedMount{Class: MountHost, ReadOnly: true}, true},
-		{"writable host path", ObservedMount{Class: MountHost}, false},
+		{"read-only host path", ObservedMount{Class: MountHost, ReadOnly: true, HostSourceDigest: hostDigest}, true},
+		{"read-only host path without a source commitment", ObservedMount{Class: MountHost, ReadOnly: true}, false},
+		{"writable host path", ObservedMount{Class: MountHost, HostSourceDigest: hostDigest}, false},
 		{"memory emptyDir", ObservedMount{Class: MountEmptyDir, Storage: MountMemory}, true},
 		{"encrypted emptyDir", ObservedMount{Class: MountEmptyDir, Storage: MountEncrypted}, true},
 		{"disk emptyDir", ObservedMount{Class: MountEmptyDir, Storage: MountUnknown}, false},
@@ -49,7 +54,7 @@ func TestConfinedMountPolicyAdmits(t *testing.T) {
 		{"no mounts", []ObservedMount{}, true},
 		{"platform only", []ObservedMount{platform}, true},
 		{"confined volume", []ObservedMount{platform, memory("/tmp")}, true},
-		{"read-only host path", []ObservedMount{{Destination: "/config", Class: MountHost, ReadOnly: true}}, true},
+		{"read-only host path", []ObservedMount{{Destination: "/config", Class: MountHost, ReadOnly: true, HostSourceDigest: hostDigest}}, true},
 		{"writable host path", []ObservedMount{{Destination: "/config", Class: MountHost}}, false},
 		{"disk emptyDir", []ObservedMount{{Destination: "/cache", Class: MountEmptyDir, Storage: MountUnknown}}, false},
 		{"unprotected data", []ObservedMount{{Destination: "/cache", Class: MountData, Storage: MountUnknown}}, false},

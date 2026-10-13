@@ -656,7 +656,7 @@ func TestInjectedModeWithUnconfinedMountIsNotDropped(t *testing.T) {
 		"memory volumes and a read-only host path": {mounts: []pkgallowlist.ObservedMount{
 			memory,
 			{Destination: "/mnt/c8s-data/cfg", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountEncrypted},
-			{Destination: "/run/c8s/workload-claims", Class: pkgallowlist.MountHost, ReadOnly: true},
+			{Destination: "/run/c8s/workload-claims", Class: pkgallowlist.MountHost, ReadOnly: true, HostSourceDigest: "3b2e1f"},
 			{Destination: "/etc/hosts", Class: pkgallowlist.MountPlatform},
 		}, want: http.StatusCreated},
 		"writable host path":   {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountHost}}, want: http.StatusForbidden},
@@ -1132,7 +1132,8 @@ func TestSecretReleaseEnforcesConfinedMounts(t *testing.T) {
 		want   int
 	}{
 		{"memory volume", []pkgallowlist.ObservedMount{{Destination: "/cache", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}}, http.StatusCreated},
-		{"read-only host path", []pkgallowlist.ObservedMount{{Destination: "/config", Class: pkgallowlist.MountHost, ReadOnly: true}}, http.StatusCreated},
+		{"read-only host path", []pkgallowlist.ObservedMount{{Destination: "/config", Class: pkgallowlist.MountHost, ReadOnly: true, HostSourceDigest: "3b2e1f"}}, http.StatusCreated},
+		{"read-only host path with recursive options", []pkgallowlist.ObservedMount{{Destination: "/config", Class: pkgallowlist.MountHost, ReadOnly: true}}, http.StatusForbidden},
 		{"writable host path", []pkgallowlist.ObservedMount{{Destination: "/config", Class: pkgallowlist.MountHost}}, http.StatusForbidden},
 		{"disk-backed volume", []pkgallowlist.ObservedMount{{Destination: "/cache", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}, http.StatusForbidden},
 		{"below a denied path", []pkgallowlist.ObservedMount{{Destination: "/usr/lib", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}}, http.StatusForbidden},

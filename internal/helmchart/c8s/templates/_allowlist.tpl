@@ -176,13 +176,12 @@
 {{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads pin %s to incomparable commands (%s and %s); the base carries one pin per digest, so give the digest one open-args entry" $c.digest ($prior | toJson) ($entrypoint | toJson)) -}}
 {{- end -}}
 {{- $entrypoint = $short -}}
-{{- /* The base carries one mount policy per digest too: any over confined,
-       and two different confined policies cannot both reach it. */ -}}
+{{- /* The base carries one mount policy per digest too. Widening it apart
+       from the pin would admit a command and mount table no entry pairs, so
+       the two entries must agree on it. */ -}}
 {{- $priorMounts := get (get $digests $c.digest) "mounts" -}}
-{{- if eq (get $priorMounts "policy") "any" -}}
-{{- $mounts = $priorMounts -}}
-{{- else if and (ne (get $mounts "policy") "any") (ne ($priorMounts | toJson) ($mounts | toJson)) -}}
-{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads confine %s's mounts in two different ways (%s and %s); the base carries one mount policy per digest, so give the digest one open-args entry" $c.digest ($priorMounts | toJson) ($mounts | toJson)) -}}
+{{- if ne ($priorMounts | toJson) ($mounts | toJson) -}}
+{{- fail (printf "nriImagePolicy.bootstrapAllowlist.workloads give %s two open-args entries with different mount policies (%s and %s); the base carries one mount policy per digest, so give the digest one open-args entry" $c.digest ($priorMounts | toJson) ($mounts | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- $_ := set $digests $c.digest (dict "image" (default $entry.label $c.image | default "") "entrypoint" $entrypoint "mounts" $mounts) -}}
@@ -208,15 +207,18 @@
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
 {{- $containers := list (include "c8s.componentContainer" (dict "digest" $digest "entry" $entry "env" false) | fromJson) -}}
 {{- /* An operator's open-args entry for the same digest: a wider pin (any, or
-       a prefix of the entrypoint) replaces the component's; one that pins
-       another invocation is admitted beside it, so neither the component nor
-       the operator's invocation is refused on a cold node. */ -}}
+       a prefix of the entrypoint) whose mounts admit every table the
+       component's do (any, or the same policy) replaces the component's; any
+       other is admitted beside it, so neither the component nor the
+       operator's invocation is refused on a cold node. */ -}}
 {{- if hasKey $openArgs $digest -}}
 {{- $operator := get $openArgs $digest -}}
 {{- $pin := get $operator "entrypoint" -}}
 {{- $entrypoint := get $entry "entrypoint" -}}
 {{- $wider := le (len $pin) (len $entrypoint) -}}
 {{- range $i, $tok := $pin -}}{{- if and $wider (ne $tok (index $entrypoint $i)) -}}{{- $wider = false -}}{{- end -}}{{- end -}}
+{{- $operatorMounts := get $operator "mounts" -}}
+{{- if not (or (eq (get $operatorMounts "policy") "any") (eq ($operatorMounts | toJson) (get $entry "mounts" | toJson))) -}}{{- $wider = false -}}{{- end -}}
 {{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $operator) | fromJson -}}
 {{- if $wider -}}{{- $containers = list $container -}}{{- else -}}{{- $containers = append $containers $container -}}{{- end -}}
 {{- end -}}

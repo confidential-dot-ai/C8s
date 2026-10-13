@@ -29,7 +29,11 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
 		switch {
 		case v.HostPath != nil:
-			mount.Class, mount.ReadOnly = pkgallowlist.MountHost, m.ReadOnly
+			digest, err := pkgallowlist.HostSourceDigest(v.HostPath.Path)
+			if err != nil {
+				t.Fatalf("container %s volume %q: %v", c.Name, m.Name, err)
+			}
+			mount.Class, mount.ReadOnly, mount.HostSourceDigest = pkgallowlist.MountHost, m.ReadOnly, digest
 		case v.EmptyDir != nil:
 			mount.Class = pkgallowlist.MountEmptyDir
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {

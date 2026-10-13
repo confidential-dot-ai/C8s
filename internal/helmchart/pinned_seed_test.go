@@ -722,3 +722,49 @@ func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
 		t.Error("base admits the operator image under a shell")
 	}
 }
+
+// An operator entry that pins a component's command with narrower mounts does
+// not replace the component's base entry: on a cold node the component still
+// starts with the mounts the chart gives it.
+func TestChartBaseKeepsComponentMountsBesideNarrowerOperatorEntry(t *testing.T) {
+	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+	p := "nriImagePolicy.bootstrapAllowlist.workloads.cds-narrow.containers[0]."
+	out, err := helmTemplate(t,
+		"--set-string", p+"digest="+cdsDigest,
+		"--set-string", p+"command.policy=exact",
+		"--set-string", p+"command.argv[0]=/c8s",
+		"--set-string", p+"args.policy=any",
+		"--set-string", p+"mounts.policy=confined",
+		"--set-string", p+"mounts.denyBelow[0]=/c8s",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	data := []pkgallowlist.ObservedMount{{Destination: "/data", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}
+	running := pkgallowlist.RunningContainer{Digest: cdsDigest, Argv: []string{"/c8s", "cds", "--port=8443"}, Mounts: data, Env: &pkgallowlist.EnvObservation{}}
+	if !base.BuildIndex().AdmitsContainer(running) {
+		t.Fatalf("base refuses CDS with its disk-backed /data beside a narrower operator entry: %v", base.Workloads)
+	}
+}
+
+// Two open-args entries for one digest reach the base as one container, so
+// they must agree on mounts: widening the pin and the mounts separately would
+// admit a pair neither entry allows.
+func TestChartOpenArgsEntriesMustAgreeOnMounts(t *testing.T) {
+	const d = "sha256:abcdef0000000000000000000000000000000000000000000000000000000001"
+	entry := func(name string, command []string, mounts string) []string {
+		p := "nriImagePolicy.bootstrapAllowlist.workloads." + name + ".containers[0]."
+		args := []string{"--set-string", p + "digest=" + d, "--set-string", p + "args.policy=any", "--set-string", p + "mounts.policy=" + mounts}
+		if command == nil {
+			return append(args, "--set-string", p+"command.policy=any")
+		}
+		return append(args, "--set-string", p+"command.policy=exact", "--set-string", p+"command.argv[0]="+command[0])
+	}
+	out, err := helmTemplate(t, slices.Concat(
+		entry("open", nil, pkgallowlist.PolicyConfined),
+		entry("pinned", []string{"/app"}, pkgallowlist.PolicyAny))...)
+	if err == nil || !strings.Contains(out, "different mount policies") {
+		t.Fatalf("helm template error = %v, want a refusal of entries that disagree on mounts\n%s", err, out)
+	}
+}
