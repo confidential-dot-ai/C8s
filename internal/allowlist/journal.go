@@ -52,6 +52,10 @@ type HistoryEntry struct {
 // ErrTokenReused refuses an operator token that already authorized a write.
 var ErrTokenReused = errors.New("operator token already used")
 
+// ErrTokenBeforeStart refuses an operator token that a store without
+// persistence cannot tell apart from one spent before CDS started.
+var ErrTokenBeforeStart = errors.New("operator token issued too early for a non-persistent store; wait --jwt-clock-skew after CDS start and mint a fresh one")
+
 // objectDigest is "sha256:<hex>" of b, the name history gives a document.
 func objectDigest(b []byte) string {
 	sum := sha256.Sum256(b)

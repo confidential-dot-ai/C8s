@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -314,6 +315,17 @@ func TestReusedTokenIsConflict(t *testing.T) {
 	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")))
 	if w.Code != http.StatusConflict {
 		t.Fatalf("PUT /allowlist with a reused token = %d, want 409", w.Code)
+	}
+}
+
+func TestTokenBeforeStartIsExplained(t *testing.T) {
+	h := Handler{Store: openJournaled(t), WriteAuthorizer: func(*http.Request, []byte) error {
+		return fmt.Errorf("%w: detail", ErrTokenBeforeStart)
+	}}
+	w := httptest.NewRecorder()
+	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")))
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist with a pre-start token = %d %q, want 401 naming ErrTokenBeforeStart", w.Code, w.Body.String())
 	}
 }
 

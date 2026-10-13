@@ -155,8 +155,8 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if err := singleUse(allow, &restarted, start.Add(time.Second), skew)(r, nil); err == nil {
-		t.Fatal("replay after restart = nil, want refusal")
+	if err := singleUse(allow, &restarted, start.Add(time.Second), skew)(r, nil); !errors.Is(err, allowlist.ErrTokenBeforeStart) {
+		t.Fatalf("replay after restart = %v, want ErrTokenBeforeStart", err)
 	}
 }
 

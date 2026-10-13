@@ -169,6 +169,10 @@ func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool
 			http.Error(w, err.Error(), http.StatusConflict)
 			return nil, false
 		}
+		if errors.Is(err, ErrTokenBeforeStart) {
+			http.Error(w, ErrTokenBeforeStart.Error(), http.StatusUnauthorized)
+			return nil, false
+		}
 		w.WriteHeader(http.StatusUnauthorized)
 		return nil, false
 	}

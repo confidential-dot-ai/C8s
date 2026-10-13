@@ -32,7 +32,7 @@ func singleUse(authorize allowlist.WriteAuthorizer, store *allowlist.Store, star
 				return err
 			}
 			if iat.Before(notBefore) {
-				return fmt.Errorf("operator token issued at %s, before %s: CDS start on a non-persistent store plus clock skew", iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
+				return fmt.Errorf("%w: issued at %s, before %s", allowlist.ErrTokenBeforeStart, iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
 			}
 		}
 		return store.ConsumeToken(token)
