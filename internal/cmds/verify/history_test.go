@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -191,22 +192,37 @@ func notesUnstamped(oc Outcome, judged string) bool {
 func TestPinPolicyThroughVerdictPolicies(t *testing.T) {
 	measured := []string{testPolicyP, testPolicyQ}
 	for _, tc := range []struct {
-		name    string
-		pins    []string
-		wantErr string
+		name          string
+		pins          []string
+		unstampedLeaf bool
+		wantErr       string
 	}{
-		{"pinned", measured, ""},
-		{"not pinned", []string{testPolicyP}, "policy_history_not_pinned: the node enforced policy " + testPolicyQ},
+		{"pinned", measured, false, ""},
+		{"pinned, unstamped leaf", measured, true, ""},
+		{"not pinned", []string{testPolicyP}, false, "policy_history_not_pinned: the node enforced policy " + testPolicyQ},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config{pinPolicies: tc.pins}
 			plan, seed := historyPlan(t, cfg)
 			ev := &evidence{platform: "tdx", measured: measured, leafChainDerived: true}
+			if tc.unstampedLeaf {
+				ev.leaf = &x509.Certificate{}
+			}
 			oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(runtimemeasure.FromDigestsSeeded(seed, measured))), nil, plan)
 			applyVerdictPolicies(&oc, cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 			checkPolicyHistory(context.Background(), &oc, cfg, ev, plan.trustKeys)
 			if oc.Verified || oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("verdict = verified %v, partial %v, error %q; want partial only without error containing %q", oc.Verified, oc.Partial, oc.Error, tc.wantErr)
+			}
+			if noted := notesUnstamped(oc, "pinned"); noted != tc.unstampedLeaf {
+				t.Errorf("NotProven = %v; want the unstamped leaf named: %v", oc.NotProven, tc.unstampedLeaf)
+			}
+			if hasLeaf := oc.LeafStamped != nil; hasLeaf != tc.unstampedLeaf || (hasLeaf && *oc.LeafStamped) {
+				got := "nil"
+				if hasLeaf {
+					got = fmt.Sprint(*oc.LeafStamped)
+				}
+				t.Errorf("LeafStamped = %s; want false when a leaf is present, nil otherwise", got)
 			}
 		})
 	}
@@ -413,14 +429,21 @@ func TestMeasuredPoliciesOutput(t *testing.T) {
 	if err := json.Unmarshal(js.Bytes(), &decoded); err != nil || !slices.Equal(decoded.MeasuredPolicies, oc.MeasuredPolicies) {
 		t.Errorf("JSON measured_policies = %v, %v; want %v", decoded.MeasuredPolicies, err, oc.MeasuredPolicies)
 	}
-	if !strings.Contains(js.String(), `"leaf_stamped": false`) {
-		t.Errorf("JSON lacks leaf_stamped false:\n%s", js.String())
-	}
-	oc.LeafStamped = true
-	js.Reset()
-	render(config{output: "json"}, oc, &js)
-	if !strings.Contains(js.String(), `"leaf_stamped": true`) {
-		t.Errorf("JSON lacks leaf_stamped true:\n%s", js.String())
+	for _, tc := range []struct {
+		name    string
+		stamped *bool
+		want    string
+	}{
+		{"no leaf", nil, ""},
+		{"unstamped", new(false), `"leaf_stamped": false`},
+		{"stamped", new(true), `"leaf_stamped": true`},
+	} {
+		oc.LeafStamped = tc.stamped
+		js.Reset()
+		render(config{output: "json"}, oc, &js)
+		if got := strings.Contains(js.String(), "leaf_stamped"); got != (tc.want != "") || !strings.Contains(js.String(), tc.want) {
+			t.Errorf("%s: JSON = %s; want it to contain %q", tc.name, js.String(), tc.want)
+		}
 	}
 	var text bytes.Buffer
 	render(config{}, oc, &text)

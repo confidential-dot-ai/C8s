@@ -721,7 +721,7 @@ matched-workload stamp is unreadable; that stamp is CA-vouched, so without
 when the pod matches no single allowlist entry, leaves the verdict partial: it
 is indistinguishable from a leaf issued to a pod that presented no sandbox
 token, so the policy it was issued under is not checked (`leaf_stamped` is
-`false` in JSON).
+`false` in JSON, and absent when the evidence carries no leaf).
 
 `--trust-operator` fetches each document from
 `<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest

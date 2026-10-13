@@ -1162,10 +1162,11 @@ type Outcome struct {
 	// policy_history_not_pinned, policy_history_unsigned).
 	MeasuredPolicies []string `json:"measured_policies,omitempty"`
 
-	// LeafStamped is true when the leaf carries a readable matched-workload
-	// stamp. Always serialized: an unstamped leaf caps --pin-policy and
-	// --trust-operator at partial.
-	LeafStamped bool `json:"leaf_stamped"`
+	// LeafStamped says whether the leaf carries a readable matched-workload
+	// stamp, nil when the evidence carries no leaf. An unstamped leaf caps
+	// --pin-policy and --trust-operator at partial. True does not mean the
+	// stamp was authenticated: that takes --mesh-ca (see WorkloadNote).
+	LeafStamped *bool `json:"leaf_stamped,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1357,10 +1358,11 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		CertSHA256:        ev.certSHA256,
 		ServingLeafSHA256: ev.servingLeafSHA256,
 		Pinned:            pinned,
-		LeafStamped:       ev.workload != nil,
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)
+		stamped := ev.workload != nil
+		oc.LeafStamped = &stamped
 	}
 	if verr != nil {
 		oc.Error = verr.Error()
