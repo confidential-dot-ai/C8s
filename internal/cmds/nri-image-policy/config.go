@@ -374,6 +374,10 @@ func (c *config) Validate() error {
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
+	// The router and cred-release read the journal from the runtime directory.
+	if c.Allowlist.Pull.MeasurePolicies && c.WorkloadClaims.SocketDir == "" {
+		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir: the measured-policy journal lives there")
+	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")
 	}

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -706,19 +707,51 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 	}
 }
 
-// Policy measuring stays off unless configured, and without a runtime
-// directory to keep the journal in.
-func TestPolicyMeasurerIsOffByDefault(t *testing.T) {
-	dir := t.TempDir()
-	for name, cfg := range map[string]*config{
-		"unset":         {Platform: "tdx", WorkloadClaims: workloadClaimsConfig{SocketDir: dir}},
-		"no socket dir": {Platform: "tdx", Allowlist: allowlistConfig{Pull: pullConfig{MeasurePolicies: true}}},
+// Measuring is off unless configured and on a platform with a runtime
+// register; when it is on but cannot work, every measure fails so nothing
+// unmeasured is applied.
+func TestPolicyMeasurer(t *testing.T) {
+	orig := readOperatorKey
+	t.Cleanup(func() { readOperatorKey = orig })
+	readOperatorKey = func() ([]byte, error) { return nil, errors.New("no operator key staged") }
+
+	for _, tc := range []struct {
+		name     string
+		platform string
+		measure  bool
+		wantHook bool
+	}{
+		{name: "off by default", platform: "tdx"},
+		{name: "no runtime register", platform: "snp", measure: true},
+		{name: "on without an operator key", platform: "tdx", measure: true, wantHook: true},
 	} {
-		if policyMeasurer(cfg, discardLogger()) != nil {
-			t.Errorf("%s: policyMeasurer returned a measurer, want nil", name)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cfg := &config{
+				Platform:       tc.platform,
+				WorkloadClaims: workloadClaimsConfig{SocketDir: dir},
+				Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: tc.measure}},
+			}
+			hook := policyMeasurer(cfg, discardLogger())
+			if (hook != nil) != tc.wantHook {
+				t.Fatalf("policyMeasurer returned a hook: %v, want %v", hook != nil, tc.wantHook)
+			}
+			if hook != nil {
+				if err := hook("sha256:" + strings.Repeat("1", 64)); err == nil {
+					t.Fatal("hook = nil error, want a failure that keeps the policy unapplied")
+				}
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Fatalf("runtime directory holds %v, want no journal", entries)
+			}
+		})
 	}
-	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
-		t.Fatalf("runtime directory holds %v, want no journal", entries)
+}
+
+func TestValidateMeasurePoliciesNeedsSocketDir(t *testing.T) {
+	cfg := validConfig()
+	cfg.Allowlist.Pull.MeasurePolicies = true
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("Validate() = nil, want an error for measure_policies without workload_claims.socket_dir")
 	}
 }

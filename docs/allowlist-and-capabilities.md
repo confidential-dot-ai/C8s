@@ -536,9 +536,11 @@ again.
 
 Set `nriImagePolicy.measurePolicies: true` to turn it on. The chart renders
 it as `allowlist.pull.measure_policies` in the plugin's boot config, and on a
-baked node patches it in through `set-cds-pins`. Measurement needs the launch
-operator key and `workload_claims.socket_dir`; without either the plugin logs
-an error and applies policies unmeasured.
+baked node patches it in through `set-cds-pins`. The key requires
+`workload_claims.socket_dir`, and is a no-op on SEV-SNP, which has no runtime
+register. On TDX without the launch operator key, or with a journal that no
+longer matches the register, the plugin applies no pulled allowlist and keeps
+enforcing the one it holds.
 
 > [!WARNING]
 > Measuring is off by default. Every armTLS check that pins RTMR[3] to the

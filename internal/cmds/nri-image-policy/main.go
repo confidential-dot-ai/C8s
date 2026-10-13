@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
@@ -580,45 +582,46 @@ func measureWith(measure func(string) error, digest string) error {
 	return measure(digest)
 }
 
+// readOperatorKey reads the launch operator key that seeded RTMR[3]. A var so
+// tests can supply one.
+var readOperatorKey = credrelease.ReadOperatorPubkey
+
 // policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
 // before the node applies it, so the register records every policy the node
 // enforced since boot. It returns nil, measuring nothing, unless
-// allowlist.pull.measure_policies is set on a node with a runtime register
-// and a launch operator key.
+// allowlist.pull.measure_policies is set on a platform with a runtime
+// register. When measuring is on but cannot work, the hook fails every call,
+// so the node keeps its current policy rather than enforce unmeasured ones.
 func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error {
 	if !cfg.Allowlist.Pull.MeasurePolicies {
 		return nil
 	}
-	dir := cfg.WorkloadClaims.SocketDir
-	if dir == "" {
-		// cred-release and the router read the journal from the runtime
-		// directory; one elsewhere would leave a register nobody can replay.
-		logger.Error("allowlist policies are not measured: workload_claims.socket_dir is unset")
+	platform := teetypes.PlatformType(cfg.NormalizedPlatform())
+	if !platform.HasRegisters() {
+		logger.Info("allowlist policies are not measured: no runtime register", "platform", platform)
 		return nil
 	}
-	anchor, err := credrelease.ReadOperatorPubkey()
-	if err != nil {
-		logger.Error("allowlist policies are not measured: no launch operator key", "error", err)
-		return nil
+	anchor, err := readOperatorKey()
+	var journal *runtimemeasure.Journal
+	if err == nil {
+		journal, err = policymeasure.Open(cfg.WorkloadClaims.SocketDir, platform, anchor)
 	}
-	journal, err := policymeasure.Open(dir, teetypes.PlatformType(cfg.NormalizedPlatform()), anchor)
 	if journal == nil {
-		if err != nil {
-			logger.Error("allowlist policies are not measured", "error", err)
-		}
-		return nil
+		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", err)
+		return func(string) error { return fmt.Errorf("allowlist policy measurement unavailable: %w", err) }
 	}
 	if err != nil {
 		// A diverged journal refuses every extend, so policy updates stop.
 		logger.Error("allowlist policy measurement journal", "error", err)
 	}
-	path := filepath.Join(dir, policymeasure.JournalName)
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, policymeasure.JournalName)
 	return func(digest string) error {
-		if _, err := journal.MeasureOnce(digest); err != nil {
-			return err
+		_, err := journal.MeasureOnce(digest)
+		// Also after a failed extend, which rewrites the file: the router
+		// reads it as a non-root user, and it lists only public digests.
+		if cerr := os.Chmod(path, 0o644); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
+			logger.Error("measured-policy journal stays unreadable to the router", "error", cerr)
 		}
-		// The router reads the journal as a non-root user; it lists only
-		// public digests.
-		return os.Chmod(path, 0o644)
+		return err
 	}
 }
