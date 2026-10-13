@@ -3,6 +3,8 @@ package allowlist
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -318,6 +320,23 @@ func TestEnvPolicyCovers(t *testing.T) {
 	} {
 		if got := tc.wide.Covers(tc.narrow); got != tc.want {
 			t.Errorf("%s: Covers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The documented env examples are what readers pass to derive --env-file.
+func TestDocumentedEnvExamplesParse(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/allowlist-and-capabilities.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	examples := regexp.MustCompile("(?m)^```json\n\"env\":(.*)\n```").FindAllSubmatch(doc, -1)
+	if len(examples) < 2 {
+		t.Fatalf("found %d env examples, want at least 2", len(examples))
+	}
+	for _, example := range examples {
+		if _, err := ParseEnvPoliciesJSON([]byte(`{"app":` + string(example[1]) + `}`)); err != nil {
+			t.Errorf("ParseEnvPoliciesJSON(%s) error = %v", example[1], err)
 		}
 	}
 }
