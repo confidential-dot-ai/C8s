@@ -24,9 +24,10 @@ are informational. Policy is always resolved by container digest.
 
 An image whose **arguments are per-pod** — the standalone and injected C8s
 components (cds, get-cert, the operator, armtls-mesh, the router) — is an entry
-whose container `command` is `exact` at the image's entrypoint and whose `args`
-is `any`: the executable is the image's own, and everything after it is the
-pod's to choose. An image that may run however it is invoked is an entry with
+whose container `command` is `exact` at the image's entrypoint, or at the
+entrypoint and a subcommand, and whose `args` is `any`: the executable is the
+image's own, and everything after it is the pod's to choose. Its `env` is
+`match`, listing every variable the component launches with. An image that may run however it is invoked is an entry with
 `command` and `args` both `any`. Nothing distinguishes either shape from any
 other entry: it is matched, stamped and diffed like the rest, and the same
 digest may also appear elsewhere under a narrower policy — see [union
@@ -567,15 +568,14 @@ mounts are `confined`, with `denyBelow` covering every directory the
 entrypoint loads code from — nginx's `docker-entrypoint.d` scripts and the
 system binaries it runs, the mesh's `ipset` and `iptables` and their
 `/etc/alternatives` links, the loader's configuration — so a volume can no
-longer replace that code. That closes the mounts half. The env half stays
-open: with `env` left `any`, the environment can still redirect what the
-entrypoint loads (`PATH`, `LD_PRELOAD`) to code already in the image or on a
-confined volume. Args stay open too, and some arguments load code: nginx's
-`-g 'load_module ...;'` and `-c`, and the `--kubeconfig` of the mesh and CDS,
-whose exec credential plugin client-go runs. Nginx's `nginx.conf` is also
-`unconfined`, so any pod using its digest can mount its own with a
-`load_module` directive. Any of these loads code from a confined volume the pod
-mounts. The node image's generated RKE2 system
+longer replace that code. Their `env` is `match` over the names the component
+launches with, `PATH` pinned to the image's value, so a pod cannot set
+`LD_PRELOAD` or redirect a `PATH` lookup. Args stay open, and some arguments
+load code: nginx's `-g 'load_module ...;'` and `-c`, and the `--kubeconfig` of
+the mesh and CDS, whose exec credential plugin client-go runs. Nginx's
+`nginx.conf` is also `unconfined`, so any pod using its digest can mount its
+own with a `load_module` directive. Any of these loads code from a confined
+volume the pod mounts. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
@@ -639,8 +639,8 @@ container *name* is one of those things; the names identify injection only over
 authored input, where admission reserves them and `c8s allowlist derive` drops
 them. get-cert runs with per-pod dynamic arguments, which is exactly why the
 seeded component entries carry `command: exact` at the image's entrypoint and
-`args: any`: the binary is pinned, the rest of the argv is not fixed and must
-not be argv-policed. Before matching, a container whose image is admitted with
+mode (`/c8s get-cert`) and `args: any`: the binary is pinned, the rest of the
+argv is not fixed and must not be argv-policed. Before matching, a container whose image is admitted with
 open args for its executable and running one of the invocations the webhook
 injects is dropped from the candidate set
 ([`secrets.md`](secrets.md#the-injected-drop-set)). The same image in any other
@@ -702,12 +702,22 @@ command and args open as well.
 The chart renders the seed (`--allowlist-seed`) from the resolved component
 digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
 component digest becomes one entry named `<image basename>-<first 12 hex of
-digest>` with a single container under `command: exact` at the image's
-entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`),
-`args: any, env: any`, and `mounts: confined` with the image's `denyBelow`
-list (`c8sComponents[].denyBelow`, `router.nginx.denyBelow`) and, as
-`unconfined`, the destinations where the chart itself mounts a writable host
-path, a PVC or a ConfigMap; an operator-authored `workloads` entry of
+digest>` with one container per way the chart or the webhook runs the image:
+`command: exact` at the image's entrypoint (`c8sComponents[].entrypoint`,
+`router.nginx.entrypoint`) plus the subcommand, `args: any`, `mounts: confined`
+with the image's `denyBelow` list (`c8sComponents[].denyBelow`,
+`router.nginx.denyBelow`) and, as `unconfined`, the destinations where the
+chart itself mounts a writable host path, a PVC or a ConfigMap, and
+`env: match`. The match lists the image config's variables pinned `exact`
+(`c8sComponents[].imageEnv`, `router.nginx.imageEnv`), the pod spec's
+(`exact` for a constant, `present` for a downward-API value), the runtime's
+`HOSTNAME`, and the `KUBERNETES_*` variables the kubelet adds. Component pods
+and injected pods run with `enableServiceLinks: false`, so no other Service
+adds a variable; a loader variable such as `LD_PRELOAD` is never listed, so
+`match` refuses it. `c8s install --resolve-digests` refuses an image whose
+config sets other variables than `imageEnv`, and `c8s allowlist lint` reports
+a component entry whose `env` is `any`, or whose `match` lists a loader
+variable as `present`, as an error. An operator-authored `workloads` entry of
 the same name replaces it whole in the rendered seed. The same component
 entries feed the host plugin's base allowlist, as does every operator entry
 that leaves args and environment unconstrained and mounts `any` or
@@ -723,25 +733,25 @@ with it gone. The same rule means a cluster installed before the component
 entries pinned their entrypoints keeps serving its stored `command: any`
 entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
-The `confined` mount policy reaches a cluster the same way: a digest the chart
-already seeded keeps its stored `mounts: any` entry until the next image bump
-or an edit. `lint`, `upload` and `apply` refuse every entry that pins its
-command, leaves args open and keeps `mounts: any`, whoever wrote it: a stored
-component entry, an operator `bootstrapAllowlist` entry, or a hand-written
-workload entry of that shape. Edit each to `mounts: confined` with a
-`denyBelow` list before the next upload. A plugin built before the policy
-cannot parse a served document that carries one `confined` entry, and it does
-not stop admission. A running plugin keeps enforcing the last document it
-pulled, which may admit more than the new one: the store's older entries,
-with `mounts: any`. A plugin restarted in that state enforces only its
-bootstrap base until a pull succeeds. Roll every enforcing node's plugin
-forward first, and upgrade the chart only after the last node runs it. To
-roll a node back to an older plugin, first edit the `confined` entries away
-(or roll the chart back): until then that node runs on a stale document or
-its base. After each step, check that every enforcing node applied the intended
-document: its plugin logs `pull loop: allowlist refreshed` with the store's
-current version, while a node that cannot parse it logs a fetch failure on
-every poll.
+The `confined` mount policy and the env match reach a cluster the same way: a
+digest the chart already seeded keeps its stored `mounts: any` or `env: any`
+entry until the next image bump or an edit. `lint`, `upload` and `apply`
+refuse every entry that pins its command, leaves args open and keeps
+`mounts: any`, whoever wrote it: a stored component entry, an operator
+`bootstrapAllowlist` entry, or a hand-written workload entry of that shape.
+Edit each to `mounts: confined` with a `denyBelow` list before the next
+upload. A plugin built before the policy cannot parse a served document that
+carries one `confined` entry, and it does not stop admission. A running
+plugin keeps enforcing the last document it pulled, which may admit more than
+the new one: the store's older entries, with `mounts: any`. A plugin
+restarted in that state enforces only its bootstrap base until a pull
+succeeds. Roll every enforcing node's plugin forward first, and upgrade the
+chart only after the last node runs it. To roll a node back to an older
+plugin, first edit the `confined` entries away (or roll the chart back):
+until then that node runs on a stale document or its base. After each step,
+check that every enforcing node applied the intended document: its plugin
+logs `pull loop: allowlist refreshed` with the store's current version, while
+a node that cannot parse it logs a fetch failure on every poll.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
