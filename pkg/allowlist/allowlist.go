@@ -36,7 +36,8 @@ import (
 // canonical form.
 const Schema = "c8s.allowlist/v1"
 
-// Policy values. Argv policies use Deny/Any/Exact; mount policies add
+// Policy values. Argv policies use Deny/Any/Exact; env policies add Match;
+// mount policies add
 // Confined; secrets grants use Deny/Allow — never Any (normalizeSecrets).
 const (
 	PolicyDeny     = "deny"

@@ -296,3 +296,28 @@ func TestMatchEnvCanonicalOrder(t *testing.T) {
 		t.Fatal("different matchers have same canonical policy")
 	}
 }
+
+func TestEnvPolicyCovers(t *testing.T) {
+	present := parseMatchEnv(t, `{"MODE":{"present":true}}`)
+	exactMatch := parseMatchEnv(t, `{"MODE":{"exact":"production"}}`)
+	exact := EnvPolicy{Policy: PolicyExact, Values: map[string]string{"MODE": "production"}}
+	empty := parseMatchEnv(t, `{}`)
+	for _, tc := range []struct {
+		name         string
+		wide, narrow EnvPolicy
+		want         bool
+	}{
+		{"any covers exact", EnvPolicy{Policy: PolicyAny}, exact, true},
+		{"present covers exact matcher", present, exactMatch, true},
+		{"present covers exact policy", present, exact, true},
+		{"exact matcher does not cover present", exactMatch, present, false},
+		{"exact policy covers equal matcher", exact, exactMatch, true},
+		{"empty match covers deny", empty, EnvPolicy{Policy: PolicyDeny}, true},
+		{"other names", present, parseMatchEnv(t, `{"OTHER":{"present":true}}`), false},
+		{"constrained does not cover any", present, EnvPolicy{Policy: PolicyAny}, false},
+	} {
+		if got := tc.wide.Covers(tc.narrow); got != tc.want {
+			t.Errorf("%s: Covers = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
