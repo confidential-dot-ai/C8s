@@ -153,6 +153,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 		rawEvidence:       r.Evidence,
 		erd:               erd,
 		fresh:             fresh,
+		measured:          r.MeasuredPolicies,
 		source:            source,
 		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
 		leaf:              leaf,

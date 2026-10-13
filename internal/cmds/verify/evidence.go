@@ -58,6 +58,9 @@ type evidence struct {
 	// fresh is true when erd binds a caller-supplied nonce, so a passing
 	// verification proves the evidence was produced for THIS check (not replayed).
 	fresh bool
+	// measured is the bundle's measured_policies, unauthenticated until
+	// applyRTMRPins replays a prefix of it against RTMR[3].
+	measured []string
 	// source describes where the evidence came from (for output).
 	source string
 	// certSHA256 is the hex SHA-256 of the serving certificate (cert modes only).
@@ -145,7 +148,8 @@ type attestationResponse struct {
 	IdentityProof *types.MeshIdentityProof `json:"identity_proof"`
 	// ServingLeafSHA256 is informational (pkg/types): the verifier recomputes
 	// it from the leaf it observed and only checks that the two agree.
-	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	ServingLeafSHA256 string   `json:"serving_leaf_sha256,omitempty"`
+	MeasuredPolicies  []string `json:"measured_policies,omitempty"`
 }
 
 // leafTrust is what a caller can offer to authenticate a leaf body that is
@@ -426,6 +430,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 		rawEvidence:      r.Evidence,
 		erd:              erd,
 		fresh:            fresh,
+		measured:         r.MeasuredPolicies,
 		source:           source,
 		bindingNote:      "REPORTDATA binds the identity transcript: front-door mode + session keys + nonce + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
 		leaf:             leaf,

@@ -35,7 +35,7 @@ func TestRTMRFlagIsEnforcedNotJustCarried(t *testing.T) {
 
 	t.Run("matching registers verify and are reported", func(t *testing.T) {
 		var oc Outcome
-		if !applyRTMRPins(&oc, plan.pins, tdxResult(testMRTD, matchingRTMRs())) {
+		if !applyRTMRPins(&oc, plan.pins, nil, tdxResult(testMRTD, matchingRTMRs())) {
 			t.Fatalf("matching pins must verify, got error %q", oc.Error)
 		}
 		// Reported ascending, so a multi-register verdict is reproducible.
@@ -49,7 +49,7 @@ func TestRTMRFlagIsEnforcedNotJustCarried(t *testing.T) {
 		claims := matchingRTMRs()
 		claims["rtmr_2"] = sha384Hex(0xee)
 		var oc Outcome
-		if applyRTMRPins(&oc, plan.pins, tdxResult(testMRTD, claims)) {
+		if applyRTMRPins(&oc, plan.pins, nil, tdxResult(testMRTD, claims)) {
 			t.Fatal("a guest whose RTMR[2] differs from the pin must not verify")
 		}
 		if !strings.Contains(oc.Error, "RTMR[2]") {
@@ -61,7 +61,7 @@ func TestRTMRFlagIsEnforcedNotJustCarried(t *testing.T) {
 		claims := matchingRTMRs()
 		delete(claims, "rtmr_1")
 		var oc Outcome
-		if applyRTMRPins(&oc, plan.pins, tdxResult(testMRTD, claims)) {
+		if applyRTMRPins(&oc, plan.pins, nil, tdxResult(testMRTD, claims)) {
 			t.Fatal("a pin the evidence cannot answer must fail, not pass")
 		}
 		if !strings.Contains(oc.Error, "carry no rtmr_1") {
