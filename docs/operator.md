@@ -696,21 +696,23 @@ A node that measures its allowlist policies (Helm value
 [Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
 reports RTMR[3] as the seed followed by each policy it enforced since boot.
 Its router's attest-pq and attest-lb bundles list those digests as
-`measured_policies`. With `--operator-pkey`, `verify` replays that list
+`measured_policies`, and its TDX armTLS certificates and discovery document
+carry them as runtime extensions. With `--operator-pkey`, or an
+`--image-policy-file` pinning an `approver_key`, `verify` replays that list
 against RTMR[3] and reports the longest prefix that matches as `history:`
-(`measured_policies` in JSON). Without `--operator-pkey`, a listed history is
-not replayed and the verdict warns. Choose how to accept the history:
+(`measured_policies` in JSON). Without either, a listed history is not
+replayed and the verdict warns. Choose how to accept the history:
 
 | Flag | Accepts | Failure |
 |---|---|---|
 | `--pin-policy sha256:<hex>` (repeatable) | Only these digests, for every history entry and for the policy the leaf was issued under | `policy_history_not_pinned` |
-| `--trust-operator --trust-operator-keys <pem>` | Every history entry whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
+| `--trust-operator --trust-operator-keys <pem>` | Every history entry, and the policy the leaf was issued under, whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
 
-Both flags require `--operator-pkey` and exclude each other. Both fail with
+Both flags require `--operator-pkey` or `--image-policy-file`, and exclude each other. Both fail with
 `policy_history_absent` when nothing replays: a node that does not measure
-proves nothing about the policies it enforced. `--pin-policy` also fails when
-the leaf carries no readable issuing policy; that stamp is CA-vouched, so
-without `--mesh-ca` the verdict stays partial.
+proves nothing about the policies it enforced. Both also fail when the leaf
+carries no readable issuing policy; that stamp is CA-vouched, so without
+`--mesh-ca` the verdict stays partial.
 
 `--trust-operator` fetches each document from
 `<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
@@ -724,7 +726,7 @@ themselves against the replayed digests, so any router replica may serve
 them.
 
 To review the documents before pinning them, add `--fetch-allowlists DIR`
-(also requires `--operator-pkey`): `verify` saves each one as
+(also requires `--operator-pkey` or `--image-policy-file`): `verify` saves each one as
 `DIR/<hex>.json`, and a failed fetch or write fails the verdict with
 `allowlist_fetch_failed`.
 
@@ -739,8 +741,11 @@ c8s verify https://app.example.com --mode attest-lb \
 Image policy files preserve each image measurement, its TDX RTMR tuple and
 optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
-`remote.EnforceImages` checks the image and calls `runtimemeasure.VerifyBinding`
-for that same entry. An image cannot borrow another entry's authorized key.
+`remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
+binding for that same entry. On TDX the binding may be the key's seed followed
+by a prefix of the peer's measured policies that replays
+([Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
 entry, including its launch-key binding when present.

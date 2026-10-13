@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -619,7 +620,15 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 		logger.Error("allowlist policy measurement journal", "error", err)
 	}
 	path := filepath.Join(cfg.WorkloadClaims.SocketDir, policymeasure.JournalName)
+	// Created readable up front: the journal's first append would create it
+	// 0600, and certificate producers would fail to read it until the chmod.
+	if err := createReadable(path); err != nil {
+		logger.Error("measured-policy journal stays unreadable to the router", "error", err)
+	}
 	return func(digest string) error {
+		if err := checkJournalRoom(journal, digest); err != nil {
+			return err
+		}
 		_, err := journal.MeasureOnce(digest)
 		// Also after a failed extend, which rewrites the file: the router
 		// reads it as a non-root user, and it lists only public digests.
@@ -628,4 +637,31 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 		}
 		return err
 	}
+}
+
+// checkJournalRoom refuses a digest the journal does not hold once it holds
+// armtls.MaxRuntimeExtensions: certificates cannot carry a longer list, so
+// measuring it would cost the node its armTLS identity. The node keeps its
+// current policy until it reboots.
+func checkJournalRoom(journal *runtimemeasure.Journal, digest string) error {
+	measured := journal.Digests()
+	if len(measured) < armtls.MaxRuntimeExtensions {
+		return nil
+	}
+	if d, err := runtimemeasure.CanonicalDigest(digest); err == nil && slices.Contains(measured, d) {
+		return nil
+	}
+	return fmt.Errorf("allowlist policy %s not applied: the node measured %d policies since boot, the most its certificates can carry; reboot to take further updates", digest, len(measured))
+}
+
+// createReadable creates path empty and world-readable unless it exists.
+func createReadable(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
 }

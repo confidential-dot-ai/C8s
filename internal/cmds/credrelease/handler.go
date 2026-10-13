@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -243,7 +243,7 @@ func serveMeasuredPolicies(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	policies, err := policymeasure.Read(measuredPoliciesPath)
+	policies, err := runtimemeasure.ReadJournal(measuredPoliciesPath)
 	if err != nil {
 		slog.Error("read measured policies", "path", measuredPoliciesPath, "error", err)
 		http.Error(w, "read measured policies", http.StatusInternalServerError)

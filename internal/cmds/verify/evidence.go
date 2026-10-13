@@ -58,8 +58,9 @@ type evidence struct {
 	// fresh is true when erd binds a caller-supplied nonce, so a passing
 	// verification proves the evidence was produced for THIS check (not replayed).
 	fresh bool
-	// measured is the bundle's measured_policies, unauthenticated until
-	// applyRTMRPins replays a prefix of it against RTMR[3].
+	// measured is the node's measured policy list (a bundle's
+	// measured_policies, a certificate's or discovery document's runtime
+	// extensions), unauthenticated until replayed against RTMR[3].
 	measured []string
 	// source describes where the evidence came from (for output).
 	source string
@@ -253,7 +254,7 @@ func authorizeLeafBody(cert *x509.Certificate, body certutil.BodyAuthentication,
 // once the body carrying that window is itself authenticated, which
 // authenticateLeafBody + authorizeLeafBody enforce together.
 func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*evidence, error) {
-	platform, raw, erd, err := localverify.CertEnvelope(cert)
+	platform, raw, params, err := localverify.CertEnvelope(cert)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +273,8 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 	return &evidence{
 		platform:          platform,
 		rawEvidence:       raw,
-		erd:               erd,
+		erd:               params.ExpectedReportData,
+		measured:          params.RuntimeExtensions,
 		fresh:             false,
 		source:            source,
 		certSHA256:        hex.EncodeToString(sum[:]),

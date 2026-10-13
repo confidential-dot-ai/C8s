@@ -34,9 +34,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/time/rate"
 
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
-	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
@@ -582,7 +582,7 @@ func (s *Server) measuredPolicies() []string {
 	if s.cfg.MeasuredPoliciesFile == "" {
 		return nil
 	}
-	policies, err := policymeasure.Read(s.cfg.MeasuredPoliciesFile)
+	policies, err := runtimemeasure.ReadJournal(s.cfg.MeasuredPoliciesFile)
 	if err != nil {
 		s.log.Warn("read measured policies", "error", err)
 	}

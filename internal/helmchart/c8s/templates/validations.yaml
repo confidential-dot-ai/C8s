@@ -170,3 +170,11 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- /*
+  Certificate producers read the measured-policy journal at the default
+  runtime directory (internal/policymeasure.NodeJournal). Elsewhere they send no
+  list and CDS refuses the node's identity.
+*/ -}}
+{{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/var/run/nri-image-policy") -}}
+{{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /var/run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
+{{- end -}}
