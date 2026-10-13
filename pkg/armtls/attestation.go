@@ -4,6 +4,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
+	"io/fs"
+	"time"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -59,19 +62,25 @@ var (
 )
 
 // MarshalExtension encodes att as the X.509 extension under OIDARMTLSAttestation.
-// TDX evidence without RuntimeExtensions carries this node's
-// ([RuntimeExtensions]), so peers can replay RTMR[3].
 func MarshalExtension(att *Attestation) (pkix.Extension, error) {
-	if att.Family == TEETypeTDX && att.RuntimeExtensions == nil {
-		list, err := RuntimeExtensions()
-		if err != nil {
-			return pkix.Extension{}, err
-		}
-		withList := *att
-		withList.RuntimeExtensions = list
-		att = &withList
-	}
 	return att.MarshalExtension(OIDARMTLSAttestation)
+}
+
+// WithRuntimeExtensions returns att carrying this node's [RuntimeExtensions]
+// when it is TDX evidence without a list of its own, so peers can replay
+// RTMR[3]; otherwise att itself. Producers call it after obtaining the
+// evidence.
+func WithRuntimeExtensions(att *Attestation) (*Attestation, error) {
+	if att.Family != TEETypeTDX || att.RuntimeExtensions != nil {
+		return att, nil
+	}
+	list, err := RuntimeExtensions()
+	if err != nil {
+		return nil, err
+	}
+	withList := *att
+	withList.RuntimeExtensions = list
+	return &withList, nil
 }
 
 // runtimeJournals are where this node's measured-policy journal may be; the
@@ -84,12 +93,31 @@ var runtimeJournals = []string{policymeasure.NodeJournal, policymeasure.SidecarJ
 // which verifiers allow for, but must not lag it.
 func RuntimeExtensions() ([]string, error) {
 	for _, path := range runtimeJournals {
-		if list, err := runtimemeasure.ReadJournal(path); err != nil || list != nil {
+		if list, err := readJournal(path); err != nil || list != nil {
 			return list, err
 		}
 	}
 	return nil, nil
 }
+
+// readJournal retries a permission error: after a failed extend the plugin
+// rewrites the journal 0600 and restores 0644 right after.
+func readJournal(path string) ([]string, error) {
+	var err error
+	for range journalReadAttempts {
+		var list []string
+		if list, err = runtimemeasure.ReadJournal(path); !errors.Is(err, fs.ErrPermission) {
+			return list, err
+		}
+		time.Sleep(journalRetryDelay)
+	}
+	return nil, err
+}
+
+const (
+	journalReadAttempts = 5
+	journalRetryDelay   = 20 * time.Millisecond
+)
 
 // ExtractAttestation parses the extension under OIDARMTLSAttestation out of a
 // certificate, failing with ErrNoAttestation when there is none.

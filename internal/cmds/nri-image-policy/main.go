@@ -646,6 +646,9 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 			return err
 		}
 		_, err := journal.MeasureOnce(digest)
+		if errors.Is(err, runtimemeasure.ErrRegisterDiverged) {
+			err = fmt.Errorf("%w: %w", errPolicyRefused, err)
+		}
 		// Also after a failed extend, which rewrites the file: the router
 		// reads it as a non-root user, and it lists only public digests.
 		if cerr := os.Chmod(path, 0o644); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {

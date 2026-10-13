@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -25,7 +26,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func TestMarshalExtensionRuntimeExtensions(t *testing.T) {
+func TestWithRuntimeExtensions(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
 	dir := t.TempDir()
@@ -57,7 +58,11 @@ func TestMarshalExtensionRuntimeExtensions(t *testing.T) {
 		{name: "SEV-SNP never", att: snp, journals: []string{journal}},
 	} {
 		runtimeJournals = tc.journals
-		ext, err := MarshalExtension(&tc.att)
+		att, err := WithRuntimeExtensions(&tc.att)
+		if err != nil {
+			t.Fatalf("%s: WithRuntimeExtensions: %v", tc.name, err)
+		}
+		ext, err := MarshalExtension(att)
 		if err != nil {
 			t.Fatalf("%s: MarshalExtension: %v", tc.name, err)
 		}
@@ -70,7 +75,7 @@ func TestMarshalExtensionRuntimeExtensions(t *testing.T) {
 		}
 	}
 	if tdx.RuntimeExtensions != nil {
-		t.Errorf("MarshalExtension set RuntimeExtensions on its argument: %v", tdx.RuntimeExtensions)
+		t.Errorf("WithRuntimeExtensions set RuntimeExtensions on its argument: %v", tdx.RuntimeExtensions)
 	}
 }
 
@@ -159,5 +164,30 @@ func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
 		if _, err := VerifyCert(cert, policy, nil); (err != nil) != tc.wantErr {
 			t.Errorf("%s: VerifyCert = %v, want error %v", tc.name, err, tc.wantErr)
 		}
+	}
+}
+
+// A journal briefly unreadable while the plugin rewrites it is read once its
+// mode is restored.
+func TestRuntimeExtensionsRetriesUnreadableJournal(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	journal := filepath.Join(t.TempDir(), "measured-policies")
+	if err := os.WriteFile(journal, []byte(p+"\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	orig := runtimeJournals
+	t.Cleanup(func() { runtimeJournals = orig })
+	runtimeJournals = []string{journal}
+	restored := make(chan error, 1)
+	go func() {
+		time.Sleep(journalRetryDelay)
+		restored <- os.Chmod(journal, 0o644)
+	}()
+	got, err := RuntimeExtensions()
+	if cerr := <-restored; cerr != nil {
+		t.Fatal(cerr)
+	}
+	if err != nil || !slices.Equal(got, []string{p}) {
+		t.Fatalf("RuntimeExtensions = %v, %v; want [%s]", got, err, p)
 	}
 }

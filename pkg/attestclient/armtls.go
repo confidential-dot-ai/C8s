@@ -60,6 +60,9 @@ func (c Client) AttestationExtension(ctx context.Context, attestationApiURL stri
 	if err != nil {
 		return pkix.Extension{}, err
 	}
+	if att, err = armtls.WithRuntimeExtensions(att); err != nil {
+		return pkix.Extension{}, err
+	}
 	return armtls.MarshalExtension(att)
 }
 

@@ -912,3 +912,27 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 		t.Errorf("applied A=%v B=%v, want the current policy A only", admitsDigest(store, pushDigestA), admitsDigest(store, pushDigestB))
 	}
 }
+
+// A register that diverged from the journal refuses every policy for good.
+func TestPolicyMeasurerRefusesOnDivergedRegister(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+	reg := &memRegister{val: runtimemeasure.Seed([]byte("another key"))}
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, policymeasure.JournalName), reg, runtimemeasure.Seed(anchor))
+	}
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	hook := policyMeasurer(cfg, discardLogger())
+	if err := hook("sha256:" + strings.Repeat("1", 64)); !errors.Is(err, errPolicyRefused) {
+		t.Errorf("hook = %v, want errPolicyRefused on a diverged register", err)
+	}
+	if reg.extends != 0 {
+		t.Errorf("register extended %d times, want 0", reg.extends)
+	}
+}
