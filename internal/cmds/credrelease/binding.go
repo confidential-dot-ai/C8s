@@ -199,6 +199,9 @@ func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error
 		return fmt.Errorf("read measured policies: %w", err)
 	}
 	if _, err := policymeasure.Prefix(report, anchor, policies); err != nil {
+		if len(policies) == 0 {
+			return err
+		}
 		return fmt.Errorf("binding replays no prefix of the %d measured policies in %s: %w", len(policies), measuredPoliciesPath, err)
 	}
 	return nil
