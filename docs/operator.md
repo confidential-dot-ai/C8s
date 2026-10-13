@@ -981,8 +981,9 @@ get-cert \
 `--key-out` is idempotent: on a kubelet restart of the sidecar it reuses the
 key that's already on disk, so the previously-issued cert chain stays valid.
 The sidecar leaves `--ca-watch-interval` at get-cert's default, so it polls
-CDS's `/ca` once a minute, and `/allowlist` too when the pod requests workload
-claims, renewing early when either no longer matches the installed leaf.
+CDS once a minute and renews early when CDS's mesh CA is missing from
+`ca.crt`, or, when the pod requests workload claims, when the allowlist no
+longer matches the snapshot stamped in the leaf.
 
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
