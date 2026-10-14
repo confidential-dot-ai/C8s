@@ -785,9 +785,12 @@ func ghostAddress(ctx context.Context, name string) error {
 	if err != nil {
 		return fmt.Errorf("the node's pod range %q: %w", cidr, err)
 	}
+	// The last address of the range but five, whatever its size.
 	ip := make(net.IP, len(network.IP))
-	copy(ip, network.IP)
-	ip[len(ip)-1] |= 0xfa // .250 of a /24
+	for i := range ip {
+		ip[i] = network.IP[i] | ^network.Mask[i]
+	}
+	ip[len(ip)-1] -= 5
 	for _, other := range w.pods {
 		for _, held := range other.addrs {
 			if held == ip.String() {
