@@ -92,7 +92,9 @@ A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
 and undoes that, and restarts the CDS. Each is undone after the scenario, and
 a plugin is started again wherever the CDS was restarted, since a plugin only
-accepts the versions a restarted CDS serves after a start of its own.
+accepts the versions a restarted CDS serves after a start of its own. The
+mesh is restarted after a CDS restart too: a restarted CDS mints a new mesh
+CA, which only a proxy started after it accepts.
 
 Where a scenario is about the CDS's own API, the backend sends the request as
 the scenario says rather than through its signed path: a write with the

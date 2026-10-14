@@ -32,6 +32,8 @@
 #   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
 #                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   mesh_restart                     restart every mesh proxy and wait until all are
+#                                    ready, so each bootstraps from the CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
@@ -605,8 +607,8 @@ MESH_SET_GUARDED=ARMTLS-MESH-CW-PODS
 
 # cached <key> <command...>: the command's output, kept in the run's scratch
 # directory after the first call and dropped by teardown; for what does
-# not change during a run (the mesh DaemonSet's spec, the mesh pod on a node,
-# the node address the proxy is scraped at). An empty answer is not kept, nor
+# not change during a run (the mesh DaemonSet's spec, the mesh pod on a node
+# until mesh_restart, the node address the proxy is scraped at). An empty answer is not kept, nor
 # a failure, whose status (77 included) is passed on.
 cached() {
     local file rc
@@ -633,6 +635,16 @@ mesh_arg() {
 mesh_ready() {
     kubectl -n "$NS" get ds "$MESH_DS" >/dev/null 2>&1 || return "$UNSUPPORTED"
     kubectl -n "$NS" rollout status "ds/$MESH_DS" --timeout=240s >/dev/null
+}
+
+# A restarted CDS mints a new mesh CA, which a running proxy refuses as a
+# CA bundle with no continuity; only a proxy started after it bootstraps
+# from the new one. The mesh pods are new, so their cached names go.
+mesh_restart() {
+    kubectl -n "$NS" get ds "$MESH_DS" >/dev/null 2>&1 || return "$UNSUPPORTED"
+    kubectl -n "$NS" rollout restart "ds/$MESH_DS" >/dev/null || return
+    kubectl -n "$NS" rollout status "ds/$MESH_DS" --timeout=240s >/dev/null || return
+    rm -f "$(scratch)"/cache-mesh-pod-*
 }
 
 mesh_member() {
@@ -749,35 +761,56 @@ mesh_cert_mode() {
 }
 
 # The verify set fills on the first CA refresh after the proxy switched to
-# its CDS leaf, which it does at start; the refresh is logged at debug level
-# only, so the observation is the proxy in cds mode for longer than one poll
-# interval with no refresh failure in its log.
+# its CDS leaf, and a failed refresh keeps the set it had. Success is logged
+# at debug level only, so the observation is the latest refresh tick (one
+# poll interval apart from "CA bundle refresh enabled") with no failure
+# logged after it; when it failed, the next tick decides.
 mesh_chain_ready() {
-    local pod interval started wait
+    local pod interval started verdict wait tries=0
     pod="$(mesh_pod_on "$1")"
     [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
     [ "$(mesh_cert_mode "$1")" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
     interval="$(mesh_arg ca-poll-interval)"
-    started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.startTime}')"
-    # Seconds still to wait until one poll interval and a margin have passed
-    # since the pod started, and the interval in seconds.
-    read -r wait interval < <(python3 - "${interval:-5m}" "$started" <<'PYEOF'
+    started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="armtls-mesh")].state.running.startedAt}')"
+    while :; do
+        read -r verdict wait < <(kubectl -n "$NS" logs "$pod" -c armtls-mesh --timestamps 2>/dev/null |
+            python3 -c "$MESH_REFRESH_PY" "${interval:-5m}" "$started")
+        case "$verdict" in
+            ok) return 0 ;;
+            failed) [ "$tries" -lt 1 ] || { echo "backend: the mesh proxy on $1 failed its last CA refresh" >&2; return 1; } ;;
+        esac
+        tries=$((tries + 1))
+        sleep "$wait"
+    done
+}
+
+# stdin: the proxy's log with timestamps; argv: the poll interval and the
+# container's start. Prints ok, failed or wait, then the seconds until the
+# next tick has had time to be logged.
+MESH_REFRESH_PY='
 import datetime, re, sys
+def ts(s):
+    s = re.sub(r"\.\d+", "", s.rstrip("Z"))
+    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
 units = {"h": 3600, "m": 60, "s": 1}
 interval = sum(int(n) * units[u] for n, u in re.findall(r"(\d+)([hms])", sys.argv[1]))
-started = datetime.datetime.strptime(sys.argv[2], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
-elapsed = (datetime.datetime.now(datetime.timezone.utc) - started).total_seconds()
-print(max(0, int(interval + 30 - elapsed)), interval)
-PYEOF
-)
-    sleep "$wait"
-    local logs
-    logs="$(kubectl -n "$NS" logs "$pod" -c armtls-mesh --since="${interval}s" 2>/dev/null)" || true
-    if grep -q "CA bundle refresh failed" <<<"$logs"; then
-        echo "backend: the mesh proxy on $1 failed a CA refresh in the last ${interval}s" >&2
-        return 1
-    fi
-}
+anchor, failures = ts(sys.argv[2]), []
+for line in sys.stdin:
+    stamp, _, msg = line.partition(" ")
+    if "CA bundle refresh enabled" in msg:
+        anchor, failures = ts(stamp), []
+    elif "CA bundle refresh failed" in msg:
+        failures.append(ts(stamp))
+margin = 35  # a refresh is logged within --cds-op-timeout (30s) of its tick
+now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+ticks = int((now - anchor - margin) // interval)
+nxt = anchor + (ticks + 1) * interval + margin
+if ticks < 1:
+    print("wait", max(1, int(nxt - now)))
+else:
+    last = anchor + ticks * interval
+    print("failed" if any(f >= last - 1 for f in failures) else "ok", max(1, int(nxt - now)))
+'
 
 mesh_platform() {
     local p
