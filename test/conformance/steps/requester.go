@@ -312,7 +312,7 @@ func presentsUnissuedChallenge(ctx context.Context, name string) error {
 }
 
 func challengeExpired(ctx context.Context) error {
-	out, err := getWorld(ctx).be.call("challenge_ttl")
+	out, err := getWorld(ctx).cdsArg("challenge-ttl")
 	if err != nil {
 		return err
 	}

@@ -666,7 +666,7 @@ func attestationUnreachable(ctx context.Context, node string) error {
 // schedules onto it, and no kubelet ever reports for it.
 const ghostNode = "conformance-elsewhere"
 
-const ghostNodeManifest = `{"apiVersion":"v1","kind":"Node","metadata":{"name":"` + ghostNode + `"},` +
+const ghostNodeManifest = `{"apiVersion":"v1","kind":"Node","metadata":{"name":"` + ghostNode + `","labels":{"conformance.c8s/ghost":"true"}},` +
 	`"spec":{"unschedulable":true,"taints":[{"key":"conformance.c8s/ghost","effect":"NoSchedule"},{"key":"conformance.c8s/ghost","effect":"NoExecute"}]}}`
 
 func ghostPod(ctx context.Context, name, node string) error {
@@ -1036,6 +1036,9 @@ func (w *world) dial(src, node, dest string, second bool) error {
 		args = append(args, "--rewrite-not-after", p.cert.rewriteNotAfter.String())
 	}
 	args = append(args, net.JoinHostPort(nodeAddr, inbound), target)
+	if err := w.ensureDialer(p); err != nil {
+		return err
+	}
 	if err := w.snapshot(); err != nil {
 		return err
 	}
@@ -1118,18 +1121,27 @@ func (w *world) mintCert(p *pod) error {
 // dialerPath is where the mesh peer sits in the pod that runs it.
 const dialerPath = "/tmp/armtls-dial"
 
-// armtlsDial runs the mesh peer in the pod's first container, copying the
-// binary the backend built there the first time.
+// ensureDialer copies the binary the backend built into the pod's first
+// container, once per pod, so a dial's counter window holds only the dial.
+func (w *world) ensureDialer(p *pod) error {
+	if p.dialer {
+		return nil
+	}
+	bin, err := w.be.call("dialer_bin")
+	if err != nil {
+		return err
+	}
+	if _, err := kubectl(nil, "cp", bin, p.namespace+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
+		return err
+	}
+	p.dialer = true
+	return nil
+}
+
+// armtlsDial runs the mesh peer in the pod's first container.
 func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
-	if !p.dialer {
-		bin, err := w.be.call("dialer_bin")
-		if err != nil {
-			return "", err
-		}
-		if _, err := kubectl(nil, "cp", bin, p.namespace+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
-			return "", err
-		}
-		p.dialer = true
+	if err := w.ensureDialer(p); err != nil {
+		return "", err
 	}
 	return kubectl(nil, append([]string{"-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", dialerPath}, args...)...)
 }

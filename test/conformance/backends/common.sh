@@ -11,9 +11,9 @@
 #   subject                          the system under test, for the run summary
 #   kubeconfig                       the file every kubectl call of a run uses
 #   setup                            once per run, before the scenarios
-#   teardown_backend                 once per run, after them: what the backend
-#                                    alone kept for the run (teardown, shared,
-#                                    runs it after what every backend kept)
+#   teardown                         once per run, after them; shared: what
+#                                    every backend kept, then teardown_backend
+#   teardown_backend                 what this backend alone kept for the run
 #   node_name <logical>              the Kubernetes node behind a scenario's node
 #   image_ref <logical>              a pullable reference for a scenario's image
 #   image_digest <ref>               the digest the plugin compares for ref
@@ -92,8 +92,6 @@
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
-#   challenge_ttl                    how long the CDS keeps a challenge, as a
-#                                    Go duration
 #   evidence <ns> <pod> <report-data-hex> [launch-digest-hex]
 #                                    evidence from the local attestation
 #                                    service of the pod's node over the report
@@ -201,15 +199,15 @@ image_ref() {
 }
 
 # The mesh peer the steps drive, built from this checkout for the node's
-# architecture once per run; the steps copy it into the pod that dials.
+# architecture (the steps call this once per run and copy the binary into the
+# pod that dials), into a fresh directory: never an earlier run's binary, and
+# never the results a metal lane uploads.
 dialer_bin() {
     local bin arch
-    bin="$(cd "$(scratch)" && pwd)/armtls-dial" || return
-    if [ ! -x "$bin" ]; then
-        command -v go >/dev/null || return "$UNSUPPORTED"
-        arch="$(kubectl get node "$(node_name one)" -o jsonpath='{.status.nodeInfo.architecture}')" || return
-        CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -C "$C8S_ROOT" -ldflags='-s -w' -o "$bin" ./test/conformance/tools/armtls-dial >&2 || return 1
-    fi
+    command -v go >/dev/null || return "$UNSUPPORTED"
+    bin="$(mktemp -d)/armtls-dial" || return
+    arch="$(kubectl get node "$(node_name one)" -o jsonpath='{.status.nodeInfo.architecture}')" || return
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -C "$C8S_ROOT" -ldflags='-s -w' -o "$bin" ./test/conformance/tools/armtls-dial >&2 || return 1
     echo "$bin"
 }
 
@@ -247,6 +245,7 @@ requester_manifest() {
 render_pod() {
     local -a flags=()
     while [ "$1" != -- ]; do
+        [ $# -gt 1 ] || { echo "backend: render_pod: no -- before the pod" >&2; return 2; }
         flags+=("$1")
         shift
     done
@@ -308,14 +307,6 @@ cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].a
 
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }
-
-# The CDS's --challenge-ttl, or its built-in default.
-challenge_ttl() {
-    local ttl
-    ttl="$(cds_arg challenge-ttl)" || return
-    [ -n "$ttl" ] || { echo "backend: the CDS runs without --challenge-ttl, which the chart sets" >&2; return 1; }
-    echo "$ttl"
-}
 
 # Every plugin pulls from https://127.0.0.1:<node port of the CDS Service>
 # (the chart's nriImagePolicy.allowlist.pull.url default and the node image's
@@ -571,7 +562,7 @@ teardown() {
     kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     allowlist_delete "$MESH_SCRAPER" || true
     rm -f "$(scratch)/mesh-scraper.ready" "$(scratch)"/cache-*
-    ! declare -F teardown_backend >/dev/null || teardown_backend
+    teardown_backend
 }
 
 # The node's /metrics, scraped once; a failed scrape is an error, never

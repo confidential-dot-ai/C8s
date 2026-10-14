@@ -36,11 +36,11 @@ teardown_backend() {
     rm -f "$written"
 }
 
-# The lane's one node; a scenario may have written a Node object that
-# schedules nothing (the ghost of RELAY-DISCIPLINE-3), which is not it.
+# The lane's one node, not a Node object a scenario wrote (the steps label
+# those conformance.c8s/ghost).
 node_name() {
     case "$1" in
-        one) kubectl get nodes -o json | jq -r '[.items[] | select(.spec.unschedulable != true)][0].metadata.name // empty' ;;
+        one) kubectl get nodes -l '!conformance.c8s/ghost' -o jsonpath='{.items[0].metadata.name}' ;;
         *) return $UNSUPPORTED ;;
     esac
 }
