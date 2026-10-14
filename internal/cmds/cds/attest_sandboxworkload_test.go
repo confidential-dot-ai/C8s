@@ -111,12 +111,8 @@ func TestAttest_SandboxWorkload_AllowsFloorOnlySandbox(t *testing.T) {
 	}
 }
 
-// An image the inventory reports but the allowlist does not admit blocks
-// issuance — the gate now runs on every token-bearing request, including the
-// first one, where a self-reported claim used to be empty.
-// wantWorkloadRefusal asserts the refusal the membership check gives: csr_denied
-// with one fixed message and no detail, since the requester chose both the
-// sandbox it claimed and the inventory host the CDS dialled.
+// wantWorkloadRefusal asserts the membership gate's refusal: csr_denied with
+// the same detail-free message whatever the cause.
 func wantWorkloadRefusal(t *testing.T, w *httptest.ResponseRecorder) {
 	t.Helper()
 	if resp := wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied); resp.Message != "sandbox workload not authorized" {
@@ -124,6 +120,9 @@ func wantWorkloadRefusal(t *testing.T, w *httptest.ResponseRecorder) {
 	}
 }
 
+// An image the inventory reports but the allowlist does not admit blocks
+// issuance — the gate now runs on every token-bearing request, including the
+// first one, where a self-reported claim used to be empty.
 func TestAttest_SandboxWorkload_RejectsUnallowlistedImage(t *testing.T) {
 	stub := newStubAttestationApi(t, "deadbeef")
 	h, signer := newSandboxTestEnv(t, stub.URL())

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -48,7 +49,7 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	}
 	csr, key := mustCSR(t, "test-node", nil, []net.IP{net.ParseIP("10.0.0.1")}, nil)
 
-	before := time.Now().Truncate(time.Second)
+	before := time.Now()
 	certPEM, serial, err := ca.SignCSR(issuer.SignCSRParams{
 		CSR:      csr,
 		TTL:      time.Hour,
@@ -74,25 +75,7 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	if len(leaf.IPAddresses) != 1 || !leaf.IPAddresses[0].Equal(net.ParseIP("10.0.0.1")) {
 		t.Errorf("IP SAN: got %v", leaf.IPAddresses)
 	}
-	if !key.PublicKey.Equal(leaf.PublicKey) {
-		t.Error("leaf certifies a key other than the CSR's")
-	}
-	if leaf.NotBefore.Before(before) || leaf.NotBefore.After(after) {
-		t.Errorf("NotBefore %s is not the signing time (between %s and %s)", leaf.NotBefore, before, after)
-	}
-	if got := leaf.NotAfter.Sub(leaf.NotBefore); got < time.Hour-time.Second || got > time.Hour+time.Second {
-		t.Errorf("validity %s, want the 1h TTL", got)
-	}
-	if leaf.IsCA {
-		t.Error("leaf is marked as a CA")
-	}
-	if leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
-		t.Error("leaf lacks the DigitalSignature key usage")
-	}
-	wantEKU := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
-	if len(leaf.ExtKeyUsage) != len(wantEKU) || leaf.ExtKeyUsage[0] != wantEKU[0] || leaf.ExtKeyUsage[1] != wantEKU[1] {
-		t.Errorf("extended key usage: got %v, want %v", leaf.ExtKeyUsage, wantEKU)
-	}
+	testutil.CheckLeafProfile(t, leaf, &key.PublicKey, time.Hour, before, after)
 }
 
 func TestCASignCSR_EmbedsAttestationDigest(t *testing.T) {

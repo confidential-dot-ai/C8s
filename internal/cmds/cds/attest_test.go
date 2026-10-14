@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -106,9 +107,8 @@ func postAttest(t *testing.T, h AttestHandler, challenge, csrPEM string) *httpte
 	return w
 }
 
-// wantRefusal asserts the handler answered status with the error code the
-// client is told, read from the JSON body, and returns the body for a
-// message check.
+// wantRefusal asserts status and the JSON error code, and returns the body so
+// a caller can check the message.
 func wantRefusal(t *testing.T, w *httptest.ResponseRecorder, status int, code string) types.ErrorResponse {
 	t.Helper()
 	if w.Code != status {
@@ -122,16 +122,6 @@ func wantRefusal(t *testing.T, w *httptest.ResponseRecorder, status int, code st
 		t.Fatalf("error code: got %q, want %q; message=%q", resp.Error, code, resp.Message)
 	}
 	return resp
-}
-
-// wantLeafEKU asserts the leaf carries exactly the serverAuth and clientAuth
-// extended key usages, so one leaf authenticates its holder in both directions.
-func wantLeafEKU(t *testing.T, leaf *x509.Certificate) {
-	t.Helper()
-	want := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}
-	if len(leaf.ExtKeyUsage) != len(want) || leaf.ExtKeyUsage[0] != want[0] || leaf.ExtKeyUsage[1] != want[1] {
-		t.Errorf("extended key usage: got %v, want %v", leaf.ExtKeyUsage, want)
-	}
 }
 
 func leafFromAttestResponse(t *testing.T, w *httptest.ResponseRecorder) *x509.Certificate {
@@ -152,7 +142,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, key := generateCSR(t)
 
-	before := time.Now().Truncate(time.Second)
+	before := time.Now()
 	w := postAttest(t, h, challenge, csrPEM)
 	after := time.Now()
 	if w.Code != http.StatusOK {
@@ -179,16 +169,7 @@ func TestAttest_InProcessSignAndReturnsChain(t *testing.T) {
 	if leaf.Subject.CommonName != "test-node" {
 		t.Errorf("CN: got %q, want test-node", leaf.Subject.CommonName)
 	}
-	if !key.PublicKey.Equal(leaf.PublicKey) {
-		t.Error("leaf certifies a key other than the CSR's")
-	}
-	if leaf.NotBefore.Before(before) || leaf.NotBefore.After(after) {
-		t.Errorf("NotBefore %s is not the signing time (between %s and %s)", leaf.NotBefore, before, after)
-	}
-	if got, want := leaf.NotAfter.Sub(leaf.NotBefore), h.CertTTL; got < want-time.Second || got > want+time.Second {
-		t.Errorf("validity %s, want the %s cert TTL", got, want)
-	}
-	wantLeafEKU(t, leaf)
+	testutil.CheckLeafProfile(t, leaf, &key.PublicKey, h.CertTTL, before, after)
 }
 
 func TestAttest_ClampsCertTTLBeforeSigning(t *testing.T) {
@@ -297,9 +278,7 @@ func TestAttest_TimeoutBeforeSigningReturns504(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body)).WithContext(ctx)
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusGatewayTimeout {
-		t.Fatalf("status: got %d, want 504; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusGatewayTimeout, types.ErrorCodeTimeout)
 	if !strings.Contains(w.Body.String(), types.ErrorCodeTimeout) {
 		t.Errorf("body should mention timeout; got %s", w.Body.String())
 	}
@@ -458,10 +437,7 @@ func TestAttest_AttestationApiFailureReturns502(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusBadGateway {
-		t.Fatalf("status: got %d, want 502; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadGateway, types.ErrorCodeAttestationApiUnreachable)
 }
 
 // A 4xx from the attestation-api means it judged the evidence bad — a client
@@ -480,20 +456,7 @@ func TestAttest_RejectedEvidenceReturns4xxNotUnreachable(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422; body=%s", w.Code, w.Body.String())
-	}
-	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode error response: %v; body=%s", err, w.Body.String())
-	}
-	if resp.Error == types.ErrorCodeAttestationApiUnreachable {
-		t.Fatalf("bad evidence mislabeled as %q", resp.Error)
-	}
-	if resp.Error != types.ErrorCodeVerificationFailed {
-		t.Fatalf("error code: got %q, want %q", resp.Error, types.ErrorCodeVerificationFailed)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnprocessableEntity, types.ErrorCodeVerificationFailed)
 }
 
 // A 4xx whose body is not the api's JSON envelope — an axum extractor
@@ -508,17 +471,7 @@ func TestAttest_NonJSONRejectionReturns422NotUnreachable(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422; body=%s", w.Code, w.Body.String())
-	}
-	var resp types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode error response: %v; body=%s", err, w.Body.String())
-	}
-	if resp.Error != types.ErrorCodeVerificationFailed {
-		t.Fatalf("error code: got %q, want %q", resp.Error, types.ErrorCodeVerificationFailed)
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnprocessableEntity, types.ErrorCodeVerificationFailed)
 }
 
 const (
@@ -820,9 +773,7 @@ func TestAttest_RejectsUnknownJSONFields(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader([]byte(`{"unknown":true}`)))
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("status: got %d, want 422; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusUnprocessableEntity, types.ErrorCodeInvalidRequest)
 }
 
 func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
@@ -841,9 +792,7 @@ func TestAttest_RejectsMalformedChallengeEncoding(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/attest", bytes.NewReader(body))
 	w := httptest.NewRecorder()
 	h.HandleAttest(w, req)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
 func TestAttest_RejectsValidBase64UnknownChallenge(t *testing.T) {
@@ -884,10 +833,7 @@ func TestAttest_RejectsNonECDSACSR(t *testing.T) {
 	}
 	csrPEM := string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: der}))
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status: got %d, want 400; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidCSR)
 }
 
 // An unloaded CA makes in-process signing fail after all validation passed.
@@ -900,13 +846,7 @@ func TestAttest_SignFailureReturns500(t *testing.T) {
 	challenge := issueChallenge(t, h)
 	csrPEM, _ := generateCSR(t)
 
-	w := postAttest(t, h, challenge, csrPEM)
-	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("status: got %d, want 500; body=%s", w.Code, w.Body.String())
-	}
-	if !strings.Contains(w.Body.String(), types.ErrorCodeSignFailed) {
-		t.Errorf("body should mention %s; got %s", types.ErrorCodeSignFailed, w.Body.String())
-	}
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusInternalServerError, types.ErrorCodeSignFailed)
 }
 
 // The issuance record is the only durable trace that a mesh identity was
