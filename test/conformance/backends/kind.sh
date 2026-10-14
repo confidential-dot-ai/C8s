@@ -16,11 +16,10 @@ PLATFORM="kind (mock attestation)"
 setup() { :; }
 
 # Each function runs in its own process, so the CDS port-forward lib.sh shares
-# through WORKDIR outlives the call that opened it, as do the pod that scrapes
-# the mesh and the container outside the cluster.
-teardown() {
+# through WORKDIR outlives the call that opened it, as does the container
+# outside the cluster.
+teardown_backend() {
     cds_pf_stop
-    mesh_scraper_teardown
     docker rm -f "$EXTERNAL_HELLO" >/dev/null 2>&1 || true
 }
 

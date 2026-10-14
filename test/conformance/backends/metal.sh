@@ -29,8 +29,7 @@ setup() {
     al add "$(image_digest "$ref")" "$ref" | awk '$1 == "added" {print $2}' >> "$written"
 }
 
-teardown() {
-    mesh_scraper_teardown
+teardown_backend() {
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true

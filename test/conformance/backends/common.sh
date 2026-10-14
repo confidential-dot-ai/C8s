@@ -10,7 +10,10 @@
 # skip), anything else when the harness is broken.
 #   subject                          the system under test, for the run summary
 #   kubeconfig                       the file every kubectl call of a run uses
-#   setup / teardown                 once per run, before and after the scenarios
+#   setup                            once per run, before the scenarios
+#   teardown_backend                 once per run, after them: what the backend
+#                                    alone kept for the run (teardown, shared,
+#                                    runs it after what every backend kept)
 #   node_name <logical>              the Kubernetes node behind a scenario's node
 #   image_ref <logical>              a pullable reference for a scenario's image
 #   image_digest <ref>               the digest the plugin compares for ref
@@ -597,6 +600,13 @@ mesh_scraper_teardown() {
     kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     allowlist_delete "$MESH_SCRAPER" || true
     rm -f "$(scratch)/mesh-scraper.ready"
+}
+
+# Once per run, after the scenarios: what every backend kept for the run, then
+# what this one did.
+teardown() {
+    mesh_scraper_teardown
+    ! declare -F teardown_backend >/dev/null || teardown_backend
 }
 
 # The node's /metrics, scraped once; a failed scrape is an error, never
