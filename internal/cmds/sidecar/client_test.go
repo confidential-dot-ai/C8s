@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
 	"math/big"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -161,7 +163,7 @@ func TestFetchChallengeFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
-			if _, err := fetchChallenge(context.Background(), testConfig(srv.URL), http.DefaultClient); err == nil {
+			if _, err := FetchChallenge(context.Background(), http.DefaultClient, srv.URL, 5*time.Second); err == nil {
 				t.Fatal("a bad challenge response was accepted")
 			}
 		})
@@ -170,9 +172,36 @@ func TestFetchChallengeFailures(t *testing.T) {
 
 // An unreachable CDS is an error, not a hang or a nil value.
 func TestFetchChallengeUnreachable(t *testing.T) {
-	cfg := testConfig("http://127.0.0.1:1")
-	cfg.RequestTimeout = 200 * time.Millisecond
-	if _, err := fetchChallenge(context.Background(), cfg, http.DefaultClient); err == nil {
+	if _, err := FetchChallenge(context.Background(), http.DefaultClient, "http://127.0.0.1:1", 200*time.Millisecond); err == nil {
 		t.Fatal("an unreachable CDS reported success")
+	}
+}
+
+// A nil challenge or token leaves its header unset; a non-nil one is encoded
+// the way CDS decodes it. The path is not touched on the way out.
+func TestNewStoreRequestHeadersAndPath(t *testing.T) {
+	req, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a//b%2Fc", []byte("chal"), []byte(`{"token":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.EscapedPath(); got != "/secrets/a//b%2Fc" {
+		t.Fatalf("path on the wire = %q, want it verbatim", got)
+	}
+	if got, want := req.Header.Get(secrets.ChallengeHeader), base64.StdEncoding.EncodeToString([]byte("chal")); got != want {
+		t.Fatalf("challenge header = %q, want %q", got, want)
+	}
+	if got, want := req.Header.Get("Authorization"), secrets.AuthScheme+base64.StdEncoding.EncodeToString([]byte(`{"token":"x"}`)); got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+
+	bare, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bare.Header[secrets.ChallengeHeader]; ok {
+		t.Fatal("a nil challenge set the challenge header")
+	}
+	if _, ok := bare.Header["Authorization"]; ok {
+		t.Fatal("a nil token set the Authorization header")
 	}
 }

@@ -146,6 +146,11 @@
 #   attestation_endpoint             the URL a pod obtains evidence from, or 77
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
+#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
+#                                    send the request to the CDS from here, as
+#                                    given (empty arguments are omitted);
+#                                    prints the status (000 when nothing
+#                                    answered), then the body
 # node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
 # node_address, mesh_port, mesh_uids, mesh_platform, excluded_namespace,
 # host_namespace_ns and attestation_endpoint answer the same for a whole run;
@@ -448,15 +453,11 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
-# Always exit 0: curl prints 000 on transport failure, and the steps assert on
-# the code itself.
+# The status alone: 000 on transport failure, which the steps assert on.
 allowlist_request() {
-    local url
-    url="$(cds_url)" || return
-    local -a auth=()
-    [ -z "${4:-}" ] || auth=(-H "Authorization: $4")
-    curl -sSk -o /dev/null -w '%{http_code}' -X "$1" -H 'Content-Type: application/json' \
-        --data-binary "@$3" ${auth[@]+"${auth[@]}"} "$url$2" || true
+    local answer
+    answer="$(cds_request "$1" "$2" "$3" "${4:-}")" || return
+    echo "${answer%%$'\n'*}"
 }
 
 allowlist_get() {
@@ -486,7 +487,21 @@ cds_document_path() {
     esac
 }
 
-# curl appends the status to the body; it moves to the first line here.
+# The request as the scenario shaped it: a body, an Authorization and a
+# client certificate only when given. curl appends the status to the body; it
+# moves to the first line here, as in cds_read.
+cds_request() {
+    local method="$1" route="$2" body="${3:-}" authorization="${4:-}" cert="${5:-}" key="${6:-}" url answer
+    url="$(cds_url)" || return
+    local -a opts=(-sk --max-time 30 -X "$method" -w $'\n%{http_code}')
+    [ -z "$body" ] || opts+=(-H 'Content-Type: application/json' --data-binary "@$body")
+    [ -z "$authorization" ] || opts+=(-H "Authorization: $authorization")
+    [ -z "$cert" ] || opts+=(--cert "$cert" --key "$key")
+    answer="$(curl "${opts[@]}" "$url$route" 2>/dev/null)" || answer=$'\n000'
+    echo "${answer##*$'\n'}"
+    printf '%s' "${answer%$'\n'*}"
+}
+
 cds_read() {
     local url path answer
     path="$(cds_document_path "$1")" || return

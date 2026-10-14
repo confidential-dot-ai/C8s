@@ -26,6 +26,35 @@ sentences needs no change in this repo.
 godog's own flags are bound under `--godog.`: `--godog.format=cucumber:report.json`
 writes the report the runner records, `--godog.tags=@area:enforcement` selects.
 
+## Probes the steps exec
+
+Where a scenario needs the cluster to see a request no well-behaved client
+sends, the steps exec a probe built into the `c8s` binary that is already in
+the pod. `c8s secret-probe` (`internal/cmds/secretprobe`) is hidden from
+`c8s --help` because it is a test instrument, not a client for applications:
+run with `kubectl exec -c c8s-cert <pod> -- /c8s secret-probe --cds-url URL
+--cert FILE --key FILE <action>` inside the injected certificate sidecar, it
+performs one workload secret request with every input under the caller's
+control. `challenge` fetches a fresh CDS challenge and prints it base64;
+`token` redeems a sandbox token for the pod's sandbox from the node's
+inventory socket, bound to the leaf's key and to a given challenge, and prints
+the JSON the Authorization header carries; `request <GET|POST> <path>` sends the
+request with `<path>` verbatim, a fresh or given challenge or none, and a fresh
+or given token or none, then prints one line with the HTTP status (`000`
+when nothing answered, a CDS that issued no challenge included) and the
+challenge and token it sent, base64 or `-` for a header it omitted, and the
+body after it, exactly as received. It exits 0 whenever an answer was printed
+and 2 when it could not ask, so a scenario about a missing or replayed
+challenge, another pod's token, or a non-canonical path reads the CDS's
+verdict rather than a sidecar's refusal to send it, and "that request's"
+challenge is known without a separate fetch. `c8s secret-probe --help` has
+the flags.
+
+An instrument that must run inside a container c8s owns (the certificate
+sidecar's image is the c8s image, with nothing else in it) is a hidden `c8s`
+subcommand; one that is a peer in a pod of its own is an image under
+[`tools/`](tools).
+
 ## Running
 
 [`run.sh`](run.sh) is what the suite's judge runs as its test command. It sets
@@ -107,6 +136,19 @@ under it, which the library busybox image's does not. A peer that connects to th
 proxy itself, presenting a certificate the scenario shaped, is
 [`tools/armtls-dial`](tools/armtls-dial/README.md), run inside a pod of the
 image the backend builds for the logical image `mesh-dialer`.
+
+For scenarios about secret release, the backend sends one request to the CDS
+as the scenario shaped it (`cds_request`: a method, a route, a body, an
+Authorization and a client certificate, each only when given), which carries
+the operator's secret writes under the write tokens `write_token` mints and a
+self-signed requester's read. The workload requester is `c8s secret-probe`,
+exec'd by the steps in the pod's certificate container (below); the secret
+client's files are read through the pod's first container. Secret paths are
+logical: a scenario's `/models/key` lives under a per-scenario prefix, since
+the store has no delete and outlives the scenario. A pod carrying a workload
+ID that a secrets scenario deploys renews its leaf every two hours rather than
+the issuance scenarios' thirty seconds, so the leaf it obtained stays the one
+it holds.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this

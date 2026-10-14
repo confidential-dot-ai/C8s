@@ -269,14 +269,21 @@ func (w *world) writeEntries() error {
 
 // writeEntry writes the described entry, once, through the signed path.
 func (w *world) writeEntry(name string) error {
+	if w.written[w.writtenName(name)] {
+		return nil
+	}
+	return w.rewriteEntry(name)
+}
+
+// rewriteEntry writes the described entry as it is now, whether or not it
+// was written before; the served allowlist is read per request, so the
+// plugin's pull is not waited for.
+func (w *world) rewriteEntry(name string) error {
 	e, err := w.entry(name)
 	if err != nil {
 		return err
 	}
 	written := w.writtenName(name)
-	if w.written[written] {
-		return nil
-	}
 	body, err := json.Marshal(e)
 	if err != nil {
 		return err
