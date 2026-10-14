@@ -106,19 +106,17 @@ func registerSecrets(sc *godog.ScenarioContext) {
 
 // The CDS's secret routes and the §11 answers the sentences name.
 const (
-	secretsRoute        = "/secrets"
-	authenticateRoute   = "/authenticate"
-	msgNotAuthorized    = "not authorized for this secret"
-	msgNoSuchSecret     = "no such secret"
-	msgQuota            = "secret storage limit reached"
-	codeHolderQuota     = "secret_holder_quota"
-	originWorkload      = "workload"
-	secretClientDir     = "/run/c8s/secrets"
-	annotationSecrets   = "confidential.ai/c8s-secrets"
-	annotationRenewal   = "confidential.ai/c8s-renew-interval"
-	secretsRenewal      = "2h" // leaves the leaf a secrets scenario obtained in place
-	defaultHolderQuota  = 64
-	defaultJWTClockSkew = 30 // seconds the CDS's --jwt-clock-skew allows a token past its validity
+	secretsRoute      = "/secrets"
+	authenticateRoute = "/authenticate"
+	msgNotAuthorized  = "not authorized for this secret"
+	msgNoSuchSecret   = "no such secret"
+	msgQuota          = "secret storage limit reached"
+	codeHolderQuota   = "secret_holder_quota"
+	originWorkload    = "workload"
+	secretClientDir   = "/run/c8s/secrets"
+	annotationSecrets = "confidential.ai/c8s-secrets"
+	annotationRenewal = "confidential.ai/c8s-renew-interval"
+	secretsRenewal    = "2h" // leaves the leaf a secrets scenario obtained in place
 )
 
 // secretsGrant is the entry's `secrets` member in the document's shape.
@@ -625,13 +623,13 @@ func operatorSignsExpiredSecretWrite(ctx context.Context, logical string) error 
 	if err := w.signSecretWrite(logical, "1s"); err != nil {
 		return err
 	}
-	skew := defaultJWTClockSkew
-	if out, err := w.be.call("cds_arg", "jwt-clock-skew"); err != nil {
+	out, err := w.cdsArg("jwt-clock-skew")
+	if err != nil {
 		return err
-	} else if out != "" {
-		if skew, err = strconv.Atoi(out); err != nil {
-			return fmt.Errorf("the CDS's clock skew %q: %w", out, err)
-		}
+	}
+	skew, err := strconv.Atoi(out)
+	if err != nil {
+		return fmt.Errorf("the CDS's clock skew %q: %w", out, err)
 	}
 	time.Sleep(time.Second + time.Duration(skew)*time.Second + 2*time.Second)
 	return nil
@@ -1373,13 +1371,13 @@ func hasFilledQuota(ctx context.Context, name, below, holder string) error {
 	if _, err := w.entry(holder); err != nil {
 		return err
 	}
-	quota := defaultHolderQuota
-	if out, err := w.be.call("cds_arg", "secrets-max-paths-per-workload"); err != nil {
+	out, err := w.cdsArg("secrets-max-paths-per-workload")
+	if err != nil {
 		return err
-	} else if out != "" {
-		if quota, err = strconv.Atoi(out); err != nil {
-			return fmt.Errorf("the holder quota %q: %w", out, err)
-		}
+	}
+	quota, err := strconv.Atoi(out)
+	if err != nil {
+		return fmt.Errorf("the holder quota %q: %w", out, err)
 	}
 	generated := 0
 	for logical := range w.secretState(p).values {

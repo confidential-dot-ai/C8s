@@ -343,7 +343,8 @@ cds_pod_url() { operator_arg cds-url; }
 challenge_ttl() {
     local ttl
     ttl="$(cds_arg challenge-ttl)" || return
-    echo "${ttl:-60s}"
+    [ -n "$ttl" ] || { echo "backend: the CDS runs without --challenge-ttl, which the chart sets" >&2; return 1; }
+    echo "$ttl"
 }
 
 # Every plugin pulls from https://127.0.0.1:<node port of the CDS Service>

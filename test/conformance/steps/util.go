@@ -47,3 +47,16 @@ func statusLine(out string) (status int, more string, body []byte, err error) {
 		return status, strings.Join(fields[1:], " "), []byte(out), nil
 	}
 }
+
+// cdsArg is the value of a flag the CDS runs with. The chart sets every one
+// the scenarios read, so an unset one is a broken install, not a default.
+func (w *world) cdsArg(flag string) (string, error) {
+	out, err := w.be.call("cds_arg", flag)
+	if err != nil {
+		return "", err
+	}
+	if out == "" {
+		return "", fmt.Errorf("the CDS runs without --%s, which the chart sets", flag)
+	}
+	return out, nil
+}
