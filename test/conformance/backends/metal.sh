@@ -30,6 +30,7 @@ setup() {
 }
 
 teardown_backend() {
+    cds_pf_stop
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true
@@ -52,13 +53,19 @@ image_alias() { return $UNSUPPORTED; }
 
 served_allowlist() { al export; }
 
-# The allowlist front door of the guest is the CDS's own listener, which the
-# c8s CLI's signed writes and raw reads go through. The launch bundle's key is
-# the run's operator key; the token minter is built from the checkout on
-# first use, with the Go toolchain that built the CLI.
-cds_url() { echo "$C8S_ALLOWLIST_URL"; }
+# The lane's allowlist URL is the router on the guest's public address: the
+# c8s CLI's signed writes and raw reads reach the CDS through its built-in
+# allowlist route, and the router serves nothing else of the CDS's. The CDS
+# itself is reached through the port-forward lib.sh shares with kind. The
+# launch bundle's key is the run's operator key; the token minter is built
+# from the checkout on first use, with the Go toolchain that built the CLI.
+cds_url() { cds_pf_start && echo "https://127.0.0.1:$CDS_LOCAL_PORT"; }
+router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 operator_key() { echo "$C8S_OPERATOR_KEY"; }
 scratch() { echo "${SUITE_RESULTS:-${TMPDIR:-/tmp}}"; }
+# lib.sh keeps the port-forward's pid here.
+# shellcheck disable=SC2034  # read by cds_pf_start
+WORKDIR="$(scratch)"
 optoken_bin() {
     local bin
     bin="$(scratch)/optoken"
@@ -69,9 +76,7 @@ optoken_bin() {
     echo "$bin"
 }
 
-# Whether the front door is the CDS listener itself is the lane's to know;
-# a plain-HTTP probe of something else would prove nothing.
-cds_plain_url() { return "$UNSUPPORTED"; }
+cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
 
 # The pins the lane started the CDS with: a launch digest, or those of its
 # policy file.

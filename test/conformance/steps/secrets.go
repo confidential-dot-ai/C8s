@@ -420,8 +420,14 @@ func putBody(value []byte, overwrite bool) []byte {
 // client certificate and key (empty for none). Status 0 when nothing
 // answered.
 func (w *world) cdsRequest(method, route string, body []byte, auth, cert, key string) (*answer, error) {
+	return w.httpRequest("cds_request", method, route, body, auth, cert, key)
+}
+
+// httpRequest sends one request through a backend function that takes
+// cds_request's arguments (cds_request, router_request).
+func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string) (*answer, error) {
 	send := func(bodyFile string) (string, error) {
-		return w.be.call("cds_request", method, route, bodyFile, auth, cert, key)
+		return w.be.call(fn, method, route, bodyFile, auth, cert, key)
 	}
 	var out string
 	var err error
@@ -435,7 +441,7 @@ func (w *world) cdsRequest(method, route string, body []byte, auth, cert, key st
 	}
 	status, _, resp, err := statusLine(out)
 	if err != nil {
-		return nil, fmt.Errorf("the CDS answer to %s %s: %q", method, route, out)
+		return nil, fmt.Errorf("the %s answer to %s %s: %q", fn, method, route, out)
 	}
 	return &answer{status: status, body: resp}, nil
 }
