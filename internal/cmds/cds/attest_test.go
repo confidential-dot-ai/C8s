@@ -296,6 +296,24 @@ func TestAttest_ConsumedChallengeRejectsReplay(t *testing.T) {
 	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
 }
 
+// A challenge is consumed by the attempt that carries it, not by success: a
+// requester whose evidence was refused cannot retry under the same challenge.
+func TestAttest_RefusedAttestConsumesChallenge(t *testing.T) {
+	stub := newStubAttestationApi(t, "deadbeef")
+	verdict := mockapi.PassingVerdict("deadbeef")
+	match := false
+	verdict.ReportDataMatch = &match
+	stub.SetVerdict(verdict)
+	h := newTestAttestHandler(t, stub.URL(), nil)
+	challenge := issueChallenge(t, h)
+	csrPEM, _ := generateCSR(t)
+
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusUnauthorized, types.ErrorCodeVerificationFailed)
+
+	stub.SetVerdict(mockapi.PassingVerdict("deadbeef"))
+	wantRefusal(t, postAttest(t, h, challenge, csrPEM), http.StatusBadRequest, types.ErrorCodeInvalidChallenge)
+}
+
 // The verify request must bind this request's CSR key and challenge:
 // anything weaker signs a leaf for whoever holds any verifiable TEE report.
 func TestAttest_BindsReportDataToCSRKeyAndChallenge(t *testing.T) {

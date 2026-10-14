@@ -387,6 +387,47 @@ func TestWorkloadPutRejectsReplayWithDifferentBody(t *testing.T) {
 	refusedWrite(t, srv.URL, req)
 }
 
+// A captured PUT token binds method and path as well as body: it does not
+// authorize removing the entry it wrote.
+func TestWorkloadPutRejectsReplayOnDelete(t *testing.T) {
+	app, _, signer := testAllowlistApp(t)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	path := "/allowlist/workloads/web"
+	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
+	header := authHeader(t, signer, http.MethodPut, path, []byte(body))
+	putWorkload(t, srv.URL, signer, "web", digestA)
+
+	req, err := http.NewRequest(http.MethodDelete, srv.URL+path, nil)
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Authorization", header)
+	refusedWrite(t, srv.URL, req)
+	if _, ok := getAllowlist(t, srv.URL).Workloads["web"]; !ok {
+		t.Fatal("the replayed token removed the entry")
+	}
+}
+
+// Nor does it authorize the same body written under another entry name.
+func TestWorkloadPutRejectsReplayOnAnotherEntry(t *testing.T) {
+	app, _, signer := testAllowlistApp(t)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
+	header := authHeader(t, signer, http.MethodPut, "/allowlist/workloads/web", []byte(body))
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/allowlist/workloads/batch", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", header)
+	refusedWrite(t, srv.URL, req)
+}
+
 // TestWorkloadPutRejectsTokenBeyondMaxValidity: a token stamped with a lifetime
 // longer than the verifier's MaxTokenValidity is refused whatever the signer
 // chose, and refusing it changes nothing.
