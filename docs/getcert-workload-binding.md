@@ -316,6 +316,18 @@ the high-water inventory carries the same fail-closed semantics as secrets
 release, and the named-leaf TTL (`cds.namedCertTTL`) bounds how long an
 already-issued name can outlive its match.
 
+The stamp names the policy snapshot at issuance, so an allowlist write leaves
+every running leaf naming a superseded snapshot, and strict clients reject it
+until it renews. get-cert's CDS watch (`--ca-watch-interval`, default 1m with
+`--workload-claims` and `--renew-interval`) closes that gap: each tick polls
+CDS's `GET /allowlist` over the same armTLS channel, with `If-None-Match`
+starting at the stamped version and following the last served version whose
+bytes still matched the stamp. When the canonical digest differs it renews after a
+random delay of up to half the interval. When a renewal comes back
+unnamed because the policy no longer matches the router, the policy check has no stamp
+to compare and goes silent by design; `--unnamed-renew-interval` (default 30s;
+the chart does not override it) paces renewal until the leaf is named again.
+
 Two inventory behaviours that still matter here:
 
 - **An unresolved digest fails the whole answer.** The inventory refuses to

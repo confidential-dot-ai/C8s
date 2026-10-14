@@ -17,6 +17,8 @@ Wants=nvidia-persistenced.service attestation-api.service network-online.target 
 Before=nvidia-cc-ready.service rke2-server.service rke2-agent.service
 
 [Service]
+# Once per boot covers every GPU only while the guest kernel has PCI hotplug
+# compiled out (kernel/c8s.config; enforced by node-guest-image-invariants.sh).
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/local/bin/gpu-cc-enforce.sh

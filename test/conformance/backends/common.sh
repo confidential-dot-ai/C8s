@@ -176,8 +176,9 @@ subject() { echo "c8s $(git -C "$C8S_ROOT" rev-parse --short HEAD) on $PLATFORM"
 kubeconfig() { echo "$KUBECONFIG"; }
 
 # "rogue" is the harness's curl image, which no entry declares at install;
-# "nginx" is its workload image, admitted under any argv by the install seed
-# (kind) or by an entry setup writes (metal). The rest are public images no
+# "nginx" is its workload image, the router's nginx digest, which the install
+# seed admits only under its entrypoint and setup therefore admits under any
+# argv with an entry it writes. The rest are public images no
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
@@ -370,10 +371,11 @@ cds_volatile() {
 #   optoken_bin    the token minter built from test/integration/cluster/optoken
 #   scratch        a directory kept for the run
 
+# The status is the first line of the read. Taking it with head would close
+# the pipe before cds_read has written the body, and that SIGPIPE is the
+# function's status under pipefail.
 operator_keys() {
     local answer code
-    # The whole answer, not its first line through head: cds_read writes the
-    # body after the status, and a pipe head has left is a SIGPIPE (141).
     answer="$(cds_read operator-key-set)" || return
     code="${answer%%$'\n'*}"
     case "$code" in

@@ -2,7 +2,9 @@ package allowlist
 
 import (
 	"fmt"
+	"path"
 	"slices"
+	"strings"
 )
 
 // RunningContainer holds the launch characteristics observed by an enforcer.
@@ -155,7 +157,34 @@ func (c Container) admits(r RunningContainer) bool {
 			return false
 		}
 	}
-	return true
+	return !c.executableShadowed(r)
+}
+
+// executableShadowed reports whether a mount the pod chose covers the pinned
+// executable. An exact command names bytes in the image; with mounts left to
+// the host, a volume bound at or above that path would replace them with
+// content of the pod author's choosing and the pin would hold only in name.
+// Under deny there is no such mount, and under exact the operator declared
+// every mount, so only `any` is checked. Unavailable mount evidence is not a
+// finding, as `any` admits without evidence elsewhere: the start-phase check
+// always observes mounts, and CDI injection defers them until then. A relative
+// executable is resolved by the container's PATH, which this cannot follow,
+// so it is not checked.
+func (c Container) executableShadowed(r RunningContainer) bool {
+	if c.Command.Policy != PolicyExact || c.Mounts.Policy != PolicyAny {
+		return false
+	}
+	if len(r.Argv) == 0 || !strings.HasPrefix(r.Argv[0], "/") {
+		return false
+	}
+	exe := path.Clean(r.Argv[0])
+	return slices.ContainsFunc(r.Mounts, func(m ObservedMount) bool {
+		if m.Class == MountPlatform {
+			return false
+		}
+		dest := path.Clean(m.Destination)
+		return dest == exe || strings.HasPrefix(exe, strings.TrimSuffix(dest, "/")+"/")
+	})
 }
 
 func (c Container) admitsProcess(r RunningContainer) bool {

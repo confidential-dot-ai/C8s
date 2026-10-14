@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"path"
+	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -245,20 +246,14 @@ func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 
 func shadowFinding(wide, narrow string) finding {
 	return errorf(
-		"workload %q can never be the unique match: %q admits every container it declares under any argv and needs nothing more running, so every pod %q describes matches both (edit %q instead of adding a narrower entry beside it, or delete it)",
+		"workload %q can never be the unique match: %q admits every launch of every container it declares and needs nothing more running, so every pod %q describes matches both (edit %q instead of adding a narrower entry beside it, or delete it)",
 		narrow, wide, narrow, wide)
 }
 
 // shadows reports whether wide describes every running set narrow describes:
 // each of wide's mains is one of narrow's mains, and each container narrow
-// declares has a wide container of the same digest that admits anything.
+// declares has a wide container of the same digest whose policy subsumes it.
 func shadows(wide, narrow pkgallowlist.Workload) bool {
-	unconstrained := map[string]bool{}
-	for _, c := range allContainers(wide) {
-		if c.IsUnconstrained() {
-			unconstrained[c.Digest.String()] = true
-		}
-	}
 	narrowMains := map[string]bool{}
 	for _, c := range narrow.Containers {
 		narrowMains[c.Digest.String()] = true
@@ -268,12 +263,45 @@ func shadows(wide, narrow pkgallowlist.Workload) bool {
 			return false
 		}
 	}
-	for _, c := range allContainers(narrow) {
-		if !unconstrained[c.Digest.String()] {
+	for _, n := range allContainers(narrow) {
+		if !slices.ContainsFunc(allContainers(wide), func(w pkgallowlist.Container) bool { return subsumes(w, n) }) {
 			return false
 		}
 	}
 	return true
+}
+
+// subsumes reports whether every launch narrow admits, wide admits too: the
+// same digest, and for each of argv, mounts and env either wide leaves it to
+// the host or both pin it the same way. For argv, an exact command whose
+// arguments are open also subsumes any exact command it is a prefix of — the
+// seeded component shape, `/c8s` under any args, subsumes `/c8s cds-attest`
+// under any policy.
+func subsumes(wide, narrow pkgallowlist.Container) bool {
+	if wide.Digest != narrow.Digest {
+		return false
+	}
+	if !wide.AnyArgv() && !argvPrefixSubsumes(wide, narrow) && !reflect.DeepEqual(processOf(wide), processOf(narrow)) {
+		return false
+	}
+	if wide.Mounts.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Mounts, narrow.Mounts) {
+		return false
+	}
+	if wide.Env.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Env, narrow.Env) {
+		return false
+	}
+	return true
+}
+
+func argvPrefixSubsumes(wide, narrow pkgallowlist.Container) bool {
+	if wide.Args.Policy != pkgallowlist.PolicyAny || wide.Command.Policy != pkgallowlist.PolicyExact || narrow.Command.Policy != pkgallowlist.PolicyExact {
+		return false
+	}
+	return len(narrow.Command.Argv) >= len(wide.Command.Argv) && slices.Equal(narrow.Command.Argv[:len(wide.Command.Argv)], wide.Command.Argv)
+}
+
+func processOf(c pkgallowlist.Container) [2]pkgallowlist.ArgvPolicy {
+	return [2]pkgallowlist.ArgvPolicy{c.Command, c.Args}
 }
 
 // searchPathFindings rejects pinned loader and interpreter search paths that

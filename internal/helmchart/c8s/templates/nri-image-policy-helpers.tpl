@@ -55,6 +55,21 @@ Host paths derived from values.
 {{- end }}
 
 {{/*
+The installer DaemonSet's long-running container: a readiness endpoint that
+follows the host plugin process. The script is shared with its argv-pinned seed
+entry (c8s.argvPinnedEntries) so the two cannot drift. It runs under /bin/sh -c
+like the entry's other script shapes: `c8s uninstall` takes the entry's one
+shape that is not /bin/sh -c as its sweep pause, in CLIs already released too.
+*/}}
+{{- define "nri-image-policy.pluginReadyPort" -}}
+8080
+{{- end }}
+
+{{- define "nri-image-policy.pluginReadyScript" -}}
+exec /usr/local/bin/c8s nri-image-policy plugin-ready --plugin-path={{ include "nri-image-policy.hostPluginPath" . | squote }} --addr=:{{ include "nri-image-policy.pluginReadyPort" . }}
+{{- end }}
+
+{{/*
 Shared hostPath mounts and volumes used by installer DaemonSets and the
 uninstall hook.
 */}}

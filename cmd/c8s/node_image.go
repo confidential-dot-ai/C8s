@@ -235,7 +235,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,
 	}
 	seen := make(map[string]bool)
-	images := make(map[string]string)
+	images := make(map[string]*bakedImage)
 	for {
 		var raw runtime.RawExtension
 		if err := decoder.Decode(&raw); err == io.EOF {
@@ -297,17 +297,27 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
+	// A baked component must start before CDS serves policy, with the
+	// arguments, environment and mounts its manifest gives it: the seed must
+	// leave those to the pod and pin at most the executable, and a pin must
+	// admit every invocation the manifests spell out.
 	seedDigests := make(map[string]bool)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
-			if c.IsUnconstrained() {
+			if c.PinsAtMostCommand() {
 				seedDigests[c.Digest.String()] = true
 			}
 		}
 	}
-	for image, digest := range images {
-		if !seedDigests[digest] {
-			return nil, fmt.Errorf("node-image image %s lacks an unrestricted bootstrap seed entry", image)
+	index := seed.BuildIndex()
+	for image, baked := range images {
+		if !seedDigests[baked.digest] {
+			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args, env and mounts unconstrained", image)
+		}
+		for _, argv := range baked.argvs {
+			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: argv}) {
+				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, argv)
+			}
 		}
 		artifacts.images = append(artifacts.images, image)
 	}
@@ -335,10 +345,19 @@ func setNodeImageNamespace(object *unstructured.Unstructured) error {
 	return nil
 }
 
+// bakedImage is one container image a baked workload runs: its digest, and
+// every argv a manifest spells out for it with an explicit command. A container
+// that runs the image's entrypoint records no argv; its executable is the
+// image's own.
+type bakedImage struct {
+	digest string
+	argvs  [][]string
+}
+
 // collectWorkloadImages records every container image a baked workload runs,
 // keyed by reference. The rootfs preloads exactly these, so an unpinned or
 // tag-only image would leave the node pulling at boot: reject it here.
-func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]string) error {
+func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage) error {
 	pod, found, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
 	if err != nil || !found {
 		return fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
@@ -359,7 +378,14 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		if !ok || !nodeImageDigestPattern.MatchString(pinned.Digest().String()) {
 			return fmt.Errorf("node-image workload %s container %q image must be pinned by sha256 digest", key, c.Name)
 		}
-		images[ref.String()] = pinned.Digest().String()
+		baked := images[ref.String()]
+		if baked == nil {
+			baked = &bakedImage{digest: pinned.Digest().String()}
+			images[ref.String()] = baked
+		}
+		if len(c.Command) > 0 {
+			baked.argvs = append(baked.argvs, slices.Concat(c.Command, c.Args))
+		}
 	}
 	return nil
 }

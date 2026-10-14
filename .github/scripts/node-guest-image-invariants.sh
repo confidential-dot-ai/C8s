@@ -403,6 +403,23 @@ done
 for config in c8s.config c8s-dev.config config-x86_64-c8s.snapshot; do
   bash "$ngi/check-apparmor-config.sh" "$ngi/kernel/$config"
 done
+# gpu-cc-enforce attests GPUs once per boot, which covers every GPU only
+# while the host cannot hot-add PCI devices (#669). The fragment line is
+# the load-bearing control: confos fails the build when the resolved
+# .config contradicts it, and node-guest-image/build checks that .config.
+# The snapshot leg is a second check only: confos rewrites the snapshot on
+# every build and does not fail when it is stale.
+for config in c8s.config c8s-dev.config config-x86_64-c8s.snapshot; do
+  if ! grep -qFx '# CONFIG_HOTPLUG_PCI is not set' "$ngi/kernel/$config"; then
+    echo "::error::$ngi/kernel/$config must keep '# CONFIG_HOTPLUG_PCI is not set': gpu-cc-enforce runs only at boot"
+    exit 1
+  fi
+  # Without -q, grep prints the offending lines above the error.
+  if grep -E '^CONFIG_HOTPLUG_PCI[A-Z0-9_]*=[ym]$' "$ngi/kernel/$config"; then
+    echo "::error::$ngi/kernel/$config enables the PCI hotplug symbols printed above; gpu-cc-enforce runs only at boot and would miss a hot-added GPU"
+    exit 1
+  fi
+done
 grep -qE '^\s*apparmor\s*$' "$ngi/c8s/mkosi.conf" \
   || { echo "::error::$ngi/c8s/mkosi.conf must ship the apparmor package (apparmor_parser)"; exit 1; }
 grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset" \

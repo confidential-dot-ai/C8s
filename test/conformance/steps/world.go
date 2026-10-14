@@ -301,7 +301,10 @@ func (e *entry) declares(digest string) bool {
 	return false
 }
 
-// admitsAnyArgv reports whether the entry admits digest under any argv.
+// admitsAnyArgv reports whether the entry admits digest under any argv. An
+// entry pinned to an executable with open args — the chart's own component
+// shape — does not count: the scenarios launch their containers under
+// `sleep`, which such an entry refuses.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
 		if c.Digest == digest && c.Command.is("any") && c.Args.is("any") {

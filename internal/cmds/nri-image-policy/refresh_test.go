@@ -596,8 +596,9 @@ func TestParseVersion(t *testing.T) {
 		want uint64
 	}{
 		{`W/"5"`, 5},
-		{`"7"`, 7},
-		{"12", 12},
+		// CDS only emits weak ETags; anything else is not a version.
+		{`"7"`, 0},
+		{"12", 0},
 		{"", 0},
 		{`W/"not-a-number"`, 0},
 	} {
