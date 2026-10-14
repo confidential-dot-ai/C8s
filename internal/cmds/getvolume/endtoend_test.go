@@ -2,6 +2,7 @@ package getvolume
 
 import (
 	"context"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"net"
 	"net/http"
 	"os"
@@ -137,7 +138,7 @@ func startDaemon(t *testing.T, dir string) *recordingOps {
 // inventory, reads the blob from CDS, and hands it to a real volumed, which
 // opens the device and mounts it into the pod's own emptyDir.
 func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
@@ -194,7 +195,7 @@ func TestSidecarOpensAVolumeEndToEnd(t *testing.T) {
 // A restarted sidecar re-sends its request; the daemon must not open a second
 // mapping for it.
 func TestSidecarRepeatIsIdempotent(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {
 			{status: http.StatusOK, value: testBlobJSON(t)},
@@ -224,7 +225,7 @@ func TestSidecarRepeatIsIdempotent(t *testing.T) {
 // The daemon's refusal reaches the sidecar as a failure rather than being
 // mistaken for success.
 func TestSidecarReportsADaemonRefusal(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
@@ -245,7 +246,7 @@ func TestSidecarReportsADaemonRefusal(t *testing.T) {
 // A mutable blob travels the same delivery path and skips verity: the daemon
 // mounts the crypt device itself, writable ext4.
 func TestSidecarOpensAMutableVolumeEndToEnd(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testMutableBlobJSON(t)}},
 	})
@@ -293,7 +294,7 @@ func containsDir(path, want string) bool {
 // At termination the sidecar posts a close — with the run context already gone,
 // as SIGTERM leaves it — and the daemon unwinds the pod's whole stack.
 func TestSidecarClosesItsVolumesAtTermination(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})

@@ -8,11 +8,10 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,40 +20,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
-
-const flowSandbox = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-// stubResolver is an inventory that vouches for one sandbox. The token route
-// binds its caller by peer credentials, which a unix socket supplies; nothing
-// here needs to disambiguate.
-type stubResolver struct{}
-
-func (stubResolver) SandboxForPeer(workloadclaims.Peer) (string, error) { return flowSandbox, nil }
-func (stubResolver) DigestsForSandbox(string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
-	return nil, nil, false, nil
-}
-
-// startInventory serves the real token route on a unix socket and returns its
-// endpoint.
-func startInventory(t *testing.T) string {
-	t.Helper()
-	signer, err := workloadclaims.NewSandboxTokenSigner("10.0.0.7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sock := filepath.Join(t.TempDir(), "wc.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go workloadclaims.ServeTokens(ctx, l, stubResolver{}, signer)
-	t.Cleanup(func() { cancel(); l.Close() })
-
-	return "unix://" + sock
-}
 
 // fakeCDS records what it was asked and answers from a scripted sequence.
 type fakeCDS struct {
@@ -135,7 +101,7 @@ func testKey(t *testing.T) *ecdsa.PublicKey {
 
 // An existing secret is read and returned without a create.
 func TestFetchOneReadsExisting(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusOK, value: "existing"}},
 	})
@@ -154,7 +120,7 @@ func TestFetchOneReadsExisting(t *testing.T) {
 // A path the store does not hold yet is created by the workload that finds it
 // empty.
 func TestFetchOneCreatesWhenAbsent(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}},
 		"POST /secrets/api/db": {{status: http.StatusCreated, value: "minted"}},
@@ -175,7 +141,7 @@ func TestFetchOneCreatesWhenAbsent(t *testing.T) {
 // recovers by reading — otherwise it would hold nothing while its sibling holds
 // the secret.
 func TestFetchOneRereadsAfterLosingCreateRace(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}, {status: http.StatusOK, value: "winner"}},
 		"POST /secrets/api/db": {{status: http.StatusConflict}},
@@ -196,7 +162,7 @@ func TestFetchOneRereadsAfterLosingCreateRace(t *testing.T) {
 // The ceiling clears only on a CDS restart, which empties the store, so
 // retrying it cannot succeed.
 func TestFetchStopsRetryingWhenTheStoreIsFull(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}},
 		"POST /secrets/api/db": {{status: http.StatusInsufficientStorage, code: types.ErrorCodeSecretStoreFull}},
@@ -232,7 +198,7 @@ func TestFetchRetriesCreateFailuresThatCanClear(t *testing.T) {
 		{"server failure", reply{status: http.StatusInternalServerError}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			endpoint := startInventory(t)
+			endpoint := "unix://" + testutil.StartInventory(t)
 			cds, url := newFakeCDS(t, map[string][]reply{
 				"GET /secrets/api/db":  {{status: http.StatusNotFound}, {status: http.StatusNotFound}},
 				"POST /secrets/api/db": {tc.refusal, {status: http.StatusCreated, value: "minted"}},
@@ -266,7 +232,7 @@ func TestFetchRetriesCreateFailuresThatCanClear(t *testing.T) {
 
 // A denial is not a create: only 404 means the path is free.
 func TestFetchOneDoesNotCreateOnDenial(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusForbidden}},
 	})
@@ -283,7 +249,7 @@ func TestFetchOneDoesNotCreateOnDenial(t *testing.T) {
 // Every request takes its own challenge and its own token: both are single-use,
 // so reusing either would be refused by CDS.
 func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db":  {{status: http.StatusNotFound}, {status: http.StatusOK, value: "v"}},
 		"POST /secrets/api/db": {{status: http.StatusConflict}},
@@ -310,7 +276,7 @@ func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
 // fetched value must never reach it: the read, create, write, and retry legs
 // are each driven with the log captured.
 func TestSecretValueNeverReachesTheLog(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	var log bytes.Buffer
 	prev := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&log, &slog.HandlerOptions{Level: slog.LevelDebug})))
@@ -368,7 +334,7 @@ func TestSecretValueNeverReachesTheLog(t *testing.T) {
 // is running — so a denial that later clears must succeed rather than fail the
 // pod.
 func TestFetchWithRetryRecoversOnceReleased(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	cds, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db": {
 			{status: http.StatusForbidden},
@@ -400,7 +366,7 @@ func TestFetchWithRetryRecoversOnceReleased(t *testing.T) {
 // A bounded run that never gets released fails rather than idling in a Running
 // pod with no secret.
 func TestFetchWithRetryGivesUp(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/api/db": {{status: http.StatusForbidden}, {status: http.StatusForbidden}},
 	})
