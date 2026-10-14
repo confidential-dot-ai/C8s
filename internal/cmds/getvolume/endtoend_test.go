@@ -2,7 +2,6 @@ package getvolume
 
 import (
 	"context"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"net"
 	"net/http"
 	"os"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volumed"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 

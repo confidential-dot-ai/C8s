@@ -8,7 +8,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +18,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 

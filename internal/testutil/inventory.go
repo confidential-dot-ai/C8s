@@ -36,7 +36,7 @@ func StartInventory(t *testing.T) string {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	go workloadclaims.ServeTokens(ctx, l, stubResolver{}, signer)
+	go func() { _ = workloadclaims.ServeTokens(ctx, l, stubResolver{}, signer) }()
 	t.Cleanup(func() { cancel(); l.Close() })
 	return sock
 }
