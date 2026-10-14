@@ -371,8 +371,11 @@ cds_volatile() {
 #   scratch        a directory kept for the run
 
 operator_keys() {
-    local code
-    code="$(cds_read operator-key-set | head -1)" || return
+    local answer code
+    # The whole answer, not its first line through head: cds_read writes the
+    # body after the status, and a pipe head has left is a SIGPIPE (141).
+    answer="$(cds_read operator-key-set)" || return
+    code="${answer%%$'\n'*}"
     case "$code" in
         200) echo yes ;;
         404) echo no ;;
