@@ -807,14 +807,20 @@ func obtainedSandboxLeaf(ctx context.Context, name string) error {
 	}
 	// The first leaf is minted before the workload container is admitted,
 	// so it names no workload and the requester renews it on the fast
-	// unnamed schedule (getcert --unnamed-renew-interval) until one does;
-	// only then does the two-hour interval hold. The leaf the scenario goes
-	// on to speak of is the named one, except for a pod whose init
-	// container keeps the workload from starting.
+	// unnamed schedule (getcert --unnamed-renew-interval, 30s at most)
+	// until one does; only then does the two-hour interval hold. The leaf
+	// the scenario goes on to speak of is the named one, so once the
+	// workload is running the step waits one unnamed interval for it. A pod
+	// that matches no entry (a container too many, an init container that
+	// keeps the workload from starting) never gets one and keeps the leaf
+	// it has.
 	if p.init != nil {
 		return nil
 	}
-	named, err := poll(observe, func() (bool, error) {
+	if err := w.awaitReady(p); err != nil {
+		return err
+	}
+	_, err = poll(45*time.Second, func() (bool, error) {
 		l, err := w.podLeaf(p)
 		if err != nil || l == nil {
 			return false, err
@@ -825,13 +831,7 @@ func obtainedSandboxLeaf(ctx context.Context, name string) error {
 		p.leaf = l
 		return true, nil
 	})
-	if err != nil {
-		return err
-	}
-	if !named {
-		return fmt.Errorf("the leaf %q holds still names no workload after %s", name, observe)
-	}
-	return nil
+	return err
 }
 
 func stillHoldsLeaf(ctx context.Context, name string) error {
@@ -855,6 +855,18 @@ func stillHoldsLeaf(ctx context.Context, name string) error {
 
 // --- The requester ---
 
+// awaitReady waits once for every container of the pod to be running.
+func (w *world) awaitReady(p *pod) error {
+	if p.ready {
+		return nil
+	}
+	if _, err := kubectl(nil, "-n", w.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
+		return fmt.Errorf("%q did not become Ready: %w", p.name, err)
+	}
+	p.ready = true
+	return nil
+}
+
 // probe runs `c8s secret-probe` in the pod's certificate container.
 func (w *world) probe(p *pod, args ...string) (string, error) {
 	if !p.deployed || !p.workloadID {
@@ -868,11 +880,10 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	// waits for the pod to be Ready once instead. A pod the scenario gave
 	// an init container asks while that container runs, which is the point
 	// of its scenario, so it is not waited for.
-	if !p.ready && p.init == nil {
-		if _, err := kubectl(nil, "-n", w.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
-			return "", fmt.Errorf("%q did not become Ready before its first secret request: %w", p.name, err)
+	if p.init == nil {
+		if err := w.awaitReady(p); err != nil {
+			return "", err
 		}
-		p.ready = true
 	}
 	url, err := w.be.call("cds_pod_url")
 	if err != nil {
