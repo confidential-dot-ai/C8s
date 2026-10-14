@@ -1,7 +1,6 @@
 package helmchart
 
 import (
-	"encoding/json"
 	"errors"
 	"maps"
 	"regexp"
@@ -241,7 +240,6 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 	}{
 		{name: "hostPort bound", args: digestArgs},
 		{name: "entry seeded", args: slices.Concat(digestArgs, noHostPort), want: defaultGate},
-		{name: "explicit name", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload=infer"}), want: "infer"},
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
 		{name: "nginx by tag", args: slices.Concat(digestArgs, noHostPort, nginxByTag)},
@@ -312,7 +310,8 @@ func TestChartRouterEntryNameTracksContent(t *testing.T) {
 		{"--set", "image.digest=sha256:" + strings.Repeat("3", 64)},
 		{"--set", "router.nginx.image.digest=sha256:" + strings.Repeat("4", 64)},
 		{"--set", "router.attest.port=8900"},
-		{"--set", "router.hostPort.enabled=false", "--set", "router.service.type=LoadBalancer", "--set-string", "router.attest.expectedWorkload=infer"},
+		// The default gate adds --expected-workload to cds-attest.
+		{"--set", "router.hostPort.enabled=false", "--set", "router.service.type=LoadBalancer"},
 	} {
 		if got := name(args...); got == base {
 			t.Errorf("%v kept router entry name %q", args, got)
@@ -379,279 +378,43 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 	}
 }
 
-func TestChartRouterOperatorEntry(t *testing.T) {
+// A gate naming another entry is the operator's own router entry: the chart
+// seeds none and passes the name through unchecked.
+func TestChartRouterOperatorGate(t *testing.T) {
 	nginxDigest := "sha256:" + strings.Repeat("5", 64)
-	container := func(digest string) string {
-		return `{"digest":"` + digest + `","image":"r@` + digest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
+	var containers []string
+	for _, digest := range []string{nginxDigest, c8sDigest} {
+		containers = append(containers, `{"digest":"`+digest+`","image":"r@`+digest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`)
 	}
-	workload := func(name string, digests ...string) []string {
-		var cs []string
-		for _, d := range digests {
-			cs = append(cs, container(d))
-		}
-		return []string{"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.` + name + `={"label":"mine","initContainers":[],"containers":[` + strings.Join(cs, ",") + `]}`}
+	entry := []string{
+		"--set", "router.nginx.image.digest=" + nginxDigest,
+		"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.my-router={"label":"mine","initContainers":[],"containers":[` + strings.Join(containers, ",") + `]}`,
 	}
-	entry := slices.Concat([]string{"--set", "router.nginx.image.digest=" + nginxDigest}, workload("my-router", nginxDigest, c8sDigest))
-	gate := func(name string) []string { return []string{"--set-string", "router.attest.expectedWorkload=" + name} }
-
-	for _, tc := range []struct {
-		name    string
-		args    []string
-		wantErr string
-	}{
-		{name: "beside the seeded entry", args: entry, wantErr: "would match each of c8s-router-"},
-		{name: "two operator entries", args: slices.Concat(entry, workload("other-router", nginxDigest, c8sDigest), gate("my-router")), wantErr: "would match each of my-router, other-router"},
-		{name: "two nginx-only entries without a c8s-image router container", args: slices.Concat(entry[:2], workload("my-router", nginxDigest), workload("other-router", nginxDigest), []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}), wantErr: "would match each of my-router, other-router"},
-		{name: "init container of a third image", args: slices.Concat(entry[:2], []string{"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.my-router={"label":"mine","initContainers":[` + container("sha256:"+strings.Repeat("6", 64)) + `],"containers":[` + container(nginxDigest) + `,` + container(c8sDigest) + `]}`}), wantErr: "would match each of c8s-router-"},
-		{name: "gate on an entry without nginx", args: slices.Concat(entry[:2], workload("c8s-only", c8sDigest), gate("c8s-only")), wantErr: "router.attest.expectedWorkload=c8s-only names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, slices.Concat(gateArgs, tc.args)...)
-			if err == nil || !strings.Contains(out, tc.wantErr) {
-				t.Fatalf("helm template: err = %v, want %q\n%s", err, tc.wantErr, out)
-			}
-		})
+	routerMatch := func(out string) (string, error) {
+		return match(renderedSeed(t, out), running(renderedDeployment(t, out, "c8s-router").Spec.Template.Spec))
 	}
 
-	out, err := helmTemplate(t, slices.Concat(gateArgs, entry, gate("my-router"))...)
+	// Ungated, the entry sits beside the seeded one and the router leaf goes unnamed.
+	out, err := helmTemplate(t, slices.Concat(gateArgs, entry)...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	seed := renderedSeed(t, out)
-	if got := routerEntryName(t, seed); got != "" {
-		t.Errorf("gate naming an operator entry still seeded %q", got)
-	}
-	if _, ok := seed.Workloads["my-router"]; !ok {
-		t.Errorf("seed lost the operator entry: %v", slices.Sorted(maps.Keys(seed.Workloads)))
-	}
-	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "my-router" {
-		t.Errorf("--expected-workload = %q, want my-router", got)
-	}
-	if got := certExpectedWorkload(t, out); got != "my-router" {
-		t.Errorf("c8s-cert --expected-workload = %q, want my-router", got)
+	if got, err := routerMatch(out); !errors.Is(err, pkgallowlist.ErrAmbiguous) {
+		t.Errorf("MatchWorkload(router) = %q, %v, want ErrAmbiguous", got, err)
 	}
 
-	// pinnedWorkload lists nginx and one c8s-image container per argv, its args pinned to it.
-	pinnedWorkload := func(name string, argvs ...[]string) []string {
-		t.Helper()
-		cs := []string{container(nginxDigest)}
-		for _, argv := range argvs {
-			pinned, err := json.Marshal(map[string]any{
-				"digest": c8sDigest, "image": "r@" + c8sDigest,
-				"command": map[string]any{"policy": "exact", "argv": []string{secrets.InjectedBinary}},
-				"args":    map[string]any{"policy": "exact", "argv": argv},
-				"mounts":  map[string]any{"policy": "any"},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cs = append(cs, string(pinned))
-		}
-		return []string{"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.` + name + `={"label":"mine","initContainers":[],"containers":[` + strings.Join(cs, ",") + `]}`}
-	}
-	// routerArgs returns the cds-attest and allowlist-proxy args the router renders.
-	routerArgs := func(args ...string) ([]string, []string) {
-		t.Helper()
-		out, err := helmTemplate(t, slices.Concat(gateArgs, entry[:2], args)...)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		return renderedDeploymentContainer(t, out, "c8s-router", "cds-attest").Args, renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy").Args
-	}
-
-	// Both router images, but an argv pin the router never runs: not a router entry.
-	foreign := pinnedWorkload("my-server", []string{"serve", "--port=9000"})
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], foreign)...)
+	out, err = helmTemplate(t, slices.Concat(gateArgs, entry, []string{"--set-string", "router.attest.expectedWorkload=my-router"})...)
 	if err != nil {
-		t.Fatalf("helm template with a pinned two-image operator entry: %v\n%s", err, out)
-	}
-	if _, ok := renderedSeed(t, out).Workloads["my-server"]; !ok {
-		t.Errorf("seed lost the pinned operator entry")
-	}
-	assertRouterMatches(t, out)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], foreign, gate("my-server"))...)
-	if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-		t.Fatalf("gate on the pinned entry: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-
-	// Pinning every argv the router runs keeps it a router entry, gated or not.
-	cdsAttest, allowlistProxy := routerArgs(gate("my-router")...)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], pinnedWorkload("my-router", cdsAttest), gate("my-router"))...)
-	if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-		t.Fatalf("gate on an entry missing allowlist-proxy: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], pinnedWorkload("my-router", cdsAttest, allowlistProxy), gate("my-router"))...)
-	if err != nil {
-		t.Fatalf("helm template with a pinned router entry: %v\n%s", err, out)
-	}
-	seed = renderedSeed(t, out)
-	if got := routerEntryName(t, seed); got != "" {
-		t.Errorf("gate naming a pinned operator entry still seeded %q", got)
-	}
-	if got, err := match(seed, running(renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)); err != nil || got != "my-router" {
-		t.Errorf("MatchWorkload(router) = %q, %v, want my-router", got, err)
-	}
-	// narrowed swaps the c8s-image containers' mounts policy for policies.
-	narrowed := func(workload []string, policies string) []string {
-		out := slices.Clone(workload)
-		out[1] = strings.ReplaceAll(out[1], `"image":"r@`+c8sDigest+`","mounts":{"policy":"any"}`, `"image":"r@`+c8sDigest+`"`+policies)
-		return out
-	}
-	// A gate needs an entry proven to admit the router's mounts and env.
-	for _, policies := range []string{"", `,"mounts":{"policy":"any"},"env":{"policy":"deny"}`} {
-		out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], narrowed(pinnedWorkload("my-router", cdsAttest, allowlistProxy), policies), gate("my-router"))...)
-		if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-			t.Fatalf("gate on an entry with policies %q: err = %v, want a cannot-match failure\n%s", policies, err, out)
-		}
-	}
-
-	// An operator entry may itself carry a c8s-router- name.
-	cdsAttest, allowlistProxy = routerArgs(gate("my-router")...)
-	cdsAttest = slices.Clone(cdsAttest)
-	cdsAttest[slices.Index(cdsAttest, "--expected-workload=my-router")] = "--expected-workload=c8s-router-custom"
-	custom := pinnedWorkload("c8s-router-custom", cdsAttest, allowlistProxy)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], custom, gate("c8s-router-custom"))...)
-	if err != nil {
-		t.Fatalf("helm template gated on c8s-router-custom: %v\n%s", err, out)
-	}
-	seed = renderedSeed(t, out)
-	if got, err := match(seed, running(renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)); err != nil || got != "c8s-router-custom" {
-		t.Errorf("MatchWorkload(router) = %q, %v, want c8s-router-custom", got, err)
-	}
-	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "c8s-router-custom" {
-		t.Errorf("--expected-workload = %q, want c8s-router-custom", got)
-	}
-	bareMetal := []string{"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false"}
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], narrowed(custom, ""), gate("c8s-router-custom"), bareMetal)...)
-	if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-		t.Fatalf("gate on an unmatchable c8s-router-custom: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-
-	// With nginx by tag the chart cannot judge the entry and takes the gate as written.
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], custom, gate("c8s-router-custom"), nginxByTag)...)
-	if err != nil {
-		t.Fatalf("helm template gated on c8s-router-custom with nginx by tag: %v\n%s", err, out)
-	}
-	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "c8s-router-custom" {
-		t.Errorf("--expected-workload = %q, want c8s-router-custom", got)
-	}
-
-	// nginx declared without policies is deny, which its argv never meets.
-	cdsAttest, allowlistProxy = routerArgs(gate("my-router")...)
-	bareNginx := pinnedWorkload("my-router", cdsAttest, allowlistProxy)
-	bareNginx[1] = strings.Replace(bareNginx[1], container(nginxDigest), `{"digest":"`+nginxDigest+`","image":"r@`+nginxDigest+`","mounts":{"policy":"any"}}`, 1)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], bareNginx, gate("my-router"))...)
-	if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-		t.Fatalf("gate on an entry with a policy-less nginx: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-
-	cdsAttest, allowlistProxy = routerArgs()
-	for _, policies := range []string{`,"mounts":{"policy":"any"}`, `,"mounts":{"policy":"exact","rules":[{"destination":"/tls","kind":"emptyDir"}]}`} {
-		out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], narrowed(pinnedWorkload("my-router", cdsAttest, allowlistProxy), policies))...)
-		if err == nil || !strings.Contains(out, "would match each of c8s-router-") {
-			t.Fatalf("pinned router entry with policies %q beside the seeded one: err = %v, want a collision failure\n%s", policies, err, out)
-		}
-	}
-
-	// kubelet expands $(HOST_IP), so a pin on the unexpanded argv is not proven.
-	cdsAttest, allowlistProxy = routerArgs(slices.Concat(bareMetal, gate("my-router"))...)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], bareMetal, pinnedWorkload("my-router", cdsAttest, allowlistProxy), gate("my-router"))...)
-	if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-		t.Fatalf("gate on an entry pinning expanded argv: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-
-	// Without an any-argv c8s-image entry get-cert is not dropped, so the router matches nothing.
-	notDerived := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=false", "--set", "nriImagePolicy.policy.mode=audit"}
-	cdsAttest, allowlistProxy = routerArgs(slices.Concat(notDerived, gate("my-router"))...)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], notDerived, pinnedWorkload("my-router", cdsAttest, allowlistProxy), gate("my-router"))...)
-	if err == nil || !strings.Contains(out, "get-cert must also be droppable as injected") {
-		t.Fatalf("gate without deriveComponents: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], notDerived, workload("my-router", nginxDigest, c8sDigest), gate("my-router"))...)
-	if err != nil {
-		t.Fatalf("helm template with an any-argv router entry without deriveComponents: %v\n%s", err, out)
-	}
-	if got, err := match(renderedSeed(t, out), running(renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)); err != nil || got != "my-router" {
-		t.Errorf("MatchWorkload(router without deriveComponents) = %q, %v, want my-router", got, err)
-	}
-
-	// A command pin over expanded argv may match too.
-	cdsAttest, allowlistProxy = routerArgs(bareMetal...)
-	commandPinned := func(name string) []string {
-		t.Helper()
-		cs := []string{container(nginxDigest)}
-		for _, args := range [][]string{cdsAttest, allowlistProxy} {
-			pinned, err := json.Marshal(map[string]any{
-				"digest": c8sDigest, "image": "r@" + c8sDigest,
-				"command": map[string]any{"policy": "exact", "argv": slices.Concat([]string{secrets.InjectedBinary}, args)},
-				"args":    map[string]any{"policy": "deny"},
-				"mounts":  map[string]any{"policy": "any"},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cs = append(cs, string(pinned))
-		}
-		return []string{"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.` + name + `={"label":"mine","initContainers":[],"containers":[` + strings.Join(cs, ",") + `]}`}
-	}
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], bareMetal, commandPinned("router-a"), commandPinned("router-b"))...)
-	if err == nil || !strings.Contains(out, "would match each of router-a, router-b") {
-		t.Fatalf("two command-pinned router entries on bare metal: err = %v, want a collision failure\n%s", err, out)
-	}
-
-	// Expanded argv still rules out pins of another length or other args.
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], bareMetal, pinnedWorkload("server-a", []string{"serve", "--port=9000"}), pinnedWorkload("server-b", []string{"serve", "--port=9001"}))...)
-	if err != nil {
-		t.Fatalf("helm template with unrelated pinned entries on bare metal: %v\n%s", err, out)
-	}
-
-	// acme runs as a native sidecar, which an entry admits as an init container.
-	acmeArgs := []string{
-		"--set-string", "router.publicTLS.mode=acme",
-		"--set", "router.san={lb.example.com}",
-		"--set-string", "router.acme.email=ops@example.com",
-		"--set", "router.service.type=LoadBalancer",
-	}
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], acmeArgs, gate("my-router"))...)
-	if err != nil {
-		t.Fatalf("helm template with acme: %v\n%s", err, out)
-	}
-	cdsAttest = renderedDeploymentContainer(t, out, "c8s-router", "cds-attest").Args
-	allowlistProxy = renderedDeploymentContainer(t, out, "c8s-router", "allowlist-proxy").Args
-	acme, ok := findContainer(renderedDeploymentInitContainers(t, out, "c8s-router"), "acme")
-	if !ok {
-		t.Fatal("acme init container missing")
-	}
-	withAcme := pinnedWorkload("my-router", cdsAttest, allowlistProxy)
-	acmeInit, err := json.Marshal(map[string]any{
-		"digest": c8sDigest, "image": "r@" + c8sDigest,
-		"command": map[string]any{"policy": "exact", "argv": []string{secrets.InjectedBinary}},
-		"args":    map[string]any{"policy": "exact", "argv": acme.Args},
-		"mounts":  map[string]any{"policy": "any"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	withAcme[1] = strings.Replace(withAcme[1], `"initContainers":[]`, `"initContainers":[`+string(acmeInit)+`]`, 1)
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], acmeArgs, withAcme, gate("my-router"))...)
-	if err != nil {
-		t.Fatalf("helm template with an acme-admitting router entry: %v\n%s", err, out)
-	}
-	if got, err := match(renderedSeed(t, out), running(renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)); err != nil || got != "my-router" {
-		t.Errorf("MatchWorkload(router with acme) = %q, %v, want my-router", got, err)
-	}
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry[:2], acmeArgs, pinnedWorkload("my-router", cdsAttest, allowlistProxy), gate("my-router"))...)
-	if err == nil || !strings.Contains(out, "names a nriImagePolicy.bootstrapAllowlist.workloads entry the router pod cannot match") {
-		t.Fatalf("gate on an entry not admitting acme: err = %v, want a cannot-match failure\n%s", err, out)
-	}
-
-	// An operator entry holding one router image cannot match the router pod.
-	out, err = helmTemplate(t, slices.Concat(gateArgs, entry, workload("c8s-only", c8sDigest), gate("my-router"))...)
-	if err != nil {
-		t.Fatalf("helm template with a c8s-only operator entry: %v\n%s", err, out)
+		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	if got := routerEntryName(t, renderedSeed(t, out)); got != "" {
-		t.Errorf("gate naming an operator entry still seeded %q", got)
+		t.Errorf("operator gate still seeded %q", got)
+	}
+	if got, err := routerMatch(out); err != nil || got != "my-router" {
+		t.Errorf("MatchWorkload(router) = %q, %v, want my-router", got, err)
+	}
+	if got := expectedWorkloadArg(renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")); got != "my-router" {
+		t.Errorf("cds-attest --expected-workload = %q, want my-router", got)
 	}
 	if got := certExpectedWorkload(t, out); got != "my-router" {
 		t.Errorf("c8s-cert --expected-workload = %q, want my-router", got)
