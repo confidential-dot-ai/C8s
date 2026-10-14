@@ -10,9 +10,37 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 )
+
+// CheckLeafProfile asserts leaf carries what an issued leaf must: it certifies
+// key, its NotBefore is the signing time (between before and after; x509
+// encodes validity to the second, so before is truncated), its validity is
+// ttl, it is not a CA, and it carries the serverAuth and clientAuth usages.
+func CheckLeafProfile(t *testing.T, leaf *x509.Certificate, key *ecdsa.PublicKey, ttl time.Duration, before, after time.Time) {
+	t.Helper()
+	if !key.Equal(leaf.PublicKey) {
+		t.Error("leaf certifies a key other than the CSR's")
+	}
+	before = before.Truncate(time.Second)
+	if leaf.NotBefore.Before(before) || leaf.NotBefore.After(after) {
+		t.Errorf("NotBefore %s is not the signing time (between %s and %s)", leaf.NotBefore, before, after)
+	}
+	if got := leaf.NotAfter.Sub(leaf.NotBefore); got != ttl {
+		t.Errorf("validity %s, want the %s TTL", got, ttl)
+	}
+	if leaf.IsCA {
+		t.Error("leaf is marked as a CA")
+	}
+	if leaf.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		t.Error("leaf lacks the DigitalSignature key usage")
+	}
+	if want := []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth}; !slices.Equal(leaf.ExtKeyUsage, want) {
+		t.Errorf("extended key usage: got %v, want %v", leaf.ExtKeyUsage, want)
+	}
+}
 
 // WriteLeaf stages a self-signed certificate and its key in dir as tls.crt and
 // tls.key, where the cert sidecar leaves a leaf, and returns their paths and

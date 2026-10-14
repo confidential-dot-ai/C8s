@@ -96,8 +96,8 @@ func allowlistTestRouter(wh allowlist.Handler, ready attestation.ReadinessFunc) 
 	return r
 }
 
-// getAllowlist fetches and parses the served document.
-func getAllowlist(t *testing.T, srvURL string) *pkgallowlist.Allowlist {
+// getServed fetches the served document and the ETag it was served with.
+func getServed(t *testing.T, srvURL string) (*pkgallowlist.Allowlist, string) {
 	t.Helper()
 	resp, err := http.Get(srvURL + "/allowlist")
 	if err != nil {
@@ -115,7 +115,47 @@ func getAllowlist(t *testing.T, srvURL string) *pkgallowlist.Allowlist {
 	if err != nil {
 		t.Fatalf("parse served allowlist: %v; body=%s", err, body)
 	}
+	return al, resp.Header.Get("ETag")
+}
+
+// getAllowlist fetches and parses the served document.
+func getAllowlist(t *testing.T, srvURL string) *pkgallowlist.Allowlist {
+	t.Helper()
+	al, _ := getServed(t, srvURL)
 	return al
+}
+
+// servedETag reads the ETag of the served document, the version a reader sees.
+func servedETag(t *testing.T, srvURL string) string {
+	t.Helper()
+	_, etag := getServed(t, srvURL)
+	return etag
+}
+
+// wantUnchanged asserts the served document still carries etag. Every write
+// that changes the document bumps its version, so an equal ETag means the
+// refusal changed nothing.
+func wantUnchanged(t *testing.T, srvURL, etag string) {
+	t.Helper()
+	if got := servedETag(t, srvURL); got != etag {
+		t.Fatalf("a refused write changed the version: ETag %q, was %q", got, etag)
+	}
+}
+
+// refusedWrite sends req, asserts the 401 a refused write answers, and asserts
+// the served document is as it was before.
+func refusedWrite(t *testing.T, srvURL string, req *http.Request) {
+	t.Helper()
+	etag := servedETag(t, srvURL)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("got status %d, want 401", resp.StatusCode)
+	}
+	wantUnchanged(t, srvURL, etag)
 }
 
 func TestReadyzReturnsUnavailableInitially(t *testing.T) {
@@ -159,16 +199,7 @@ func TestAllowlistReplaceRequiresAuth(t *testing.T) {
 		t.Fatalf("create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("got status %d, want 401", resp.StatusCode)
-	}
+	refusedWrite(t, srv.URL, req)
 }
 
 // TestAllowlistReplaceSwapsSet verifies PUT is a full replace: an entry present
@@ -293,8 +324,9 @@ func workloadRequest(method, name, body string) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 }
 
-// putWorkload writes a one-container entry through the signed PUT path.
-func putWorkload(t *testing.T, srvURL string, signer *operatorauth.Signer, name, digest string) {
+// putWorkloadRequest builds a PUT of a one-container entry; a nil signer
+// sends it without a token.
+func putWorkloadRequest(t *testing.T, srvURL string, signer *operatorauth.Signer, name, digest string) *http.Request {
 	t.Helper()
 	path := "/allowlist/workloads/" + name
 	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digest)
@@ -303,9 +335,16 @@ func putWorkload(t *testing.T, srvURL string, signer *operatorauth.Signer, name,
 		t.Fatalf("create request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, path, []byte(body)))
+	if signer != nil {
+		req.Header.Set("Authorization", authHeader(t, signer, http.MethodPut, path, []byte(body)))
+	}
+	return req
+}
 
-	resp, err := http.DefaultClient.Do(req)
+// putWorkload writes a one-container entry through the signed PUT path.
+func putWorkload(t *testing.T, srvURL string, signer *operatorauth.Signer, name, digest string) {
+	t.Helper()
+	resp, err := http.DefaultClient.Do(putWorkloadRequest(t, srvURL, signer, name, digest))
 	if err != nil {
 		t.Fatalf("request failed: %v", err)
 	}
@@ -324,24 +363,7 @@ func TestWorkloadPutRejectsUnpinnedOperatorKey(t *testing.T) {
 	defer srv.Close()
 
 	otherSigner, _ := testOperatorCredential(t) // not the pinned key
-	path := "/allowlist/workloads/web"
-	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
-	req, err := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(body))
-	if err != nil {
-		t.Fatalf("create request: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", authHeader(t, otherSigner, http.MethodPut, path, []byte(body)))
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("got status %d, want 401", resp.StatusCode)
-	}
+	refusedWrite(t, srv.URL, putWorkloadRequest(t, srv.URL, otherSigner, "web", digestA))
 }
 
 // TestWorkloadPutRejectsReplayWithDifferentBody: a captured operator token for
@@ -362,16 +384,18 @@ func TestWorkloadPutRejectsReplayWithDifferentBody(t *testing.T) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", header)
+	refusedWrite(t, srv.URL, req)
+}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request failed: %v", err)
-	}
-	defer resp.Body.Close()
+// TestWorkloadPutRejectsTokenBeyondMaxValidity: a token stamped with a lifetime
+// longer than the verifier's MaxTokenValidity is refused whatever the signer
+// chose, and refusing it changes nothing.
+func TestWorkloadPutRejectsTokenBeyondMaxValidity(t *testing.T) {
+	app, _, signer := testAllowlistApp(t)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("captured token authorized a different body: got status %d, want 401", resp.StatusCode)
-	}
+	refusedWrite(t, srv.URL, putWorkloadRequest(t, srv.URL, signer.WithTTL(time.Hour), "web", digestA))
 }
 
 // TestWorkloadPutRejectsBodyOverConfiguredCap confirms the per-Handler cap is
@@ -472,9 +496,11 @@ func TestWorkloadPutDeleteRoundtrip(t *testing.T) {
 	if code := del(); code != http.StatusNoContent {
 		t.Fatalf("first delete: got %d, want 204", code)
 	}
+	etag := servedETag(t, srv.URL)
 	if code := del(); code != http.StatusNotFound {
 		t.Fatalf("second delete: got %d, want 404", code)
 	}
+	wantUnchanged(t, srv.URL, etag)
 }
 
 func TestWorkloadPutRejectsInvalidBody(t *testing.T) {
@@ -502,17 +528,7 @@ func TestWorkloadPutRequiresAuth(t *testing.T) {
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
-	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/allowlist/workloads/web", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("put: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("unauth workload put: got %d, want 401", resp.StatusCode)
-	}
+	refusedWrite(t, srv.URL, putWorkloadRequest(t, srv.URL, nil, "web", digestA))
 }
 
 func TestAllowlistListEmitsETag(t *testing.T) {

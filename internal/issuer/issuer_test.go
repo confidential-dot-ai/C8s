@@ -1,6 +1,7 @@
 package issuer_test
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -22,6 +23,12 @@ func TestNewCA(t *testing.T) {
 	}
 	if !ca.Cert.IsCA {
 		t.Error("generated cert should have IsCA=true")
+	}
+	if !bytes.Equal(ca.Cert.RawIssuer, ca.Cert.RawSubject) {
+		t.Error("CA issuer is not its own subject")
+	}
+	if err := ca.Cert.CheckSignatureFrom(ca.Cert); err != nil {
+		t.Errorf("CA certificate does not verify under its own key: %v", err)
 	}
 	if ca.Cert.Subject.CommonName != "test ca" {
 		t.Errorf("CN mismatch: got %q", ca.Cert.Subject.CommonName)
