@@ -32,12 +32,13 @@
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
-#   pod_manifest [options --] <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
+#   pod_manifest <options...> -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
 #                                    container per +-separated group; the
-#                                    options, each before --, are
+#                                    options, before the --, are
 #                                    --host-network, --run-as-user <uid>,
 #                                    --add-capability <cap>, --label <k=v>,
+#                                    --annotation <k=v>,
 #                                    --init-container '<image> <command...>'
 #   image_entrypoint <ref>           the argv the image starts with when the pod
 #                                    spec overrides nothing, one word per line
@@ -80,9 +81,11 @@
 #                                    in the files of the node
 #   attest_direct                    one issuance against the CDS process from
 #                                    an admitted TEE; prints the chain, PEM
-#   cw_pod_manifest <name> <ns> <node> <image> <command...> [+ ...]
+#   cw_pod_manifest <options...> -- <name> <ns> <node> <image> <command...> [+ ...]
 #                                    pod_manifest's pod carrying a workload ID,
-#                                    renewing its leaf every 30s
+#                                    renewing its leaf every CW_RENEW_INTERVAL
+#                                    unless an --annotation option names
+#                                    another interval
 #   requester_manifest <name> <ns> <node>
 #                                    a pod on node that relays HTTP for the
 #                                    steps and can reach the node's sandbox
@@ -224,58 +227,35 @@ pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
 # the first are the fixture's --container groups, one shell-quoted string each.
-# Options before -- are the fixture's own, named in the header; every pod may
-# send an echo request over an ICMP datagram socket (a safe sysctl, which the
-# chart's admission policy admits where NET_RAW is refused), except one in
-# the node's network namespace, where kubelet refuses every net.* sysctl.
-# The tenant-app image is Alpine's python, whose ping uses that socket; the
-# library busybox image's cannot.
+# The options before the -- are the fixture's own, named in the header; every
+# pod may send an echo request over an ICMP datagram socket (a safe sysctl,
+# which the chart's admission policy admits where NET_RAW is refused), except
+# one in the node's network namespace, where kubelet refuses every net.*
+# sysctl. The tenant-app image is Alpine's python, whose ping uses that
+# socket; the library busybox image's cannot.
 PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
 pod_manifest() {
-    take_pod_opts "$@"
-    shift "$POD_OPTS_TAKEN"
-    render_fixture -- "$@"
-}
-
-# render_fixture <render flags...> -- <pod args...>: render_pod with the
-# flags, the ping sysctl where allowed, and the options take_pod_opts took.
-render_fixture() {
-    local -a flags=(--sysctl "$PING_SYSCTL")
-    case " ${POD_OPTS[*]-} " in *" --host-network "*) flags=() ;; esac
+    local -a opts=()
     while [ "$1" != -- ]; do
-        flags+=("$1")
+        opts+=("$1")
         shift
     done
-    shift
-    render_pod ${flags[@]+"${flags[@]}"} ${POD_OPTS[@]+"${POD_OPTS[@]}"} -- "$@"
-}
-
-# take_pod_opts <args...>: the options before a bare --, if there is one, into
-# POD_OPTS, and how many arguments they and the -- took into POD_OPTS_TAKEN.
-take_pod_opts() {
-    POD_OPTS=()
-    POD_OPTS_TAKEN=0
-    local arg
-    for arg in "$@"; do
-        [ "$arg" = -- ] && break
-    done
-    [ "$arg" = -- ] || return 0
-    while [ "$1" != -- ]; do
-        POD_OPTS+=("$1")
-        shift
-        POD_OPTS_TAKEN=$((POD_OPTS_TAKEN + 1))
-    done
-    POD_OPTS_TAKEN=$((POD_OPTS_TAKEN + 1))
+    case " ${opts[*]-} " in *" --host-network "*) ;; *) opts+=(--sysctl "$PING_SYSCTL") ;; esac
+    render_pod ${opts[@]+"${opts[@]}"} "$@"
 }
 
 # The renew interval a pod carrying a workload ID is given: short enough to
-# observe a renewal, and below the CDS's named leaf TTL.
+# observe a renewal, and below the CDS's named leaf TTL. The default comes
+# before the caller's options, so an --annotation among them replaces it.
 CW_RENEW_INTERVAL=10s
-
 cw_pod_manifest() {
-    take_pod_opts "$@"
-    shift "$POD_OPTS_TAKEN"
-    render_fixture --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" -- "$@"
+    local -a opts=()
+    while [ "$1" != -- ]; do
+        opts+=("$1")
+        shift
+    done
+    shift
+    pod_manifest --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" ${opts[@]+"${opts[@]}"} -- "$@"
 }
 
 # The node's admission plugin binds its socket directory into a container

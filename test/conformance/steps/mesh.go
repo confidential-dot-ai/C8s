@@ -763,7 +763,7 @@ func ghostPod(ctx context.Context, name, node string) error {
 		w.mesh.ghostNode = k8sNode
 	}
 	p := &pod{name: name, containers: []*container{{ref: refs[0], command: []string{"sleep", "3600"}}}}
-	manifest, err := w.be.call("pod_manifest", p.name, w.namespace, ghostNode, refs[0], "sleep", "3600")
+	manifest, err := w.be.call("pod_manifest", "--", p.name, w.namespace, ghostNode, refs[0], "sleep", "3600")
 	if err != nil {
 		return err
 	}

@@ -20,6 +20,9 @@ type world struct {
 	namespace string
 	pods      map[string]*pod
 	lastPod   *pod
+	// cwOpts: pod_manifest options every pod carrying a workload ID is
+	// rendered with, which an area's sentences set for the scenario.
+	cwOpts []string
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.

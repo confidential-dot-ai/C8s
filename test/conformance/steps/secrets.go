@@ -188,9 +188,7 @@ type outsideRequester struct {
 
 // secretsState is the scenario's view of the secret store.
 type secretsState struct {
-	// active: the scenario is about secrets; its pods renew their leaf
-	// slowly, so the leaf they obtained is the one they hold.
-	active bool
+	active bool // secretsScenario has run
 	// stored values by logical path, as the scenario supplied or generated
 	// them.
 	stored map[string][]byte
@@ -199,6 +197,16 @@ type secretsState struct {
 	served string // the served allowlist as last read without authentication
 	self   *outsideRequester
 	last   *pod // the pod whose request was the last
+}
+
+// secretsScenario marks the scenario as one about secrets: the pods it
+// deploys with a workload ID renew their leaf slowly, so the leaf a pod
+// obtained is still the one it holds when the scenario looks again.
+func (w *world) secretsScenario() {
+	if !w.secrets.active {
+		w.secrets.active = true
+		w.cwOpts = append(w.cwOpts, "--annotation", annotationRenewal+"="+secretsRenewal)
+	}
 }
 
 func (w *world) secretState(p *pod) *secretReq {
@@ -226,7 +234,7 @@ func (w *world) grantOf(name string) (*entry, *secretsGrant, error) {
 
 func grantAllows(ctx context.Context, name, action, p string) error {
 	w := getWorld(ctx)
-	w.secrets.active = true
+	w.secretsScenario()
 	_, g, err := w.grantOf(name)
 	if err != nil {
 		return err
@@ -241,7 +249,7 @@ func grantAllows(ctx context.Context, name, action, p string) error {
 
 func noGrant(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	w.secrets.active = true
+	w.secretsScenario()
 	e, err := w.entry(name)
 	if err != nil {
 		return err
@@ -442,7 +450,7 @@ func (w *world) operatorPut(signer, logical string, value []byte, overwrite bool
 
 func operatorHasSupplied(ctx context.Context, logical string) error {
 	w := getWorld(ctx)
-	w.secrets.active = true
+	w.secretsScenario()
 	v, err := randomValue()
 	if err != nil {
 		return err
@@ -476,7 +484,7 @@ func operatorSupplies(ctx context.Context, logical string) error {
 
 func operatorReplaces(ctx context.Context, logical string) error {
 	w := getWorld(ctx)
-	w.secrets.active = true
+	w.secretsScenario()
 	v, err := randomValue()
 	if err != nil {
 		return err
@@ -714,7 +722,7 @@ func secretFile(logical string) string { return path.Base(logical) }
 
 func secretClientConfigured(ctx context.Context, name, logical string) error {
 	w := getWorld(ctx)
-	w.secrets.active = true
+	w.secretsScenario()
 	p, err := w.undeployed(name)
 	if err != nil {
 		return err
