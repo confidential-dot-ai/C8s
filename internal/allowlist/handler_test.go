@@ -118,6 +118,32 @@ func getAllowlist(t *testing.T, srvURL string) *pkgallowlist.Allowlist {
 	return al
 }
 
+// servedETag reads the ETag of the served document, the version a reader sees.
+func servedETag(t *testing.T, srvURL string) string {
+	t.Helper()
+	resp, err := http.Get(srvURL + "/allowlist")
+	if err != nil {
+		t.Fatalf("get allowlist: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("get allowlist: status %d", resp.StatusCode)
+	}
+	return resp.Header.Get("ETag")
+}
+
+// wantUnchanged asserts a refused write left the served document at the ETag
+// read before it and created no entry of the given name.
+func wantUnchanged(t *testing.T, srvURL, etag, absentName string) {
+	t.Helper()
+	if got := servedETag(t, srvURL); got != etag {
+		t.Fatalf("a refused write changed the version: ETag %q, was %q", got, etag)
+	}
+	if _, ok := getAllowlist(t, srvURL).Workloads[absentName]; ok {
+		t.Fatalf("a refused write created the entry %q", absentName)
+	}
+}
+
 func TestReadyzReturnsUnavailableInitially(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
@@ -152,6 +178,7 @@ func TestAllowlistReplaceRequiresAuth(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
+	etag := servedETag(t, srv.URL)
 
 	body := fmt.Sprintf(`{"schema":%q,"workloads":{"web":{"containers":[{"digest":"%s"}]}}}`, pkgallowlist.Schema, digestA)
 	req, err := http.NewRequest(http.MethodPut, srv.URL+"/allowlist", strings.NewReader(body))
@@ -169,6 +196,7 @@ func TestAllowlistReplaceRequiresAuth(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("got status %d, want 401", resp.StatusCode)
 	}
+	wantUnchanged(t, srv.URL, etag, "web")
 }
 
 // TestAllowlistReplaceSwapsSet verifies PUT is a full replace: an entry present
@@ -322,6 +350,7 @@ func TestWorkloadPutRejectsUnpinnedOperatorKey(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
+	etag := servedETag(t, srv.URL)
 
 	otherSigner, _ := testOperatorCredential(t) // not the pinned key
 	path := "/allowlist/workloads/web"
@@ -342,6 +371,7 @@ func TestWorkloadPutRejectsUnpinnedOperatorKey(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("got status %d, want 401", resp.StatusCode)
 	}
+	wantUnchanged(t, srv.URL, etag, "web")
 }
 
 // TestWorkloadPutRejectsReplayWithDifferentBody: a captured operator token for
@@ -350,6 +380,7 @@ func TestWorkloadPutRejectsReplayWithDifferentBody(t *testing.T) {
 	app, _, signer := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
+	etag := servedETag(t, srv.URL)
 
 	path := "/allowlist/workloads/web"
 	originalBody := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
@@ -372,6 +403,37 @@ func TestWorkloadPutRejectsReplayWithDifferentBody(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("captured token authorized a different body: got status %d, want 401", resp.StatusCode)
 	}
+	wantUnchanged(t, srv.URL, etag, "web")
+}
+
+// TestWorkloadPutRejectsTokenBeyondMaxValidity: a token stamped with a lifetime
+// longer than the verifier's MaxTokenValidity is refused whatever the signer
+// chose, and refusing it changes nothing.
+func TestWorkloadPutRejectsTokenBeyondMaxValidity(t *testing.T) {
+	app, _, signer := testAllowlistApp(t)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+	etag := servedETag(t, srv.URL)
+
+	path := "/allowlist/workloads/web"
+	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
+	req, err := http.NewRequest(http.MethodPut, srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("create request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", authHeader(t, signer.WithTTL(time.Hour), http.MethodPut, path, []byte(body)))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("hour-long token authorized a write: got status %d, want 401", resp.StatusCode)
+	}
+	wantUnchanged(t, srv.URL, etag, "web")
 }
 
 // TestWorkloadPutRejectsBodyOverConfiguredCap confirms the per-Handler cap is
@@ -472,8 +534,12 @@ func TestWorkloadPutDeleteRoundtrip(t *testing.T) {
 	if code := del(); code != http.StatusNoContent {
 		t.Fatalf("first delete: got %d, want 204", code)
 	}
+	etag := servedETag(t, srv.URL)
 	if code := del(); code != http.StatusNotFound {
 		t.Fatalf("second delete: got %d, want 404", code)
+	}
+	if got := servedETag(t, srv.URL); got != etag {
+		t.Fatalf("a 404 delete changed the version: ETag %q, was %q", got, etag)
 	}
 }
 
@@ -501,6 +567,7 @@ func TestWorkloadPutRequiresAuth(t *testing.T) {
 	app, _, _ := testAllowlistApp(t)
 	srv := httptest.NewServer(app)
 	defer srv.Close()
+	etag := servedETag(t, srv.URL)
 
 	body := fmt.Sprintf(`{"containers":[{"digest":"%s"}]}`, digestA)
 	req, _ := http.NewRequest(http.MethodPut, srv.URL+"/allowlist/workloads/web", strings.NewReader(body))
@@ -513,6 +580,7 @@ func TestWorkloadPutRequiresAuth(t *testing.T) {
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauth workload put: got %d, want 401", resp.StatusCode)
 	}
+	wantUnchanged(t, srv.URL, etag, "web")
 }
 
 func TestAllowlistListEmitsETag(t *testing.T) {
