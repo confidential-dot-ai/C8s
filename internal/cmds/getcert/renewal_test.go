@@ -16,10 +16,10 @@ import (
 
 func namedLeaf(t *testing.T) *x509.Certificate {
 	t.Helper()
-	return stampedLeaf(t, "api")
+	return leafNaming(t, "api")
 }
 
-func stampedLeaf(t *testing.T, name string) *x509.Certificate {
+func leafNaming(t *testing.T, name string) *x509.Certificate {
 	t.Helper()
 	ext, err := armtls.MarshalMatchedWorkloadExtension(&armtls.MatchedWorkload{
 		Name:             name,
@@ -277,7 +277,7 @@ func TestWarnUnexpectedWorkloadOncePerName(t *testing.T) {
 	for _, name := range []string{"c8s-operator-a", "c8s-operator-a", "", "other", "c8s-operator-a", "c8s-router-0123456789ab", "other", "c8s-operator-a"} {
 		leaf := &x509.Certificate{}
 		if name != "" {
-			leaf = stampedLeaf(t, name)
+			leaf = leafNaming(t, name)
 		}
 		warnUnexpectedWorkload(cfg, leaf, warned)
 	}

@@ -2151,6 +2151,50 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 	}
 }
 
+// TestChartOperatorStartupProbeHoldsOffLiveness pins the operator's
+// startupProbe (#208). setupManager runs CRD discovery and the webhook PKI
+// bootstrap before /healthz is served, so without it liveness (~90s at the
+// defaults) can kill the operator mid-startup and, via failurePolicy=Fail,
+// block every pod admission while it restarts.
+func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	op := renderedDeploymentContainer(t, out, "c8s-operator", "operator")
+	sp := op.StartupProbe
+	if sp == nil || sp.HTTPGet == nil {
+		t.Fatalf("operator must carry an HTTP startupProbe; got %+v", sp)
+	}
+	if sp.HTTPGet.Path != "/healthz" || sp.HTTPGet.Port.String() != "health" {
+		t.Errorf("operator startupProbe = GET %s on %s, want /healthz on the health port", sp.HTTPGet.Path, sp.HTTPGet.Port.String())
+	}
+	if window := sp.FailureThreshold * sp.PeriodSeconds; window < 300 {
+		t.Errorf("operator startupProbe window = %ds, want >= 300s", window)
+	}
+	if op.LivenessProbe == nil {
+		t.Fatal("operator lost its livenessProbe")
+	}
+}
+
+// TestChartOperatorHasPodNameEnv pins the downward-API POD_NAME the operator
+// puts in its webhook CA's CommonName: the CA's identity in the caBundle,
+// which must be unique among live pods (the hostname is truncated at 63).
+func TestChartOperatorHasPodNameEnv(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	op := renderedDeploymentContainer(t, out, "c8s-operator", "operator")
+	for _, e := range op.Env {
+		if e.Name == "POD_NAME" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&
+			e.ValueFrom.FieldRef.FieldPath == "metadata.name" {
+			return
+		}
+	}
+	t.Fatalf("operator missing POD_NAME from metadata.name; env %+v", op.Env)
+}
+
 // TestChartNonBareMetalModeUsesAttestationSocket proves the bare-metal-mode wiring does
 // not leak into the other cvmModes: gke/aks dial the on-node Unix socket
 // and render no HOST_IP env anywhere. The consumers that must carry both the
@@ -2682,7 +2726,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims", "--expected-workload=infer")
+	assertContainerArgs(t, cert, "--workload-claims", "--expected-workload=infer", "--ca-watch-interval=1m")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -2950,6 +2994,17 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	if got := nginx.SecurityContext.RunAsNonRoot; got == nil || *got {
 		t.Fatalf("nginx runAsNonRoot = %v, want false", got)
 	}
+
+	claimsOut, err := helmTemplate(t,
+		"--set-string", "router.attest.expectedWorkload=infer",
+		"--set", "router.hostPort.enabled=false",
+		"--set-string", "router.certProvisioning.caWatchInterval=3m",
+	)
+	if err != nil {
+		t.Fatalf("helm template (workload claims): %v\n%s", err, claimsOut)
+	}
+	claimsCert := routerGetCertContainer(t, claimsOut, "c8s-cert")
+	assertContainerArgs(t, claimsCert, "--workload-claims", "--ca-watch-interval=3m")
 }
 
 // TestChartDefaultRouterUpstreamIsWorkloadDirect pins the default front-door

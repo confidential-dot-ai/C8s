@@ -34,10 +34,10 @@ var digestArgs = []string{
 }
 
 // running is the set the node inventory reports for a rendered pod: a pod
-// command replaces the entrypoint, which is /c8s for the c8s image and
-// irrelevant to the any-argv entries of the others. Mounts are reported as
+// command replaces the entrypoint, which is /c8s for the c8s image and the
+// one the seed pins for the other component images. Mounts are reported as
 // platform-only.
-func running(pod corev1.PodSpec) []workloadclaims.SandboxContainer {
+func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.SandboxContainer {
 	var out []workloadclaims.SandboxContainer
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
 		_, digest, _ := strings.Cut(c.Image, "@")
@@ -47,7 +47,7 @@ func running(pod corev1.PodSpec) []workloadclaims.SandboxContainer {
 		case digest == c8sDigest:
 			command = []string{secrets.InjectedBinary}
 		default:
-			command = []string{"/entrypoint"}
+			command = seededEntrypoint(seed, digest)
 		}
 		out = append(out, workloadclaims.SandboxContainer{
 			Digest: digest,
@@ -56,6 +56,19 @@ func running(pod corev1.PodSpec) []workloadclaims.SandboxContainer {
 		})
 	}
 	return out
+}
+
+// seededEntrypoint is the command the seed pins digest to, or /entrypoint when
+// it pins none.
+func seededEntrypoint(seed *pkgallowlist.Allowlist, digest string) []string {
+	for _, w := range seed.Workloads {
+		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
+			if c.Digest.String() == digest && c.Command.Policy == pkgallowlist.PolicyExact {
+				return c.Command.Argv
+			}
+		}
+	}
+	return []string{"/entrypoint"}
 }
 
 // routerEntryName returns the seeded router entry's name, or "" when none is seeded.
@@ -100,7 +113,7 @@ func assertRouterMatches(t *testing.T, out string) {
 		if !slices.Contains([]string{"c8s-router", "c8s-cds", "c8s-operator", "c8s-armtls-mesh"}, w.name) {
 			continue
 		}
-		reported := running(w.spec)
+		reported := running(seed, w.spec)
 		want := routerEntry
 		if w.name != "c8s-router" {
 			candidates := secrets.WorkloadContainers(seed, reported)
@@ -145,7 +158,7 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 		t.Errorf("entry mains = %d, want nginx, cds-attest and allowlist-proxy", len(entry.Containers))
 	}
 
-	reported := running(pod)
+	reported := running(seed, pod)
 	for _, tc := range []struct {
 		name   string
 		want   string // "" wants ErrNoMatch
@@ -391,7 +404,8 @@ func TestChartRouterOperatorGate(t *testing.T) {
 		"--set-json", `nriImagePolicy.bootstrapAllowlist.workloads.my-router={"label":"mine","initContainers":[],"containers":[` + strings.Join(containers, ",") + `]}`,
 	}
 	routerMatch := func(out string) (string, error) {
-		return match(renderedSeed(t, out), running(renderedDeployment(t, out, "c8s-router").Spec.Template.Spec))
+		seed := renderedSeed(t, out)
+		return match(seed, running(seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec))
 	}
 
 	// Ungated, the entry sits beside the seeded one and the router leaf goes unnamed.

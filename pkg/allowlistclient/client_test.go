@@ -113,6 +113,69 @@ func TestFetchNotModified(t *testing.T) {
 	}
 }
 
+func TestFetchServedStatus(t *testing.T) {
+	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	tests := []struct {
+		name            string
+		status          int
+		etag            string
+		wantETag        string
+		wantNotModified bool
+		wantErr         bool
+	}{
+		{name: "304", status: http.StatusNotModified, wantNotModified: true},
+		{name: "200", status: http.StatusOK, etag: `W/"8"`, wantETag: `W/"8"`},
+		{name: "5xx", status: http.StatusInternalServerError, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("If-None-Match"); got != `W/"7"` {
+					t.Errorf("If-None-Match = %q, want W/\"7\"", got)
+				}
+				if tt.etag != "" {
+					w.Header().Set("ETag", tt.etag)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				if tt.status == http.StatusOK {
+					io.WriteString(w, doc)
+				}
+			}))
+			defer srv.Close()
+
+			served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), `W/"7"`)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FetchServed() error = %v, want error %v", err, tt.wantErr)
+			}
+			if served.ETag != tt.wantETag || notModified != tt.wantNotModified {
+				t.Fatalf("FetchServed() = %q, %v; want %q, %v", served.ETag, notModified, tt.wantETag, tt.wantNotModified)
+			}
+		})
+	}
+}
+
+func TestVersionFromETag(t *testing.T) {
+	tests := []struct {
+		name string
+		etag string
+		want string
+	}{
+		{name: "weak", etag: `W/"7"`, want: "7"},
+		{name: "strong", etag: `"7"`, want: ""},
+		{name: "empty weak", etag: `W/""`, want: ""},
+		{name: "missing", etag: "", want: ""},
+		{name: "unclosed", etag: `W/"7`, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VersionFromETag(tt.etag); got != tt.want {
+				t.Errorf("VersionFromETag(%q) = %q, want %q", tt.etag, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPutWorkloadBindsBody(t *testing.T) {
 	var gotPath, gotMethod string
 	var gotBody []byte

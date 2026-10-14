@@ -50,6 +50,120 @@ image_alias() { return $UNSUPPORTED; }
 
 served_allowlist() { al export; }
 
+# The allowlist front door of the guest is the CDS's own listener, which the
+# c8s CLI's signed writes and raw reads go through. The launch bundle's key is
+# the run's operator key; the token minter is built from the checkout on
+# first use, with the Go toolchain that built the CLI.
+cds_url() { echo "$C8S_ALLOWLIST_URL"; }
+operator_key() { echo "$C8S_OPERATOR_KEY"; }
+scratch() { echo "${SUITE_RESULTS:-${TMPDIR:-/tmp}}"; }
+optoken_bin() {
+    local bin
+    bin="$(scratch)/optoken"
+    if [ ! -x "$bin" ]; then
+        command -v go >/dev/null || return $UNSUPPORTED
+        go build -C "$C8S_ROOT" -o "$bin" ./test/integration/cluster/optoken >&2 || return 1
+    fi
+    echo "$bin"
+}
+
+# Whether the front door is the CDS listener itself is the lane's to know;
+# a plain-HTTP probe of something else would prove nothing.
+cds_plain_url() { return "$UNSUPPORTED"; }
+
+# The pins the lane started the CDS with: a launch digest, or those of its
+# policy file.
+cds_pins() {
+    if [ -n "${C8S_MEASUREMENTS:-}" ]; then
+        printf '%s\n' "$C8S_MEASUREMENTS" | tr ',' '\n'
+    elif [ -n "${C8S_MEASUREMENTS_CONFIG:-}" ]; then
+        jq -r '.measurements[].measurement // empty' "$C8S_MEASUREMENTS_CONFIG"
+    else
+        echo "backend: neither C8S_MEASUREMENTS nor C8S_MEASUREMENTS_CONFIG names the CDS's pins" >&2
+        return 1
+    fi
+}
+
+# Reconfiguring or stopping node services, and searching the node, need a
+# shell on it; an issuance from the harness host needs a TEE it has not.
+cds_restart_with() { return "$UNSUPPORTED"; }
+attestation_service_stop() { return "$UNSUPPORTED"; }
+attestation_service_start() { return "$UNSUPPORTED"; }
+private_keys() { return "$UNSUPPORTED"; }
+attest_direct() { return "$UNSUPPORTED"; }
+
+# The node's local attestation service, over the socket the plugin binds into
+# the requester (the webhook rebases a unix:// attestation-api URL under
+# that directory for the requesters it injects). A chosen launch digest
+# would need a second TEE.
+attestation_socket() {
+    local url
+    url="$(operator_arg attestation-api-url)"
+    case "$url" in
+        unix://*) echo "/run/c8s/workload-claims/$(basename "${url#unix://}")" ;;
+        *) return "$UNSUPPORTED" ;;
+    esac
+}
+
+evidence() {
+    [ -z "${4:-}" ] || return "$UNSUPPORTED"
+    local socket body out
+    socket="$(attestation_socket)" || return
+    body="$(mktemp)"
+    python3 -c 'import base64, json, sys; print(json.dumps({"report_data": base64.b64encode(bytes.fromhex(sys.argv[1])).decode()}))' "$3" >"$body"
+    out="$(requester_request "$1" "$2" POST http://localhost/attest "$body" "$socket")"
+    rm -f "$body"
+    [ "$(head -1 <<<"$out")" = 200 ] || { echo "backend: attestation service: $out" >&2; return 1; }
+    tail -n +2 <<<"$out"
+}
+
+# Real evidence with one byte of the signed report body changed: an SNP
+# report's launch measurement. Other evidence shapes are not edited here.
+evidence_unsigned() {
+    local env
+    env="$(evidence "$1" "$2" "$3")" || return
+    python3 - "$env" <<'PYEOF'
+import base64, json, sys
+env = json.loads(sys.argv[1])
+try:
+    report = bytearray(base64.b64decode(env["evidence"]["attestation_report"]))
+except (KeyError, TypeError):
+    sys.exit(77)
+report[0x90] ^= 0xFF
+env["evidence"]["attestation_report"] = base64.b64encode(bytes(report)).decode()
+print(json.dumps(env))
+PYEOF
+}
+
+# No node shell: the certificate volume is read through a container of the
+# pod, the first one unless named, so a leaf is seen only once it runs.
+pod_cert_file() {
+    local container="${4:-}"
+    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
+    pod_cert_file_in "$1" "$2" "$container" "$3"
+}
+
+pod_sandbox_id() { return "$UNSUPPORTED"; }
+
+# The operator's verifier on a saved leaf: 0 accepts, 2 rejects on a verdict;
+# anything else means it could not judge.
+relying_party() {
+    local leaf="$1" ca="$2" rc=0
+    shift 2
+    c8s verify --from-file "$leaf" --mesh-ca "$ca" "${measurement_args[@]}" "$@" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) echo accepts ;;
+        2) echo rejects ;;
+        *) echo "backend: c8s verify exited $rc" >&2; return 1 ;;
+    esac
+}
+
+# From the registry, with the crane the lane installs; no node shell.
+image_entrypoint() {
+    command -v crane >/dev/null || return $UNSUPPORTED
+    crane config "$1" | jq -r '.config | ((.Entrypoint // []) + (.Cmd // []))[]'
+}
+
 # `apply` takes a name-keyed map of entries and lints it against the live
 # document first.
 allowlist_put() { jq -c --arg name "$1" '{($name): .}' "$2" | al apply - >/dev/null; }
@@ -80,6 +194,9 @@ node_containers() { return $UNSUPPORTED; }
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted
 # CDS serves (its versions start over), so the CDS stays up too.
+# No shell on the node: the pull is taken to be refused as soon as the
+# Service is patched.
+node_refuses() { echo yes; }
 plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }

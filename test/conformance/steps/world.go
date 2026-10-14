@@ -22,9 +22,15 @@ type world struct {
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
-	entries map[string]*entry
-	written map[string]bool
-	removed map[string]json.RawMessage
+	entries  map[string]*entry
+	written  map[string]bool
+	removed  map[string]json.RawMessage
+	api      cdsAPIState
+	cds      cdsState
+	issuance issuanceState
+	// undo is what the scenario changed in the cluster beyond the node and
+	// the allowlist, put back last in, first out before those are restored.
+	undo []func() error
 	// appliedVersion is the served version the plugin had applied when the
 	// scenario last waited for it.
 	appliedVersion string
@@ -43,6 +49,15 @@ type pod struct {
 	name       string
 	containers []*container
 	deployed   bool
+	// workloadID: the pod opts into a leaf of its own, which the webhook's
+	// requester obtains and renews. leaf is the one the pod holds as last
+	// read (or, for a requester the scenario drives, the one its last attest
+	// request was issued); renewed and refusal are what an injected
+	// requester's last attempt did.
+	workloadID bool
+	leaf       *leaf
+	renewed    bool
+	refusal    *refusal
 }
 
 type container struct {
@@ -71,6 +86,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				running:    map[string]*pod{},
 				nodes:      map[string]bool{},
 				pluginDown: map[string]bool{},
+				issuance:   issuanceState{requesters: map[string]*requester{}},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
@@ -81,27 +97,46 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			// Before may have failed before storing the world.
 			if w, ok := ctx.Value(worldKey{}).(*world); ok {
 				_, _ = kubectl(nil, "delete", "namespace", w.namespace, "--ignore-not-found", "--wait=false")
-				// The node first: the allowlist is restored through the CDS,
-				// which the scenario may have blocked or restarted.
-				return ctx, errors.Join(w.restoreNode(), w.restoreAllowlist())
+				// The undo list first, which brings the CDS back to its
+				// installed configuration; then the node, whose plugins pull
+				// from that CDS; then the allowlist, written through it.
+				return ctx, errors.Join(w.runUndo(), w.restoreNode(), w.restoreAllowlist())
 			}
 			return ctx, nil
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
+		registerCDSAPI(sc)
+		registerCDS(sc)
+		registerIssuance(sc)
+		registerRequester(sc)
 		registerNode(sc)
 	}
+}
+
+// onUndo records what the After hook has to run to put the cluster back.
+func (w *world) onUndo(fn func() error) { w.undo = append(w.undo, fn) }
+
+// runUndo runs the recorded steps last in, first out, every one of them.
+func (w *world) runUndo() error {
+	var errs []error
+	for i := len(w.undo) - 1; i >= 0; i-- {
+		errs = append(errs, w.undo[i]())
+	}
+	w.undo = nil
+	return errors.Join(errs...)
 }
 
 // describe records a pod the scenario will deploy, one container per
 // reference; it becomes the last pod. A scenario that says nothing about the
 // argv gets one that keeps the container alive.
-func (w *world) describe(name string, refs ...string) {
+func (w *world) describe(name string, refs ...string) *pod {
 	p := &pod{name: name}
 	for _, ref := range refs {
 		p.containers = append(p.containers, &container{ref: ref, command: []string{"sleep", "3600"}})
 	}
 	w.pods[name], w.lastPod = p, p
+	return p
 }
 
 func (p *pod) last() *container { return p.containers[len(p.containers)-1] }
@@ -153,13 +188,15 @@ type entry struct {
 	Containers     []entryContainer `json:"containers"`
 }
 
+// entryContainer is a declared container. Command and Args are nil when the
+// entry states no policy, which the document's defaults then decide.
 type entryContainer struct {
-	Digest  string     `json:"digest"`
-	Image   string     `json:"image,omitempty"`
-	Command argvPolicy `json:"command"`
-	Args    argvPolicy `json:"args"`
-	Mounts  policy     `json:"mounts"`
-	Env     policy     `json:"env"`
+	Digest  string       `json:"digest"`
+	Image   string       `json:"image,omitempty"`
+	Command *argvPolicy  `json:"command,omitempty"`
+	Args    *argvPolicy  `json:"args,omitempty"`
+	Mounts  mountsPolicy `json:"mounts"`
+	Env     policy       `json:"env"`
 }
 
 type argvPolicy struct {
@@ -167,8 +204,25 @@ type argvPolicy struct {
 	Argv   []string `json:"argv,omitempty"`
 }
 
+func anyArgv() *argvPolicy                { return &argvPolicy{Policy: "any"} }
+func denyArgv() *argvPolicy               { return &argvPolicy{Policy: "deny"} }
+func exactArgv(argv []string) *argvPolicy { return &argvPolicy{Policy: "exact", Argv: argv} }
+
+func (p *argvPolicy) is(policy string) bool { return p != nil && p.Policy == policy }
+
 type policy struct {
 	Policy string `json:"policy"`
+}
+
+type mountsPolicy struct {
+	Policy string      `json:"policy"`
+	Rules  []mountRule `json:"rules,omitempty"`
+}
+
+// mountRule is the part of a rule every kind carries.
+type mountRule struct {
+	Destination string `json:"destination"`
+	Kind        string `json:"kind"`
 }
 
 // containers lists the entry's declared containers, init then main.
@@ -193,35 +247,45 @@ func (e *entry) declares(digest string) bool {
 	return false
 }
 
-// admitsAnyArgv reports whether the entry admits digest under any argv.
+// admitsAnyArgv reports whether the entry admits digest under any argv. An
+// entry pinned to an executable with open args — the chart's own component
+// shape — does not count: the scenarios launch their containers under
+// `sleep`, which such an entry refuses.
 func (e *entry) admitsAnyArgv(digest string) bool {
 	for _, c := range e.containers() {
-		if c.Digest == digest && c.Command.Policy == "any" && c.Args.Policy == "any" {
+		if c.Digest == digest && c.Command.is("any") && c.Args.is("any") {
 			return true
 		}
 	}
 	return false
 }
 
-// served is the document CDS serves at the moment of the call: its entries
-// parsed, and raw for putting one back as it was.
+// served is an allowlist document as CDS serves it: its entries parsed, and
+// raw for putting one back as it was.
 type served struct {
+	schema  string
 	entries map[string]*entry
 	raw     map[string]json.RawMessage
 }
 
+// served is the document CDS serves at the moment of the call.
 func (w *world) served() (served, error) {
 	out, err := w.be.call("served_allowlist")
 	if err != nil {
 		return served{}, err
 	}
+	return parseServed(out)
+}
+
+func parseServed(out string) (served, error) {
 	var doc struct {
+		Schema    string                     `json:"schema"`
 		Workloads map[string]json.RawMessage `json:"workloads"`
 	}
 	if err := json.Unmarshal([]byte(out), &doc); err != nil {
 		return served{}, fmt.Errorf("served allowlist is not JSON: %w", err)
 	}
-	s := served{raw: doc.Workloads, entries: make(map[string]*entry, len(doc.Workloads))}
+	s := served{schema: doc.Schema, raw: doc.Workloads, entries: make(map[string]*entry, len(doc.Workloads))}
 	for name, raw := range doc.Workloads {
 		e := &entry{}
 		if err := json.Unmarshal(raw, e); err != nil {

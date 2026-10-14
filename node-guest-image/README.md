@@ -168,7 +168,9 @@ values merge or separate host nginx configuration.
 The renderer also emits the component allowlist seed and a list of pinned
 core images. `airgap-images.sh` preserves their complete OCI content under
 `/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
-role. Core pods use `imagePullPolicy: Never`. Before containerd starts,
+role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
+when every referenced blob is present and matches its digest, and copies the
+image afresh otherwise, so a warm cache needs no registry access. Core pods use `imagePullPolicy: Never`. Before containerd starts,
 boot preparation merges the measured component seed into the NRI system
 floor, allowing CDS and its clients to start while CDS is unavailable.
 Signed tenant workload entries are added to CDS's served seed without
@@ -623,6 +625,15 @@ Provision it with your host-provisioning system before installing C8s:
   `--reset-with-sbr` → D3→D0 power-control cycle; FLR alone is insufficient.
 - On SEV-SNP hosts, `kvm_amd.sev_snp=1` and an IOMMU on the host cmdline.
 
+Attach GPUs at VM launch. The guest kernel has PCI hotplug compiled out, so a
+GPU attached later is not enumerated. `gpu-cc-enforce.service` checks CC mode
+and attestation once per boot and relies on this; the invariant gate fails if
+the kernel fragments or the resolved snapshot enable any `HOTPLUG_PCI*`
+symbol. A `/sys/bus/pci/rescan` by guest root or by any privileged platform
+pod (the NVIDIA device plugin, attestation-api, volumed, the NRI image-policy
+installer) still enumerates new devices without a check ([#669]). Tenant pods
+cannot do this under restricted PodSecurity.
+
 ## Troubleshooting
 
 Inspect the core workloads with the attested kubeconfig:
@@ -675,4 +686,5 @@ Migration state (see [#264] for the full plan):
 
 [confidential-os-builder]: https://github.com/confidential-dot-ai/confidential-os-builder
 [#264]: https://github.com/confidential-dot-ai/c8s/issues/264
+[#669]: https://github.com/confidential-dot-ai/c8s/issues/669
 [operator.md]: ../docs/operator.md

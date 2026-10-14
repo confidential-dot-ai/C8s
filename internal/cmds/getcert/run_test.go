@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
+	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
@@ -446,6 +447,11 @@ func plaintextCDSClient(cdsURL string) attestclient.Client {
 	return attestclient.NewClientWithHTTP(cdsURL, http.DefaultClient)
 }
 
+// plaintextPolicyClient is plaintextCDSClient for the allowlist API.
+func plaintextPolicyClient(cdsURL string) allowlistclient.Client {
+	return allowlistclient.NewClientWithHTTP(cdsURL, http.DefaultClient)
+}
+
 func TestValidateConfigAccepts(t *testing.T) {
 	tests := []struct {
 		name string
@@ -551,7 +557,12 @@ func TestValidateConfigRejects(t *testing.T) {
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = -time.Minute
 		}, errInvalidCAWatchInterval},
-		{"ca watch without ca-out", func(c *config) {
+		{"sub-second ca watch interval", func(c *config) {
+			c.CAOutPath = "/tls/ca.pem"
+			c.RenewInterval = time.Hour
+			c.CAWatchInterval = 500 * time.Millisecond
+		}, errInvalidCAWatchInterval},
+		{"ca watch with nothing to watch", func(c *config) {
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = time.Minute
 		}, errInvalidCAWatchInterval},
@@ -1022,7 +1033,7 @@ func TestBuildDiscoveryDocumentRejectsUnparseableCert(t *testing.T) {
 }
 
 func TestNewCDSClientInvalidURL(t *testing.T) {
-	if _, err := newCDSClient(config{CDSURL: "://bad"}); err == nil {
+	if _, _, err := newCDSClient(config{CDSURL: "://bad"}); err == nil {
 		t.Fatal("newCDSClient succeeded, want error for invalid URL")
 	}
 }

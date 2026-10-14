@@ -475,11 +475,13 @@ func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.Sa
 }
 
 // isInjected reports whether a reported container is one C8s injected: its
-// image is admitted under an unconstrained argv, its argv is the C8s binary in
-// one of the modes the webhook injects, and every mount it holds is confined
-// to the node. All three conditions are required. An unconstrained image
-// running a shell is not injected. Nor is the C8s image in a mode the webhook
-// never injects: that container is declared, however it is invoked. Nor is an
+// argv is the C8s binary in one of the modes the webhook injects, its image is
+// admitted running that binary under an unconstrained args policy (the seeded
+// component entry pins the executable and nothing else, since the arguments
+// are per-pod), and every mount it holds is confined to the node. All three
+// conditions are required. An image admitted with open args but running a
+// shell is not injected. Nor is the C8s image in a mode the webhook never
+// injects: that container is declared, however it is invoked. Nor is an
 // injected mode with a mount the host can read: dropping it would exempt from
 // matching the one container able to fetch for the pod (docs/secrets.md).
 func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) bool {
@@ -489,7 +491,7 @@ func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) b
 	if !slices.Contains(InjectedModes, c.Argv[1]) {
 		return false
 	}
-	if !al.AdmitsAnyArgv(c.Digest) {
+	if !al.AdmitsAnyArgs(c.Digest, c.Argv) {
 		return false
 	}
 	// nil is unavailable evidence, which fails closed like an exact policy.

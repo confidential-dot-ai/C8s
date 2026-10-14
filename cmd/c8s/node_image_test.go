@@ -345,6 +345,8 @@ spec:
       containers:
         - name: mesh
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s", "armtls-mesh"]
+          args: ["--platform", "snp"]
 ---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
@@ -466,6 +468,9 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 		{"unseeded init", "registry.example.com/init@" + nodeImageTestCDSDigest, "registry.example.com/init@" + nodeImageTestMeshDigest},
 		{"missing core workload", "name: c8s-cds", "name: other-cds"},
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
+		{"pinned args", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"deny"},"mounts":{"policy":"any"}}]},"init"`},
+		{"restricted mounts", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"any"},"mounts":{"policy":"deny"}}]},"init"`},
+		{"pinned executable other than the baked command", `"` + testDigest + `","command":{"policy":"any"}`, `"` + testDigest + `","command":{"policy":"exact","argv":["/other"]}`},
 		{"unexpected namespace", "name: c8s-cds", "name: c8s-cds\n  namespace: outside"},
 		{"cluster resource namespace", "name: confidentialworkloads.confidential.ai", "name: confidentialworkloads.confidential.ai\n  namespace: c8s-system"},
 		{"invalid seed", `"schema":"c8s.allowlist/v1"`, `"schema":"invalid"`},
@@ -579,5 +584,19 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 				}
 			}
 		})
+	}
+}
+
+// A seed that pins a component's executable is accepted when the pin admits
+// every command the baked manifests spell out for the image.
+func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
+	input := strings.Replace(nodeImageCollectFixture(),
+		`"`+testDigest+`","command":{"policy":"any"}`,
+		`"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]}`, 1)
+	if input == nodeImageCollectFixture() {
+		t.Fatal("fixture did not change")
+	}
+	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
+		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
 	}
 }

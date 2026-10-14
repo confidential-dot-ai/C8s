@@ -154,7 +154,11 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		}
 		args = append(args, c.command...)
 	}
-	manifest, err := w.be.call("pod_manifest", args...)
+	renderer := "pod_manifest"
+	if p.workloadID {
+		renderer = "cw_pod_manifest"
+	}
+	manifest, err := w.be.call(renderer, args...)
 	if err != nil {
 		return err
 	}
@@ -258,6 +262,18 @@ func containerNotCreated(ctx context.Context, name string) error {
 	p, err := w.pod(name)
 	if err != nil {
 		return err
+	}
+	if p.workloadID {
+		// A pod carrying a workload ID is held back by its requester's wait
+		// for a leaf, not by the admission plugin, so no denial is recorded;
+		// the scenario's leaf step says how long the leaf was waited for.
+		if !p.deployed {
+			return fmt.Errorf("pod %q has not been deployed", name)
+		}
+		if id := created(w.statuses(p)); id != "" {
+			return fmt.Errorf("the container of %q was created (%s)", name, id)
+		}
+		return nil
 	}
 	st, err := w.await(p, decided)
 	switch {

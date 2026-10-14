@@ -209,7 +209,10 @@
           "properties": {
             "cacheDir": {},
             "configDir": {},
-            "pluginDir": {},
+            "pluginDir": {
+              "type": "string",
+              "pattern": "^/[A-Za-z0-9._/-]+$"
+            },
             "runtimeDir": {}
           }
         },
@@ -239,7 +242,10 @@
             "excludeLabels": {}
           }
         },
-        "pluginFilename": {},
+        "pluginFilename": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
         "pluginName": {},
         "policy": {
           "type": [
@@ -271,6 +277,10 @@
           "properties": {
             "interval": {}
           }
+        },
+        "requestTimeout": {
+          "type": "string",
+          "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|ms|s|m|h))+$"
         },
         "resources": {},
         "sandboxDigests": {
@@ -445,6 +455,7 @@
           ],
           "additionalProperties": false,
           "properties": {
+            "entrypoint": {},
             "httpsPort": {},
             "image": {
               "type": [

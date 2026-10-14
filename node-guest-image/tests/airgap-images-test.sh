@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Real ORAS + OCI fixture: verify complete index preservation, imported names,
-# deterministic archives and rejection of unpinned/empty image lists offline.
+# verified cache reuse, deterministic archives and rejection of unpinned/empty
+# image lists offline.
 set -euo pipefail
 TESTS_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 for tool in oras jq python3 tar; do command -v "$tool" >/dev/null; done
@@ -16,19 +17,27 @@ mkdir -p "$work/bin" "$OCI_SOURCE/blobs/sha256"
 python3 - "$OCI_SOURCE" > "$work/images.txt" <<'PYFIXTURE'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
-def blob(value, media_type):
-    data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+def raw(data, media_type):
     digest = hashlib.sha256(data).hexdigest()
     (root / "blobs/sha256" / digest).write_bytes(data)
     return {"mediaType": media_type, "digest": "sha256:" + digest, "size": len(data)}
+def blob(value, media_type):
+    return raw(json.dumps(value, sort_keys=True, separators=(",", ":")).encode(), media_type)
 children = []
 for architecture in ("amd64", "arm64"):
+    platform = {"architecture": architecture, "os": "linux"}
     config = blob({"architecture": architecture, "os": "linux", "config": {},
                    "rootfs": {"type": "layers", "diff_ids": []}},
                   "application/vnd.oci.image.config.v1+json")
+    layer = raw(("layer-" + architecture).encode() * 512, "application/vnd.oci.image.layer.v1.tar")
     manifest = blob({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                     "config": config, "layers": []}, "application/vnd.oci.image.manifest.v1+json")
-    manifest["platform"] = {"architecture": architecture, "os": "linux"}
+                     "config": config, "layers": [layer]}, "application/vnd.oci.image.manifest.v1+json")
+    manifest["platform"] = platform
+    if architecture == "arm64":
+        # A nested index: its manifest is reachable only through it.
+        manifest = blob({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
+                         "manifests": [manifest]}, "application/vnd.oci.image.index.v1+json")
+        manifest["platform"] = platform
     children.append(manifest)
 index = blob({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
               "manifests": children}, "application/vnd.oci.image.index.v1+json")
@@ -42,6 +51,7 @@ PYFIXTURE
 cat > "$work/bin/oras" <<'SHIM'
 #!/usr/bin/env bash
 set -euo pipefail
+[[ $1 != cp ]] || echo "${@: -1}" >> "$ORAS_LOG"
 if [[ ${2:-} == --from-oci-layout ]]; then
     exec "$REAL_ORAS" "$@"
 fi
@@ -51,10 +61,57 @@ exec "$REAL_ORAS" cp --from-oci-layout --to-oci-layout "$OCI_SOURCE@${3##*@}" "$
 SHIM
 chmod +x "$work/bin/oras"
 export PATH="$work/bin:$PATH"
+ORAS_LOG="$work/oras.log"
+export ORAS_LOG
+copies() { [[ -f "$ORAS_LOG" ]] && wc -l < "$ORAS_LOG" || echo 0; }
 script="$TESTS_DIR/../c8s/airgap-images.sh"
 bash "$script" "$work/images.txt" "$work/cache" "$work/first"
+[[ $(copies) == 1 ]]
+# A verified cache is reused without copying and archives identically.
 bash "$script" "$work/images.txt" "$work/cache" "$work/second"
+[[ $(copies) == 1 ]]
 cmp "$work/first/c8s-0.tar" "$work/second/c8s-0.tar"
+[[ $(tar -tf "$work/first/c8s-0.tar" | grep -c '^blobs/sha256/.') == 8 ]]
+# Damaged blobs, stray entries or a tag fresh copies never write force a
+# clean recopy.
+cached="$work/cache/oci-$(cut -d@ -f2 "$work/images.txt" | cut -d: -f2)"
+edit_tag() {
+    jq "(.manifests[] | select(.annotations[\"org.opencontainers.image.ref.name\"] == \"measured\")) |= ($1)" \
+        "$cached/index.json" > "$work/index.json"
+    mv "$work/index.json" "$cached/index.json"
+}
+damage() {
+    # oras writes blobs read-only; a non-root runner cannot damage them in place.
+    chmod -R u+w "$cached"
+    local blobs=("$cached"/blobs/sha256/*)
+    case $1 in
+        corrupt) sed -i s/amd64/amd65/ "$(grep -l amd64 "${blobs[@]}" | head -1)" ;;
+        layer) sed -i s/layer-arm64/layer-arm65/ "$(grep -l layer-arm64 "${blobs[@]}")" ;;
+        missing) rm "${blobs[0]}" ;;
+        truncated) : > "${blobs[0]}" ;;
+        stray) echo stray > "$cached/blobs/sha256/$(printf stray | sha256sum | cut -d' ' -f1)" ;;
+        emptydir) mkdir "$cached/blobs/sha512" ;;
+        untagged) edit_tag '.annotations = {}' ;;
+        octet) edit_tag '.mediaType = "application/octet-stream"' ;;
+        extrakey) edit_tag '.platform = {"architecture": "amd64", "os": "linux"}' ;;
+    esac
+}
+for step in corrupt layer missing truncated stray emptydir untagged octet extrakey; do
+    before=$(copies)
+    damage "$step"
+    bash "$script" "$work/images.txt" "$work/cache" "$work/recopied"
+    [[ $(copies) == $((before + 1)) ]] || { echo "reused a damaged cache: $step" >&2; exit 1; }
+    cmp "$work/first/c8s-0.tar" "$work/recopied/c8s-0.tar"
+done
+# The archived oci-layout is fixed, so a damaged cached one never reaches it.
+chmod -R u+w "$cached"
+echo '{"imageLayoutVersion":"9"}' > "$cached/oci-layout"
+bash "$script" "$work/images.txt" "$work/cache" "$work/layout"
+cmp "$work/first/c8s-0.tar" "$work/layout/c8s-0.tar"
+# Layouts for digests no longer listed are pruned from the persisted cache.
+mkdir -p "$work/cache/oci-stale/blobs"
+bash "$script" "$work/images.txt" "$work/cache" "$work/pruned"
+[[ ! -e "$work/cache/oci-stale" && -d "$cached" ]]
 
 local_images="$work/local images"
 mkdir -p "$local_images"

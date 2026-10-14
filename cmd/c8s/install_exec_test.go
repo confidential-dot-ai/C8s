@@ -284,7 +284,7 @@ func TestDetectDistroExec(t *testing.T) {
 func TestCraneDigestShellsOut(t *testing.T) {
 	t.Run("resolves the ref", func(t *testing.T) {
 		f := newFakeBin(t)
-		f.tool(t, "crane", "echo "+testDigest)
+		f.tool(t, "crane", fakeCrane(testDigest))
 		got, err := crane.Digest(context.Background(), "ghcr.io/x/app:v1")
 		if err != nil || got != testDigest {
 			t.Fatalf("craneDigest = (%q, %v), want (%q, nil)", got, err, testDigest)
@@ -477,7 +477,7 @@ func TestPreflightOperatorImageExec(t *testing.T) {
 
 	t.Run("published operator image passes", func(t *testing.T) {
 		f := newFakeBin(t)
-		f.tool(t, "crane", "echo "+testDigest)
+		f.tool(t, "crane", fakeCrane(testDigest))
 		if err := preflightOperatorImage(context.Background(), comps, "v1"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -512,7 +512,7 @@ func TestPreflightOperatorImageExec(t *testing.T) {
 
 	t.Run("no operator component is a no-op", func(t *testing.T) {
 		f := newFakeBin(t)
-		f.tool(t, "crane", "echo "+testDigest)
+		f.tool(t, "crane", fakeCrane(testDigest))
 		if err := preflightOperatorImage(context.Background(), comps[:1], "v1"); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -600,7 +600,7 @@ func TestAdoptedWorkloadImagesExec(t *testing.T) {
 func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 	t.Run("resolves and pins the allowlist entry", func(t *testing.T) {
 		f := newFakeBin(t)
-		f.tool(t, "crane", "echo "+testDigest)
+		f.tool(t, "crane", fakeCrane(testDigest))
 		got, err := appendResolvedWorkloadImageArgs(context.Background(), nil, []string{"ghcr.io/acme/vllm:v1"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -639,7 +639,7 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 	t.Run("pins repository and digest per component", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		f.tool(t, "crane", "echo "+testDigest)
+		f.tool(t, "crane", fakeCrane(testDigest))
 		got, err := appendResolvedDigestArgs(context.Background(), writeChart(t, "a: 1\n"), nil, "main", comps)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -655,7 +655,7 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
-		f.tool(t, "crane", "echo "+testDigest)
+		f.tool(t, "crane", fakeCrane(testDigest))
 		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, "a: 1\n"), nil, "main", comps); err == nil {
 			t.Fatal("want error when helm fails")
 		}
@@ -732,7 +732,7 @@ upgrade)
   ;;
 esac`)
 	f.tool(t, "kubectl", kubectlBody)
-	f.tool(t, "crane", "echo "+testDigest)
+	f.tool(t, "crane", fakeCrane(testDigest))
 	return s
 }
 
@@ -1369,4 +1369,41 @@ func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
 	if got, ok := policy["exemptNamespaces"]; ok {
 		t.Errorf("computed values override the piped exemptNamespaces with %#v", got)
 	}
+}
+
+// An install refuses a component whose image does not start with the
+// entrypoint the chart seeds it under: the seed would deny it on its own node.
+func TestInstallChecksComponentEntrypoints(t *testing.T) {
+	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}}
+	t.Run("matching entrypoint passes", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "crane", fakeCrane(testDigest))
+		if err := checkComponentEntrypoint(context.Background(), comp, testDigest); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		mustContainLine(t, f.calls(t), "crane config ghcr.io/x/op@"+testDigest)
+	})
+	t.Run("entrypoint and cmd together satisfy a longer pin", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "crane", `echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"]}}'`)
+		nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}}
+		if err := checkComponentEntrypoint(context.Background(), nginx, testDigest); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+	t.Run("moved entrypoint aborts", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "crane", `echo '{"config":{"Entrypoint":["/usr/bin/c8s"]}}'`)
+		err := checkComponentEntrypoint(context.Background(), comp, testDigest)
+		if err == nil || !strings.Contains(err.Error(), "pinned to") {
+			t.Fatalf("want an entrypoint mismatch, got %v", err)
+		}
+	})
+	t.Run("no entrypoint, nothing to check", func(t *testing.T) {
+		f := newFakeBin(t)
+		f.tool(t, "crane", "exit 1")
+		if err := checkComponentEntrypoint(context.Background(), c8sComponent{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
 }

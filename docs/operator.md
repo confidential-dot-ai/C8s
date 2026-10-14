@@ -374,8 +374,9 @@ release — a `failurePolicy: Fail` webhook cannot outlive the operator Service
 and block pod creation cluster-wide.
 
 It then **sweeps the host-side artifacts** that chart hooks cannot guarantee
-were removed: chart-installed NRI policy, armtls-mesh netfilter state, and the
-managed RKE2 containerd-prep template. Baked node-image components are preserved.
+were removed: chart-installed NRI policy, armtls-mesh netfilter state, the
+managed RKE2 containerd-prep template, and `c8s volume attach` LIO disks.
+Baked node-image components are preserved.
 The host paths are read from the release's computed values *before* deletion,
 so install-time `-f` overrides are honored. `--host-sweep=false` skips this cleanup.
 
@@ -390,7 +391,24 @@ The sweep removes:
   fail-closed guard, so this state survives healthy uninstall. A stale
   `OUTPUT` redirect blackholes host-originated pod traffic for non-root users;
 - on RKE2, the sentinel-marked containerd template written by containerd-prep
-  and its lock file, skipped on the baked node image by the same rule.
+  and its lock file, skipped on the baked node image by the same rule;
+- the LIO loopback disks `c8s volume attach` built, torn down the way
+  `c8s volume detach` does. Only a `fileio_0` backstore whose unit serial is
+  `c8s-vol-<name>` and the loopback target attach derives from it are touched.
+  A disk is left in place and named in the sweep log when it or one of its
+  partitions has a holder (an open dm-crypt mapping), is mounted in any
+  process's mount namespace, or is active swap; run
+  `c8s volume detach <name>` once it is released. A process holding the raw
+  device open with no mount or holder is not detected, as `detach` does not
+  detect it either. A disk whose use cannot be read, or an idle disk that
+  will not tear down, stays and fails the sweep.
+
+  To stay admissible under the release's allowlist, the sweep replays the
+  script the release's chart pinned, so this step applies only to releases
+  installed from a chart that carries it. For an older release the uninstall
+  prints a notice: run `c8s volume detach <name>` on each node for every
+  attached volume, or, once the release is gone, run
+  `c8s uninstall --host-sweep-only`, which runs this CLI's own sweep.
 
 The swept paths are cluster-global, so running two C8s releases in one
 cluster is unsupported: uninstalling either strips the other's host state.
@@ -470,11 +488,20 @@ provisioning flow.
 The router discovery endpoints (`/.well-known/mesh-ca.pem`,
 `/.well-known/cds-cert.pem`, `/v1/discovery`) track the new CA without a
 router restart: the c8s-cert sidecar polls CDS's `/ca` every
-`router.certProvisioning.caWatchInterval` (default 1m) over the same
+`router.certProvisioning.caWatchInterval` (default 1m; values below 1s are
+rejected, `"0"` disables) over the same
 armTLS-verified channel it obtains certificates on, and re-issues its leaf —
 rewriting the served CA bundle and discovery document — as soon as CDS holds
 a CA the served bundle is missing. External clients that pinned the old CA
 must still re-fetch it from the discovery endpoint.
+
+An allowlist write has a similar effect on a router that requests workload
+claims: its leaf stamps the policy snapshot it was issued under, and strict
+clients reject a leaf naming a superseded policy. The same watch tick also
+polls CDS's `/allowlist` and re-issues the leaf when the served policy moves.
+CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
+clients recover without a router restart within one poll interval, plus up to
+half an interval of jitter, plus one issuance.
 
 There is **no scheduled in-process CA rotation today** — no cds flag or
 loop drives it, so every CA fingerprint change is a restart-shaped
@@ -1016,6 +1043,11 @@ get-cert \
 
 `--key-out` is idempotent: on a kubelet restart of the sidecar it reuses the
 key that's already on disk, so the previously-issued cert chain stays valid.
+The sidecar leaves `--ca-watch-interval` at get-cert's default, so it polls
+CDS once a minute and renews early when CDS's mesh CA is missing from
+`ca.crt`, or, when the pod requests workload claims, when the allowlist no
+longer matches the snapshot stamped in the leaf.
+
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on

@@ -62,6 +62,43 @@ func TestRunProducesAuthorizingHeader(t *testing.T) {
 	}
 }
 
+// A validity argument sets the token's lifetime; one the Verifier's bound
+// excludes yields a header the CDS refuses.
+func TestRunValidity(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "operator.key")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	bodyPath := filepath.Join(dir, "body.json")
+	if err := os.WriteFile(bodyPath, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	header, err := run([]string{"optoken", keyPath, "PUT", "/allowlist/workloads/x", bodyPath, "1h"})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPut, "https://cds/allowlist/workloads/x", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", header)
+	if err := (operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}).Authorize(req, []byte("{}")); err == nil {
+		t.Fatal("verifier accepted a token valid for an hour")
+	}
+	if _, err := run([]string{"optoken", keyPath, "PUT", "/allowlist/workloads/x", bodyPath, "soon"}); err == nil {
+		t.Fatal("run accepted a validity that is not a duration")
+	}
+}
+
 func TestRunUsage(t *testing.T) {
 	if _, err := run([]string{"optoken"}); err == nil {
 		t.Fatal("run with no arguments did not fail")

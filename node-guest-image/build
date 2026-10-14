@@ -107,6 +107,9 @@ KVER=$(sed -n 's/^LINUX_VERSION=//p' kernel/version)
 [[ -n "$KVER" ]] \
     || { echo "node-guest-image/build: missing LINUX_VERSION in kernel/version" >&2; exit 1; }
 bash "$NGI_DIR/check-apparmor-config.sh" "output/kernel/build/linux-$KVER/.config"
+# gpu-cc-enforce runs only at boot, so no PCI hotplug driver may be built.
+! grep -E '^CONFIG_HOTPLUG_PCI[A-Z0-9_]*=[ym]$' "output/kernel/build/linux-$KVER/.config" \
+    || { echo "node-guest-image/build: resolved kernel enables the PCI hotplug symbols above; gpu-cc-enforce would miss a hot-added GPU" >&2; exit 1; }
 PROFILES=(--profile gpu --profile attest-gpu --profile c8s)
 # Fingerprint-gated: the module build must rerun iff the kernel, the fetch
 # script (NVIDIA pins), or the signing cert changed. The kernel manifest

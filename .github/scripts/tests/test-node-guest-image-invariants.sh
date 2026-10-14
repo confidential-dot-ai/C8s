@@ -90,4 +90,40 @@ if ! run_gate EXPECT_IMMUTABLE_ROOT=0; then
   fail "explicit legacy compatibility override was rejected"
 fi
 tests=$((tests + 1))
+
+# gpu-cc-enforce runs only at boot, so no kernel config may enable PCI
+# hotplug (#669). Fragment edits go to both fragments so the c8s-dev
+# superset check still passes and the hotplug check is what fails.
+cp "$confos_dir/mkosi/initrd/mkosi.extra/init" "$fixture_init"
+kernel_dir="$fixture_dir/node-guest-image/kernel"
+cp -a "$kernel_dir" "$fixture_dir/kernel.orig"
+rejects_hotplug() {
+  local name=$1 expected=$2 edit=$3 config
+  shift 3
+  for config in "$@"; do
+    sed "$edit" "$fixture_dir/kernel.orig/$config" >"$kernel_dir/$config"
+  done
+  if run_gate; then fail "$name was accepted"; fi
+  grep -Fq "$expected" "$fixture_dir/output" || {
+    cat "$fixture_dir/output"
+    fail "$name failed for an unrelated reason"
+  }
+  for config in "$@"; do
+    cp "$fixture_dir/kernel.orig/$config" "$kernel_dir/$config"
+  done
+  tests=$((tests + 1))
+}
+off='s/^# CONFIG_HOTPLUG_PCI is not set$/CONFIG_HOTPLUG_PCI=y/'
+# shellcheck disable=SC2016 # sed's last-line address, not a shell expansion.
+append='$a '
+rejects_hotplug "fragments enabling HOTPLUG_PCI" \
+  "c8s.config must keep '# CONFIG_HOTPLUG_PCI is not set'" "$off" c8s.config c8s-dev.config
+rejects_hotplug "fragments enabling pciehp" \
+  'c8s.config enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI_PCIE=y" c8s.config c8s-dev.config
+rejects_hotplug "dev fragment enabling HOTPLUG_PCI" \
+  'c8s-dev.config enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI=y" c8s-dev.config
+rejects_hotplug "snapshot resolving HOTPLUG_PCI on" \
+  "c8s.snapshot must keep '# CONFIG_HOTPLUG_PCI is not set'" "$off" config-x86_64-c8s.snapshot
+rejects_hotplug "snapshot resolving acpiphp on" \
+  'c8s.snapshot enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI_ACPI=y" config-x86_64-c8s.snapshot
 echo "$tests node-image invariant assertions passed"

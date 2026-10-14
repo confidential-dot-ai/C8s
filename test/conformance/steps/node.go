@@ -24,7 +24,7 @@ func registerNode(sc *godog.ScenarioContext) {
 	sc.Step(`^the first pull of the admission plugin on node "([^"]*)" has not succeeded$`, firstPullNotSucceeded)
 	sc.Step(`^the admission plugin on node "([^"]*)" pulls the served allowlist$`, pluginPulls)
 	sc.Step(`^the database of the CDS does not survive a restart$`, cdsVolatile)
-	sc.Step(`^the CDS has restarted$`, cdsRestarted)
+	sc.Step(`^the CDS (?:restarts|has restarted)$`, cdsRestarted)
 	sc.Step(`^the version of the served allowlist is below the version the admission plugin on node "([^"]*)" applied$`, versionBelowApplied)
 }
 
@@ -143,9 +143,16 @@ func cdsRestarted(ctx context.Context) error {
 	if _, err := w.be.call("cds_restart"); err != nil {
 		return err
 	}
+	w.noteCDSRestart()
+	return nil
+}
+
+// noteCDSRestart records a CDS restart, however it came about: what it serves
+// afterwards is a change the plugin has yet to pull, and restoring the node
+// means starting the plugin again.
+func (w *world) noteCDSRestart() {
 	w.cdsRestarted = true
 	lastMutation = time.Now()
-	return nil
 }
 
 func versionBelowApplied(ctx context.Context, node string) error {
@@ -176,13 +183,19 @@ func versionBelowApplied(ctx context.Context, node string) error {
 
 // restoreNode undoes what the scenario did to the node and the CDS: the pull
 // is unblocked, and the plugin is started again where the scenario stopped
-// it, or wherever it addressed one if the CDS was restarted, since only a
-// start lets the plugin accept the versions a restarted CDS serves.
+// it, or on every node it addressed and on node "one" if the CDS was
+// restarted, since only a start lets a plugin accept the versions a
+// restarted CDS serves, whether or not the scenario spoke of its node.
 func (w *world) restoreNode() error {
 	var errs []error
 	if w.cdsBlocked {
 		_, err := w.be.call("cds_unblock")
 		errs = append(errs, err)
+	}
+	if w.cdsRestarted {
+		if k8sNode, err := w.be.call("node_name", "one"); err == nil {
+			w.nodes[k8sNode] = true
+		}
 	}
 	for k8sNode := range w.nodes {
 		if !w.pluginDown[k8sNode] && !w.cdsRestarted {

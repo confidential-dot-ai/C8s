@@ -24,7 +24,7 @@ type backend struct {
 }
 
 // constant names the functions whose answer the contract fixes for a run.
-var constant = map[string]bool{"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true}
+var constant = map[string]bool{"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true, "cds_pod_url": true}
 
 // newBackend finds the backend beside this package; `go test` runs with the
 // package directory as its working directory.

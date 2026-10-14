@@ -19,6 +19,12 @@
 #
 # PCI presence (vendor 0x10de) mirrors gpu-node-label.sh so a GPU-less boot
 # of the same image is a clean no-op.
+#
+# Runs once per boot. That is enough only because the guest kernel has PCI
+# hotplug compiled out, so the host cannot add a GPU later; kernel/c8s.config
+# pins it and .github/scripts/node-guest-image-invariants.sh enforces it. A
+# /sys/bus/pci/rescan by guest root or any privileged platform pod is not
+# covered (#669).
 set -eu
 
 API=${GPU_CC_API:-http://127.0.0.1:8400}
