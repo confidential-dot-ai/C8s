@@ -869,9 +869,51 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	verify, err := w.cdsVerification(p)
+	if err != nil {
+		return "", err
+	}
 	cmd := append([]string{"-n", p.namespace, "exec", p.name, "-c", certContainer, "--", "/c8s", "secret-probe",
-		"--cds-url", url, "--cert", certFile, "--key", keyFile}, args...)
-	return kubectl(nil, cmd...)
+		"--cds-url", url, "--cert", certFile, "--key", keyFile}, verify...)
+	return kubectl(nil, append(cmd, args...)...)
+}
+
+// cdsVerification is how the pod's certificate container verifies the CDS,
+// as the probe's flags: the webhook's attestation API and pins, with the
+// one $(HOST_IP) reference the kubelet expands resolved to the pod's node.
+func (w *world) cdsVerification(p *pod) ([]string, error) {
+	if p.verifyCDS != nil {
+		return p.verifyCDS, nil
+	}
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o",
+		`jsonpath={.status.hostIP}{"\n"}{range .spec.initContainers[?(@.name=="`+certContainer+`")].args[*]}{@}{"\n"}{end}`)
+	if err != nil {
+		return nil, err
+	}
+	hostIP, rest, _ := strings.Cut(out, "\n")
+	flags := []string{}
+	for _, arg := range strings.Split(rest, "\n") {
+		name, value, _ := strings.Cut(arg, "=")
+		switch name {
+		case "--attestation-api-url", "--image-policy-json":
+		case "--cds-measurements":
+			name = "--measurements"
+		case "--cds-rtmrs":
+			name = "--rtmrs"
+		default:
+			continue
+		}
+		value = strings.ReplaceAll(value, "$(HOST_IP)", hostIP)
+		if strings.Contains(value, "$(") {
+			return nil, fmt.Errorf("the %s container of %q passes %s with a reference the steps do not expand: %s", certContainer, p.name, name, value)
+		}
+		flags = append(flags, name+"="+value)
+	}
+	if len(flags) == 0 {
+		return nil, fmt.Errorf("the %s container of %q names no attestation API to verify the CDS through", certContainer, p.name)
+	}
+	p.verifyCDS = flags
+	return flags, nil
 }
 
 func (w *world) fetchChallenge(p *pod) ([]byte, error) {

@@ -71,7 +71,8 @@ type pod struct {
 	opts      []string
 	namespace string
 	cert      *peerCert
-	dialer    bool // the mesh peer has been copied into the pod
+	dialer    bool     // the mesh peer has been copied into the pod
+	verifyCDS []string // how the pod's certificate container verifies the CDS, as probe flags
 	addrs     []string
 	// What the secrets sentences add: the secret client's NAME=path specs,
 	// an init container (which "that container" addresses while initLast),

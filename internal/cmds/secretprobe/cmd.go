@@ -14,6 +14,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -26,11 +27,17 @@ const (
 
 // options are the flags every action shares.
 type options struct {
-	cdsURL   string
-	certPath string
-	keyPath  string
-	socket   string
-	timeout  time.Duration
+	cdsURL         string
+	attestationURL string
+	measurements   []string
+	rtmrs          []string
+	policyFile     string
+	policyJSON     string
+	certPath       string
+	keyPath        string
+	socket         string
+	timeout        time.Duration
+	newClient      clientFunc
 }
 
 func (o *options) validate() error {
@@ -41,6 +48,9 @@ func (o *options) validate() error {
 		return err
 	}
 	o.cdsURL = strings.TrimRight(o.cdsURL, "/")
+	if o.attestationURL == "" {
+		return fmt.Errorf("--attestation-api-url is required to verify CDS")
+	}
 	if o.certPath == "" || o.keyPath == "" {
 		return fmt.Errorf("--cert and --key are required")
 	}
@@ -63,15 +73,16 @@ type requestOptions struct {
 }
 
 // NewCmd returns the hidden cobra subcommand. Registered as a child of `c8s`.
-func NewCmd() *cobra.Command { return newCmd(os.Exit) }
+func NewCmd() *cobra.Command { return newCmd(os.Exit, sidecar.NewClient) }
 
-// newCmd takes the exit function so tests can observe the code. Every failure
+// newCmd takes the exit function so tests can observe the code, and the
+// client builder so they can stand a plain TLS server in for CDS. Every failure
 // goes through it rather than up to cobra's caller, which maps every error to
 // exit 1; the probe's contract is 2 for anything that is not an answer.
-func newCmd(exit func(int)) *cobra.Command {
-	var o options
+func newCmd(exit func(int), newClient clientFunc) *cobra.Command {
+	o := options{newClient: newClient}
 	root := &cobra.Command{
-		Use:    "secret-probe --cds-url URL --cert FILE --key FILE <challenge|token|request>",
+		Use:    "secret-probe --cds-url URL --attestation-api-url URL --cert FILE --key FILE <challenge|token|request>",
 		Hidden: true,
 		Short:  "Conformance probe: one workload secret request with every input under the caller's control",
 		Long: `secret-probe is a conformance test instrument, not a client for applications.
@@ -92,9 +103,9 @@ missing or replayed challenge, another pod's token, a non-canonical path.
               base64 or - when the header was omitted, then the body exactly
               as received
 
-The CDS's certificate is not verified: the scenarios test its authorization of
-this client, and a probe that could not reach a reconfigured CDS would fail
-for the wrong reason. Exit 0 whenever an answer was printed, a CDS that
+CDS is verified as the pod's sidecars verify it: its armTLS certificate
+through --attestation-api-url, against the measurement or image-policy pins
+given (none pins nothing). Exit 0 whenever an answer was printed, a CDS that
 issued no challenge included (status 000); 2 on a usage error, an unreadable
 file, or a token the inventory did not redeem, with the reason on stderr.`,
 		Args:          cobra.ArbitraryArgs,
@@ -118,6 +129,10 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 	})
 	pf := root.PersistentFlags()
 	pf.StringVar(&o.cdsURL, "cds-url", "", "base URL of CDS (required)")
+	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate (required)")
+	pf.StringSliceVar(&o.measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable)")
+	pf.StringSliceVar(&o.rtmrs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable)")
+	cmdsutil.BindImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "", "pins CDS; excludes --measurements and --rtmrs")
 	pf.StringVar(&o.certPath, "cert", "", "the pod's CDS-issued certificate, presented to CDS (required)")
 	pf.StringVar(&o.keyPath, "key", "", "private key for --cert (required)")
 	pf.StringVar(&o.socket, "socket", strings.TrimPrefix(workloadclaims.InventoryEndpoint(), "unix://"), "the inventory's token socket")

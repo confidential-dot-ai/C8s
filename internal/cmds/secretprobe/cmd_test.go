@@ -3,8 +3,10 @@ package secretprobe
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"net"
@@ -20,6 +22,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/testutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -85,6 +88,7 @@ type harness struct {
 	cdsURL  string
 	socket  string
 	leafPub *ecdsa.PublicKey
+	roots   *x509.CertPool // what the probe trusts CDS by, in place of armTLS
 	common  []string
 }
 
@@ -99,7 +103,7 @@ func newHarnessAt(t *testing.T, cds *fakeCDS, cdsURL string) *harness {
 	t.Helper()
 	certPath, keyPath, pub := testutil.WriteLeaf(t, t.TempDir())
 	h := &harness{cds: cds, cdsURL: cdsURL, socket: testutil.StartInventory(t), leafPub: pub}
-	h.common = []string{"--cds-url", cdsURL, "--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
+	h.common = []string{"--cds-url", cdsURL, "--attestation-api-url", "unix:///nonexistent/attest.sock", "--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
 	return h
 }
 
@@ -107,14 +111,34 @@ func newHarnessAt(t *testing.T, cds *fakeCDS, cdsURL string) *harness {
 // action, and returns exit code, stdout and stderr.
 func (h *harness) run(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
-	return execute(t, append(append([]string{}, h.common...), args...)...)
+	return executeWith(t, trusting(h.roots), append(append([]string{}, h.common...), args...)...)
+}
+
+// trusting builds the probe's client as the command does, presenting the
+// leaf, but verifies CDS against roots instead of through armTLS.
+func trusting(roots *x509.CertPool) clientFunc {
+	return func(cfg sidecar.Config, _ armtls.Pins) (*http.Client, crypto.PublicKey, error) {
+		leaf, pub, err := sidecar.LoadLeaf(cfg.CertPath, cfg.KeyPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		return &http.Client{
+			Timeout:   cfg.RequestTimeout,
+			Transport: &http.Transport{TLSClientConfig: &tls.Config{Certificates: []tls.Certificate{leaf}, RootCAs: roots}},
+		}, pub, nil
+	}
 }
 
 func execute(t *testing.T, args ...string) (int, string, string) {
 	t.Helper()
+	return executeWith(t, trusting(nil), args...)
+}
+
+func executeWith(t *testing.T, newClient clientFunc, args ...string) (int, string, string) {
+	t.Helper()
 	code := -1
 	var out, errOut bytes.Buffer
-	cmd := newCmd(func(c int) { code = c })
+	cmd := newCmd(func(c int) { code = c }, newClient)
 	cmd.SetArgs(args)
 	cmd.SetOut(&out)
 	cmd.SetErr(&errOut)
@@ -330,8 +354,7 @@ func TestRequestSendsGivenToken(t *testing.T) {
 	}
 }
 
-// The leaf is the client certificate, and a CDS whose certificate chains to
-// nothing the probe knows is still reached.
+// The leaf is the client certificate.
 func TestRequestPresentsLeafOverTLS(t *testing.T) {
 	cds := newFakeCDS(http.StatusForbidden, "")
 	srv := httptest.NewUnstartedServer(cds)
@@ -339,11 +362,31 @@ func TestRequestPresentsLeafOverTLS(t *testing.T) {
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	h := newHarnessAt(t, cds, srv.URL)
+	h.roots = x509.NewCertPool()
+	h.roots.AddCert(srv.Certificate())
 	if code, _, errOut := h.run(t, "request", "GET", "/api/db", "--no-challenge", "--no-token"); code != 0 {
 		t.Fatalf("exit %d, stderr %q", code, errOut)
 	}
 	if got := cds.only(t).peerKey; got == nil || !got.Equal(h.leafPub) {
 		t.Fatal("the request did not present the leaf as its client certificate")
+	}
+}
+
+// The command verifies CDS through armTLS, as the sidecars do: a CDS whose
+// certificate carries no evidence the attestation API vouched for is never
+// sent the request, and the probe reports that nothing answered.
+func TestRequestDoesNotTrustAnUnverifiedCDS(t *testing.T) {
+	cds := newFakeCDS(http.StatusOK, "secret")
+	srv := httptest.NewTLSServer(cds)
+	t.Cleanup(srv.Close)
+	h := newHarnessAt(t, cds, srv.URL)
+	code, out, errOut := executeWith(t, sidecar.NewClient,
+		append(append([]string{}, h.common...), "request", "GET", "/api/db", "--no-challenge", "--no-token")...)
+	if code != 0 || out != "000 - -\n" {
+		t.Fatalf("exit %d, stdout %q, stderr %q; want 0 and 000", code, out, errOut)
+	}
+	if n := len(cds.requests); n != 0 {
+		t.Fatalf("an unverified CDS was sent %d store requests", n)
 	}
 }
 
@@ -419,9 +462,10 @@ func TestUsageErrorsExit2(t *testing.T) {
 		})
 	}
 	for name, args := range map[string][]string{
-		"no cds-url": {"--cert", "c", "--key", "k", "challenge"},
-		"no cert":    {"--cds-url", "https://cds.example", "challenge"},
-		"bad url":    {"--cds-url", "cds.example", "--cert", "c", "--key", "k", "challenge"},
+		"no cds-url":         {"--cert", "c", "--key", "k", "challenge"},
+		"no cert":            {"--cds-url", "https://cds.example", "challenge"},
+		"bad url":            {"--cds-url", "cds.example", "--cert", "c", "--key", "k", "challenge"},
+		"no attestation api": {"--cds-url", "https://cds.example", "--cert", "c", "--key", "k", "challenge"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if code, _, errOut := execute(t, args...); code != exitUsage || errOut == "" {

@@ -10,13 +10,14 @@ import (
 	"context"
 	"crypto"
 	"crypto/rand"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // probe is a CDS client bound to one leaf: the mTLS client presenting it, the
@@ -30,24 +31,36 @@ type probe struct {
 	timeout  time.Duration
 }
 
+// clientFunc builds the mTLS client to CDS and returns the leaf's key;
+// sidecar.NewClient in the command, a client trusting a test server in tests.
+type clientFunc func(sidecar.Config, armtls.Pins) (*http.Client, crypto.PublicKey, error)
+
+// newProbe verifies CDS as the pod's sidecars do, through armTLS against the
+// pins it was given. The pins are loaded without the sidecars' unpinned
+// warning: the steps read the probe's output and stderr as one stream.
 func newProbe(o options) (*probe, error) {
-	leaf, pub, err := sidecar.LoadLeaf(o.certPath, o.keyPath)
+	cfg := sidecar.Config{
+		CDSURL:                 o.cdsURL,
+		AttestationApiURL:      o.attestationURL,
+		Measurements:           o.measurements,
+		RTMRs:                  o.rtmrs,
+		MeasurementsConfig:     o.policyFile,
+		MeasurementsConfigJSON: o.policyJSON,
+		CertPath:               o.certPath,
+		KeyPath:                o.keyPath,
+		RequestTimeout:         o.timeout,
+	}
+	policy, err := (cmdsutil.ImagePolicySource{File: cfg.MeasurementsConfig, JSON: cfg.MeasurementsConfigJSON}).Load(
+		cmdsutil.MeasurementPins{Measurements: cfg.Measurements, Registers: cfg.RTMRs})
+	if err != nil {
+		return nil, err
+	}
+	client, pub, err := o.newClient(cfg, armtls.Pins(policy))
 	if err != nil {
 		return nil, err
 	}
 	return &probe{
-		client: &http.Client{
-			Timeout: o.timeout,
-			Transport: &http.Transport{TLSClientConfig: &tls.Config{
-				Certificates: []tls.Certificate{leaf},
-				// The scenarios test the CDS's authorization of this client,
-				// not this client's verification of the CDS; a probe that
-				// could not reach a reconfigured CDS would fail for the wrong
-				// reason. The sidecars verify through armtls; this never
-				// handles a secret a scenario cares about.
-				InsecureSkipVerify: true,
-			}},
-		},
+		client:   client,
 		pub:      pub,
 		cdsURL:   o.cdsURL,
 		endpoint: "unix://" + o.socket,
