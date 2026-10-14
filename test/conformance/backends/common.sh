@@ -319,9 +319,13 @@ cds_volatile() {
 #   optoken_bin    the token minter built from test/integration/cluster/optoken
 #   scratch        a directory kept for the run
 
+# The status is the first line of the read. Taking it with head would close
+# the pipe before cds_read has written the body, and that SIGPIPE is the
+# function's status under pipefail.
 operator_keys() {
-    local code
-    code="$(cds_read operator-key-set | head -1)" || return
+    local answer code
+    answer="$(cds_read operator-key-set)" || return
+    code="${answer%%$'\n'*}"
     case "$code" in
         200) echo yes ;;
         404) echo no ;;
