@@ -37,9 +37,11 @@ teardown() {
     rm -f "$written"
 }
 
+# The lane's one node; a scenario may have written a Node object that
+# schedules nothing (the ghost of RELAY-DISCIPLINE-3), which is not it.
 node_name() {
     case "$1" in
-        one) kubectl get nodes -o jsonpath='{.items[0].metadata.name}' ;;
+        one) kubectl get nodes -o json | jq -r '[.items[] | select(.spec.unschedulable != true)][0].metadata.name // empty' ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -145,11 +147,16 @@ print(json.dumps(env))
 PYEOF
 }
 
-# No node shell: the certificate volume is read through a container of the
-# pod, the first one unless named, so a leaf is seen only once it runs.
+# No node shell: the certificate volume is read through a running container
+# of the pod, the named one when given, else the first of the scenario's own
+# (the webhook mounts the volume into every container, its own included, but
+# those are distroless). Nothing while no such container runs yet.
 pod_cert_file() {
     local container="${4:-}"
-    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
+    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o json | jq -r '
+        [((.status.initContainerStatuses // []) + (.status.containerStatuses // []))[] | select(.state.running) | .name] as $running
+        | [((.spec.initContainers // []) + .spec.containers)[] | .name | select((startswith("c8s-") | not) and IN($running[]))][0] // empty')" || return
+    [ -n "$container" ] || return 0
     pod_cert_file_in "$1" "$2" "$container" "$3"
 }
 
