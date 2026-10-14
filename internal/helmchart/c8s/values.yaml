@@ -1268,7 +1268,8 @@ router:
       pullPolicy: IfNotPresent
     # The argv prefix the seeded allowlist entry pins this image to: its
     # ENTRYPOINT and the first CMD token, which the entrypoint script requires
-    # before it execs anything. Bump with the image if either changes.
+    # before it execs anything. Bump with the image if either changes, along
+    # with nginxEntrypoint and nginxCmd in internal/helmchart/router_entry_test.go.
     entrypoint: ["/docker-entrypoint.sh", "nginx"]
     # -- Number of nginx replicas.
     replicas: 1

@@ -33,6 +33,12 @@ var digestArgs = []string{
 	"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 }
 
+// nginxEntrypoint and nginxCmd are router.nginx.image's ENTRYPOINT and CMD.
+var (
+	nginxEntrypoint = []string{"/docker-entrypoint.sh"}
+	nginxCmd        = []string{"nginx", "-g", "daemon off;"}
+)
+
 // running is the set the node inventory reports for a rendered pod: a pod
 // command replaces the entrypoint, which is /c8s for the c8s image, the
 // image's own for nginx, and the one the seed pins for the other component
@@ -41,20 +47,22 @@ func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.
 	var out []workloadclaims.SandboxContainer
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
 		_, digest, _ := strings.Cut(c.Image, "@")
-		command := c.Command
+		command, args := c.Command, c.Args
 		switch {
 		case len(command) > 0:
 		case digest == c8sDigest:
 			command = []string{secrets.InjectedBinary}
-		case strings.Contains(c.Image, "nginx-unprivileged@") && len(c.Args) == 0:
-			// The image's ENTRYPOINT and CMD; update with router.nginx.image.
-			command = []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}
+		case strings.Contains(c.Image, "nginx-unprivileged@"):
+			command = nginxEntrypoint
+			if len(args) == 0 {
+				args = nginxCmd
+			}
 		default:
 			command = seededEntrypoint(seed, digest)
 		}
 		out = append(out, workloadclaims.SandboxContainer{
 			Digest: digest,
-			Argv:   slices.Concat(command, c.Args),
+			Argv:   slices.Concat(command, args),
 			Mounts: []pkgallowlist.ObservedMount{},
 		})
 	}
