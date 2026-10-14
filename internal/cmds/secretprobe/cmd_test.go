@@ -4,15 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/tls"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
-	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,74 +19,10 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/sidecar"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
-
-// stubResolver is an inventory that vouches for one sandbox; the unix socket
-// supplies the peer credentials, so nothing here needs to disambiguate.
-type stubResolver struct{}
-
-func (stubResolver) SandboxForPeer(workloadclaims.Peer) (string, error) {
-	return "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", nil
-}
-
-func (stubResolver) DigestsForSandbox(string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
-	return nil, nil, false, nil
-}
-
-// startInventory serves the real token route on a unix socket and returns the
-// socket path.
-func startInventory(t *testing.T) string {
-	t.Helper()
-	signer, err := workloadclaims.NewSandboxTokenSigner("10.0.0.7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sock := filepath.Join(t.TempDir(), "wc.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go workloadclaims.ServeTokens(ctx, l, stubResolver{}, signer)
-	t.Cleanup(func() { cancel(); l.Close() })
-	return sock
-}
-
-// writeLeaf stages a self-signed leaf where the cert sidecar would leave it.
-func writeLeaf(t *testing.T) (certPath, keyPath string, pub *ecdsa.PublicKey) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "workload"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	dir := t.TempDir()
-	certPath, keyPath = filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
-	for path, block := range map[string]*pem.Block{
-		certPath: {Type: "CERTIFICATE", Bytes: der},
-		keyPath:  {Type: "EC PRIVATE KEY", Bytes: keyDER},
-	} {
-		if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return certPath, keyPath, &key.PublicKey
-}
 
 // seen is one store request as the fake CDS received it.
 type seen struct {
@@ -167,8 +97,8 @@ func newHarness(t *testing.T, cds *fakeCDS) *harness {
 
 func newHarnessAt(t *testing.T, cds *fakeCDS, cdsURL string) *harness {
 	t.Helper()
-	certPath, keyPath, pub := writeLeaf(t)
-	h := &harness{cds: cds, cdsURL: cdsURL, socket: startInventory(t), leafPub: pub}
+	certPath, keyPath, pub := testutil.WriteLeaf(t, t.TempDir())
+	h := &harness{cds: cds, cdsURL: cdsURL, socket: testutil.StartInventory(t), leafPub: pub}
 	h.common = []string{"--cds-url", cdsURL, "--cert", certPath, "--key", keyPath, "--socket", h.socket, "--timeout", "5s"}
 	return h
 }

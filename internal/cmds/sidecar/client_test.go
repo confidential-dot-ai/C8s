@@ -3,13 +3,8 @@ package sidecar
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/pem"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,37 +13,9 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
-
-// writeLeaf stages a certificate and key where the cert sidecar would leave
-// them.
-func writeLeaf(t *testing.T, dir string) (certPath, keyPath string, pub *ecdsa.PublicKey) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "workload"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPath = filepath.Join(dir, "tls.crt")
-	keyPath = filepath.Join(dir, "tls.key")
-	write(t, certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-	write(t, keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
-	return certPath, keyPath, &key.PublicKey
-}
 
 func write(t *testing.T, path string, b []byte) {
 	t.Helper()
@@ -72,7 +39,7 @@ func testConfig(url string) Config {
 // of the certificate it presents — not a fresh one.
 func TestNewClientReturnsLeafKey(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath, want := writeLeaf(t, dir)
+	certPath, keyPath, want := testutil.WriteLeaf(t, dir)
 	cfg := testConfig("https://cds.example")
 	cfg.CertPath, cfg.KeyPath = certPath, keyPath
 
@@ -119,7 +86,7 @@ func TestNewClientWithoutLeaf(t *testing.T) {
 // picked up without restarting this one.
 func TestLeafProviderReloads(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath, first := writeLeaf(t, dir)
+	certPath, keyPath, first := testutil.WriteLeaf(t, dir)
 	p := leafProvider{certPath: certPath, keyPath: keyPath}
 
 	got, ttl, err := p.Provision(context.Background())
@@ -134,7 +101,7 @@ func TestLeafProviderReloads(t *testing.T) {
 		t.Fatal("first provision returned the wrong key")
 	}
 
-	_, _, second := writeLeaf(t, dir) // renewal lands on the same paths
+	_, _, second := testutil.WriteLeaf(t, dir) // renewal lands on the same paths
 	got, _, err = p.Provision(context.Background())
 	if err != nil {
 		t.Fatal(err)
