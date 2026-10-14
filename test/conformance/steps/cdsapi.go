@@ -145,18 +145,15 @@ func (w *world) token(signer string, wr write) (string, error) {
 // the status. A stored write changed the served allowlist: a put entry is
 // the scenario's to delete afterwards.
 func (w *world) send(wr write, auth string) error {
-	var status string
-	err := withBodyFile(wr.body, func(path string) error {
-		out, err := w.be.call("allowlist_request", wr.method, wr.path, path, auth)
-		status = out
-		return err
-	})
+	body := wr.body
+	if body == nil {
+		body = []byte{} // sent as an empty body, which the token signed
+	}
+	a, err := w.cdsRequest(wr.method, wr.path, body, auth, "", "")
 	if err != nil {
 		return err
 	}
-	if w.api.lastStatus, err = strconv.Atoi(status); err != nil {
-		return fmt.Errorf("status %q: %w", status, err)
-	}
+	w.api.lastStatus = a.status
 	if w.api.lastStatus == http.StatusNoContent {
 		lastMutation = time.Now()
 		if wr.method == http.MethodPut {

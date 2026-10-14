@@ -30,10 +30,12 @@ setup() {
 }
 
 # Each function runs in its own process, so the CDS port-forward lib.sh shares
-# through WORKDIR outlives the call that opened it.
-teardown() {
+# through WORKDIR outlives the call that opened it, as does the container
+# outside the cluster.
+teardown_backend() {
     allowlist_delete "$nginx_entry" || true
     cds_pf_stop
+    docker rm -f "$EXTERNAL_HELLO" >/dev/null 2>&1 || true
 }
 
 node_name() {
@@ -60,6 +62,40 @@ image_alias() {
     node_exec ctr -n k8s.io images pull "$1" >/dev/null
     node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
 }
+
+# A hello API outside the cluster: a container on the kind docker network,
+# which pods reach through the node's address translation, so the address is
+# neither a pod's nor a Service's.
+EXTERNAL_HELLO="c8s-conformance-hello-$(basename "$WORKDIR")"
+external_endpoint() {
+    local addr
+    if ! docker inspect "$EXTERNAL_HELLO" >/dev/null 2>&1; then
+        docker run -d --name "$EXTERNAL_HELLO" --network kind "$(image_ref tenant-app)" \
+            sh -c 'mkdir -p /www && echo hello > /www/index.html && exec python3 -m http.server -b :: -d /www 8080' >/dev/null || return 1
+        # python takes a moment to listen, unlike the httpd it replaced.
+        local i
+        for i in $(seq 30); do
+            docker exec "$EXTERNAL_HELLO" wget -qO- -T 1 http://127.0.0.1:8080/ >/dev/null 2>&1 && break
+            sleep 0.5
+        done
+        if [ "$i" = 30 ]; then
+            echo "backend: the external hello API did not come up: $(docker logs "$EXTERNAL_HELLO" 2>&1 | tail -3)" >&2
+            return 1
+        fi
+    fi
+    addr="$(docker inspect -f '{{.NetworkSettings.Networks.kind.IPAddress}}' "$EXTERNAL_HELLO")"
+    [ -n "$addr" ] || { echo "backend: the external hello container has no address" >&2; return 1; }
+    echo "$addr:8080"
+}
+
+# Pods obtain evidence where every component does: the mock, on the node
+# address. Making the node's local attestation service unreachable is
+# attestation_service_stop, which also takes the CDS's readiness with it.
+attestation_endpoint() { mock_attestation_url; }
+
+# The CDS and the mesh pin the mock's launch digest, which the mock reports
+# for every requester.
+mesh_pins_satisfied() { echo yes; }
 
 # The CDS through the port-forward lib.sh shares; the harness's operator key
 # and token minter beside it.

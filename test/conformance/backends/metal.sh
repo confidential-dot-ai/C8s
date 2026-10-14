@@ -29,16 +29,18 @@ setup() {
     al add "$(image_digest "$ref")" "$ref" | awk '$1 == "added" {print $2}' >> "$written"
 }
 
-teardown() {
+teardown_backend() {
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true
     rm -f "$written"
 }
 
+# The lane's one node, not a Node object a scenario wrote (the steps label
+# those conformance.c8s/ghost).
 node_name() {
     case "$1" in
-        one) kubectl get nodes -o jsonpath='{.items[0].metadata.name}' ;;
+        one) kubectl get nodes -l '!conformance.c8s/ghost' -o jsonpath='{.items[0].metadata.name}' ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -92,6 +94,14 @@ attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
 
+# The lane pins the node's own measurement, so its evidence satisfies them.
+mesh_pins_satisfied() { echo yes; }
+
+# No address outside the cluster answers for the lane, and a pod that is not
+# injected has no socket to the attestation service.
+external_endpoint() { return "$UNSUPPORTED"; }
+attestation_endpoint() { return "$UNSUPPORTED"; }
+
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
 # that directory for the requesters it injects). A chosen launch digest
@@ -135,11 +145,16 @@ print(json.dumps(env))
 PYEOF
 }
 
-# No node shell: the certificate volume is read through a container of the
-# pod, the first one unless named, so a leaf is seen only once it runs.
+# No node shell: the certificate volume is read through a running container
+# of the pod, the named one when given, else the first of the scenario's own
+# (the webhook mounts the volume into every container, its own included, but
+# those are distroless). Nothing while no such container runs yet.
 pod_cert_file() {
     local container="${4:-}"
-    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
+    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o json | jq -r '
+        [((.status.initContainerStatuses // []) + (.status.containerStatuses // []))[] | select(.state.running) | .name] as $running
+        | [((.spec.initContainers // []) + .spec.containers)[] | .name | select((startswith("c8s-") | not) and IN($running[]))][0] // empty')" || return
+    [ -n "$container" ] || return 0
     pod_cert_file_in "$1" "$2" "$container" "$3"
 }
 
