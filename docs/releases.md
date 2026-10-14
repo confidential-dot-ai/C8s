@@ -175,8 +175,10 @@ The protected `beta` branch gives a fast signed prerelease. It uses the same
 pipeline as `main`. A push to `beta` makes these items:
 
 - The Git tag `vX.Y.Z-beta.N`. `vX.Y.Z` is the stable version that the same
-  commits would get on `main`. `N` starts at 1 and increases with each beta
-  release of that base.
+  commits would get on `main`. CI changes can change the measured node image
+  without a stable version change. Beta publishes those source changes under
+  the stable base version. An identical source tree creates no new beta.
+  `N` starts at 1 and increases with each beta release of that base.
 - Component images and a Helm chart with the exact tags `vX.Y.Z-beta.N` and
   `X.Y.Z-beta.N`, plus the short commit tag. A beta never moves `latest`,
   `X.Y`, a stable `X.Y.Z` tag, or the `main` tag.

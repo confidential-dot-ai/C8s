@@ -59,11 +59,19 @@ if git show-ref --verify --quiet "refs/tags/$candidate"; then
 fi
 
 if [ "$RELEASE_CHANNEL" = beta ]; then
-  # A beta needs a release-worthy commit after its stable baseline. A
-  # candidate that is already a stable tag has none, even at TARGET_SHA.
+  # CI changes can change the measured node image without bumping the stable
+  # version. Publish a beta when its source differs from the stable baseline.
+  # An identical source tree does not need another beta.
   if git show-ref --verify --quiet "refs/tags/$candidate"; then
-    publish=false
-    echo "no release-worthy commit on beta since $candidate"
+    if git diff --quiet "$candidate^{tree}" "$TARGET_SHA^{tree}"; then
+      publish=false
+      echo "no source change on beta since $candidate"
+    else
+      diff_status=$?
+      test "$diff_status" -eq 1
+      publish=true
+      echo "publishing beta source changes since $candidate"
+    fi
   fi
   beta_pattern="^v${version//./[.]}-beta[.]([1-9][0-9]*)$"
   mapfile -t own_betas < <(
@@ -78,6 +86,7 @@ if [ "$RELEASE_CHANNEL" = beta ]; then
   fi
   if [ "${#own_betas[@]}" -eq 1 ]; then
     candidate="${own_betas[0]}"
+    publish=true
     echo "repairing or verifying $candidate for $TARGET_SHA"
   else
     last="$(
