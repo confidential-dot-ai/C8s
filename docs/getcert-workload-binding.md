@@ -327,7 +327,6 @@ random delay of up to half the interval. When a renewal comes back
 unnamed because the policy no longer matches the router, the policy check has no stamp
 to compare and goes silent by design; `--unnamed-renew-interval` (default 30s;
 the chart does not override it) paces renewal until the leaf is named again.
-A leaf naming another entry than `--expected-workload` is treated the same way.
 
 Two inventory behaviours that still matter here:
 

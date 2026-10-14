@@ -34,9 +34,9 @@ var digestArgs = []string{
 }
 
 // running is the set the node inventory reports for a rendered pod: a pod
-// command replaces the entrypoint, which is /c8s for the c8s image and the
-// one the seed pins for the other component images. Mounts are reported as
-// platform-only.
+// command replaces the entrypoint, which is /c8s for the c8s image, the
+// image's own for nginx, and the one the seed pins for the other component
+// images. Mounts are reported as platform-only.
 func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.SandboxContainer {
 	var out []workloadclaims.SandboxContainer
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
@@ -46,6 +46,9 @@ func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.
 		case len(command) > 0:
 		case digest == c8sDigest:
 			command = []string{secrets.InjectedBinary}
+		case strings.Contains(c.Image, "nginx-unprivileged@") && len(c.Args) == 0:
+			// The image's ENTRYPOINT and CMD; update with router.nginx.image.
+			command = []string{"/docker-entrypoint.sh", "nginx", "-g", "daemon off;"}
 		default:
 			command = seededEntrypoint(seed, digest)
 		}
@@ -61,7 +64,8 @@ func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.
 // seededEntrypoint is the command the seed pins digest to, or /entrypoint when
 // it pins none.
 func seededEntrypoint(seed *pkgallowlist.Allowlist, digest string) []string {
-	for _, w := range seed.Workloads {
+	for _, name := range slices.Sorted(maps.Keys(seed.Workloads)) {
+		w := seed.Workloads[name]
 		for _, c := range slices.Concat(w.InitContainers, w.Containers) {
 			if c.Digest.String() == digest && c.Command.Policy == pkgallowlist.PolicyExact {
 				return c.Command.Argv

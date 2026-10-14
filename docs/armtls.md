@@ -696,9 +696,7 @@ rather than after a full interval.
 Between renewals, `--ca-watch-interval` (default 1m with `--renew-interval`
 and `--ca-out` or `--workload-claims`; `0` disables) polls CDS and renews early
 when the mesh CA at `--ca-out` is stale, or when the allowlist CDS serves no
-longer matches the leaf's stamped policy snapshot. The policy check skips a
-leaf the fast poll already renews: unnamed, or naming another entry than
-`--expected-workload`.
+longer matches the leaf's stamped policy snapshot.
 Once the installed leaf has **expired** and renewals still fail, get-cert exits
 instead of retrying forever: as a native sidecar it restarts with fresh client
 state and re-runs the full issuance.

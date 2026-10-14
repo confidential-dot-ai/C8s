@@ -380,11 +380,12 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 					continue
 				}
 			}
-			// A pending retry already re-issues, and the unnamed fast poll
-			// covers a leaf that is unstamped or names another entry than
-			// --expected-workload. The policy check resumes once a renewal
-			// succeeds and failures is 0.
-			if !cfg.WorkloadClaims || failures > 0 || policyRenewPending || !isNamedLeaf(cfg, leaf) {
+			// A pending retry already re-issues, and an unparsed or unnamed
+			// leaf has no stamp to compare: the unnamed fast poll covers it.
+			// A leaf naming another entry than --expected-workload is still
+			// checked: the fast poll may be off or backed off.
+			// The policy check resumes once a renewal succeeds and failures is 0.
+			if !cfg.WorkloadClaims || leaf == nil || failures > 0 || policyRenewPending {
 				continue
 			}
 			stamp, err := armtls.MatchedWorkloadFromCert(leaf)
