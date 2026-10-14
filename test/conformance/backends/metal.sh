@@ -30,7 +30,6 @@ setup() {
 }
 
 teardown_backend() {
-    cds_pf_stop
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true
@@ -55,17 +54,30 @@ served_allowlist() { al export; }
 
 # The lane's allowlist URL is the router on the guest's public address: the
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
-# allowlist route, and the router serves nothing else of the CDS's. The CDS
-# itself is reached through the port-forward lib.sh shares with kind. The
-# launch bundle's key is the run's operator key; the token minter is built
-# from the checkout on first use, with the Go toolchain that built the CLI.
-cds_url() { cds_pf_start && echo "https://127.0.0.1:$CDS_LOCAL_PORT"; }
+# allowlist route, which forwards the /allowlist routes unchanged. The
+# operator's credential may neither exec, port-forward nor write in $NS, so
+# that route is the harness's only way to the CDS: its other documents, its
+# own serving certificate and its Service answer 77 below. The launch
+# bundle's key is the run's operator key; the token minter is built from the
+# checkout on first use, with the Go toolchain that built the CLI.
+cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
+cds_document_path() {
+    case "$1" in
+        allowlist) echo /allowlist ;;
+        *) return "$UNSUPPORTED" ;;
+    esac
+}
+cds_serving_cert() { return "$UNSUPPORTED"; }
+cds_block() { return "$UNSUPPORTED"; }
+cds_unblock() { return "$UNSUPPORTED"; }
+cds_relay_block() { return "$UNSUPPORTED"; }
+cds_relay_unblock() { return "$UNSUPPORTED"; }
+# The lane started the CDS pinning the launch bundle's key, the one
+# operator_key names.
+operator_keys() { echo yes; }
 operator_key() { echo "$C8S_OPERATOR_KEY"; }
 scratch() { echo "${SUITE_RESULTS:-${TMPDIR:-/tmp}}"; }
-# lib.sh keeps the port-forward's pid here.
-# shellcheck disable=SC2034  # read by cds_pf_start
-WORKDIR="$(scratch)"
 optoken_bin() {
     local bin
     bin="$(scratch)/optoken"
@@ -76,7 +88,7 @@ optoken_bin() {
     echo "$bin"
 }
 
-cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
+cds_plain_url() { return "$UNSUPPORTED"; }
 
 # The pins the lane started the CDS with: a launch digest, or those of its
 # policy file.
@@ -84,7 +96,7 @@ cds_pins() {
     if [ -n "${C8S_MEASUREMENTS:-}" ]; then
         printf '%s\n' "$C8S_MEASUREMENTS" | tr ',' '\n'
     elif [ -n "${C8S_MEASUREMENTS_CONFIG:-}" ]; then
-        jq -r '.measurements[].measurement // empty' "$C8S_MEASUREMENTS_CONFIG"
+        jq -r '.measurements[] | .measurement // .mrtd // empty' "$C8S_MEASUREMENTS_CONFIG"
     else
         echo "backend: neither C8S_MEASUREMENTS nor C8S_MEASUREMENTS_CONFIG names the CDS's pins" >&2
         return 1
@@ -192,15 +204,11 @@ allowlist_delete() { al delete "$1" >/dev/null 2>&1 || true; }
 
 # The base allowlist is measured into the node image and not readable without
 # a shell, so answer from what it was built from: the system images pinned in
-# node-guest-image/c8s/image-policy.yaml.in, plus c8s's own component entries,
-# which boot staging merges in and which are the images running in $NS.
+# node-guest-image/c8s/image-policy.yaml.in. c8s's own component entries,
+# which boot staging merges in, pin each image to its component's entrypoint,
+# so they declare no image for a container of the scenario's.
 base_declares() {
-    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in" ||
-        kubectl -n "$NS" get pods -o jsonpath='{.items[*].status.containerStatuses[*].imageID}' | grep -qF "$2"; then
-        echo yes
-    else
-        echo no
-    fi
+    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in"; then echo yes; else echo no; fi
 }
 
 # The lane's components-ready assert gates the suite; here only the node's
@@ -214,9 +222,7 @@ node_containers() { return $UNSUPPORTED; }
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted
 # CDS serves (its versions start over), so the CDS stays up too.
-# No shell on the node: the pull is taken to be refused as soon as the
-# Service is patched.
-node_refuses() { echo yes; }
+node_refuses() { return "$UNSUPPORTED"; }
 plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }

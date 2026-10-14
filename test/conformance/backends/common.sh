@@ -538,16 +538,21 @@ router_nginx_conf() {
 }
 
 # The attest container is started with --front-door-mode, or, where a launch
-# configuration drives the router, with the file that holds it.
+# configuration drives the router, with the file that holds it. get-cert
+# reads the same file into the discovery document it writes, so that mode is
+# read from the document the router serves, which needs no exec.
 router_tls_mode() {
-    local args mode file container
+    local args mode out path
     args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
-        jq -r '.spec.template.spec.containers[] | .name as $n | (.args // [])[] | "\($n) \(.)"')" || return
-    mode="$(awk '$2 ~ /^--front-door-mode=/ {sub(/^--front-door-mode=/, "", $2); print $2; exit}' <<<"$args")"
+        jq -r '.spec.template.spec.containers[] | (.args // [])[]')" || return
+    mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
     if [ -z "$mode" ]; then
-        read -r container file < <(awk '$2 ~ /^--front-door-mode-file=/ {sub(/^--front-door-mode-file=/, "", $2); print $1, $2; exit}' <<<"$args")
-        [ -n "$file" ] || { echo "backend: the router names no front-door mode" >&2; return 1; }
-        mode="$(kubectl -n "$NS" exec "deploy/$ROUTER_DEPLOY" -c "$container" -- cat "$file")" || return
+        grep -q '^--front-door-mode-file=' <<<"$args" || { echo "backend: the router names no front-door mode" >&2; return 1; }
+        out="$(sed -n 's/^--discovery-out=//p' <<<"$args" | head -1)"
+        [ -n "$out" ] || { echo "backend: the router publishes no discovery document" >&2; return 1; }
+        path="$(router_nginx_conf | awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}')"
+        [ -n "$path" ] || { echo "backend: no router location serves $out" >&2; return 1; }
+        mode="$(curl -sk --max-time 30 "$(router_url)$path" | jq -r '.public_tls.mode // empty')" || return
     fi
     echo "$mode" | tr -d '[:space:]'
 }
