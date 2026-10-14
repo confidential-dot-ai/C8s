@@ -13,15 +13,6 @@ type fixedStorage allowlist.MountStorage
 
 func (s fixedStorage) Inspect(string) allowlist.MountStorage { return allowlist.MountStorage(s) }
 
-func (fixedStorage) NoMountsBelow(string) bool { return true }
-
-// nestedMounts reports whether every host source has mounts below it.
-type nestedMounts bool
-
-func (nestedMounts) Inspect(string) allowlist.MountStorage { return allowlist.MountUnknown }
-
-func (n nestedMounts) NoMountsBelow(string) bool { return !bool(n) }
-
 func TestMountObserverBindsSourcesToCurrentPodAndSandbox(t *testing.T) {
 	pod := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
 	ctr := &api.Container{Name: "app", PodSandboxId: pod.Id, Mounts: []*api.Mount{
@@ -125,27 +116,32 @@ func TestHostMountSourceAndAccess(t *testing.T) {
 	for _, tc := range []struct {
 		name, source    string
 		options         []string
-		nested          bool
 		readOnly, valid bool
 	}{
-		{"read-only", "/etc/service", []string{"rbind", "ro"}, false, true, true},
-		{"writable", "/etc/service", []string{"bind", "rw"}, false, false, true},
-		{"last read-only", "/etc/service", []string{"rw", "ro"}, false, true, true},
-		{"last writable", "/etc/service", []string{"ro", "rw"}, false, false, true},
-		{"recursive writable", "/etc/service", []string{"ro", "rrw"}, false, false, true},
-		{"recursive writable before read-only", "/etc/service", []string{"rbind", "rrw", "ro"}, false, false, true},
-		{"recursive read-only", "/etc/service", []string{"rbind", "rro"}, true, true, true},
-		{"read-only recursive bind over nested mounts", "/var/lib/kubelet", []string{"rbind", "ro"}, true, false, true},
-		{"read-only plain bind over nested mounts", "/var/lib/kubelet", []string{"bind", "ro"}, true, true, true},
-		{"read-only with slave propagation", "/etc/service", []string{"rbind", "ro", "rslave"}, false, false, true},
-		{"recursive read-only with shared propagation", "/etc/service", []string{"rbind", "rro", "rshared"}, false, false, true},
-		{"propagation reset to private", "/etc/service", []string{"rslave", "rbind", "ro", "rprivate"}, false, true, true},
-		{"relative bind", "service", []string{"bind"}, false, false, false},
-		{"unclean", "/etc/../service", []string{"bind"}, false, false, false},
+		{"read-only bind", "/etc/service", []string{"bind", "ro", "rprivate"}, true, true},
+		{"read-only bind with private propagation", "/etc/service", []string{"bind", "ro", "private"}, true, true},
+		{"writable", "/etc/service", []string{"bind", "rw", "rprivate"}, false, true},
+		{"last read-only", "/etc/service", []string{"rw", "ro", "rprivate"}, true, true},
+		{"last writable", "/etc/service", []string{"ro", "rw", "rprivate"}, false, true},
+		{"read-only without propagation", "/etc/service", []string{"bind", "ro"}, false, true},
+		{"read-only recursive bind", "/etc/service", []string{"rbind", "ro", "rprivate"}, false, true},
+		{"recursive read-only", "/etc/service", []string{"rbind", "rro", "rprivate"}, true, true},
+		{"recursive read-only beside ro", "/etc/service", []string{"rbind", "rro", "ro", "rprivate"}, true, true},
+		{"recursive read-only before rw", "/etc/service", []string{"rbind", "rro", "rw", "rprivate"}, true, true},
+		{"recursive writable before ro", "/etc/service", []string{"rbind", "rrw", "ro", "rprivate"}, false, true},
+		{"recursive writable on a plain bind", "/etc/service", []string{"bind", "rrw", "ro", "rprivate"}, false, true},
+		{"recursive read-only with non-recursive private", "/etc/service", []string{"rbind", "rro", "private"}, false, true},
+		{"read-only with slave propagation", "/etc/service", []string{"bind", "ro", "rslave"}, false, true},
+		{"recursive read-only with shared propagation", "/etc/service", []string{"rbind", "rro", "rshared"}, false, true},
+		{"propagation reset to private", "/etc/service", []string{"rslave", "rbind", "rro", "rprivate"}, true, true},
+		{"recursive read-only with slave then non-recursive private", "/etc/service", []string{"rbind", "rro", "rslave", "private"}, false, true},
+		{"propagation reset to slave", "/etc/service", []string{"rprivate", "bind", "ro", "rslave"}, false, true},
+		{"relative bind", "service", []string{"bind"}, false, false},
+		{"unclean", "/etc/../service", []string{"bind"}, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctr := &api.Container{Mounts: []*api.Mount{{Type: "bind", Source: tc.source, Destination: "/config", Options: tc.options}}}
-			got := newMountObserver(nestedMounts(tc.nested)).Observe(&api.PodSandbox{}, ctr)
+			got := newMountObserver(fixedStorage(allowlist.MountUnknown)).Observe(&api.PodSandbox{}, ctr)
 			if len(got) != 1 || got[0].Class != allowlist.MountHost {
 				t.Fatalf("host bind disappeared: %+v", got)
 			}

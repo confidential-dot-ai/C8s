@@ -16,7 +16,10 @@ object, so scalar booleans must be handled as text here.
 The component inventory drives both allowlist derivation and the coverage guard
 in [validations.yaml](../../templates/validations.yaml); `c8s install` also reads
 it from chart values. CDS is exempt from that guard because its self-entry is
-seeded independently. Components marked `argvPinned` are covered by argv-pinned
+seeded independently. With derivation off, an operator open-args entry covers
+a component only when its mounts admit the component's own: `any`, or
+`confined` with no `denyBelow` path outside the component's list and every
+destination `c8s.componentMounts` leaves `unconfined`. Components marked `argvPinned` are covered by argv-pinned
 seed entries and excluded from any-argv derivation.
 
 `c8s.imageAllowlist` returns a digest-to-`{image, entrypoint, mounts}` map containing enabled,

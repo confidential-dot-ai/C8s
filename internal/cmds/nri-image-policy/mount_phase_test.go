@@ -76,26 +76,24 @@ func TestExactHostMountAdmissionUsesFinalStartSpec(t *testing.T) {
 		options                   []string
 		policyReadOnly, allowed   bool
 	}{
-		{"read-only", "/etc/service", "/config", []string{"rbind", "ro"}, true, true},
+		{"read-only", "/etc/service", "/config", []string{"bind", "ro", "rprivate"}, true, true},
 		{"writable", "/etc/service", "/config", []string{"rw"}, false, true},
 		{"default writable", "/etc/service", "/config", nil, false, true},
-		{"last read-only", "/etc/service", "/config", []string{"rw", "ro"}, true, true},
+		{"last read-only", "/etc/service", "/config", []string{"rw", "ro", "rprivate"}, true, true},
 		{"last writable", "/etc/service", "/config", []string{"ro", "rw"}, false, true},
 		{"source mismatch", "/etc/other", "/config", []string{"ro"}, true, false},
 		{"destination mismatch", "/etc/service", "/other", []string{"ro"}, true, false},
 		{"writable mismatch", "/etc/service", "/config", []string{"rw"}, true, false},
-		{"read-only mismatch", "/etc/service", "/config", []string{"ro"}, false, false},
+		{"read-only mismatch", "/etc/service", "/config", []string{"ro", "rprivate"}, false, false},
 		{"missing source", "", "/config", []string{"ro"}, true, false},
 		{"relative source", "service", "/config", []string{"ro"}, true, false},
 		{"unclean source", "/etc/../etc/service", "/config", []string{"ro"}, true, false},
 		{"NUL source", "/etc/service\x00", "/config", []string{"ro"}, true, false},
-		{"recursive read-only", "/etc/service", "/config", []string{"rbind", "rro"}, true, true},
+		{"recursive read-only", "/etc/service", "/config", []string{"rbind", "rro", "rprivate"}, true, true},
 		{"recursive writable", "/etc/service", "/config", []string{"rrw", "rw"}, false, true},
 		{"read-only with slave propagation", "/etc/service", "/config", []string{"rbind", "ro", "rslave"}, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// A real directory: the observer proves from the node's mount
-			// table that nothing is mounted below a recursive read-only bind.
 			service := t.TempDir()
 			tc.source = strings.ReplaceAll(tc.source, "/etc/service", service)
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
@@ -156,14 +154,15 @@ func TestConfinedMountAdmissionUsesFinalStartSpec(t *testing.T) {
 		mount   *api.Mount
 		allowed bool
 	}{
-		{"read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "ro"}}, true},
+		{"read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"bind", "ro", "rprivate"}}, true},
+		{"read-only recursive bind", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "ro", "rprivate"}}, false},
 		{"writable host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "rw"}}, false},
 		{"read-only host path with recursively writable submounts", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"ro", "rrw"}}, false},
 		{"writable host path at an unconfined destination", &api.Mount{Type: "bind", Source: "/run/xtables.lock", Destination: "/run/xtables.lock", Options: []string{"rw"}}, true},
 		{"read-only host path over a denied directory", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/bin", Options: []string{"ro"}}, false},
 		{"read-only host path over the loader preload list", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/etc", Options: []string{"ro"}}, false},
 		{"read-only host path with slave propagation", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "ro", "rslave"}}, false},
-		{"recursively read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "rro"}}, true},
+		{"recursively read-only host path", &api.Mount{Type: "bind", Source: "/etc/service", Destination: "/config", Options: []string{"rbind", "rro", "rprivate"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.mount.Source == "/etc/service" {

@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -8,6 +9,19 @@ import (
 // hostDigest stands in for the source commitment the observer records for a
 // host path whose mount options it fully read.
 const hostDigest = "3b2e1f"
+
+// An older node reported a recursive bind with plain ro as "readOnly", a
+// guarantee for the top mount alone; that evidence must not count as read-only.
+func TestObservedMountIgnoresTopMountReadOnlyEvidence(t *testing.T) {
+	const legacy = `{"destination":"/config","class":"host","storage":"unknown","hostSourceDigest":"3b2e1f","readOnly":true}`
+	var m ObservedMount
+	if err := json.Unmarshal([]byte(legacy), &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.ReadOnly || m.Confined() {
+		t.Fatalf("legacy evidence %s decoded as ReadOnly = %v, Confined = %v, want false, false", legacy, m.ReadOnly, m.Confined())
+	}
+}
 
 func TestObservedMountConfined(t *testing.T) {
 	for _, tc := range []struct {
@@ -73,6 +87,7 @@ func TestConfinedMountPolicyAdmits(t *testing.T) {
 		{"volume nested in a volume listed first", []ObservedMount{memory("/h/lib"), memory("/h")}, false},
 		{"two volumes at one destination", []ObservedMount{memory("/h"), memory("/h")}, false},
 		{"platform mount nested in a volume", []ObservedMount{memory("/etcx"), {Destination: "/etcx/hosts", Class: MountPlatform}}, false},
+		{"volume nested in an unconfined host path", []ObservedMount{{Destination: "/data", Class: MountHost}, memory("/data/lib")}, false},
 		{"volume nested in a platform mount", []ObservedMount{{Destination: "/var/run/secrets/kubernetes.io/serviceaccount", Class: MountPlatform}, memory("/var/run/secrets/kubernetes.io/serviceaccount/x")}, true},
 		{"sibling volumes", []ObservedMount{memory("/h"), memory("/h2")}, true},
 		{"platform mounts nested in an unconfined host volume", []ObservedMount{{Destination: "/data", Class: MountHost}, {Destination: "/data/shm", Class: MountPlatform}}, true},

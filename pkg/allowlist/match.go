@@ -27,9 +27,11 @@ type ObservedMount struct {
 	Storage          MountStorage `json:"storage"`
 	HostSourceDigest string       `json:"hostSourceDigest,omitempty"`
 	// ReadOnly holds when nothing reachable through the mount is writable: the
-	// node reports a host bind read-only only when it is recursively read-only
-	// or proven to carry no nested mount, and receives no propagated mounts.
-	ReadOnly bool `json:"readOnly,omitempty"`
+	// node reports a host bind read-only only when its options make it
+	// recursively read-only, or a plain read-only bind, and private. Older
+	// nodes reported the top mount's flag as "readOnly"; the distinct key keeps
+	// a consumer from reading that weaker evidence as this guarantee.
+	ReadOnly bool `json:"readOnlyTree,omitempty"`
 }
 
 // ErrNoMatch reports that no entry describes the running set; ErrAmbiguous that

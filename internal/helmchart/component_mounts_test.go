@@ -10,19 +10,32 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// observedMounts classifies a rendered container's volume mounts the way the
-// node plugin would on a node with no encrypted scratch, the least the
-// chart's policies must admit: tmpfs-backed volumes (memory emptyDirs,
-// Secrets, projected and downward-API volumes) are memory; ConfigMaps, PVCs
-// and disk emptyDirs are of unknown storage; a hostPath is a host mount with
-// the volumeMount's access mode.
+// observedMounts classifies a rendered container's mounts the way the node
+// plugin would on a node with no encrypted scratch, the least the chart's
+// policies must admit: tmpfs-backed volumes (memory emptyDirs, Secrets,
+// projected and downward-API volumes) are memory; ConfigMaps, PVCs and disk
+// emptyDirs are of unknown storage; a hostPath is a host mount, read-only only
+// with recursiveReadOnly and no propagation, as kubelet binds it recursively.
+// The kubelet and containerd add their platform mounts too.
 func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkgallowlist.ObservedMount {
 	t.Helper()
 	volumes := map[string]corev1.Volume{}
 	for _, v := range spec.Volumes {
 		volumes[v.Name] = v
 	}
-	out := make([]pkgallowlist.ObservedMount, 0, len(c.VolumeMounts))
+	platform := []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf", "/dev/shm"}
+	terminationLog := c.TerminationMessagePath
+	if terminationLog == "" {
+		terminationLog = corev1.TerminationMessagePathDefault
+	}
+	platform = append(platform, terminationLog)
+	if spec.AutomountServiceAccountToken == nil || *spec.AutomountServiceAccountToken {
+		platform = append(platform, "/var/run/secrets/kubernetes.io/serviceaccount")
+	}
+	out := make([]pkgallowlist.ObservedMount, 0, len(c.VolumeMounts)+len(platform))
+	for _, destination := range platform {
+		out = append(out, pkgallowlist.ObservedMount{Destination: destination, Class: pkgallowlist.MountPlatform})
+	}
 	for _, m := range c.VolumeMounts {
 		v, ok := volumes[m.Name]
 		if !ok {
@@ -35,7 +48,9 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 			if err != nil {
 				t.Fatalf("container %s volume %q: %v", c.Name, m.Name, err)
 			}
-			mount.Class, mount.ReadOnly, mount.HostSourceDigest = pkgallowlist.MountHost, m.ReadOnly, digest
+			recursive := m.RecursiveReadOnly != nil && *m.RecursiveReadOnly == corev1.RecursiveReadOnlyEnabled
+			private := m.MountPropagation == nil || *m.MountPropagation == corev1.MountPropagationNone
+			mount.Class, mount.ReadOnly, mount.HostSourceDigest = pkgallowlist.MountHost, m.ReadOnly && recursive && private, digest
 		case v.EmptyDir != nil:
 			mount.Class = pkgallowlist.MountEmptyDir
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
@@ -48,10 +63,6 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 			t.Fatalf("container %s volume %q has a source this test does not classify", c.Name, m.Name)
 		}
 		out = append(out, mount)
-	}
-	// What the kubelet and containerd add to every container.
-	for _, destination := range []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf", "/dev/shm", "/dev/termination-log"} {
-		out = append(out, pkgallowlist.ObservedMount{Destination: destination, Class: pkgallowlist.MountPlatform})
 	}
 	return out
 }
@@ -121,6 +132,8 @@ func TestChartRefusesUncleanMountPaths(t *testing.T) {
 		"relative runtimeDir":              {"--set-string", "nriImagePolicy.hostPaths.runtimeDir=var/run/nri-image-policy"},
 		"unclean denyBelow":                {"--set-string", "router.nginx.denyBelow[0]=/usr/../usr"},
 		"empty local-path data dir":        {"--set-string", "rke2.localPathHelper.dataDir="},
+		"volumed cgroup root with a trailing slash": {"--set", "node.baked=false", "--set", "volumed.enabled=true",
+			"--set", "volumed.image.digest=sha256:" + strings.Repeat("3", 64), "--set-string", "volumed.hostPaths.cgroupRoot=/sys/fs/cgroup/"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			out, err := helmTemplate(t, append(append([]string{}, bakedArgs...), args...)...)

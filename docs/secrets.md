@@ -352,10 +352,11 @@ every mount the container holds to be confined to the node, so whatever the
 container fetches or writes cannot reach any location the host reads. A
 confined mount is a platform mount, a read-only host path whose source
 commitment the node recorded, or a volume on memory or encrypted scratch. A
-host path counts as read-only only when nothing below it is writable: a
-`readOnly` hostPath over a directory holding other mounts needs
-`recursiveReadOnly: Enabled`, and one with `HostToContainer` or
-`Bidirectional` propagation never counts. This is the test the `confined` mount policy applies
+host path counts as read-only only when its mount options prove nothing
+reachable through it is writable: a `readOnly` hostPath needs
+`recursiveReadOnly: Enabled`, since kubelet binds it recursively, and one with
+`HostToContainer` or `Bidirectional` propagation never counts. A volume counts
+as memory or encrypted only when every mount below its source is too. This is the test the `confined` mount policy applies
 (`ObservedMount.Confined` in `pkg/allowlist`, the one implementation both
 use). The test runs on every mount the container holds, whatever `unconfined`
 destinations the entry lists. A writable host path, a disk-backed `emptyDir`, or a PVC

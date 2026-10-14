@@ -22,6 +22,9 @@ mounted into pods. Directory requires verified staging to have completed. */}}
 - name: node-config
   mountPath: /run/c8s-node
   readOnly: true
+  # Kubelet binds a hostPath recursively; the node counts it read-only, and
+  # so confined, only when the whole tree is (rro).
+  recursiveReadOnly: Enabled
 {{- end }}
 {{- end -}}
 

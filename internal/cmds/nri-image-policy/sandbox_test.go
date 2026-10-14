@@ -79,7 +79,7 @@ func injectedSocketMount(c *api.Container) {
 		Destination: workloadclaims.SidecarSocketDir,
 		Type:        "bind",
 		Source:      "/var/run/nri-image-policy",
-		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
+		Options:     []string{"bind", "ro", "private", "nosuid", "nodev", "noexec"},
 	})
 }
 

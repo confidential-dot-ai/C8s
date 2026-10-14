@@ -266,12 +266,48 @@ symlinks in a destination when it mounts. So `denyBelow` must also list every
 symlink that leads into a denied directory, such as `/lib`, `/bin` and `/sbin`
 on a merged-`/usr` image. A volume can hold symlinks too, and the runtime
 follows them when it creates a later mount inside that volume, so `confined`
-refuses any mount at or below another non-platform mount's destination. The
-pinned executable is checked as under `any`,
-whether `denyBelow` lists it or not. `confined` is constrained but
+refuses any mount at or below another non-platform mount's destination, or
+below `/dev/shm`, which every container in the pod can write. A platform mount
+inside a host path is the exception: it follows the node's own layout, as when
+the runtime adds `/dev/shm` and `/dev/termination-log` inside volumed's host
+`/dev`. An image symlink can hide nesting: with `/var/run -> /run`, a mount at
+`/var/run/v/link` lands inside a volume at `/run/v` and follows its symlinks.
+So when a container has a non-platform mount and any other mount, the node
+resolves every destination against the container's root filesystem, under the
+containerd state directory. It reports no mount evidence when a destination
+resolves inside another mount it does not sit in as written, when the walk
+passes through another mount after a symlink, or when the root filesystem
+cannot be found. `confined` and `exact` then refuse the container. The pinned
+executable is checked as under `any`, whether `denyBelow` lists it or not. `confined` is constrained but
 host-dependent: a read-only host path admits whatever the host keeps there.
 The [injected drop set](secrets.md#the-injected-drop-set) uses the same
 confinement test (`ObservedMount.Confined` in `pkg/allowlist`).
+
+### Prerequisites and costs
+
+- **Recursive read-only.** `rro` needs Linux 5.12 or later, runc 1.1 or later,
+  containerd 2.0 or later, and Kubernetes 1.31 or later (1.30 with the
+  `RecursiveReadOnlyMounts` feature gate). Without them, a pod that sets
+  `recursiveReadOnly: Enabled` fails to start or loses the field, and one that
+  sets `IfPossible` may get plain `ro`; the node counts plain `ro` as
+  writable. The chart sets `Enabled` on the node configuration mount (measured
+  node image only) and on the router's workload-claims socket mount. It lists
+  its other read-only host paths as `unconfined`.
+- **Mount evidence.** The node checks the final OCI specification when the
+  container starts. Resolving destinations needs the runc shim's root
+  filesystem under `/run/containerd` or `/run/k3s/containerd`, and Linux 5.8
+  or later for mount IDs. A runtime without it, such as a VM sandbox, yields
+  no evidence, and `confined` and `exact` refuse its containers.
+- **Cold bootstrap.** The plugin's base carries every component entry, so a
+  component starts before CDS serves policy. The chart tests check each
+  component's rendered mounts, with the mounts kubelet and containerd add,
+  against both the seed and the base.
+- **Mixed versions.** See [Bootstrap](#bootstrap) for the rollout and
+  rollback order.
+- **Cost.** Each container start compares destinations pairwise and reads the
+  node's mount table once per `emptyDir` or `data` volume. A container with
+  a non-platform mount and another mount also walks each destination in its
+  root filesystem. Pods hold tens of mounts at most.
 
 ### Derive mount policies
 
@@ -331,16 +367,25 @@ A `host` rule pins an exact source path and mount-level access mode:
 
 The source is the clean absolute path in the final OCI specification, after
 containerd resolves symlinks. An omitted `readOnly` requires a writable mount.
-The node reports a host mount read-only only when nothing reachable through it
-is writable. Plain `ro` on a recursive bind leaves each nested mount its own
-flags, so it counts only when the node's mount table holds no mount below the
-source; `rro` (`recursiveReadOnly: Enabled`) always counts; slave or shared
-propagation, which brings in host mounts made later, never does.
+The node reports a host mount read-only only when its mount options prove
+that every mount the container gets through it is read-only and receives no
+host mount made later:
+
+- Any `rrw` makes it writable.
+- A recursive bind (`rbind`, which kubelet uses for every hostPath) needs
+  `rro` (`recursiveReadOnly: Enabled`) and `rprivate` propagation. Plain `ro`
+  leaves each submount its own flags, and the node cannot list the submounts
+  the bind copied once the container exists.
+- A plain bind needs `ro` or `rro`, and `private` or `rprivate` propagation.
+
+Slave or shared propagation (`HostToContainer`, `Bidirectional`) never counts.
 Host evidence carries a SHA-256 source commitment and the access mode through
-inventory and release matching. Host-backed workloads remain host-dependent;
-the path pin grants access to the contents at that node path. Read-only mode
-applies to the mount itself; nested mounts retain their own flags. Recursive
-read-only/write mount options leave the host source commitment unavailable.
+inventory and release matching. The evidence names that access mode
+`readOnlyTree`: a node built before this rule reported the top mount's flag
+as `readOnly`, and a consumer reads such evidence as writable. A volume counts
+as memory or encrypted only when every mount the node holds below its source
+does too. Host-backed workloads remain host-dependent;
+the path pin grants access to the contents at that node path.
 
 The pod UID embedded in a kubelet source must equal the pod being admitted, and
 containerd sandbox sources must name its exact sandbox. These runtime IDs prove
@@ -646,11 +691,18 @@ command, leaves args open and keeps `mounts: any`, whoever wrote it: a stored
 component entry, an operator `bootstrapAllowlist` entry, or a hand-written
 workload entry of that shape. Edit each to `mounts: confined` with a
 `denyBelow` list before the next upload. A plugin built before the policy
-rejects the whole served document once it carries one `confined` entry, which
-blocks admission on that node. Roll every enforcing node's plugin forward
-first, and upgrade the chart only after the last node runs it. A node rolled
-back to an older plugin stays blocked while the store holds a `confined`
-entry, so roll back nodes only after editing those entries away.
+cannot parse a served document that carries one `confined` entry, and it does
+not stop admission. A running plugin keeps enforcing the last document it
+pulled, which may admit more than the new one: the store's older entries,
+with `mounts: any`. A plugin restarted in that state enforces only its
+bootstrap base until a pull succeeds. Roll every enforcing node's plugin
+forward first, and upgrade the chart only after the last node runs it. To
+roll a node back to an older plugin, first edit the `confined` entries away
+(or roll the chart back): until then that node runs on a stale document or
+its base. After each step, check that every enforcing node applied the intended
+document: its plugin logs `pull loop: allowlist refreshed` with the store's
+current version, while a node that cannot parse it logs a fetch failure on
+every poll.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 

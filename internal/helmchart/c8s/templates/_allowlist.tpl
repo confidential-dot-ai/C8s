@@ -116,14 +116,15 @@
 {{- /* operator and allowlist-proxy config; attest-proxy config and its socket directory */ -}}
 {{- $unconfined = list "/etc/c8s-measurements" "/etc/attestation-api" $runtimeDir -}}
 {{- else if eq .name "cds.image" -}}
-{{- $unconfined = list "/data" "/etc/cds" "/etc/cds-operator-keys" "/etc/c8s-measurements" -}}
+{{- /* also the attest-proxy socket directory, a read-only hostPath kubelet binds recursively */ -}}
+{{- $unconfined = list "/data" "/etc/cds" "/etc/cds-operator-keys" "/etc/c8s-measurements" $runtimeDir -}}
 {{- else if eq .name "attestationApi.image" -}}
 {{- $unconfined = list "/etc/attestation-api" -}}
 {{- if $v.attestationApi.teeDevices.sevGuest -}}{{- $unconfined = append $unconfined "/dev/sev-guest" -}}{{- end -}}
 {{- if $v.attestationApi.teeDevices.tdxGuest -}}{{- $unconfined = append $unconfined "/sys/kernel/config" -}}{{- end -}}
 {{- if $v.attestationApi.teeDevices.tpm -}}{{- $unconfined = concat $unconfined (list "/dev/tpm0" "/dev/tpmrm0") -}}{{- end -}}
 {{- else if eq .name "armtlsMesh.image" -}}
-{{- $unconfined = list "/run/xtables.lock" "/etc/c8s-measurements" -}}
+{{- $unconfined = list "/run/xtables.lock" "/etc/c8s-measurements" $runtimeDir -}}
 {{- else if eq .name "volumed.image" -}}
 {{- /* /sys and a v1 /cgroup hold nested mounts, so their read-only binds are not recursive */ -}}
 {{- $unconfined = list $v.volumed.hostPaths.kubeletRoot "/dev" "/sys" "/cgroup" $runtimeDir -}}

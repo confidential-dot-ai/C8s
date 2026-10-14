@@ -911,6 +911,8 @@ volumed:
   hostPaths:
     ## Kubelet's root dir; override only when the kubelet runs a custom --root-dir.
     kubeletRoot: /var/lib/kubelet
+    ## The node's cgroup root, mounted read-only at /cgroup in the container;
+    ## volumed always reads it there. A clean absolute path.
     cgroupRoot: /sys/fs/cgroup
 
   ## Volumes open on one node at once. Each costs two device-mapper devices and

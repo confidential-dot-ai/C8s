@@ -193,40 +193,55 @@ func cutTwoOrMore(s string) (string, string, bool) {
 	return a, b, ok && a != "" && b != ""
 }
 
-// observeHostMount records a host mount as read-only only when nothing below
-// its destination can be written: plain ro on a recursive bind leaves nested
-// mounts with their own flags, and slave or shared propagation brings in host
-// mounts made later.
+// observeHostMount records a host mount as read-only only when the options
+// alone prove that every mount the container gets through it is read-only and
+// stays closed to host mounts made later. See hostReadOnly.
 func (o mountObserver) observeHostMount(m *api.Mount) allowlist.ObservedMount {
 	mount := observed(m, allowlist.MountHost, allowlist.MountUnknown)
-	readOnly, recursiveReadOnly, recursiveWritable, recursiveBind, propagated := false, false, false, false, false
-	for _, option := range m.GetOptions() {
-		switch option {
-		case "ro":
-			readOnly, recursiveReadOnly = true, false
-		case "rw":
-			readOnly, recursiveReadOnly = false, false
-		case "rrw":
-			// runc applies the recursive attribute after the ro remount, so a
-			// later ro does not undo it.
-			readOnly, recursiveReadOnly, recursiveWritable = false, false, true
-		case "rro":
-			readOnly, recursiveReadOnly = true, true
-		case "rbind":
-			recursiveBind = true
-		case "slave", "rslave", "shared", "rshared":
-			propagated = true
-		case "private", "rprivate":
-			propagated = false
-		}
-	}
-	mount.ReadOnly = readOnly && !recursiveWritable && !propagated && (recursiveReadOnly || !recursiveBind || o.storage.NoMountsBelow(m.GetSource()))
+	mount.ReadOnly = hostReadOnly(m.GetOptions())
 	digest, err := allowlist.HostSourceDigest(m.GetSource())
 	if err != nil {
 		return mount
 	}
 	mount.HostSourceDigest = digest
 	return mount
+}
+
+// hostReadOnly applies runc's option semantics. ro and rw set MS_RDONLY on the
+// top mount only, last one winning; rro and rrw are mount_setattr attributes
+// applied afterwards to the whole tree, top mount included, so any rrw leaves
+// it writable and rro makes it read-only whatever ro or rw says. A recursive
+// bind also copies the submounts the source holds when the container is
+// created, which the node cannot list afterwards, so it needs rro. Propagation
+// must be private, and recursively so for a recursive bind: a slave or shared
+// mount, top or nested, receives host mounts made later.
+func hostReadOnly(options []string) bool {
+	topReadOnly, recursiveReadOnly, recursiveWritable, recursive := false, false, false, false
+	propagation := ""
+	for _, option := range options {
+		switch option {
+		case "ro":
+			topReadOnly = true
+		case "rw":
+			topReadOnly = false
+		case "rro":
+			recursiveReadOnly = true
+		case "rrw":
+			recursiveWritable = true
+		case "rbind":
+			recursive = true
+		case "private", "rprivate", "slave", "rslave", "shared", "rshared", "unbindable", "runbindable":
+			propagation = option
+		}
+	}
+	switch {
+	case recursiveWritable:
+		return false
+	case recursive:
+		return recursiveReadOnly && propagation == "rprivate"
+	default:
+		return (topReadOnly || recursiveReadOnly) && (propagation == "private" || propagation == "rprivate")
+	}
 }
 
 func observed(m *api.Mount, class allowlist.MountClass, storage allowlist.MountStorage) allowlist.ObservedMount {

@@ -66,7 +66,8 @@ func normalizePaths(field string, paths []string) ([]string, error) {
 // No mount may sit at or below another mount it could be carried through
 // (nestedIn): the runtime follows symlinks inside earlier volumes when it
 // creates a later mount, so a volume holding a symlink to a denyBelow path
-// would carry the nested mount there.
+// would carry the nested mount there. The check is lexical; the node withholds
+// the evidence when an image symlink hides such nesting.
 func (p MountPolicy) admitsConfined(mounts []ObservedMount) bool {
 	if mounts == nil {
 		return false

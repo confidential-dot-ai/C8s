@@ -1,5 +1,9 @@
 {{- if .Values.volumed.enabled }}
 {{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
+{{- $cgroupRoot := toString .Values.volumed.hostPaths.cgroupRoot }}
+{{- if or (not (isAbs $cgroupRoot)) (ne (clean $cgroupRoot) $cgroupRoot) }}
+{{- fail (printf "volumed.hostPaths.cgroupRoot %q is not a clean absolute path" $cgroupRoot) }}
+{{- end }}
 {{- /*
   Node agent that opens encrypted volumes for the pods on it (docs/volumes.md).
 
@@ -116,7 +120,7 @@ spec:
             type: Directory
         - name: cgroup
           hostPath:
-            path: {{ .Values.volumed.hostPaths.cgroupRoot }}
+            path: {{ $cgroupRoot }}
             type: Directory
         - name: inventory-socket-dir
           hostPath:

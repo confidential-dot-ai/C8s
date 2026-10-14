@@ -643,8 +643,8 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 	}{
 		"any mounts": {[]string{"--set-string", p + "mounts.policy=any"}, pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
 		"confined mounts": {
-			[]string{"--set-string", p + "mounts.policy=confined", "--set-string", p + "mounts.denyBelow[0]=/c8s"},
-			pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyConfined, DenyBelow: []string{"/c8s"}},
+			append([]string{"--set-string", p + "mounts.policy=confined", "--set-string", p + "mounts.denyBelow[0]=/c8s"}, operatorUnconfinedArgs(p)...),
+			pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyConfined, DenyBelow: []string{"/c8s"}, Unconfined: operatorUnconfined},
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -673,6 +673,51 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 						t.Errorf("base mount policy for the operator = %+v, want the entry's %+v", c.Mounts, tc.want)
 					}
 				}
+			}
+		})
+	}
+}
+
+// operatorUnconfined is where the chart mounts unprotected storage into the
+// operator image's containers, as c8s.componentMounts lists it.
+var operatorUnconfined = []string{"/etc/attestation-api", "/etc/c8s-measurements", "/var/run/nri-image-policy"}
+
+func operatorUnconfinedArgs(prefix string) []string {
+	var args []string
+	for i, destination := range operatorUnconfined {
+		args = append(args, "--set-string", fmt.Sprintf("%smounts.unconfined[%d]=%s", prefix, i, destination))
+	}
+	return args
+}
+
+// With deriveComponents off, an entry with the component's command covers it
+// only if its mounts admit the component's own: denying the operator's /tmp
+// volume, or leaving out a destination the chart mounts unconfined, would
+// refuse the component on its own node.
+func TestChartOperatorEntryMountsMustAdmitComponent(t *testing.T) {
+	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
+	entry := []string{
+		"--set-string", "image.digest=" + opD,
+		"--set", "nriImagePolicy.policy.mode=fail-closed",
+		"--set-string", p + "digest=" + opD,
+		"--set-string", p + "command.policy=exact",
+		"--set-string", p + "command.argv[0]=/c8s",
+		"--set-string", p + "args.policy=any",
+		"--set-string", p + "mounts.policy=confined",
+		"--set-string", p + "mounts.denyBelow[0]=/c8s",
+	}
+	for name, args := range map[string][]string{
+		"a denied volume destination":      append(slices.Concat(entry, operatorUnconfinedArgs(p)), "--set-string", p+"mounts.denyBelow[1]=/tmp"),
+		"a missing unconfined destination": entry,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, args...)
+			if err == nil {
+				t.Fatalf("helm template succeeded with the component covered by an entry whose mounts refuse its own\n%s", out)
+			}
+			if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
+				t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
 			}
 		})
 	}

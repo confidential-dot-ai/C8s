@@ -82,9 +82,19 @@
 {{- $ok = true -}}
 {{- range $i, $tok := $pin -}}{{- if ne $tok (index $entrypoint $i) -}}{{- $ok = false -}}{{- end -}}{{- end -}}
 {{- end -}}
+{{- /* Its mounts must admit at least what the derived entry would: the chart
+       tests prove that entry admits the component's rendered mounts. A
+       confined entry qualifies when it denies no path the derived one leaves
+       open and lists every destination the derived one leaves unconfined. */ -}}
+{{- $mounts := get (get $covered (get $img "digest")) "mounts" -}}
+{{- if and $ok (ne (get $mounts "policy") "any") -}}
+{{- $derived := include "c8s.componentMounts" (dict "root" $ "name" (get $c "name") "denyBelow" (get $c "denyBelow")) | fromJson -}}
+{{- range $p := (get $mounts "denyBelow" | default list) -}}{{- if not (has $p (get $derived "denyBelow")) -}}{{- $ok = false -}}{{- end -}}{{- end -}}
+{{- range $p := (get $derived "unconfined" | default list) -}}{{- if not (has $p (get $mounts "unconfined" | default list)) -}}{{- $ok = false -}}{{- end -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- if not $ok -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args and env unconstrained and mounts any or confined for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape; pin the entrypoint with mounts confined, as allowlist lint refuses a pinned entry with mounts any), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args and env unconstrained and mounts any or confined for that digest with its command any or pinned to the image's entrypoint %s, and mounts that admit the component's own (any, or confined with no denyBelow path beyond the chart's and every destination the chart leaves unconfined). The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape; pin the entrypoint with mounts confined, as allowlist lint refuses a pinned entry with mounts any), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

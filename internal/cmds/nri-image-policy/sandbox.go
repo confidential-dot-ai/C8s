@@ -206,13 +206,13 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 }
 
 // isInjectedSocketMount reports whether m is the mount socketDirAdjustment
-// adds: read-only, at the sidecar socket directory, in a socket consumer of an
+// adds: read-only (hostReadOnly), at the sidecar socket directory, in a socket consumer of an
 // injected pod. A pod-spec hostPath at the same source and destination is a host bind
 // like any other — writable, it would let the container replace the node's
 // inventory sockets.
 func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount) bool {
 	return m.GetDestination() == workloadclaims.SidecarSocketDir &&
-		slices.Contains(m.GetOptions(), "ro") &&
+		hostReadOnly(m.GetOptions()) &&
 		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
 		workloadclaims.IsSocketConsumer(ctr.GetName())
 }

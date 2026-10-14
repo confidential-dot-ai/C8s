@@ -47,8 +47,26 @@ func newMountStorageInspector() mountStorageInspector {
 	}
 }
 
+// Inspect classifies the filesystem holding source, then every mount below it
+// in the node's mount table: the weakest storage among them decides, as the
+// container reaches all of them. A mount propagated in later, such as the
+// encrypted volume volumed binds over a reserved placeholder, is made by the
+// node itself.
 func (i linuxStorageInspector) Inspect(source string) allowlist.MountStorage {
-	return i.inspect(source, map[string]bool{})
+	storage := i.inspect(source, map[string]bool{})
+	if storage == allowlist.MountUnknown {
+		return storage
+	}
+	below, ok := i.mountsBelow(source)
+	if !ok {
+		return allowlist.MountUnknown
+	}
+	for _, mountpoint := range below {
+		if i.inspect(mountpoint, map[string]bool{}) == allowlist.MountUnknown {
+			return allowlist.MountUnknown
+		}
+	}
+	return storage
 }
 
 func (i linuxStorageInspector) inspect(source string, seen map[string]bool) allowlist.MountStorage {
@@ -277,28 +295,31 @@ func containingOverlay(mountInfo, source string) (mountpoint, upper string, ok b
 	return containingMountpoint, overlayUpper, s.Err() == nil && overlayUpper != ""
 }
 
-func (i linuxStorageInspector) NoMountsBelow(source string) bool {
+// mountsBelow lists the node's mountpoints strictly below source. False when
+// the mount table cannot be read in full.
+func (i linuxStorageInspector) mountsBelow(source string) ([]string, bool) {
 	clean, err := filepath.EvalSymlinks(filepath.Clean(source))
 	if err != nil {
-		return false
+		return nil, false
 	}
 	f, err := os.Open(i.mountInfo)
 	if err != nil {
-		return false
+		return nil, false
 	}
 	defer f.Close()
 	prefix := strings.TrimSuffix(clean, "/") + "/"
+	var below []string
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		fields := strings.Fields(s.Text())
 		if len(fields) < 5 {
-			return false
+			return nil, false
 		}
-		if strings.HasPrefix(unescapeMountInfo(fields[4]), prefix) {
-			return false
+		if mountpoint := unescapeMountInfo(fields[4]); strings.HasPrefix(mountpoint, prefix) {
+			below = append(below, mountpoint)
 		}
 	}
-	return s.Err() == nil
+	return below, s.Err() == nil
 }
 
 func optionValue(options, name string) string {
@@ -317,4 +338,29 @@ func unescapeMountInfo(s string) string {
 		s = strings.ReplaceAll(s, `\`+code, string(rune(value)))
 	}
 	return s
+}
+
+// crossesMount reports whether child, a directory entry in parent, lies on
+// another mount than parent does.
+func crossesMount(parent, child string) (bool, error) {
+	parentID, err := mountID(parent)
+	if err != nil {
+		return false, err
+	}
+	childID, err := mountID(child)
+	if err != nil {
+		return false, err
+	}
+	return parentID != childID, nil
+}
+
+func mountID(name string) (uint64, error) {
+	var st unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, name, unix.AT_SYMLINK_NOFOLLOW, unix.STATX_MNT_ID, &st); err != nil {
+		return 0, fmt.Errorf("statx %s: %w", name, err)
+	}
+	if st.Mask&unix.STATX_MNT_ID == 0 {
+		return 0, fmt.Errorf("statx %s: no mount ID", name)
+	}
+	return st.Mnt_id, nil
 }

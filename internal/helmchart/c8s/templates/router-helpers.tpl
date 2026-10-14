@@ -641,7 +641,7 @@ list.
        (workloadclaims.InventorySocketGID) on the same condition. */ -}}
 {{- $extraArgs = append $extraArgs "--workload-claims" -}}
 {{- if eq (include "router.mountInventorySocket" .) "true" -}}
-{{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
+{{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true\n  recursiveReadOnly: Enabled" -}}
 {{- end -}}
 {{- end -}}
 {{- if eq (include "router.publicTLSMode" .) "webpki" -}}

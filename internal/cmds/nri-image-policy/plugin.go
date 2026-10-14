@@ -122,6 +122,10 @@ type plugin struct {
 	ready      atomic.Bool
 	containerd containerdOps
 
+	// rootfs locates a created container's root filesystem, against which
+	// mount destinations are resolved; nil means containerRootfs.
+	rootfs func(containerID string) (string, error)
+
 	// exempt admits an exempt namespace's containers by the digest set captured
 	// running in it, not by the namespace name. nil ⇔ not opted in
 	// (policy.exempt_namespaces empty) or not yet captured. See exempt.go.
@@ -286,14 +290,14 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
 		}
 	}
-	p.recordDigest(ctr, digest, observedMounts(pod, ctr))
+	p.recordDigest(ctr, digest, p.observedMounts(pod, ctr))
 }
 
 // recordUncheckedForInventory records the digest inlined in the reference
 // without resolving; the pre-Ready hook must answer inside NRI's
 // plugin_request_timeout, so recording adds no containerd round-trip.
 func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr))
+	p.recordDigest(ctr, extractDigest(imageRef), p.observedMounts(pod, ctr))
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
@@ -306,11 +310,17 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
 }
 
-func observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
+// observedMounts is the mount evidence of a created container: classified,
+// and withheld when a destination resolves somewhere its path does not say.
+func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(nil).Observe(pod, ctr)
+	rootfs := p.rootfs
+	if rootfs == nil {
+		rootfs = containerRootfs
+	}
+	return withholdAliasedMounts(rootfs, ctr, newMountObserver(nil).Observe(pod, ctr))
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -520,7 +530,7 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
-		mounts = newMountObserver(nil).Observe(pod, ctr)
+		mounts = p.observedMounts(pod, ctr)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
 	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {
@@ -951,7 +961,9 @@ func (p *plugin) socketDirAdjustment(pod *api.PodSandbox, ctr *api.Container) *a
 		Destination: workloadclaims.SidecarSocketDir,
 		Type:        "bind",
 		Source:      p.cfg.WorkloadClaims.SocketDir,
-		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
+		// A plain bind: the directory holds no mounts to carry, and the node
+		// reports only a non-recursive read-only bind of it as read-only.
+		Options: []string{"bind", "ro", "private", "nosuid", "nodev", "noexec"},
 	})
 	return adjust
 }

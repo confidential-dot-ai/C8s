@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -371,31 +374,74 @@ func TestOverlayStorageFailsClosed(t *testing.T) {
 	}
 }
 
-func TestNoMountsBelow(t *testing.T) {
+func TestMountsBelow(t *testing.T) {
 	source, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
 		name, mountInfo string
-		want            bool
+		want            []string
+		ok              bool
 	}{
-		{"none below", "20 1 0:1 / / rw - ext4 /dev/root rw\n21 20 0:2 / " + source + " rw - ext4 /dev/vdb rw\n", true},
-		{"sibling with a shared prefix", "21 20 0:2 / " + source + "2 rw - tmpfs tmpfs rw\n", true},
-		{"one below", "21 20 0:2 / " + source + "/pvc rw - ext4 /dev/vdc rw\n", false},
-		{"malformed line", "21 20\n", false},
+		{"none below", "20 1 0:1 / / rw - ext4 /dev/root rw\n21 20 0:2 / " + source + " rw - ext4 /dev/vdb rw\n", nil, true},
+		{"sibling with a shared prefix", "21 20 0:2 / " + source + "2 rw - tmpfs tmpfs rw\n", nil, true},
+		{"one below", "21 20 0:2 / " + source + "/pvc rw - ext4 /dev/vdc rw\n", []string{source + "/pvc"}, true},
+		{"malformed line", "21 20\n", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			file := filepath.Join(t.TempDir(), "mountinfo")
 			if err := os.WriteFile(file, []byte(tc.mountInfo), 0600); err != nil {
 				t.Fatal(err)
 			}
-			if got := (linuxStorageInspector{mountInfo: file}).NoMountsBelow(source); got != tc.want {
-				t.Fatalf("NoMountsBelow(%q) = %v, want %v", source, got, tc.want)
+			got, ok := (linuxStorageInspector{mountInfo: file}).mountsBelow(source)
+			if ok != tc.ok || !slices.Equal(got, tc.want) {
+				t.Fatalf("mountsBelow(%q) = %q, %v, want %q, %v", source, got, ok, tc.want, tc.ok)
 			}
 		})
 	}
-	if (linuxStorageInspector{mountInfo: "/nonexistent"}).NoMountsBelow(source) {
-		t.Fatal("NoMountsBelow without a mount table = true, want false")
+	if _, ok := (linuxStorageInspector{mountInfo: "/nonexistent"}).mountsBelow(source); ok {
+		t.Fatal("mountsBelow without a mount table succeeded")
+	}
+}
+
+// A recursive bind of a protected source also carries the mounts below it,
+// so one unprotected descendant makes the whole mount unprotected.
+func TestInspectRequiresProtectedDescendants(t *testing.T) {
+	var fs unix.Statfs_t
+	if err := unix.Statfs("/dev/shm", &fs); err != nil || fs.Type != unix.TMPFS_MAGIC {
+		t.Skip("/dev/shm is not a tmpfs")
+	}
+	source, err := os.MkdirTemp("/dev/shm", "volume")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(source) })
+	// The descendant stands in for a disk filesystem mounted below the
+	// source: Inspect follows it to the root filesystem, which is no tmpfs.
+	if err := os.Symlink("/", filepath.Join(source, "pvc")); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Statfs("/", &fs); err != nil || fs.Type == unix.TMPFS_MAGIC {
+		t.Skip("/ is a tmpfs")
+	}
+	for _, tc := range []struct {
+		name, mountInfo string
+		want            allowlist.MountStorage
+	}{
+		{"no mount below", "21 20 0:2 / " + source + " rw - tmpfs tmpfs rw\n", allowlist.MountMemory},
+		{"protected mount below", "22 21 0:3 / /dev/shm rw - tmpfs tmpfs rw\n21 20 0:2 / " + source + " rw - tmpfs tmpfs rw\n", allowlist.MountMemory},
+		{"unprotected mount below", "22 21 0:3 / " + source + "/pvc rw - ext4 /dev/vdc rw\n", allowlist.MountUnknown},
+		{"unreadable mount table", "21 20\n", allowlist.MountUnknown},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "mountinfo")
+			if err := os.WriteFile(file, []byte(tc.mountInfo), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if got := (linuxStorageInspector{mountInfo: file}).Inspect(source); got != tc.want {
+				t.Fatalf("Inspect(%q) = %q, want %q", source, got, tc.want)
+			}
+		})
 	}
 }
