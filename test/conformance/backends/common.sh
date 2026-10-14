@@ -150,6 +150,20 @@
 #                                    given (empty arguments are omitted);
 #                                    prints the status (000 when nothing
 #                                    answered), then the body
+#   router_request <method> <path> [body-file] [authorization]
+#                                    the same to the router's public address
+#   router_headers <path>            GET path at the router; prints the status,
+#                                    then the response headers, one per line
+#   router_serving_cert              the leaf the router presents on its public
+#                                    address, PEM
+#   router_nginx_conf                the router's rendered nginx configuration
+#   router_tls_mode                  cds, webpki or acme: the public TLS
+#                                    credential the router selects
+#   cds_relay_block / cds_relay_unblock
+#                                    leave the CDS Service with no endpoints, so
+#                                    the router's allowlist relay cannot reach
+#                                    the CDS, and undo it; each returns once
+#                                    the Service's endpoints say so
 # node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
 # node_address, mesh_port, mesh_uids, mesh_platform, excluded_namespace,
 # host_namespace_ns and attestation_endpoint answer the same for a whole run;
@@ -159,6 +173,8 @@
 # The implementations below that are the same everywhere need these from the
 # backend, which the steps never call:
 #   cds_url                          the base URL of the CDS, reachable from here
+#   router_url                       the base URL of the router's public HTTPS
+#                                    address, reachable from here
 #   cds_plain_url                    the same listener over http://, or 77
 #   operator_key                     the operator's private key, PEM
 #   optoken_bin                      the token minter built from
@@ -447,8 +463,20 @@ cds_document_path() {
 # client certificate only when given. curl appends the status to the body; it
 # moves to the first line here, as in cds_read.
 cds_request() {
-    local method="$1" route="$2" body="${3:-}" authorization="${4:-}" cert="${5:-}" key="${6:-}" url answer
+    local url
     url="$(cds_url)" || return
+    http_request "$url" "$@"
+}
+
+router_request() {
+    local url
+    url="$(router_url)" || return
+    http_request "$url" "$@"
+}
+
+# http_request <base-url> <method> <route> [body-file] [authorization] [client-cert] [client-key]
+http_request() {
+    local url="$1" method="$2" route="$3" body="${4:-}" authorization="${5:-}" cert="${6:-}" key="${7:-}" answer
     local -a opts=(-sk --max-time 30 -X "$method" -w $'\n%{http_code}')
     [ -z "$body" ] || opts+=(-H 'Content-Type: application/json' --data-binary "@$body")
     [ -z "$authorization" ] || opts+=(-H "Authorization: $authorization")
@@ -471,12 +499,95 @@ cds_read() {
     printf '%s' "${answer%$'\n'*}"
 }
 
-cds_serving_cert() {
-    local url host
-    url="$(cds_url)" || return
-    host="${url#https://}"
+cds_serving_cert() { local url; url="$(cds_url)" || return; serving_cert "$url"; }
+
+serving_cert() {
+    local host="${1#https://}"
     host="${host%%/*}"
     openssl s_client -connect "$host" </dev/null 2>/dev/null | openssl x509
+}
+
+# --- The router ---
+# The chart's router Deployment and its nginx ConfigMap in $NS, whether the
+# chart or a node image's launch configuration drives it.
+ROUTER_DEPLOY=c8s-router
+CDS_SELECTOR_ANNOTATION=c8s-conformance/selector
+
+router_serving_cert() { local url; url="$(router_url)" || return; serving_cert "$url"; }
+
+router_headers() {
+    local url answer
+    url="$(router_url)" || return
+    answer="$(curl -sk --max-time 30 -o /dev/null -D - "$url$1" 2>/dev/null | tr -d '\r')" || answer=""
+    if [ -z "$answer" ]; then
+        echo 000
+        return
+    fi
+    echo "${answer%%$'\n'*}" | awk '{print $2}'
+    printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
+}
+
+router_nginx_conf() {
+    local cm
+    cm="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}' |
+        tr ' ' '\n' | grep -- '-nginx$' | head -1)"
+    [ -n "$cm" ] || { echo "backend: the router mounts no nginx ConfigMap" >&2; return 1; }
+    kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
+}
+
+# The attest container is started with --front-door-mode, or, where a launch
+# configuration drives the router, with the file that holds it.
+router_tls_mode() {
+    local args mode file container
+    args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
+        jq -r '.spec.template.spec.containers[] | .name as $n | (.args // [])[] | "\($n) \(.)"')" || return
+    mode="$(awk '$2 ~ /^--front-door-mode=/ {sub(/^--front-door-mode=/, "", $2); print $2; exit}' <<<"$args")"
+    if [ -z "$mode" ]; then
+        read -r container file < <(awk '$2 ~ /^--front-door-mode-file=/ {sub(/^--front-door-mode-file=/, "", $2); print $1, $2; exit}' <<<"$args")
+        [ -n "$file" ] || { echo "backend: the router names no front-door mode" >&2; return 1; }
+        mode="$(kubectl -n "$NS" exec "deploy/$ROUTER_DEPLOY" -c "$container" -- cat "$file")" || return
+    fi
+    echo "$mode" | tr -d '[:space:]'
+}
+
+# The selector the Service had is kept in an annotation on it, so
+# cds_relay_unblock restores it from any process. Established connections
+# outlive the endpoints, so the block holds only once the relay's pooled ones
+# have idled out (the armTLS client's IdleConnTimeout, 30s).
+RELAY_IDLE_SECONDS=31
+cds_relay_block() {
+    local selector
+    [ -z "$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_SELECTOR_ANNOTATION}")" ] || return 0
+    selector="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.selector}')"
+    [ -n "$selector" ] || { echo "backend: the CDS Service has no selector" >&2; return 1; }
+    kubectl -n "$NS" annotate svc c8s-cds "$CDS_SELECTOR_ANNOTATION=$selector" --overwrite >/dev/null || return
+    kubectl -n "$NS" patch svc c8s-cds --type merge -p '{"spec":{"selector":{"c8s-conformance/none":"none"}}}' >/dev/null || return
+    cds_endpoints_await empty || return
+    sleep "$RELAY_IDLE_SECONDS"
+}
+
+cds_relay_unblock() {
+    local selector
+    selector="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_SELECTOR_ANNOTATION}")"
+    [ -n "$selector" ] || return 0
+    kubectl -n "$NS" patch svc c8s-cds --type json \
+        -p "[{\"op\":\"replace\",\"path\":\"/spec/selector\",\"value\":$selector}]" >/dev/null || return
+    kubectl -n "$NS" annotate svc c8s-cds "$CDS_SELECTOR_ANNOTATION-" >/dev/null || return
+    cds_endpoints_await present
+}
+
+# cds_endpoints_await <empty|present>
+cds_endpoints_await() {
+    local deadline=$(($(date +%s) + 60)) ips
+    while :; do
+        ips="$(kubectl -n "$NS" get endpoints c8s-cds -o jsonpath='{.subsets[*].addresses[*].ip}')"
+        case "$1" in
+            empty) [ -n "$ips" ] || return 0 ;;
+            present) [ -z "$ips" ] || return 0 ;;
+        esac
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS Service's endpoints are not $1 after 60s" >&2; return 1; }
+        sleep 1
+    done
 }
 
 # --- The armTLS mesh ---

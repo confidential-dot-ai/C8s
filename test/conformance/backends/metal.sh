@@ -52,11 +52,13 @@ image_alias() { return $UNSUPPORTED; }
 
 served_allowlist() { al export; }
 
-# The allowlist front door of the guest is the CDS's own listener, which the
-# c8s CLI's signed writes and raw reads go through. The launch bundle's key is
-# the run's operator key; the token minter is built from the checkout on
-# first use, with the Go toolchain that built the CLI.
+# The lane's allowlist URL is the router's built-in allowlist route on the
+# guest's public address, so the c8s CLI's signed writes and raw reads reach
+# the CDS through the router's relay, and the router is the same origin. The
+# launch bundle's key is the run's operator key; the token minter is built
+# from the checkout on first use, with the Go toolchain that built the CLI.
 cds_url() { echo "$C8S_ALLOWLIST_URL"; }
+router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 operator_key() { echo "$C8S_OPERATOR_KEY"; }
 scratch() { echo "${SUITE_RESULTS:-${TMPDIR:-/tmp}}"; }
 optoken_bin() {

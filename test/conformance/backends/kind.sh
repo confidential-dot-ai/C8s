@@ -100,6 +100,13 @@ mesh_pins_satisfied() { echo yes; }
 # The CDS through the port-forward lib.sh shares; the harness's operator key
 # and token minter beside it.
 cds_url() { cds_pf_start && echo "https://127.0.0.1:$CDS_LOCAL_PORT"; }
+# The router's hostPort 443 on the kind node, reachable on the kind network.
+router_url() {
+    local ip
+    ip="$(kubectl get node "$NODE" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | awk '{print $1}')"
+    [ -n "$ip" ] || { echo "backend: node $NODE has no InternalIP" >&2; return 1; }
+    echo "https://$ip:443"
+}
 operator_key() { echo "$WORKDIR/operator.key"; }
 optoken_bin() { echo "$WORKDIR/optoken"; }
 scratch() { echo "$WORKDIR"; }
