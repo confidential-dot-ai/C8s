@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	"github.com/cucumber/godog"
-	messages "github.com/cucumber/messages/go/v34"
 )
 
 // world is one scenario's state. Names in the feature text (images, nodes,
@@ -20,9 +19,6 @@ type world struct {
 	namespace string
 	pods      map[string]*pod
 	lastPod   *pod
-	// cwOpts: pod_manifest options every pod carrying a workload ID is
-	// rendered with, which an area's sentences set for the scenario.
-	cwOpts []string
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
@@ -49,9 +45,6 @@ type world struct {
 	pluginDown   map[string]bool
 	cdsBlocked   bool
 	cdsRestarted bool
-	// outcome: the step running is a Then (or an And/But under one), for
-	// the few sentences that state a fact as a Given and check it as a Then.
-	outcome bool
 }
 
 type pod struct {
@@ -101,7 +94,7 @@ func getWorld(ctx context.Context) *world { return ctx.Value(worldKey{}).(*world
 
 func initializeScenario(be backend) func(*godog.ScenarioContext) {
 	return func(sc *godog.ScenarioContext) {
-		sc.Before(func(ctx context.Context, _ *godog.Scenario) (context.Context, error) {
+		sc.Before(func(ctx context.Context, sc *godog.Scenario) (context.Context, error) {
 			suffix := make([]byte, 4)
 			if _, err := rand.Read(suffix); err != nil {
 				return ctx, err
@@ -123,18 +116,12 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 					ghosts:    map[string]*pod{},
 					endpoints: map[string]string{},
 				},
-				secrets: secretsState{stored: map[string][]byte{}},
+				secrets: secretsState{active: hasTag(sc, "area:secrets"), stored: map[string][]byte{}},
 			}
 			if _, err := kubectl(nil, "create", "namespace", w.namespace); err != nil {
 				return ctx, err
 			}
 			return context.WithValue(ctx, worldKey{}, w), nil
-		})
-		sc.StepContext().Before(func(ctx context.Context, st *godog.Step) (context.Context, error) {
-			if w, ok := ctx.Value(worldKey{}).(*world); ok {
-				w.outcome = st.Type == messages.PickleStepType_OUTCOME
-			}
-			return ctx, nil
 		})
 		sc.After(func(ctx context.Context, _ *godog.Scenario, _ error) (context.Context, error) {
 			// Before may have failed before storing the world.
@@ -157,6 +144,16 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerMesh(sc)
 		registerSecrets(sc)
 	}
+}
+
+// hasTag reports whether the scenario carries the tag, with or without its @.
+func hasTag(sc *godog.Scenario, name string) bool {
+	for _, t := range sc.Tags {
+		if strings.TrimPrefix(t.Name, "@") == name {
+			return true
+		}
+	}
+	return false
 }
 
 // suffix is the random part of the scenario namespace, for names that must

@@ -18,16 +18,15 @@ const maxBody = 4096
 // report is the one JSON object the tool prints. TLS is true once the
 // handshake returned without error, which in TLS 1.3 says nothing about the
 // client certificate yet: the client's Finished goes first, so a server that
-// rejects the certificate alerts afterwards, on the first read. Handshake is
-// true only once the proxy relayed an application byte. The conformance
-// steps mirror this struct (test/conformance/steps/mesh.go, dialReport).
+// rejects the certificate alerts afterwards, on the first read; only Bytes
+// above zero says the proxy relayed anything. The conformance steps mirror
+// this struct (test/conformance/steps/mesh.go, dialReport).
 type report struct {
-	TLS       bool   `json:"tls"`
-	Handshake bool   `json:"handshake"`
-	Error     string `json:"error"`
-	Bytes     int    `json:"bytes"`
-	Status    int    `json:"status"`
-	Body      string `json:"body"`
+	TLS    bool   `json:"tls"`
+	Error  string `json:"error"`
+	Bytes  int    `json:"bytes"`
+	Status int    `json:"status"`
+	Body   string `json:"body"`
 }
 
 // dial connects to the inbound proxy at nodeAddr, presents cert, names dest
@@ -78,8 +77,7 @@ func dial(ctx context.Context, nodeAddr, dest string, cert tls.Certificate, time
 	}
 	r.Bytes = len(data)
 	r.Error = joinErrors(werr, rerr)
-	r.Handshake = len(data) > 0
-	if r.Handshake {
+	if r.Bytes > 0 {
 		r.Status, r.Body = parseResponse(data)
 	}
 	return r

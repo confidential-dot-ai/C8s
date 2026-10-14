@@ -72,7 +72,7 @@ func registerIssuance(sc *godog.ScenarioContext) {
 const certContainer = "c8s-cert"
 
 // renewWindow bounds how long a renewal is waited for: the pod's renew
-// interval (CW_RENEW_INTERVAL in the backends) or the unnamed fast poll, both
+// interval (issuanceRenewal) or the unnamed fast poll, both
 // at most 30s plus jitter, and the request itself.
 const renewWindow = 120 * time.Second
 

@@ -7,10 +7,10 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"flag"
 	"fmt"
@@ -18,6 +18,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
 const (
@@ -158,20 +160,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 // writePEM writes the chain and key as PEM, in the shape tls.LoadX509KeyPair
-// reads back.
+// reads back (PKCS#8, as get-cert writes a leaf's key).
 func writePEM(cert tls.Certificate, certFile, keyFile string) error {
 	var chain []byte
 	for _, der := range cert.Certificate {
-		chain = append(chain, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+		chain = append(chain, certutil.EncodeCertPEM(der)...)
 	}
-	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
+	key, ok := cert.PrivateKey.(*ecdsa.PrivateKey)
+	if !ok {
+		return fmt.Errorf("the key is a %T, not an EC key", cert.PrivateKey)
+	}
+	keyPEM, err := certutil.MarshalECKeyPEM(key)
 	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(certFile, chain, 0o600); err != nil {
 		return err
 	}
-	return os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600)
+	return os.WriteFile(keyFile, keyPEM, 0o600)
 }
 
 // rewriteLeafNotAfter applies rewriteNotAfter to the chain's leaf and

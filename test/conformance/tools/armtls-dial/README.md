@@ -46,7 +46,7 @@ and key usages as `armtls.CreateAttestedCert`.
 One JSON object on stdout:
 
 ```
-{"tls": true|false, "handshake": true|false, "error": "<message or empty>", "bytes": <application bytes received>, "status": <HTTP status parsed from the reply, 0 if none>, "body": "<response body, at most 4 KiB>"}
+{"tls": true|false, "error": "<message or empty>", "bytes": <application bytes received>, "status": <HTTP status parsed from the reply, 0 if none>, "body": "<response body, at most 4 KiB>"}
 ```
 
 `tls` is true once the TLS handshake returned without error; a connection
@@ -55,8 +55,8 @@ TLS handshake the tool writes the proxy's destination header
 `<dest-ip:port>\n`, then `GET / HTTP/1.0` with `Connection: close`, and reads
 until EOF or the timeout. In TLS 1.3 the client finishes first, so a proxy
 that rejects the client certificate alerts on the client's first read, after
-the handshake returned: `handshake` is therefore false whenever an alert or
-EOF arrives before any application byte, with `error` naming it. A rejected
+the handshake returned: `bytes` is therefore 0 whenever an alert or EOF
+arrives before any application byte, with `error` naming it. A rejected
 certificate reads `remote error: tls: bad certificate`; a proxy that accepted
 the certificate but refused or could not reach the destination closes
 cleanly, which reads `EOF`.

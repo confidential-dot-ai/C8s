@@ -45,7 +45,7 @@ var lastMutation time.Time
 // writtenName is the entry's allowlist workload name at CDS: the scenario's
 // name, suffixed so that two scenarios naming "web" never meet.
 func (w *world) writtenName(name string) string {
-	return name + "-" + strings.TrimPrefix(w.namespace, "conf-")
+	return name + "-" + w.suffix()
 }
 
 func (w *world) entry(name string) (*entry, error) {

@@ -4,14 +4,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha512"
-	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
-	"encoding/pem"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -20,24 +17,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
-
-// writeKeyPair writes cert as the PEM files --cert/--key read.
-func writeKeyPair(t *testing.T, dir string, cert tls.Certificate) (certFile, keyFile string) {
-	t.Helper()
-	keyDER, err := x509.MarshalPKCS8PrivateKey(cert.PrivateKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certFile = filepath.Join(dir, "tls.crt")
-	keyFile = filepath.Join(dir, "tls.key")
-	if err := os.WriteFile(certFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Certificate[0]}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(keyFile, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return certFile, keyFile
-}
 
 // selfSignatureOK is the check certutil.AuthenticateLeafBody applies to a
 // self-issued leaf. x509.CheckSignatureFrom would refuse the parent on its

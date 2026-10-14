@@ -35,7 +35,7 @@
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
-#   pod_manifest <options...> -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
+#   pod_manifest [options] -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
 #                                    container per +-separated group; the
 #                                    options, before the --, are
@@ -51,9 +51,6 @@
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
 #                                    that is not an operator key
-#   allowlist_request <method> <path> <body-file> [authorization]
-#                                    send the write as given, authorization
-#                                    included only when given; prints the status
 #   allowlist_get [version]          read the allowlist, naming version in
 #                                    If-None-Match when given; prints
 #                                    "<status> <version>", then the body
@@ -84,11 +81,6 @@
 #                                    in the files of the node
 #   attest_direct                    one issuance against the CDS process from
 #                                    an admitted TEE; prints the chain, PEM
-#   cw_pod_manifest <options...> -- <name> <ns> <node> <image> <command...> [+ ...]
-#                                    pod_manifest's pod carrying a workload ID,
-#                                    renewing its leaf every CW_RENEW_INTERVAL
-#                                    unless an --annotation option names
-#                                    another interval
 #   requester_manifest <name> <ns> <node>
 #                                    a pod on node that relays HTTP for the
 #                                    steps and can reach the node's sandbox
@@ -230,36 +222,14 @@ pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
 # the first are the fixture's --container groups, one shell-quoted string each.
-# The options before the -- are the fixture's own, named in the header; every
-# pod may send an echo request over an ICMP datagram socket (a safe sysctl,
-# which the chart's admission policy admits where NET_RAW is refused), except
-# one in the node's network namespace, where kubelet refuses every net.*
-# sysctl. The tenant-app image is Alpine's python, whose ping uses that
+# Options before -- are the fixture's own, named in the header; every pod may
+# send an echo request over an ICMP datagram socket (a safe sysctl, which the
+# chart's admission policy admits where NET_RAW is refused; the fixture leaves
+# it out of a pod in the node's network namespace, where kubelet refuses every
+# net.* sysctl). The tenant-app image is Alpine's python, whose ping uses that
 # socket; the library busybox image's cannot.
 PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
-pod_manifest() {
-    local -a opts=()
-    while [ "$1" != -- ]; do
-        opts+=("$1")
-        shift
-    done
-    case " ${opts[*]-} " in *" --host-network "*) ;; *) opts+=(--sysctl "$PING_SYSCTL") ;; esac
-    render_pod ${opts[@]+"${opts[@]}"} "$@"
-}
-
-# The renew interval a pod carrying a workload ID is given: short enough to
-# observe a renewal, and below the CDS's named leaf TTL. The default comes
-# before the caller's options, so an --annotation among them replaces it.
-CW_RENEW_INTERVAL=10s
-cw_pod_manifest() {
-    local -a opts=()
-    while [ "$1" != -- ]; do
-        opts+=("$1")
-        shift
-    done
-    shift
-    pod_manifest --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" ${opts[@]+"${opts[@]}"} -- "$@"
-}
+pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@"; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
@@ -450,13 +420,6 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
-# The status alone: 000 on transport failure, which the steps assert on.
-allowlist_request() {
-    local answer
-    answer="$(cds_request "$1" "$2" "$3" "${4:-}")" || return
-    echo "${answer%%$'\n'*}"
-}
-
 allowlist_get() {
     local url headers body status
     url="$(cds_url)" || return
@@ -534,14 +497,18 @@ MESH_SET_LOCAL=ARMTLS-MESH-LOCAL-PODS
 MESH_SET_GUARDED=ARMTLS-MESH-CW-PODS
 
 # cached <key> <command...>: the command's output, kept in the run's scratch
-# directory after the first call; for what does not change during a run (the
-# mesh DaemonSet's spec, the mesh pod on a node). An empty answer is not kept.
+# directory after the first call and dropped by teardown; for what does
+# not change during a run (the mesh DaemonSet's spec, the mesh pod on a node,
+# the node address the proxy is scraped at). An empty answer is not kept, nor
+# a failure, whose status (77 included) is passed on.
 cached() {
-    local file
+    local file rc
     file="$(scratch)/cache-$1"
     shift
     if [ ! -s "$file" ]; then
-        "$@" > "$file" || { rm -f "$file"; return 1; }
+        "$@" > "$file"
+        rc=$?
+        [ "$rc" -eq 0 ] || { rm -f "$file"; return "$rc"; }
         [ -s "$file" ] || { rm -f "$file"; return 0; }
     fi
     cat "$file"
@@ -597,33 +564,33 @@ mesh_scraper() {
     kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=180s >/dev/null || return
     touch "$ready"
 }
-mesh_scraper_teardown() {
+
+# Once per run, after the scenarios: what every backend kept for the run (the
+# scraper and its entry, the memoised answers), then what this one did.
+teardown() {
     kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     allowlist_delete "$MESH_SCRAPER" || true
-    rm -f "$(scratch)/mesh-scraper.ready"
-}
-
-# Once per run, after the scenarios: what every backend kept for the run, then
-# what this one did.
-teardown() {
-    mesh_scraper_teardown
+    rm -f "$(scratch)/mesh-scraper.ready" "$(scratch)"/cache-*
     ! declare -F teardown_backend >/dev/null || teardown_backend
 }
 
 # The node's /metrics, scraped once; a failed scrape is an error, never
 # empty. A scraper found gone is made again, once.
 mesh_metrics() {
-    local addr port body
-    addr="$(node_address "$1" ipv4)" || return
-    port="$(mesh_arg health-port)"
+    local addr port body _
+    addr="$(cached "node-ipv4-$1" node_address "$1" ipv4)" || return
+    port="$(cached mesh-health-port mesh_arg health-port)"
     port="${port:-15021}"
-    mesh_scraper || return
-    if ! body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
-        rm -f "$(scratch)/mesh-scraper.ready"
+    for _ in 1 2; do
         mesh_scraper || return
-        body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")" || { echo "backend: no scrape of $addr:$port" >&2; return 1; }
-    fi
-    printf '%s\n' "$body"
+        if body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
+            printf '%s\n' "$body"
+            return 0
+        fi
+        rm -f "$(scratch)/mesh-scraper.ready"
+    done
+    echo "backend: no scrape of $addr:$port" >&2
+    return 1
 }
 
 # The sum of the series matching the pattern in a scrape on stdin.

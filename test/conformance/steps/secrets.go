@@ -48,9 +48,9 @@ func registerSecrets(sc *godog.ScenarioContext) {
 	sc.Step(`^the operator has supplied a secret value at the secret path "([^"]*)"$`, operatorHasSupplied)
 	sc.Step(`^the operator supplies a secret value at the secret path "([^"]*)"$`, operatorSupplies)
 	sc.Step(`^the operator (?:replaces|has replaced) the secret value at the secret path "([^"]*)"$`, operatorReplaces)
-	sc.Step(`^no secret value is stored at the secret path "([^"]*)"$`, nothingStored)
-	sc.Step(`^the write is refused as unauthorized$`, writeUnauthorized)
-	sc.Step(`^the write is refused because the secret path already holds a value$`, writeConflict)
+	sc.Given(`^no secret value is stored at the secret path "([^"]*)"$`, nothingStoredGiven)
+	sc.Then(`^no secret value is stored at the secret path "([^"]*)"$`, nothingStoredThen)
+	sc.Step(`^the write is refused (as unauthorized|because the secret path already holds a value)$`, writeRefused)
 	sc.Step(`^the write result names the existing value as a workload's$`, writeNamesWorkload)
 	sc.Step(`^the write result carries no secret value$`, writeCarriesNoValue)
 	sc.Step(`^a caller holding an operator key the CDS does not hold supplies a secret value at the secret path "([^"]*)"$`, foreignSupplies)
@@ -115,8 +115,10 @@ const (
 	originWorkload    = "workload"
 	secretClientDir   = "/run/c8s/secrets"
 	annotationSecrets = "confidential.ai/c8s-secrets"
+	annotationCW      = "confidential.ai/cw"
 	annotationRenewal = "confidential.ai/c8s-renew-interval"
-	secretsRenewal    = "2h" // leaves the leaf a secrets scenario obtained in place
+	issuanceRenewal   = "10s" // below the CDS's named leaf TTL, so a renewal can be observed
+	secretsRenewal    = "2h"  // leaves the leaf a secrets scenario obtained in place
 )
 
 // secretsGrant is the entry's `secrets` member in the document's shape.
@@ -177,16 +179,26 @@ type pendingWrite struct {
 	token string
 }
 
-// selfSigned is a requester outside any pod: a key and a self-signed
+// outsideRequester is a requester outside any pod: a key and a self-signed
 // certificate carrying a sandbox ID.
 type outsideRequester struct {
 	certFile, keyFile string
 	last              *answer
 }
 
+// clientFile is a file of a secret client's output directory the scenario
+// read: whose, for which logical path, and what it held.
+type clientFile struct {
+	p       *pod
+	logical string
+	content []byte
+}
+
 // secretsState is the scenario's view of the secret store.
 type secretsState struct {
-	active bool // secretsScenario has run
+	// active: the scenario is tagged as being about secrets; its pods renew
+	// their leaf slowly, so the leaf they obtained is the one they hold.
+	active bool
 	// stored values by logical path, as the scenario supplied or generated
 	// them.
 	stored map[string][]byte
@@ -194,17 +206,8 @@ type secretsState struct {
 	signed *pendingWrite
 	served string // the served allowlist as last read without authentication
 	self   *outsideRequester
-	last   *pod // the pod whose request was the last
-}
-
-// secretsScenario marks the scenario as one about secrets: the pods it
-// deploys with a workload ID renew their leaf slowly, so the leaf a pod
-// obtained is still the one it holds when the scenario looks again.
-func (w *world) secretsScenario() {
-	if !w.secrets.active {
-		w.secrets.active = true
-		w.cwOpts = append(w.cwOpts, "--annotation", annotationRenewal+"="+secretsRenewal)
-	}
+	last   *pod        // the pod whose request was the last
+	file   *clientFile // the secret client file last read, which "that file" names
 }
 
 func (w *world) secretState(p *pod) *secretReq {
@@ -232,7 +235,6 @@ func (w *world) grantOf(name string) (*entry, *secretsGrant, error) {
 
 func grantAllows(ctx context.Context, name, action, p string) error {
 	w := getWorld(ctx)
-	w.secretsScenario()
 	_, g, err := w.grantOf(name)
 	if err != nil {
 		return err
@@ -247,7 +249,6 @@ func grantAllows(ctx context.Context, name, action, p string) error {
 
 func noGrant(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	w.secretsScenario()
 	e, err := w.entry(name)
 	if err != nil {
 		return err
@@ -380,12 +381,21 @@ func readCarriesNoValue(ctx context.Context) error {
 	if strings.Contains(w.secrets.served, `"value"`) {
 		return errors.New("the served allowlist carries a value member")
 	}
-	for p, v := range w.secrets.stored {
-		if strings.Contains(w.secrets.served, base64.StdEncoding.EncodeToString(v)) || bytes.Contains([]byte(w.secrets.served), v) {
-			return fmt.Errorf("the served allowlist carries the value stored at %s", p)
-		}
+	if p, ok := w.carriesStored([]byte(w.secrets.served)); ok {
+		return fmt.Errorf("the served allowlist carries the value stored at %s", p)
 	}
 	return nil
+}
+
+// carriesStored names the logical path of a stored value the body carries,
+// raw or base64, if any.
+func (w *world) carriesStored(body []byte) (string, bool) {
+	for p, v := range w.secrets.stored {
+		if bytes.Contains(body, []byte(base64.StdEncoding.EncodeToString(v))) || bytes.Contains(body, v) {
+			return p, true
+		}
+	}
+	return "", false
 }
 
 // --- Operator values ---
@@ -446,81 +456,72 @@ func (w *world) operatorPut(signer, logical string, value []byte, overwrite bool
 	return a, nil
 }
 
-func operatorHasSupplied(ctx context.Context, logical string) error {
-	w := getWorld(ctx)
-	w.secretsScenario()
+// supply writes a fresh value at the logical path with the signer's token
+// and records it as stored when the CDS took it.
+func (w *world) supply(signer, logical string, overwrite bool) (*answer, error) {
 	v, err := randomValue()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	a, err := w.operatorPut("operator", logical, v, false, "")
+	a, err := w.operatorPut(signer, logical, v, overwrite, "")
+	if err != nil {
+		return nil, err
+	}
+	if a.ok() {
+		w.secrets.stored[logical] = v
+	}
+	return a, nil
+}
+
+func operatorHasSupplied(ctx context.Context, logical string) error {
+	a, err := getWorld(ctx).supply("operator", logical, false)
 	if err != nil {
 		return err
 	}
 	if a.status != http.StatusCreated {
 		return fmt.Errorf("the operator's write of %s was answered %s", logical, a)
 	}
-	w.secrets.stored[logical] = v
 	return nil
 }
 
 func operatorSupplies(ctx context.Context, logical string) error {
-	w := getWorld(ctx)
-	v, err := randomValue()
-	if err != nil {
-		return err
-	}
-	a, err := w.operatorPut("operator", logical, v, false, "")
-	if err != nil {
-		return err
-	}
-	if a.status == http.StatusCreated {
-		w.secrets.stored[logical] = v
-	}
-	return nil
+	_, err := getWorld(ctx).supply("operator", logical, false)
+	return err
 }
 
 func operatorReplaces(ctx context.Context, logical string) error {
-	w := getWorld(ctx)
-	w.secretsScenario()
-	v, err := randomValue()
-	if err != nil {
-		return err
-	}
-	a, err := w.operatorPut("operator", logical, v, true, "")
+	a, err := getWorld(ctx).supply("operator", logical, true)
 	if err != nil {
 		return err
 	}
 	if !a.ok() {
 		return fmt.Errorf("the operator's replacement at %s was answered %s", logical, a)
 	}
-	w.secrets.stored[logical] = v
 	return nil
 }
 
-// nothingStored: as a Given, the scenario's own record is the fact, since
-// the paths are the scenario's alone; as a Then, the store is asked, by a
-// create that a held value refuses.
-func nothingStored(ctx context.Context, logical string) error {
+// nothingStoredGiven: the scenario's own record is the fact, since the paths
+// are the scenario's alone.
+func nothingStoredGiven(ctx context.Context, logical string) error {
 	w := getWorld(ctx)
 	if v, ok := w.secrets.stored[logical]; ok && v != nil {
 		return fmt.Errorf("the scenario stored a value at %s", logical)
 	}
-	if !w.outcome {
-		return nil
-	}
-	v, err := randomValue()
-	if err != nil {
+	return nil
+}
+
+// nothingStoredThen asks the store, by a create that a held value refuses.
+func nothingStoredThen(ctx context.Context, logical string) error {
+	if err := nothingStoredGiven(ctx, logical); err != nil {
 		return err
 	}
-	a, err := w.operatorPut("operator", logical, v, false, "")
+	a, err := getWorld(ctx).supply("operator", logical, false)
 	if err != nil {
 		return err
 	}
 	if a.status != http.StatusCreated {
 		return fmt.Errorf("a value is stored at %s: a create was answered %s", logical, a)
 	}
-	w.secrets.stored[logical] = v
 	return nil
 }
 
@@ -531,24 +532,17 @@ func (w *world) lastWrite() (*answer, error) {
 	return w.secrets.write, nil
 }
 
-func writeUnauthorized(ctx context.Context) error {
+func writeRefused(ctx context.Context, why string) error {
 	a, err := getWorld(ctx).lastWrite()
 	if err != nil {
 		return err
 	}
-	if a.status != http.StatusUnauthorized {
-		return fmt.Errorf("the write was answered %s, not 401", a)
+	want := http.StatusUnauthorized
+	if why != "as unauthorized" {
+		want = http.StatusConflict
 	}
-	return nil
-}
-
-func writeConflict(ctx context.Context) error {
-	a, err := getWorld(ctx).lastWrite()
-	if err != nil {
-		return err
-	}
-	if a.status != http.StatusConflict {
-		return fmt.Errorf("the write was answered %s, not 409", a)
+	if a.status != want {
+		return fmt.Errorf("the write was answered %s, not %d", a, want)
 	}
 	return nil
 }
@@ -579,21 +573,14 @@ func writeCarriesNoValue(ctx context.Context) error {
 	if _, has := a.value(); has || bytes.Contains(a.body, []byte(`"value"`)) {
 		return fmt.Errorf("the write result carries a value: %s", a)
 	}
-	for p, v := range w.secrets.stored {
-		if bytes.Contains(a.body, []byte(base64.StdEncoding.EncodeToString(v))) || bytes.Contains(a.body, v) {
-			return fmt.Errorf("the write result carries the value stored at %s", p)
-		}
+	if p, ok := w.carriesStored(a.body); ok {
+		return fmt.Errorf("the write result carries the value stored at %s", p)
 	}
 	return nil
 }
 
 func foreignSupplies(ctx context.Context, logical string) error {
-	w := getWorld(ctx)
-	v, err := randomValue()
-	if err != nil {
-		return err
-	}
-	_, err = w.operatorPut("foreign", logical, v, false, "")
+	_, err := getWorld(ctx).supply("foreign", logical, false)
 	return err
 }
 
@@ -643,8 +630,14 @@ func (w *world) signedWrite() (*pendingWrite, error) {
 	return w.secrets.signed, nil
 }
 
-func (w *world) sendSigned(route string, body []byte) error {
+// sendSigned sends the signed write's token with the route and body given,
+// which fn derives from the write.
+func (w *world) sendSigned(fn func(*pendingWrite) (route string, body []byte, err error)) error {
 	signed, err := w.signedWrite()
+	if err != nil {
+		return err
+	}
+	route, body, err := fn(signed)
 	if err != nil {
 		return err
 	}
@@ -658,33 +651,20 @@ func (w *world) sendSigned(route string, body []byte) error {
 
 func sendsTokenToOtherPath(ctx context.Context, logical string) error {
 	w := getWorld(ctx)
-	signed, err := w.signedWrite()
-	if err != nil {
-		return err
-	}
-	return w.sendSigned(secretsRoute+w.secretPath(logical), signed.body)
+	return w.sendSigned(func(s *pendingWrite) (string, []byte, error) {
+		return secretsRoute + w.secretPath(logical), s.body, nil
+	})
 }
 
 func sendsTokenWithOtherValue(ctx context.Context) error {
-	w := getWorld(ctx)
-	signed, err := w.signedWrite()
-	if err != nil {
-		return err
-	}
-	v, err := randomValue()
-	if err != nil {
-		return err
-	}
-	return w.sendSigned(signed.path, putBody(v, false))
+	return getWorld(ctx).sendSigned(func(s *pendingWrite) (string, []byte, error) {
+		v, err := randomValue()
+		return s.path, putBody(v, false), err
+	})
 }
 
 func sendsTokenAsSigned(ctx context.Context) error {
-	w := getWorld(ctx)
-	signed, err := w.signedWrite()
-	if err != nil {
-		return err
-	}
-	return w.sendSigned(signed.path, signed.body)
+	return getWorld(ctx).sendSigned(func(s *pendingWrite) (string, []byte, error) { return s.path, s.body, nil })
 }
 
 func operatorDeletes(ctx context.Context, logical string) error {
@@ -720,7 +700,6 @@ func secretFile(logical string) string { return path.Base(logical) }
 
 func secretClientConfigured(ctx context.Context, name, logical string) error {
 	w := getWorld(ctx)
-	w.secretsScenario()
 	p, err := w.undeployed(name)
 	if err != nil {
 		return err
@@ -756,27 +735,18 @@ func initContainerState(ctx context.Context, name, state string) error {
 	if p.init == nil {
 		return fmt.Errorf("%q has no init container", name)
 	}
+	// The init container's state, a one-member object keyed running,
+	// terminated or waiting; empty until the object is there.
 	var seen string
 	ok, err := poll(observe, func() (bool, error) {
-		doc, err := w.podJSON(p)
+		out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", `jsonpath={.status.initContainerStatuses[?(@.name=="i1")].state}`)
 		if err != nil {
 			return false, nil // the object may not be there yet
 		}
-		status, _ := doc["status"].(map[string]any)
-		list, _ := status["initContainerStatuses"].([]any)
-		for _, item := range list {
-			st, _ := item.(map[string]any)
-			if st["name"] != "i1" {
-				continue
-			}
-			s, _ := st["state"].(map[string]any)
-			switch {
-			case s["running"] != nil:
-				seen = "running"
-			case s["terminated"] != nil:
-				seen = "terminated"
-			default:
-				seen = "waiting"
+		seen = "waiting"
+		for _, key := range []string{"running", "terminated"} {
+			if strings.Contains(out, `"`+key+`"`) {
+				seen = key
 			}
 		}
 		if state == "is running" {
@@ -1393,21 +1363,22 @@ func hasFilledQuota(ctx context.Context, name, below, holder string) error {
 	return nil
 }
 
-func (w *world) lastOf(name string) (*pod, *secretReq, *answer, error) {
+// lastOf is the record of the pod's requests, which holds at least one.
+func (w *world) lastOf(name string) (*secretReq, error) {
 	p, err := w.pod(name)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	s := w.secretState(p)
 	if s.last == nil {
-		return nil, nil, nil, fmt.Errorf("%q has sent no secret request", name)
+		return nil, fmt.Errorf("%q has sent no secret request", name)
 	}
-	return p, s, s.last, nil
+	return s, nil
 }
 
 func receivesStoredValue(ctx context.Context, name string) error {
 	w := getWorld(ctx)
-	_, s, _, err := w.lastOf(name)
+	s, err := w.lastOf(name)
 	if err != nil {
 		return err
 	}
@@ -1415,15 +1386,11 @@ func receivesStoredValue(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("the scenario stored no value at %s", s.lastPath)
 	}
-	return w.expectValue(name, want, "the one stored at "+s.lastPath)
+	return expectValue(name, s.last, want, "the one stored at "+s.lastPath)
 }
 
-// expectValue checks the pod's last answer carried want, described as source.
-func (w *world) expectValue(name string, want []byte, source string) error {
-	_, _, a, err := w.lastOf(name)
-	if err != nil {
-		return err
-	}
+// expectValue checks the pod's answer carried want, described as source.
+func expectValue(name string, a *answer, want []byte, source string) error {
 	got, has := a.value()
 	if a.status != http.StatusOK || !has {
 		return fmt.Errorf("%q was answered %s, not %s", name, a, source)
@@ -1435,66 +1402,69 @@ func (w *world) expectValue(name string, want []byte, source string) error {
 }
 
 func receivesAValue(ctx context.Context, name string) error {
-	_, _, a, err := getWorld(ctx).lastOf(name)
+	s, err := getWorld(ctx).lastOf(name)
 	if err != nil {
 		return err
 	}
-	if _, has := a.value(); !a.ok() || !has {
-		return fmt.Errorf("%q was answered %s, no value", name, a)
+	if _, has := s.last.value(); !s.last.ok() || !has {
+		return fmt.Errorf("%q was answered %s, no value", name, s.last)
 	}
 	return nil
 }
 
 func receivesNoValue(ctx context.Context, name string) error {
-	_, _, a, err := getWorld(ctx).lastOf(name)
+	s, err := getWorld(ctx).lastOf(name)
 	if err != nil {
 		return err
 	}
-	if _, has := a.value(); has && a.ok() {
-		return fmt.Errorf("%q received a value: %s", name, a)
+	if _, has := s.last.value(); has && s.last.ok() {
+		return fmt.Errorf("%q received a value: %s", name, s.last)
 	}
 	return nil
 }
 
-func (w *world) answered(name string, status int, message string) error {
-	_, _, a, err := w.lastOf(name)
+func (w *world) answered(name string, status int, message string) (*answer, error) {
+	s, err := w.lastOf(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	a := s.last
 	if a.status != status {
-		return fmt.Errorf("the CDS answered %q %s, not %d %s", name, a, status, message)
+		return nil, fmt.Errorf("the CDS answered %q %s, not %d %s", name, a, status, message)
 	}
 	if message != "" && !bytes.Contains(a.body, []byte(message)) {
-		return fmt.Errorf("the CDS answered %q %d without %q: %s", name, status, message, a.body)
+		return nil, fmt.Errorf("the CDS answered %q %d without %q: %s", name, status, message, a.body)
 	}
-	return nil
+	return a, nil
 }
 
 func answersNotAuthorized(ctx context.Context, name string) error {
-	return getWorld(ctx).answered(name, http.StatusForbidden, msgNotAuthorized)
+	_, err := getWorld(ctx).answered(name, http.StatusForbidden, msgNotAuthorized)
+	return err
 }
 
 func answersNoSuchSecret(ctx context.Context, name string) error {
-	return getWorld(ctx).answered(name, http.StatusNotFound, msgNoSuchSecret)
+	_, err := getWorld(ctx).answered(name, http.StatusNotFound, msgNoSuchSecret)
+	return err
 }
 
 func answersInvalid(ctx context.Context, name string) error {
-	return getWorld(ctx).answered(name, http.StatusBadRequest, "")
+	_, err := getWorld(ctx).answered(name, http.StatusBadRequest, "")
+	return err
 }
 
 func answersExists(ctx context.Context, name string) error {
-	if err := getWorld(ctx).answered(name, http.StatusConflict, ""); err != nil {
+	if _, err := getWorld(ctx).answered(name, http.StatusConflict, ""); err != nil {
 		return err
 	}
 	return receivesNoValue(ctx, name)
 }
 
 func answersQuota(ctx context.Context, name string) error {
-	w := getWorld(ctx)
-	if err := w.answered(name, http.StatusInsufficientStorage, msgQuota); err != nil {
+	a, err := getWorld(ctx).answered(name, http.StatusInsufficientStorage, msgQuota)
+	if err != nil {
 		return err
 	}
-	_, _, a, _ := w.lastOf(name)
 	var doc struct {
 		Code string `json:"error"`
 	}
@@ -1564,7 +1534,9 @@ func valueDiffersFromBefore(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if p.name != name && !strings.HasPrefix(p.name, name) {
+	if named, err := w.pod(name); err != nil {
+		return err
+	} else if named != p {
 		return fmt.Errorf("the last answer was %q's, not %q's", p.name, name)
 	}
 	before, ok := p.secret.previous[p.secret.lastPath]
@@ -1587,12 +1559,15 @@ func receivesHeldValue(ctx context.Context, name, other, logical string) error {
 	if !ok {
 		return fmt.Errorf("%q holds no value for %s", other, logical)
 	}
-	return w.expectValue(name, held, fmt.Sprintf("the one %q holds for %s", other, logical))
+	s, err := w.lastOf(name)
+	if err != nil {
+		return err
+	}
+	return expectValue(name, s.last, held, fmt.Sprintf("the one %q holds for %s", other, logical))
 }
 
 func sameAnswerAs(ctx context.Context, name, logical string) error {
-	w := getWorld(ctx)
-	_, s, a, err := w.lastOf(name)
+	s, err := getWorld(ctx).lastOf(name)
 	if err != nil {
 		return err
 	}
@@ -1600,8 +1575,8 @@ func sameAnswerAs(ctx context.Context, name, logical string) error {
 	if !ok {
 		return fmt.Errorf("%q received no answer for %s", name, logical)
 	}
-	if earlier.status != a.status || !bytes.Equal(earlier.body, a.body) {
-		return fmt.Errorf("the answers differ: %s for %s, %s now", earlier, logical, a)
+	if earlier.status != s.last.status || !bytes.Equal(earlier.body, s.last.body) {
+		return fmt.Errorf("the answers differ: %s for %s, %s now", earlier, logical, s.last)
 	}
 	return nil
 }
@@ -1649,7 +1624,6 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 	if err != nil {
 		return err
 	}
-	s := w.secretState(p)
 	var content []byte
 	ok, err := poll(observe, func() (bool, error) {
 		content, err = w.readSecretFile(p, logical)
@@ -1662,24 +1636,23 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 		log, _ := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", "c8s-secret")
 		return fmt.Errorf("%q has no file for %s after %s; its secret client logged: %s", name, logical, observe, tail(log, 5))
 	}
-	s.files[logical] = content
-	w.secrets.last = p
-	s.lastPath = logical
+	w.secretState(p).files[logical] = content
+	w.secrets.file = &clientFile{p: p, logical: logical, content: content}
 	return nil
 }
 
 func fileHoldsSupplied(ctx context.Context) error {
 	w := getWorld(ctx)
-	p := w.secrets.last
-	if p == nil || p.secret == nil || p.secret.files[p.secret.lastPath] == nil {
+	f := w.secrets.file
+	if f == nil {
 		return errors.New("no file of a secret client has been read")
 	}
-	want, ok := w.secrets.stored[p.secret.lastPath]
+	want, ok := w.secrets.stored[f.logical]
 	if !ok {
-		return fmt.Errorf("the operator supplied no value at %s", p.secret.lastPath)
+		return fmt.Errorf("the operator supplied no value at %s", f.logical)
 	}
-	if !bytes.Equal(p.secret.files[p.secret.lastPath], want) {
-		return fmt.Errorf("the file of %q for %s holds other bytes than the operator supplied", p.name, p.secret.lastPath)
+	if !bytes.Equal(f.content, want) {
+		return fmt.Errorf("the file of %q for %s holds other bytes than the operator supplied", f.p.name, f.logical)
 	}
 	return nil
 }

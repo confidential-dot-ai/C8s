@@ -11,7 +11,13 @@ import (
 // poll calls fn once a second until it reports done or timeout has passed,
 // and says whether it got there; fn's error ends the wait.
 func poll(timeout time.Duration, fn func() (bool, error)) (bool, error) {
-	for deadline := time.Now().Add(timeout); ; time.Sleep(time.Second) {
+	return pollEvery(time.Second, timeout, fn)
+}
+
+// pollEvery is poll at a cadence of its own, for a condition that moves on a
+// slower tick than a second.
+func pollEvery(every, timeout time.Duration, fn func() (bool, error)) (bool, error) {
+	for deadline := time.Now().Add(timeout); ; time.Sleep(every) {
 		done, err := fn()
 		if err != nil || done {
 			return done, err

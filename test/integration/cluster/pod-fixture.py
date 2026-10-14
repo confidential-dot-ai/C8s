@@ -102,10 +102,6 @@ def main():
         pod["spec"]["securityContext"]["supplementalGroups"] = [args.supplemental_group]
     if args.add_capability:
         container["securityContext"]["capabilities"]["add"] = args.add_capability
-    if args.sysctl:
-        pod["spec"]["securityContext"]["sysctls"] = [
-            {"name": name, "value": value} for name, value in (s.split("=", 1) for s in args.sysctl)
-        ]
     if args.host_network:
         pod["spec"]["hostNetwork"] = True
     if args.run_as_user is not None:
@@ -133,6 +129,12 @@ def main():
         container["volumeMounts"] = [{"name": "data", "mountPath": "/data"}]
         pod["spec"]["volumes"] = [
             {"name": "data", "persistentVolumeClaim": {"claimName": args.name}}
+        ]
+    # kubelet refuses every net.* sysctl for a pod in the node's network namespace.
+    sysctls = [s for s in args.sysctl if not (pod["spec"].get("hostNetwork") and s.startswith("net."))]
+    if sysctls:
+        pod["spec"]["securityContext"]["sysctls"] = [
+            {"name": name, "value": value} for name, value in (s.split("=", 1) for s in sysctls)
         ]
     print(json.dumps(pod))
 

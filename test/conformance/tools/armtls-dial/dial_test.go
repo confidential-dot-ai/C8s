@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -84,8 +85,8 @@ func TestDialRejectedCertificate(t *testing.T) {
 		func(net.Conn) { t.Error("handler ran after a rejected certificate") })
 
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
-	if !r.TLS || r.Handshake || r.Bytes != 0 || r.Status != 0 || r.Body != "" {
-		t.Fatalf("report = %+v, want tls true, handshake false and nothing received", r)
+	if !r.TLS || r.Bytes != 0 || r.Status != 0 || r.Body != "" {
+		t.Fatalf("report = %+v, want tls true and nothing received", r)
 	}
 	if !strings.Contains(r.Error, "bad certificate") {
 		t.Fatalf("error = %q, want the server's bad certificate alert", r.Error)
@@ -111,7 +112,7 @@ func TestDialAccepted(t *testing.T) {
 	})
 
 	r := dial(context.Background(), addr, dest, testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
-	if !r.Handshake || r.Error != "" || r.Status != 200 || r.Body != "hello" || r.Bytes == 0 {
+	if r.Error != "" || r.Status != 200 || r.Body != "hello" || r.Bytes == 0 {
 		t.Fatalf("report = %+v", r)
 	}
 }
@@ -119,8 +120,8 @@ func TestDialAccepted(t *testing.T) {
 func TestDialClosedWithoutBytes(t *testing.T) {
 	addr := serve(t, nil, func(net.Conn) {})
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
-	if !r.TLS || r.Handshake || r.Bytes != 0 || r.Error != "EOF" {
-		t.Fatalf("report = %+v, want tls true, handshake false with EOF", r)
+	if !r.TLS || r.Bytes != 0 || r.Error != "EOF" {
+		t.Fatalf("report = %+v, want tls true and EOF before any byte", r)
 	}
 }
 
@@ -130,7 +131,7 @@ func TestDialNonHTTPReply(t *testing.T) {
 		conn.Write(bytes.Repeat([]byte("x"), 2*maxBody))
 	})
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), 5*time.Second)
-	if !r.Handshake || r.Status != 0 || r.Bytes != 2*maxBody || len(r.Body) != maxBody {
+	if r.Status != 0 || r.Bytes != 2*maxBody || len(r.Body) != maxBody {
 		t.Fatalf("report = %+v (body %d bytes)", r, len(r.Body))
 	}
 }
@@ -143,7 +144,7 @@ func TestDialUnreachable(t *testing.T) {
 	addr := ln.Addr().String()
 	ln.Close()
 	r := dial(context.Background(), addr, "10.0.0.2:80", testCert(t, certOptions{notAfter: time.Hour}), time.Second)
-	if r.TLS || r.Handshake || r.Error == "" {
+	if r.TLS || r.Bytes != 0 || r.Error == "" {
 		t.Fatalf("report = %+v", r)
 	}
 }
@@ -208,7 +209,10 @@ func TestRunReport(t *testing.T) {
 		func(net.Conn) {})
 	dir := t.TempDir()
 	cert := testCert(t, certOptions{notAfter: time.Hour})
-	certFile, keyFile := writeKeyPair(t, dir, cert)
+	certFile, keyFile := filepath.Join(dir, "tls.crt"), filepath.Join(dir, "tls.key")
+	if err := writePEM(cert, certFile, keyFile); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout, stderr bytes.Buffer
 	code := run([]string{"--cert", certFile, "--key", keyFile, "--rewrite-not-after", "-1h", addr, "10.0.0.2:80"}, &stdout, &stderr)
@@ -219,7 +223,7 @@ func TestRunReport(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &r); err != nil || strings.Count(stdout.String(), "\n") != 1 {
 		t.Fatalf("stdout %q is not one JSON line: %v", stdout.String(), err)
 	}
-	if r.Handshake || !strings.Contains(r.Error, "bad certificate") {
+	if r.Bytes != 0 || !strings.Contains(r.Error, "bad certificate") {
 		t.Fatalf("report = %+v", r)
 	}
 }

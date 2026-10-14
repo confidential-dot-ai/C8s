@@ -147,9 +147,9 @@ exec'd by the steps in the pod's certificate container (below); the secret
 client's files are read through the pod's first container. Secret paths are
 logical: a scenario's `/models/key` lives under a per-scenario prefix, since
 the store has no delete and outlives the scenario. A pod carrying a workload
-ID that a secrets scenario deploys renews its leaf every two hours rather than
-the issuance scenarios' thirty seconds, so the leaf it obtained stays the one
-it holds.
+ID that a secrets scenario (one tagged `@area:secrets`) deploys renews its
+leaf every two hours rather than the ten seconds an issuance scenario's pod
+does, so the leaf it obtained stays the one it holds.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and the exit status that means "this
