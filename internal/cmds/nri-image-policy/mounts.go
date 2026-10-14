@@ -199,13 +199,17 @@ func cutTwoOrMore(s string) (string, string, bool) {
 // mounts made later.
 func (o mountObserver) observeHostMount(m *api.Mount) allowlist.ObservedMount {
 	mount := observed(m, allowlist.MountHost, allowlist.MountUnknown)
-	readOnly, recursiveReadOnly, recursiveBind, propagated := false, false, false, false
+	readOnly, recursiveReadOnly, recursiveWritable, recursiveBind, propagated := false, false, false, false, false
 	for _, option := range m.GetOptions() {
 		switch option {
 		case "ro":
 			readOnly, recursiveReadOnly = true, false
-		case "rw", "rrw":
+		case "rw":
 			readOnly, recursiveReadOnly = false, false
+		case "rrw":
+			// runc applies the recursive attribute after the ro remount, so a
+			// later ro does not undo it.
+			readOnly, recursiveReadOnly, recursiveWritable = false, false, true
 		case "rro":
 			readOnly, recursiveReadOnly = true, true
 		case "rbind":
@@ -216,7 +220,7 @@ func (o mountObserver) observeHostMount(m *api.Mount) allowlist.ObservedMount {
 			propagated = false
 		}
 	}
-	mount.ReadOnly = readOnly && !propagated && (recursiveReadOnly || !recursiveBind || o.storage.NoMountsBelow(m.GetSource()))
+	mount.ReadOnly = readOnly && !recursiveWritable && !propagated && (recursiveReadOnly || !recursiveBind || o.storage.NoMountsBelow(m.GetSource()))
 	digest, err := allowlist.HostSourceDigest(m.GetSource())
 	if err != nil {
 		return mount

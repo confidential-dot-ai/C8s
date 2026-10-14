@@ -94,7 +94,8 @@ apply. The local-path helper pins its executable and leaves args open like a
 component entry, so it takes `mounts: confined`: busybox's binaries and loader
 are denied below, and its two mounts, the writable node path
 (`rke2.localPathHelper.dataDir`) and the `/script` ConfigMap, are `unconfined`.
-The scripts it runs still come from that ConfigMap. The pause and `plugin-ready` containers have no workload mounts and
+The scripts it runs still come from that ConfigMap, so any pod using the
+helper digest can supply its own `/script` and run arbitrary shell. The pause and `plugin-ready` containers have no workload mounts and
 retain the default `deny` policy. `plugin-ready` runs under `/bin/sh -c`
 because `c8s uninstall` takes the entry's one non-script shape as its sweep
 pause. Operator-supplied workload policies are preserved as authored.

@@ -75,6 +75,8 @@ func TestConfinedMountPolicyAdmits(t *testing.T) {
 		{"platform mount nested in a volume", []ObservedMount{memory("/etcx"), {Destination: "/etcx/hosts", Class: MountPlatform}}, false},
 		{"volume nested in a platform mount", []ObservedMount{{Destination: "/var/run/secrets/kubernetes.io/serviceaccount", Class: MountPlatform}, memory("/var/run/secrets/kubernetes.io/serviceaccount/x")}, true},
 		{"sibling volumes", []ObservedMount{memory("/h"), memory("/h2")}, true},
+		{"platform mounts nested in an unconfined host volume", []ObservedMount{{Destination: "/data", Class: MountHost}, {Destination: "/data/shm", Class: MountPlatform}}, true},
+		{"volume nested in /dev/shm", []ObservedMount{{Destination: "/dev/shm", Class: MountPlatform}, memory("/dev/shm/x")}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := policy.admits(tc.mounts); got != tc.want {

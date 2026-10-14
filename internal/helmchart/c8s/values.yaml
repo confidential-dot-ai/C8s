@@ -41,12 +41,14 @@ c8sComponents:
     enabledPath: ""
     cdsExempt: false
     entrypoint: ["/c8s"]
-    denyBelow: [/c8s, /etc/ssl]
+    # Subcommands exec helpers by name (mkfs.erofs, ipset, cryptsetup), so
+    # the PATH directories are denied as well.
+    denyBelow: [/c8s, /etc/ssl, /usr, /bin, /sbin]
   - valuePath: cds.image
     enabledPath: ""
     cdsExempt: true
     entrypoint: ["/c8s", "cds"]
-    denyBelow: [/c8s, /etc/ssl]
+    denyBelow: [/c8s, /etc/ssl, /usr, /bin, /sbin]
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     cdsExempt: false

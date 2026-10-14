@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -48,6 +49,10 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 		}
 		out = append(out, mount)
 	}
+	// What the kubelet and containerd add to every container.
+	for _, destination := range []string{"/etc/hosts", "/etc/hostname", "/etc/resolv.conf", "/dev/shm", "/dev/termination-log"} {
+		out = append(out, pkgallowlist.ObservedMount{Destination: destination, Class: pkgallowlist.MountPlatform})
+	}
 	return out
 }
 
@@ -55,7 +60,21 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 // image adds (node config, inventory socket); the seed it measures must admit
 // each of them.
 func TestChartBakedComponentMountsPassTheirPolicy(t *testing.T) {
-	out, err := helmTemplate(t, bakedArgs...)
+	checkComponentMounts(t, bakedArgs)
+}
+
+// Off a baked node volumed runs as a DaemonSet, with the host's /dev at /dev.
+func TestChartVolumedDaemonSetMountsPassTheirPolicy(t *testing.T) {
+	args := slices.Clone(bakedArgs)
+	args[slices.Index(args, "node.baked=true")] = "node.baked=false"
+	checkComponentMounts(t, append(args,
+		"--set", "volumed.enabled=true",
+		"--set", "volumed.image.digest=sha256:"+strings.Repeat("3", 64)))
+}
+
+func checkComponentMounts(t *testing.T, args []string) {
+	t.Helper()
+	out, err := helmTemplate(t, args...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -90,7 +109,7 @@ func TestChartBakedComponentMountsPassTheirPolicy(t *testing.T) {
 		}
 	}
 	if checked == 0 {
-		t.Fatal("no baked component container was checked")
+		t.Fatal("no component container was checked")
 	}
 }
 

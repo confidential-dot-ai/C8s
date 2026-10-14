@@ -63,10 +63,10 @@ func normalizePaths(field string, paths []string) ([]string, error) {
 // admitsConfined checks a confined policy against classified mount evidence.
 // Unavailable evidence fails closed, as under exact.
 //
-// No mount may sit at or below another mount's non-platform destination: the
-// runtime follows symlinks inside earlier volumes when it creates a later
-// mount, so a volume holding a symlink to a denyBelow path would carry the
-// nested mount there.
+// No mount may sit at or below another mount it could be carried through
+// (nestedIn): the runtime follows symlinks inside earlier volumes when it
+// creates a later mount, so a volume holding a symlink to a denyBelow path
+// would carry the nested mount there.
 func (p MountPolicy) admitsConfined(mounts []ObservedMount) bool {
 	if mounts == nil {
 		return false
@@ -77,7 +77,7 @@ func (p MountPolicy) admitsConfined(mounts []ObservedMount) bool {
 		}
 		destination := path.Clean(m.Destination)
 		for j, other := range mounts {
-			if j != i && other.Class != MountPlatform && within(destination, path.Clean(other.Destination)) {
+			if j != i && nestedIn(m, other) && within(destination, path.Clean(other.Destination)) {
 				return false
 			}
 		}
@@ -90,6 +90,21 @@ func (p MountPolicy) admitsConfined(mounts []ObservedMount) bool {
 		if !m.Confined() && !slices.Contains(p.Unconfined, destination) {
 			return false
 		}
+	}
+	return true
+}
+
+// nestedIn reports whether m, created inside other, could be carried elsewhere
+// by a symlink in other. A pod volume can hold one, and so can /dev/shm, which
+// every container in the pod writes. A node-created mount inside a host volume
+// follows the node's own layout: volumed mounts the host's /dev at /dev, and
+// the runtime still adds /dev/shm and /dev/termination-log there.
+func nestedIn(m, other ObservedMount) bool {
+	switch {
+	case other.Class == MountPlatform:
+		return path.Clean(other.Destination) == "/dev/shm"
+	case m.Class == MountPlatform:
+		return other.Class != MountHost
 	}
 	return true
 }

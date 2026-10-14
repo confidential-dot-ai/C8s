@@ -133,6 +133,7 @@ func TestHostMountSourceAndAccess(t *testing.T) {
 		{"last read-only", "/etc/service", []string{"rw", "ro"}, false, true, true},
 		{"last writable", "/etc/service", []string{"ro", "rw"}, false, false, true},
 		{"recursive writable", "/etc/service", []string{"ro", "rrw"}, false, false, true},
+		{"recursive writable before read-only", "/etc/service", []string{"rbind", "rrw", "ro"}, false, false, true},
 		{"recursive read-only", "/etc/service", []string{"rbind", "rro"}, true, true, true},
 		{"read-only recursive bind over nested mounts", "/var/lib/kubelet", []string{"rbind", "ro"}, true, false, true},
 		{"read-only plain bind over nested mounts", "/var/lib/kubelet", []string{"bind", "ro"}, true, true, true},

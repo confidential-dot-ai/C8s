@@ -305,7 +305,7 @@
 {{- if or (not (isAbs $dataDir)) (ne (clean $dataDir) $dataDir) -}}
 {{- fail (printf "rke2.localPathHelper.dataDir %q is not a clean absolute path" $dataDir) -}}
 {{- end -}}
-{{- $mounts := dict "policy" "confined" "denyBelow" (list "/bin" "/lib" "/lib64" "/etc/ld.so.preload" "/etc/ld.so.cache" "/etc/ld.so.conf" "/etc/ld.so.conf.d") "unconfined" (list "/script" $dataDir) -}}
+{{- $mounts := dict "policy" "confined" "denyBelow" (list "/bin" "/sbin" "/usr" "/lib" "/lib64" "/etc/ld.so.preload" "/etc/ld.so.cache" "/etc/ld.so.conf" "/etc/ld.so.conf.d") "unconfined" (list "/script" $dataDir) -}}
 {{- range $path := list "/script/setup" "/script/teardown" -}}
 {{- $containers = append $containers (dict "digest" $img.digest "image" $ref "mounts" $mounts "command" (dict "policy" "exact" "argv" (list "/bin/sh" $path)) "args" (dict "policy" "any")) -}}
 {{- end -}}
