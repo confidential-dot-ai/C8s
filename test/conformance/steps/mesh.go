@@ -414,6 +414,27 @@ func podRunning(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("%q is %s without a pod address after 2 minutes", name, phase)
 	}
+	return w.helloListening(p)
+}
+
+// helloListening waits until each hello API the pod serves answers on its
+// loopback: Running says the container started, not that it listens.
+func (w *world) helloListening(p *pod) error {
+	for _, port := range p.hello {
+		var last string
+		ok, _ := poll(30*time.Second, func() (bool, error) {
+			r, err := w.exec(p, fmt.Sprintf("wget -qO- -T 2 http://127.0.0.1:%d/ 2>&1", port))
+			if err != nil {
+				last = err.Error()
+				return false, nil
+			}
+			last = r.out
+			return r.rc == 0, nil
+		})
+		if !ok {
+			return fmt.Errorf("the hello API of %q on port %d did not answer within 30s:\n%s", p.name, port, last)
+		}
+	}
 	return nil
 }
 
@@ -1023,7 +1044,7 @@ func (w *world) dial(src, node, dest string, second bool) error {
 		if args, err = w.mintFlags(append(args, cert.mintArgs()...)); err != nil {
 			return err
 		}
-	case p.leaf != nil:
+	case p.workloadID:
 		certFile, keyFile, err := w.certPaths()
 		if err != nil {
 			return err
