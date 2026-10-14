@@ -147,7 +147,7 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	ns := w.nsOf(p)
+	ns := p.namespace
 	var args []string
 	if p.workloadID {
 		args = append(args, w.cwOpts...)
@@ -196,7 +196,7 @@ type containerStatus struct {
 // it), the denial reason the create check returned, if any, and its running
 // state in one call. A pull failure or a crash is not a denial.
 func (w *world) statuses(p *pod) []containerStatus {
-	out, _ := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "json")
+	out, _ := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
 		Status struct {
 			ContainerStatuses []struct {

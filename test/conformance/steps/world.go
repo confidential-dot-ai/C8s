@@ -68,9 +68,10 @@ type pod struct {
 	renewed    bool
 	refusal    *refusal
 	// How the mesh sentences shape the pod: the ports its hello APIs and
-	// datagram listener use, pod_manifest options, a namespace other than
-	// the scenario's, the certificate a dialer in it presents, whether the
-	// dialer is in it yet, and its addresses once running.
+	// datagram listener use, pod_manifest options, its namespace (the
+	// scenario's unless a sentence moves it), the certificate a dialer in it
+	// presents, whether the dialer is in it yet, and its addresses once
+	// running.
 	hello     []int
 	datagram  int
 	listener  string // the container whose log shows the datagrams received
@@ -179,7 +180,7 @@ func (w *world) runUndo() error {
 // reference; it becomes the last pod. A scenario that says nothing about the
 // argv gets one that keeps the container alive.
 func (w *world) describe(name string, refs ...string) *pod {
-	p := &pod{name: name}
+	p := &pod{name: name, namespace: w.namespace}
 	for _, ref := range refs {
 		p.containers = append(p.containers, &container{ref: ref, command: []string{"sleep", "3600"}})
 	}

@@ -290,7 +290,7 @@ func (w *world) elsewhere(p *pod, fn string) error {
 	if err != nil {
 		return err
 	}
-	if p.namespace != "" && p.namespace != ns {
+	if p.namespace != w.namespace && p.namespace != ns {
 		return fmt.Errorf("%q is already placed in namespace %q", p.name, p.namespace)
 	}
 	p.namespace = ns
@@ -380,16 +380,8 @@ func mayBind53(ctx context.Context, name string) error {
 
 // --- Pods running, membership, addresses ---
 
-// nsOf is the namespace the pod lives in.
-func (w *world) nsOf(p *pod) string {
-	if p.namespace != "" {
-		return p.namespace
-	}
-	return w.namespace
-}
-
 func (w *world) podJSON(p *pod) (map[string]any, error) {
-	out, err := kubectl(nil, "-n", w.nsOf(p), "get", "pod", p.name, "-o", "json")
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	if err != nil {
 		return nil, err
 	}
@@ -762,8 +754,8 @@ func ghostPod(ctx context.Context, name, node string) error {
 		}
 		w.mesh.ghostNode = k8sNode
 	}
-	p := &pod{name: name, containers: []*container{{ref: refs[0], command: []string{"sleep", "3600"}}}}
-	manifest, err := w.be.call("pod_manifest", "--", p.name, w.namespace, ghostNode, refs[0], "sleep", "3600")
+	p := &pod{name: name, namespace: w.namespace, containers: []*container{{ref: refs[0], command: []string{"sleep", "3600"}}}}
+	manifest, err := w.be.call("pod_manifest", "--", p.name, p.namespace, ghostNode, refs[0], "sleep", "3600")
 	if err != nil {
 		return err
 	}
@@ -804,7 +796,7 @@ func ghostAddress(ctx context.Context, name string) error {
 		}
 	}
 	status := fmt.Sprintf(`{"status":{"phase":"Running","podIP":%q,"podIPs":[{"ip":%q}],"hostIP":"203.0.113.9"}}`, ip, ip)
-	if _, err := kubectl(nil, "-n", w.namespace, "patch", "pod", p.name, "--subresource=status", "--type=merge", "-p", status); err != nil {
+	if _, err := kubectl(nil, "-n", p.namespace, "patch", "pod", p.name, "--subresource=status", "--type=merge", "-p", status); err != nil {
 		return err
 	}
 	p.addrs = []string{ip.String()}
@@ -819,7 +811,7 @@ func ghostAddress(ctx context.Context, name string) error {
 // printed and its exit status, which a failing command does not turn into
 // an error here.
 func (w *world) exec(p *pod, script string) (*execResult, error) {
-	out, err := kubectl(nil, "-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--", "sh", "-c", script+"; echo \"rc=$?\"")
+	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "sh", "-c", script+"; echo \"rc=$?\"")
 	if err != nil {
 		return nil, err
 	}
@@ -1172,12 +1164,12 @@ func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if _, err := kubectl(nil, "cp", bin, w.nsOf(p)+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
+		if _, err := kubectl(nil, "cp", bin, p.namespace+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
 			return "", err
 		}
 		p.dialer = true
 	}
-	return kubectl(nil, append([]string{"-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--", dialerPath}, args...)...)
+	return kubectl(nil, append([]string{"-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", dialerPath}, args...)...)
 }
 
 // --- Outcomes ---
@@ -1254,7 +1246,7 @@ func (w *world) listenerLog(p *pod) (string, error) {
 	if p.listener == "" {
 		return "", fmt.Errorf("%q receives no datagrams", p.name)
 	}
-	return kubectl(nil, "-n", w.nsOf(p), "logs", p.name, "-c", p.listener)
+	return kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", p.listener)
 }
 
 func datagramReaches(ctx context.Context, what, name string) error {

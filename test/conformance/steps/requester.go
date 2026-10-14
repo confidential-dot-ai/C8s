@@ -160,7 +160,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	p := w.describe(name, ref)
-	manifest, err := w.be.call("requester_manifest", p.name, w.namespace, k8sNode)
+	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
 	if err != nil {
 		return err
 	}
@@ -175,7 +175,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if len(st) == 0 || !st[0].running {
 		return fmt.Errorf("the requester %q is not running after %s; denials: %s", name, observe, denials(st))
 	}
-	addr, err := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.podIP}")
+	addr, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.podIP}")
 	if err != nil {
 		return err
 	}
@@ -190,7 +190,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if status != 200 {
-		sockets, _ := kubectl(nil, "-n", w.namespace, "exec", p.name, "--", "ls", "-la", "/run/c8s/workload-claims")
+		sockets, _ := kubectl(nil, "-n", p.namespace, "exec", p.name, "--", "ls", "-la", "/run/c8s/workload-claims")
 		return fmt.Errorf("harness: the requester %q got %d from %s/healthz; its socket directory holds:\n%s", name, status, url, sockets)
 	}
 	return nil
@@ -200,7 +200,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 func (w *world) relay(r *requester, method, url string, body []byte, socket string) (int, []byte, error) {
 	var out string
 	send := func(bodyFile string) (err error) {
-		args := []string{w.namespace, r.pod.name, method, url}
+		args := []string{r.pod.namespace, r.pod.name, method, url}
 		if bodyFile != "" {
 			args = append(args, bodyFile)
 		}
@@ -384,11 +384,11 @@ func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode)
 	var err error
 	switch mode {
 	case evidenceNoSignature:
-		out, err = w.be.call("evidence_unsigned", w.namespace, r.pod.name, rd)
+		out, err = w.be.call("evidence_unsigned", r.pod.namespace, r.pod.name, rd)
 	case evidenceForeignDigest:
-		out, err = w.be.call("evidence", w.namespace, r.pod.name, rd, strings.Repeat("aa", 48))
+		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd, strings.Repeat("aa", 48))
 	default:
-		out, err = w.be.call("evidence", w.namespace, r.pod.name, rd)
+		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd)
 	}
 	if err != nil {
 		return nil, err
@@ -435,7 +435,7 @@ func (w *world) buildCSR(r *requester) ([]byte, error) {
 	case csrOwnIP:
 		tmpl.IPAddresses = []net.IP{net.ParseIP(r.addr)}
 	default:
-		tmpl.DNSNames = []string{r.pod.name + "." + w.namespace + ".svc"}
+		tmpl.DNSNames = []string{r.pod.name + "." + r.pod.namespace + ".svc"}
 	}
 	reportData, err := armtls.ReportDataForKey(&r.key.PublicKey, nil)
 	if err != nil {

@@ -868,7 +868,7 @@ func (w *world) awaitReady(p *pod) error {
 	if p.ready {
 		return nil
 	}
-	if _, err := kubectl(nil, "-n", w.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
+	if _, err := kubectl(nil, "-n", p.namespace, "wait", "--for=condition=Ready", "pod/"+p.name, "--timeout=120s"); err != nil {
 		return fmt.Errorf("%q did not become Ready: %w", p.name, err)
 	}
 	p.ready = true
@@ -901,7 +901,7 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := append([]string{"-n", w.namespace, "exec", p.name, "-c", certContainer, "--", "/c8s", "secret-probe",
+	cmd := append([]string{"-n", p.namespace, "exec", p.name, "-c", certContainer, "--", "/c8s", "secret-probe",
 		"--cds-url", url, "--cert", certFile, "--key", keyFile}, args...)
 	return kubectl(nil, cmd...)
 }
@@ -1638,7 +1638,7 @@ func canStillRead(ctx context.Context, name, logical string) error {
 // --- The secret client ---
 
 func (w *world) readSecretFile(p *pod, logical string) ([]byte, error) {
-	out, err := kubectl(nil, "-n", w.namespace, "exec", p.name, "-c", firstContainer, "--", "cat", secretClientDir+"/"+secretFile(logical))
+	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "cat", secretClientDir+"/"+secretFile(logical))
 	if err != nil {
 		return nil, err
 	}
@@ -1661,7 +1661,7 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 		return err
 	}
 	if !ok {
-		log, _ := kubectl(nil, "-n", w.namespace, "logs", p.name, "-c", "c8s-secret")
+		log, _ := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", "c8s-secret")
 		return fmt.Errorf("%q has no file for %s after %s; its secret client logged: %s", name, logical, observe, tail(log, 5))
 	}
 	s.files[logical] = content
@@ -1714,7 +1714,7 @@ func outputOnMemory(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	out, err := kubectl(nil, "-n", w.namespace, "exec", p.name, "-c", firstContainer, "--", "stat", "-f", "-c", "%T", secretClientDir)
+	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "stat", "-f", "-c", "%T", secretClientDir)
 	if err != nil {
 		return err
 	}
