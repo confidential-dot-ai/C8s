@@ -146,6 +146,20 @@ func anyEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
 	}}}
 }
 
+// componentEntry is the shape the chart seeds a C8s image in: the executable
+// pinned, everything else per-pod.
+func componentEntry(t *testing.T, digest, image string) pkgallowlist.Workload {
+	t.Helper()
+	return pkgallowlist.Workload{Label: image, Containers: []pkgallowlist.Container{{
+		Digest:  mustDigest(t, digest),
+		Image:   image,
+		Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s"}},
+		Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
+		Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+		Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny},
+	}}}
+}
+
 // leafFor mints a client certificate carrying sandboxID, as CDS stamps it.
 func leafFor(t *testing.T, sandboxID string) (*x509.Certificate, *ecdsa.PrivateKey) {
 	t.Helper()
@@ -198,7 +212,9 @@ func newHarness(t *testing.T) *harness {
 		t.Fatal(err)
 	}
 	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s":     anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		"c8s": componentEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		// The previous release seeded the image under any argv; a node still
+		// running it keeps matching.
 		"c8s-old": anyEntry(t, testInjectedOld, "ghcr.io/confidential-dot-ai/c8s@"+testInjectedOld),
 		"busybox": anyEntry(t, testOther, "docker.io/library/busybox@"+testOther),
 		// Two mains: release is gated on every main container running, so the
@@ -228,7 +244,7 @@ func newHarness(t *testing.T) *harness {
 		containers: []workloadclaims.SandboxContainer{
 			{Digest: testAppImg, Argv: []string{"/serve"}},
 			{Digest: testAppImg2, Argv: []string{"/metrics"}},
-			{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+			{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 		},
 	}
 	challenges := &fakeChallenges{used: map[string]bool{}}
@@ -277,7 +293,7 @@ func (hn *harness) declareBulkEntry(t *testing.T) *x509.Certificate {
 	}
 	hn.inv.bySandbox[testBulkSandbox] = []workloadclaims.SandboxContainer{
 		{Digest: testBulkImg, Argv: []string{"/bulk"}},
-		{Digest: testInjected, Argv: []string{"get-secret"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}},
 	}
 	leaf, _ := leafFor(t, testBulkSandbox)
 	return leaf
@@ -576,15 +592,90 @@ func TestForeignAnyArgvContainerRefused(t *testing.T) {
 	}
 }
 
-// The injected image is an argv-unconstrained entry, so it is dropped only
-// when running an injected entrypoint. A pod that adds it running a shell
-// must not have that container ignored.
+// The injected image is dropped only when running an injected entrypoint. A
+// pod that adds it running a shell must not have that container ignored,
+// whether the entry pins the executable or leaves the argv open.
 func TestInjectedImageWithForeignArgvIsNotDropped(t *testing.T) {
+	for _, digest := range []string{testInjected, testInjectedOld} {
+		hn := newHarness(t)
+		hn.inv.containers = append(hn.inv.containers,
+			workloadclaims.SandboxContainer{Digest: digest, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
+		if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
+			t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
+		}
+	}
+}
+
+// An injected invocation is dropped only when its image is admitted with the
+// arguments left open. An entry that pins the whole argv declares the
+// container; the pod must then match an entry that names it.
+func TestInjectedModeUnderPinnedArgsIsNotDropped(t *testing.T) {
 	hn := newHarness(t)
-	hn.inv.containers = append(hn.inv.containers,
-		workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/bin/sh", "-c", "cat /run/c8s/secrets/*"}})
+	al := hn.h.Policy.(fakePolicy).al
+	c8s := al.Workloads["c8s"]
+	c8s.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-cert", "--san=x"}}
+	al.Workloads["c8s"] = c8s
 	if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
-		t.Fatalf("smuggled injected-image container = %d, want 403", w.Code)
+		t.Fatalf("sidecar declared by a pinned entry = %d, want 403", w.Code)
+	}
+}
+
+// The drop set holds exactly the invocations the webhook injects. The C8s
+// binary in any other mode — one a pod author added, or one with no mode at
+// all — is a declared container the entry must admit, never a sidecar to
+// ignore.
+func TestInjectedBinaryInUninjectedModeIsNotDropped(t *testing.T) {
+	for name, argv := range map[string][]string{
+		"operator mode": {"/c8s", "render-values"},
+		"attest mode":   {"/c8s", "cds-attest", "--listen=:8400"},
+		"no mode":       {"/c8s"},
+		"mode as argv0": {"get-cert", "--san=x"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			hn.inv.containers = append(hn.inv.containers,
+				workloadclaims.SandboxContainer{Digest: testInjected, Argv: argv})
+			if w := do(hn.h, hn.request(t, http.MethodGet, "/api/db")); w.Code != http.StatusForbidden {
+				t.Fatalf("%v = %d, want 403", argv, w.Code)
+			}
+		})
+	}
+}
+
+// A container in an injected mode is dropped only while every mount it holds is
+// confined to the node. With a mount the host can read, dropping it would
+// exempt from matching the one container able to fetch for the pod, so it is a
+// foreign container instead.
+func TestInjectedModeWithUnconfinedMountIsNotDropped(t *testing.T) {
+	memory := pkgallowlist.ObservedMount{Destination: "/run/c8s/secrets", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
+	for name, tc := range map[string]struct {
+		mounts []pkgallowlist.ObservedMount
+		legacy bool
+		want   int
+	}{
+		"memory volumes and a read-only host path": {mounts: []pkgallowlist.ObservedMount{
+			memory,
+			{Destination: "/mnt/c8s-data/cfg", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountEncrypted},
+			{Destination: "/run/c8s/workload-claims", Class: pkgallowlist.MountHost, ReadOnly: true},
+			{Destination: "/etc/hosts", Class: pkgallowlist.MountPlatform},
+		}, want: http.StatusCreated},
+		"writable host path":   {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountHost}}, want: http.StatusForbidden},
+		"disk-backed emptyDir": {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountUnknown}}, want: http.StatusForbidden},
+		"persistent volume":    {mounts: []pkgallowlist.ObservedMount{memory, {Destination: "/out", Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}}, want: http.StatusForbidden},
+		"no mount evidence":    {legacy: true, want: http.StatusForbidden},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			hn.inv.legacyMounts = tc.legacy
+			hn.inv.containers = []workloadclaims.SandboxContainer{
+				{Digest: testAppImg, Argv: []string{"/serve"}, Mounts: []pkgallowlist.ObservedMount{}},
+				{Digest: testAppImg2, Argv: []string{"/metrics"}, Mounts: []pkgallowlist.ObservedMount{}},
+				{Digest: testInjected, Argv: []string{"/c8s", "get-secret", "--out-dir=/out"}, Mounts: tc.mounts},
+			}
+			if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != tc.want {
+				t.Fatalf("status = %d, want %d; body = %s", w.Code, tc.want, w.Body)
+			}
+		})
 	}
 }
 
@@ -602,7 +693,9 @@ func TestInventoryWithoutContainerDetailRefused(t *testing.T) {
 func TestEntryWithoutGrantRefused(t *testing.T) {
 	hn := newHarness(t)
 	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s":     anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		"c8s": componentEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+		// The previous release seeded the image under any argv; a node still
+		// running it keeps matching.
 		"c8s-old": anyEntry(t, testInjectedOld, "ghcr.io/confidential-dot-ai/c8s@"+testInjectedOld),
 		"busybox": anyEntry(t, testOther, "docker.io/library/busybox@"+testOther),
 		"api": {Containers: []pkgallowlist.Container{{
@@ -663,7 +756,7 @@ func TestReleaseRefusedUntilEveryMainIsRunning(t *testing.T) {
 	hn.seed(t, "/api/db", stored)
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
-		{Digest: testInjected, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjected, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 	}
 	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
 	if w.Code != http.StatusForbidden {
@@ -750,7 +843,7 @@ func TestInjectedImageFromPreviousReleaseIsDropped(t *testing.T) {
 	hn.inv.containers = []workloadclaims.SandboxContainer{
 		{Digest: testAppImg, Argv: []string{"/serve"}},
 		{Digest: testAppImg2, Argv: []string{"/metrics"}},
-		{Digest: testInjectedOld, Argv: []string{"get-cert", "--san=x"}},
+		{Digest: testInjectedOld, Argv: []string{"/c8s", "get-cert", "--san=x"}},
 	}
 	if w := do(hn.h, hn.request(t, http.MethodPost, "/api/db")); w.Code != http.StatusCreated {
 		t.Fatalf("pod running the previous injected image = %d, want 201", w.Code)

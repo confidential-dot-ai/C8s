@@ -79,9 +79,12 @@ assert config["imports"] == ["/var/lib/rancher/rke2/agent/etc/containerd/config-
 effective = tomllib.loads((root / "effective.toml").read_text())
 plugins = effective["plugins"]
 assert plugins["io.containerd.nri.v1.nri"]["disable"] is False
-validator = plugins["io.containerd.nri.v1.nri.default_validator"]
-assert validator["enable"] is True
-assert validator["required_plugins"] == ["nri-image-policy"]
+validator = plugins["io.containerd.nri.v1.nri"]["default_validator"]
+assert validator["enable"] is True, validator
+assert validator["required_plugins"] == ["nri-image-policy"], validator
+# A table opened under one quoted key is a plugin id of its own, which the
+# dump echoes back and containerd never reads.
+assert "io.containerd.nri.v1.nri.default_validator" not in plugins, sorted(plugins)
 PY
 echo 'PASS: RKE2-generated config loads the required NRI validator'
 

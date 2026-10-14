@@ -2,6 +2,7 @@ go 1.27.0
 
 use (
 	.
+	./test/conformance/steps
 	./test/mock-attestation
 	./test/mock-cds
 )

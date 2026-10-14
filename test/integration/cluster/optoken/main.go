@@ -8,6 +8,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -21,10 +22,12 @@ func main() {
 	fmt.Print(hdr)
 }
 
-// run is main, extracted for the test: args includes argv[0].
+// run is main, extracted for the test: args includes argv[0]. The optional
+// validity (a Go duration) replaces the signer's default token lifetime, so a
+// harness can mint a token the CDS must refuse as too long-lived.
 func run(args []string) (string, error) {
-	if len(args) != 5 {
-		return "", fmt.Errorf("usage: optoken <key.pem> <method> <path> <body-file>")
+	if len(args) != 5 && len(args) != 6 {
+		return "", fmt.Errorf("usage: optoken <key.pem> <method> <path> <body-file> [validity]")
 	}
 	keyPEM, err := os.ReadFile(args[1])
 	if err != nil {
@@ -37,6 +40,13 @@ func run(args []string) (string, error) {
 	signer, err := operatorauth.NewSignerFromKeyPEM(keyPEM)
 	if err != nil {
 		return "", err
+	}
+	if len(args) == 6 {
+		ttl, err := time.ParseDuration(args[5])
+		if err != nil {
+			return "", fmt.Errorf("validity %q: %w", args[5], err)
+		}
+		signer = signer.WithTTL(ttl)
 	}
 	return signer.Authorization(args[2], args[3], body)
 }

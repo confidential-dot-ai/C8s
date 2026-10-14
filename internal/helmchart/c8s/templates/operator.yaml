@@ -76,6 +76,12 @@ spec:
             {{- range .Values.webhook.extraExcluded }}
             - --exclude-namespaces={{ . }}
             {{- end }}
+            {{- if and .Values.armtlsMesh.enabled .Values.armtlsMesh.egressCompanionPolicy.enabled }}
+            - --mesh-outbound-port={{ include "c8s.int" .Values.armtlsMesh.ports.outbound }}
+            {{- range .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces }}
+            - --mesh-exclude-source-namespaces={{ . }}
+            {{- end }}
+            {{- end }}
             - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
             - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
             - --get-cert-run-as-user={{ include "c8s.int" .Values.webhook.getCert.runAsUser }}
@@ -93,11 +99,24 @@ spec:
             {{- range .Values.operator.extraArgs }}
             - {{ . | quote }}
             {{- end }}
+          env:
+            # The webhook CA carries the pod name as its identity in the
+            # caBundle; the hostname is truncated past 63 characters.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef: { fieldPath: metadata.name }
           ports:
             - name: metrics
               containerPort: 8080
             - name: health
               containerPort: 8081
+          # setupManager (CRD discovery + webhook PKI bootstrap) runs before the
+          # health server serves, with :8081 already bound by NewManager, so
+          # probes hang rather than refuse. 30x10s covers that window.
+          startupProbe:
+            httpGet: { path: /healthz, port: health }
+            periodSeconds: 10
+            failureThreshold: 30
           readinessProbe:
             httpGet: { path: /readyz, port: health }
             initialDelaySeconds: 3

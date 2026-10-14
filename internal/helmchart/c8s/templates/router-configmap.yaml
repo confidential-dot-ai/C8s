@@ -9,6 +9,10 @@
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
 {{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
+{{- $readTimeout := toString (default "3600s" .Values.router.upstream.readTimeout) -}}
+{{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) -}}
+{{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) -}}
+{{- end -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- include "router.validateProtocol" (required "protocol must be http or https" .Values.router.upstream.protocol) -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
@@ -90,7 +94,7 @@ data:
 
         sendfile on;
         keepalive_timeout 65;
-{{- if $upstreamAddress }}
+{{- if or $upstreamAddress $launchDriven }}
 
         # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
         # other requests keep Connection: close to the upstream.
@@ -339,7 +343,12 @@ data:
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
-                # Stream responses through; see the static catch-all below.
+                proxy_set_header Upgrade $http_upgrade;
+                proxy_set_header Connection $connection_upgrade;
+                # Timeouts and streaming: see the static catch-all below.
+                proxy_connect_timeout 5s;
+                proxy_read_timeout {{ $readTimeout }};
+                proxy_send_timeout {{ $readTimeout }};
                 proxy_buffering off;
                 proxy_http_version 1.1;
             }
@@ -363,10 +372,6 @@ data:
                 proxy_set_header X-Forwarded-Proto $scheme;
                 proxy_set_header Upgrade $http_upgrade;
                 proxy_set_header Connection $connection_upgrade;
-                {{- $readTimeout := toString (default "3600s" .Values.router.upstream.readTimeout) }}
-                {{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) }}
-                {{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) }}
-                {{- end }}
                 # A non-streaming completion sends nothing until it is done, so
                 # nginx's 60s default read timeout would 504 long generations.
                 # A dead upstream must fail fast instead.

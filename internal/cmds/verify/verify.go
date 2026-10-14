@@ -107,6 +107,11 @@ type config struct {
 	fromFile      string
 	discoveryPath string
 
+	// observedServingCert and attestationNonce are what a saved attest-lb
+	// receipt binds besides itself.
+	observedServingCert string
+	attestationNonce    string
+
 	measurements       []string
 	measurementsFile   string
 	imageManifest      string
@@ -170,6 +175,9 @@ Evidence sources:
                          fetched from AMD KDS). Default mode: cds → armtls-cert,
                          lb → discovery, auto → discovery then serving cert.
   --from-file FILE       verify a saved PEM cert or attestation-response JSON.
+                         With --mode attest-lb, also pass the
+                         --observed-serving-cert and --attestation-nonce the
+                         receipt was fetched with.
 
   c8s cds verify https://cds.example.com:8443 --measurements <sha384-hex>
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex>
@@ -195,11 +203,13 @@ responder chose).`,
 	f := cmd.Flags()
 	f.StringVar(&cfg.url, "url", "", "target URL or host:port (alternative to the positional argument)")
 	f.StringVar(&cfg.kind, "kind", orDefault(d.Kind, "auto"), "component being verified: cds, lb, workload, or auto")
-	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, armtls-cert, discovery, or attest-pq")
+	f.StringVar(&cfg.mode, "mode", orDefault(d.Mode, "auto"), "evidence mode: auto, armtls-cert, discovery, attest-pq, or attest-lb")
 	f.StringVar(&cfg.discoveryPath, "discovery-path", defaultDiscoveryPath, "path of the LB discovery document (discovery mode)")
 	f.StringVar(&cfg.server, "server-name", "", "TLS SNI server name (for port-forward / routed domains)")
 	f.DurationVar(&cfg.timeout, "timeout", 15*time.Second, "per-attempt timeout (evidence fetch and AMD KDS collateral fetch)")
 	f.StringVar(&cfg.fromFile, "from-file", "", "verify evidence from a saved PEM certificate or attestation-response JSON instead of dialing")
+	f.StringVar(&cfg.observedServingCert, "observed-serving-cert", "", "with --mode attest-lb --from-file: PEM serving leaf observed on the connection that fetched the receipt")
+	f.StringVar(&cfg.attestationNonce, "attestation-nonce", "", "with --mode attest-lb --from-file: unpadded base64url nonce sent to fetch the receipt")
 
 	f.StringSliceVar(&cfg.measurements, "measurements", nil, "allowed SHA-384 hex launch measurement(s) (repeatable / comma-separated); empty = no pinning (UNSAFE). On TDX this pins MRTD only, which covers just the TDVF firmware — use --image-manifest to pin the whole guest image instead (the two are mutually exclusive: the manifest already pins MRTD exactly)")
 	f.StringVar(&cfg.measurementsFile, "measurements-file", "", "text file of allowed launch measurements, one hex digest per line; use --image-policy-file for complete JSON policies; excludes --image-manifest")
@@ -213,7 +223,7 @@ responder chose).`,
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
 	f.StringVar(&cfg.allowlistFile, "allowlist", "", "file holding the exact canonical allowlist bytes (as served by GET /allowlist); the leaf's stamped policy digest must equal SHA-256 of these bytes and the stamped name must resolve in the document. Requires --mesh-ca")
-	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
+	f.StringVar(&cfg.meshCA, "mesh-ca", "", "PEM bundle of the CDS mesh CA; when set, the target's leaf must chain to it, which is what authenticates the reported sandbox ID. On attest-pq and attest-lb it is also what upgrades the chain anchor from responder-chosen (partial verdict) to verified")
 	f.StringVar(&cfg.initDataHex, "init-data", "", "expected init-data digest: SHA-256 hex of the init-data document the target guest must carry. Verification fails unless the evidence commits exactly this digest")
 	f.BoolVar(&cfg.allowDebug, "allow-debug", false, "accept debug-enabled guests")
 	const tcbSNPOnly = " (SEV-SNP evidence only — TDX carries no such component, so against TDX evidence this is a policy error rather than an ignored flag)"
@@ -242,9 +252,9 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 	// No mode alias: the retired "attestation-endpoint" name (and anything
 	// else unknown) is a usage error, not a silent fall-through to auto.
 	switch cfg.mode {
-	case "", "auto", "armtls-cert", "discovery", "attest-pq":
+	case "", "auto", "armtls-cert", "discovery", "attest-pq", "attest-lb":
 	default:
-		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, armtls-cert, discovery, attest-pq)\n", cfg.mode)
+		fmt.Fprintf(errOut, "error: unknown --mode %q (valid modes: auto, armtls-cert, discovery, attest-pq, attest-lb)\n", cfg.mode)
 		return exitUsage
 	}
 
@@ -261,6 +271,11 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 
 	if cfg.url == "" && cfg.fromFile == "" {
 		fmt.Fprintf(errOut, "error: no target: pass a component's discovery URL / host:port (or --from-file)\n")
+		return exitUsage
+	}
+	offlineLB := cfg.mode == "attest-lb" && cfg.fromFile != ""
+	if offlineLB != (cfg.observedServingCert != "") || offlineLB != (cfg.attestationNonce != "") {
+		fmt.Fprintf(errOut, "error: --mode attest-lb --from-file requires --observed-serving-cert and --attestation-nonce, which apply to nothing else\n")
 		return exitUsage
 	}
 
@@ -929,6 +944,9 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		if err != nil {
 			return nil, err
 		}
+		if cfg.mode == "attest-lb" {
+			return gatherAttestLBFromFile(data, cfg.observedServingCert, cfg.attestationNonce, "file "+cfg.fromFile)
+		}
 		return gatherFromFile(data, overrideERD, "file "+cfg.fromFile, trust)
 	}
 	if cfg.url == "" {
@@ -947,6 +965,8 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		return gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
 	case "attest-pq":
 		return gatherFromEndpoint(ctx, baseURL, cfg.server, cfg.timeout)
+	case "attest-lb":
+		return gatherFromAttestLB(ctx, baseURL, cfg.server, cfg.timeout)
 	default: // auto: try the LB discovery doc (what the chart serves), then the
 		// serving cert. Don't fall back on a security error — surface it.
 		ev, err := gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
@@ -1032,8 +1052,12 @@ type Outcome struct {
 	SMT        bool   `json:"smt"`
 	CurrentTCB string `json:"current_tcb,omitempty"`
 	CertSHA256 string `json:"cert_sha256,omitempty"`
-	Pinned     bool   `json:"measurement_pinned"`
-	Error      string `json:"error,omitempty"`
+	// ServingLeafSHA256 is the unpadded base64url digest of the serving leaf
+	// an attest-lb verdict was bound to, matching the receipt's
+	// serving_leaf_sha256; a client compares it with the leaf it observed.
+	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	Pinned            bool   `json:"measurement_pinned"`
+	Error             string `json:"error,omitempty"`
 
 	// InitData is the init-data digest the verified evidence commits, and
 	// InitDataNote says what stands behind it: compared against --init-data,
@@ -1288,13 +1312,14 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	// report itself as unpinned.
 	pinned := len(plan.policy.Policy.Measurements) > 0 || plan.pins.image != nil || !plan.refValues.Empty()
 	oc := Outcome{
-		Backend:    "attestation-go",
-		VerifiedAt: time.Now().UTC(),
-		Source:     ev.source,
-		Fresh:      ev.fresh,
-		Binding:    ev.bindingNote,
-		CertSHA256: ev.certSHA256,
-		Pinned:     pinned,
+		Backend:           "attestation-go",
+		VerifiedAt:        time.Now().UTC(),
+		Source:            ev.source,
+		Fresh:             ev.fresh,
+		Binding:           ev.bindingNote,
+		CertSHA256:        ev.certSHA256,
+		ServingLeafSHA256: ev.servingLeafSHA256,
+		Pinned:            pinned,
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)
@@ -1651,6 +1676,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	if oc.CertSHA256 != "" {
 		fmt.Fprintf(out, "  cert sha256:  %s\n", oc.CertSHA256)
 	}
+	if oc.ServingLeafSHA256 != "" {
+		fmt.Fprintf(out, "  serving leaf: sha256 %s\n", oc.ServingLeafSHA256)
+	}
 	if oc.CertBody != "" {
 		fmt.Fprintf(out, "  cert body:    %s\n", oc.CertBody)
 	}
@@ -1684,7 +1712,13 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	} else if oc.OperatorKeysNote != "" {
 		fmt.Fprintf(out, "  operator keys: %s\n", oc.OperatorKeysNote)
 	}
-	if !oc.Fresh {
+	switch {
+	case oc.Fresh:
+	case oc.ServingLeafSHA256 != "":
+		// A non-fresh attest-lb verdict comes from a saved receipt: the nonce is
+		// bound, but the caller chose it.
+		fmt.Fprintf(out, "  note:         freshness NOT proven (nonce was caller-chosen, not verifier-generated; the receipt may be stale)\n")
+	default:
 		fmt.Fprintf(out, "  note:         freshness NOT proven (no per-request nonce bound)\n")
 	}
 	if !oc.Pinned {

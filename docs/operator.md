@@ -23,16 +23,18 @@ The operator tree is built around these pieces:
 The operator does not inject the armTLS mesh sidecar. Pod-to-pod mTLS remains
 the responsibility of node-level `armtls-mesh`, deployed as a DaemonSet by
 the chart or as systemd services by the measured node image. The chart-managed
-mesh excludes `kube-system` and its own release namespace as local traffic
-sources, so C8s control-plane agents (and, on kind/kubeadm-style clusters where
-the API server runs as a `kube-system` pod, in-cluster webhook callers) do not
-get captured by the pod-to-pod mesh path. The exclusion is one-sided: it
+mesh excludes the namespaces in `armtlsMesh.iptablesSync.excludeSourceNamespaces`
+(default `kube-system`) as local traffic sources, so on kind/kubeadm-style
+clusters where the API server runs as a `kube-system` pod, in-cluster webhook
+callers do not get captured by the pod-to-pod mesh path. The release namespace
+is deliberately not excluded: router's egress to workload pod IPs must be
+intercepted to get attested mTLS, and the control plane's own traffic dials
+Service VIPs, which the mesh never intercepts. The exclusion is one-sided: it
 removes those pods as PREROUTING sources but keeps their IPs in the destination
-ipset, so a workload that connects to a `kube-system` or release-namespace pod
-by pod IP — bypassing the Service VIP — will still be DNATed into the mesh and
-fail mTLS against a peer with no armtls sidecar. In-cluster Service-VIP traffic
-to those namespaces is unaffected because kube-proxy DNATs the VIP before the
-mesh chain matches.
+ipset, so a workload that connects to a `kube-system` pod by pod IP — bypassing
+the Service VIP — will still be DNATed into the mesh and fail mTLS against a
+peer with no armtls sidecar. In-cluster Service-VIP traffic to those namespaces
+is unaffected because kube-proxy DNATs the VIP before the mesh chain matches.
 
 Confidential-workload pods (label `confidential.ai/cw`) get a stricter
 inbound posture from the always-on cw guard: the mesh drops FORWARD-path
@@ -372,8 +374,9 @@ release — a `failurePolicy: Fail` webhook cannot outlive the operator Service
 and block pod creation cluster-wide.
 
 It then **sweeps the host-side artifacts** that chart hooks cannot guarantee
-were removed: chart-installed NRI policy, armtls-mesh netfilter state, and the
-managed RKE2 containerd-prep template. Baked node-image components are preserved.
+were removed: chart-installed NRI policy, armtls-mesh netfilter state, the
+managed RKE2 containerd-prep template, and `c8s volume attach` LIO disks.
+Baked node-image components are preserved.
 The host paths are read from the release's computed values *before* deletion,
 so install-time `-f` overrides are honored. `--host-sweep=false` skips this cleanup.
 
@@ -388,7 +391,24 @@ The sweep removes:
   fail-closed guard, so this state survives healthy uninstall. A stale
   `OUTPUT` redirect blackholes host-originated pod traffic for non-root users;
 - on RKE2, the sentinel-marked containerd template written by containerd-prep
-  and its lock file, skipped on the baked node image by the same rule.
+  and its lock file, skipped on the baked node image by the same rule;
+- the LIO loopback disks `c8s volume attach` built, torn down the way
+  `c8s volume detach` does. Only a `fileio_0` backstore whose unit serial is
+  `c8s-vol-<name>` and the loopback target attach derives from it are touched.
+  A disk is left in place and named in the sweep log when it or one of its
+  partitions has a holder (an open dm-crypt mapping), is mounted in any
+  process's mount namespace, or is active swap; run
+  `c8s volume detach <name>` once it is released. A process holding the raw
+  device open with no mount or holder is not detected, as `detach` does not
+  detect it either. A disk whose use cannot be read, or an idle disk that
+  will not tear down, stays and fails the sweep.
+
+  To stay admissible under the release's allowlist, the sweep replays the
+  script the release's chart pinned, so this step applies only to releases
+  installed from a chart that carries it. For an older release the uninstall
+  prints a notice: run `c8s volume detach <name>` on each node for every
+  attached volume, or, once the release is gone, run
+  `c8s uninstall --host-sweep-only`, which runs this CLI's own sweep.
 
 The swept paths are cluster-global, so running two C8s releases in one
 cluster is unsupported: uninstalling either strips the other's host state.
@@ -1012,6 +1032,26 @@ signed launch file selects the mode and the upstream at boot. Mode `acme`
 applies when its `router.hostnames` is not empty, else mode `cds`. See
 "Authenticated launch configuration".
 
+### Verify a saved attest-lb receipt
+
+A client can verify an `attest-lb` response after the fact. Keep the 32-byte
+challenge it sent and the serving certificate it observed on the HTTPS
+connection that fetched the receipt; a certificate fetched over another
+connection proves nothing about that receipt.
+
+```bash
+c8s verify --mode attest-lb --from-file receipt.json \
+  --attestation-nonce "$NONCE" --observed-serving-cert serving-leaf.pem \
+  --measurements "$MEASUREMENT" -o json
+```
+
+`NONCE` is the challenge as unpadded base64url; `MEASUREMENT` is the pinned
+launch digest. The verdict checks the challenge, the serving certificate, the
+mesh identity proof and the hardware report, and reports `serving_leaf_sha256`
+in the same form as the receipt so the client can match the two. It is never
+`fresh`: the caller chose the nonce, so the verdict says what that connection
+was, not what the front door serves now.
+
 ## router upstream
 
 ### Built-in allowlist route
@@ -1227,6 +1267,61 @@ spec:
 ```
 
 These are inert on a cluster whose CNI does not enforce NetworkPolicy.
+
+### Workload namespaces with default-deny egress
+
+The node mesh DNATs every TCP connection from one pod to another to the
+node's outbound listener, `nodeIP:15001` (`armtlsMesh.ports.outbound`),
+including connections between pods on the same node. The CNI applies the
+source pod's egress policy after that rewrite, so what it must allow is
+egress to port 15001, not the destination pod's port. A namespace that
+isolates egress and allows only its intended peers therefore drops every
+intercepted connection before the mesh sees it, and nothing logs the drop:
+`armtls_mesh_connections_total` stays at zero.
+
+The operator closes this for you. Beside every NetworkPolicy whose
+`policyTypes` include `Egress`, in a namespace the mesh intercepts, it keeps
+a companion named `<policy>-mesh-egress` that selects the same pods and
+allows egress to TCP 15001 and nothing else:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-mesh-egress
+  namespace: my-app
+  labels:
+    app.kubernetes.io/managed-by: c8s-operator
+    c8s.confidential.ai/mesh-egress-companion: "true"
+  ownerReferences: [<the default-deny policy>]
+spec:
+  podSelector: <copied from default-deny>
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 15001
+```
+
+The companion is additive and never isolates a pod on its own: it exists
+only where a policy of yours already isolates egress, and it copies that
+policy's `podSelector`. It follows the source: a selector change is
+mirrored, dropping `Egress` from the source's `policyTypes` deletes the
+companion, and deleting the source garbage-collects it. The rule names no
+peer because the rewritten destination is the node's own address, which
+CNIs classify as the host rather than as a CIDR peer. Namespaces in
+`armtlsMesh.iptablesSync.excludeSourceNamespaces` are not intercepted and
+get no companions. A policy whose own rules already admit TCP to the port
+for every destination, such as an allow-all or all-TCP rule, or the chart's
+`armtls-mesh-tcp-only-egress`, gets none either. Turn the mechanism off
+with `armtlsMesh.egressCompanionPolicy.enabled=false` and add the rule above
+to your own policies instead.
+
+The same rewrite means the CNI cannot enforce egress rules that name
+specific pod peers between confidential pods: every intercepted connection
+reaches it as a connection to the node, and the mesh's own guards decide
+what reaches a confidential pod. Service-VIP dials to confidential pods are
+dropped by the cw guard described in the [Overview](#overview).
 
 ## Validation
 

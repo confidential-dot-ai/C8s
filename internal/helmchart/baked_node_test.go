@@ -167,6 +167,23 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	if strings.Contains(conf, "ssl_certificate ") {
 		t.Error("launch-driven nginx.conf must leave the certificate to tls.conf")
 	}
+	// The :80 redirect server also has a location /, so pick the catch-all by
+	// its proxy_pass.
+	cfg := parseNginxConfig(t, conf)
+	var route *nginxBlock
+	for _, block := range cfg.all {
+		if slices.ContainsFunc(block.directives["proxy_pass"], func(args []string) bool {
+			return slices.Equal(args, []string{"http://$c8s_upstream"})
+		}) {
+			route = block
+		}
+	}
+	if route == nil {
+		t.Fatal("launch-driven catch-all location missing")
+	}
+	assertRouterWebSocketUpgrade(t, cfg, route)
+	assertRouterUpstreamTimeouts(t, route, "3600s")
+
 	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{
 		"tls-cds.conf":  "ssl_certificate     /tls/cert.pem;\nssl_certificate_key /tls/key.pem;",

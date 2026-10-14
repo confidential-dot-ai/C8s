@@ -1307,6 +1307,35 @@ func TestChartWebhookExtraExcludedFlowsToWebhookAndSweep(t *testing.T) {
 	}
 }
 
+// The operator's mesh-egress reconciler must be told the same outbound port
+// and excluded source namespaces the mesh DaemonSet runs with, or its
+// companion policies open the wrong port or appear in namespaces the mesh
+// never intercepts. Disabling the value removes both flags, which turns the
+// reconciler off.
+func TestChartMeshEgressCompanionFlagsMirrorTheMesh(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "armtlsMesh.ports.outbound=15101",
+		"--set", "armtlsMesh.iptablesSync.excludeSourceNamespaces={kube-system,monitoring}")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	args := renderedOperatorArgs(t, out)
+	assertContainerHasArg(t, "operator", args, "--mesh-outbound-port=15101")
+	for _, ns := range []string{"kube-system", "monitoring"} {
+		assertContainerHasArg(t, "operator", args, "--mesh-exclude-source-namespaces="+ns)
+	}
+
+	for _, disable := range []string{"armtlsMesh.egressCompanionPolicy.enabled=false", "armtlsMesh.enabled=false"} {
+		out, err := helmTemplate(t, "--set", disable)
+		if err != nil {
+			t.Fatalf("helm template (%s): %v\n%s", disable, err, out)
+		}
+		args := renderedOperatorArgs(t, out)
+		assertContainerNoArgPrefix(t, "operator", args, "--mesh-outbound-port=")
+		assertContainerNoArgPrefix(t, "operator", args, "--mesh-exclude-source-namespaces=")
+	}
+}
+
 // TestChartWebhookOptsOutOfAKSAdmissionsEnforcer proves the AKS workaround:
 // with attestationApi.cvmMode=aks (what `c8s install --cvm-mode aks` sets) the
 // pod-injector MutatingWebhookConfiguration carries
@@ -2120,6 +2149,50 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 	if hasHostIPEnv(op) {
 		t.Errorf("operator MUST NOT define HOST_IP (it forwards $(HOST_IP) verbatim to tenant sidecars); env %+v", op.Env)
 	}
+}
+
+// TestChartOperatorStartupProbeHoldsOffLiveness pins the operator's
+// startupProbe (#208). setupManager runs CRD discovery and the webhook PKI
+// bootstrap before /healthz is served, so without it liveness (~90s at the
+// defaults) can kill the operator mid-startup and, via failurePolicy=Fail,
+// block every pod admission while it restarts.
+func TestChartOperatorStartupProbeHoldsOffLiveness(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	op := renderedDeploymentContainer(t, out, "c8s-operator", "operator")
+	sp := op.StartupProbe
+	if sp == nil || sp.HTTPGet == nil {
+		t.Fatalf("operator must carry an HTTP startupProbe; got %+v", sp)
+	}
+	if sp.HTTPGet.Path != "/healthz" || sp.HTTPGet.Port.String() != "health" {
+		t.Errorf("operator startupProbe = GET %s on %s, want /healthz on the health port", sp.HTTPGet.Path, sp.HTTPGet.Port.String())
+	}
+	if window := sp.FailureThreshold * sp.PeriodSeconds; window < 300 {
+		t.Errorf("operator startupProbe window = %ds, want >= 300s", window)
+	}
+	if op.LivenessProbe == nil {
+		t.Fatal("operator lost its livenessProbe")
+	}
+}
+
+// TestChartOperatorHasPodNameEnv pins the downward-API POD_NAME the operator
+// puts in its webhook CA's CommonName: the CA's identity in the caBundle,
+// which must be unique among live pods (the hostname is truncated at 63).
+func TestChartOperatorHasPodNameEnv(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	op := renderedDeploymentContainer(t, out, "c8s-operator", "operator")
+	for _, e := range op.Env {
+		if e.Name == "POD_NAME" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&
+			e.ValueFrom.FieldRef.FieldPath == "metadata.name" {
+			return
+		}
+	}
+	t.Fatalf("operator missing POD_NAME from metadata.name; env %+v", op.Env)
 }
 
 // TestChartNonBareMetalModeUsesAttestationSocket proves the bare-metal-mode wiring does
@@ -4116,6 +4189,11 @@ func TestChartOperatorRBACIsScoped(t *testing.T) {
 	}
 	if got := operatorVerbsFor(role, "", "services"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
 		t.Fatalf("operator services verbs = %v", got)
+	}
+	// The mesh-egress reconciler watches every NetworkPolicy and owns the
+	// companions it creates beside egress-isolating ones.
+	if got := operatorVerbsFor(role, "networking.k8s.io", "networkpolicies"); !slices.Equal(got, []string{"get", "list", "watch", "create", "update", "delete"}) {
+		t.Fatalf("operator networkpolicies verbs = %v", got)
 	}
 	// No rendered Role/ClusterRole may grant any of these resources at all.
 	// nodes is granted — but only to CDS's node-reader, which keeps the

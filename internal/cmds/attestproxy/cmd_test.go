@@ -1,11 +1,14 @@
 package attestproxy
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,5 +217,70 @@ func TestServeHealthAddr(t *testing.T) {
 	}
 	if err := serve(context.Background(), cfg, proxy, listener); err == nil || !strings.Contains(err.Error(), "--health-addr") {
 		t.Fatalf("serve with a taken --health-addr = %v, want a --health-addr error", err)
+	}
+}
+
+// awaitServerClose fails the test unless the server closes c within wait.
+func awaitServerClose(t *testing.T, c net.Conn, wait time.Duration) {
+	t.Helper()
+	if err := c.SetReadDeadline(time.Now().Add(wait)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.Copy(io.Discard, c); err != nil {
+		t.Fatalf("connection still open after %s: %v", wait, err)
+	}
+}
+
+func TestServerBoundsConnections(t *testing.T) {
+	const timeout = 300 * time.Millisecond
+	upstream := startUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+
+	t.Run("stalled body", func(t *testing.T) {
+		sock := serveProxy(t, config{upstream: upstream, readTimeout: timeout, writeTimeout: time.Minute, idleTimeout: time.Minute})
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if _, err := io.WriteString(c, "POST /attest HTTP/1.1\r\nHost: x\r\nContent-Length: 1024\r\n\r\n{"); err != nil {
+			t.Fatal(err)
+		}
+		awaitServerClose(t, c, 20*timeout)
+	})
+
+	t.Run("idle keep-alive", func(t *testing.T) {
+		sock := serveProxy(t, config{upstream: upstream, readTimeout: time.Minute, writeTimeout: time.Minute, idleTimeout: timeout})
+		c, err := net.Dial("unix", sock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer c.Close()
+		if _, err := io.WriteString(c, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n"); err != nil {
+			t.Fatal(err)
+		}
+		br := bufio.NewReader(c)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Close {
+			t.Fatalf("GET /health = %d (close %t), want 200 on a kept-alive connection", resp.StatusCode, resp.Close)
+		}
+		awaitServerClose(t, c, 20*timeout)
+	})
+}
+
+func TestNewProxyCapsUpstreamConns(t *testing.T) {
+	h, err := newProxy(config{socket: "/tmp/x.sock", upstream: "http://127.0.0.1:1", readHeaderTimeout: time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := h.(*httputil.ReverseProxy).Transport.(*http.Transport).MaxConnsPerHost; got <= 0 {
+		t.Errorf("upstream MaxConnsPerHost = %d, want a positive cap", got)
 	}
 }

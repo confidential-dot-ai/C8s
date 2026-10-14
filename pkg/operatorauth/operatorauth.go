@@ -104,6 +104,15 @@ func NewSignerFromKeyPEM(keyPEM []byte) (*Signer, error) {
 	return &Signer{key: key, method: method, ttl: DefaultTokenTTL}, nil
 }
 
+// WithTTL returns a copy of the Signer whose tokens expire ttl after they are
+// issued, in place of DefaultTokenTTL. The Verifier rejects a token whose
+// exp−iat exceeds MaxTokenValidity, whatever the signer stamped.
+func (s *Signer) WithTTL(ttl time.Duration) *Signer {
+	c := *s
+	c.ttl = ttl
+	return &c
+}
+
 // Authorization returns the HTTP Authorization header value ("Bearer <jwt>")
 // for a token freshly bound to the request. It satisfies
 // allowlistclient.Authorizer; the caller must pass the exact method, URL path,
