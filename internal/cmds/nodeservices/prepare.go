@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
 	"path/filepath"
 
@@ -12,7 +11,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -192,10 +190,7 @@ func (c serverConfig) files() map[string][]byte {
 // merges the operator's workloads over the baked seed. It writes nothing:
 // Prepare publishes only after every input has been validated.
 func serverOutputs(d *launchconfig.Document, bakedData []byte) (serverConfig, error) {
-	if net.ParseIP(d.TLSSAN) != nil {
-		return serverConfig{}, fmt.Errorf("staged TLS SAN must be a DNS hostname")
-	}
-	if err := cmdsutil.ValidateDNSName(d.TLSSAN); err != nil {
+	if err := launchconfig.ValidateHostname(d.TLSSAN); err != nil {
 		return serverConfig{}, fmt.Errorf("staged TLS SAN: %w", err)
 	}
 	pub := []byte(d.Server.OperatorPublicKey)

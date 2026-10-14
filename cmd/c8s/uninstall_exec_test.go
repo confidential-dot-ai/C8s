@@ -665,3 +665,39 @@ func assertEmbeddedSweepArgv(t *testing.T, ds *appsv1.DaemonSet) {
 		t.Errorf("pause argv = %v + %v, want the embedded spec", pause.Command, pause.Args)
 	}
 }
+
+// A replayed script from a chart older than the LIO step leaves `c8s volume
+// attach` disks behind, so the uninstall says how to remove them; a replayed
+// script that carries the step says nothing.
+func TestUninstallSweepReplayNamesAMissingLIOStep(t *testing.T) {
+	imageRef := "ghcr.io/confidential-dot-ai/nri-image-policy@" + testDigest
+	for _, tc := range []struct {
+		name   string
+		script string
+		notice bool
+	}{
+		{"older chart", "# older sweep bytes\necho '==> c8s host sweep starting (old)'\n", true},
+		{"current chart", hostSweepScript, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			values := hostReleaseValuesNRIFile(t, imageRef)
+			cm := seedCMFile(t, imageRef, [][]string{
+				{"/bin/sh", "-c", tc.script},
+				{"/bin/sleep", "2147483646"},
+			})
+			s := newUninstallStubs(t, values, seedCMStub(cm), false)
+			var err error
+			out := captureStdout(t, func() { err = runC8s(t, "uninstall") })
+			if err != nil {
+				t.Fatalf("uninstall: %v", err)
+			}
+			if got := strings.Contains(out, "c8s volume detach <name>"); got != tc.notice {
+				t.Errorf("detach notice printed = %t, want %t; output:\n%s", got, tc.notice, out)
+			}
+			ds := appliedDaemonSet(t, s.applied)
+			if want := []string{"/bin/sh", "-c", tc.script}; !reflect.DeepEqual(ds.Spec.Template.Spec.InitContainers[0].Command, want) {
+				t.Error("sweep argv is not the pinned script")
+			}
+		})
+	}
+}

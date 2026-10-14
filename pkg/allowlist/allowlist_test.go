@@ -108,26 +108,53 @@ func TestParseJSON_RejectsBadDigest(t *testing.T) {
 	}
 }
 
-func TestAdmitsAnyArgv(t *testing.T) {
+func TestAdmitsAnyArgs(t *testing.T) {
 	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{
 		"open":{"containers":[{"digest":"`+digestA+`","command":{"policy":"any"},"args":{"policy":"any"}}]},
+		"component":{"containers":[{"digest":"`+digestB+`","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"}}]},
 		"pinned":{"containers":[
-			{"digest":"`+digestA+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}},
-			{"digest":"`+digestB+`","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]}}]}}}`)
-	if !al.AdmitsAnyArgv(digestA) {
-		t.Fatal("a digest with an any/any entry must report AdmitsAnyArgv")
+			{"digest":"`+digestC+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}},
+			{"digest":"`+digestC+`","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]}}]}}}`)
+	for name, tc := range map[string]struct {
+		digest string
+		argv   []string
+		want   bool
+	}{
+		"any/any admits any command":          {digestA, []string{"/bin/sh", "-c", "id"}, true},
+		"pinned executable, open args":        {digestB, []string{"/c8s", "get-cert", "--san=x"}, true},
+		"pinned executable, other executable": {digestB, []string{"/bin/sh", "-c", "id"}, false},
+		"exact args are not open":             {digestC, []string{"/app"}, false},
+		"command any with exact args":         {digestC, []string{"x"}, false},
+		"unlisted digest":                     {"sha256:" + strings.Repeat("d", 64), []string{"/c8s"}, false},
+		"canonical digest comparison":         {digestA[:7] + strings.ToUpper(digestA[7:]), []string{"/x"}, true},
+		"malformed digest":                    {"not-a-digest", []string{"/x"}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := al.AdmitsAnyArgs(tc.digest, tc.argv); got != tc.want {
+				t.Fatalf("AdmitsAnyArgs(%s, %q) = %v, want %v", tc.digest, tc.argv, got, tc.want)
+			}
+		})
 	}
-	if al.AdmitsAnyArgv(digestB) {
-		t.Fatal("command any with args exact is not unconstrained")
-	}
-	if al.AdmitsAnyArgv(digestC) {
-		t.Fatal("an unlisted digest must not report AdmitsAnyArgv")
-	}
-	if !al.AdmitsAnyArgv(digestA[:7] + strings.ToUpper(digestA[7:])) {
-		t.Fatal("digests are compared canonically")
-	}
-	if al.AdmitsAnyArgv("not-a-digest") {
-		t.Fatal("a malformed digest must not report AdmitsAnyArgv")
+}
+
+func TestPinsAtMostCommand(t *testing.T) {
+	any := ArgvPolicy{Policy: PolicyAny}
+	for name, tc := range map[string]struct {
+		c    Container
+		want bool
+	}{
+		"any argv, any mounts":       {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, true},
+		"pinned command, any mounts": {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyAny}}, true},
+		"pinned args":                {Container{Command: any, Args: ArgvPolicy{Policy: PolicyExact, Argv: []string{"x"}}, Mounts: MountPolicy{Policy: PolicyAny}}, false},
+		"denied command":             {Container{Command: ArgvPolicy{Policy: PolicyDeny}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, false},
+		"mounts left absent (deny)":  {Container{Command: any, Args: any}, false},
+		"exact env":                  {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.c.PinsAtMostCommand(); got != tc.want {
+				t.Fatalf("PinsAtMostCommand() = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

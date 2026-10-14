@@ -2,12 +2,17 @@
 // client that has verified the endpoint's attestation, and the operator
 // credential that signs a write.
 //
-// It is shared by `c8s allowlist` and `c8s secrets`, which authorize against the
-// same pinned operator keys and reach CDS the same way. The attestation
-// decisions — that plaintext http needs --insecure, that a router front door is
-// trusted through its discovery document, that a direct URL is verified by
-// armTLS — belong in one place, since each is a way to talk to an unattested
-// endpoint by mistake.
+// It is shared by `c8s allowlist`, `c8s secrets`, `c8s volume` and `c8s cds ca`,
+// which reach CDS the same way and, for writes, authorize against the same
+// pinned operator keys. The attestation decisions — that plaintext http needs --insecure, that a
+// router front door is trusted through its discovery document, that a direct
+// URL is verified by armTLS — belong in one place, since each is a way to talk
+// to an unattested endpoint by mistake.
+//
+// Every request one HTTPClient sends reaches one peer: a router front door is a
+// single connection, and a direct armTLS URL is pinned to the serving
+// certificate its first handshake presented. MeshCAGate depends on that: it
+// checks the mesh CA on the client that then carries the write.
 package cdsconn
 
 import (
@@ -72,11 +77,41 @@ func (o *Options) Validate() error {
 // set, so a typo'd or downgraded URL never silently writes to an
 // unauthenticated endpoint.
 func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
+	u, err := o.endpoint()
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "http" {
+		fmt.Fprintln(os.Stderr, "warning: --url is http:// with --insecure; CDS attestation is NOT verified (dev/test only)")
+		return &http.Client{Timeout: o.Timeout}, nil
+	}
+	pins, err := o.loadPins()
+	if err != nil {
+		return nil, err
+	}
+	if pins.Empty() {
+		fmt.Fprintln(os.Stderr, "warning: no --measurements set; accepting any attested endpoint build (UNSAFE)")
+	}
+	hc, err := o.httpsClient(ctx, pins)
+	if err != nil {
+		return nil, err
+	}
+	hc.Timeout = o.Timeout
+	return hc, nil
+}
+
+// CheckEndpoint runs every refusal HTTPClient makes that needs no network, so a
+// command with expensive work before it connects can fail first.
+func (o *Options) CheckEndpoint() error {
+	_, err := o.endpoint()
+	return err
+}
+
+func (o *Options) endpoint() (*url.URL, error) {
 	u, err := url.Parse(o.URL)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("invalid --url %q", o.URL)
 	}
-
 	switch u.Scheme {
 	case "http":
 		if o.MeasurementsConfig != "" {
@@ -85,25 +120,14 @@ func (o *Options) HTTPClient(ctx context.Context) (*http.Client, error) {
 		if !o.Insecure {
 			return nil, fmt.Errorf("refusing plaintext http:// for CDS (no attestation): use https:// (armTLS), or pass --insecure for a dev/test endpoint")
 		}
-		fmt.Fprintln(os.Stderr, "warning: --url is http:// with --insecure; CDS attestation is NOT verified (dev/test only)")
-		return &http.Client{Timeout: o.Timeout}, nil
 	case "https":
-		pins, err := o.loadPins()
-		if err != nil {
+		if _, err := o.loadPins(); err != nil {
 			return nil, err
 		}
-		if pins.Empty() {
-			fmt.Fprintln(os.Stderr, "warning: no --measurements set; accepting any attested endpoint build (UNSAFE)")
-		}
-		hc, err := o.httpsClient(ctx, pins)
-		if err != nil {
-			return nil, err
-		}
-		hc.Timeout = o.Timeout
-		return hc, nil
 	default:
 		return nil, fmt.Errorf("--url scheme must be http or https, got %q", u.Scheme)
 	}
+	return u, nil
 }
 
 // httpsClient builds the attestation-verifying client. A router front door
@@ -122,7 +146,7 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 		fmt.Fprintln(os.Stderr, "note: target is a router front door; verified its discovery attestation and bound this session to the attested connection")
 		return hc, nil
 	case errors.Is(err, routerdiscovery.ErrNoDiscovery):
-		return localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout), nil
+		return pinFirstPeer(localverify.NewARMTLSHTTPClient(pins.Digests(), verify.Verify, o.Timeout))
 	default:
 		return nil, err
 	}

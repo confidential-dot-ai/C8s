@@ -3,6 +3,7 @@
 
 import argparse
 import json
+import shlex
 
 
 def main():
@@ -14,10 +15,32 @@ def main():
     parser.add_argument("command", nargs="+")
     parser.add_argument("--node", help="pin the pod to this node")
     parser.add_argument("--pull-policy", help="the container's imagePullPolicy")
+    parser.add_argument(
+        "--annotation",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="a pod annotation; repeatable",
+    )
+    parser.add_argument("--container-name", default="curl", help="the first container's name")
+    parser.add_argument(
+        "--supplemental-group",
+        type=int,
+        metavar="GID",
+        help="a group the pod's processes are also members of",
+    )
+    parser.add_argument(
+        "--container",
+        action="append",
+        default=[],
+        metavar="'IMAGE CMD...'",
+        help="a further container, its image then its command as one shell-quoted string; "
+        "named c2, c3, ... after the first",
+    )
     args = parser.parse_args()
 
     container = {
-        "name": "curl",
+        "name": args.container_name,
         "image": args.image,
         "command": args.command,
         "securityContext": {
@@ -43,6 +66,13 @@ def main():
         pod["spec"]["nodeName"] = args.node
     if args.pull_policy:
         container["imagePullPolicy"] = args.pull_policy
+    if args.annotation:
+        pod["metadata"]["annotations"] = dict(a.split("=", 1) for a in args.annotation)
+    if args.supplemental_group is not None:
+        pod["spec"]["securityContext"]["supplementalGroups"] = [args.supplemental_group]
+    for i, spec in enumerate(args.container, start=2):
+        words = shlex.split(spec)
+        pod["spec"]["containers"].append(dict(container, name=f"c{i}", image=words[0], command=words[1:]))
     if args.mode == "bad-label":
         pod["metadata"]["labels"] = {"confidential.ai/cw": "rogue"}
     elif args.mode == "bad-hostnet":

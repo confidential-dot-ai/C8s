@@ -32,8 +32,9 @@ import (
 const (
 	challengePrefix = "/.well-known/acme-challenge/"
 	issueTimeout    = 5 * time.Minute
-	// recheckInterval paces the renewal loop; retryInterval is the loop's
-	// pace while no serviceable certificate is on disk.
+	// recheckInterval paces the renewal loop; retryInterval is its pace while
+	// the disk certificate misses a configured name, so a hostname that starts
+	// reaching this router is picked up quickly.
 	recheckInterval = time.Hour
 	retryInterval   = time.Minute
 	accountKeyFile  = "account.key"
@@ -109,8 +110,8 @@ func (m *manager) handler() http.Handler {
 }
 
 // run issues eagerly, then re-checks until ctx is done. Renewal fires at 2/3
-// of the certificate's lifetime; while no serviceable certificate is on disk
-// the loop re-tries at retryInterval.
+// of the certificate's lifetime; while the disk certificate does not cover
+// every configured name the loop re-checks at retryInterval.
 func (m *manager) run(ctx context.Context) {
 	if err := m.bootstrap(); err != nil {
 		m.log.Error("bootstrap certificate failed", "error", err)
@@ -228,7 +229,7 @@ func (m *manager) ensure(ctx context.Context) {
 		return
 	}
 	if err := m.issueDomains(ctx, domains); err != nil {
-		m.log.Error("certificate issuance failed", "domains", m.domains, "error", err)
+		m.log.Error("certificate issuance failed", "domains", domains, "error", err)
 		return
 	}
 	m.log.Info("certificate issued", "domains", domains)
@@ -431,6 +432,8 @@ func (m *manager) fulfillAuthorization(ctx context.Context, client *acme.Client,
 
 // needsIssueFor keeps a valid certificate when it already covers the reachable
 // names. Names outside the signed launch configuration are never retained.
+// A configured name the certificate covers but the probe missed may be a
+// transient failure, so it blocks issuance until 5/6 of the lifetime.
 func (m *manager) needsIssueFor(domains []string) bool {
 	leaf, err := m.diskLeaf()
 	if err != nil || bytes.Equal(leaf.RawIssuer, leaf.RawSubject) {
@@ -441,13 +444,20 @@ func (m *manager) needsIssueFor(domains []string) bool {
 			return true
 		}
 	}
+	lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
+	if time.Now().Before(leaf.NotBefore.Add(lifetime * 5 / 6)) {
+		for _, name := range leaf.DNSNames {
+			if !slices.Contains(domains, name) {
+				return false
+			}
+		}
+	}
 	for _, name := range domains {
 		if !slices.Contains(leaf.DNSNames, name) {
 			return true
 		}
 	}
-	renewAt := leaf.NotBefore.Add(leaf.NotAfter.Sub(leaf.NotBefore) * 2 / 3)
-	return time.Now().After(renewAt)
+	return time.Now().After(leaf.NotBefore.Add(lifetime * 2 / 3))
 }
 
 // reachableDomains prevents an unavailable launch hostname from blocking the

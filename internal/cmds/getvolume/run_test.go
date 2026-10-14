@@ -98,10 +98,15 @@ func TestValidateTrimsURL(t *testing.T) {
 
 func TestNewCmdHasTheSidecarFlags(t *testing.T) {
 	cmd := NewCmd()
-	for _, flag := range []string{"cds-url", "attestation-api-url", "cert", "key", "volume", "socket-dir", "attempts"} {
+	for _, flag := range []string{"cds-url", "attestation-api-url", "cert", "key", "volume", "attempts"} {
 		if cmd.Flags().Lookup(flag) == nil {
 			t.Errorf("missing --%s", flag)
 		}
+	}
+	// The socket directory is baked in: a flag would let a pod author redirect
+	// the key handoff.
+	if cmd.Flags().Lookup("socket-dir") != nil {
+		t.Error("--socket-dir is a flag; the node agent's socket directory must be baked in")
 	}
 }
 

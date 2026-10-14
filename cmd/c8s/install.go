@@ -101,10 +101,11 @@ const platformExemptNamespace = "kube-system"
 // against, so an operator's -f override of a repository cannot leave the chart
 // deploying repoA@<digest-of-repoB>.
 type c8sComponent struct {
-	valuePrefix  string // values path, e.g. "cds.image" (renders {repository}@{digest})
-	repository   string // values.yaml default repository resolved against
-	enabledPath  string // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
-	pinnedDigest string // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
+	valuePrefix  string   // values path, e.g. "cds.image" (renders {repository}@{digest})
+	repository   string   // values.yaml default repository resolved against
+	enabledPath  string   // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
+	pinnedDigest string   // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
+	entrypoint   []string // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
 }
 
 // chartComponents reads the component set from the chart at chartPath via
@@ -147,7 +148,17 @@ func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, err
 		enabledPath, _ := m["enabledPath"].(string)
 		// pinnedDigest is optional; absent/empty means resolve at the install tag.
 		pinnedDigest, _ := m["pinnedDigest"].(string)
-		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest})
+		var entrypoint []string
+		if raw, ok := m["entrypoint"].([]any); ok {
+			for _, tok := range raw {
+				tok, ok := tok.(string)
+				if !ok {
+					return nil, fmt.Errorf("component %q: entrypoint must be a list of strings: %v", valuePath, raw)
+				}
+				entrypoint = append(entrypoint, tok)
+			}
+		}
+		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest, entrypoint: entrypoint})
 	}
 	return comps, nil
 }
@@ -1972,8 +1983,8 @@ func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, ima
 }
 
 // buildWorkloadImageArgs renders one any-argv bootstrapAllowlist.workloads
-// entry per adopted image digest, named and shaped as `c8s allowlist add` and
-// the chart's own component entries are (pkgallowlist.DigestEntry).
+// entry per adopted image digest, named and shaped as `c8s allowlist add`
+// writes one (pkgallowlist.DigestEntry).
 func buildWorkloadImageArgs(helmArgs []string, images []string, resolve func(ref string) (string, error)) ([]string, error) {
 	entries := map[string]string{}
 	digests := map[string]types.Digest{}
@@ -2039,6 +2050,9 @@ func tagCouplingHint(repo string) string {
 
 // appendResolvedDigestArgs resolves each chart component's repo:tag to its
 // registry digest (via crane) and appends the helm --set flags that pin it.
+// Every pinned image, resolved or chart-pinned, is checked against the
+// entrypoint the chart seeds it under: a pin the image does not start with
+// would render a seed that denies the component on its own node.
 func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []string, tag string, components []c8sComponent) ([]string, error) {
 	if !crane.Available() {
 		return nil, fmt.Errorf("digest resolution needs the 'crane' CLI on PATH; install it or pass --resolve-digests=false and supply digests via -f")
@@ -2046,6 +2060,16 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 	enabled, err := componentEnabledPredicate(ctx, chartPath, helmArgs)
 	if err != nil {
 		return nil, err
+	}
+	byRef := map[string]c8sComponent{}
+	for _, c := range components {
+		byRef[c.repository+":"+tag] = c
+		if c.pinnedDigest == "" || c.enabledPath != "" && !boolAtPathOrFalse(enabled, c.enabledPath) {
+			continue
+		}
+		if err := checkComponentEntrypoint(ctx, c, c.pinnedDigest); err != nil {
+			return nil, err
+		}
 	}
 	return buildDigestArgs(helmArgs, tag, components, func(ref string) (string, error) {
 		digest, err := crane.Digest(ctx, ref)
@@ -2055,8 +2079,38 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 		// Progress to stderr: render-values writes the values bundle to stdout,
 		// so stdout must stay clean. Install's stdout is diagnostic too.
 		fmt.Fprintf(os.Stderr, "+ resolved %s -> %s\n", ref, digest)
+		if c, ok := byRef[ref]; ok {
+			if err := checkComponentEntrypoint(ctx, c, digest); err != nil {
+				return "", err
+			}
+		}
 		return digest, nil
 	}, enabled)
+}
+
+func boolAtPathOrFalse(enabled func(string) (bool, error), path string) bool {
+	on, err := enabled(path)
+	return err == nil && on
+}
+
+// checkComponentEntrypoint reads the image config at repo@digest and requires
+// the component's seeded entrypoint to be a prefix of the argv the image bakes
+// (ENTRYPOINT then CMD). A component without an entrypoint is seeded
+// argv-pinned elsewhere and has nothing to check.
+func checkComponentEntrypoint(ctx context.Context, c c8sComponent, digest string) error {
+	if len(c.entrypoint) == 0 {
+		return nil
+	}
+	ref := c.repository + "@" + digest
+	cfg, err := crane.Config(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("component %s: read the image config to check its entrypoint: %w", c.valuePrefix, err)
+	}
+	baked := slices.Concat(cfg.Config.Entrypoint, cfg.Config.Cmd)
+	if len(baked) < len(c.entrypoint) || !slices.Equal(baked[:len(c.entrypoint)], c.entrypoint) {
+		return fmt.Errorf("component %s: image %s starts with %q, but the chart seeds it pinned to %q (c8sComponents[].entrypoint); the node plugin would deny it. Align the entrypoint with the image", c.valuePrefix, ref, baked, c.entrypoint)
+	}
+	return nil
 }
 
 // componentEnabledPredicate reports the effective enabled value at a component's

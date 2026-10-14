@@ -41,16 +41,26 @@ const (
 	ChallengeHeader = "X-C8s-Challenge"
 )
 
-// InjectedEntrypoints are the argv[0] values the admission webhook injects the
-// C8s image with: get-cert for the cert sidecar, /c8s for the probe-file gate,
-// get-secret for the fetcher, and get-volume for the volume fetcher. A
-// container must be running one of these, on an injected digest, to be excluded
-// from workload matching — see WorkloadContainers.
+// InjectedBinary is the C8s image's entrypoint (cmd/c8s/Dockerfile), so it is
+// argv[0] of every container the admission webhook injects.
+const InjectedBinary = "/c8s"
+
+// InjectedModes are the c8s subcommands the admission webhook injects the C8s
+// image with: get-cert for the cert sidecar, probe-file for the cert-wait gate,
+// get-secret for the secret fetcher, and get-volume for the volume fetcher. A
+// container is dropped from workload matching only if it runs InjectedBinary
+// in one of these modes, on an injected digest; see WorkloadContainers.
 //
-// An entrypoint added here widens the assumption in docs/secrets.md that no
-// image admitted with an unconstrained argv other than C8s's carries an
-// executable at one of these names.
-var InjectedEntrypoints = []string{"get-cert", "get-secret", "get-volume", "/c8s"}
+// The same image in any other mode — cds-attest, allowlist-proxy, or anything
+// a pod author adds — is a declared container that the workload entry must
+// admit.
+//
+// A pod author can also add the image in one of these modes, with arguments of
+// their own. That container is dropped too: the inventory reports no container
+// name, and matching keys on nothing the host writes. It is dropped only while
+// its mounts confine it to the node (confinedMount), so whatever it fetches or
+// writes cannot reach any location the host reads.
+var InjectedModes = []string{"get-cert", "get-secret", "get-volume", "probe-file"}
 
 // RateKey charges a request to the sandbox its client certificate names, so a
 // rate limit bounds one workload rather than one address.
@@ -465,16 +475,44 @@ func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.Sa
 }
 
 // isInjected reports whether a reported container is one C8s injected: its
-// image is admitted under an unconstrained argv AND its entrypoint is one C8s
-// injects. Both halves are required — an unconstrained image running a shell is
-// not injected. Rests on no unconstrained image other than C8s's carrying an
-// executable at one of InjectedEntrypoints (docs/secrets.md).
+// argv is the C8s binary in one of the modes the webhook injects, its image is
+// admitted running that binary under an unconstrained args policy (the seeded
+// component entry pins the executable and nothing else, since the arguments
+// are per-pod), and every mount it holds is confined to the node. All three
+// conditions are required. An image admitted with open args but running a
+// shell is not injected. Nor is the C8s image in a mode the webhook never
+// injects: that container is declared, however it is invoked. Nor is an
+// injected mode with a mount the host can read: dropping it would exempt from
+// matching the one container able to fetch for the pod (docs/secrets.md).
 func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) bool {
-	if len(c.Argv) == 0 {
+	if len(c.Argv) < 2 || c.Argv[0] != InjectedBinary {
 		return false
 	}
-	if !al.AdmitsAnyArgv(c.Digest) {
+	if !slices.Contains(InjectedModes, c.Argv[1]) {
 		return false
 	}
-	return slices.Contains(InjectedEntrypoints, c.Argv[0])
+	if !al.AdmitsAnyArgs(c.Digest, c.Argv) {
+		return false
+	}
+	// nil is unavailable evidence, which fails closed like an exact policy.
+	if c.Mounts == nil {
+		return false
+	}
+	return !slices.ContainsFunc(c.Mounts, func(m pkgallowlist.ObservedMount) bool { return !confinedMount(m) })
+}
+
+// confinedMount reports whether a mount keeps what a container writes inside
+// the node's TEE boundary: a node-created platform mount, a read-only host
+// path, or a volume on memory or encrypted scratch. The host can read what a
+// container writes to a writable host path, or to a volume on storage the node
+// cannot vouch for (a disk-backed emptyDir, a PVC).
+func confinedMount(m pkgallowlist.ObservedMount) bool {
+	switch m.Class {
+	case pkgallowlist.MountPlatform:
+		return true
+	case pkgallowlist.MountHost:
+		return m.ReadOnly
+	default:
+		return m.Storage == pkgallowlist.MountMemory || m.Storage == pkgallowlist.MountEncrypted
+	}
 }

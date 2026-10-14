@@ -89,7 +89,8 @@ preference:
    only on a Unix socket. `attest-proxy --health-addr` serves `GET /healthz` by
    making the same round-trip over its own socket that its exec probe used to
    make; `armtls-mesh iptables-sync --ready-addr` and `acme --ready-port` do the
-   same for their readiness signals.
+   same for their readiness signals, and `nri-image-policy plugin-ready` serves
+   the NRI installer's readiness from whether the host plugin process is alive.
 3. SIGTERM handling instead of a `preStop` hook. The mesh's cleanup sidecar
    runs `armtls-mesh iptables-cleanup --on-shutdown`, which idles until SIGTERM
    and then cleans up; native sidecars stop in reverse init order, so it still

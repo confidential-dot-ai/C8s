@@ -92,6 +92,10 @@ type evidence struct {
 	// frontDoorCertSHA256 is the hex SHA-256 of the leaf the live handshake
 	// presented ("" when no handshake was observed).
 	frontDoorCertSHA256 string
+	// servingLeafSHA256 is the unpadded base64url SHA-256 of the serving leaf
+	// an attest-lb transcript was verified against, the form the receipt's
+	// serving_leaf_sha256 carries ("" for other gathers).
+	servingLeafSHA256 string
 	// leafKeyProven is true when a live TLS handshake with the leaf completed,
 	// which proves the presenter holds the attested private key. A forged body
 	// carrying someone else's attested SubjectPublicKeyInfo cannot complete
@@ -139,6 +143,9 @@ type attestationResponse struct {
 	XWingCT       string                   `json:"xwing_ct"`
 	SessionID     string                   `json:"session_id"`
 	IdentityProof *types.MeshIdentityProof `json:"identity_proof"`
+	// ServingLeafSHA256 is informational (pkg/types): the verifier recomputes
+	// it from the leaf it observed and only checks that the two agree.
+	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
 }
 
 // leafTrust is what a caller can offer to authenticate a leaf body that is

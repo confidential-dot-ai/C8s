@@ -49,6 +49,23 @@ paths follow the config schema version (`config-v3.toml.d` for schema v3).
 Because it lives in the chart, this runs for both `c8s install` and GitOps
 `HelmRelease` installs without manual containerd-template edits.
 
+The plugin is a host process, not a pod, and NRI does not respawn it: when a
+callback overruns containerd's `plugin_request_timeout`, NRI drops the plugin
+and it exits. The `c8s-nri-image-policy-worker` pod on that node then goes
+NotReady: its `plugin-ready` container answers the readiness probe only while
+containerd's child process launched from `nriImagePolicy.hostPaths.pluginDir`
+exists. Only a containerd restart brings the plugin back. On RKE2 that means
+restarting the whole `rke2-server` or `rke2-agent` unit, kubelet (and on a
+server, the API server) included. Deleting the pod reruns the installer, which
+does that restart when it finds no plugin process and the plugin's health
+socket does not answer either, at most once every 10 minutes per node. A
+rollout does the same, so a node whose plugin had already died does not hold
+it.
+
+The timeout defaults to `2s` and is set by `nriImagePolicy.requestTimeout`.
+The setting has no effect under `nriImagePolicy.baked` (which `bare-metal`
+mode sets), where the node image's containerd drop-in fixes it at `2s`.
+
 ---
 
 ## What runs where
@@ -106,7 +123,7 @@ sequenceDiagram
     Helm->>K: create operator Deployment, CDS, ...
     Helm->>K: create MWC pod-injector (failurePolicy=Fail, empty caBundle)
     Op->>Op: bootstrapWebhookPKI: mint ephemeral CA + serving cert
-    Op->>K: patch MWC caBundle (every operator start)
+    Op->>K: prepend CA to MWC caBundle (every operator start)
     Op->>K: reinject sweep: delete controller-owned cw pods admitted uninjected
     Note over Pods,K: in-scope pod created before the caBundle patch →<br/>webhook call fails → Fail rejects → ReplicaSet retries
     Pods->>K: (retry) admitted + mutated correctly
@@ -122,8 +139,21 @@ Key properties (see `templates/webhook.yaml`, `controller/runner.go`):
   which excludes the release namespace (plus `kube-system`, `kube-public`,
   `kube-node-lease`, and `webhook.extraExcluded`), so the operator can always
   boot to patch the caBundle — no deadlock.
-- The webhook CA is **ephemeral**: `bootstrapWebhookPKI` re-mints it and
-  re-patches the caBundle on every operator start. The chart renders the
+- The operator reports **Ready only once its webhook TLS listener accepts
+  connections** (`/readyz` dials it), so it never becomes a Service endpoint
+  that refuses admission calls.
+- The webhook CA is **ephemeral**: `bootstrapWebhookPKI` re-mints it on
+  every operator start, its key only in process memory, and adds it to the
+  caBundle, keeping the previous pod's CA. During a rolling update the old pod
+  stays the only Ready endpoint until the new one is, so replacing the bundle
+  would fail admission in between. The CA's CommonName carries the pod name
+  (`POD_NAME`), so a container restart replaces its own pod's entry in place
+  and a crash-looping pod cannot push the old pod's CA out. Once the new pod
+  holds the leader Lease (the old one has stopped) and its webhook serves, it
+  prunes the CAs of pods older than itself. With `--leader-elect=false`
+  nothing is ever pruned: the bundle keeps one CA per past pod, at most 16,
+  dropping the oldest pods' first (the CAs are valid for ten years, so expiry
+  rarely trims it). The chart renders the
   `caBundle` field only when `webhook.caBundle` is set, so a `helm upgrade`
   leaves the operator-patched bundle in place and MWC spec changes roll out
   like any other resource.
@@ -213,11 +243,11 @@ sequenceDiagram
 
 **`c8s uninstall`** wraps the Helm step and adds a host sweep after the release
 is gone. A short-lived privileged DaemonSet removes chart-installed NRI policy,
-mesh netfilter state, and managed containerd-prep templates, preserving baked
-node-image components. Release values are read before deletion so install-time
-`-f` overrides are honored. `--host-sweep=false` skips the sweep;
-`--host-sweep-only` recovers a cluster whose release a bare `helm uninstall`
-already deleted. See [`operator.md`](operator.md#uninstall).
+mesh netfilter state, managed containerd-prep templates, and idle
+`c8s volume attach` LIO disks, preserving baked node-image components. Release
+values are read before deletion so install-time `-f` overrides are honored.
+`--host-sweep=false` skips the sweep; `--host-sweep-only` recovers a cluster
+whose release a bare `helm uninstall` already deleted. See [`operator.md`](operator.md#uninstall).
 
 ---
 

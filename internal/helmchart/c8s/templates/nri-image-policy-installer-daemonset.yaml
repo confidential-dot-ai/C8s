@@ -123,17 +123,41 @@ spec:
           resources:
             {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
       containers:
-        - name: pause
+        # Holds the pod, and its readiness follows the host plugin: the plugin
+        # exits when its NRI connection drops and NRI does not respawn it, so a
+        # bare sleep here left the DaemonSet Ready over a node admitting without
+        # it. See runPluginReady for why it checks the process (visible through
+        # hostPID) rather than the health socket, and why HTTP, not exec.
+        #
+        # Readiness only: a restart of this container reruns neither the
+        # install nor containerd, and the plugin comes back only when
+        # containerd restarts.
+        - name: plugin-ready
           image: {{ include "nri-image-policy.image" . }}
           imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
-          command: ["/bin/sh", "-c", "sleep infinity"]
+          command: ["/bin/sh", "-c"]
+          args:
+            - {{ include "nri-image-policy.pluginReadyScript" . | quote }}
+          ports:
+            - name: plugin-ready
+              containerPort: {{ include "nri-image-policy.pluginReadyPort" . }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: plugin-ready
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          # Measured at about 47Mi resident, most of it the c8s binary's file
+          # pages, which the cgroup charges like any other memory.
           resources:
             requests:
               cpu: 10m
-              memory: 16Mi
+              memory: 48Mi
             limits:
               cpu: 50m
-              memory: 32Mi
+              memory: 64Mi
       volumes:
         {{- if .Values.nriImagePolicy.baked }}
         {{- include "nri-image-policy.pinsVolumes" . | nindent 8 }}

@@ -1,10 +1,10 @@
 // Package cdsca implements `c8s cds ca`: read the CDS mesh CA bundle over the
 // attested connection.
 //
-// The bundle is the anchor `--mesh-ca` takes on `c8s secrets put` and
-// `c8s verify`. It is read from the same `GET /ca` route that gate compares
-// against, over the channel cdsconn builds — armTLS to a direct CDS URL, a
-// verified discovery document at a router front door.
+// The bundle is the anchor `--mesh-ca` takes on `c8s secrets put`,
+// `c8s volume create` and `c8s verify`. It is read from the same `GET /ca`
+// route that gate compares against, over the channel cdsconn builds — armTLS to
+// a direct CDS URL, a verified discovery document at a router front door.
 package cdsca
 
 import (
@@ -52,8 +52,8 @@ func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
 		Use:   "ca",
 		Short: "Read the CDS mesh CA bundle over the attested connection",
 		Long: `Read the mesh CA bundle CDS serves at GET /ca and write it as PEM to --out,
-or to stdout. This is the anchor 'c8s secrets put --mesh-ca' and
-'c8s verify --mesh-ca' take.
+or to stdout. This is the anchor 'c8s secrets put --mesh-ca',
+'c8s volume create --mesh-ca' and 'c8s verify --mesh-ca' take.
 
 The read travels the attested connection those commands use and requires endpoint
 pins: use --image-policy-file for a complete image policy, or --measurements

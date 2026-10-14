@@ -28,28 +28,30 @@ by this command.`,
 			return err
 		}
 		return controller.Run(cmd.Context(), controller.Options{
-			MetricsAddr:               metricsAddr,
-			HealthAddr:                healthAddr,
-			LeaderElection:            leaderElection,
-			LeaderElectionID:          "c8s-operator.confidential.ai",
-			LeaderElectionNS:          leaderElectionNS,
-			DisableStatusMirror:       !statusMirrorEnabled,
-			GetCertImage:              getCertImage,
-			CDSURL:                    cdsURL,
-			AttestationApiURL:         attestationApiURL,
-			CDSMeasurements:           cdsMeasurements,
-			CDSRTMRs:                  cdsRTMRs,
-			CDSMeasurementsConfigJSON: policyJSON,
-			ExcludeNamespaces:         excludeNamespaces,
-			WebhookConfigName:         webhookConfigName,
-			WebhookServiceName:        webhookServiceName,
-			WebhookServiceNamespace:   webhookServiceNamespace,
-			CertFSGroup:               certFSGroup,
-			CertRenewInterval:         certRenewInterval,
-			GetCertRunAsUser:          getCertRunAsUser,
-			GetCertRunAsGroup:         getCertRunAsGroup,
-			GetCertRunAsNonRoot:       getCertRunAsNonRoot,
-			WorkloadClaimsHostDir:     workloadClaimsHostDir,
+			MetricsAddr:                 metricsAddr,
+			HealthAddr:                  healthAddr,
+			LeaderElection:              leaderElection,
+			LeaderElectionID:            "c8s-operator.confidential.ai",
+			LeaderElectionNS:            leaderElectionNS,
+			DisableStatusMirror:         !statusMirrorEnabled,
+			GetCertImage:                getCertImage,
+			CDSURL:                      cdsURL,
+			AttestationApiURL:           attestationApiURL,
+			CDSMeasurements:             cdsMeasurements,
+			CDSRTMRs:                    cdsRTMRs,
+			CDSMeasurementsConfigJSON:   policyJSON,
+			ExcludeNamespaces:           excludeNamespaces,
+			WebhookConfigName:           webhookConfigName,
+			WebhookServiceName:          webhookServiceName,
+			WebhookServiceNamespace:     webhookServiceNamespace,
+			CertFSGroup:                 certFSGroup,
+			CertRenewInterval:           certRenewInterval,
+			GetCertRunAsUser:            getCertRunAsUser,
+			GetCertRunAsGroup:           getCertRunAsGroup,
+			GetCertRunAsNonRoot:         getCertRunAsNonRoot,
+			WorkloadClaimsHostDir:       workloadClaimsHostDir,
+			MeshOutboundPort:            meshOutboundPort,
+			MeshExcludeSourceNamespaces: meshExcludeSourceNamespaces,
 		})
 	},
 }
@@ -76,7 +78,9 @@ var (
 	getCertRunAsGroup       int64
 	getCertRunAsNonRoot     bool
 
-	workloadClaimsHostDir string
+	workloadClaimsHostDir       string
+	meshOutboundPort            int32
+	meshExcludeSourceNamespaces []string
 )
 
 func init() {
@@ -100,6 +104,10 @@ func init() {
 	operatorCmd.Flags().Int64Var(&getCertRunAsUser, "get-cert-run-as-user", 65532, "runAsUser for injected get-cert containers")
 	operatorCmd.Flags().Int64Var(&getCertRunAsGroup, "get-cert-run-as-group", 65532, "runAsGroup for injected get-cert containers")
 	operatorCmd.Flags().BoolVar(&getCertRunAsNonRoot, "get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
+	operatorCmd.Flags().Int32Var(&meshOutboundPort, "mesh-outbound-port", 0, "node mesh outbound listener port (armtls-mesh --outbound-port); when set, the operator keeps a companion NetworkPolicy beside every egress-isolating policy in an intercepted namespace allowing TCP to it (0 = off)")
+	// The default must match armtls-mesh's --exclude-source-namespaces
+	// default; the chart passes both from one value.
+	operatorCmd.Flags().StringSliceVar(&meshExcludeSourceNamespaces, "mesh-exclude-source-namespaces", []string{"kube-system"}, "namespaces the node mesh does not intercept (mirrors armtls-mesh --exclude-source-namespaces); they get no companion policies")
 	operatorCmd.Flags().StringVar(&workloadClaimsHostDir, "workload-claims-host-dir", "", "host directory holding the nri-image-policy inventory socket (node-CVM); when set, NRI mounts it into c8s-cert and the webhook injects --workload-claims so get-cert redeems a sandbox token (docs/armtls.md)")
 	rootCmd.AddCommand(operatorCmd)
 }

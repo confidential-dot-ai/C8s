@@ -25,18 +25,26 @@ node:
 ##                  absent at a C8s release tag. Only `c8s install` reads it, so
 ##                  a chart consumer that sets the component's image.tag or
 ##                  image.digest itself is unaffected.
+##   - entrypoint:  the executable the derived allowlist entry pins the image
+##                  to, as the argv prefix every container running the image
+##                  starts with (the image's ENTRYPOINT, plus the subcommand
+##                  when the image bakes one). Arguments stay unconstrained:
+##                  they are per-pod. Required unless argvPinned.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
   - valuePath: image
     enabledPath: ""
     cdsExempt: false
+    entrypoint: ["/c8s"]
   - valuePath: cds.image
     enabledPath: ""
     cdsExempt: true
+    entrypoint: ["/c8s", "cds"]
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     cdsExempt: false
+    entrypoint: ["/attestation-api"]
     ## Released by attestation-rs: the image built from .github/build-pins.json's
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
@@ -44,6 +52,7 @@ c8sComponents:
   - valuePath: armtlsMesh.image
     enabledPath: armtlsMesh.enabled
     cdsExempt: false
+    entrypoint: ["/app/c8s", "armtls-mesh"]
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
     cdsExempt: false
@@ -54,6 +63,7 @@ c8sComponents:
   - valuePath: volumed.image
     enabledPath: volumed.enabled
     cdsExempt: false
+    entrypoint: ["/app/c8s", "volumed"]
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -579,9 +589,19 @@ armtlsMesh:
   # (drop); this NetworkPolicy is the defence-in-depth layer. namespaces is a
   # per-namespace opt-in list; when empty the policy renders into the release
   # namespace only, and the guard covers every managed namespace regardless.
+  # It imposes isolation; egressCompanionPolicy below relaxes a user's own
+  # isolation for the mesh port. The two are independent.
   tcpEgressPolicy:
     enabled: true
     namespaces: []
+
+  # Mesh egress companions: the operator keeps a companion NetworkPolicy
+  # beside every policy of yours that isolates egress in an intercepted
+  # namespace, allowing the selected pods TCP to ports.outbound, which is
+  # where the mesh sends every pod-to-pod connection. Additive only; see
+  # docs/operator.md, "Workload namespaces with default-deny egress".
+  egressCompanionPolicy:
+    enabled: true
 
   # ValidatingAdmissionPolicy to prevent pods from running as mesh UID
   uidAdmissionPolicy:
@@ -750,14 +770,26 @@ nriImagePolicy:
     # equal value measured into the node image, which an override cannot reach.
     interval: 5s
 
+  # containerd's NRI plugin_request_timeout: how long containerd waits on one
+  # plugin callback. A callback that overruns it makes NRI drop the plugin,
+  # which then exits and is not respawned until containerd restarts; the
+  # installer pod goes NotReady when that happens. Raise it on nodes where the
+  # plugin resolves image tags against a busy containerd. A Go duration
+  # ("2s", "500ms"). Changing it restarts containerd on each node as the
+  # installer rolls out. Under
+  # `baked` the node image's drop-in sets it, which an override cannot reach.
+  requestTimeout: 2s
+
   # --- Bootstrap allowlist ---
   # The entries the cluster needs before an operator writes anything, rendered
   # into CDS's --allowlist-seed (templates/cds.yaml) beside the chart's own
   # component entries, so CDS's served /allowlist is non-empty on the first
-  # worker pull. An entry admitting a digest under any command and args also
-  # lands in every plugin's base allowlist (nri-image-policy.bootConfig), so the
-  # cluster can bring itself up before CDS is reachable; an entry that pins a
-  # command line is seed-only.
+  # worker pull. An entry admitting a digest with open args, env and mounts,
+  # under any command or pinned to one, also lands in every plugin's base
+  # allowlist (nri-image-policy.bootConfig), so the cluster can bring itself
+  # up before CDS is reachable; an entry that pins args, env or mounts is
+  # seed-only. The chart's own component entries pin each image's entrypoint
+  # (c8sComponents[].entrypoint) and land in both.
   #
   # Everything needed to reach a Ready CDS on the CDS node and a working kubelet
   # on every node goes here as any-argv entries — the C8s component images plus
@@ -770,7 +802,8 @@ nriImagePolicy:
     # `c8s install --resolve-digests`, which turns it on). When true, the C8s
     # component images this chart installs (operator, cds, attestation-api,
     # armtls-mesh) are seeded and admitted whenever their image.digest is set,
-    # so a digest-pinned install self-allows the C8s images without an entry
+    # each pinned to its entrypoint with the arguments left open, so a
+    # digest-pinned install self-allows the C8s images without an entry
     # for each. It never covers the non-c8s system images, so production
     # installs pin the full set in `workloads` instead. nri-image-policy is
     # not derived: the chart seeds it argv-pinned, and a same-named entry
@@ -806,9 +839,10 @@ nriImagePolicy:
   nodeAffinity:
     excludeLabels: []
 
-  # Resources for the install-DaemonSet pod itself (init container that
-  # copies files and patches containerd, then sleeps idle). Not the host
-  # plugin process, which runs outside K8s and has no resource limits.
+  # Resources for the install-DaemonSet's init container, which copies files
+  # and patches containerd; its long-running plugin-ready container sets its
+  # own. Not the host plugin process, which runs outside K8s and has no
+  # resource limits.
   # The install init enters all host namespaces (nsenter -t 1) and spawns a
   # transient systemd unit (systemd-run) to restart containerd; that init peak
   # OOM-kills under a 64Mi limit on confidential nodes, so the limit is
@@ -1204,6 +1238,10 @@ router:
       digest: "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
       tag: ""
       pullPolicy: IfNotPresent
+    # The argv prefix the seeded allowlist entry pins this image to: its
+    # ENTRYPOINT and the first CMD token, which the entrypoint script requires
+    # before it execs anything. Bump with the image if either changes.
+    entrypoint: ["/docker-entrypoint.sh", "nginx"]
     # -- Number of nginx replicas.
     replicas: 1
     # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs

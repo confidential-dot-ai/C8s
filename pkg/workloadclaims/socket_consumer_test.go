@@ -2,14 +2,20 @@ package workloadclaims
 
 import "testing"
 
-func TestAttestationSidecarSocketConsumer(t *testing.T) {
-	if !IsSocketConsumer("cds-attest") {
-		t.Fatal("attestation sidecar has no socket access")
+func TestSocketConsumers(t *testing.T) {
+	for name, want := range map[string]bool{
+		CertContainerName:     true,
+		SecretContainerName:   true,
+		VolumeContainerName:   true,
+		AttestContainerName:   true,
+		CertWaitContainerName: false,
+		"gateway":             false,
+	} {
+		if got := IsSocketConsumer(name); got != want {
+			t.Errorf("IsSocketConsumer(%q) = %v, want %v", name, got, want)
+		}
 	}
-	if IsInjectedContainerName("cds-attest") {
-		t.Fatal("application sidecar marked as webhook injected")
-	}
-	if IsSocketConsumer("gateway") {
-		t.Fatal("ordinary workload receives node sockets")
+	if IsInjectedContainerName(AttestContainerName) {
+		t.Error("an application's cds-attest must not count as a webhook-injected container")
 	}
 }

@@ -164,3 +164,64 @@ func TestDigestConstantsAreWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// A pinned executable comes from the image only while no mount the pod chose
+// covers its path. With mounts left to the host, a volume bound over the
+// binary, or over a directory above it, would run the pod author's bytes
+// under the pinned name.
+func TestAdmitsContainerPinnedExecutableNotShadowedByMount(t *testing.T) {
+	pinned := func(mounts MountPolicy) *Index {
+		return (&Allowlist{Workloads: map[string]Workload{"c": {Containers: []Container{{
+			Digest:  dig(t, dApp),
+			Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/app/c8s", "serve"}},
+			Args:    ArgvPolicy{Policy: PolicyAny},
+			Mounts:  mounts,
+			Env:     EnvPolicy{Policy: PolicyAny},
+		}}}}}).BuildIndex()
+	}
+	anyMounts := MountPolicy{Policy: PolicyAny}
+	platform := ObservedMount{Destination: "/etc/hosts", Class: MountPlatform}
+	data := func(dest string) ObservedMount {
+		return ObservedMount{Destination: dest, Class: MountData, Storage: MountMemory}
+	}
+	for name, tc := range map[string]struct {
+		index  *Index
+		argv   []string
+		mounts []ObservedMount
+		want   bool
+	}{
+		"no pod mounts":                      {pinned(anyMounts), []string{"/app/c8s", "serve"}, []ObservedMount{platform}, true},
+		"mount elsewhere":                    {pinned(anyMounts), []string{"/app/c8s", "serve"}, []ObservedMount{platform, data("/mnt/c8s-data/cfg")}, true},
+		"mount over the binary":              {pinned(anyMounts), []string{"/app/c8s", "serve"}, []ObservedMount{platform, data("/app/c8s")}, false},
+		"mount over a parent directory":      {pinned(anyMounts), []string{"/app/c8s", "serve"}, []ObservedMount{data("/app/")}, false},
+		"mount with a sibling prefix":        {pinned(anyMounts), []string{"/app/c8s", "serve"}, []ObservedMount{data("/app/c8s-data")}, true},
+		"unclean destination":                {pinned(anyMounts), []string{"/app/c8s", "serve"}, []ObservedMount{data("/app//c8s/")}, false},
+		"no mount evidence yet":              {pinned(anyMounts), []string{"/app/c8s", "serve"}, nil, true},
+		"declared mounts are the operator's": {pinned(MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/app", Kind: MountData}}}), []string{"/app/c8s", "serve"}, []ObservedMount{data("/app")}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := tc.index.AdmitsContainer(RunningContainer{Digest: dApp, Argv: tc.argv, Mounts: tc.mounts, Env: &EnvObservation{}})
+			if got != tc.want {
+				t.Fatalf("AdmitsContainer(argv=%q, mounts=%v) = %v, want %v", tc.argv, tc.mounts, got, tc.want)
+			}
+		})
+	}
+}
+
+// An unpinned command has nothing to shadow, and a relative one is resolved
+// by the container's PATH, which admission cannot follow; neither is checked.
+func TestAdmitsContainerShadowRuleOnlyForAbsolutePinnedCommand(t *testing.T) {
+	entry := func(command ArgvPolicy) *Index {
+		return (&Allowlist{Workloads: map[string]Workload{"c": {Containers: []Container{{
+			Digest: dig(t, dApp), Command: command, Args: ArgvPolicy{Policy: PolicyAny},
+			Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyAny},
+		}}}}}).BuildIndex()
+	}
+	over := []ObservedMount{{Destination: "/usr/bin", Class: MountData, Storage: MountMemory}}
+	if !entry(ArgvPolicy{Policy: PolicyAny}).AdmitsContainer(RunningContainer{Digest: dApp, Argv: []string{"/usr/bin/sh"}, Mounts: over, Env: &EnvObservation{}}) {
+		t.Fatal("an any command is not shadowed")
+	}
+	if !entry(ArgvPolicy{Policy: PolicyExact, Argv: []string{"python3"}}).AdmitsContainer(RunningContainer{Digest: dApp, Argv: []string{"python3"}, Mounts: over, Env: &EnvObservation{}}) {
+		t.Fatal("a relative command is not shadowed")
+	}
+}

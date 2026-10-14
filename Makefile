@@ -80,8 +80,9 @@ build-nri-image-policy:
 # C8S_TEST_COUNT= lets CI use Go's content-addressed test cache; the local
 # default keeps forced reruns.
 C8S_TEST_COUNT ?= -count=1
+# `work` covers every go.work module; ./... stops at the root module.
 test:
-	go test -race $(C8S_TEST_COUNT) -timeout=120s ./...
+	go test -race $(C8S_TEST_COUNT) -timeout=120s work
 
 test-integration:
 	./test/integration/run.sh
@@ -191,7 +192,7 @@ test-e2e-cw-workload:
 # --- Linting ---
 
 vet:
-	go vet ./...
+	go vet work
 
 # gofmt over tracked Go files only.
 fmt:

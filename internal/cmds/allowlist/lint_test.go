@@ -206,15 +206,19 @@ func TestInspectImageJSON(t *testing.T) {
 
 // --- shadowed entries ---
 
+// The union warning fires only for a container left entirely to the host. A
+// shadow needs less: the wide entry admits every launch the narrow one does,
+// field by field — the narrow entry here pins its argv, leaves mounts at the
+// default deny and env at the default any.
 func TestLintUnconstrainedChecksAllLaunchFields(t *testing.T) {
 	for _, tc := range []struct {
-		name, fields string
-		wantAny      bool
+		name, fields        string
+		wantAny, wantShadow bool
 	}{
-		{"all any", `"mounts":{"policy":"any"},"env":{"policy":"any"}`, true},
-		{"default mounts", `"env":{"policy":"any"}`, false},
-		{"deny mounts", `"mounts":{"policy":"deny"},"env":{"policy":"any"}`, false},
-		{"deny env", `"mounts":{"policy":"any"},"env":{"policy":"deny"}`, false},
+		{"all any", `"mounts":{"policy":"any"},"env":{"policy":"any"}`, true, true},
+		{"default mounts", `"env":{"policy":"any"}`, false, true},
+		{"deny mounts", `"mounts":{"policy":"deny"},"env":{"policy":"any"}`, false, true},
+		{"deny env", `"mounts":{"policy":"any"},"env":{"policy":"deny"}`, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wide := `[{"digest":"` + digA + `","command":{"policy":"any"},"args":{"policy":"any"},` + tc.fields + `}]`
@@ -227,8 +231,8 @@ func TestLintUnconstrainedChecksAllLaunchFields(t *testing.T) {
 			if gotAny != tc.wantAny {
 				t.Fatalf("unconstrained warning = %v, want %v", gotAny, tc.wantAny)
 			}
-			if got := shadows(al.Workloads["alpha"], al.Workloads["beta"]); got != tc.wantAny {
-				t.Fatalf("unconstrained shadow = %v, want %v", got, tc.wantAny)
+			if got := shadows(al.Workloads["alpha"], al.Workloads["beta"]); got != tc.wantShadow {
+				t.Fatalf("shadow = %v, want %v", got, tc.wantShadow)
 			}
 		})
 	}
@@ -272,6 +276,26 @@ func TestLintShadowedEntry(t *testing.T) {
 	// reported once, not as a shadow in each direction as well.
 	if got := errs(`"a":` + wide + `,"b":` + wide); len(got) != 1 || !strings.Contains(got[0], "declare the same containers") {
 		t.Fatalf("identical entries should yield one indistinguishable error, got %v", got)
+	}
+
+	// A seeded component entry pins the executable and leaves the arguments
+	// open, so it still shadows an entry pinning an invocation of that binary.
+	component := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"any"}}]}`
+	attest := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`
+	if got := errs(`"seeded":` + component + `,"attest":` + attest); len(got) != 1 || !strings.Contains(got[0], `workload "attest" can never be the unique match: "seeded"`) {
+		t.Fatalf("component-shaped entry did not shadow a narrower invocation: %v", got)
+	}
+	// Another executable, or an open command the pin does not cover, is
+	// distinguishable; so is a mount set the wide entry does not admit.
+	deniedMounts := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"deny"},"env":{"policy":"any"}}]}`
+	for name, tc := range map[string]struct{ wide, narrow string }{
+		"other executable": {component, `{"containers":[` + ctrJSON(digA, "/app") + `]}`},
+		"open command":     {component, `{"containers":[{"digest":"` + digA + `","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]},"mounts":{"policy":"any"}}]}`},
+		"declared mounts":  {deniedMounts, `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/cfg","kind":"data"}]}}]}`},
+	} {
+		if got := errs(`"seeded":` + tc.wide + `,"narrow":` + tc.narrow); len(got) != 0 {
+			t.Fatalf("%s: a distinguishable entry was reported: %v", name, got)
+		}
 	}
 }
 
