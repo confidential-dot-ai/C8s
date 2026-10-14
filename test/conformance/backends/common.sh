@@ -144,6 +144,9 @@
 #   external_endpoint                <address>:<port> of a hello API outside
 #                                    the cluster, or 77
 #   attestation_endpoint             the URL a pod obtains evidence from, or 77
+#   dialer_bin                       the armtls-dial binary for the node's
+#                                    architecture, built once per run; 77
+#                                    without a Go toolchain
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
 #   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
@@ -182,9 +185,9 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
-# undeclared while a scenario admits this one. "mesh-dialer" is the image of
-# test/conformance/tools/armtls-dial, the mesh peer the steps drive; where it
-# comes from is the backend's (dialer_image).
+# undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
+# tar for the copy, which no other logical image shares.
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
@@ -194,13 +197,23 @@ image_ref() {
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
-        mesh-dialer) dialer_image ;;
+        mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
         *) return $UNSUPPORTED ;;
     esac
 }
 
-# A pullable reference of the armtls-dial image, or 77 until it is published.
-dialer_image() { return "$UNSUPPORTED"; }
+# The mesh peer the steps drive, built from this checkout for the node's
+# architecture once per run; the steps copy it into the pod that dials.
+dialer_bin() {
+    local bin arch
+    bin="$(cd "$(scratch)" && pwd)/armtls-dial" || return
+    if [ ! -x "$bin" ]; then
+        command -v go >/dev/null || return "$UNSUPPORTED"
+        arch="$(kubectl get node "$(node_name one)" -o jsonpath='{.status.nodeInfo.architecture}')" || return
+        CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -C "$C8S_ROOT" -ldflags='-s -w' -o "$bin" ./test/conformance/tools/armtls-dial >&2 || return 1
+    fi
+    echo "$bin"
+}
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
 # which the node image bakes as the equal value (node-guest-image/c8s/

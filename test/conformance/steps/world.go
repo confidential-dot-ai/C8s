@@ -66,14 +66,15 @@ type pod struct {
 	refusal    *refusal
 	// How the mesh sentences shape the pod: the ports its hello APIs and
 	// datagram listener use, pod_manifest options, a namespace other than
-	// the scenario's, the certificate a dialer in it presents, and its
-	// addresses once running.
+	// the scenario's, the certificate a dialer in it presents, whether the
+	// dialer is in it yet, and its addresses once running.
 	hello     []int
 	datagram  int
 	listener  string // the container whose log shows the datagrams received
 	opts      []string
 	namespace string
 	cert      *peerCert
+	dialer    bool // the mesh peer has been copied into the pod
 	addrs     []string
 	// What the secrets sentences add: the secret client's NAME=path specs,
 	// an init container (which "that container" addresses while initLast),

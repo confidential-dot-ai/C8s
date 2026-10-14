@@ -49,18 +49,6 @@ image_alias() {
     node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
 }
 
-# The mesh peer the steps drive, built from this checkout and loaded into the
-# node the way the harness loads the component images, once per run.
-DIALER_IMAGE="ghcr.io/confidential-dot-ai/armtls-dial:$IMAGE_TAG"
-dialer_image() {
-    if [ ! -e "$WORKDIR/armtls-dial.loaded" ]; then
-        docker build -q -f "$C8S_ROOT/test/conformance/tools/armtls-dial/Dockerfile" -t "$DIALER_IMAGE" "$C8S_ROOT" >/dev/null || return 1
-        kind load docker-image "$DIALER_IMAGE" --name "$CLUSTER" >/dev/null || return 1
-        touch "$WORKDIR/armtls-dial.loaded"
-    fi
-    echo "$DIALER_IMAGE"
-}
-
 # A hello API outside the cluster: a container on the kind docker network,
 # which pods reach through the node's address translation, so the address is
 # neither a pod's nor a Service's.

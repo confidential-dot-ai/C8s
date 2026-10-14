@@ -134,8 +134,9 @@ pod it renders may ping: the pod carries the `net.ipv4.ping_group_range`
 sysctl, and the tenant image's ping (Alpine's) uses an ICMP datagram socket
 under it, which the library busybox image's does not. A peer that connects to the inbound
 proxy itself, presenting a certificate the scenario shaped, is
-[`tools/armtls-dial`](tools/armtls-dial/README.md), run inside a pod of the
-image the backend builds for the logical image `mesh-dialer`.
+[`tools/armtls-dial`](tools/armtls-dial/README.md), which the backend builds
+for the node's architecture and the steps copy into a pod of the logical
+image `mesh-dialer`.
 
 For scenarios about secret release, the backend sends one request to the CDS
 as the scenario shaped it (`cds_request`: a method, a route, a body, an
@@ -164,9 +165,9 @@ rejects unknown names.
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
-change with c8s. The tools under [`tools/`](tools) are built into images by the backends and
-may import c8s packages: they stand in for peers the cluster does not have,
-not for the steps' judgement. A change to any of those updates the backend in
+change with c8s. The tools under [`tools/`](tools) are built by the backends,
+copied into pods by the steps, and may import c8s packages: they stand in for
+peers the cluster does not have, not for the steps' judgement. A change to any of those updates the backend in
 the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
 

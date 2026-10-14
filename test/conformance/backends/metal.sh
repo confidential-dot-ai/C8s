@@ -99,8 +99,7 @@ attest_direct() { return "$UNSUPPORTED"; }
 mesh_pins_satisfied() { echo yes; }
 
 # No address outside the cluster answers for the lane, and a pod that is not
-# injected has no socket to the attestation service; the mesh peer image is
-# built by the kind harness and not published.
+# injected has no socket to the attestation service.
 external_endpoint() { return "$UNSUPPORTED"; }
 attestation_endpoint() { return "$UNSUPPORTED"; }
 

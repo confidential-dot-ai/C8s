@@ -16,9 +16,9 @@ import (
 // Sentences about the armTLS mesh: which pod traffic its proxies carry, what
 // its guards drop, and what the inbound proxy makes of a peer that connects
 // to it. Pods act through kubectl exec (the tenant image's wget, nc, ping and
-// python); a peer is the armtls-dial tool in a pod of the "mesh-dialer"
-// image, which dials
-// the inbound proxy presenting the certificate the scenario described. The
+// python); a peer is the armtls-dial tool, copied into a pod of the
+// "mesh-dialer" image, which dials the inbound proxy presenting the
+// certificate the scenario described. The
 // proxies are observed through the counters of the node's mesh pod and its
 // ipsets, read by the backend.
 func registerMesh(sc *godog.ScenarioContext) {
@@ -1161,9 +1161,23 @@ func (w *world) mintCert(p *pod) error {
 	return nil
 }
 
-// armtlsDial runs the mesh peer in the pod's first container.
+// dialerPath is where the mesh peer sits in the pod that runs it.
+const dialerPath = "/tmp/armtls-dial"
+
+// armtlsDial runs the mesh peer in the pod's first container, copying the
+// binary the backend built there the first time.
 func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
-	return kubectl(nil, append([]string{"-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--", "/armtls-dial"}, args...)...)
+	if !p.dialer {
+		bin, err := w.be.call("dialer_bin")
+		if err != nil {
+			return "", err
+		}
+		if _, err := kubectl(nil, "cp", bin, w.nsOf(p)+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
+			return "", err
+		}
+		p.dialer = true
+	}
+	return kubectl(nil, append([]string{"-n", w.nsOf(p), "exec", p.name, "-c", firstContainer, "--", dialerPath}, args...)...)
 }
 
 // --- Outcomes ---
