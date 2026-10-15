@@ -362,7 +362,10 @@ sidecars: a discovery or reload-watch volume the pod names for `get-cert` must
 be memory-backed, or the sidecar is foreign and the pod matches nothing. The
 node admits a real sidecar only under the mount table its shape pins, so a
 discovery volume must be an `emptyDir` and a reload-watch volume a Secret,
-ConfigMap or projected volume. Each
+ConfigMap or projected volume. On a node without encrypted scratch (a GKE,
+AKS or kind node), a ConfigMap volume and a disk-backed `emptyDir` observe as
+`unknown` and the node refuses the sidecar: use `emptyDir: {medium: Memory}`
+for discovery, and a Secret or projected volume for reload-watch. Each
 mode finds the node's sockets at a baked-in path, never a flag, so a pod author
 cannot point one at a socket of their choosing.
 
@@ -471,7 +474,9 @@ unless they name the fixed destination. To migrate a pod, remove the
 annotation and read the files at the fixed path.
 `confidential.ai/c8s-discovery-out` and `confidential.ai/c8s-reload-watch-paths`
 must name files below the fixed discovery and reload-watch destinations, or
-the webhook refuses the pod. A pod admitted before
+the webhook refuses the pod. Back the discovery and reload-watch volumes
+with tmpfs unless the node has encrypted scratch; see
+[The injected drop set](#the-injected-drop-set). A pod admitted before
 the upgrade keeps its old mounts until a sidecar restarts or the pod is
 recreated; from then on the node refuses its sidecars, and the webhook refuses
 the pod until the annotation is gone.
