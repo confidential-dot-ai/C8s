@@ -82,6 +82,7 @@ type config struct {
 	WorkloadClaims                  bool
 	WorkloadClaimsTimeout           time.Duration
 	UnnamedRenewInterval            time.Duration
+	ExpectedWorkload                string
 }
 
 // inventoryEndpoint returns the compiled admission-inventory endpoint. It is a
@@ -101,6 +102,7 @@ var (
 	errInvalidRenewJitterPercent                 = errors.New("invalid renew jitter percent")
 	errReloadWatchRequiresRenewInterval          = errors.New("reload watch requires renew interval")
 	errContinueOnInitialErrorRequiresRenewalLoop = errors.New("continue on initial error requires renewal loop")
+	errExpectedWorkloadRequiresClaimsLoop        = errors.New("expected workload requires workload claims and a renewal loop")
 )
 
 // NewCmd returns the cobra subcommand. It is registered as a child of
@@ -161,6 +163,7 @@ alongside a workload that uses the obtained certificate.`,
 	flags.BoolVar(&cfg.WorkloadClaims, "workload-claims", false, "Request an inventory-signed sandbox token, which CDS verifies and stamps into the issued leaf, from the local inventory at get-cert's compiled Unix socket path — nri-image-policy on node-CVM (docs/armtls.md). The path is baked in, not supplied, so the control plane cannot redirect the request; fail-closed if the inventory is unreachable")
 	flags.DurationVar(&cfg.WorkloadClaimsTimeout, "workload-claims-timeout", 5*time.Second, "Timeout for the admission inventory request")
 	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew while the installed leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
+	flags.StringVar(&cfg.ExpectedWorkload, "expected-workload", "", "The allowlist entry this pod should be stamped with; requires --workload-claims and --renew-interval. A leaf stamped with any other name stays on the --unnamed-renew-interval fast poll, logged once per name, instead of settling. Issuance never fails on a mismatch (empty = any stamp settles)")
 
 	_ = cmd.MarkFlagRequired("cds-url")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
@@ -310,6 +313,8 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 	// matched-workload stamp; failures counts consecutive renewal errors. Both
 	// only pace the timer.
 	var unnamedRuns, failures int
+	warned := map[string]bool{}
+	warnUnexpectedWorkload(cfg, leaf, warned)
 	next := renewalInterval(cfg, leaf, unnamedRuns)
 	if !haveCert {
 		next = initialBackoff.NextBackOff()
@@ -378,6 +383,8 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			}
 			// A pending retry already re-issues, and an unparsed or unnamed
 			// leaf has no stamp to compare: the unnamed fast poll covers it.
+			// A leaf naming another entry than --expected-workload is still
+			// checked: the fast poll may be off or backed off.
 			// The policy check resumes once a renewal succeeds and failures is 0.
 			if !cfg.WorkloadClaims || leaf == nil || failures > 0 || policyRenewPending {
 				continue
@@ -435,8 +442,9 @@ func renewLoop(ctx context.Context, cfg config, client attestclient.Client, poli
 			haveCert = true
 			failures = 0
 			leaf = renewed
+			warnUnexpectedWorkload(cfg, leaf, warned)
 			policyVersion = stampedPolicyVersion(leaf)
-			if isNamedLeaf(leaf) {
+			if isNamedLeaf(cfg, leaf) {
 				unnamedRuns = 0
 			} else {
 				unnamedRuns++
@@ -549,7 +557,7 @@ func renewalInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) time.D
 // here and clamped by the caller, so it can never push a delay past
 // --renew-interval or past the installed leaf's remaining lifetime.
 func unnamedPollInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) time.Duration {
-	if !cfg.WorkloadClaims || cfg.UnnamedRenewInterval <= 0 || isNamedLeaf(leaf) {
+	if !cfg.WorkloadClaims || cfg.UnnamedRenewInterval <= 0 || isNamedLeaf(cfg, leaf) {
 		return 0
 	}
 	// Start at unnamedFirstPoll and double per unnamed renewal up to the flag:
@@ -581,6 +589,9 @@ func unnamedPollInterval(cfg config, leaf *x509.Certificate, unnamedRuns int) ti
 // ordinary pacing, which is itself bounded by the installed leaf's remaining
 // lifetime.
 func renewalRetryInterval(cfg config, leaf *x509.Certificate, failures int) time.Duration {
+	// A wrong-name leaf still serves; back off like a named one, not at the
+	// fast poll, so a CDS outage is not retried every few seconds.
+	cfg.ExpectedWorkload = ""
 	ceiling := renewalInterval(cfg, leaf, 0)
 	delay := renewalRetryBase
 	for i := 1; i < failures && delay < ceiling; i++ {
@@ -594,13 +605,46 @@ func shouldRestartAfterRenewalFailures(leaf *x509.Certificate, failures int) boo
 }
 
 // isNamedLeaf reports whether the installed leaf carries a valid
-// matched-workload stamp. A nil, unparseable, or unstamped leaf is not named.
-func isNamedLeaf(leaf *x509.Certificate) bool {
+// matched-workload stamp naming --expected-workload, or any name when that
+// is unset. A nil, unparseable, or unstamped leaf is not named. A pod stamped
+// while its sandbox is still starting can match a subset entry, so a wrong
+// name keeps polling rather than settling on it.
+func isNamedLeaf(cfg config, leaf *x509.Certificate) bool {
+	name := stampedWorkload(leaf)
+	return name != "" && (cfg.ExpectedWorkload == "" || name == cfg.ExpectedWorkload)
+}
+
+// stampedWorkload returns the leaf's matched-workload name, or "" for a nil,
+// unparseable, or unstamped leaf.
+func stampedWorkload(leaf *x509.Certificate) string {
 	if leaf == nil {
-		return false
+		return ""
 	}
 	matched, err := armtls.MatchedWorkloadFromCert(leaf)
-	return err == nil && matched != nil
+	if err != nil || matched == nil {
+		return ""
+	}
+	return matched.Name
+}
+
+// warnUnexpectedWorkload logs a leaf stamped with a name other than
+// --expected-workload, once per name recorded in warned until a leaf names
+// the expected workload.
+func warnUnexpectedWorkload(cfg config, leaf *x509.Certificate, warned map[string]bool) {
+	name := stampedWorkload(leaf)
+	if !cfg.WorkloadClaims || cfg.ExpectedWorkload == "" || name == "" {
+		return
+	}
+	if name == cfg.ExpectedWorkload {
+		// A later regression to a wrong name logs again.
+		clear(warned)
+		return
+	}
+	if warned[name] {
+		return
+	}
+	warned[name] = true
+	slog.Warn("certificate stamped with an unexpected workload; renewing until it names the expected one", "stamped_workload", name, "expected_workload", cfg.ExpectedWorkload)
 }
 
 // obtainCertWithRetry runs the first certificate request, retrying in-process
@@ -774,6 +818,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.ContinueOnInitialError && cfg.RenewInterval <= 0 {
 		return fmt.Errorf("%w: --continue-on-initial-error requires --renew-interval", errContinueOnInitialErrorRequiresRenewalLoop)
+	}
+	if cfg.ExpectedWorkload != "" && (!cfg.WorkloadClaims || cfg.RenewInterval <= 0) {
+		return fmt.Errorf("%w: --expected-workload requires --workload-claims and --renew-interval", errExpectedWorkloadRequiresClaimsLoop)
 	}
 	return nil
 }

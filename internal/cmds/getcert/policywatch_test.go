@@ -334,6 +334,27 @@ func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
 	}
 }
 
+// A leaf naming another entry than --expected-workload still renews on a
+// policy change: with the fast poll off, nothing else would re-issue it before
+// --renew-interval.
+func TestRenewLoopPolicyWatchRenewsUnexpectedWorkload(t *testing.T) {
+	cds := &fakeAllowlist{}
+	cds.set(4, policyTwoWorkloads)
+	url := cds.serve(t)
+	attempts := stubIssueUnderCurrentPolicy(t, cds)
+
+	cfg := policyWatchConfig()
+	cfg.ExpectedWorkload = "worker"
+	startRenewLoop(t, cfg, url, stampedLeaf(t, "4", policyTwoWorkloads))
+
+	cds.waitForTicks(t, 2)
+	if got := len(attempts()); got != 0 {
+		t.Fatalf("%d renewals before the allowlist changed, want 0", got)
+	}
+	cds.set(5, policyRouterOnly)
+	waitForAttempts(t, attempts, 1)
+}
+
 func TestStampedPolicyStale(t *testing.T) {
 	tests := []struct {
 		name        string
