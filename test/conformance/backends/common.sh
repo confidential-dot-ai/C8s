@@ -122,7 +122,12 @@
 #                                    the node's
 #   evidence_unsigned <ns> <pod> <report-data-hex>
 #                                    evidence whose signature does not verify
-#   pod_exec                         yes: steps may exec in a pod's containers
+#   pod_exec                         how steps run a command in a pod: kubectl
+#                                    (exec), or agent (agent_run)
+#   agent_run <ns> <pod> <container> <script>
+#                                    where pod_exec is agent: the sh script's
+#                                    combined output as base64, its status as
+#                                    the function's
 #   pod_cert_file <ns> <pod> <file> [container]
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
@@ -316,7 +321,8 @@ render_pod() {
 # The webhook mounts the certificate volume here in every container of a pod
 # carrying a workload ID; read through one of them, once it runs.
 CERT_VOLUME_PATH=/etc/c8s/certs
-pod_exec() { echo yes; }
+pod_exec() { echo kubectl; }
+agent_run() { return "$UNSUPPORTED"; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is

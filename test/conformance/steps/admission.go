@@ -128,6 +128,7 @@ func argv(ctx context.Context, line string) error {
 		return errors.New("no container has been described yet")
 	}
 	w.lastPod.last().command = strings.Fields(line)
+	w.lastPod.last().stated = true
 	return nil
 }
 
@@ -150,6 +151,10 @@ func environment(ctx context.Context, line string) error {
 	w.lastPod.last().env = strings.Fields(line)
 	return nil
 }
+
+// annotationHarnessArgv marks a pod whose first container runs an argv the
+// harness chose, beside which a backend may run its pod agent (metal.sh).
+const annotationHarnessArgv = "c8s-conformance/harness-argv"
 
 // deployOnNode applies the pod. The entries the scenario described must have
 // reached the plugin first, which only the applied sentence promises.
@@ -188,6 +193,10 @@ func deployOnNode(ctx context.Context, name, node string) error {
 			renewal = secretsRenewal
 		}
 		args = append(args, "--annotation", annotationCW+"="+p.name, "--annotation", annotationRenewal+"="+renewal)
+	}
+	if !p.containers[0].stated {
+		// The backend may run more beside an argv the harness chose.
+		args = append(args, "--annotation", annotationHarnessArgv+"=yes")
 	}
 	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {

@@ -193,24 +193,59 @@ PYEOF
 }
 
 # The node image's confos-pod-exec policy closes pod exec for every
-# principal, so nothing here runs in a pod through exec.
-pod_exec() { return "$UNSUPPORTED"; }
+# principal, so a command reaches a pod through its own annotations instead
+# (agent_run below).
+pod_exec() { echo agent; }
 
-# A command reaches a pod through its own annotations instead. A pod whose
-# first container would only `sleep 3600` (the steps' placeholder argv) runs
-# an agent there: it reads two annotations from a downward-API volume, which
-# the kubelet rewrites when the pod is patched, runs the command they carry
-# and prints its combined output and status to the container log.
+# A pod whose first container runs an argv the harness chose (the steps mark
+# it c8s-conformance/harness-argv) runs an agent there, in place of the
+# placeholder `sleep 3600` or beside anything else: it reads two annotations
+# from a downward-API volume, which the kubelet rewrites when the pod is
+# patched, runs the command they carry and prints its combined output and
+# status to the container log.
 AGENT=c8s-conformance/agent
 AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
 AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; base64 -d '"$AGENT_DIR"'/cmd > /tmp/.agent-cmd 2>/dev/null; sh /tmp/.agent-cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
 
-pod_manifest() {
-    render_pod --sysctl "$PING_SYSCTL" "$@" | jq -c --arg a "$AGENT" --arg dir "$AGENT_DIR" --arg script "$AGENT_SCRIPT" --arg q "'" '
-        if .spec.containers[0].command == ["sleep", "3600"] then
+pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@" | agent_wrap; }
+
+requester_manifest() {
+    local image
+    image="$(image_ref requester)" || return
+    render_pod --annotation confidential.ai/c8s-injected=true --annotation c8s-conformance/harness-argv=yes \
+        --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
+        -- "$1" "$2" "$3" "$image" sleep 3600 | agent_wrap
+}
+
+# Sent by curl in the requester through its agent; the body travels in the
+# command, as the agent has no stdin.
+requester_request() {
+    local ns="$1" pod="$2" method="$3" url="$4" body="${5:-}" socket="${6:-}" resp script
+    local -a opts=(-sk --max-time 30 -X "$method" -w '\n%{http_code}')
+    [ -z "$socket" ] || opts+=(--unix-socket "$socket")
+    if [ -n "$body" ]; then
+        opts+=(-H 'Content-Type: application/json' --data-binary @-)
+        script="echo $(base64 < "$body" | tr -d '\n') | base64 -d | curl $(shq "${opts[@]}" "$url")"
+    else
+        script="curl $(shq "${opts[@]}" "$url")"
+    fi
+    resp="$(agent_run "$ns" "$pod" "$REQUESTER_CONTAINER" "$script")"
+    [ $? != "$UNSUPPORTED" ] || return "$UNSUPPORTED"
+    resp="$(printf '%s' "$resp" | base64 -d)"
+    echo "${resp##*$'\n'}"
+    printf '%s\n' "${resp%$'\n'*}"
+}
+
+# shq <word...>: each word single-quoted for a POSIX sh.
+shq() { local w; for w in "$@"; do printf "'%s' " "${w//\'/\'\\\'\'}"; done; }
+
+agent_wrap() {
+    jq -c --arg a "$AGENT" --arg dir "$AGENT_DIR" --arg script "$AGENT_SCRIPT" --arg q "'" '
+        if .metadata.annotations["c8s-conformance/harness-argv"] == "yes" then
             .metadata.annotations += {($a): "yes", ($a + "-seq"): "0", ($a + "-cmd"): ""}
-            | .spec.containers[0].command = ["sh", "-c", $script]
+            | .spec.containers[0].command |= (if . == ["sleep", "3600"] then ["sh", "-c", $script]
+                else ["sh", "-c", "(" + (map(@sh) | join(" ")) + ") & " + $script] end)
             | .spec.containers[0].volumeMounts += [{name: "c8s-conformance-agent", mountPath: $dir, readOnly: true}]
             | .spec.volumes += [{name: "c8s-conformance-agent", downwardAPI: {items: [
                 {path: "seq", fieldRef: {fieldPath: ("metadata.annotations[" + $q + $a + "-seq" + $q + "]")}},
@@ -218,24 +253,35 @@ pod_manifest() {
         else . end'
 }
 
-# agent_exec <ns> <pod> <command...>: its output, and its status as ours; 77
-# for a pod without the agent, 1 when the agent has not answered in a minute.
-agent_exec() {
-    local ns="$1" pod="$2" seq line container rc out deadline
-    shift 2
-    [ "$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null | jq -r --arg a "$AGENT" '.metadata.annotations[$a] // empty')" = yes ] ||
-        return "$UNSUPPORTED"
-    container="$(kubectl -n "$ns" get pod "$pod" -o jsonpath='{.spec.containers[0].name}')" || return
+# agent_run <ns> <pod> <container> <script>: the sh script's combined output
+# as base64, and its status as ours. The agent runs in the first
+# container alone, so another named container answers 77, as does a pod
+# without the agent; 1 when the agent has not answered in a minute.
+agent_run() {
+    local ns="$1" pod="$2" want="$3" script="$4" pod_json seq line container rc out deadline
+    pod_json="$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null)" || return "$UNSUPPORTED"
+    [ "$(jq -r --arg a "$AGENT" '.metadata.annotations[$a] // empty' <<<"$pod_json")" = yes ] || return "$UNSUPPORTED"
+    container="$(jq -r '.spec.containers[0].name' <<<"$pod_json")"
+    [ -z "$want" ] || [ "$want" = "$container" ] || return "$UNSUPPORTED"
     seq="$(date +%s%N)"
     kubectl -n "$ns" annotate pod "$pod" --overwrite \
-        "$AGENT-cmd=$(printf '%q ' "$@" | base64 | tr -d '\n')" "$AGENT-seq=$seq" >/dev/null || return
+        "$AGENT-cmd=$(printf '%s' "$script" | base64 | tr -d '\n')" "$AGENT-seq=$seq" >/dev/null || return
     deadline=$(($(date +%s) + 60))
     until line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep "^agent $seq " | tail -1)" && [ -n "$line" ]; do
         [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the agent in $ns/$pod did not answer within 60s" >&2; return 1; }
         sleep 1
     done
     read -r _ _ rc out <<<"$line"
-    printf '%s' "${out:-}" | base64 -d
+    printf '%s' "${out:-}"
+    return "$rc"
+}
+
+# agent_exec <ns> <pod> <script>: agent_run in the first container, its
+# output decoded.
+agent_exec() {
+    local out rc=0
+    out="$(agent_run "$1" "$2" "" "$3")" || rc=$?
+    printf '%s' "$out" | base64 -d
     return "$rc"
 }
 
@@ -243,7 +289,7 @@ agent_exec() {
 # pod_cert_file answers elsewhere; 77 for a pod without the agent.
 pod_cert_file() {
     local out rc=0
-    out="$(agent_exec "$1" "$2" cat "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    out="$(agent_exec "$1" "$2" "cat '$CERT_VOLUME_PATH/$3'" 2>/dev/null)" || rc=$?
     case "$rc" in
         0) printf '%s\n' "$out" ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
