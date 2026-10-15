@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -334,6 +335,43 @@ func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
 			if v.EmptyDir.SizeLimit == nil {
 				t.Errorf("%s/%s volume %q: memory emptyDir without sizeLimit", w.kind, w.name, v.Name)
 			}
+		}
+	}
+}
+
+// The schema accepts any positive Kubernetes quantity as the store's memory
+// limit and renders it as the volume's sizeLimit.
+func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
+	for _, tc := range []struct {
+		flag, value, want string
+	}{
+		{"--set-string", "64Mi", "64Mi"},
+		{"--set-string", "1.5Gi", "1536Mi"},
+		{"--set-string", "100M", "100M"},
+		{"--set-string", "67108864", "64Mi"},
+		{"--set-string", "128e6", "128M"},
+		{"--set-string", "+2Gi", "2Gi"},
+		{"--set-string", "0.5Gi", "512Mi"},
+		{"--set", "67108864", "64Mi"},
+	} {
+		out, err := helmTemplate(t, tc.flag, "cds.persistence.memorySizeLimit="+tc.value)
+		if err != nil {
+			t.Errorf("helm template %s memorySizeLimit=%s: %v\n%s", tc.flag, tc.value, err, out)
+			continue
+		}
+		pod := renderedDeployment(t, out, "c8s-cds").Spec.Template.Spec
+		i := slices.IndexFunc(pod.Volumes, func(v corev1.Volume) bool { return v.Name == "data" })
+		if i < 0 || pod.Volumes[i].EmptyDir == nil || pod.Volumes[i].EmptyDir.SizeLimit == nil {
+			t.Errorf("memorySizeLimit=%s: no data emptyDir with a sizeLimit in %+v", tc.value, pod.Volumes)
+			continue
+		}
+		if got := pod.Volumes[i].EmptyDir.SizeLimit; got.Cmp(resource.MustParse(tc.want)) != 0 {
+			t.Errorf("memorySizeLimit=%s: sizeLimit = %s, want %s", tc.value, got, tc.want)
+		}
+	}
+	for _, value := range []string{"0Mi", "0.0", "-64Mi", "64MB", "Mi", "64 Mi"} {
+		if out, err := helmTemplate(t, "--set-string", "cds.persistence.memorySizeLimit="+value); err == nil {
+			t.Errorf("helm template memorySizeLimit=%s succeeded, want a schema error\n%s", value, out)
 		}
 	}
 }
