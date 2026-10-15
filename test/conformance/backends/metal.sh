@@ -63,8 +63,6 @@ image_digest() { c8s allowlist inspect-image "$1" | awk '$1 == "digest:" {print 
 
 image_alias() { return $UNSUPPORTED; }
 
-served_allowlist() { al export; }
-
 # The lane's allowlist URL is the router on the guest's public address: the
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
@@ -245,6 +243,5 @@ plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
 
-served_version() { al list | awk '$1 == "version" {sub(/:$/, "", $2); print $2; exit}'; }
 
 dispatch "$@"

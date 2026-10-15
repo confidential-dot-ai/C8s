@@ -437,6 +437,10 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
+# Raw reads, so the steps see the document the CDS serves, as served.
+served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
+served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
+
 allowlist_get() {
     local url headers body status
     url="$(cds_url)" || return
