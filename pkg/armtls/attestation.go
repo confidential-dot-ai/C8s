@@ -11,7 +11,6 @@ import (
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 )
 
 // The armTLS extension, its wire format and its verification live in
@@ -85,7 +84,18 @@ func WithRuntimeExtensions(att *Attestation) (*Attestation, error) {
 
 // runtimeJournals are where this node's measured-policy journal may be; the
 // first that exists wins. Var so tests can move it.
-var runtimeJournals = []string{policymeasure.NodeJournal, policymeasure.SidecarJournal}
+// MeasuredPoliciesJournal is the journal of the allowlist policies a TDX node
+// extends into RTMR[3], in the NRI plugin's runtime directory. NodeJournal is
+// its path on the node and in pods that mount the runtime directory at its
+// host path; SidecarJournal is its path in sidecars the plugin mounts the
+// directory into.
+const (
+	MeasuredPoliciesJournal = "measured-policies"
+	NodeJournal             = "/var/run/nri-image-policy/" + MeasuredPoliciesJournal
+	SidecarJournal          = "/run/c8s/workload-claims/" + MeasuredPoliciesJournal
+)
+
+var runtimeJournals = []string{NodeJournal, SidecarJournal}
 
 // RuntimeExtensions returns the RTMR[3] runtime extensions this node
 // journaled, nil when it journals none. Call it after obtaining the evidence:
