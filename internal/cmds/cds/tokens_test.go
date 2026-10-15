@@ -32,7 +32,7 @@ func TestSingleUse(t *testing.T) {
 	}
 	denied := errors.New("denied")
 	var verdict error
-	authorize := singleUse(func(*http.Request, []byte) error { return verdict }, &store, time.Time{}, 0)
+	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, verdict }, &store, time.Time{}, 0)
 	r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 	r.Header.Set("Authorization", "Bearer "+token)
 
@@ -85,7 +85,7 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	twin := token[:dot+1] + base64.RawURLEncoding.EncodeToString(sig)
 
 	verifier := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}}
-	authorize := singleUse(verifier.Authorize, &store, time.Time{}, 0)
+	authorize := singleUse(verifier.AuthorizeIssuedAt, &store, time.Time{}, 0)
 	request := func(token string) *http.Request {
 		r := httptest.NewRequest(http.MethodPut, "/allowlist", nil)
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -113,19 +113,18 @@ func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 	defer store.Close()
 	start := time.Unix(1_700_000_000, 0)
 	const skew = 30 * time.Second
-	authorize := singleUse(func(*http.Request, []byte) error { return nil }, &store, start, skew)
 	for _, tc := range []struct {
-		name   string
-		claims jwt.MapClaims
-		ok     bool
+		name string
+		iat  time.Time
+		ok   bool
 	}{
-		{"issued before start", jwt.MapClaims{"iat": start.Add(-time.Second).Unix()}, false},
-		{"issued at start", jwt.MapClaims{"iat": start.Unix()}, false},
-		{"issued inside the skew", jwt.MapClaims{"iat": start.Add(skew - time.Second).Unix()}, false},
-		{"issued at start plus skew", jwt.MapClaims{"iat": start.Add(skew).Unix()}, true},
-		{"no iat", jwt.MapClaims{}, false},
+		{"issued before start", start.Add(-time.Second), false},
+		{"issued at start", start, false},
+		{"issued inside the skew", start.Add(skew - time.Second), false},
+		{"issued at start plus skew", start.Add(skew), true},
 	} {
-		r := bearerRequest(t, tc.claims)
+		authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return tc.iat, nil }, &store, start, skew)
+		r := bearerRequest(t, jwt.MapClaims{"iat": tc.iat.Unix()})
 		if err := authorize(r, nil); (err == nil) != tc.ok {
 			t.Errorf("%s: authorize = %v, want ok=%v", tc.name, err, tc.ok)
 		}
@@ -138,8 +137,9 @@ func TestSingleUseRefusesTokensBeforeStart(t *testing.T) {
 func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 	const skew = 30 * time.Second
 	start := time.Unix(1_700_000_000, 0)
-	r := bearerRequest(t, jwt.MapClaims{"iat": start.Add(5 * time.Second).Unix()})
-	allow := func(*http.Request, []byte) error { return nil }
+	iat := start.Add(5 * time.Second)
+	r := bearerRequest(t, jwt.MapClaims{"iat": iat.Unix()})
+	allow := func(*http.Request, []byte) (time.Time, error) { return iat, nil }
 
 	first, err := allowlist.OpenInMemory()
 	if err != nil {

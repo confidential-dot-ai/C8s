@@ -158,26 +158,18 @@ type Verifier struct {
 // token signed by one of the pinned keys. Any failure returns a non-nil error
 // and the caller must reject the mutation.
 func (v Verifier) Authorize(r *http.Request, body []byte) error {
+	_, err := v.AuthorizeIssuedAt(r, body)
+	return err
+}
+
+// AuthorizeIssuedAt is Authorize, also returning the verified token's iat.
+func (v Verifier) AuthorizeIssuedAt(r *http.Request, body []byte) (time.Time, error) {
 	tokenStr, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if !ok || tokenStr == "" {
-		return fmt.Errorf("missing operator bearer token")
+		return time.Time{}, fmt.Errorf("missing operator bearer token")
 	}
 	return verifyToken(v.Keys, tokenStr, r.Method, r.URL.Path, body,
 		jwt.WithLeeway(v.ClockSkew), jwt.WithIssuedAt(), jwt.WithExpirationRequired())
-}
-
-// TokenIssuedAt returns the iat claim of a token Authorize or VerifyStored
-// already checked; it does not verify the token itself.
-func TokenIssuedAt(token string) (time.Time, error) {
-	claims := jwt.MapClaims{}
-	if _, _, err := jwt.NewParser().ParseUnverified(token, claims); err != nil {
-		return time.Time{}, err
-	}
-	iat, err := claims.GetIssuedAt()
-	if err != nil || iat == nil {
-		return time.Time{}, fmt.Errorf("operator token missing iat claim")
-	}
-	return iat.Time, nil
 }
 
 // VerifyStored checks a token that authorized a past request: its signature
@@ -186,12 +178,14 @@ func TokenIssuedAt(token string) (time.Time, error) {
 // read; the server that accepted the request enforced them. It still
 // requires exp−iat within MaxTokenValidity.
 func VerifyStored(keys []*ecdsa.PublicKey, token, method, path string, body []byte) error {
-	return verifyToken(keys, token, method, path, body, jwt.WithoutClaimsValidation())
+	_, err := verifyToken(keys, token, method, path, body, jwt.WithoutClaimsValidation())
+	return err
 }
 
-func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []byte, opts ...jwt.ParserOption) error {
+// verifyToken returns the iat claim of a token it verified.
+func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []byte, opts ...jwt.ParserOption) (time.Time, error) {
 	if len(keys) == 0 {
-		return fmt.Errorf("no operator keys configured")
+		return time.Time{}, fmt.Errorf("no operator keys configured")
 	}
 
 	// Try each pinned key. A signature made by key N fails verification under
@@ -221,20 +215,20 @@ func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []
 		// tooling minted the token.
 		iat, err := claims.GetIssuedAt()
 		if err != nil || iat == nil {
-			return fmt.Errorf("operator token missing iat claim")
+			return time.Time{}, fmt.Errorf("operator token missing iat claim")
 		}
 		exp, err := claims.GetExpirationTime()
 		if err != nil || exp == nil {
-			return fmt.Errorf("operator token missing exp claim")
+			return time.Time{}, fmt.Errorf("operator token missing exp claim")
 		}
 		if validity := exp.Sub(iat.Time); validity <= 0 || validity > MaxTokenValidity {
-			return fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
+			return time.Time{}, fmt.Errorf("operator token validity %s outside (0, %s]", validity, MaxTokenValidity)
 		}
 		if htm, _ := claims[claimHTTPMethod].(string); htm != method {
-			return fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, method)
+			return time.Time{}, fmt.Errorf("operator token %s %q does not match request method %q", claimHTTPMethod, htm, method)
 		}
 		if htu, _ := claims[claimHTTPPath].(string); htu != path {
-			return fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, path)
+			return time.Time{}, fmt.Errorf("operator token %s %q does not match request path %q", claimHTTPPath, htu, path)
 		}
 
 		// Body binding: the token's pbh must equal SHA-256 of the body the
@@ -242,19 +236,19 @@ func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []
 		// timing.
 		pbh, _ := claims[claimPayloadBodyHash].(string)
 		if pbh == "" {
-			return fmt.Errorf("operator token missing %s claim", claimPayloadBodyHash)
+			return time.Time{}, fmt.Errorf("operator token missing %s claim", claimPayloadBodyHash)
 		}
 		sum := sha256.Sum256(body)
 		want := base64.RawURLEncoding.EncodeToString(sum[:])
 		if subtle.ConstantTimeCompare([]byte(pbh), []byte(want)) != 1 {
-			return fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
+			return time.Time{}, fmt.Errorf("operator token %s does not match request body", claimPayloadBodyHash)
 		}
-		return nil
+		return iat.Time, nil
 	}
 	if lastErr == nil {
 		lastErr = fmt.Errorf("token not signed by any pinned operator key")
 	}
-	return fmt.Errorf("operator token invalid: %w", lastErr)
+	return time.Time{}, fmt.Errorf("operator token invalid: %w", lastErr)
 }
 
 // ParsePublicKeysPEM parses one or more PEM "PUBLIC KEY" (PKIX/SubjectPublicKeyInfo)

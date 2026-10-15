@@ -91,6 +91,7 @@ func run(cfg config) error {
 	var writeAuthorizer allowlist.WriteAuthorizer = func(*http.Request, []byte) error {
 		return fmt.Errorf("operator writes are disabled: set --operator-keys")
 	}
+	var authorizeIssuedAt func(*http.Request, []byte) (time.Time, error)
 	var operatorKeysPEM []byte
 	var operatorKeysHash string
 	if cfg.operatorKeys != "" {
@@ -103,10 +104,12 @@ func run(cfg config) error {
 			return fmt.Errorf("hash --operator-keys %q: %w", cfg.operatorKeys, err)
 		}
 		operatorKeysPEM = pemBytes
-		writeAuthorizer = operatorauth.Verifier{
+		verifier := operatorauth.Verifier{
 			Keys:      keys,
 			ClockSkew: time.Duration(cfg.jwtClockSkew) * time.Second,
-		}.Authorize
+		}
+		writeAuthorizer = verifier.Authorize
+		authorizeIssuedAt = verifier.AuthorizeIssuedAt
 		slog.Info("operator write authorization enabled (pinned operator keys)", "operator_keys", cfg.operatorKeys, "count", len(keys), "key_set_hash", operatorKeysHash)
 	} else {
 		slog.Warn("--operator-keys empty: allowlist and secret writes are disabled (reads still served)")
@@ -189,7 +192,7 @@ func run(cfg config) error {
 		if !cfg.allowlistPersistent {
 			started = time.Now()
 		}
-		allowlistWriteAuthorizer = singleUse(writeAuthorizer, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
+		allowlistWriteAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}
 
 	if !cfg.allowlistPersistent {

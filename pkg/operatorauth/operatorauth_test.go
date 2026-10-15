@@ -576,27 +576,33 @@ func TestSignerTokensAreDistinct(t *testing.T) {
 	}
 }
 
-func TestTokenIssuedAt(t *testing.T) {
-	keyPEM, _ := genKey(t, elliptic.P256())
+func TestAuthorizeIssuedAt(t *testing.T) {
+	keyPEM, pub := genKey(t, elliptic.P256())
+	otherPEM, _ := genKey(t, elliptic.P256())
+	body := []byte("body")
 	iat := time.Now().Add(-time.Minute).Truncate(time.Second)
-	noIat := baseClaims(nil)
+	valid := baseClaims(body)
+	valid["iat"] = iat.Unix()
+	noIat := baseClaims(body)
 	delete(noIat, "iat")
+	v := Verifier{Keys: []*ecdsa.PublicKey{pub}}
 	for _, tc := range []struct {
-		name  string
-		token string
-		ok    bool
+		name string
+		auth string
+		ok   bool
 	}{
-		{"iat", strings.TrimPrefix(mintCustom(t, keyPEM, jwt.MapClaims{"iat": iat.Unix()}), "Bearer "), true},
-		{"missing iat", strings.TrimPrefix(mintCustom(t, keyPEM, noIat), "Bearer "), false},
-		{"malformed", "not-a-jwt", false},
+		{"valid", mintCustom(t, keyPEM, valid), true},
+		{"missing iat", mintCustom(t, keyPEM, noIat), false},
+		{"unpinned key", mintCustom(t, otherPEM, valid), false},
+		{"malformed", "Bearer not-a-jwt", false},
 	} {
-		got, err := TokenIssuedAt(tc.token)
+		got, err := v.AuthorizeIssuedAt(reqWith(tc.auth), body)
 		if (err == nil) != tc.ok {
-			t.Errorf("%s: TokenIssuedAt = %v, %v; want ok=%v", tc.name, got, err, tc.ok)
+			t.Errorf("%s: AuthorizeIssuedAt = %v, %v; want ok=%v", tc.name, got, err, tc.ok)
 			continue
 		}
 		if tc.ok && !got.Equal(iat) {
-			t.Errorf("%s: TokenIssuedAt = %v, want %v", tc.name, got, iat)
+			t.Errorf("%s: AuthorizeIssuedAt = %v, want %v", tc.name, got, iat)
 		}
 	}
 }
