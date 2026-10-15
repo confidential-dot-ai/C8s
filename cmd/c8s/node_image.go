@@ -314,7 +314,7 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		}
 		for _, k := range baked.containers {
 			if !slices.ContainsFunc(components[baked.digest], func(c pkgallowlist.Container) bool { return admitsBaked(c, baked.digest, k) }) {
-				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit container %s with argv %q and mounts %q", image, k.name, k.argv(), k.destinations)
+				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit container %s with argv %q and mounts %+v", image, k.name, k.argv(), k.mounts)
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -351,13 +351,13 @@ type bakedImage struct {
 }
 
 // bakedContainer is what a manifest says one container runs: an explicit
-// command, or the image's entrypoint, with its args and its volume mount
-// destinations.
+// command, or the image's entrypoint, with its args and the mount rule each of
+// its volume mounts needs.
 type bakedContainer struct {
-	name         string
-	command      []string
-	args         []string
-	destinations []string
+	name    string
+	command []string
+	args    []string
+	mounts  []pkgallowlist.MountRule
 }
 
 func (k bakedContainer) argv() []string {
@@ -367,8 +367,8 @@ func (k bakedContainer) argv() []string {
 // admitsBaked reports whether a seed container admits a baked one. For a
 // container that runs the image's entrypoint, only a command the seed pins
 // says what the argv starts with; a command left any admits it only with args
-// any too. The mount check compares destinations: the node classifies the
-// sources, which a manifest alone cannot.
+// any too. The mount check compares the rules the manifest implies; whether
+// the storage behind a volume is memory or encrypted is the node's to see.
 func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool {
 	argv := k.argv()
 	if len(k.command) == 0 {
@@ -387,14 +387,33 @@ func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool
 	case pkgallowlist.PolicyAny:
 		return true
 	case pkgallowlist.PolicyExact:
-		rules := make([]string, 0, len(c.Mounts.Rules))
-		for _, r := range c.Mounts.Rules {
-			rules = append(rules, r.Destination)
-		}
-		return slices.Equal(slices.Sorted(slices.Values(rules)), slices.Sorted(slices.Values(k.destinations)))
+		byDestination := func(a, b pkgallowlist.MountRule) int { return strings.Compare(a.Destination, b.Destination) }
+		return slices.Equal(slices.SortedFunc(slices.Values(c.Mounts.Rules), byDestination), slices.SortedFunc(slices.Values(k.mounts), byDestination))
 	default:
-		return len(k.destinations) == 0
+		return len(k.mounts) == 0
 	}
+}
+
+// mountRule is the rule a pod-spec volume mount needs: a host rule naming the
+// hostPath and the access mode, an emptyDir rule, or a data rule for
+// operator-supplied content. It fails on a source no rule describes.
+func mountRule(m corev1.VolumeMount, volumes map[string]corev1.Volume) (pkgallowlist.MountRule, error) {
+	v, ok := volumes[m.Name]
+	if !ok {
+		return pkgallowlist.MountRule{}, fmt.Errorf("mount %q names no volume", m.Name)
+	}
+	rule := pkgallowlist.MountRule{Destination: m.MountPath}
+	switch {
+	case v.HostPath != nil:
+		rule.Kind, rule.Source, rule.ReadOnly = pkgallowlist.MountHost, v.HostPath.Path, m.ReadOnly
+	case v.EmptyDir != nil:
+		rule.Kind = pkgallowlist.MountEmptyDir
+	case v.ConfigMap != nil, v.Secret != nil, v.Projected != nil, v.DownwardAPI != nil, v.PersistentVolumeClaim != nil:
+		rule.Kind = pkgallowlist.MountData
+	default:
+		return pkgallowlist.MountRule{}, fmt.Errorf("mount %q has a volume source no mount rule describes", m.Name)
+	}
+	return rule, nil
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
@@ -412,6 +431,10 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 	if len(spec.Containers) == 0 || len(spec.EphemeralContainers) != 0 {
 		return fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
 	}
+	volumes := make(map[string]corev1.Volume, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		volumes[v.Name] = v
+	}
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
 		ref, err := reference.ParseDockerRef(c.Image)
 		if err != nil {
@@ -428,7 +451,11 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		}
 		k := bakedContainer{name: c.Name, command: c.Command, args: c.Args}
 		for _, m := range c.VolumeMounts {
-			k.destinations = append(k.destinations, m.MountPath)
+			rule, err := mountRule(m, volumes)
+			if err != nil {
+				return fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
+			}
+			k.mounts = append(k.mounts, rule)
 		}
 		baked.containers = append(baked.containers, k)
 	}
