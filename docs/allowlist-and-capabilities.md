@@ -617,17 +617,17 @@ longer matches the register, the plugin applies no pulled allowlist and keeps
 enforcing the one it holds: at startup, the base allowlist alone.
 
 > [!WARNING]
-> Measuring is off by default. c8s's own checks accept a node that measures,
-> but two kinds of check still require the bare operator-key seed and reject
-> it: armTLS verifiers built on attestation-go releases that predate runtime
-> extensions, flat RTMR[3] pins (`--rtmrs 3=…`, `allowlist.pull.cds_rtmrs`),
-> and `c8s verify --image-policy-file` with an `approver_key`. Producers find
-> the journal only under the default `nriImagePolicy.hostPaths.runtimeDir`,
+> Measuring is off by default. Three kinds of check still require the bare
+> operator-key seed and reject a node that measures: armTLS verifiers built on
+> attestation-go releases that predate runtime extensions, flat RTMR[3] pins
+> (`--rtmrs 3=…`, `allowlist.pull.cds_rtmrs`), and
+> `c8s verify --image-policy-file` with an `approver_key`. Producers find the
+> journal only under the default `nriImagePolicy.hostPaths.runtimeDir`,
 > mounted beside the attestation-api socket, so the chart refuses
 > `measurePolicies` with any other directory or without
-> `attestationApi.enabled`. A
-> node stops measuring, and so stops applying new policies, after 256 of them
-> (the most a certificate carries) until it reboots.
+> `attestationApi.enabled`. A node stops measuring, and so stops applying new
+> policies, after 256 of them (the most a certificate carries) until it
+> reboots.
 
 The plugin journals the digests, one per line in extend order, at
 `<nriImagePolicy.hostPaths.runtimeDir>/measured-policies`, a tmpfs that dies
