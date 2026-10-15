@@ -43,10 +43,11 @@ its containers, each `c8s.openArgsEntries` digest under the command it pins or
 under any (`c8s.openArgsContainer`), and each `c8s.pinnedComponentEntries`
 container, all beside one another for a shared digest. Workloads that pin
 args, env or mounts for any other digest remain in the served seed without
-reaching the base. The coverage guard in
-[validations.yaml](../../templates/validations.yaml) accepts either kind of
-operator entry whose command is `any` or a prefix of the component's
-entrypoint.
+reaching the base. With `deriveComponents` off, the coverage guard in
+[validations.yaml](../../templates/validations.yaml) requires every container
+the chart runs a component's executable in to be admitted by an operator
+entry: `c8s.admitsShape` checks the entry's command, args and mount rules
+against the container's derived shape, leaving env aside.
 
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference

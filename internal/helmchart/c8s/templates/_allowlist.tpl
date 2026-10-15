@@ -277,6 +277,47 @@
 {{ $out | toJson }}
 {{- end -}}
 
+{{/* "true" when an operator-written container admits a component shape:
+     its command any or a prefix of the shape's argv, its args admitting the
+     rest, and its mounts any or the shape's rule set. Env is not checked: the
+     chart cannot know what the runtime adds. Feeds the coverage guard
+     (validations.yaml). */ -}}
+{{- define "c8s.admitsShape" -}}
+{{- $c := .container -}}
+{{- $shape := .shape -}}
+{{- $argv := concat (get (get $shape "command") "argv") (dig "args" "argv" list $shape) -}}
+{{- $ok := true -}}
+{{- $rest := $argv -}}
+{{- $command := dig "command" "policy" "" $c -}}
+{{- if eq $command "exact" -}}
+{{- $pin := dig "command" "argv" list $c -}}
+{{- if and (le (len $pin) (len $argv)) (eq (slice $argv 0 (len $pin) | toJson) ($pin | toJson)) -}}
+{{- $rest = slice $argv (len $pin) -}}
+{{- else -}}
+{{- $ok = false -}}
+{{- end -}}
+{{- else if ne $command "any" -}}
+{{- $ok = false -}}
+{{- end -}}
+{{- $args := dig "args" "policy" "deny" $c -}}
+{{- if eq $args "exact" -}}
+{{- if ne ($rest | toJson) (dig "args" "argv" list $c | toJson) -}}{{- $ok = false -}}{{- end -}}
+{{- else if eq $args "deny" -}}
+{{- if $rest -}}{{- $ok = false -}}{{- end -}}
+{{- else if ne $args "any" -}}
+{{- $ok = false -}}
+{{- end -}}
+{{- $mounts := dig "mounts" "policy" "deny" $c -}}
+{{- if ne $mounts "any" -}}
+{{- $want := dict -}}
+{{- range $r := (dig "mounts" "rules" list $shape) -}}{{- $_ := set $want $r.destination (list $r.kind (default "" $r.source) (toString (default false $r.readOnly))) -}}{{- end -}}
+{{- $have := dict -}}
+{{- range $r := (dig "mounts" "rules" list $c) -}}{{- $_ := set $have (toString $r.destination) (list (toString $r.kind) (default "" $r.source) (toString (default false $r.readOnly))) -}}{{- end -}}
+{{- if or (not (has $mounts (list "exact" "deny"))) (ne ($want | toJson) ($have | toJson)) -}}{{- $ok = false -}}{{- end -}}
+{{- end -}}
+{{- if $ok -}}true{{- end -}}
+{{- end -}}
+
 {{/* The base container for an operator open-args entry pinned to an
      entrypoint: command pinned, args and mounts any. */ -}}
 {{- define "c8s.componentContainer" -}}

@@ -555,40 +555,63 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 }
 
 // An operator entry for a component digest that pins args and mounts is a
-// component entry like the chart's own: it covers the component for the
-// fail-closed guard and reaches the base verbatim, with its pins.
+// component entry like the chart's own: copied from the chart's derived entry,
+// it covers the component for the fail-closed guard and reaches the base
+// verbatim. Missing any container the chart runs the executable in, it does
+// not cover the component.
 func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
-	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
-	out, err := helmTemplate(t,
-		"--set-string", "image.digest="+opD,
-		"--set", "nriImagePolicy.policy.mode=fail-closed",
-		"--set-string", p+"digest="+opD,
-		"--set-string", p+"command.policy=exact",
-		"--set-string", p+"command.argv[0]=/c8s",
-		"--set-string", p+"args.policy=exact",
-		"--set-string", p+"args.argv[0]=operator",
-		"--set-string", p+"mounts.policy=exact",
-		"--set-string", p+"mounts.rules[0].destination=/tmp",
-		"--set-string", p+"mounts.rules[0].kind=emptyDir",
-	)
+	derived, err := helmTemplate(t, "--set-string", "image.digest="+opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
 	if err != nil {
-		t.Fatalf("helm template should render with the component covered by a pinned entry: %v\n%s", err, out)
+		t.Fatalf("helm template: %v\n%s", err, derived)
 	}
-	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
-	index := base.BuildIndex()
-	tmp := []pkgallowlist.ObservedMount{{Destination: "/tmp", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}}
-	for _, tc := range []struct {
-		argv []string
-		want bool
-	}{
-		{[]string{"/c8s", "operator"}, true},
-		{[]string{"/c8s", "operator", "--kubeconfig=/tmp/x"}, false},
-	} {
-		running := pkgallowlist.RunningContainer{Digest: opD, Argv: tc.argv, Mounts: tmp, Env: &pkgallowlist.EnvObservation{}}
-		if got := index.AdmitsContainer(running); got != tc.want {
-			t.Errorf("base AdmitsContainer(%q) = %v, want %v", tc.argv, got, tc.want)
+	var containers []pkgallowlist.Container
+	for _, w := range renderedSeed(t, derived).Workloads {
+		for _, c := range w.Containers {
+			if c.Digest.String() == opD {
+				containers = append(containers, c)
+			}
 		}
+	}
+	operatorArgv := runtimeArgv(renderedDeploymentContainer(t, derived, "c8s-operator", "operator"), []string{"/c8s"})
+	for _, tc := range []struct {
+		name    string
+		drop    bool
+		covered bool
+	}{
+		{"the chart's entry", false, true},
+		{"without the operator's container", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := slices.DeleteFunc(slices.Clone(containers), func(c pkgallowlist.Container) bool {
+				return tc.drop && c.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(c.Args.Argv, operatorArgv[1:])
+			})
+			if tc.drop && len(entry) == len(containers) {
+				t.Fatal("the derived entry has no container for the operator")
+			}
+			raw, err := json.Marshal(map[string]any{"containers": entry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := helmTemplate(t,
+				"--set-string", "image.digest="+opD,
+				"--set", "nriImagePolicy.policy.mode=fail-closed",
+				"--set-json", "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator="+string(raw),
+			)
+			if !tc.covered {
+				if err == nil || parseValidationErrorKind(out) != "uncovered_component_digest" {
+					t.Fatalf("helm template = %v, want uncovered_component_digest\n%s", err, out)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("helm template should render with the component covered by a pinned entry: %v\n%s", err, out)
+			}
+			base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+			if !base.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: opD, Argv: operatorArgv}) {
+				t.Errorf("base does not admit the operator as rendered: %v", base.Workloads)
+			}
+		})
 	}
 }
 
