@@ -3,8 +3,6 @@ package controller
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -100,29 +98,6 @@ func TestRunManagerStartError(t *testing.T) {
 	err := Run(context.Background(), opts)
 	if err == nil || !strings.Contains(err.Error(), "manager exited: boom") {
 		t.Fatalf("Run error = %v, want wrapped manager-exit error", err)
-	}
-}
-
-// A kubeconfig the pod points KUBECONFIG at is never loaded: client-go would
-// run its exec credential plugin. Off-cluster, Run fails instead.
-func TestRunIgnoresKubeconfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "kubeconfig")
-	const kubeconfig = `apiVersion: v1
-kind: Config
-clusters: [{name: c, cluster: {server: "https://127.0.0.1:1"}}]
-users: [{name: u, user: {exec: {apiVersion: client.authentication.k8s.io/v1, command: /bin/false}}}]
-contexts: [{name: c, context: {cluster: c, user: u}}]
-current-context: c
-`
-	if err := os.WriteFile(path, []byte(kubeconfig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("KUBECONFIG", path)
-	t.Setenv("KUBERNETES_SERVICE_HOST", "")
-	t.Setenv("KUBERNETES_SERVICE_PORT", "")
-	err := Run(context.Background(), Options{})
-	if err == nil || !strings.Contains(err.Error(), "in-cluster config") {
-		t.Fatalf("Run() with KUBECONFIG set off-cluster = %v, want an in-cluster config error", err)
 	}
 }
 

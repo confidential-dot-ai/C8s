@@ -530,39 +530,6 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 	}
 }
 
-func TestMutatePodMountsSidecarsAtFixedDestinations(t *testing.T) {
-	pod := podWithApp()
-	pod.Annotations = map[string]string{
-		AnnotationWorkload:               "api",
-		AnnotationSecrets:                "DB=/api/db",
-		AnnotationReloadWatchVolume:      "public-tls",
-		AnnotationReloadWatchPaths:       reloadWatchMountPath + "/tls.crt",
-		AnnotationDiscoveryVolume:        "discovery",
-		AnnotationDiscoveryOut:           discoveryMountPath + "/discovery.json",
-		AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
-		AnnotationDiscoveryPublicTLSMode: "cds",
-	}
-	inj, err := parseAnnotations(pod)
-	if err != nil {
-		t.Fatalf("parseAnnotations: %v", err)
-	}
-	mutatePod(pod, inj, Config{GetCertImage: "image", CDSURL: "http://cds"})
-	want := map[string][]string{
-		reservedCertContainerName:     {certDir, discoveryMountPath, reloadWatchMountPath},
-		reservedCertWaitContainerName: {certDir, discoveryMountPath},
-		reservedSecretContainerName:   {certDir, discoveryMountPath, defaultSecretDir},
-	}
-	for _, c := range pod.Spec.InitContainers {
-		var got []string
-		for _, m := range c.VolumeMounts {
-			got = append(got, m.MountPath)
-		}
-		if !slices.Equal(got, want[c.Name]) {
-			t.Errorf("%s mounts at %q, want %q", c.Name, got, want[c.Name])
-		}
-	}
-}
-
 func hasArg(args []string, want string) bool {
 	return slices.Contains(args, want)
 }

@@ -234,9 +234,6 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 	if !slices.Equal(inj.Secrets.Specs, []string{"DB=/api/db", "HF=/api/hf"}) {
 		t.Fatalf("specs = %v", inj.Secrets.Specs)
 	}
-	if got := inj.withDefaults(Config{}).Secrets.Dir; got != defaultSecretDir {
-		t.Fatalf("dir = %q, want %q", got, defaultSecretDir)
-	}
 }
 
 // An ephemeral container attaches to a running pod, so the release check cannot

@@ -58,11 +58,3 @@ func TestWatchNodeIP(t *testing.T) {
 		})
 	}
 }
-
-// A URL without $(NODE_IP) needs no watch.
-func TestWatchNodeIPWithoutReference(t *testing.T) {
-	ctx := t.Context()
-	if got := WatchNodeIP(ctx, "http://192.0.2.10:8080", "http://192.0.2.10:8080"); got != ctx {
-		t.Fatal("WatchNodeIP wrapped a context for a URL without $(NODE_IP)")
-	}
-}

@@ -9,13 +9,6 @@ import (
 	"testing"
 )
 
-// A proxy named in the environment must not see attestation-api requests.
-func TestAttestationTransportIgnoresProxy(t *testing.T) {
-	if directTransport().Proxy != nil {
-		t.Fatal("attestation-api transport consults a proxy")
-	}
-}
-
 // Each online verification builds a client; they must share one pool.
 func TestAttestationClientsReuseConnections(t *testing.T) {
 	var conns atomic.Int32

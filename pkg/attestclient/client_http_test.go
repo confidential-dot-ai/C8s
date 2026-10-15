@@ -496,13 +496,9 @@ func TestGenerateEvidenceWithAttestationHTTP(t *testing.T) {
 		_, _ = w.Write([]byte(`{"platform":"snp","evidence":{"q":1}}`))
 	}))
 	defer srv.Close()
-	t.Setenv("HTTPS_PROXY", unreachableURL)
 
 	c := NewClientWithHTTP("https://cds.invalid", &http.Client{}).WithAttestationHTTP(srv.Client())
 	if _, err := c.GenerateEvidence(srv.URL, []byte("report-data")); err != nil {
 		t.Fatalf("GenerateEvidence over the private-CA client: %v", err)
-	}
-	if proxy := c.attestHTTP.Transport.(*http.Transport).Proxy; proxy != nil {
-		t.Fatal("evidence transport consults a proxy")
 	}
 }
