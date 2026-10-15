@@ -192,15 +192,15 @@ func captureStream(t *testing.T, stream **os.File, fn func()) string {
 func captureStdout(t *testing.T, fn func()) string { return captureStream(t, &os.Stdout, fn) }
 func captureStderr(t *testing.T, fn func()) string { return captureStream(t, &os.Stderr, fn) }
 
-// fakeCrane is a crane stub that resolves every reference to digest and
-// answers `crane config` with the entrypoint the chart pins for the image the
-// reference names, so an install's entrypoint check passes.
 // The Env entries the chart's imageEnv declares for the component images.
 const (
 	fakePath  = `"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"`
 	fakeCerts = `"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"`
 )
 
+// fakeCrane is a crane stub that resolves every reference to digest and
+// answers `crane config` with the entrypoint the chart pins for the image the
+// reference names, so an install's entrypoint check passes.
 func fakeCrane(digest string) string {
 	return `case "$1" in
 config)

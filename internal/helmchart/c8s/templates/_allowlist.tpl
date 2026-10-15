@@ -108,17 +108,21 @@
 {{ $variables | toJson }}
 {{- end -}}
 
-{{/* The env match for one component invocation: the runtime's variables,
-     then the image's (pinned exact, PATH among them), then the chart's, each
-     overriding the one before as the runtime applies them. containerd sets a
-     default PATH when the image sets none (oci.WithDefaultPathEnv). Loader
-     variables are never listed, so match rejects them. */ -}}
+{{/* The env match for one component invocation, each source overriding the
+     one before as the runtime applies them: containerd's HOSTNAME, the
+     image's variables (pinned exact, PATH among them), the kubelet's, then
+     the chart's (container_create.go in containerd's CRI plugin, and
+     makeEnvironmentVariables in pkg/kubelet/kubelet_pods.go). containerd
+     sets a default PATH when the image sets none (oci.WithDefaultPathEnv).
+     Loader variables are never listed, so match rejects them. */ -}}
 {{- define "c8s.componentEnv" -}}
-{{- $variables := include "c8s.runtimeEnv" . | fromJson -}}
+{{- $runtime := include "c8s.runtimeEnv" . | fromJson -}}
+{{- $variables := dict "HOSTNAME" (get $runtime "HOSTNAME") -}}
 {{- if not (hasKey .imageEnv "PATH") -}}
 {{- $_ := set $variables "PATH" (dict "exact" "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin") -}}
 {{- end -}}
 {{- range $name, $value := .imageEnv -}}{{- $_ := set $variables $name (dict "exact" (toString $value)) -}}{{- end -}}
+{{- range $name, $matcher := omit $runtime "HOSTNAME" -}}{{- $_ := set $variables $name $matcher -}}{{- end -}}
 {{- range $name, $matcher := .variables -}}{{- $_ := set $variables $name $matcher -}}{{- end -}}
 {{ dict "policy" "match" "variables" $variables | toJson }}
 {{- end -}}

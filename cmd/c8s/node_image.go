@@ -444,14 +444,12 @@ func launchSeeds(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Contain
 }
 
 // seedLaunches reports whether seed, an entry container that pins at most the
-// command, admits c's command and environment: the complete environment the
-// container starts with, from its manifest, its image and the runtime, is
-// listed, with the values exact matchers pin, and every variable the seed
-// matches present is set. image is the image config's environment, or nil
-// when unknown: a variable the seed pins exact and the manifest leaves unset
-// is then taken to be the image's. A value the kubelet expands is refused
-// under an exact pin: its result is unknown. An optional key reference is
-// refused: whether it sets its variable is unknown.
+// command, admits c's command and environment: every variable of the
+// container's launch environment (launchEnvironment) is listed, every exact
+// pin agrees with a value known here, and every variable the seed matches
+// present is set. image is the image config's environment, or nil when
+// unknown: a variable the seed pins exact and the launch environment leaves
+// to the image is then taken to be the image's.
 func seedLaunches(seed pkgallowlist.Container, c bakedContainer, image map[string]string) bool {
 	if seed.Command.Policy == pkgallowlist.PolicyExact {
 		if len(c.argv) < len(seed.Command.Argv) || !slices.Equal(c.argv[:len(seed.Command.Argv)], seed.Command.Argv) {
@@ -461,48 +459,89 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer, image map[strin
 	if seed.Env.Policy != pkgallowlist.PolicyMatch {
 		return true
 	}
-	if c.envFrom {
+	env, ok := launchEnvironment(c, image)
+	if !ok {
 		return false
 	}
 	exact := seed.Env.ExactValues()
-	for _, name := range runtimeVariables {
+	for name, v := range env {
 		if _, listed := seed.Env.Variables[name]; !listed {
 			return false
 		}
-	}
-	inherited := maps.Clone(image)
-	if image != nil {
-		if _, ok := inherited["PATH"]; !ok {
-			inherited["PATH"] = containerdDefaultPath
-		}
-	}
-	set := make(map[string]bool, len(c.env)+len(inherited))
-	for _, v := range c.env {
-		if _, listed := seed.Env.Variables[v.name]; !listed || v.optional {
+		want, pinned := exact[name]
+		if pinned && (v.source == sourceDynamic || v.source == sourceKnown && v.value != want) {
 			return false
 		}
-		if want, pinned := exact[v.name]; pinned && (!v.literal || kubeletExpands(v.value) || v.value != want) {
-			return false
-		}
-		set[v.name] = true
-		delete(inherited, v.name)
-	}
-	for name, value := range inherited {
-		if _, listed := seed.Env.Variables[name]; !listed {
-			return false
-		}
-		if want, pinned := exact[name]; pinned && value != want {
-			return false
-		}
-		set[name] = true
 	}
 	for name := range seed.Env.Variables {
-		if _, pinned := exact[name]; set[name] || slices.Contains(runtimeVariables, name) || pinned && image == nil {
+		if _, set := env[name]; set {
 			continue
 		}
-		return false
+		if _, pinned := exact[name]; !pinned || image != nil {
+			return false
+		}
 	}
 	return true
+}
+
+// launchValue is one variable of a launch environment and where its value
+// comes from.
+type launchValue struct {
+	value  string
+	source valueSource
+}
+
+type valueSource int
+
+const (
+	// sourceKnown is a value fixed before the container starts.
+	sourceKnown valueSource = iota
+	// sourceDynamic is a value set per pod or node, which no exact pin can
+	// be checked against.
+	sourceDynamic
+	// sourceImage is the image's value, or the runtime's when the image
+	// sets none, unknown until check-images reads the image.
+	sourceImage
+)
+
+// launchEnvironment is the environment c starts with, applied in the
+// runtime's order, each source overriding the one before: containerd's
+// HOSTNAME, the image's variables (containerd's default PATH when it sets
+// none), the kubelet's API-server variables, then the manifest's. It is not
+// ok when the manifest imports variables (envFrom) or sets one through an
+// optional key reference: which variables are set is then unknown.
+func launchEnvironment(c bakedContainer, image map[string]string) (map[string]launchValue, bool) {
+	if c.envFrom {
+		return nil, false
+	}
+	env := map[string]launchValue{"HOSTNAME": {source: sourceDynamic}}
+	if image == nil {
+		env["HOSTNAME"] = launchValue{source: sourceImage}
+		env["PATH"] = launchValue{source: sourceImage}
+	} else {
+		env["PATH"] = launchValue{value: containerdDefaultPath}
+		for name, value := range image {
+			env[name] = launchValue{value: value}
+		}
+	}
+	for name, value := range kubeletVariables {
+		if value == "" {
+			env[name] = launchValue{source: sourceDynamic}
+		} else {
+			env[name] = launchValue{value: value}
+		}
+	}
+	for _, v := range c.env {
+		if v.optional {
+			return nil, false
+		}
+		if v.literal && !kubeletExpands(v.value) {
+			env[v.name] = launchValue{value: v.value}
+		} else {
+			env[v.name] = launchValue{source: sourceDynamic}
+		}
+	}
+	return env, true
 }
 
 func optionalReference(source *corev1.EnvVarSource) bool {
@@ -522,14 +561,24 @@ func kubeletExpands(value string) bool {
 	return strings.Contains(value, "$(") || strings.Contains(value, "$$")
 }
 
-// runtimeVariables are set in every container whatever its manifest and
-// image set: containerd's HOSTNAME and PATH (its default when the image sets
-// none), and the kubelet's API-server variables. Keep in step with
-// c8s.runtimeEnv in the chart.
-var runtimeVariables = []string{
-	"HOSTNAME", "PATH", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBERNETES_SERVICE_PORT_HTTPS",
-	"KUBERNETES_PORT", "KUBERNETES_PORT_443_TCP", "KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT", "KUBERNETES_PORT_443_TCP_PROTO",
+// kubeletVariables are the variables the kubelet sets in every container
+// with service links off: those of the default namespace's kubernetes
+// Service, whose port kube-apiserver fixes at 443. An empty value differs
+// per cluster. Keep in step with c8s.runtimeEnv in the chart.
+var kubeletVariables = map[string]string{
+	"KUBERNETES_SERVICE_HOST":       "",
+	"KUBERNETES_SERVICE_PORT":       "443",
+	"KUBERNETES_SERVICE_PORT_HTTPS": "443",
+	"KUBERNETES_PORT":               "",
+	"KUBERNETES_PORT_443_TCP":       "",
+	"KUBERNETES_PORT_443_TCP_ADDR":  "",
+	"KUBERNETES_PORT_443_TCP_PORT":  "443",
+	"KUBERNETES_PORT_443_TCP_PROTO": "tcp",
 }
+
+// runtimeVariables are set in every container whatever its manifest and
+// image set: containerd's HOSTNAME and PATH, and the kubelet's variables.
+var runtimeVariables = append([]string{"HOSTNAME", "PATH"}, slices.Sorted(maps.Keys(kubeletVariables))...)
 
 // containerdDefaultPath is the PATH containerd sets when the image sets none
 // (oci.WithDefaultPathEnv).

@@ -654,7 +654,9 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 // The guard compares a manifest's value as the kubelet sets it, so it refuses
 // an exact-pinned value the kubelet would expand, and it counts as
 // runtime-supplied only the variables c8s.runtimeEnv lists, and requires the
-// seed to list each of those: the runtime sets them in every container.
+// seed to list each of those: the runtime sets them in every container. An
+// exact pin on a kubelet variable must hold the kubelet's value, and one that
+// differs per cluster cannot be pinned.
 func TestNodeImageCollectChecksRuntimeEnv(t *testing.T) {
 	for name, tc := range map[string]struct {
 		seed, env, omit string
@@ -668,6 +670,9 @@ func TestNodeImageCollectChecksRuntimeEnv(t *testing.T) {
 		"plain exact value":       {seed: `"MODE":{"exact":"a$b"}`, env: `env: [{name: MODE, value: "a$b"}]`},
 		"exact value with a ref":  {seed: `"MODE":{"exact":"$(NODE_IP)"}`, env: `env: [{name: MODE, value: "$(NODE_IP)"}]`, wantErr: true},
 		"exact value with escape": {seed: `"MODE":{"exact":"$$(NODE_IP)"}`, env: `env: [{name: MODE, value: "$$(NODE_IP)"}]`, wantErr: true},
+		"kubelet port pinned":     {seed: `"KUBERNETES_SERVICE_PORT":{"exact":"443"}`, env: `env: []`},
+		"kubelet port mispinned":  {seed: `"KUBERNETES_SERVICE_PORT":{"exact":"444"}`, env: `env: []`, wantErr: true},
+		"dynamic host pinned":     {seed: `"KUBERNETES_SERVICE_HOST":{"exact":"10.43.0.1"}`, env: `env: []`, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {
 			seeded := strings.Replace(nodeImageCollectFixture(),

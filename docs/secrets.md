@@ -423,6 +423,34 @@ c8s allowlist apply entry.json
 
 Pass the same mount flags the old entry was derived with.
 
+#### Move clients that pin the old name
+
+CDS stamps the matched entry's name and the policy snapshot into each
+workload certificate (see [Matched workload](armtls.md#matched-workload-which-allowlist-entry-is-behind-a-key)).
+After step 4, a restarted pod renews under `NEW_NAME`, so a client running
+`c8s verify --workload OLD_NAME` rejects it, and a client pinning the
+document with `--allowlist FILE` rejects every renewed certificate. Secret
+grants carry over through the copied `secrets` block; name pins do not.
+
+To move the clients, alongside the steps above:
+
+1. Before step 4, list every client that passes `--workload OLD_NAME` or
+   `--allowlist FILE` for this workload.
+2. After step 4, export the document with `c8s allowlist export FILE` and
+   give it to each client that pins the document.
+3. As pods restart, switch each client to `--workload NEW_NAME`. A client
+   pinned to one name rejects pods under the other until the rollout ends,
+   so switch a client once the pods it reaches have restarted.
+4. Verify each switched client: `c8s verify` reports `workload_verified`
+   for a restarted pod.
+5. After step 5, export the document again for the clients that pin it.
+
+To roll back before step 5, delete the new entry with `c8s allowlist
+delete NEW_NAME`, switch the clients back to `--workload OLD_NAME`, and
+restore their previous document. Pods started before the upgrade renew
+under `OLD_NAME`. A pod started after it matches no entry until you apply a
+new one again.
+
 ### The injected drop set
 
 C8s injects its own containers into every confidential pod. They are not part of

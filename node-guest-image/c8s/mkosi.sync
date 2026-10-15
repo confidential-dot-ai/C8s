@@ -66,7 +66,7 @@ RKE2_IMAGES_CORE_SHA256="8988a2eff587dd88b8eab86fe719703e9541a1f08d22771a94cbec4
 RKE2_IMAGES_CANAL_SHA256="4359b651bfdec8f3bcc01b351b33a55ff21f06b18a767366db6f3800d5750871"
 
 # The baked binary and Kubernetes C8s images resolve from one source ref.
-# The binary must include `c8s node-image render`.
+# The binary must include `c8s node-image render` and `c8s node-image check-images`.
 # Inputs arrive through confos's explicit sync-input files; sudo strips the
 # caller's environment. c8s-registry supports private/air-gapped registries.
 SYNC_INPUTS="$SRCDIR/mkosi.local/.confos-sync-inputs"
@@ -289,7 +289,10 @@ render_node_integration() {
         "$LOCAL_IMAGES_DIR" "$C8S_REGISTRY"
     # Render knows the image env only as the chart declares it; check the
     # preloaded configs against the seed before they are sealed.
-    "$C8S_TARGET" node-image check-images --output-dir "$out" --layouts "$CACHE_DIR/core-images"
+    if ! "$C8S_TARGET" node-image check-images --output-dir "$out" --layouts "$CACHE_DIR/core-images"; then
+        echo "c8s sync: FATAL ${C8S_REF} must provide a working 'c8s node-image check-images' whose seed admits the preloaded images" >&2
+        exit 1
+    fi
 }
 
 # Download <url> to <dest>, verifying its sha256. Skip if dest exists and

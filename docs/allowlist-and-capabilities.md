@@ -682,6 +682,12 @@ after upgrading the chart:
 5. Leave each historical entry as stored. Delete it with `c8s allowlist
    delete` once no pod runs its digest. To list the digests pods run, use
    `kubectl get pods -A -o jsonpath='{..imageID}'`.
+6. On measured nodes (`nriImagePolicy.baked=true`), replace every node. A
+   chart upgrade updates the served entries but not the base measured into
+   the node image, which keeps `env: any` for the components. Rebuild the
+   node image from this release, put only its measurements in the launch
+   bundle's `server.json` and `peers.json`, and relaunch each node on it.
+   Drain and delete each old node once its replacement is `Ready`.
 
 The migration is complete when all of these hold:
 
@@ -693,6 +699,11 @@ The migration is complete when all of these hold:
   succeeds in the get-cert sidecar's log.
 - No historical entry remains, or each one still names a digest a running
   pod uses.
+- On measured nodes, every node runs the rebuilt image: `kubectl get nodes`
+  lists only replacement nodes, and `c8s cds verify` with
+  `--served-policy-file peers.json` passes against a `peers.json` that holds
+  no measurement of an earlier image. CDS then admits no node whose base
+  still carries `env: any`.
 
 To roll back, restore the entry you replaced from `before.json` with `c8s
 allowlist edit`; `apply` refuses its `env: any`. Do this when a component pod

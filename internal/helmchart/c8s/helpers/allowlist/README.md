@@ -37,10 +37,12 @@ the pod spec sets: `present` for a downward-API value or one that differs per
 workload, `exact` for a constant. `HOST_IP` follows
 `c8s.attestationApiHostIPEnv`. Keep it in step with the templates; the chart
 tests render each mode and check every component container is admitted with
-its launch environment. `c8s.componentEnv` builds the `match` policy:
-`c8s.runtimeEnv` (`HOSTNAME` and the `KUBERNETES_*` variables, with their
-upstream sources), then the image's variables pinned `exact` (containerd's
-default `PATH` when the image sets none), then the invocation's. Every pod
+its launch environment. `c8s.componentEnv` builds the `match` policy in
+the order the runtime applies the variables, each overriding the one before:
+containerd's `HOSTNAME`, the image's variables pinned `exact` (containerd's
+default `PATH` when the image sets none), the kubelet's `KUBERNETES_*`
+variables, then the invocation's. `c8s.runtimeEnv` lists the runtime's, with
+their upstream sources. Every pod
 running a component image sets `enableServiceLinks: false`, so the kubelet
 adds no other variable.
 

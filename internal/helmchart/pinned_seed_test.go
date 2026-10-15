@@ -410,7 +410,7 @@ func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
 // componentRender renders the chart with every component enabled and
 // digest-pinned, and derivation on, so the seed and the base carry an entry
 // for each.
-func componentRender(t *testing.T) string {
+func componentRender(t *testing.T, extra ...string) string {
 	t.Helper()
 	args := []string{
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
@@ -420,7 +420,7 @@ func componentRender(t *testing.T) string {
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
-	out, err := helmTemplate(t, args...)
+	out, err := helmTemplate(t, append(args, extra...)...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}

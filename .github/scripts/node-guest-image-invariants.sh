@@ -431,7 +431,7 @@ for token in '"$C8S_TARGET" node-image render' '--image-digest "$OPERATOR_DIGEST
              '--kube-version "${RKE2_VERSION%%+*}"' \
              'c8s-integration.yaml' '/usr/lib/c8s/allowlist-seed.json' \
              '--cds-image-digest "$CDS_DIGEST"' '--armtls-mesh-image-digest "$MESH_DIGEST"' \
-             'c8s/airgap-images.sh' '"$out/images.txt"' 'node-image check-images'; do
+             'c8s/airgap-images.sh' '"$out/images.txt"' 'if ! "$C8S_TARGET" node-image check-images'; do
   if ! grep -qF -- "$token" "$sync"; then
     echo "::error::$sync must stage the measured node integration (missing: $token)"
     exit 1

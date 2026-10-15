@@ -118,8 +118,8 @@ func checkNodeImages(outputDir, layoutDir string) error {
 }
 
 // layoutImageConfig reads the config of the image digest names from the OCI
-// layout at dir, choosing the linux/amd64 manifest of an index. Every blob is
-// checked against its digest.
+// layout at dir, choosing the linux/amd64 manifest of an index, through
+// nested indexes. Every blob is checked against its digest.
 func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
 	var layout ocispec.Index
 	if err := readJSON(filepath.Join(dir, "index.json"), &layout); err != nil {
@@ -128,24 +128,9 @@ func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
 	if !slices.ContainsFunc(layout.Manifests, func(d ocispec.Descriptor) bool { return d.Digest.String() == digest }) {
 		return nil, fmt.Errorf("OCI layout %s does not hold %s", dir, digest)
 	}
-	var root struct {
-		ocispec.Manifest
-		Manifests []ocispec.Descriptor `json:"manifests"`
-	}
-	if err := readBlob(dir, digest, &root); err != nil {
+	manifest, err := layoutManifest(dir, digest)
+	if err != nil {
 		return nil, err
-	}
-	manifest := root.Manifest
-	if len(root.Manifests) > 0 {
-		i := slices.IndexFunc(root.Manifests, func(d ocispec.Descriptor) bool {
-			return d.Platform != nil && d.Platform.OS == "linux" && d.Platform.Architecture == nodeImageArchitecture
-		})
-		if i < 0 {
-			return nil, fmt.Errorf("image index %s has no linux/%s manifest", digest, nodeImageArchitecture)
-		}
-		if err := readBlob(dir, root.Manifests[i].Digest.String(), &manifest); err != nil {
-			return nil, err
-		}
 	}
 	if manifest.Config.Digest == "" {
 		return nil, fmt.Errorf("image %s has no config", digest)
@@ -155,6 +140,35 @@ func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
 		return nil, err
 	}
 	return &config, nil
+}
+
+// maxIndexDepth bounds the indexes layoutManifest descends through, so a
+// cyclic layout fails instead of recursing forever.
+const maxIndexDepth = 8
+
+// layoutManifest reads the image manifest digest names in the layout at dir,
+// following the linux/amd64 entry of each index it meets.
+func layoutManifest(dir, digest string) (*ocispec.Manifest, error) {
+	for range maxIndexDepth {
+		var blob struct {
+			ocispec.Manifest
+			Manifests []ocispec.Descriptor `json:"manifests"`
+		}
+		if err := readBlob(dir, digest, &blob); err != nil {
+			return nil, err
+		}
+		if len(blob.Manifests) == 0 {
+			return &blob.Manifest, nil
+		}
+		i := slices.IndexFunc(blob.Manifests, func(d ocispec.Descriptor) bool {
+			return d.Platform != nil && d.Platform.OS == "linux" && d.Platform.Architecture == nodeImageArchitecture
+		})
+		if i < 0 {
+			return nil, fmt.Errorf("image index %s has no linux/%s manifest", digest, nodeImageArchitecture)
+		}
+		digest = blob.Manifests[i].Digest.String()
+	}
+	return nil, fmt.Errorf("image %s nests indexes deeper than %d levels", digest, maxIndexDepth)
 }
 
 // readBlob decodes the layout blob digest names into v, refusing content

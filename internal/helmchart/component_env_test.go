@@ -75,14 +75,19 @@ func componentImages(t *testing.T) map[string]componentImage {
 	return images
 }
 
-// launchEnv observes the environment c launches with: the image's, the
-// runtime's, then the pod spec's, each overriding the one before. A
-// downward-API value stands in as a fixed string; extra adds NAME=value
-// entries on top.
+// launchEnv observes the environment c launches with: containerd's
+// HOSTNAME, the image's, the kubelet's, then the pod spec's, each overriding
+// the one before. A downward-API value stands in as a fixed string; extra
+// adds NAME=value entries on top.
 func launchEnv(t *testing.T, imageEnv map[string]string, c corev1.Container, extra ...string) *pkgallowlist.EnvObservation {
 	t.Helper()
-	env := maps.Clone(runtimeTestEnv)
+	env := map[string]string{"HOSTNAME": runtimeTestEnv["HOSTNAME"]}
 	maps.Copy(env, imageEnv)
+	for name, value := range runtimeTestEnv {
+		if name != "HOSTNAME" {
+			env[name] = value
+		}
+	}
 	for _, e := range c.Env {
 		value := e.Value
 		if e.ValueFrom != nil {
@@ -296,5 +301,34 @@ func TestChartComponentImageEnvsCoverDockerfiles(t *testing.T) {
 				t.Errorf("%s sets ENV %s, which %s imageEnv lacks", dockerfile, m[1], repository)
 			}
 		}
+	}
+}
+
+// The kubelet sets its API-server variables over the image's, so an image
+// that declares one launches with the kubelet's value, which the entry must
+// pin.
+func TestChartComponentEntriesPinKubeletOverImageEnv(t *testing.T) {
+	out := componentRender(t, "--set", "router.nginx.imageEnv.KUBERNETES_SERVICE_PORT=9999", "--set", "router.nginx.imageEnv.HOSTNAME=nginx")
+	seed := renderedSeed(t, out).BuildIndex()
+	checked := false
+	for _, cc := range renderedComponentContainers(t, out) {
+		if cc.image.env["NGINX_VERSION"] == "" {
+			continue
+		}
+		checked = true
+		imageEnv := maps.Clone(cc.image.env)
+		imageEnv["KUBERNETES_SERVICE_PORT"] = "9999"
+		imageEnv["HOSTNAME"] = "nginx"
+		argv := effectiveArgv(cc.container)
+		if len(cc.container.Command) == 0 {
+			argv = append(slices.Clone(cc.image.entrypoint), cc.container.Args...)
+		}
+		r := pkgallowlist.RunningContainer{Digest: cc.digest, Argv: argv, Mounts: []pkgallowlist.ObservedMount{}, Env: launchEnv(t, imageEnv, cc.container)}
+		if !seed.AdmitsContainer(r) {
+			t.Errorf("seed refuses %s container %s launching with the kubelet's KUBERNETES_SERVICE_PORT over the image's", cc.workload, cc.container.Name)
+		}
+	}
+	if !checked {
+		t.Fatal("no rendered container runs the nginx image")
 	}
 }
