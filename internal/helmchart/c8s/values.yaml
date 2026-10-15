@@ -754,9 +754,10 @@ nriImagePolicy:
   ## distinguishes this inventory from a workload sharing the node measurement.
   ## CDS must be able to reach every node on it.
   ##
-  ## The advertised host defaults to the installer's own status.hostIP, handed
-  ## to the host process through a file. Override only when that is not the
-  ## address CDS reaches the node on.
+  ## The advertised host defaults to the address the kubelet registers by
+  ## default (the default-route interface's). Override only when that is not
+  ## the address CDS reaches the node on. An IP here is also the node-ip that
+  ## components dial the attestation-api on.
   sandboxDigests:
     advertiseHost: ""
 
@@ -1232,7 +1233,7 @@ router:
     # passes $$(NAME) through as $(NAME) and the sidecar expands it. Under a
     # fail-closed nriImagePolicy (or the node image's baked one, with
     # nriImagePolicy.enabled=false) on cvmMode=bare-metal, write $$(NODE_IP),
-    # which the sidecar reads from the node-ip file the image policy installer
+    # which the sidecar reads from the node-ip file the image policy plugin
     # writes; $(HOST_IP) comes from a variable the allowlist does not pin and
     # fails the render there. An unescaped reference fails the render.
     attestationApiURL: ""

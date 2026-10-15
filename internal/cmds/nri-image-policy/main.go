@@ -20,9 +20,12 @@ import (
 	"syscall"
 	"time"
 
+	utilnet "k8s.io/apimachinery/pkg/util/net"
+
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
+	"github.com/confidential-dot-ai/c8s/internal/fileutil"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -138,6 +141,14 @@ func Run(args []string) error {
 	}()
 
 	logger.Info("policy store seeded", "base_entries", store.base.Size())
+
+	if cfg.WorkloadClaims.PublishNodeIP {
+		// Fail-soft: exiting would block container creation node-wide, while
+		// a missing file only fails closed the components that read it.
+		if err := publishNodeIP(cfg); err != nil {
+			logger.Error("node-ip not published; components that read it will not start", "error", err)
+		}
+	}
 
 	addr := *healthAddr
 	if cfg.Plugin.HealthAddr != "" {
@@ -448,6 +459,37 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	return nil
 }
 
+// chooseHostInterface is a package var so tests can fake the host's routes.
+var chooseHostInterface = utilnet.ChooseHostInterface
+
+// publishNodeIP writes NodeIPFile from the node's own view: advertise_host when
+// it is an IP, else the address the kubelet registers by default. A pod could
+// otherwise pick the attestation verifier components dial. On failure it
+// removes any earlier file so those components fail closed.
+func publishNodeIP(cfg *config) error {
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	host := cfg.WorkloadClaims.AdvertiseHost
+	if net.ParseIP(host) == nil {
+		ip, err := chooseHostInterface()
+		if err != nil {
+			return errors.Join(fmt.Errorf("resolve node address: %w", err), removeIfExists(path))
+		}
+		host = ip.String()
+	}
+	if err := os.MkdirAll(cfg.WorkloadClaims.SocketDir, 0o711); err != nil {
+		return err
+	}
+	// World-readable: non-root components read it.
+	return fileutil.WriteAtomic(path, []byte(host+"\n"), 0o644)
+}
+
+func removeIfExists(path string) error {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return nil
+}
+
 // sandboxTokenSigner builds the inventory's sandbox-token signer. The key needs
 // no credential of its own: CDS reads it from this inventory's digests endpoint
 // on a privileged port, which is what establishes whose key it is. Without pull
@@ -471,14 +513,13 @@ func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.Sandb
 }
 
 // digestsAdvertiseHost is the node IP every sandbox token names for CDS's
-// digests callback: the configured override, else the address the installer
-// wrote from its own status.hostIP. Route inference is the last resort and
+// digests callback: the configured override, else the node-ip file. Route inference is the last resort and
 // usually wrong here — the chart points the plugin at the CDS NodePort on
 // loopback, whose route source is loopback.
 func digestsAdvertiseHost(cfg *config) (string, error) {
-	// Config first, then the file the chart's installer writes, then the
-	// environment — the node image bakes the plugin without an installer, so
-	// nri-node-ip.service writes it there. None of these needs to be trustworthy: a
+	// Config first, then the node-ip file (publishNodeIP, or
+	// nri-node-ip.service on the node image), then the environment. None of
+	// these needs to be trustworthy: a
 	// wrong host makes CDS fetch a key the token signature fails under, so it
 	// can only fail closed, never redirect.
 	host := cfg.WorkloadClaims.AdvertiseHost

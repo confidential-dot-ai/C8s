@@ -473,8 +473,8 @@ router sidecars find the node-baked attestation-api by node address. Under a
 fail-closed policy, or with `nriImagePolicy.enabled=false` (the node image's
 baked plugin, whose mode the chart cannot see), the chart writes it as
 `$(NODE_IP)`. The binary reads that from the `node-ip` file the image policy
-installer or the node image's `nri-node-ip.service` writes into the socket
-directory, mounted read-only at `/run/c8s/node-ip` from a host path the entry
+plugin (a host process, from the host's own view) or the node image's
+`nri-node-ip.service` writes into the socket directory, never a pod, mounted read-only at `/run/c8s/node-ip` from a host path the entry
 pins. The render refuses `$(HOST_IP)` in a component's argv there: the binary
 would read it from the `HOST_IP` variable, and a restaged pod could set that
 to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,

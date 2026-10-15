@@ -627,16 +627,6 @@ func TestChartNriInstallerRendersSinglePullDaemonSet(t *testing.T) {
 	if got, want := worker.Spec.Template.Labels["app.kubernetes.io/component"], "nri-installer-worker"; got != want {
 		t.Errorf("worker installer pod component label = %q, want %q", got, want)
 	}
-	// The install script writes ${NODE_IP:?} to the node-ip file the plugin
-	// reads, so the env var must sit on the install container itself, not on
-	// the rke2-only containerd-prep sibling.
-	install, ok := findContainer(worker.Spec.Template.Spec.InitContainers, "install")
-	if !ok {
-		t.Fatalf("install init container missing; have %v", containerNames(worker.Spec.Template.Spec.InitContainers))
-	}
-	if !hasNodeIPEnv(install) {
-		t.Errorf("install init container missing NODE_IP downward-API env; have %+v", install.Env)
-	}
 }
 
 // Both admission paths enforce host isolation and Pod security defaults.
@@ -880,8 +870,7 @@ func TestChartHostNamespacePolicyDeniesAllHostPath(t *testing.T) {
 }
 
 // hasNodeIPEnv reports whether the container carries a NODE_IP env var sourced
-// from the status.hostIP downward-API field — the sandbox-digests callback
-// address the installer writes down for the host-process plugin.
+// from the status.hostIP downward-API field.
 func hasNodeIPEnv(c corev1.Container) bool {
 	for _, e := range c.Env {
 		if e.Name == "NODE_IP" && e.ValueFrom != nil && e.ValueFrom.FieldRef != nil &&

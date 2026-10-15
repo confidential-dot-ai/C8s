@@ -53,10 +53,12 @@ type workloadClaimsConfig struct {
 	// container cgroup. Defaults to "/proc".
 	ProcRoot string `yaml:"proc_root"`
 	// AdvertiseHost is the node address CDS dials to reach this inventory's
-	// digests endpoint. Empty reads it from NodeIPFile, which the installer
-	// writes from its own status.hostIP — the plugin is a host process and has
-	// no downward API of its own.
+	// digests endpoint. Empty reads it from NodeIPFile.
 	AdvertiseHost string `yaml:"advertise_host"`
+	// PublishNodeIP makes the plugin write NodeIPFile at startup from the
+	// node's own view (see publishNodeIP). The chart sets it; the node image
+	// leaves it unset because nri-node-ip.service writes the file there.
+	PublishNodeIP bool `yaml:"publish_node_ip"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -176,8 +178,9 @@ type loggingConfig struct {
 const defaultPullInterval = 5 * time.Second
 const defaultPullTimeout = 30 * time.Second
 
-// NodeIPFile is the filename, inside SocketDir, the installer writes this
-// node's address to. Read only when advertise_host is unset.
+// NodeIPFile is the filename, inside SocketDir, holding this node's address:
+// components read it as their attestation-api host (cmdsutil.NodeIPPath), so
+// only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
 // defaultConfigPath is the plugin config containerd's plugin_config_path
@@ -371,6 +374,9 @@ func (c *config) Validate() error {
 	}
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
+	}
+	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
+		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
 	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")

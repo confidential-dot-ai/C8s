@@ -61,8 +61,13 @@ const (
 )
 
 // NodeIPPath is where the chart mounts, read-only, the node-ip file the image
-// policy installer writes into its socket directory.
+// policy plugin writes into its socket directory.
 const NodeIPPath = "/run/c8s/node-ip"
+
+// NodeAddressHelp ends the usage of an --attestation-api-url flag the command
+// passes through ExpandHostIP.
+const NodeAddressHelp = "; a literal $(NODE_IP) is replaced by the address in " + NodeIPPath +
+	" and $(HOST_IP) by the HOST_IP environment variable, and startup fails when that source is missing, unreadable or not an IP address"
 
 // ExpandHostIP replaces a node address reference in an attestation-api URL.
 // A component's arguments are pinned exactly in the allowlist, so the chart

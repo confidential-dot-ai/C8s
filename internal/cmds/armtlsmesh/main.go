@@ -140,7 +140,7 @@ type proxyConfig struct {
 
 func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.platform, "platform", "auto", "TEE platform: sev-snp, tdx, or auto (probes /dev/{tdx_guest,sev-guest})")
-	fs.StringVar(&c.attestationApiURL, "attestation-api-url", "", "URL of the local attestation-api (e.g. http://localhost:8400)")
+	fs.StringVar(&c.attestationApiURL, "attestation-api-url", "", "URL of the local attestation-api (e.g. http://localhost:8400)"+cmdsutil.NodeAddressHelp)
 	fs.IntVar(&c.outboundPort, "outbound-port", 15001, "outbound listener port (intercepted app traffic)")
 	fs.IntVar(&c.inboundPort, "inbound-port", 15006, "inbound listener port (armTLS from peer nodes)")
 	fs.StringVar(&c.nodeIP, "node-ip", "", "this node's IP (auto-detected from NODE_IP env if unset)")

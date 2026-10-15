@@ -267,7 +267,7 @@
 {{- range $token := concat (default list $c.command) (default list $c.args) -}}
 {{- /* An unescaped reference fails in c8s.kubeletExpand. */ -}}
 {{- if contains "$$(HOST_IP)" (toString $token) -}}
-{{- fail (printf "VALIDATION_ERROR kind=host_ip_argv: %s container %s names $(HOST_IP) in %q under a fail-closed image policy. The binary would read the node address from the HOST_IP variable, which the allowlist does not pin, so the pod would choose its attestation verifier. Write the node address as $$(NODE_IP): the binary reads it from the node-ip file the image policy installer writes." (get $pod "name") $c.name (toString $token)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=host_ip_argv: %s container %s names $(HOST_IP) in %q under a fail-closed image policy. The binary would read the node address from the HOST_IP variable, which the allowlist does not pin, so the pod would choose its attestation verifier. Write the node address as $$(NODE_IP): the binary reads it from the node-ip file the image policy plugin writes." (get $pod "name") $c.name (toString $token)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -556,8 +556,8 @@ The node inventory is wired through NRI.
   bind-mounts read-only into the `c8s-cert` sidecar at container creation (an
   NRI mount, so the pod spec carries no hostPath and stays admissible under
   PodSecurity `restricted`), and `/identity` + `/digests` on `:1019`. The node IP it signs into tokens comes from the
-  installer DaemonSet's downward API `status.hostIP`, written to a `node-ip`
-  file beside the socket; `nriImagePolicy.sandboxDigests.advertiseHost`
+  `node-ip` file beside the socket, which the plugin writes at startup from the
+  address the kubelet registers by default; `nriImagePolicy.sandboxDigests.advertiseHost`
   overrides it. Route inference is the last resort and is wrong under the
   chart's own default, since the plugin dials the CDS NodePort over loopback.
 CDS must be able to reach every node on `:1019`, and the

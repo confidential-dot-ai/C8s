@@ -61,11 +61,11 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
 
 {{- /* Non-empty when components reach the attestation-api by node address
-       and read it from the node-ip file the image policy installer or the
-       node image's nri-node-ip.service writes: bare-metal without a local
-       socket, under a fail-closed image policy. The allowlist pins the file's
-       host path but not the environment, so HOST_IP would let the pod choose
-       the verifier. */ -}}
+       and read it from the node-ip file the image policy plugin or the node
+       image's nri-node-ip.service writes: bare-metal without a local socket,
+       under a fail-closed image policy. The allowlist pins the file's host
+       path but not the environment, so HOST_IP would let the pod choose the
+       verifier. */ -}}
 {{- define "c8s.attestationApiNodeIPFile" -}}
 {{- if and (not (include "c8s.attestationApiSocketPresent" .)) (eq .Values.attestationApi.cvmMode "bare-metal") (include "c8s.imagePolicyFailClosed" .) -}}true{{- end -}}
 {{- end -}}

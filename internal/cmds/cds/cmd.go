@@ -45,7 +45,7 @@ func NewCmd() *cobra.Command {
 	flags.IntVarP(&cfg.port, "port", "p", 8443, "")
 	flags.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 
-	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of the attestation-api service")
+	flags.StringVar(&cfg.attestationApiURL, "attestation-api-url", "", "URL of the attestation-api service"+cmdsutil.NodeAddressHelp)
 	flags.StringVar(&cfg.caCommonName, "ca-common-name", issuer.DefaultCACommonName, "common name for the in-memory generated mesh CA")
 	flags.DurationVar(&cfg.caCertValidity, "ca-cert-validity", 8760*time.Hour, "validity period of the in-memory mesh CA certificate")
 	flags.StringSliceVar(&cfg.measurements, "measurements", nil, "SHA-384 hex launch measurements allowed to call /attest (empty = no pinning, UNSAFE)")
