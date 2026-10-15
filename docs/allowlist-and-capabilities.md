@@ -218,7 +218,9 @@ The NRI plugin enforces env after cumulative NRI adjustments. The admission
 inventory carries the complete environment digest and per-variable digests bound
 to their names for CDS workload matching and secret release. Names are visible;
 raw values are omitted, but digests allow guessing low-entropy values. `match`
-requires per-variable evidence from the node. Deferred CDI edits leave env and
+requires per-variable evidence from the node, which it omits for environments
+over 128 variables or 4 KiB of names; set `enableServiceLinks: false` on pods
+that use `match`. Deferred CDI edits leave env and
 mount evidence unavailable, so constrained policies reject those launches.
 
 Consumers that predate `match` reject the whole allowlist when it contains one,
