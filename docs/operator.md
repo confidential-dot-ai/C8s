@@ -1180,7 +1180,8 @@ against `--trust-operator-keys` with `operatorauth.VerifyStored`.
 `--operator-keys` does not feed it, and `--trust-operator-keys` alone is
 rejected. Only a document uploaded whole with a signed `PUT /allowlist`
 carries a token: a per-workload edit yields an unsigned policy, which fails
-`--trust-operator` until the node reboots. The documents authenticate
+`--trust-operator` until a signed upload of the same document stores a token
+for its digest. The documents authenticate
 themselves against the replayed digests, so any router replica may serve
 them.
 

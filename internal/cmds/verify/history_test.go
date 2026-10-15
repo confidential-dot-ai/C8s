@@ -157,6 +157,7 @@ func TestPinPolicy(t *testing.T) {
 	}{
 		{"history pinned", []string{testPolicyP, testPolicyQ}, nil, false, nil, "", false},
 		{"stamp pinned", []string{testPolicyP}, stampP, true, nil, "", false},
+		{"stamp pinned, unvouched", []string{testPolicyP}, stampP, false, nil, "", true},
 		{"history not pinned", []string{testPolicyP, testPolicyR}, nil, false, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR, false},
 		{"stamp not pinned", []string{testPolicyP}, stampR, true, nil, "policy_history_not_pinned: the leaf was issued under policy " + testPolicyR, false},
 		{"leaf without stamp", []string{testPolicyP}, nil, true, nil, "", true},
@@ -166,11 +167,12 @@ func TestPinPolicy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ev := &evidence{workloadErr: tc.workloadErr}
-			if tc.leaf {
+			if tc.leaf || tc.stamp != nil {
 				ev.leaf = &x509.Certificate{}
 			}
 			if tc.stamp != nil {
 				ev.workload = &armtls.MatchedWorkload{Name: "app", AllowlistDigest: tc.stamp}
+				ev.leafChainVerified = tc.leaf
 			}
 			for _, partial := range []bool{false, true} {
 				oc := Outcome{Verified: !partial, Partial: partial, MeasuredPolicies: tc.history}
@@ -184,19 +186,20 @@ func TestPinPolicy(t *testing.T) {
 				if wantPartial := partial || tc.wantPartial; oc.Partial != wantPartial || oc.Verified == wantPartial {
 					t.Errorf("applyPinPolicy(partial %v) = verified %v, partial %v; want partial %v", partial, oc.Verified, oc.Partial, wantPartial)
 				}
-				if noted := notesUnstamped(oc, "pinned"); noted != tc.wantPartial {
-					t.Errorf("applyPinPolicy(partial %v) NotProven = %v; want the unstamped leaf named: %v", partial, oc.NotProven, tc.wantPartial)
+				if noted := notesUnproven(oc, "pinned"); noted != tc.wantPartial {
+					t.Errorf("applyPinPolicy(partial %v) NotProven = %v; want the leaf's issuing policy named: %v", partial, oc.NotProven, tc.wantPartial)
 				}
 			}
 		})
 	}
 }
 
-// notesUnstamped reports whether oc names an unstamped leaf under a history
-// that was judged.
-func notesUnstamped(oc Outcome, judged string) bool {
+// notesUnproven reports whether oc names the leaf's issuing policy as
+// unchecked: an unstamped leaf, or a stamp no --mesh-ca chain authenticated.
+func notesUnproven(oc Outcome, judged string) bool {
 	return slices.ContainsFunc(oc.NotProven, func(n string) bool {
-		return strings.Contains(n, "the policy history is "+judged+", but the leaf carries no matched-workload stamp")
+		return strings.Contains(n, "the policy history is "+judged+", but the leaf carries no matched-workload stamp") ||
+			strings.Contains(n, "its matched-workload stamp is "+judged+", but it is CA-vouched")
 	})
 }
 
@@ -227,7 +230,7 @@ func TestPinPolicyThroughVerdictPolicies(t *testing.T) {
 			if oc.Verified || oc.Partial != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 				t.Errorf("verdict = verified %v, partial %v, error %q; want partial only without error containing %q", oc.Verified, oc.Partial, oc.Error, tc.wantErr)
 			}
-			if noted := notesUnstamped(oc, "pinned"); noted != tc.unstampedLeaf {
+			if noted := notesUnproven(oc, "pinned"); noted != tc.unstampedLeaf {
 				t.Errorf("NotProven = %v; want the unstamped leaf named: %v", oc.NotProven, tc.unstampedLeaf)
 			}
 			if hasLeaf := oc.LeafStamped != nil; hasLeaf != tc.unstampedLeaf || (hasLeaf && *oc.LeafStamped) {
@@ -495,7 +498,8 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 		wantErr     string
 		wantPartial bool
 	}{
-		{"signed stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", false},
+		{"signed stamp", &evidence{leaf: leaf, leafChainVerified: true, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", false},
+		{"signed stamp, unvouched", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", true},
 		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
 		{"no stamp", &evidence{leaf: leaf}, signed, "", true},
 		{"no stamp, unsigned history", &evidence{leaf: leaf}, unsigned, "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
@@ -516,8 +520,8 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 				if wantPartial := partial || tc.wantPartial; oc.Partial != wantPartial || oc.Verified == wantPartial {
 					t.Errorf("checkPolicyHistory(partial %v) = verified %v, partial %v; want partial %v", partial, oc.Verified, oc.Partial, wantPartial)
 				}
-				if noted := notesUnstamped(oc, "signed"); noted != tc.wantPartial {
-					t.Errorf("checkPolicyHistory(partial %v) NotProven = %v; want the unstamped leaf named: %v", partial, oc.NotProven, tc.wantPartial)
+				if noted := notesUnproven(oc, "signed"); noted != tc.wantPartial {
+					t.Errorf("checkPolicyHistory(partial %v) NotProven = %v; want the leaf's issuing policy named: %v", partial, oc.NotProven, tc.wantPartial)
 				}
 			}
 		})
