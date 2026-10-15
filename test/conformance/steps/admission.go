@@ -147,20 +147,41 @@ func deployOnNode(ctx context.Context, name, node string) error {
 	if err != nil {
 		return err
 	}
-	args := []string{p.name, w.namespace, k8sNode, p.containers[0].ref}
+	args := append([]string(nil), p.opts...)
+	if len(p.secrets) > 0 {
+		args = append(args, "--annotation", annotationSecrets+"="+strings.Join(p.secrets, ","))
+	}
+	if p.init != nil {
+		args = append(args, "--init-container", p.init.ref+" "+strings.Join(p.init.command, " "))
+	}
+	if p.workloadID {
+		// The label the webhook injects on, and how often the requester
+		// renews the leaf: short enough for an issuance scenario to observe
+		// a renewal, long enough that a secrets scenario, which observes the
+		// leaf the pod obtained, sees no renewal replace it.
+		renewal := issuanceRenewal
+		if w.secrets.active {
+			renewal = secretsRenewal
+		}
+		args = append(args, "--annotation", annotationCW+"="+p.name, "--annotation", annotationRenewal+"="+renewal)
+	}
+	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {
 		if i > 0 {
 			args = append(args, "+", c.ref)
 		}
 		args = append(args, c.command...)
 	}
-	renderer := "pod_manifest"
-	if p.workloadID {
-		renderer = "cw_pod_manifest"
-	}
-	manifest, err := w.be.call(renderer, args...)
+	manifest, err := w.be.call("pod_manifest", args...)
 	if err != nil {
 		return err
+	}
+	if p.namespace != w.namespace {
+		// Deleting the scenario namespace will not take this one.
+		w.onUndo(func() error {
+			_, err := kubectl(nil, "-n", p.namespace, "delete", "pod", p.name, "--ignore-not-found", "--wait=false")
+			return err
+		})
 	}
 	p.deployed = true
 	_, err = kubectl([]byte(manifest), "apply", "-f", "-")
@@ -177,7 +198,7 @@ type containerStatus struct {
 // it), the denial reason the create check returned, if any, and its running
 // state in one call. A pull failure or a crash is not a denial.
 func (w *world) statuses(p *pod) []containerStatus {
-	out, _ := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "json")
+	out, _ := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	var doc struct {
 		Status struct {
 			ContainerStatuses []struct {

@@ -66,6 +66,12 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 			t.Fatalf("c8s-cert args %v missing %s", cert.Args, want)
 		}
 	}
+	// get-cert's default CDS watch is the contract for injected sidecars.
+	for _, arg := range cert.Args {
+		if strings.HasPrefix(arg, "--ca-watch-interval") {
+			t.Fatalf("c8s-cert args %v carry %s, want get-cert's default watch", cert.Args, arg)
+		}
+	}
 	if cert.RestartPolicy == nil || *cert.RestartPolicy != corev1.ContainerRestartPolicyAlways {
 		t.Fatalf("c8s-cert restartPolicy = %#v, want Always", cert.RestartPolicy)
 	}

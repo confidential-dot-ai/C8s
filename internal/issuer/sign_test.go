@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -46,13 +47,15 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new ca: %v", err)
 	}
-	csr, _ := mustCSR(t, "test-node", nil, []net.IP{net.ParseIP("10.0.0.1")}, nil)
+	csr, key := mustCSR(t, "test-node", nil, []net.IP{net.ParseIP("10.0.0.1")}, nil)
 
+	before := time.Now()
 	certPEM, serial, err := ca.SignCSR(issuer.SignCSRParams{
 		CSR:      csr,
 		TTL:      time.Hour,
 		Evidence: []byte(`{"test":true}`),
 	})
+	after := time.Now()
 	if err != nil {
 		t.Fatalf("SignCSR: %v", err)
 	}
@@ -72,6 +75,7 @@ func TestCASignCSR_SignsLeafAgainstCA(t *testing.T) {
 	if len(leaf.IPAddresses) != 1 || !leaf.IPAddresses[0].Equal(net.ParseIP("10.0.0.1")) {
 		t.Errorf("IP SAN: got %v", leaf.IPAddresses)
 	}
+	testutil.CheckLeafProfile(t, leaf, &key.PublicKey, time.Hour, before, after)
 }
 
 func TestCASignCSR_EmbedsAttestationDigest(t *testing.T) {
