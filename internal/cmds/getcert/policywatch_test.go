@@ -402,6 +402,26 @@ func TestStampedPolicyStale(t *testing.T) {
 		}
 	})
 
+	for _, etag := range []string{"", `"5"`} {
+		t.Run("200 with ETag "+strconv.Quote(etag), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if etag != "" {
+					w.Header().Set("ETag", etag)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(policyRouterOnly))
+			}))
+			t.Cleanup(srv.Close)
+			stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err == nil {
+				t.Fatal("stampedPolicyStale succeeded, want error without a weak ETag")
+			}
+		})
+	}
+
 	t.Run("cds error", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "store down", http.StatusInternalServerError)

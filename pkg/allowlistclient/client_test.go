@@ -2,6 +2,8 @@ package allowlistclient
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -40,6 +42,61 @@ func TestList(t *testing.T) {
 	}
 }
 
+// The served digest is the stamped policy digest of the canonical document.
+func TestFetchServedDigestsServedBytes(t *testing.T) {
+	al, err := allowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := al.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("ETag", `W/"4"`)
+		w.Write(body)
+	}))
+	defer srv.Close()
+
+	served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), "")
+	if err != nil || notModified {
+		t.Fatalf("FetchServed = nm=%v err=%v", notModified, err)
+	}
+	sum, err := al.CanonicalDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "sha256:" + hex.EncodeToString(sum); served.Digest != want {
+		t.Errorf("FetchServed().Digest = %s, want %s", served.Digest, want)
+	}
+	if served.ETag != `W/"4"` || served.Allowlist == nil {
+		t.Errorf("FetchServed() = %+v, want ETag W/\"4\" and an allowlist", served)
+	}
+}
+
+// The digest covers the bytes on the wire, not a re-encoding of them.
+func TestFetchServedDigestsExactBytes(t *testing.T) {
+	const body = `{"schema":"c8s.allowlist/v1",  "workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, body)
+	}))
+	defer srv.Close()
+
+	served, _, err := NewClient(srv.URL).FetchServed(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(body))
+	if want := "sha256:" + hex.EncodeToString(sum[:]); served.Digest != want {
+		t.Errorf("FetchServed().Digest = %s, want %s", served.Digest, want)
+	}
+	if served.Allowlist == nil {
+		t.Error("FetchServed() returned no allowlist")
+	}
+}
+
 func TestFetchNotModified(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("If-None-Match") == `W/"3"` {
@@ -56,21 +113,18 @@ func TestFetchNotModified(t *testing.T) {
 	}
 }
 
-func TestFetchCanonical(t *testing.T) {
+func TestFetchServedStatus(t *testing.T) {
 	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 	tests := []struct {
 		name            string
 		status          int
 		etag            string
-		wantBody        string
-		wantVersion     string
+		wantETag        string
 		wantNotModified bool
 		wantErr         bool
 	}{
 		{name: "304", status: http.StatusNotModified, wantNotModified: true},
-		{name: "200", status: http.StatusOK, etag: `W/"8"`, wantBody: doc, wantVersion: "8"},
-		{name: "200 without ETag", status: http.StatusOK, wantErr: true},
-		{name: "200 with strong ETag", status: http.StatusOK, etag: `"8"`, wantErr: true},
+		{name: "200", status: http.StatusOK, etag: `W/"8"`, wantETag: `W/"8"`},
 		{name: "5xx", status: http.StatusInternalServerError, wantErr: true},
 	}
 	for _, tt := range tests {
@@ -90,12 +144,12 @@ func TestFetchCanonical(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			body, version, notModified, err := NewClient(srv.URL).FetchCanonical(context.Background(), `W/"7"`)
+			served, notModified, err := NewClient(srv.URL).FetchServed(context.Background(), `W/"7"`)
 			if (err != nil) != tt.wantErr {
-				t.Fatalf("FetchCanonical() error = %v, want error %v", err, tt.wantErr)
+				t.Fatalf("FetchServed() error = %v, want error %v", err, tt.wantErr)
 			}
-			if string(body) != tt.wantBody || version != tt.wantVersion || notModified != tt.wantNotModified {
-				t.Fatalf("FetchCanonical() = %q, %q, %v; want %q, %q, %v", body, version, notModified, tt.wantBody, tt.wantVersion, tt.wantNotModified)
+			if served.ETag != tt.wantETag || notModified != tt.wantNotModified {
+				t.Fatalf("FetchServed() = %q, %v; want %q, %v", served.ETag, notModified, tt.wantETag, tt.wantNotModified)
 			}
 		})
 	}
