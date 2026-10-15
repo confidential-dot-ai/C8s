@@ -1,3 +1,66 @@
+{{- define "c8s.volumedTeardownPodSpec" -}}
+{{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
+automountServiceAccountToken: false
+{{- with .Values.volumed.priorityClassName }}
+priorityClassName: {{ . }}
+{{- end }}
+{{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.volumed.imagePullSecrets) | nindent 0 }}
+nodeSelector:
+  kubernetes.io/os: linux
+  {{- with .Values.volumed.nodeSelector }}
+{{ toYaml . | indent 2 }}
+  {{- end }}
+tolerations:
+  {{- toYaml .Values.volumed.tolerations | nindent 2 }}
+initContainers:
+  - name: teardown
+    image: {{ include "volumed.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    securityContext:
+      privileged: true
+      # The image is nonroot (USER 65532) and privileged grants no
+      # effective caps to a non-root process.
+      runAsUser: 0
+      runAsGroup: 0
+    # The image entrypoint is ["/app/c8s", "volumed"]; this hook runs a
+    # shell script instead, so it overrides both.
+    command: ["/bin/sh", "-c"]
+    args:
+      - |
+{{ .Files.Get "files/scripts/volumed-teardown.sh" | indent 8 }}
+    volumeMounts:
+      # Bidirectional: the mounts live in the host namespace, so the
+      # unmount has to propagate back out of this pod.
+      - name: kubelet-root
+        mountPath: {{ $kubeletRoot }}
+        mountPropagation: Bidirectional
+      - name: dev
+        mountPath: /dev
+    resources:
+      {{- toYaml .Values.volumed.resources | nindent 6 }}
+containers:
+  - name: pause
+    image: {{ include "volumed.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    command: ["/bin/sh", "-c", "sleep infinity"]
+    resources:
+      requests:
+        cpu: 10m
+        memory: 16Mi
+      limits:
+        cpu: 50m
+        memory: 32Mi
+volumes:
+  - name: kubelet-root
+    hostPath:
+      path: {{ $kubeletRoot }}
+      type: Directory
+  - name: dev
+    hostPath:
+      path: /dev
+      type: Directory
+{{- end -}}
+
 {{- if .Values.volumed.enabled }}
 {{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 {{- /*
@@ -45,63 +108,5 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
-      automountServiceAccountToken: false
-      {{- with .Values.volumed.priorityClassName }}
-      priorityClassName: {{ . }}
-      {{- end }}
-      {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.volumed.imagePullSecrets) | nindent 6 }}
-      nodeSelector:
-        kubernetes.io/os: linux
-        {{- with .Values.volumed.nodeSelector }}
-{{ toYaml . | indent 8 }}
-        {{- end }}
-      tolerations:
-        {{- toYaml .Values.volumed.tolerations | nindent 8 }}
-      initContainers:
-        - name: teardown
-          image: {{ include "volumed.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            privileged: true
-            # The image is nonroot (USER 65532) and privileged grants no
-            # effective caps to a non-root process.
-            runAsUser: 0
-            runAsGroup: 0
-          # The image entrypoint is ["/app/c8s", "volumed"]; this hook runs a
-          # shell script instead, so it overrides both.
-          command: ["/bin/sh", "-c"]
-          args:
-            - |
-{{ .Files.Get "files/scripts/volumed-teardown.sh" | indent 14 }}
-          volumeMounts:
-            # Bidirectional: the mounts live in the host namespace, so the
-            # unmount has to propagate back out of this pod.
-            - name: kubelet-root
-              mountPath: {{ $kubeletRoot }}
-              mountPropagation: Bidirectional
-            - name: dev
-              mountPath: /dev
-          resources:
-            {{- toYaml .Values.volumed.resources | nindent 12 }}
-      containers:
-        - name: pause
-          image: {{ include "volumed.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          command: ["/bin/sh", "-c", "sleep infinity"]
-          resources:
-            requests:
-              cpu: 10m
-              memory: 16Mi
-            limits:
-              cpu: 50m
-              memory: 32Mi
-      volumes:
-        - name: kubelet-root
-          hostPath:
-            path: {{ $kubeletRoot }}
-            type: Directory
-        - name: dev
-          hostPath:
-            path: /dev
-            type: Directory
+{{- include "c8s.volumedTeardownPodSpec" . | nindent 6 }}
 {{- end }}
