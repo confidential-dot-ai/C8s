@@ -118,7 +118,7 @@ destinations whose `Pod.Status.HostIP` matches this node's `NODE_IP`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--platform` | `auto` | TEE platform: `sev-snp`, `tdx`, or `auto` (probes `/dev/{tdx_guest,sev-guest}`) |
-| `--attestation-api-url` | (required) | URL of the local attestation-api (e.g. `http://localhost:8400`) |
+| `--attestation-api-url` | (required) | URL of the local attestation-api (e.g. `http://localhost:8400`); a literal `$(HOST_IP)` is replaced by the `HOST_IP` environment variable |
 | `--outbound-port` | `15001` | Outbound listener port (iptables redirect target) |
 | `--inbound-port` | `15006` | Inbound listener port (armTLS from peer nodes) |
 | `--node-ip` | `$NODE_IP` | This node's IP address |

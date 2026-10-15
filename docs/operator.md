@@ -524,7 +524,7 @@ With CDS a singleton:
 
 ### Operator-added allowlist entries across restarts
 
-For the measured node image, CDS stores its database at `/data/allowlist.db`
+For the measured node image, CDS stores its database at `/mnt/c8s-data/cds/allowlist.db`
 in the Pod's `emptyDir`. A container restart preserves that directory; Pod
 recreation or a VM reboot loses it. The baked component seed and optional
 signed `workloads` document initialize the new store; reapply any later
@@ -1010,7 +1010,8 @@ nginx reload, Secret watch paths, discovery output, and get-cert UID/GID.
 get-cert containers directly from the chart's templates instead.) The
 webhook rejects incomplete reload-watch or discovery annotation sets during pod
 admission instead of admitting a pod that cannot serve its configured
-certificate/discovery path.
+certificate/discovery path. The sidecars mount at fixed destinations, which the
+allowlist pins; see [Fixed sidecar mounts](secrets.md#fixed-sidecar-mounts).
 
 ## router public TLS modes
 
