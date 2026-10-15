@@ -313,6 +313,56 @@ func TestInventoryServesEvidenceRecordedBeforeMatchPolicy(t *testing.T) {
 	}
 }
 
+// After a failed initial pull no image counts as needing evidence; a running
+// container keeps its digests while stopped sidecars churn past the budget, and
+// is served them once the match policy applies.
+func TestInventoryKeepsRunningEvidenceUntilMatchPolicyApplies(t *testing.T) {
+	p, store := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, &allowlist.Allowlist{Schema: allowlist.Schema})
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.inventory.needsVariableEvidence = store.needsVariableEvidence
+	_, envs := matchWorkloadAtLimits(t, 1)
+	variant := func(value string) []string {
+		env := slices.Clone(envs[0])
+		for i := range env {
+			env[i] = strings.TrimSuffix(env[i], "x") + value
+		}
+		return env
+	}
+	pod := makePod("default", "pod")
+	main := makeCtrWithImageArgs(pod.Id, "main", "registry/repo@"+pushDigestB, []string{"/bin/app"})
+	main.Env = variant("main")
+	p.recordUncheckedForInventory(pod, main, "registry/repo@"+pushDigestB)
+	probe, err := allowlist.ObserveEnv(main.Env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range allowlist.MaxSandboxVariableEvidenceBytes/probe.VariableEvidenceBytes() + 2 {
+		sidecar := makeCtrWithImageArgs(pod.Id, fmt.Sprint("sidecar-", i), "registry/sidecar@"+pushDigestA, []string{"/sidecar"})
+		sidecar.Env = variant(fmt.Sprint(i))
+		p.recordUncheckedForInventory(pod, sidecar, "registry/sidecar@"+pushDigestA)
+		if _, err := p.StopContainer(context.Background(), pod, sidecar); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"present":true}}}`), &al.Workloads["w"].Containers[0].Env); err != nil {
+		t.Fatal(err)
+	}
+	if !store.apply(al, 2) {
+		t.Fatal("match allowlist not applied")
+	}
+	_, cs, _, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		if c.Digest == pushDigestB && c.Env.VariableDigests == nil {
+			t.Fatalf("the running container lost its per-variable evidence before the match policy applied: %+v", c.Env)
+		}
+	}
+}
+
 // matchWorkloadAtLimits declares n containers, each with a match env policy at
 // the per-record evidence limits, and the environment each of them runs.
 func matchWorkloadAtLimits(t *testing.T, n int) ([]byte, [][]string) {

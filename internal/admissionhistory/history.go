@@ -89,11 +89,14 @@ func (h *History) Exited(id string) {
 }
 
 // Bound evicts per-variable digests until the sandbox's total fits within
-// allowlist.MaxSandboxVariableEvidenceBytes: first from records whose image
-// needed reports not needing them, then from records with no running container,
-// then the oldest. Need outranks liveness because an exited init container's
-// record still has to match. Each record keeps its aggregate digest and is
-// marked evicted. A nil needed treats every image as needing them.
+// allowlist.MaxSandboxVariableEvidenceBytes. It ranks records by whether
+// needed reports their image needing them, then by whether a container still
+// runs, and evicts the lowest-ranked, oldest first. Need outranks liveness
+// because an exited init container's record still has to match; liveness
+// still ranks within each, so a running container keeps its evidence while a
+// node that has not applied its policy yet reports no image as needed. Each
+// record keeps its aggregate digest and is marked evicted. A nil needed treats
+// every image as needing them.
 func (h *History) Bound(needed func(digest string) bool) {
 	total := 0
 	var holding []*record
@@ -107,14 +110,14 @@ func (h *History) Bound(needed func(digest string) bool) {
 		return
 	}
 	rank := func(r *record) int {
-		switch {
-		case needed != nil && !needed(r.container.Digest):
-			return 0
-		case len(r.running) == 0:
-			return 1
-		default:
-			return 2
+		rank := 0
+		if needed == nil || needed(r.container.Digest) {
+			rank += 2
 		}
+		if len(r.running) > 0 {
+			rank++
+		}
+		return rank
 	}
 	slices.SortFunc(holding, func(a, b *record) int {
 		return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.seq, b.seq))

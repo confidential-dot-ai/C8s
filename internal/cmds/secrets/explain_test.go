@@ -16,3 +16,11 @@ func TestEnvEvidenceReasonNamesRecreation(t *testing.T) {
 		}
 	}
 }
+
+// An oversized environment persists across restarts, so the missing case must
+// name how to shrink it.
+func TestEnvEvidenceMissingNamesShrinking(t *testing.T) {
+	if got := envEvidenceReason(pkgallowlist.EnvEvidenceMissing); !strings.Contains(got, "enableServiceLinks: false") {
+		t.Errorf("envEvidenceReason(%q) = %q, want it to name how to shrink the environment", pkgallowlist.EnvEvidenceMissing, got)
+	}
+}

@@ -482,10 +482,15 @@ of CDS's 1 MiB response limit:
   recorded before the node applied that policy is still served its digests once
   it does.
 - A sandbox keeps at most 512 KiB of serialized per-variable digests. Past
-  that, the node evicts them from records of images no `match` policy lists
-  first, then from records whose container has stopped, then from the oldest.
-  A stopped init container of a `match`-listed image therefore keeps its
-  digests while unlisted images hold any. An evicted record keeps its aggregate digest and reports
+  that, the node evicts them in this order: unlisted images' stopped
+  containers, unlisted images' running containers, listed images' stopped
+  containers, then listed images' running containers, the oldest first within
+  each. An image is listed when a `match` policy in the node's current
+  allowlist names it. A stopped init container of a listed image therefore
+  keeps its digests while unlisted images hold any. An image whose `match`
+  policy the node has not applied yet, for example after a failed initial
+  pull, counts as unlisted, so its running containers still keep their digests
+  ahead of stopped ones. An evicted record keeps its aggregate digest and reports
   `variableDigestsEvicted: true`. Admitting the same environment again restores
   its digests.
 - `derive`, `lint` and `apply` reject a workload whose containers of

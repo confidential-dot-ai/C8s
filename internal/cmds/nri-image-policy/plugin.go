@@ -796,16 +796,19 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		return nil, nil
 	}
 
-	// If not ready yet, defer the check until after CDS init completes.
+	// If not ready yet, defer the check until after CDS init completes. Ready
+	// is read under deferredMu so RunDeferredCheck cannot run between it and
+	// the store and leave the batch unchecked.
+	p.deferredMu.Lock()
 	if !p.Ready() {
-		p.logger.Info("plugin not ready, deferring startup check",
-			"pods", len(pods), "containers", len(ctrs))
-		p.deferredMu.Lock()
 		p.deferredPods = pods
 		p.deferredCtrs = ctrs
 		p.deferredMu.Unlock()
+		p.logger.Info("plugin not ready, deferring startup check",
+			"pods", len(pods), "containers", len(ctrs))
 		return nil, nil
 	}
+	p.deferredMu.Unlock()
 
 	p.checkExisting(ctx, cfg, pods, ctrs)
 	return nil, nil

@@ -256,6 +256,26 @@ func TestHistoryEvictsUnneededBeforeExited(t *testing.T) {
 	}
 }
 
+// Before a node applies its policy no image counts as needed, and a running
+// container still keeps its evidence while exited variants churn past the
+// budget.
+func TestHistoryEvictsExitedEvidenceFirstWhenNoneNeeded(t *testing.T) {
+	var h History
+	none := func(string) bool { return false }
+	live := observeAtLimits(t, "live")
+	h.Record("main", "sha256:a", []string{"/app"}, live)
+	h.Bound(none)
+	for i := range allowlist.MaxSandboxVariableEvidenceBytes/live.VariableEvidenceBytes() + 2 {
+		id := fmt.Sprint("sidecar-", i)
+		h.Record(id, "sha256:b", []string{"/sidecar"}, observeAtLimits(t, fmt.Sprint(i)))
+		h.Exited(id)
+		h.Bound(none)
+	}
+	if got := evidenceByEnv(t, h, nil)[live.Digest]; got.VariableDigests == nil {
+		t.Fatal("the running container lost its per-variable evidence to exited variants")
+	}
+}
+
 // Serving decides which records need evidence, so an image listed by a match
 // policy only after its container was recorded is still served its evidence.
 func TestHistoryServesEvidenceByCurrentPolicy(t *testing.T) {
