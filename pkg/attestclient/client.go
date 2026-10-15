@@ -39,6 +39,8 @@ const defaultRequestTimeout = 60 * time.Second
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	// attestHTTP reaches the attestation-api: httpClient without a proxy.
+	attestHTTP *http.Client
 }
 
 // CertificateResult is the complete CDS challenge/attest/certify result.
@@ -60,15 +62,36 @@ func NewClient(baseURL string) Client {
 	return Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{Timeout: defaultRequestTimeout},
+		attestHTTP: armtls.NewDirectHTTPClient(defaultRequestTimeout),
 	}
 }
 
-// NewClientWithHTTP creates a new client with a custom HTTP client.
+// NewClientWithHTTP creates a new client with a custom HTTP client. Evidence
+// requests to the attestation-api keep its timeout and TLS settings but never
+// use a proxy.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: httpClient,
+		attestHTTP: withoutProxy(httpClient),
 	}
+}
+
+// withoutProxy is c with proxy lookup disabled. A RoundTripper other than
+// *http.Transport cannot be inspected for one, so it is replaced by
+// [armtls.NewDirectHTTPClient].
+func withoutProxy(c *http.Client) *http.Client {
+	t, ok := c.Transport.(*http.Transport)
+	if !ok {
+		return armtls.NewDirectHTTPClient(c.Timeout)
+	}
+	if t.Proxy != nil {
+		t = t.Clone()
+		t.Proxy = nil
+	}
+	direct := *c
+	direct.Transport = t
+	return &direct
 }
 
 // GenerateEvidence calls the local attestation-api to generate TEE evidence
@@ -80,10 +103,9 @@ func (c Client) GenerateEvidence(attestationApiURL string, reportData []byte) (r
 }
 
 // GenerateEvidenceContext is GenerateEvidence with caller-controlled
-// cancellation. The request keeps the client's timeout but not its transport:
-// it goes over [armtls.NewDirectHTTPClient], never through a proxy.
+// cancellation. The request never goes through a proxy.
 func (c Client) GenerateEvidenceContext(ctx context.Context, attestationApiURL string, reportData []byte) (remote.AttestResponse, error) {
-	asClient := remote.NewClientWithHTTP(attestationApiURL, armtls.NewDirectHTTPClient(c.httpClient.Timeout))
+	asClient := remote.NewClientWithHTTP(attestationApiURL, c.attestHTTP)
 	return asClient.Attest(contextOrBackground(ctx), remote.AttestRequest{
 		ReportData: reportData,
 		Platform:   remote.PlatformAuto,

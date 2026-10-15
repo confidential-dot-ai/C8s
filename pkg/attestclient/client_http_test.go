@@ -487,3 +487,22 @@ func TestRedirectStatusIsNotSuccess(t *testing.T) {
 		}
 	})
 }
+
+// Evidence requests keep the caller's TLS trust: an attestation-api behind a
+// private CA must still verify.
+func TestGenerateEvidenceKeepsCallerTLS(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"platform":"snp","evidence":{"q":1}}`))
+	}))
+	defer srv.Close()
+	t.Setenv("HTTPS_PROXY", unreachableURL)
+
+	c := NewClientWithHTTP("https://cds.invalid", srv.Client())
+	if _, err := c.GenerateEvidence(srv.URL, []byte("report-data")); err != nil {
+		t.Fatalf("GenerateEvidence over the caller's private-CA client: %v", err)
+	}
+	if proxy := c.attestHTTP.Transport.(*http.Transport).Proxy; proxy != nil {
+		t.Fatal("evidence transport consults a proxy")
+	}
+}
