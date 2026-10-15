@@ -7,10 +7,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -18,40 +16,9 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
-	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
-
-const flowSandbox = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-
-// stubResolver is an inventory that vouches for one sandbox. The token route
-// binds its caller by peer credentials, which a unix socket supplies.
-type stubResolver struct{}
-
-func (stubResolver) SandboxForPeer(workloadclaims.Peer) (string, error) { return flowSandbox, nil }
-func (stubResolver) DigestsForSandbox(string) ([]string, []workloadclaims.SandboxContainer, bool, error) {
-	return nil, nil, false, nil
-}
-
-// startInventory serves the real token route on a unix socket and returns its
-// endpoint.
-func startInventory(t *testing.T) string {
-	t.Helper()
-	signer, err := workloadclaims.NewSandboxTokenSigner("10.0.0.7")
-	if err != nil {
-		t.Fatal(err)
-	}
-	sock := filepath.Join(t.TempDir(), "wc.sock")
-	l, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	go workloadclaims.ServeTokens(ctx, l, stubResolver{}, signer)
-	t.Cleanup(func() { cancel(); l.Close() })
-
-	return "unix://" + sock
-}
 
 // fakeCDS records what it was asked and answers from a scripted sequence.
 type fakeCDS struct {
@@ -182,7 +149,7 @@ func testKey(t *testing.T) *ecdsa.PublicKey {
 }
 
 func TestFetchBlobReadsTheStore(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: testBlobJSON(t)}},
 	})
@@ -201,7 +168,7 @@ func TestFetchBlobReadsTheStore(t *testing.T) {
 // would squat the path with random bytes that decrypt nothing and leave the
 // real key unwritable behind a 409.
 func TestFetchBlobNeverCreates(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	f, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusNotFound}},
 	})
@@ -219,7 +186,7 @@ func TestFetchBlobNeverCreates(t *testing.T) {
 // A denial is not a reason to write either: release is refused until every main
 // container is admitted, so 403 is the normal early answer.
 func TestFetchBlobDoesNotWriteOnDenial(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	f, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusForbidden}},
 	})
@@ -234,7 +201,7 @@ func TestFetchBlobDoesNotWriteOnDenial(t *testing.T) {
 
 // A value that is not a key blob is refused rather than handed to the daemon.
 func TestFetchBlobRejectsANonBlob(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	_, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {{status: http.StatusOK, value: []byte(`{"type":"something/else"}`)}},
 	})
@@ -247,7 +214,7 @@ func TestFetchBlobRejectsANonBlob(t *testing.T) {
 // Each request carries its own challenge and its own token; both are single-use
 // at CDS, so a reused pair is a replayed request.
 func TestEveryRequestTakesAFreshChallengeAndToken(t *testing.T) {
-	endpoint := startInventory(t)
+	endpoint := "unix://" + testutil.StartInventory(t)
 	f, url := newFakeCDS(t, map[string][]reply{
 		"GET /secrets/tenant-a/volumes/weights": {
 			{status: http.StatusForbidden},

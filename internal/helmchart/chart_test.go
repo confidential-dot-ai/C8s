@@ -2726,7 +2726,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims")
+	assertContainerArgs(t, cert, "--workload-claims", "--ca-watch-interval=1m")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -3003,6 +3003,17 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	if got := nginx.SecurityContext.RunAsNonRoot; got == nil || *got {
 		t.Fatalf("nginx runAsNonRoot = %v, want false", got)
 	}
+
+	claimsOut, err := helmTemplate(t,
+		"--set-string", "router.attest.expectedWorkload=infer",
+		"--set", "router.hostPort.enabled=false",
+		"--set-string", "router.certProvisioning.caWatchInterval=3m",
+	)
+	if err != nil {
+		t.Fatalf("helm template (workload claims): %v\n%s", err, claimsOut)
+	}
+	claimsCert := routerGetCertContainer(t, claimsOut, "c8s-cert")
+	assertContainerArgs(t, claimsCert, "--workload-claims", "--ca-watch-interval=3m")
 }
 
 // TestChartDefaultRouterUpstreamIsWorkloadDirect pins the default front-door

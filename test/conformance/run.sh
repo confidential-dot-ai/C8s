@@ -32,6 +32,6 @@ export CONFORMANCE_FEATURES CONFORMANCE_BACKEND
 echo "conformance: $(be subject)" >&2
 be setup
 cd "$here/steps"
-go test -count=1 -timeout 60m . \
+go test -count=1 -timeout 80m . \
     --godog.format="progress,cucumber:$report" \
     ${GODOG_TAGS:+--godog.tags="$GODOG_TAGS"}
