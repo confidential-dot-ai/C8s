@@ -359,7 +359,7 @@ plugin_healthy() {
 
 # The version in that answer, whatever its status: the one the plugin applied.
 applied_version() {
-    node_exec sh -c 'curl -s --max-time 2 --unix-socket "$1" http://localhost/healthz | jq -r .allowlist_version' _ "$PLUGIN_HEALTH"
+    node_exec curl -s --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz | jq -r .allowlist_version
 }
 
 # Ready within the installer's budget: a containerd restart, then the first
