@@ -2,6 +2,7 @@ package steps
 
 import (
 	"bytes"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -80,10 +81,28 @@ func (b backend) call(fn string, args ...string) (string, error) {
 }
 
 // podExec runs cmd in a container of the pod, kubectl's default one when
-// container is empty. Where the backend's cluster closes pod exec it skips.
+// container is empty: through kubectl exec, or where the backend's cluster
+// closes pod exec, through the agent the backend runs in the pod (pod_exec,
+// agent_run), which skips what it cannot reach.
 func (w *world) podExec(p *pod, container string, cmd ...string) (string, error) {
-	if _, err := w.be.call("pod_exec"); err != nil {
+	mode, err := w.be.call("pod_exec")
+	if err != nil {
 		return "", err
+	}
+	if mode == "agent" {
+		quoted := make([]string, len(cmd))
+		for i, word := range cmd {
+			quoted[i] = "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
+		}
+		out, err := w.be.call("agent_run", p.namespace, p.name, container, strings.Join(quoted, " "))
+		if err != nil {
+			return "", err
+		}
+		raw, err := base64.StdEncoding.DecodeString(out)
+		if err != nil {
+			return "", fmt.Errorf("the agent in %q answered no base64: %w", p.name, err)
+		}
+		return string(raw), nil
 	}
 	args := []string{"-n", p.namespace, "exec", p.name}
 	if container != "" {
