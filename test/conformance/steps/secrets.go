@@ -879,9 +879,8 @@ func (w *world) probe(p *pod, args ...string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	cmd := append([]string{"-n", p.namespace, "exec", p.name, "-c", certContainer, "--", "/c8s", "secret-probe",
-		"--cds-url", url, "--cert", certFile, "--key", keyFile}, verify...)
-	return kubectl(nil, append(cmd, args...)...)
+	cmd := append([]string{"/c8s", "secret-probe", "--cds-url", url, "--cert", certFile, "--key", keyFile}, verify...)
+	return w.podExec(p, certContainer, append(cmd, args...)...)
 }
 
 // cdsVerification is how the pod's certificate container verifies the CDS,
@@ -1659,7 +1658,7 @@ func canStillRead(ctx context.Context, name, logical string) error {
 // --- The secret client ---
 
 func (w *world) readSecretFile(p *pod, logical string) ([]byte, error) {
-	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "cat", secretClientDir+"/"+secretFile(logical))
+	out, err := w.podExec(p, firstContainer, "cat", secretClientDir+"/"+secretFile(logical))
 	if err != nil {
 		return nil, err
 	}
@@ -1733,7 +1732,7 @@ func outputOnMemory(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "stat", "-f", "-c", "%T", secretClientDir)
+	out, err := w.podExec(p, firstContainer, "stat", "-f", "-c", "%T", secretClientDir)
 	if err != nil {
 		return err
 	}

@@ -798,7 +798,7 @@ func (w *world) unheldAddress(network *net.IPNet) (net.IP, error) {
 // printed and its exit status, which a failing command does not turn into
 // an error here.
 func (w *world) exec(p *pod, script string) (*execResult, error) {
-	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "sh", "-c", script+"; echo \"rc=$?\"")
+	out, err := w.podExec(p, firstContainer, "sh", "-c", script+"; echo \"rc=$?\"")
 	if err != nil {
 		return nil, err
 	}
@@ -1164,7 +1164,7 @@ func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
 	if err := w.ensureDialer(p); err != nil {
 		return "", err
 	}
-	return kubectl(nil, append([]string{"-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", dialerPath}, args...)...)
+	return w.podExec(p, firstContainer, append([]string{dialerPath}, args...)...)
 }
 
 // --- Outcomes ---
