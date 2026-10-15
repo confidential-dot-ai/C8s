@@ -256,9 +256,13 @@
 {{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/var/run/nri-image-policy") -}}
 {{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /var/run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
 {{- end -}}
-{{- /* Producers mount the runtime directory only beside the attestation-api socket. */ -}}
-{{- if and $nri.measurePolicies (not (include "c8s.attestationApiSocketPresent" .)) -}}
-{{- fail "VALIDATION_ERROR kind=measure_policies_no_journal_mount: nriImagePolicy.measurePolicies=true requires attestationApi.enabled=true or node.baked=true: otherwise certificate producers do not mount the measured-policy journal, send no list, and peers refuse the node" -}}
+{{- /*
+  Producers mount the runtime directory only beside the attestation-api
+  socket. Under node.baked the image owns the plugin config, which the value
+  cannot reach.
+*/ -}}
+{{- if and $nri.measurePolicies (not .Values.attestationApi.enabled) -}}
+{{- fail "VALIDATION_ERROR kind=measure_policies_no_journal_mount: nriImagePolicy.measurePolicies=true requires attestationApi.enabled=true, and so excludes node.baked: otherwise certificate producers do not mount the measured-policy journal, or the plugin never sees the setting" -}}
 {{- end -}}
 {{- /*
   A component expands $(HOST_IP) from its HOST_IP variable, which the

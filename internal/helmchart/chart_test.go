@@ -7656,7 +7656,8 @@ func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 
 // nriImagePolicy.measurePolicies reaches both plugin configs: the rendered
 // boot config and, on a baked node, the set-cds-pins patch. The router's
-// cds-attest reads the journal wherever it mounts the runtime directory.
+// cds-attest reads the journal wherever it mounts the runtime directory, so a
+// node that stopped measuring still reports the extends RTMR[3] keeps.
 func TestChartMeasurePolicies(t *testing.T) {
 	for _, measure := range []bool{false, true} {
 		set := fmt.Sprintf("nriImagePolicy.measurePolicies=%t", measure)
@@ -7694,10 +7695,10 @@ func TestChartMeasurePolicies(t *testing.T) {
 		dir      string
 		wantFlag bool
 	}{
-		{name: "unbaked", args: []string{"--set", "attestationApi.enabled=true"}, dir: custom, wantFlag: true},
-		{name: "unbaked, measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, dir: defaultDir, wantFlag: true},
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}, dir: defaultDir},
+		{name: "not measuring", args: []string{"--set", "attestationApi.enabled=true"}, dir: custom, wantFlag: true},
+		{name: "measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, dir: defaultDir, wantFlag: true},
 		{name: "baked", args: bakedArgs, dir: custom, wantFlag: true},
-		{name: "baked, measuring", args: append(slices.Clone(bakedArgs), "--set", "nriImagePolicy.measurePolicies=true"), dir: defaultDir, wantFlag: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := tc.dir
@@ -7735,17 +7736,22 @@ func TestChartMeasurePoliciesNeedsDefaultRuntimeDir(t *testing.T) {
 	}
 }
 
-// Producers mount the journal only beside the attestation-api socket, so the
-// chart refuses measuring on an unbaked node without attestation-api.
+// Producers mount the journal only beside the chart's attestation-api socket,
+// and a node.baked image owns the plugin config, so the chart refuses
+// measuring without attestationApi.enabled.
 func TestChartMeasurePoliciesNeedsJournalMount(t *testing.T) {
-	out, err := helmTemplate(t,
-		"--set", "nriImagePolicy.measurePolicies=true",
-		"--set", "attestationApi.enabled=false",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want a measure_policies_no_journal_mount failure\n%s", out)
-	}
-	if got := parseValidationErrorKind(out); got != "measure_policies_no_journal_mount" {
-		t.Fatalf("validation kind = %q, want measure_policies_no_journal_mount\n%s", got, out)
+	for name, args := range map[string][]string{
+		"no attestation-api": {"--set", "attestationApi.enabled=false"},
+		"node baked":         bakedArgs,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(args), "--set", "nriImagePolicy.measurePolicies=true")...)
+			if err == nil {
+				t.Fatalf("helm template succeeded, want a measure_policies_no_journal_mount failure\n%s", out)
+			}
+			if got := parseValidationErrorKind(out); got != "measure_policies_no_journal_mount" {
+				t.Fatalf("validation kind = %q, want measure_policies_no_journal_mount\n%s", got, out)
+			}
+		})
 	}
 }
