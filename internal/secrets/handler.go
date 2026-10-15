@@ -476,9 +476,10 @@ func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.Sa
 
 // isInjected reports whether a reported container is one C8s injected: its
 // argv is the C8s binary in one of the modes the webhook injects, its image is
-// admitted running that binary under an unconstrained args policy (the seeded
-// component entry pins the executable and nothing else, since the arguments
-// are per-pod), and every mount it holds is confined to the node. All three
+// admitted running that binary under an unconstrained args policy (the
+// component entry's sidecar shapes pin the invocation and mount table and
+// leave the per-pod arguments open), and every mount it holds is confined to
+// the node. All three
 // conditions are required. An image admitted with open args but running a
 // shell is not injected. Nor is the C8s image in a mode the webhook never
 // injects: that container is declared, however it is invoked. Nor is an

@@ -5,8 +5,7 @@
 // init/main container set; every container binds a digest to the process
 // (argv), bind-mount and environment policy permitted for those bytes, and the
 // entry as a whole carries a secret-store grant. An image that may run however
-// it is invoked — a standalone or injected C8s component, whose argv is
-// per-pod — is an entry whose container policy is any. Policy is always looked
+// it is invoked is an entry whose container policy is any. Policy is always looked
 // up by container digest — the entry name and image labels are informational,
 // never a trust-bearing key, because the image reference a pod presents is
 // chosen by the untrusted host while the digest is bound to the bytes that run.
@@ -290,10 +289,11 @@ func (w Workload) containers() []Container {
 }
 
 // AdmitsAnyArgs reports whether some entry admits the digest running argv's
-// command under an unconstrained args policy: the entry pins at most the
-// executable, and the arguments are the pod's to choose. The
-// injected-container drop set (internal/secrets) keys on it: C8s's own image
-// runs with per-pod arguments, so it is only ever admitted this way.
+// command under an unconstrained args policy: the entry pins the executable,
+// and the arguments are the pod's to choose. The injected-container drop set
+// (internal/secrets) keys on it: the sidecars the webhook injects run with
+// per-pod arguments, so their shapes in the C8s image's component entry leave
+// args open.
 func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 	d, err := types.ParseDigest(digest)
 	if err != nil {

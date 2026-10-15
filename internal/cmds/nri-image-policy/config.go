@@ -65,9 +65,9 @@ type workloadClaimsConfig struct {
 // of every pulled snapshot (CDS and operator digests). Installer and busybox
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
-// entries. The chart's component entries pin the executable and explicitly
-// leave the other fields open; the node image's generated RKE2 system entries
-// leave command and args open too.
+// entries. The chart's component entries pin each container's argv and mount
+// table and leave env open; the node image's generated RKE2 system entries
+// leave command and args open.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`

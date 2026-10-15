@@ -28,8 +28,9 @@ node:
 ##   - entrypoint:  the executable the derived allowlist entry pins the image
 ##                  to, as the argv prefix every container running the image
 ##                  starts with (the image's ENTRYPOINT, plus the subcommand
-##                  when the image bakes one). Arguments stay unconstrained:
-##                  they are per-pod. Required unless argvPinned.
+##                  when the image bakes one). The entry pins the arguments
+##                  and mounts of each container the chart renders too.
+##                  Required unless argvPinned.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
@@ -787,9 +788,10 @@ nriImagePolicy:
   # worker pull. An entry admitting a digest with open args, env and mounts,
   # under any command or pinned to one, also lands in every plugin's base
   # allowlist (nri-image-policy.bootConfig), so the cluster can bring itself
-  # up before CDS is reachable; an entry that pins args, env or mounts is
-  # seed-only. The chart's own component entries pin each image's entrypoint
-  # (c8sComponents[].entrypoint) and land in both.
+  # up before CDS is reachable, and so does an entry for a C8s component's
+  # digest whatever it pins; any other entry that pins args, env or mounts is
+  # seed-only. The chart's own component entries pin each container it
+  # renders to its exact argv and mount table, and land in both.
   #
   # Everything needed to reach a Ready CDS on the CDS node and a working kubelet
   # on every node goes here as any-argv entries — the C8s component images plus
@@ -802,7 +804,7 @@ nriImagePolicy:
     # `c8s install --resolve-digests`, which turns it on). When true, the C8s
     # component images this chart installs (operator, cds, attestation-api,
     # armtls-mesh) are seeded and admitted whenever their image.digest is set,
-    # each pinned to its entrypoint with the arguments left open, so a
+    # each container pinned to the exact argv and mounts it renders, so a
     # digest-pinned install self-allows the C8s images without an entry
     # for each. It never covers the non-c8s system images, so production
     # installs pin the full set in `workloads` instead. nri-image-policy is

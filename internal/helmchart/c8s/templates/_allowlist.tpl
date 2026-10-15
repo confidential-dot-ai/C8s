@@ -25,11 +25,10 @@
 {{- end -}}
 
 {{/* The chart-deployed system images the seed and the plugin base admit, as
-     digest -> {image, entrypoint}. Each is admitted pinned to its entrypoint
-     (c8s.componentContainer): the executable is the image's own, while the
-     arguments, environment and mounts are per-pod. A derived component
-     without an entrypoint fails the render: an entry left at any command
-     would admit the image under a shell or a mounted binary. */ -}}
+     digest -> {image, entrypoint}. Each container that runs one is pinned to
+     its exact argv and mount table (c8s.componentShapes); the entrypoint is
+     the command prefix of a container that runs the image's own. A derived
+     component without an entrypoint fails the render. */ -}}
 {{- define "c8s.imageAllowlist" -}}
 {{- $digests := dict -}}
 {{- $components := include "c8s.components" . | fromJsonArray -}}
@@ -278,9 +277,8 @@
 {{ $out | toJson }}
 {{- end -}}
 
-{{/* One allowlist container for a system image from c8s.imageAllowlist:
-     command pinned to the entrypoint, args and mounts any. The seed adds an
-     explicit env any; the base leaves env absent, which normalizes to any. */ -}}
+{{/* The base container for an operator open-args entry pinned to an
+     entrypoint: command pinned, args and mounts any. */ -}}
 {{- define "c8s.componentContainer" -}}
 {{- $command := dict "policy" "exact" "argv" (get .entry "entrypoint") -}}
 {{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (dict "policy" "any") "command" $command "args" (dict "policy" "any") -}}
