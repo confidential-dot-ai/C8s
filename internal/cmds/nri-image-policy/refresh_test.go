@@ -913,6 +913,37 @@ func TestPullLoopRefusedVersionNotRefetched(t *testing.T) {
 	}
 }
 
+// A version the node fails to measure is retried every tick, but the failure
+// is logged at Error once.
+func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
+	body := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{versions: []string{"2"}, bodyByV: map[string][]byte{"2": body}})
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	measures := 0
+	var logs bytes.Buffer
+	runPullLoop(ctx, pullLoopArgs{
+		client: allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		store:  newPolicyStore(anyAllowlist(map[string]string{pushDigestA: "image-1"})),
+		measure: func(string) error {
+			if measures++; measures == 3 {
+				cancel()
+			}
+			return errors.New("register write failed")
+		},
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	if measures != 3 {
+		t.Errorf("measured %d times, want 3", measures)
+	}
+	if n := strings.Count(logs.String(), "could not measure"); n != 1 {
+		t.Errorf("measure failure logged %d times at Error, want 1:\n%s", n, logs.String())
+	}
+}
+
 // A register that diverged from the journal refuses every policy for good.
 func TestPolicyMeasurerRefusesOnDivergedRegister(t *testing.T) {
 	anchor := []byte("operator key")
