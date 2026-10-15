@@ -193,9 +193,62 @@ PYEOF
 }
 
 # The node image's confos-pod-exec policy closes pod exec for every
-# principal, so nothing here reads a pod's files or runs in it.
+# principal, so nothing here runs in a pod through exec.
 pod_exec() { return "$UNSUPPORTED"; }
-pod_cert_file() { return "$UNSUPPORTED"; }
+
+# A command reaches a pod through its own annotations instead. A pod whose
+# first container would only `sleep 3600` (the steps' placeholder argv) runs
+# an agent there: it reads two annotations from a downward-API volume, which
+# the kubelet rewrites when the pod is patched, runs the command they carry
+# and prints its combined output and status to the container log.
+AGENT=c8s-conformance/agent
+AGENT_DIR=/run/c8s-conformance-agent
+# shellcheck disable=SC2016  # expands in the pod
+AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; base64 -d '"$AGENT_DIR"'/cmd > /tmp/.agent-cmd 2>/dev/null; sh /tmp/.agent-cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
+
+pod_manifest() {
+    render_pod --sysctl "$PING_SYSCTL" "$@" | jq -c --arg a "$AGENT" --arg dir "$AGENT_DIR" --arg script "$AGENT_SCRIPT" '
+        if .spec.containers[0].command == ["sleep", "3600"] then
+            .metadata.annotations += {($a): "yes", ($a + "-seq"): "0", ($a + "-cmd"): ""}
+            | .spec.containers[0].command = ["sh", "-c", $script]
+            | .spec.containers[0].volumeMounts += [{name: "c8s-conformance-agent", mountPath: $dir, readOnly: true}]
+            | .spec.volumes += [{name: "c8s-conformance-agent", downwardAPI: {items: [
+                {path: "seq", fieldRef: {fieldPath: ("metadata.annotations['" + $a + "-seq']")}},
+                {path: "cmd", fieldRef: {fieldPath: ("metadata.annotations['" + $a + "-cmd']")}}]}}]
+        else . end'
+}
+
+# agent_exec <ns> <pod> <command...>: its output, and its status as ours; 77
+# for a pod without the agent, 1 when the agent has not answered in a minute.
+agent_exec() {
+    local ns="$1" pod="$2" seq line container rc out deadline
+    shift 2
+    [ "$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null | jq -r --arg a "$AGENT" '.metadata.annotations[$a] // empty')" = yes ] ||
+        return "$UNSUPPORTED"
+    container="$(kubectl -n "$ns" get pod "$pod" -o jsonpath='{.spec.containers[0].name}')" || return
+    seq="$(date +%s%N)"
+    kubectl -n "$ns" annotate pod "$pod" --overwrite \
+        "$AGENT-cmd=$(printf '%q ' "$@" | base64 | tr -d '\n')" "$AGENT-seq=$seq" >/dev/null || return
+    deadline=$(($(date +%s) + 60))
+    until line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep "^agent $seq " | tail -1)" && [ -n "$line" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the agent in $ns/$pod did not answer within 60s" >&2; return 1; }
+        sleep 1
+    done
+    read -r _ _ rc out <<<"$line"
+    printf '%s' "${out:-}" | base64 -d
+    return "$rc"
+}
+
+# Nothing while the file is absent or the agent does not answer yet, as
+# pod_cert_file answers elsewhere; 77 for a pod without the agent.
+pod_cert_file() {
+    local out rc=0
+    out="$(agent_exec "$1" "$2" cat "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0) printf '%s\n' "$out" ;;
+        "$UNSUPPORTED") return "$UNSUPPORTED" ;;
+    esac
+}
 requester_request() { return "$UNSUPPORTED"; }
 mesh_member() { return "$UNSUPPORTED"; }
 mesh_metrics() { return "$UNSUPPORTED"; }
