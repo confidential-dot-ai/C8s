@@ -582,26 +582,29 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 // A seed that pins a component's executable is accepted when the pin admits
 // every command the baked manifests spell out for the image.
 // The chart pins a component's args and mounts too; the seed must still admit
-// every baked invocation, whether the manifest names the command or runs the
-// image's entrypoint.
+// every baked container, whether the manifest names the command or runs the
+// image's entrypoint, with the mounts the manifest gives it.
 func TestNodeImageCollectPinnedArgs(t *testing.T) {
 	core := `{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
-	pinned := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]},"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]}},` +
-		`{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
+	mesh := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]}}`
+	entrypoint := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
+	const router = "        - name: router\n          image: registry.example.com/operator@" + testDigest
 	for _, tc := range []struct {
-		name, manifest string
-		ok             bool
+		name, seed, manifest string
+		ok                   bool
 	}{
-		{"every invocation pinned", "", true},
-		{"entrypoint arguments not pinned", "        - name: router\n          image: registry.example.com/operator@" + testDigest + "\n          args: [\"--other\"]", false},
+		{"every invocation pinned", mesh + "," + entrypoint, "", true},
+		{"entrypoint arguments not pinned", mesh + "," + entrypoint, router + "\n          args: [\"--other\"]", false},
+		{"mount the manifest lacks", strings.Replace(mesh, `"args"`, `"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]},"args"`, 1) + "," + entrypoint, "", false},
+		{"entrypoint under any command with pinned args", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := strings.Replace(nodeImageCollectFixture(), core, pinned, 1)
+			input := strings.Replace(nodeImageCollectFixture(), core, tc.seed, 1)
 			if input == nodeImageCollectFixture() {
 				t.Fatal("fixture seed did not change")
 			}
 			if tc.manifest != "" {
-				input = strings.Replace(input, "        - name: router\n          image: registry.example.com/operator@"+testDigest, tc.manifest, 1)
+				input = strings.Replace(input, router, tc.manifest, 1)
 			}
 			_, err := collectNodeImageArtifacts([]byte(input))
 			if (err == nil) != tc.ok {
