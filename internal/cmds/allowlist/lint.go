@@ -324,16 +324,28 @@ func processOf(c pkgallowlist.Container) [2]pkgallowlist.ArgvPolicy {
 	return [2]pkgallowlist.ArgvPolicy{c.Command, c.Args}
 }
 
-// searchPathFindings rejects pinned loader and interpreter search paths that
-// overlap operator-supplied data, which could otherwise be loaded as code.
+// loaderVariables choose where the loader, a shell or an interpreter finds
+// code, so the host must not pick their values.
+var loaderVariables = []string{"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "NODE_PATH", "BASH_ENV", "ENV", "GLIBC_TUNABLES"}
+
+// searchPathFindings rejects loader variables the host chooses, and pinned
+// search paths overlapping operator-supplied data: either way, content outside
+// the measured image could be loaded as code.
 func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		for _, c := range allContainers(al.Workloads[name]) {
+			pinnedValues := c.Env.ExactValues()
+			for _, variable := range loaderVariables {
+				if _, matched := c.Env.Variables[variable]; matched {
+					if _, pinned := pinnedValues[variable]; !pinned {
+						out = append(out, errorf("workload %q container %s leaves %s to the host; the host could choose what code is loaded (pin it with exact, or leave it unlisted)", name, c.Digest.String(), variable))
+					}
+				}
+			}
 			if c.Mounts.Policy != pkgallowlist.PolicyExact {
 				continue
 			}
-			pinnedValues := c.Env.ExactValues()
 			for _, variable := range []string{"PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "NODE_PATH"} {
 				value, set := pinnedValues[variable]
 				if !set {

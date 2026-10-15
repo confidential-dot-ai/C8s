@@ -504,6 +504,32 @@ func TestWorkloadApplyDoesNotDoubleReportInFileCollision(t *testing.T) {
 	}
 }
 
+func TestLintRejectsHostChosenLoaderVariables(t *testing.T) {
+	for _, variable := range []string{"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "NODE_PATH", "BASH_ENV", "ENV", "GLIBC_TUNABLES"} {
+		t.Run(variable, func(t *testing.T) {
+			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+				`"env":{"policy":"match","variables":{"` + variable + `":{"present":true},"MODE":{"exact":"production"}}}}`
+			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[`+container+`]}}}`)
+			out, _, err := runCmd("lint", "--strict", file)
+			if err == nil {
+				t.Fatalf("lint --strict accepted a host-chosen %s: %s", variable, out)
+			}
+			if want := "leaves " + variable + " to the host"; !strings.Contains(out, want) {
+				t.Fatalf("lint output = %s, want %q", out, want)
+			}
+		})
+	}
+}
+
+func TestLintAcceptsPinnedLoaderVariable(t *testing.T) {
+	container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+		`"env":{"policy":"match","variables":{"LD_PRELOAD":{"exact":"/lib/a.so"},"GPU_SERIAL":{"present":true}}}}`
+	file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[`+container+`]}}}`)
+	if out, _, err := runCmd("lint", file); strings.Contains(out, "to the host;") {
+		t.Fatalf("lint flagged a pinned LD_PRELOAD (err %v): %s", err, out)
+	}
+}
+
 func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 	for _, tc := range []struct {
 		name, variable, value, kind string
