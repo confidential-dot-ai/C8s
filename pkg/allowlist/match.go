@@ -27,6 +27,8 @@ type ObservedMount struct {
 	Storage          MountStorage `json:"storage"`
 	HostSourceDigest string       `json:"hostSourceDigest,omitempty"`
 	ReadOnly         bool         `json:"readOnly,omitempty"`
+	// ContentSHA256 is emitted only for immutable node-root regular files.
+	ContentSHA256 string `json:"contentSHA256,omitempty"`
 }
 
 // ErrNoMatch reports that no entry describes the running set; ErrAmbiguous that

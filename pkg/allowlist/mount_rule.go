@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -35,8 +36,8 @@ type emptyDirRule struct {
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly {
-		return fmt.Errorf("mount kind %q does not support source or readOnly", r.Kind)
+	if r.Source != "" || r.ReadOnly || r.ContentSHA256 != "" {
+		return fmt.Errorf("mount kind %q does not support source, readOnly or contentSHA256", r.Kind)
 	}
 	return nil
 }
@@ -68,13 +69,22 @@ type hostRule struct {
 }
 
 func (r hostRule) validate() error {
+	if r.ContentSHA256 != "" {
+		decoded, err := hex.DecodeString(r.ContentSHA256)
+		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != r.ContentSHA256 {
+			return fmt.Errorf("contentSHA256 must be 64 lowercase hexadecimal digits")
+		}
+		if !r.ReadOnly {
+			return fmt.Errorf("contentSHA256 requires readOnly: true")
+		}
+	}
 	_, err := HostSourceDigest(r.Source)
 	return err
 }
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly
+	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.ContentSHA256 == "" || m.ContentSHA256 == r.ContentSHA256)
 }
 
 func (hostRule) hostIndependent() bool {

@@ -129,3 +129,26 @@ func TestContainerKeyDistinguishesMissingEnvironment(t *testing.T) {
 		t.Fatal("missing environment collapsed into present evidence")
 	}
 }
+
+func TestContentPinSurvivesInventoryAndChangesIdentity(t *testing.T) {
+	mount := allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, ContentSHA256: strings.Repeat("b", 64)}
+	c := SandboxContainer{Mounts: []allowlist.ObservedMount{mount}}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded SandboxContainer
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Mounts[0].ContentSHA256 != mount.ContentSHA256 || decoded.Key() != c.Key() {
+		t.Fatal("lost content authority on inventory round trip")
+	}
+	for _, hash := range []string{"", strings.Repeat("a", 64)} {
+		changed := mount
+		changed.ContentSHA256 = hash
+		if (SandboxContainer{Mounts: []allowlist.ObservedMount{changed}}).Key() == c.Key() {
+			t.Fatal("content authority collapsed in history key")
+		}
+	}
+}

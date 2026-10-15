@@ -75,3 +75,77 @@ func TestHostSourceDigestRejectsInvalidPaths(t *testing.T) {
 		})
 	}
 }
+
+func TestContentPinnedHostMount(t *testing.T) {
+	const hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, ContentSHA256: hash}}}
+	if err := normalizeMounts(&policy); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := HostSourceDigest("/usr/bin/nvidia-smi")
+	mount := ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: MountHost, HostSourceDigest: source, ReadOnly: true, ContentSHA256: hash}
+	for _, tc := range []struct {
+		name    string
+		change  func(*ObservedMount)
+		allowed bool
+	}{
+		{"reviewed bytes", func(*ObservedMount) {}, true},
+		{"old node without content evidence", func(m *ObservedMount) { m.ContentSHA256 = "" }, false},
+		{"different bytes", func(m *ObservedMount) {
+			m.ContentSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		}, false},
+		{"different source", func(m *ObservedMount) { m.HostSourceDigest = "other" }, false},
+		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := mount
+			tc.change(&observed)
+			if policy.admits([]ObservedMount{observed}) != tc.allowed {
+				t.Fatalf("admission for %+v, want %v", observed, tc.allowed)
+			}
+		})
+	}
+	encoded, err := json.Marshal(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ObservedMount
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.admits([]ObservedMount{decoded}) {
+		t.Fatal("content evidence lost during serialization")
+	}
+	// Existing rules remain path/mode-only even if a new node supplies bytes.
+	policy.Rules[0].ContentSHA256 = ""
+	if !policy.admits([]ObservedMount{mount}) {
+		t.Fatal("changed legacy host rule behavior")
+	}
+}
+
+func TestContentPinRequiresReadOnlyHostAndCanonicalSHA256(t *testing.T) {
+	for _, tc := range []struct {
+		name, hash string
+		kind       MountClass
+		readOnly   bool
+	}{
+		{"short", "abc", MountHost, true},
+		{"uppercase", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", MountHost, true},
+		{"nonhex", "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz", MountHost, true},
+		{"prefixed", "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", MountHost, true},
+		{"writable", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", MountHost, false},
+		{"emptyDir", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", MountEmptyDir, false},
+		{"data", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", MountData, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := MountRule{Destination: "/mnt/c8s-data/tools", Kind: tc.kind, ContentSHA256: tc.hash, ReadOnly: tc.readOnly}
+			if tc.kind == MountHost {
+				rule.Source = "/usr/bin/nvidia-smi"
+			}
+			p := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+			if err := normalizeMounts(&p); err == nil {
+				t.Fatal("accepted invalid content pin")
+			}
+		})
+	}
+}

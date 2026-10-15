@@ -330,7 +330,9 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 }
 
 func searchPathLoadsMountedContent(value string, rule pkgallowlist.MountRule) bool {
-	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost
+	// A normalized content pin requires the node to prove immutable bytes,
+	// not merely a familiar source path or a read-only container bind.
+	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost && rule.ContentSHA256 == ""
 	return operatorSupplied && searchPathReachesMount(value, rule.Destination)
 }
 

@@ -210,6 +210,9 @@ func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 		return mount
 	}
 	mount.HostSourceDigest = digest
+	if mount.ReadOnly {
+		mount.ContentSHA256 = hostFileContentDigest(m.GetSource())
+	}
 	return mount
 }
 

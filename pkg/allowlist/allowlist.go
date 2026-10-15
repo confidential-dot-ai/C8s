@@ -100,6 +100,9 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	// ContentSHA256 pins a regular file from the read-only dm-verity node root.
+	// It is supported only for read-only host rules and is lowercase hex.
+	ContentSHA256 string `json:"contentSHA256,omitempty" yaml:"contentSHA256,omitempty"`
 }
 
 // MountClass identifies who controls the content behind a bind mount.

@@ -522,3 +522,25 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 		})
 	}
 }
+
+func TestLintAllowsContentPinnedHostExecutables(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		refused       bool
+	}{
+		{"path alone", "", true},
+		{"reviewed bytes", `,"contentSHA256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, false},
+		{"invalid bytes pin", `,"contentSHA256":"not-a-hash"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+				`"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true` + tc.content + `}]},` +
+				`"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}}}`
+			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"worker":{"containers":[`+container+`]}}}`)
+			out, _, err := runCmd("lint", "--strict", file)
+			if (err != nil) != tc.refused {
+				t.Fatalf("lint error = %v, want refusal %v: %s", err, tc.refused, out)
+			}
+		})
+	}
+}

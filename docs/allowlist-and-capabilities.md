@@ -284,6 +284,47 @@ the path pin grants access to the contents at that node path. Read-only mode
 applies to the mount itself; nested mounts retain their own flags. Recursive
 read-only/write mount options leave the host source commitment unavailable.
 
+A read-only host **file** can also pin its bytes with `contentSHA256`:
+
+```json
+{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"contentSHA256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+```
+
+Replace the example hash with the SHA-256 of the approved binary, encoded as
+64 lowercase hexadecimal digits without a `sha256:` prefix. Derive it from a
+trusted node-image artifact (for example, `sha256sum` on its extracted file),
+not from a first unrestricted workload launch. Supply the rule through
+`allowlist derive --mounts-file`, or include it in an exact mount policy.
+Existing source path and destination checks still apply; the source must be
+its canonical path without symlink components.
+
+The node verifies content during blocking `ValidateContainerAdjustment`,
+before container creation, and again when observing the final launch. It
+reports a content digest only for a regular file of at most 256 MiB reachable
+directly from the node's read-only root, with no symlinks or intervening mounts.
+The node queries the root device's active kernel table and requires a single
+read-only dm-verity target with strict corruption handling. An unsupported
+kernel, missing device-mapper access, writable root, foreign mount, directory,
+unsafe verity option, unreadable file, wrong hash, or missing evidence rejects
+the content-pinned rule. A container's `readOnly: true` alone is insufficient:
+it does not prevent someone changing the source after it has been checked.
+
+The digest travels through the trusted inventory and participates in admission
+history identity and CDS workload matching. Lint permits these content-pinned
+host files on `PATH` or loader search paths: their bytes are explicitly
+operator-authorized and the runtime must prove them immutable. Unpinned host
+files and data mounts retain the existing search-path rejection. This does not
+approve other libraries, environment changes, hooks, or GPU device counts.
+Attestation binds the enforcing node and policy; reviewing the pinned binary
+and its dependencies remains the policy author's responsibility.
+
+Upgrade the CDS/CLI consumers first, then the node enforcer, before publishing
+rules with `contentSHA256`. Old parsers reject the new field, and absent content
+evidence cannot satisfy the pin. A baked enforcer requires a node-image rebuild;
+a CLI update alone cannot enforce this feature. Existing rules without the
+field retain their path-and-access-mode behavior. This is the runtime-backed
+solution related to #868, not its proposed temporary lint acceptance record.
+
 The pod UID embedded in a kubelet source must equal the pod being admitted, and
 containerd sandbox sources must name its exact sandbox. These runtime IDs prove
 local ownership only and are not serialized into the stable allowlist.

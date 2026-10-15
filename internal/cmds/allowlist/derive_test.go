@@ -341,3 +341,16 @@ func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {
 		t.Errorf("error = %v, want it to name the unknown container", err)
 	}
 }
+
+func TestDerivePreservesHostContentPin(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	file := writeFile(t, "mounts.json", `{"seed":{"policy":"deny"},"frontend":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"contentSHA256":"`+hash+`"}]},"worker":{"policy":"deny"}}`)
+	got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := got["dynamo"].Containers[0].Mounts.Rules[0]
+	if rule.ContentSHA256 != hash || rule.Source != "/usr/bin/nvidia-smi" || !rule.ReadOnly {
+		t.Fatalf("derived rule lost file authorization: %+v", rule)
+	}
+}
