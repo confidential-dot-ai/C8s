@@ -2726,7 +2726,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 	if !ok {
 		t.Fatal("c8s-cert init container missing")
 	}
-	assertContainerArgs(t, cert, "--workload-claims", "--ca-watch-interval=1m")
+	assertContainerArgs(t, cert, "--workload-claims", "--expected-workload=infer", "--ca-watch-interval=1m")
 	var mount *corev1.VolumeMount
 	for i, m := range cert.VolumeMounts {
 		if m.Name == "workload-claims" {
@@ -4597,6 +4597,12 @@ func helmOutput(cmd *exec.Cmd) ([]byte, error) {
 
 func helmTemplate(t *testing.T, args ...string) (string, error) {
 	t.Helper()
+	return helmTemplateIn(t, ".", args...)
+}
+
+// helmTemplateIn is helmTemplate on the chart directory c8s under dir.
+func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
+	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
@@ -4631,7 +4637,7 @@ func helmTemplate(t *testing.T, args ...string) (string, error) {
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 	}
 	cmd := exec.Command("helm", append(base, args...)...)
-	cmd.Dir = "."
+	cmd.Dir = dir
 	out, err := helmOutput(cmd)
 	return string(out), err
 }
@@ -5528,13 +5534,12 @@ func podVolume(spec corev1.PodSpec, name string) (corev1.Volume, bool) {
 	return corev1.Volume{}, false
 }
 
-// seedEntry finds the seed entry whose single container carries digest.
+// seedEntry finds a seed entry whose containers all carry digest.
 func seedEntry(seed *pkgallowlist.Allowlist, digest string) (pkgallowlist.Workload, bool) {
 	for _, w := range seed.Workloads {
-		for _, c := range w.Containers {
-			if c.Digest.String() == digest {
-				return w, true
-			}
+		// Multi-image entries such as the router's also list the digest.
+		if len(w.Containers) > 0 && !slices.ContainsFunc(w.Containers, func(c pkgallowlist.Container) bool { return c.Digest.String() != digest }) {
+			return w, true
 		}
 	}
 	return pkgallowlist.Workload{}, false

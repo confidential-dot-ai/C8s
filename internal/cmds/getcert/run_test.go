@@ -468,6 +468,17 @@ func TestValidateConfigAccepts(t *testing.T) {
 			},
 		},
 		{
+			name: "expected workload with claims and renew",
+			cfg: config{
+				CDSURL:            "https://cds:8443",
+				AttestationApiURL: "http://attestation-api:8400",
+				SAN:               "host.example.com",
+				RenewInterval:     time.Hour,
+				WorkloadClaims:    true,
+				ExpectedWorkload:  "api",
+			},
+		},
+		{
 			name: "reload watch with renew",
 			cfg: config{
 				CDSURL:              "http://cds:8443",
@@ -528,37 +539,47 @@ func TestValidateConfigRejects(t *testing.T) {
 	tests := []struct {
 		name   string
 		mutate func(*config)
+		want   error // nil accepts any error
 	}{
-		{"empty cds url", func(c *config) { c.CDSURL = "" }},
-		{"bad cds url", func(c *config) { c.CDSURL = "://nope" }},
-		{"empty attestation url", func(c *config) { c.AttestationApiURL = "" }},
-		{"empty san", func(c *config) { c.SAN = "" }},
-		{"url san", func(c *config) { c.SAN = "https://host.example.com" }},
+		{"empty cds url", func(c *config) { c.CDSURL = "" }, nil},
+		{"bad cds url", func(c *config) { c.CDSURL = "://nope" }, nil},
+		{"empty attestation url", func(c *config) { c.AttestationApiURL = "" }, nil},
+		{"empty san", func(c *config) { c.SAN = "" }, nil},
+		{"url san", func(c *config) { c.SAN = "https://host.example.com" }, nil},
 		{"negative ca watch interval", func(c *config) {
 			c.CAOutPath = "/tls/ca.pem"
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = -time.Minute
-		}},
+		}, errInvalidCAWatchInterval},
 		{"sub-second ca watch interval", func(c *config) {
 			c.CAOutPath = "/tls/ca.pem"
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = 500 * time.Millisecond
-		}},
+		}, errInvalidCAWatchInterval},
 		{"ca watch with nothing to watch", func(c *config) {
 			c.RenewInterval = time.Hour
 			c.CAWatchInterval = time.Minute
-		}},
+		}, errInvalidCAWatchInterval},
 		{"ca watch without renew interval", func(c *config) {
 			c.CAOutPath = "/tls/ca.pem"
 			c.CAWatchInterval = time.Minute
-		}},
+		}, errInvalidCAWatchInterval},
+		{"expected workload without workload claims", func(c *config) {
+			c.RenewInterval = time.Hour
+			c.ExpectedWorkload = "api"
+		}, errExpectedWorkloadRequiresClaimsLoop},
+		{"expected workload without renew interval", func(c *config) {
+			c.WorkloadClaims = true
+			c.ExpectedWorkload = "api"
+		}, errExpectedWorkloadRequiresClaimsLoop},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := base
 			tt.mutate(&cfg)
-			if err := validateConfig(cfg); err == nil {
-				t.Fatal("validateConfig succeeded, want error")
+			err := validateConfig(cfg)
+			if err == nil || (tt.want != nil && !errors.Is(err, tt.want)) {
+				t.Fatalf("validateConfig() = %v, want %v", err, tt.want)
 			}
 		})
 	}
