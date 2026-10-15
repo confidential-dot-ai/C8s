@@ -136,6 +136,12 @@ jobs:
         # its mtime and invalidates the cached pass.
         run: make test C8S_TEST_COUNT=
 
+      - name: Verify host mount read-only observation in a private namespace
+        run: |
+          go test -c -o /tmp/c8s-mounts.test ./internal/cmds/nri-image-policy
+          sudo unshare --mount --propagation private env C8S_TEST_PRIVATE_MOUNTS=1 \
+            /tmp/c8s-mounts.test -test.run '^TestRecursiveReadOnlyRetainedMount$' -test.timeout 30s -test.v
+
       # The advisory mutation job only exercises the 0-mutant path on
       # script-only diffs; this guards the summary paths it skips.
       - name: mutation-check selftest
