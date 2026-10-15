@@ -43,7 +43,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	if got, want := cdsShapeAnnotation(t, after), cdsShapeAnnotation(t, before); got == "" || got != want {
 		t.Fatalf("CDS shape %q after the upgrade, want unchanged %q", got, want)
 	}
-	if _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
+	if _, _, err := store.SeedWorkloads(renderedSeed(t, before).Workloads); err != nil {
 		t.Fatal(err)
 	}
 	operatorDigest := componentTestDigests["image"]
@@ -65,7 +65,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 			}
 		}
 	}
-	if _, err := store.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil {
+	if _, _, err := store.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil {
 		t.Fatal(err)
 	}
 	live, _, err := store.LoadAll()
@@ -205,5 +205,58 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 	}
 	if got := names(mirrored); !slices.Equal(got, want) {
 		t.Errorf("entry names under a mirror = %v, want %v", got, want)
+	}
+}
+
+// A release before per-shape names seeded each component as
+// DigestEntryName with open args and mounts; the current seed must retire it.
+func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
+	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	for valuePath, digest := range componentTestDigests {
+		args = append(args, "--set", valuePath+".digest="+digest)
+	}
+	out, err := helmTemplate(t, args...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	seed := renderedSeed(t, out).Workloads
+	old := map[string]pkgallowlist.Workload{}
+	for name, w := range seed {
+		if len(w.Containers) == 0 {
+			continue
+		}
+		c := w.Containers[0]
+		if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyExact {
+			continue
+		}
+		c.Args, c.Mounts, c.Env = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny}, pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}, pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
+		if openArgs, _ := allowlist.OpenComponent(c); !openArgs || strings.HasPrefix(name, "c8s-router-") {
+			continue
+		}
+		// The shape name less its 8-hex policy hash: c8s.digestWorkloadName.
+		old[name[:len(name)-9]] = pkgallowlist.Workload{Label: w.Label, InitContainers: []pkgallowlist.Container{}, Containers: []pkgallowlist.Container{c}}
+	}
+	if len(old) == 0 {
+		t.Fatal("no component shape in the rendered seed")
+	}
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, _, err := store.SeedWorkloads(old); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.SeedWorkloads(seed); err != nil {
+		t.Fatal(err)
+	}
+	live, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name := range old {
+		if _, ok := live.Workloads[name]; ok {
+			t.Errorf("pre-shape entry %q survived the seed", name)
+		}
 	}
 }

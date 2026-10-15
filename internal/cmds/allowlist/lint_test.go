@@ -654,6 +654,7 @@ func TestLintComponentShapes(t *testing.T) {
 func TestLintSeedNamesStaleShapes(t *testing.T) {
 	hex := digA[7:19]
 	live := writeFile(t, "live.json", `{"schema":"c8s.allowlist/v1","workloads":{
+		"c8s-`+hex+`":{"containers":[`+ctrJSON(digA, "/before-shapes")+`]},
 		"c8s-`+hex+`-00000001":{"containers":[`+ctrJSON(digA, "/old")+`]},
 		"c8s-`+hex+`-00000002":{"containers":[`+ctrJSON(digA, "/new")+`]},
 		"c8s-router-000000000001":{"containers":[`+ctrJSON(digA, "/router-old")+`]},
@@ -673,7 +674,7 @@ func TestLintSeedNamesStaleShapes(t *testing.T) {
 			stale = append(stale, line)
 		}
 	}
-	want := []string{"c8s-" + hex + "-00000001", "c8s-router-000000000001"}
+	want := []string{"c8s-" + hex, "c8s-" + hex + "-00000001", "c8s-router-000000000001"}
 	if len(stale) != len(want) {
 		t.Fatalf("stale findings = %q, want one each for %q", stale, want)
 	}

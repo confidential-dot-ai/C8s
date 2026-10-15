@@ -18,7 +18,7 @@ var seedRecheckInterval = 30 * time.Second
 
 // seedStore reads the JSON allowlist at path, seeds its workload entries into
 // store and returns the content it applied. It owns the file/wire-format
-// concerns; the additive, version-stable merge is Store.SeedWorkloads.
+// concerns; the version-stable merge is Store.SeedWorkloads.
 //
 // Seeding runs before the HTTP server serves, so the first GET /allowlist
 // reflects the seed. Any error fails closed: CDS must not serve an empty or
@@ -34,12 +34,12 @@ func seedStore(store *allowlist.Store, path string) ([]byte, error) {
 		return nil, fmt.Errorf("parse allowlist seed %q: %w", path, err)
 	}
 
-	added, err := store.SeedWorkloads(seed.Workloads)
+	added, retired, err := store.SeedWorkloads(seed.Workloads)
 	if err != nil {
 		return nil, fmt.Errorf("seed allowlist workloads: %w", err)
 	}
 
-	slog.Info("allowlist seeded", "workloads_added", added, "workloads_in_seed", len(seed.Workloads))
+	slog.Info("allowlist seeded", "workloads_added", added, "workloads_retired", retired, "workloads_in_seed", len(seed.Workloads))
 	return data, nil
 }
 

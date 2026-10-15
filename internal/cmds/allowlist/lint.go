@@ -7,7 +7,6 @@ import (
 	"maps"
 	"path"
 	"reflect"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -15,8 +14,8 @@ import (
 	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
 
+	cdsallowlist "github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/crane"
-	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -235,34 +234,19 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	return warnings
 }
 
-// generatedName matches the chart's generated entry names, capturing the
-// part one image keeps across configurations: DigestEntryName's image segment
-// and digest prefix before an 8-hex policy hash, or the router entry's prefix.
-var generatedName = regexp.MustCompile(`^(?:(.+-[0-9a-f]{12})-[0-9a-f]{8}|(c8s-router)-[0-9a-f]{12})$`)
-
-// generatedKey is the part of a generated entry name one image keeps across
-// configurations, or "" for any other name.
-func generatedKey(name string) string {
-	m := generatedName.FindStringSubmatch(name)
-	if m == nil {
-		return ""
-	}
-	return m[1] + m[2]
-}
-
 // staleShapes names each generated entry of al that seed lacks while seed
 // generates another entry for the same image: a shape an earlier
 // configuration seeded, which CDS keeps until an operator deletes it.
 func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
 	current := map[string]string{}
 	for name := range seed.Workloads {
-		if key := generatedKey(name); key != "" {
+		if key := cdsallowlist.GeneratedKey(name); key != "" {
 			current[key] = name
 		}
 	}
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
-		key := generatedKey(name)
+		key := cdsallowlist.GeneratedKey(name)
 		if key == "" {
 			continue
 		}
@@ -276,44 +260,16 @@ func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
 	return out
 }
 
-// componentInvocations are the executables the chart's component entries pin:
-// the C8s binary (/c8s in the operator and CDS images, /app/c8s in the mesh
-// and volumed images), attestation-api, and nginx through its entrypoint
-// script.
-var componentInvocations = [][]string{{secrets.InjectedBinary}, {"/app/c8s"}, {"/attestation-api"}, {"/docker-entrypoint.sh", "nginx"}}
-
 // componentFindings reports a container pinned to a component executable that
-// leaves its args or mounts to the pod. Either lets a pod point the component
-// at code of its choosing: --kubeconfig runs an exec credential plugin, nginx's
-// -g loads a module, and a volume replaces what the binary reads. A shape of
-// the sidecars the webhook injects may leave its args open, since they are per
-// pod, but not its mounts. The invocation is matched against the command and
-// any exact args after it, since an entry may split nginx's argv either way;
-// a command that open args could complete into an invocation counts too.
+// leaves its args or mounts to the pod (cdsallowlist.OpenComponent).
 func componentFindings(name string, c pkgallowlist.Container) []finding {
-	if c.Command.Policy != pkgallowlist.PolicyExact {
-		return nil
-	}
+	openArgs, openMounts := cdsallowlist.OpenComponent(c)
 	argv := c.Command.Argv
-	invocation := argv
-	if c.Args.Policy == pkgallowlist.PolicyExact {
-		invocation = slices.Concat(invocation, c.Args.Argv)
-	}
-	openArgs := c.Args.Policy == pkgallowlist.PolicyAny || c.Args.Policy == ""
-	if !slices.ContainsFunc(componentInvocations, func(prefix []string) bool {
-		if len(invocation) >= len(prefix) {
-			return slices.Equal(invocation[:len(prefix)], prefix)
-		}
-		return openArgs && len(argv) > 0 && slices.Equal(prefix[:len(argv)], argv)
-	}) {
-		return nil
-	}
-	sidecar := len(argv) == 2 && argv[0] == secrets.InjectedBinary && slices.Contains(secrets.InjectedModes, argv[1])
 	var out []finding
-	if c.Args.Policy == pkgallowlist.PolicyAny && !sidecar {
+	if openArgs {
 		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves args any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
 	}
-	if c.Mounts.Policy == pkgallowlist.PolicyAny {
+	if openMounts {
 		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves mounts any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
 	}
 	return out

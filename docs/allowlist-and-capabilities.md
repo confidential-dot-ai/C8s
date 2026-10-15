@@ -758,8 +758,21 @@ mounts fails until you publish the new entry:
 4. Rerun the upgrade with `--set cds.publishedShape=<NAME>`, where `NAME` is
    the entry name from the error.
 
-Old shapes stay admitted until you retire them. To retire them once no pod
-runs them and no rollback needs them:
+When it seeds, CDS deletes a stored entry the seed replaces if it pins a
+component executable with `args` or `mounts` `any`: an entry under a generated
+name (`<image>-<first 12 hex of the digest>`, a `-<8 hex>` shape, or
+`c8s-router-*`) that the seed lacks, for an image the seed now generates
+another entry for. These are the open entries releases before the pinned
+shapes seeded as `<image>-<12 hex>`. Kept beside the pinned shape, an open
+entry would keep the bypass open, since a container is admitted when any
+entry for its digest admits it. A pod of the previous release that restarts
+before its rollout replaces it is refused. Operator entries under other names
+are not touched; `c8s allowlist lint` reports such an entry for a component as
+an error, and you delete it with `c8s allowlist delete <name>`. A rollback
+seeds the previous release's entries again, since their names are free.
+
+Old shapes with exact `args` and `mounts` stay admitted until you retire them.
+To retire them once no pod runs them and no rollback needs them:
 
 1. Export the live allowlist: `c8s allowlist export live.json`.
 2. Save the release's seed: `kubectl get configmap <release>-cds-allowlist-seed -n <namespace> -o jsonpath='{.data.allowlist-seed\.json}' > seed.json`.
