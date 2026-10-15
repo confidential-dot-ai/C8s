@@ -174,6 +174,9 @@ type matchEnvPolicy struct{ variables map[string]envMatcherBehavior }
 
 func newMatchEnvPolicy(variables map[string]EnvMatcher) (matchEnvPolicy, error) {
 	p := matchEnvPolicy{variables: make(map[string]envMatcherBehavior, len(variables))}
+	if err := checkVariableEvidenceLimits(maps.Keys(variables)); err != nil {
+		return p, err
+	}
 	for name, matcher := range variables {
 		if !validEnvName(name) {
 			return p, fmt.Errorf("invalid environment name")

@@ -200,18 +200,23 @@ including `""`; `present: true` accepts any value, including empty. Missing or
 additional variables are rejected. An empty `variables: {}` requires an observed
 empty environment. The allowlisted program and its dependencies must be safe for
 every possible value of a variable matched with `present`. `lint` rejects
-`present` on `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`, `PYTHONPATH`,
-`NODE_PATH`, `BASH_ENV`, `ENV` and `GLIBC_TUNABLES`, because the host would
-choose what code is loaded.
+`present` on `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
+`GLIBC_TUNABLES`, `BASH_ENV`, `ENV`, `PYTHONPATH`, `PYTHONHOME`,
+`PYTHONSTARTUP`, `NODE_PATH`, `NODE_OPTIONS`, `JAVA_TOOL_OPTIONS`,
+`_JAVA_OPTIONS`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB` and `RUBYOPT`, because the
+host would choose what code is loaded. The list is not exhaustive: check what
+else your program's runtime reads from its environment.
 
 Supply these policies per container through `c8s allowlist derive --env-file`.
 The NRI plugin enforces env after cumulative NRI adjustments. The admission
-inventory carries the complete environment digest and per-variable digests bound
-to their names for CDS workload matching and secret release. Names are visible;
-raw values are omitted, but digests allow guessing low-entropy values. `match`
-requires per-variable evidence from the node, which it omits for environments
-over 128 variables or 4 KiB of names; set `enableServiceLinks: false` on pods
-that use `match`. Deferred CDI edits leave env and
+inventory carries the complete environment digest for CDS workload matching and
+secret release, plus per-variable digests bound to their names for images a
+`match` policy lists ([bounds](secrets.md#what-the-inventory-reports)). Names
+are visible; raw values are omitted, but digests allow guessing low-entropy
+values. The node omits per-variable evidence for environments over 128
+variables or 4 KiB of names, so `derive`, `lint` and `apply` reject a `match`
+policy past either limit; set `enableServiceLinks: false` on pods that use
+`match`. Deferred CDI edits leave env and
 mount evidence unavailable, so constrained policies reject those launches.
 
 Consumers that predate `match` reject the whole allowlist when it contains one,

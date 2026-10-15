@@ -1,7 +1,10 @@
 package admissionhistory
 
 import (
+	"encoding/json"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -144,5 +147,60 @@ func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 		if c.Mounts != nil && c.Mounts[0].Destination != "/config" {
 			t.Fatal("snapshot borrowed history's mount slice")
 		}
+	}
+}
+
+func TestHistoryBoundsVariableEvidence(t *testing.T) {
+	var h History
+	const variants = MaxVariableEvidenceRecords + 4
+	stripped := map[string]bool{}
+	for i := range variants {
+		env, err := allowlist.ObserveEnv([]string{fmt.Sprintf("MODE=%d", i)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		stripped[env.Digest] = i < variants-MaxVariableEvidenceRecords
+		h.Record("c", "sha256:a", []string{"run"}, env)
+	}
+	_, cs, err := h.Snapshot()
+	if err != nil || len(cs) != variants {
+		t.Fatalf("Snapshot() = %d records, %v; want %d", len(cs), err, variants)
+	}
+	for _, c := range cs {
+		if !c.Env.Valid() {
+			t.Fatalf("record lost its aggregate digest: %+v", c.Env)
+		}
+		if got, want := c.Env.VariableDigests == nil, stripped[c.Env.Digest]; got != want {
+			t.Errorf("record %s: digests dropped = %t, want %t", c.Env.Digest, got, want)
+		}
+	}
+}
+
+// Every variant sits at the per-record evidence limits; CDS reads at most 1 MiB.
+func TestHistoryInventoryFitsResponseLimit(t *testing.T) {
+	var h History
+	for image := range 4 {
+		for variant := range 32 {
+			env := make([]string, 128)
+			for i := range env {
+				env[i] = fmt.Sprintf("%s%03d=%d", strings.Repeat("V", 29), i, variant)
+			}
+			observation, err := allowlist.ObserveEnv(env)
+			if err != nil || observation.VariableDigests == nil {
+				t.Fatalf("ObserveEnv() = %v, %v; want per-variable evidence", observation, err)
+			}
+			h.Record("c", fmt.Sprintf("sha256:%064d", image), []string{"/app"}, observation)
+		}
+	}
+	digests, cs, err := h.Snapshot()
+	if err != nil || len(cs) != 128 {
+		t.Fatalf("Snapshot() = %d records, %v; want 128", len(cs), err)
+	}
+	body, err := json.Marshal(workloadclaims.SandboxDigestsResponse{Digests: digests, Containers: cs})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) >= 1<<20 {
+		t.Fatalf("inventory response = %d bytes, want under 1 MiB", len(body))
 	}
 }

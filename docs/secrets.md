@@ -472,6 +472,20 @@ host mounts carry a source commitment and read-only mode.
 policies fail closed in that case. Inventory responses retain the `mounts` field
 even for an empty set so consumers can preserve this distinction.
 
+The env evidence always carries the aggregate digest of the whole environment.
+Per-variable digests (`variableDigests`) are kept within two bounds, so the
+inventory stays under CDS's 1 MiB response limit:
+
+- The node records them only for an image whose digest a `match` env policy
+  lists in its current allowlist. Every other record carries the aggregate
+  digest alone.
+- At most 16 records per sandbox keep them. Past that, the oldest records lose
+  their per-variable digests but keep the record and its aggregate digest.
+
+A record without per-variable digests fails a `match` policy. If you add a
+`match` policy after its pods started, or a sandbox exceeds 16 variants,
+recreate the pod.
+
 `containers` is absent on an inventory older than the field. A consumer that
 needs it must treat that as "cannot answer" rather than "no containers"
 (`RequireContainers`).

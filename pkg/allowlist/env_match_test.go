@@ -422,6 +422,21 @@ func TestObserveEnvBoundsVariableEvidence(t *testing.T) {
 			if !(EnvPolicy{Policy: PolicyExact, Values: values}).admitsObservation(o) {
 				t.Fatal("exact policy rejected the observation")
 			}
+			variables := make(map[string]map[string]string, len(values))
+			for name, value := range values {
+				variables[name] = map[string]string{"exact": value}
+			}
+			encoded, _ := json.Marshal(map[string]any{"app": map[string]any{"policy": PolicyMatch, "variables": variables}})
+			policies, err := ParseEnvPoliciesJSON(encoded)
+			if !tc.want {
+				if err == nil || !strings.Contains(err.Error(), "at most") {
+					t.Fatalf("ParseEnvPoliciesJSON(oversized match) error = %v, want the evidence limit", err)
+				}
+				return
+			}
+			if err != nil || !policies["app"].admitsObservation(o) {
+				t.Fatalf("match policy at the limit: error %v, admitted false", err)
+			}
 		})
 	}
 }

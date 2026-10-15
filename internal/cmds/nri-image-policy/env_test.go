@@ -246,3 +246,38 @@ func TestMountCreationValidatorContainerdBaseline(t *testing.T) {
 		})
 	}
 }
+
+func TestInventoryKeepsVariableEvidenceOnlyForMatchPolicies(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		policy string
+		want   bool
+	}{
+		{"match", `{"policy":"match","variables":{"MODE":{"present":true}}}`, true},
+		{"exact", `{"policy":"exact","values":{"MODE":"production"}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			if err := json.Unmarshal([]byte(tc.policy), &al.Workloads["w"].Containers[0].Env); err != nil {
+				t.Fatal(err)
+			}
+			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
+			p.SetReady()
+			p.inventory = newAdmissionInventory(t.TempDir())
+			pod := makePod("default", "pod")
+			ctr := makeCtrWithImage(pod.Id, "ctr", "registry/repo@"+pushDigestB)
+			ctr.Args = []string{"/bin/app"}
+			ctr.Env = []string{"MODE=production"}
+			if _, _, err := createAndStart(p, context.Background(), pod, ctr); err != nil {
+				t.Fatal(err)
+			}
+			_, cs, _, err := p.inventory.DigestsForSandbox(pod.Id)
+			if err != nil || len(cs) != 1 || !cs[0].Env.Valid() {
+				t.Fatalf("DigestsForSandbox() = %v, %v; want one record with an aggregate digest", cs, err)
+			}
+			if got := cs[0].Env.VariableDigests != nil; got != tc.want {
+				t.Errorf("per-variable evidence recorded = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

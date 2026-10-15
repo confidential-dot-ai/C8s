@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"iter"
 	"maps"
 	"slices"
 	"strings"
@@ -23,9 +24,8 @@ type EnvObservation struct {
 const EnvFormat = "c8s.env/v1"
 
 // Per-variable evidence rides in every inventory record, whose response CDS
-// caps at 1 MiB. Above these bounds VariableDigests is nil: only match
-// policies read it, and they fail closed. A match policy lists every
-// variable, so a service-link-heavy environment is out of its reach anyway.
+// caps at 1 MiB. Above these bounds VariableDigests is nil, and a match
+// policy, which lists every variable, is rejected when authored.
 const (
 	maxVariableEvidence          = 128
 	maxVariableEvidenceNameBytes = 4 << 10
@@ -58,14 +58,22 @@ func ObserveEnv(entries []string) (*EnvObservation, error) {
 }
 
 func variableEvidenceFits(values map[string]string) bool {
-	if len(values) > maxVariableEvidence {
-		return false
-	}
-	nameBytes := 0
-	for name := range values {
+	return checkVariableEvidenceLimits(maps.Keys(values)) == nil
+}
+
+func checkVariableEvidenceLimits(names iter.Seq[string]) error {
+	count, nameBytes := 0, 0
+	for name := range names {
+		count++
 		nameBytes += len(name)
 	}
-	return nameBytes <= maxVariableEvidenceNameBytes
+	if count > maxVariableEvidence {
+		return fmt.Errorf("match env lists %d variables; nodes report per-variable evidence for at most %d", count, maxVariableEvidence)
+	}
+	if nameBytes > maxVariableEvidenceNameBytes {
+		return fmt.Errorf("match env names total %d bytes; nodes report per-variable evidence for at most %d", nameBytes, maxVariableEvidenceNameBytes)
+	}
+	return nil
 }
 
 // ObserveLaunchEnv keeps the last value per name, matching runc's launch environment.

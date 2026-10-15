@@ -505,7 +505,10 @@ func TestWorkloadApplyDoesNotDoubleReportInFileCollision(t *testing.T) {
 }
 
 func TestLintRejectsHostChosenLoaderVariables(t *testing.T) {
-	for _, variable := range []string{"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "NODE_PATH", "BASH_ENV", "ENV", "GLIBC_TUNABLES"} {
+	for _, variable := range []string{
+		"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "NODE_PATH", "BASH_ENV", "ENV", "GLIBC_TUNABLES",
+		"NODE_OPTIONS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "PYTHONHOME", "PYTHONSTARTUP", "PERL5LIB", "PERL5OPT", "RUBYLIB", "RUBYOPT",
+	} {
 		t.Run(variable, func(t *testing.T) {
 			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
 				`"env":{"policy":"match","variables":{"` + variable + `":{"present":true},"MODE":{"exact":"production"}}}}`
@@ -619,6 +622,41 @@ func TestShadowByEnvMatcherSubsumption(t *testing.T) {
 				}
 			}
 			if got := len(shadowErrors); got != map[bool]int{true: 1, false: 0}[tc.shadowed] {
+				t.Fatalf("lint shadow errors = %v, want shadowed %v", shadowErrors, tc.shadowed)
+			}
+			incoming := map[string]pkgallowlist.Workload{"beta": al.Workloads["beta"]}
+			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
+			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.shadowed {
+				t.Fatalf("apply collision = %v, want %v", got, tc.shadowed)
+			}
+		})
+	}
+}
+
+// A wide entry pinning its executable under `mounts: any` refuses a mount over
+// that executable, which a narrow entry declaring such a mount admits.
+func TestShadowRespectsExecutableShadowing(t *testing.T) {
+	container := func(env, mounts string) string {
+		return `[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/mnt/c8s-data/tools/run"]},"args":{"policy":"deny"},"env":` + env + `,"mounts":` + mounts + `}]`
+	}
+	wide := container(`{"policy":"match","variables":{"MODE":{"present":true}}}`, `{"policy":"any"}`)
+	narrowEnv := `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`
+	for _, tc := range []struct {
+		name, mounts string
+		shadowed     bool
+	}{
+		{"mount over executable", `{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/tools","kind":"data"}]}`, false},
+		{"mount beside executable", `{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/cfg","kind":"data"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := entryPair(t, wide, container(narrowEnv, tc.mounts))
+			var shadowErrors []string
+			for _, f := range lintOffline(al) {
+				if f.err && strings.Contains(f.msg, "can never be the unique match") {
+					shadowErrors = append(shadowErrors, f.msg)
+				}
+			}
+			if got := len(shadowErrors) != 0; got != tc.shadowed {
 				t.Fatalf("lint shadow errors = %v, want shadowed %v", shadowErrors, tc.shadowed)
 			}
 			incoming := map[string]pkgallowlist.Workload{"beta": al.Workloads["beta"]}

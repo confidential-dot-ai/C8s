@@ -307,10 +307,39 @@ func subsumes(wide, narrow pkgallowlist.Container) bool {
 	if wide.Mounts.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Mounts, narrow.Mounts) {
 		return false
 	}
+	if shadowRestricted(wide) && !shadowRestricted(narrow) && declaresMountOverExecutable(narrow) {
+		return false
+	}
 	if !wide.Env.Covers(narrow.Env) {
 		return false
 	}
 	return true
+}
+
+// shadowRestricted mirrors admission: an exact command under `mounts: any`
+// refuses any mount covering its executable.
+func shadowRestricted(c pkgallowlist.Container) bool {
+	return c.Command.Policy == pkgallowlist.PolicyExact && c.Mounts.Policy == pkgallowlist.PolicyAny
+}
+
+// declaresMountOverExecutable reports whether c's exact mounts may cover its
+// pinned executable; with no pinned executable it conservatively says yes.
+func declaresMountOverExecutable(c pkgallowlist.Container) bool {
+	if c.Mounts.Policy != pkgallowlist.PolicyExact {
+		return false
+	}
+	if len(c.Command.Argv) == 0 {
+		return true
+	}
+	exe := c.Command.Argv[0]
+	if !strings.HasPrefix(exe, "/") {
+		return false
+	}
+	exe = path.Clean(exe)
+	return slices.ContainsFunc(c.Mounts.Rules, func(rule pkgallowlist.MountRule) bool {
+		dest := path.Clean(rule.Destination)
+		return dest == exe || strings.HasPrefix(exe, strings.TrimSuffix(dest, "/")+"/")
+	})
 }
 
 func argvPrefixSubsumes(wide, narrow pkgallowlist.Container) bool {
@@ -326,7 +355,11 @@ func processOf(c pkgallowlist.Container) [2]pkgallowlist.ArgvPolicy {
 
 // loaderVariables choose where the loader, a shell or an interpreter finds
 // code, so the host must not pick their values.
-var loaderVariables = []string{"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "NODE_PATH", "BASH_ENV", "ENV", "GLIBC_TUNABLES"}
+var loaderVariables = []string{
+	"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "GLIBC_TUNABLES", "BASH_ENV", "ENV",
+	"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NODE_PATH", "NODE_OPTIONS",
+	"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "PERL5LIB", "PERL5OPT", "RUBYLIB", "RUBYOPT",
+}
 
 // searchPathFindings rejects loader variables the host chooses, and pinned
 // search paths overlapping operator-supplied data: either way, content outside

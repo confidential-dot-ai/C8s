@@ -85,6 +85,19 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// needsVariableEvidence reports whether the base or applied allowlist has a
+// match env policy for digest.
+func (s *policyStore) needsVariableEvidence(digest string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.NeedsVariableEvidence(digest) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.NeedsVariableEvidence(digest)
+}
+
 // apply installs the pulled document at version, unless version is below the
 // applied one — an epoch rollback a withheld/rolled-back CDS must not use to
 // loosen a tightened policy. Reports whether it applied. Single-writer: only the
@@ -297,12 +310,17 @@ func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Conta
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
-// effective OCI process.args, the same value the checks read.
+// effective OCI process.args, the same value the checks read. Per-variable env
+// digests are kept only for an image a match policy lists, which bounds the
+// inventory size (docs/secrets.md).
 func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	if p.inventory == nil {
 		return
 	}
 	env := containerEnv(ctr)
+	if env != nil && !p.policy.needsVariableEvidence(digest) {
+		env.VariableDigests = nil
+	}
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
 }
 
