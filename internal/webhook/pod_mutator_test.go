@@ -961,6 +961,47 @@ func TestHandleRejectsReservedCertVolumeCollision(t *testing.T) {
 	})
 }
 
+// Handle refuses a reload-watch volume the sidecar's mount rules cannot admit.
+func TestHandleRejectsUnpinnableReloadWatchVolume(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	m := &podMutator{
+		decoder: admission.NewDecoder(scheme),
+		cfg:     Config{GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test", CDSURL: "http://cds.c8s-system.svc:8443"},
+	}
+	for name, tc := range map[string]struct {
+		source  corev1.VolumeSource
+		allowed bool
+	}{
+		"secret":   {source: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "tls"}}, allowed: true},
+		"hostPath": {source: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/srv/tls"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				Annotations: map[string]string{
+					AnnotationWorkload:          "api",
+					AnnotationReloadWatchVolume: "watched",
+					AnnotationReloadWatchPaths:  reloadWatchMountPath + "/tls.crt",
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "app"}},
+					Volumes:    []corev1.Volume{{Name: "watched", VolumeSource: tc.source}},
+				},
+			}
+			raw, err := json.Marshal(pod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := m.Handle(context.Background(), admission.Request{Namespace: "default", Object: runtime.RawExtension{Raw: raw}})
+			if resp.Allowed != tc.allowed {
+				t.Fatalf("Handle(reload-watch %s).Allowed = %v, want %v: %+v", name, resp.Allowed, tc.allowed, resp.Result)
+			}
+		})
+	}
+}
+
 // TestHandleInjectsDespitePresetInjectedMarker proves the
 // confidential.ai/c8s-injected marker no longer suppresses injection: a pod
 // that presets it (with no real sidecar) is still given the c8s-cert sidecar,

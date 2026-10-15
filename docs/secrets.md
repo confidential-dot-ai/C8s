@@ -365,7 +365,8 @@ sidecars: a discovery or reload-watch volume the pod names for `get-cert` must
 be memory-backed, or the sidecar is foreign and the pod matches nothing. The
 node admits a real sidecar only under the mount table its shape pins, so a
 discovery volume must be an `emptyDir` and a reload-watch volume a Secret,
-ConfigMap or projected volume. On a node without encrypted scratch (a GKE,
+ConfigMap, projected or downward API volume; the webhook refuses any other
+kind at admission. On a node without encrypted scratch (a GKE,
 AKS or kind node), a ConfigMap volume and a disk-backed `emptyDir` observe as
 `unknown` and the node refuses the sidecar: use `emptyDir: {medium: Memory}`
 for discovery, and a Secret or projected volume for reload-watch. Each

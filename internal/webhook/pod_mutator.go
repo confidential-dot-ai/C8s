@@ -749,6 +749,9 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 		if err := rejectReservedVolumeVolume(pod); err != nil {
 			return admission.Errored(http.StatusBadRequest, err)
 		}
+		if err := rejectUnpinnableSidecarVolumes(pod, inj); err != nil {
+			return admission.Errored(http.StatusBadRequest, err)
+		}
 		l.Info("injecting c8s get-cert containers", "workload", inj.WorkloadID)
 		mutatePod(pod, inj, m.cfg)
 	}
@@ -1217,6 +1220,36 @@ func reservedVolumeNames(pod *corev1.Pod) map[string]bool {
 		}
 	}
 	return reserved
+}
+
+// rejectUnpinnableSidecarVolumes refuses a discovery or reload-watch volume of
+// a kind the get-cert sidecar's exact mount rules cannot admit (the chart's
+// c8s.injectedShapes): discovery is an emptyDir rule, and reload-watch a data
+// rule, which the node classifies a kubelet-projected volume as. Admitting the
+// pod would only have the node refuse the sidecar at container creation.
+func rejectUnpinnableSidecarVolumes(pod *corev1.Pod, inj *injection) error {
+	for _, ref := range []struct {
+		annotation, name, want string
+		admits                 func(corev1.VolumeSource) bool
+	}{
+		{AnnotationDiscoveryVolume, inj.Discovery.Volume, "an emptyDir", func(v corev1.VolumeSource) bool { return v.EmptyDir != nil }},
+		{AnnotationReloadWatchVolume, inj.Reload.WatchVolume, "a Secret, ConfigMap, projected or downward API volume", func(v corev1.VolumeSource) bool {
+			return v.Secret != nil || v.ConfigMap != nil || v.Projected != nil || v.DownwardAPI != nil
+		}},
+	} {
+		if ref.name == "" {
+			continue
+		}
+		i := slices.IndexFunc(pod.Spec.Volumes, func(v corev1.Volume) bool { return v.Name == ref.name })
+		if i < 0 {
+			return fmt.Errorf("%w: %s %q names no volume of the pod", errInvalidInjectionAnnotation, ref.annotation, ref.name)
+		}
+		if !ref.admits(pod.Spec.Volumes[i].VolumeSource) {
+			return fmt.Errorf("%w: %s %q must be %s: the get-cert sidecar's mount rules admit no other kind there, so the node would refuse it",
+				errInvalidInjectionAnnotation, ref.annotation, ref.name, ref.want)
+		}
+	}
+	return nil
 }
 
 // rejectReservedSecretsVolume denies a pod that pre-declares the secrets volume

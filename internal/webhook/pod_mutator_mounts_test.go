@@ -160,3 +160,56 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 		})
 	}
 }
+
+// A discovery or reload-watch volume the sidecar's mount rules cannot admit is
+// refused at admission rather than by the node at container creation.
+func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
+	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
+	secret := corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "public-tls"}}
+	hostPath := corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: "/srv/tls"}}
+	pvc := corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: "tls"}}
+	for _, tc := range []struct {
+		name              string
+		discovery, reload *corev1.VolumeSource
+		wantRefused       bool
+	}{
+		{name: "memory discovery", discovery: &memory},
+		{name: "disk discovery", discovery: &corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}},
+		{name: "secret discovery", discovery: &secret, wantRefused: true},
+		{name: "hostPath discovery", discovery: &hostPath, wantRefused: true},
+		{name: "secret reload watch", reload: &secret},
+		{name: "configMap reload watch", reload: &corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}},
+		{name: "projected reload watch", reload: &corev1.VolumeSource{Projected: &corev1.ProjectedVolumeSource{}}},
+		{name: "emptyDir reload watch", reload: &memory, wantRefused: true},
+		{name: "hostPath reload watch", reload: &hostPath, wantRefused: true},
+		{name: "PVC reload watch", reload: &pvc, wantRefused: true},
+		{name: "undeclared discovery volume", wantRefused: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := podWithApp()
+			pod.Annotations = map[string]string{AnnotationWorkload: "api"}
+			if tc.discovery != nil || tc.reload == nil {
+				pod.Annotations[AnnotationDiscoveryVolume] = "discovery"
+				pod.Annotations[AnnotationDiscoveryOut] = discoveryMountPath + "/discovery.json"
+				pod.Annotations[AnnotationDiscoveryCDSCertURL] = "/.well-known/cds-cert.pem"
+				pod.Annotations[AnnotationDiscoveryPublicTLSMode] = "cds"
+			}
+			if tc.discovery != nil {
+				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "discovery", VolumeSource: *tc.discovery})
+			}
+			if tc.reload != nil {
+				pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "watched", VolumeSource: *tc.reload})
+				pod.Annotations[AnnotationReloadWatchVolume] = "watched"
+				pod.Annotations[AnnotationReloadWatchPaths] = reloadWatchMountPath + "/tls.crt"
+			}
+			inj, err := parseAnnotations(pod)
+			if err != nil {
+				t.Fatalf("parseAnnotations: %v", err)
+			}
+			err = rejectUnpinnableSidecarVolumes(pod, inj)
+			if refused := err != nil; refused != tc.wantRefused {
+				t.Fatalf("rejectUnpinnableSidecarVolumes = %v, want refused %v", err, tc.wantRefused)
+			}
+		})
+	}
+}
