@@ -462,7 +462,6 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 		{"missing core workload", "name: c8s-cds", "name: other-cds"},
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
 		{"pinned args", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"deny"},"mounts":{"policy":"any"}}]},"init"`},
-		{"restricted mounts", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"any"},"mounts":{"policy":"deny"}}]},"init"`},
 		{"pinned executable other than the baked command", `"` + testDigest + `","command":{"policy":"any"}`, `"` + testDigest + `","command":{"policy":"exact","argv":["/other"]}`},
 		{"unexpected namespace", "name: c8s-cds", "name: c8s-cds\n  namespace: outside"},
 		{"cluster resource namespace", "name: confidentialworkloads.confidential.ai", "name: confidentialworkloads.confidential.ai\n  namespace: c8s-system"},
@@ -582,6 +581,36 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 
 // A seed that pins a component's executable is accepted when the pin admits
 // every command the baked manifests spell out for the image.
+// The chart pins a component's args and mounts too; the seed must still admit
+// every baked invocation, whether the manifest names the command or runs the
+// image's entrypoint.
+func TestNodeImageCollectPinnedArgs(t *testing.T) {
+	core := `{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
+	pinned := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]},"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]}},` +
+		`{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
+	for _, tc := range []struct {
+		name, manifest string
+		ok             bool
+	}{
+		{"every invocation pinned", "", true},
+		{"entrypoint arguments not pinned", "        - name: router\n          image: registry.example.com/operator@" + testDigest + "\n          args: [\"--other\"]", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(nodeImageCollectFixture(), core, pinned, 1)
+			if input == nodeImageCollectFixture() {
+				t.Fatal("fixture seed did not change")
+			}
+			if tc.manifest != "" {
+				input = strings.Replace(input, "        - name: router\n          image: registry.example.com/operator@"+testDigest, tc.manifest, 1)
+			}
+			_, err := collectNodeImageArtifacts([]byte(input))
+			if (err == nil) != tc.ok {
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+}
+
 func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	input := strings.Replace(nodeImageCollectFixture(),
 		`"`+testDigest+`","command":{"policy":"any"}`,

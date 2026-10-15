@@ -298,25 +298,36 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		return nil, fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
 	// A baked component must start before CDS serves policy, with the
-	// arguments, environment and mounts its manifest gives it: the seed must
-	// leave those to the pod and pin at most the executable, and a pin must
-	// admit every invocation the manifests spell out.
-	seedDigests := make(map[string]bool)
+	// arguments its manifest gives it: the seed must carry a component entry
+	// for its image whose pins admit every invocation the manifests spell out.
+	entrypoints := make(map[string][][]string)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
-			if c.PinsAtMostCommand() {
-				seedDigests[c.Digest.String()] = true
+			if !c.IsComponentShape() {
+				continue
 			}
+			digest := c.Digest.String()
+			entrypoints[digest] = append(entrypoints[digest], c.Command.Argv)
 		}
 	}
 	index := seed.BuildIndex()
 	for image, baked := range images {
-		if !seedDigests[baked.digest] {
-			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args, env and mounts unconstrained", image)
+		if _, ok := entrypoints[baked.digest]; !ok {
+			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed component entry", image)
 		}
 		for _, argv := range baked.argvs {
 			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: argv}) {
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, argv)
+			}
+		}
+		// A container that runs the image's entrypoint names only its
+		// arguments; some pinned command must admit them.
+		for _, args := range baked.entrypointArgs {
+			admitted := slices.ContainsFunc(entrypoints[baked.digest], func(command []string) bool {
+				return index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: slices.Concat(command, args)})
+			})
+			if !admitted {
+				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked arguments %q under any pinned command", image, args)
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -345,13 +356,13 @@ func setNodeImageNamespace(object *unstructured.Unstructured) error {
 	return nil
 }
 
-// bakedImage is one container image a baked workload runs: its digest, and
-// every argv a manifest spells out for it with an explicit command. A container
-// that runs the image's entrypoint records no argv; its executable is the
-// image's own.
+// bakedImage is one container image a baked workload runs: its digest, every
+// argv a manifest spells out for it with an explicit command, and the
+// arguments of every container that runs the image's own entrypoint.
 type bakedImage struct {
-	digest string
-	argvs  [][]string
+	digest         string
+	argvs          [][]string
+	entrypointArgs [][]string
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
@@ -385,6 +396,8 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		}
 		if len(c.Command) > 0 {
 			baked.argvs = append(baked.argvs, slices.Concat(c.Command, c.Args))
+		} else {
+			baked.entrypointArgs = append(baked.entrypointArgs, c.Args)
 		}
 	}
 	return nil

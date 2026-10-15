@@ -247,18 +247,14 @@ func (c Container) IsUnconstrained() bool {
 	return true
 }
 
-// PinsAtMostCommand reports whether the container leaves everything but its
-// executable to the host: args, mounts and environment are any, and command is
-// any or exact. It is the shape of a seeded component entry, whose arguments
-// and mounts are per-pod but whose binary is the image's.
-func (c Container) PinsAtMostCommand() bool {
-	if c.Command.Policy != PolicyAny && c.Command.Policy != PolicyExact {
-		return false
-	}
-	if c.Args.Policy != PolicyAny {
-		return false
-	}
-	return (mountConstraint{policy: &c.Mounts}).isUnconstrained() && (envConstraint{policy: &c.Env}).isUnconstrained()
+// IsComponentShape reports whether the container has the shape of a
+// component entry's container: its command is exact, pinning the image's
+// executable, or any. Args, mounts and environment may be open or pinned: the
+// chart pins all of them for a component's own pods, while a sidecar the
+// webhook injects leaves its args to the pod. A deny command admits no
+// process, so it starts no component.
+func (c Container) IsComponentShape() bool {
+	return c.Command.Policy == PolicyAny || c.Command.Policy == PolicyExact
 }
 
 // ArgvPinned reports whether every container's command and args policy is
