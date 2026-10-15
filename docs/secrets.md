@@ -337,6 +337,13 @@ lists every variable by name, so a set that changes whenever a Service is added
 would deny them. A workload that reads service-link variables must resolve the
 Service by DNS instead (`<service>.<namespace>.svc`).
 
+The webhook overrides an explicit `enableServiceLinks: true` and returns an
+admission warning whenever it turns service links off. On upgrade, a restarted pod loses its
+service-link variables, so a workload entry whose `exact` env or aggregate env
+digest includes them stops matching, and CDS refuses that pod its certificate
+and secrets. Before you roll out the upgrade, re-derive those entries with
+`c8s allowlist derive`.
+
 ### The injected drop set
 
 C8s injects its own containers into every confidential pod. They are not part of

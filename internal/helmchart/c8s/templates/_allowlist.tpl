@@ -297,10 +297,26 @@
 {{- if $ok -}}true{{- end -}}
 {{- end -}}
 
-{{/* "true" when the base container .container starts .entrypoint: its
-     command is any or a prefix of the entrypoint, whatever its env. */ -}}
-{{- define "c8s.startsEntrypoint" -}}
-{{- include "c8s.coversEntrypoint" (dict "container" (omit .container "env") "entrypoint" .entrypoint) -}}
+{{/* "true" when the base container .container admits one invocation: argv
+     .entrypoint under .env, the c8s.componentEnv match the runtime gives it.
+     Its command is any or a prefix of the argv, and its env any or a match
+     over the same names whose exact matchers pin the values .env pins. With
+     .env unknown (no imageEnv), only env any admits it. */ -}}
+{{- define "c8s.startsInvocation" -}}
+{{- $ok := include "c8s.coversEntrypoint" (dict "container" (omit .container "env") "entrypoint" .entrypoint) -}}
+{{- $match := get .container "env" -}}
+{{- if and $ok $match -}}
+{{- $want := get (.env | default dict) "variables" | default dict -}}
+{{- $have := get $match "variables" | default dict -}}
+{{- $ok = and .env (eq (len $have) (len $want)) -}}
+{{- range $name, $m := $have -}}
+{{- $w := get $want $name -}}
+{{- if not $w -}}{{- $ok = false -}}
+{{- else if and (hasKey $m "exact") (or (not (hasKey $w "exact")) (ne (toString (get $m "exact")) (toString (get $w "exact")))) -}}{{- $ok = false -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if $ok -}}true{{- end -}}
 {{- end -}}
 
 {{/* The plugin boot base, as allowlist workloads keyed by DigestEntryName:

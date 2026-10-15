@@ -594,7 +594,7 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	if input == nodeImageCollectFixture() {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(input), map[string][]string{testDigest: {"/app/c8s"}}); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(input), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s"}}}); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
 	}
 }
@@ -628,7 +628,7 @@ func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
 	if input == nodeImageCollectFixture() {
 		t.Fatal("fixture did not change")
 	}
-	if _, err := collectNodeImageArtifacts([]byte(input), map[string][]string{testDigest: {"/app/c8s", "armtls-mesh"}}); err != nil {
+	if _, err := collectNodeImageArtifacts([]byte(input), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s", "armtls-mesh"}}}); err != nil {
 		t.Fatalf("collectNodeImageArtifacts(matched env invocations) = %v, want nil", err)
 	}
 }
@@ -660,7 +660,7 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 			if input == seeded {
 				t.Fatal("fixture did not change")
 			}
-			_, err := collectNodeImageArtifacts([]byte(input), map[string][]string{testDigest: {"/app/c8s"}})
+			_, err := collectNodeImageArtifacts([]byte(input), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s"}}})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("collectNodeImageArtifacts(%s) = %v, want error %v", tc.env, err, tc.wantErr)
 			}
@@ -668,9 +668,41 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 	}
 }
 
+// The guard compares a manifest's value as the kubelet sets it, so it refuses
+// an exact-pinned value the kubelet would expand, and it counts as
+// runtime-supplied only the variables c8s.runtimeEnv lists.
+func TestNodeImageCollectChecksRuntimeEnv(t *testing.T) {
+	for name, tc := range map[string]struct {
+		seed, env string
+		wantErr   bool
+	}{
+		"runtime variable unset":  {seed: `"KUBERNETES_SERVICE_HOST":{"present":true}`, env: `env: []`},
+		"unknown prefixed name":   {seed: `"KUBERNETES_CUSTOM":{"present":true}`, env: `env: []`, wantErr: true},
+		"plain exact value":       {seed: `"MODE":{"exact":"a$b"}`, env: `env: [{name: MODE, value: "a$b"}]`},
+		"exact value with a ref":  {seed: `"MODE":{"exact":"$(NODE_IP)"}`, env: `env: [{name: MODE, value: "$(NODE_IP)"}]`, wantErr: true},
+		"exact value with escape": {seed: `"MODE":{"exact":"$$(NODE_IP)"}`, env: `env: [{name: MODE, value: "$$(NODE_IP)"}]`, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			seeded := strings.Replace(nodeImageCollectFixture(),
+				`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
+				`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"match","variables":{`+tc.seed+`}}}`, 1)
+			input := strings.Replace(seeded, `          args: ["--platform", "snp"]`, `          args: ["--platform", "snp"]
+          `+tc.env, 1)
+			if input == seeded {
+				t.Fatal("fixture did not change")
+			}
+			_, err := collectNodeImageArtifacts([]byte(input), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s"}}})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("collectNodeImageArtifacts(%s, %s) = %v, want error %v", tc.seed, tc.env, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // A container that sets no command runs the image's entrypoint with its args:
 // the guard resolves that argv from the chart's entrypoint and checks it
-// against the seed's pins, and refuses it when the entrypoint is unknown.
+// against the seed's pins, and refuses it when the entrypoint is unknown or
+// ends in CMD tokens its args would replace.
 func TestNodeImageCollectChecksEntrypointInvocations(t *testing.T) {
 	input := strings.Replace(nodeImageCollectFixture(),
 		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
@@ -682,13 +714,16 @@ func TestNodeImageCollectChecksEntrypointInvocations(t *testing.T) {
 	}
 	for name, tc := range map[string]struct {
 		args        string
-		entrypoints map[string][]string
+		entrypoints map[string]entrypointPin
 		wantErr     bool
 	}{
-		"pinned invocation":    {args: "probe-file, --path, /ready", entrypoints: map[string][]string{testDigest: {"/c8s"}}},
-		"unpinned invocation":  {args: "attest-proxy", entrypoints: map[string][]string{testDigest: {"/c8s"}}, wantErr: true},
+		"pinned invocation":    {args: "probe-file, --path, /ready", entrypoints: map[string]entrypointPin{testDigest: {argv: []string{"/c8s"}}}},
+		"unpinned invocation":  {args: "attest-proxy", entrypoints: map[string]entrypointPin{testDigest: {argv: []string{"/c8s"}}}, wantErr: true},
 		"no known entrypoint":  {args: "probe-file", wantErr: true},
-		"bare entrypoint only": {args: "", entrypoints: map[string][]string{testDigest: {"/c8s"}}, wantErr: true},
+		"bare entrypoint only": {args: "", entrypoints: map[string]entrypointPin{testDigest: {argv: []string{"/c8s"}}}, wantErr: true},
+		// nginx's pin, ["/docker-entrypoint.sh", "nginx"], ends in its CMD.
+		"args beside a CMD pin": {args: "--path, /ready", entrypoints: map[string]entrypointPin{testDigest: {argv: []string{"/c8s", "probe-file"}, withCmd: true}}, wantErr: true},
+		"CMD pin under its CMD": {args: "", entrypoints: map[string]entrypointPin{testDigest: {argv: []string{"/c8s", "probe-file"}, withCmd: true}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fixture := strings.ReplaceAll(input, "ARGS", tc.args)

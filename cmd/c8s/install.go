@@ -102,12 +102,13 @@ const platformExemptNamespace = "kube-system"
 // against, so an operator's -f override of a repository cannot leave the chart
 // deploying repoA@<digest-of-repoB>.
 type c8sComponent struct {
-	valuePrefix  string            // values path, e.g. "cds.image" (renders {repository}@{digest})
-	repository   string            // values.yaml default repository resolved against
-	enabledPath  string            // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
-	pinnedDigest string            // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
-	entrypoint   []string          // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
-	imageEnv     map[string]string // the image config's Env the seeded entry's env match pins
+	valuePrefix   string            // values path, e.g. "cds.image" (renders {repository}@{digest})
+	repository    string            // values.yaml default repository resolved against
+	enabledPath   string            // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
+	pinnedDigest  string            // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
+	entrypoint    []string          // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
+	imageEnv      map[string]string // the image config's Env the seeded entry's env match pins
+	entrypointCmd bool              // entrypoint ends in CMD tokens, which a container's args replace
 }
 
 // chartComponents reads the component set from the chart at chartPath via
@@ -183,7 +184,7 @@ func routerNginxComponent(tree map[string]any) (c8sComponent, error) {
 	}
 	repository, _ := stringAtPath(tree, "router.nginx.image.repository")
 	digest, _ := stringAtPath(tree, "router.nginx.image.digest")
-	return c8sComponent{valuePrefix: "router.nginx.image", repository: repository, enabledPath: "router.enabled", pinnedDigest: digest, entrypoint: entrypoint, imageEnv: imageEnv}, nil
+	return c8sComponent{valuePrefix: "router.nginx.image", repository: repository, enabledPath: "router.enabled", pinnedDigest: digest, entrypoint: entrypoint, imageEnv: imageEnv, entrypointCmd: true}, nil
 }
 
 // seedPins reads the entrypoint and imageEnv a component's values declare.

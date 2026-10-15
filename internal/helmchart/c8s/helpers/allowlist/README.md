@@ -81,12 +81,13 @@ them when one admits every invocation of the entrypoint with any env
 (`c8s.admitsMounts`: `any`, or the same `confined` policy). The
 `uncovered_component_digest` guard accepts a component digest when, for every
 invocation in `c8s.componentInvocations`, one of its containers starts the
-entrypoint plus that subcommand (`c8s.startsEntrypoint`), whatever its env,
-with mounts that admit the component's own: `any`, or `confined` with no
-`denyBelow` path outside the component's list and every destination
-`c8s.componentMounts` leaves `unconfined`. Workloads that pin args, env
-`exact`, or mounts `deny` or `exact`, remain in the served seed without
-reaching the base.
+entrypoint plus that subcommand under the env the invocation runs with
+(`c8s.startsInvocation`): env `any`, or a `match` over the same names as
+`c8s.componentEnv` whose `exact` values agree; with mounts that admit the
+component's own: `any`, or `confined` with no `denyBelow` path outside the
+component's list and every destination `c8s.componentMounts` leaves
+`unconfined`. Workloads that pin args, env `exact`, or mounts `deny` or
+`exact`, remain in the served seed without reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes

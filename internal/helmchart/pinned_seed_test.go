@@ -771,44 +771,85 @@ func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 }
 
 // An operator entry in the shape the chart seeds — one container per
-// invocation, command pinned, env matched — covers the component for the
-// fail-closed guard and reaches the base with its env match intact. One that
-// leaves an invocation out does not cover it.
+// invocation, command pinned, env matched to c8s.componentEnv — covers the
+// component for the fail-closed guard and reaches the base with its env
+// match intact. One that leaves an invocation out, or matches a narrower env
+// than the runtime gives the component, does not cover it.
 func TestChartOperatorMatchedEntryCoversComponent(t *testing.T) {
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
-	matched := func(subcommands ...string) []string {
-		args := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
-		for i, subcommand := range subcommands {
-			p := fmt.Sprintf("nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[%d].", i)
-			args = append(args,
-				"--set-string", p+"digest="+opD,
-				"--set-string", p+"command.policy=exact",
-				"--set-string", p+"command.argv[0]=/c8s",
-				"--set-string", p+"command.argv[1]="+subcommand,
-				"--set-string", p+"args.policy=any",
-				"--set-string", p+"mounts.policy=any",
-				"--set-string", p+"env.policy=match",
-				"--set-string", p+"env.variables.PATH.exact=/usr/bin:/bin",
-			)
-		}
-		return args
-	}
-	invocations := []string{"operator", "attest-proxy", "acme", "cds-attest", "allowlist-proxy", "get-cert", "probe-file", "get-secret", "get-volume"}
-	out, err := helmTemplate(t, matched(invocations[1:]...)...)
-	if err == nil {
-		t.Fatalf("helm template succeeded with the operator invocation uncovered\n%s", out)
-	}
-	if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
-		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
-	}
-	out, err = helmTemplate(t, matched(invocations...)...)
+	failClosed := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
+	out, err := helmTemplate(t, append(failClosed, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")...)
 	if err != nil {
-		t.Fatalf("helm template with the component covered by a matched entry: %v\n%s", err, out)
+		t.Fatalf("helm template with deriveComponents: %v\n%s", err, out)
+	}
+	seed, err := pkgallowlist.ParseJSON([]byte(renderedConfigMap(t, out, "c8s-cds-allowlist-seed").Data["allowlist-seed.json"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	derived, ok := seedEntry(seed, opD)
+	if !ok {
+		t.Fatalf("seed derives no operator entry: %v", seed.Workloads)
+	}
+	render := func(edit func([]map[string]any) []map[string]any) (string, error) {
+		raw, err := json.Marshal(derived.Containers)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var containers []map[string]any
+		if err := json.Unmarshal(raw, &containers); err != nil {
+			t.Fatal(err)
+		}
+		values, err := json.Marshal(map[string]any{"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{
+			"workloads": map[string]any{"c8s-operator": map[string]any{"containers": edit(containers)}},
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "values.json")
+		if err := os.WriteFile(path, values, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return helmTemplate(t, append(failClosed, "-f", path)...)
+	}
+	for name, edit := range map[string]func([]map[string]any) []map[string]any{
+		"operator invocation left out": func(cs []map[string]any) []map[string]any { return cs[1:] },
+		"PATH-only match": func(cs []map[string]any) []map[string]any {
+			for _, c := range cs {
+				c["env"] = map[string]any{"policy": "match", "variables": map[string]any{"PATH": map[string]any{"exact": "/usr/bin:/bin"}}}
+			}
+			return cs
+		},
+		"another SSL_CERT_FILE": func(cs []map[string]any) []map[string]any {
+			for _, c := range cs {
+				c["env"].(map[string]any)["variables"].(map[string]any)["SSL_CERT_FILE"] = map[string]any{"exact": "/tmp/ca.pem"}
+			}
+			return cs
+		},
+	} {
+		out, err := render(edit)
+		if err == nil {
+			t.Errorf("%s: helm template succeeded with the component uncovered\n%s", name, out)
+			continue
+		}
+		if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
+			t.Errorf("%s: validation error kind = %q, want uncovered_component_digest\n%s", name, kind, out)
+		}
+	}
+	out, err = render(func(cs []map[string]any) []map[string]any { return cs })
+	if err != nil {
+		t.Fatalf("helm template with the component covered by the seeded shape: %v\n%s", err, out)
 	}
 	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
 	index := base.BuildIndex()
+	runtimeEnv := []string{
+		"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt",
+		"HOSTNAME=op", "KUBERNETES_SERVICE_HOST=10.0.0.1", "KUBERNETES_SERVICE_PORT=443", "KUBERNETES_SERVICE_PORT_HTTPS=443",
+		"KUBERNETES_PORT=tcp://10.0.0.1:443", "KUBERNETES_PORT_443_TCP=tcp://10.0.0.1:443", "KUBERNETES_PORT_443_TCP_ADDR=10.0.0.1",
+		"KUBERNETES_PORT_443_TCP_PORT=443", "KUBERNETES_PORT_443_TCP_PROTO=tcp",
+	}
 	launch := func(argv []string, env ...string) pkgallowlist.RunningContainer {
-		observed, err := pkgallowlist.ObserveEnv(env)
+		observed, err := pkgallowlist.ObserveEnv(slices.Concat(runtimeEnv, env))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -818,10 +859,10 @@ func TestChartOperatorMatchedEntryCoversComponent(t *testing.T) {
 		launch pkgallowlist.RunningContainer
 		want   bool
 	}{
-		"operator":           {launch([]string{"/c8s", "operator"}, "PATH=/usr/bin:/bin"), true},
-		"probe-file":         {launch([]string{"/c8s", "probe-file", "/ready"}, "PATH=/usr/bin:/bin"), true},
-		"preloaded operator": {launch([]string{"/c8s", "operator"}, "PATH=/usr/bin:/bin", "LD_PRELOAD=/tmp/x.so"), false},
-		"another subcommand": {launch([]string{"/c8s", "render-values"}, "PATH=/usr/bin:/bin"), false},
+		"operator":           {launch([]string{"/c8s", "operator"}, "POD_NAME=op"), true},
+		"probe-file":         {launch([]string{"/c8s", "probe-file", "/ready"}), true},
+		"preloaded operator": {launch([]string{"/c8s", "operator"}, "POD_NAME=op", "LD_PRELOAD=/tmp/x.so"), false},
+		"another subcommand": {launch([]string{"/c8s", "render-values"}), false},
 	} {
 		if got := index.AdmitsContainer(tc.launch); got != tc.want {
 			t.Errorf("base AdmitsContainer(%s) = %v, want %v", name, got, tc.want)
