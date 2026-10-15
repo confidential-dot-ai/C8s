@@ -22,7 +22,8 @@ func (p Pins) VerifyPolicy(url string) *VerifyPolicy {
 // EnforceImages is [remote.EnforceImagesWithRuntimeLog] with every anchored
 // pin accepting any runtime extension that replays: a c8s peer accepts a node
 // whose measured policy history replays against RTMR[3], and judging that
-// history is an external verifier's job. claimed is the peer's list, nil for none, and is refused
+// history is an external verifier's job (c8s verify --pin-policy,
+// --trust-operator). claimed is the peer's list, nil for none, and is refused
 // beyond [MaxRuntimeExtensions] entries since each costs a hash.
 func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, claimed []string) error {
 	if len(claimed) > MaxRuntimeExtensions {
