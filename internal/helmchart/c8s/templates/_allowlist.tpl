@@ -128,7 +128,8 @@
 {{- else if eq .name "volumed.image" -}}
 {{- /* /sys and a v1 /cgroup hold nested mounts, so their read-only binds are not recursive */ -}}
 {{- $unconfined = list $v.volumed.hostPaths.kubeletRoot "/dev" "/sys" "/cgroup" $runtimeDir -}}
-{{- else if eq .name "router.nginx" -}}
+{{- else if and (eq .name "router.nginx") (not $v.node.baked) -}}
+{{- /* A baked node mounts these from the image's read-only /usr. */ -}}
 {{- $unconfined = list "/etc/nginx/nginx.conf" (include "router.tlsSnippetDir" .root) -}}
 {{- end -}}
 {{- /* The plugin and CDS reject an unclean path at load; fail the render instead. */ -}}

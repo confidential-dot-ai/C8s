@@ -284,6 +284,11 @@ render_node_integration() {
         "$STAGE_DIR/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml"
     install -D -m 0644 "$out/allowlist-seed.json" \
         "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
+    # The baked router mounts its nginx configuration from here, not from
+    # an editable ConfigMap (chart helper router.bakedNginxDir).
+    for f in nginx.conf tls-cds.conf tls-acme.conf; do
+        install -D -m 0644 "$out/router-nginx/$f" "$STAGE_DIR/usr/lib/c8s/router-nginx/$f"
+    done
     bash "$SRCDIR/mkosi.profiles/c8s/airgap-images.sh" \
         "$out/images.txt" "$CACHE_DIR/core-images" "$AIRGAP_DIR" \
         "$LOCAL_IMAGES_DIR" "$C8S_REGISTRY"

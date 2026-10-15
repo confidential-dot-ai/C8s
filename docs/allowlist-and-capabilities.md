@@ -533,10 +533,11 @@ open: with `env` left `any`, the environment can still redirect what the
 entrypoint loads (`PATH`, `LD_PRELOAD`) to code already in the image or on a
 confined volume. Args stay open too, and some arguments load code: nginx's
 `-g 'load_module ...;'` and `-c`, and the `--kubeconfig` of the mesh and CDS,
-whose exec credential plugin client-go runs. Nginx's `nginx.conf` is also
-`unconfined`, so any pod using its digest can mount its own with a
-`load_module` directive. Any of these loads code from a confined volume the pod
-mounts. The node image's generated RKE2 system
+whose exec credential plugin client-go runs. Off a node image, nginx's
+`nginx.conf` and TLS snippets are also `unconfined`, so any pod using its
+digest can mount its own with a `load_module` directive. A node image ships
+them read-only in `/usr/lib/c8s/router-nginx`, and its seed leaves them
+confined. Any of these loads code from a confined volume the pod mounts. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means

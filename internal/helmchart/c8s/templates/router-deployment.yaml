@@ -216,6 +216,9 @@ spec:
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
               readOnly: true
+              {{- if .Values.node.baked }}
+              recursiveReadOnly: Enabled
+              {{- end }}
             {{- if $launchDriven }}
             {{- /* nginx.conf includes router/upstream.conf and router/tls.conf
                    from here; tls.conf includes a snippet from the dir below. */}}
@@ -223,6 +226,7 @@ spec:
             - name: nginx-config
               mountPath: {{ include "router.tlsSnippetDir" . }}
               readOnly: true
+              recursiveReadOnly: Enabled
             {{- end }}
             - name: nginx-cache
               mountPath: /var/cache/nginx
@@ -454,8 +458,14 @@ spec:
             medium: Memory
             sizeLimit: 16Mi
         - name: nginx-config
+          {{- if .Values.node.baked }}
+          hostPath:
+            path: {{ include "router.bakedNginxDir" . }}
+            type: Directory
+          {{- else }}
           configMap:
             name: {{ include "router.fullname" . }}-nginx
+          {{- end }}
         {{- if eq (include "router.mountInventorySocket" .) "true" }}
         # The baked router and the readiness gate need a stamped mesh leaf.
         # get-cert redeems a

@@ -162,11 +162,13 @@ binary and baked RKE2 Kubernetes version. The complete chart renders once
 into `/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml`, including
 CDS, router, mesh, operator, CRDs, RBAC, webhook and admission policies.
 Only `rke2-server` applies that directory; including it in the agent image
-is intentional. There is no guest Helm install, chart archive, runtime
-values merge or separate host nginx configuration.
+is intentional. There is no guest Helm install, chart archive or runtime
+values merge.
 
-The renderer also emits the component allowlist seed and a list of pinned
-core images. `airgap-images.sh` preserves their complete OCI content under
+The renderer also emits the component allowlist seed, a list of pinned
+core images and the router's nginx configuration. The image installs that
+configuration in `/usr/lib/c8s/router-nginx`, and the router mounts it from
+there instead of from a ConfigMap the control plane could edit. `airgap-images.sh` preserves their complete OCI content under
 `/var/lib/rancher/rke2/agent/images`; RKE2 imports these archives on either
 role. It reuses a cached layout under `mkosi.pkgcache/c8s/core-images` only
 when every referenced blob is present and matches its digest, and copies the

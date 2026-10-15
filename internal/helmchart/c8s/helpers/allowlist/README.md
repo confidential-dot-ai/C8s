@@ -31,6 +31,8 @@ and derives from its own image values (`router.nginx.entrypoint`,
 component's `confined` mount policy: its `denyBelow` list, and as
 `unconfined` the destinations where the chart mounts a writable host path, a
 PVC or a ConfigMap for that image, computed from the values that place them.
+On a baked node the router's nginx configuration is a read-only host path
+(`router.bakedNginxDir`), so nginx has none.
 Keep those lists in step with the component templates;
 [pinned_seed_test.go](../../../pinned_seed_test.go) checks every rendered
 mount against them, classifying ConfigMaps and PVCs as unprotected storage.

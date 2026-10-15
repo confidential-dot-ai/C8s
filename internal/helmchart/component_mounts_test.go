@@ -83,6 +83,49 @@ func TestChartVolumedDaemonSetMountsPassTheirPolicy(t *testing.T) {
 		"--set", "volumed.image.digest=sha256:"+strings.Repeat("3", 64)))
 }
 
+// A baked router reads its nginx configuration from the image, so the seed
+// must refuse a ConfigMap swapped in over it.
+func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
+	out, err := helmTemplate(t, bakedArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	router := renderedDeployment(t, out, "c8s-router")
+	spec := router.Spec.Template.Spec
+	var nginx corev1.Container
+	for _, c := range spec.Containers {
+		if c.Name == "nginx" {
+			nginx = c
+		}
+	}
+	seed := renderedSeed(t, out)
+	digest := imageDigest(nginx.Image)
+	argv := effectiveArgv(nginx)
+	for _, w := range seed.Workloads {
+		for _, c := range w.Containers {
+			if c.Digest.String() == digest && c.PinsAtMostCommand() && len(nginx.Command) == 0 {
+				argv = append(slices.Clone(c.Command.Argv), nginx.Args...)
+			}
+		}
+	}
+	admits := func() bool {
+		return seed.BuildIndex().AdmitsContainer(pkgallowlist.RunningContainer{
+			Digest: digest, Argv: argv, Mounts: observedMounts(t, spec, nginx), Env: &pkgallowlist.EnvObservation{},
+		})
+	}
+	if !admits() {
+		t.Fatal("baked seed refuses nginx as rendered")
+	}
+	i := slices.IndexFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == "nginx-config" })
+	if i < 0 || spec.Volumes[i].HostPath == nil || spec.Volumes[i].HostPath.Path != "/usr/lib/c8s/router-nginx" {
+		t.Fatalf("baked router lacks the nginx-config hostPath /usr/lib/c8s/router-nginx: %+v", spec.Volumes)
+	}
+	spec.Volumes[i].VolumeSource = corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}
+	if admits() {
+		t.Error("baked seed admits nginx with its configuration from a ConfigMap")
+	}
+}
+
 func checkComponentMounts(t *testing.T, args []string) {
 	t.Helper()
 	out, err := helmTemplate(t, args...)

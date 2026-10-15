@@ -65,7 +65,7 @@ func TestNodeImageRender(t *testing.T) {
 			for _, key := range []string{
 				"Namespace/c8s-system", "CustomResourceDefinition/confidentialworkloads.confidential.ai",
 				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh",
-				"ConfigMap/c8s-router-nginx", "ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
+				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingAdmissionPolicy/c8s-cw-label-integrity", "ValidatingAdmissionPolicyBinding/c8s-cw-label-integrity",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
@@ -160,12 +160,20 @@ func TestNodeImageRender(t *testing.T) {
 					}
 				}
 			}
-			var nginx corev1.ConfigMap
-			if err := yaml.Unmarshal(docs["ConfigMap/c8s-router-nginx"], &nginx); err != nil {
+			if docs["ConfigMap/c8s-router-nginx"] != nil {
+				t.Error("integration manifests kept the router nginx ConfigMap")
+			}
+			nginxConf, err := os.ReadFile(filepath.Join(out, "router-nginx", "nginx.conf"))
+			if err != nil {
 				t.Fatal(err)
 			}
+			for _, file := range []string{"tls-cds.conf", "tls-acme.conf"} {
+				if body, err := os.ReadFile(filepath.Join(out, "router-nginx", file)); err != nil || !strings.Contains(string(body), "ssl_certificate ") {
+					t.Errorf("router-nginx/%s = %q, %v; want a certificate snippet", file, body, err)
+				}
+			}
 			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "location /healthz", "include /run/c8s-node/router/upstream.conf;", "include /run/c8s-node/router/tls.conf;", "proxy_pass http://$c8s_upstream;", "listen 8080;"} {
-				if !strings.Contains(nginx.Data["nginx.conf"], directive) {
+				if !strings.Contains(string(nginxConf), directive) {
 					t.Errorf("nginx missing %q", directive)
 				}
 			}
@@ -385,6 +393,8 @@ data:
     # a document-looking line remains nginx content
     ---
     events {}
+  tls-cds.conf: ssl_certificate /tls/cert.pem;
+  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -407,6 +417,13 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, after := nodeImageDocuments(t, []byte(fixture)), nodeImageDocuments(t, artifacts.integration)
+	if after["ConfigMap/c8s-router-nginx"] != nil {
+		t.Error("integration manifests kept the router nginx ConfigMap the image ships as files")
+	}
+	if got := artifacts.routerNginx["nginx.conf"]; got != "# a document-looking line remains nginx content\n---\nevents {}\n" {
+		t.Errorf("router nginx.conf = %q, want the ConfigMap's content", got)
+	}
+	delete(before, "ConfigMap/c8s-router-nginx")
 	for key, doc := range before {
 		var want, got map[string]any
 		if err := k8syaml.Unmarshal(doc, &want); err != nil {
@@ -452,6 +469,21 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 			input := nodeImageCollectFixture() + "---\n" + tc.resource
 			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
 				t.Fatal("accepted an invalid resource alongside otherwise complete chart artifacts")
+			}
+		})
+	}
+}
+
+func TestNodeImageCollectRejectsIncompleteRouterNginx(t *testing.T) {
+	for name, replacement := range map[string]string{
+		"missing snippet": "",
+		"empty snippet":   "  tls-acme.conf: \"\"\n",
+		"extra key":       "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n  extra.conf: x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := strings.Replace(nodeImageCollectFixture(), "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n", replacement, 1)
+			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+				t.Fatal("accepted a router nginx ConfigMap that does not hold exactly routerNginxFiles")
 			}
 		})
 	}

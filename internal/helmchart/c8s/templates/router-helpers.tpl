@@ -522,6 +522,14 @@ file's tls.conf includes one of them (nodeservices.RouterTLSSnippetDir).
 {{- define "router.tlsSnippetDir" -}}/etc/nginx/c8s{{- end -}}
 
 {{/*
+Where a baked node image holds the rendered nginx.conf, tls-cds.conf and
+tls-acme.conf (node-guest-image/c8s/mkosi.sync installs them). The router
+mounts them from the measured /usr instead of the c8s-router-nginx ConfigMap,
+which the control plane can edit.
+*/}}
+{{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
+
+{{/*
 ACME constants shared by the acme sidecar args, the deployment mounts, the
 nginx :80 server, and the cert-path helpers below.
 */}}
