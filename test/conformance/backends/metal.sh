@@ -204,18 +204,21 @@ image_entrypoint() {
     crane config "$1" | jq -r '.config | ((.Entrypoint // []) + (.Cmd // []))[]'
 }
 
-# `apply` takes a name-keyed map of entries and lints it against the live
-# document first.
-allowlist_put() {
-    local doc rc
-    doc="$(mktemp)"
-    jq -c --arg name "$1" '{($name): .}' "$2" > "$doc" || { rm -f "$doc"; return 1; }
-    al apply "$doc" >/dev/null && rc=0 || rc=$?
-    rm -f "$doc"
-    return "$rc"
+# Signed writes through the route, as kind's are, not `apply`: that lints
+# against the live document and refuses an entry a broader one shadows,
+# which the CDS accepts and scenarios write on purpose.
+allowlist_write() {
+    local method="$1" path="/allowlist/workloads/$2" body="$3" token code
+    token="$(write_token operator "$method" "$path" "$body")" || return
+    code="$(router_request "$method" "$path" "$body" "$token" | head -1)"
+    case "$code" in
+        204) ;;
+        404) [ "$method" = DELETE ] || return 1 ;;
+        *) echo "backend: $method $path: HTTP $code" >&2; return 1 ;;
+    esac
 }
-
-allowlist_delete() { al delete "$1" >/dev/null 2>&1 || true; }
+allowlist_put() { allowlist_write PUT "$1" "$2"; }
+allowlist_delete() { allowlist_write DELETE "$1" /dev/null; }
 
 # The base allowlist is measured into the node image and not readable without
 # a shell, so answer from what it was built from: the system images pinned in
