@@ -372,7 +372,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	defer ticker.Stop()
 
 	etag := args.etag
-	var refused string // digest last logged as refused
+	var refused, failing string // digests last logged as refused or unmeasured
 	for {
 		select {
 		case <-ctx.Done():
@@ -405,7 +405,13 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		}
 		if err := measureWith(args.measure, served.Digest); err != nil {
 			if !errors.Is(err, errPolicyRefused) {
-				args.logger.Error("pull loop: not applying an allowlist this node could not measure",
+				// Retried every tick; logged at Error once per digest.
+				level := slog.LevelError
+				if served.Digest == failing {
+					level = slog.LevelDebug
+				}
+				failing = served.Digest
+				args.logger.Log(ctx, level, "pull loop: not applying an allowlist this node could not measure",
 					"digest", served.Digest, "error", err)
 				continue
 			}
@@ -420,7 +426,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		args.store.apply(wl, version)
-		etag = newETag
+		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
 			"workloads", len(wl.Workloads),
 			"version", version,
