@@ -59,6 +59,9 @@ const (
 	// without it the SAN is derived from the cw id (see workloadSAN).
 	AnnotationSAN = "confidential.ai/c8s-san"
 
+	// AnnotationCertDir, AnnotationReloadWatchMountPath and
+	// AnnotationDiscoveryMountPath once moved a sidecar mount. They are
+	// refused unless they name the fixed destination; see pinnedDestinations.
 	AnnotationCertVolume             = "confidential.ai/c8s-cert-volume"
 	AnnotationCertDir                = "confidential.ai/c8s-cert-dir"
 	AnnotationCertFile               = "confidential.ai/c8s-cert-file"
@@ -82,9 +85,10 @@ const (
 
 	// AnnotationSecrets requests secrets for the pod, as a comma-separated
 	// list of NAME=/store/path. NAME is the file each value is written to
-	// under AnnotationSecretDir. Setting it injects the fetcher sidecar.
+	// under the secrets directory. Setting it injects the fetcher sidecar.
 	AnnotationSecrets = "confidential.ai/c8s-secrets"
-	// AnnotationSecretDir overrides where the files land.
+	// AnnotationSecretDir once moved the secrets directory. It is refused
+	// unless it names the fixed one; see pinnedDestinations.
 	AnnotationSecretDir = "confidential.ai/c8s-secret-dir"
 
 	// AnnotationVolumes requests encrypted volumes for the pod, as a
@@ -127,8 +131,30 @@ const defaultCertVolumeName = "c8s-certs"
 // workload reads from.
 const secretsVolumeName = "c8s-secrets"
 
-// defaultSecretDir is where the fetcher writes, matching its own default.
-const defaultSecretDir = "/run/c8s/secrets"
+// The injected sidecars' mount destinations. The allowlist pins each
+// sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod
+// cannot move them.
+const (
+	// certDir is where the cert volume is mounted.
+	certDir = "/etc/c8s/certs"
+	// defaultSecretDir is where the fetcher writes, matching its own default.
+	defaultSecretDir = "/run/c8s/secrets"
+	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
+	discoveryMountPath = "/run/c8s/discovery"
+	// reloadWatchMountPath is where get-cert mounts the pod's reload-watch
+	// volume. Under /mnt/c8s-data/ because the volume is the pod's own data
+	// (a Secret, typically), which the allowlist admits only there.
+	reloadWatchMountPath = "/mnt/c8s-data/c8s-reload-watch"
+)
+
+// pinnedDestinations are the annotations that used to move a sidecar mount.
+// Each is refused unless it names the fixed destination.
+var pinnedDestinations = []struct{ annotation, path string }{
+	{AnnotationCertDir, certDir},
+	{AnnotationSecretDir, defaultSecretDir},
+	{AnnotationDiscoveryMountPath, discoveryMountPath},
+	{AnnotationReloadWatchMountPath, reloadWatchMountPath},
+}
 
 // reservedVolumeContainerName is the injected volume fetcher. Reserved like the
 // cert containers.
@@ -176,9 +202,6 @@ type Config struct {
 
 	// CDSMeasurementsConfigJSON retains the complete identity policy for injected clients.
 	CDSMeasurementsConfigJSON string
-
-	// CertDir is the mount path for the shared cert volume.
-	CertDir string
 
 	// CertFSGroup is applied to the pod when it does not already specify
 	// fsGroup. A negative value disables fsGroup mutation.
@@ -291,23 +314,27 @@ func parseAnnotations(pod *corev1.Pod) (*injection, error) {
 		return nil, nil
 	}
 
+	for _, pinned := range pinnedDestinations {
+		if value := strings.TrimSpace(annotations[pinned.annotation]); value != "" && value != pinned.path {
+			return nil, fmt.Errorf("%w: %s is no longer supported: the C8s sidecars mount at %s, which the allowlist pins; remove the annotation and read the files there",
+				errInvalidInjectionAnnotation, pinned.annotation, pinned.path)
+		}
+	}
+
 	inj := &injection{
 		WorkloadID: id,
 		SAN:        strings.TrimSpace(annotations[AnnotationSAN]),
 		Cert: certSpec{
 			Volume:   annotations[AnnotationCertVolume],
-			Dir:      annotations[AnnotationCertDir],
 			CertFile: annotations[AnnotationCertFile],
 			KeyFile:  annotations[AnnotationKeyFile],
 			CAFile:   annotations[AnnotationCAFile],
 		},
 		Reload: reloadSpec{
-			WatchVolume:    annotations[AnnotationReloadWatchVolume],
-			WatchMountPath: annotations[AnnotationReloadWatchMountPath],
+			WatchVolume: annotations[AnnotationReloadWatchVolume],
 		},
 		Secrets: secretsSpec{
 			Specs: listAnnotation(annotations, AnnotationSecrets),
-			Dir:   strings.TrimSpace(annotations[AnnotationSecretDir]),
 		},
 		Volumes: volumesSpec{
 			Specs: listAnnotation(annotations, AnnotationVolumes),
@@ -315,7 +342,6 @@ func parseAnnotations(pod *corev1.Pod) (*injection, error) {
 		},
 		Discovery: discoverySpec{
 			Volume:        annotations[AnnotationDiscoveryVolume],
-			MountPath:     annotations[AnnotationDiscoveryMountPath],
 			Out:           annotations[AnnotationDiscoveryOut],
 			CDSCertURL:    annotations[AnnotationDiscoveryCDSCertURL],
 			MeshCAURL:     annotations[AnnotationDiscoveryMeshCAURL],
@@ -500,10 +526,6 @@ func (s secretsSpec) validate() error {
 			return fmt.Errorf("%w: %s %q: %s", errInvalidInjectionAnnotation, AnnotationSecrets, name, err)
 		}
 	}
-	if s.Dir != "" && !strings.HasPrefix(s.Dir, "/") {
-		return fmt.Errorf("%w: %s must be an absolute path",
-			errInvalidInjectionAnnotation, AnnotationSecretDir)
-	}
 	return nil
 }
 
@@ -539,16 +561,13 @@ func (v volumesSpec) validate() error {
 
 func (r reloadSpec) validate() error {
 	if len(r.WatchPaths) == 0 {
-		if r.WatchVolume != "" || r.WatchMountPath != "" {
+		if r.WatchVolume != "" {
 			return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchVolume, AnnotationReloadWatchPaths)
 		}
 		return nil
 	}
 	if r.WatchVolume == "" {
 		return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchPaths, AnnotationReloadWatchVolume)
-	}
-	if r.WatchMountPath == "" {
-		return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchPaths, AnnotationReloadWatchMountPath)
 	}
 	return nil
 }
@@ -561,9 +580,6 @@ func (d discoverySpec) validate() error {
 	var missing []string
 	if d.Volume == "" {
 		missing = append(missing, AnnotationDiscoveryVolume)
-	}
-	if d.MountPath == "" {
-		missing = append(missing, AnnotationDiscoveryMountPath)
 	}
 	if d.Out == "" {
 		missing = append(missing, AnnotationDiscoveryOut)
@@ -588,7 +604,6 @@ func (d discoverySpec) validate() error {
 
 func (d discoverySpec) configured() bool {
 	return d.Volume != "" ||
-		d.MountPath != "" ||
 		d.Out != "" ||
 		d.CDSCertURL != "" ||
 		d.MeshCAURL != "" ||
@@ -1001,8 +1016,13 @@ func (inj *injection) withDefaults(cfg Config) injection {
 	if effective.Cert.Volume == "" {
 		effective.Cert.Volume = defaultCertVolumeName
 	}
-	if effective.Cert.Dir == "" {
-		effective.Cert.Dir = cfg.CertDir
+	effective.Cert.Dir = certDir
+	effective.Secrets.Dir = defaultSecretDir
+	if effective.Discovery.Volume != "" {
+		effective.Discovery.MountPath = discoveryMountPath
+	}
+	if effective.Reload.WatchVolume != "" {
+		effective.Reload.WatchMountPath = reloadWatchMountPath
 	}
 	if effective.Cert.CertFile == "" {
 		effective.Cert.CertFile = "tls.crt"
@@ -1015,9 +1035,6 @@ func (inj *injection) withDefaults(cfg Config) injection {
 	}
 	if effective.Cert.RenewInterval <= 0 {
 		effective.Cert.RenewInterval = cfg.CertRenewInterval
-	}
-	if effective.Secrets.Dir == "" {
-		effective.Secrets.Dir = defaultSecretDir
 	}
 	if effective.Volumes.Dir == "" {
 		effective.Volumes.Dir = defaultVolumeDir
@@ -1035,9 +1052,6 @@ func (inj *injection) withDefaults(cfg Config) injection {
 }
 
 func (cfg Config) withDefaults() Config {
-	if cfg.CertDir == "" {
-		cfg.CertDir = "/etc/c8s/certs"
-	}
 	if cfg.CertFSGroup == nil {
 		cfg.CertFSGroup = new(defaultCertFSGroup)
 	}

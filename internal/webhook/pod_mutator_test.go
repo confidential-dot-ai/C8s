@@ -32,7 +32,6 @@ func TestMutatePodInjectsCertSidecar(t *testing.T) {
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		CDSURL:            "http://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-		CertDir:           "/etc/c8s/certs",
 	})
 
 	if len(pod.Spec.InitContainers) != 2 {
@@ -136,7 +135,6 @@ func TestMutatePodCertSidecarCarriesHostIPEnv(t *testing.T) {
 		GetCertImage:      "image",
 		CDSURL:            "http://cds",
 		AttestationApiURL: "http://$(HOST_IP):8400",
-		CertDir:           "/etc/c8s/certs",
 	})
 
 	cert := pod.Spec.InitContainers[0]
@@ -171,7 +169,6 @@ func TestMutatePodPreservesExistingFSGroup(t *testing.T) {
 		GetCertImage:      "image",
 		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
-		CertDir:           "/etc/c8s/certs",
 	})
 
 	if got := *pod.Spec.SecurityContext.FSGroup; got != existing {
@@ -191,7 +188,6 @@ func TestMutatePodUsesConfiguredCertAndInitSecurity(t *testing.T) {
 		GetCertImage:        "image",
 		CDSURL:              "http://cds",
 		AttestationApiURL:   "http://attestation-api",
-		CertDir:             "/etc/c8s/certs",
 		CertFSGroup:         new(int64(4242)),
 		CertRenewInterval:   time.Hour,
 		GetCertRunAsUser:    new(int64(0)),
@@ -225,17 +221,14 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		Annotations: map[string]string{
 			AnnotationWorkload:               "c8s-router.c8s-system.svc",
 			AnnotationCertVolume:             "tls-certs",
-			AnnotationCertDir:                "/tls",
 			AnnotationCertFile:               "cert.pem",
 			AnnotationKeyFile:                "key.pem",
 			AnnotationRenewInterval:          "1h",
 			AnnotationReloadNginx:            "true",
 			AnnotationReloadWatchVolume:      "public-tls",
-			AnnotationReloadWatchMountPath:   "/edge-tls",
-			AnnotationReloadWatchPaths:       "/edge-tls/public.crt,/edge-tls/public.key",
+			AnnotationReloadWatchPaths:       "/mnt/c8s-data/c8s-reload-watch/public.crt,/mnt/c8s-data/c8s-reload-watch/public.key",
 			AnnotationDiscoveryVolume:        "discovery",
-			AnnotationDiscoveryMountPath:     "/discovery",
-			AnnotationDiscoveryOut:           "/discovery/discovery.json",
+			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
 			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryMeshCAURL:     "/.well-known/mesh-ca.pem",
 			AnnotationDiscoveryPublicTLSMode: "webpki",
@@ -252,7 +245,7 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 			},
 			Containers: []corev1.Container{{
 				Name:         "nginx",
-				VolumeMounts: []corev1.VolumeMount{{Name: "tls-certs", MountPath: "/tls", ReadOnly: true}},
+				VolumeMounts: []corev1.VolumeMount{{Name: "tls-certs", MountPath: "/etc/c8s/certs", ReadOnly: true}},
 			}},
 		},
 	}
@@ -265,7 +258,6 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 		GetCertImage:      "image",
 		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
-		CertDir:           "/etc/c8s/certs",
 	})
 
 	if pod.Spec.ShareProcessNamespace == nil || !*pod.Spec.ShareProcessNamespace {
@@ -279,14 +271,14 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	}
 	cert := pod.Spec.InitContainers[0]
 	for _, want := range []string{
-		"--out=/tls/cert.pem",
-		"--key-out=/tls/key.pem",
-		"--ca-out=/tls/ca.crt",
+		"--out=/etc/c8s/certs/cert.pem",
+		"--key-out=/etc/c8s/certs/key.pem",
+		"--ca-out=/etc/c8s/certs/ca.crt",
 		"--renew-interval=1h0m0s",
 		"--reload-nginx=true",
-		"--reload-watch=/edge-tls/public.crt",
-		"--reload-watch=/edge-tls/public.key",
-		"--discovery-out=/discovery/discovery.json",
+		"--reload-watch=/mnt/c8s-data/c8s-reload-watch/public.crt",
+		"--reload-watch=/mnt/c8s-data/c8s-reload-watch/public.key",
+		"--discovery-out=/run/c8s/discovery/discovery.json",
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
@@ -299,13 +291,13 @@ func TestMutatePodSupportsRouterProfile(t *testing.T) {
 	if got := *cert.SecurityContext.RunAsUser; got != 101 {
 		t.Fatalf("c8s-cert runAsUser = %d, want 101", got)
 	}
-	if !hasMount(cert.VolumeMounts, "tls-certs", "/tls", false) {
+	if !hasMount(cert.VolumeMounts, "tls-certs", "/etc/c8s/certs", false) {
 		t.Fatalf("c8s-cert mounts %v missing writable tls-certs", cert.VolumeMounts)
 	}
-	if !hasMount(cert.VolumeMounts, "public-tls", "/edge-tls", true) {
+	if !hasMount(cert.VolumeMounts, "public-tls", "/mnt/c8s-data/c8s-reload-watch", true) {
 		t.Fatalf("c8s-cert mounts %v missing read-only public-tls", cert.VolumeMounts)
 	}
-	if !hasMount(cert.VolumeMounts, "discovery", "/discovery", false) {
+	if !hasMount(cert.VolumeMounts, "discovery", "/run/c8s/discovery", false) {
 		t.Fatalf("c8s-cert mounts %v missing writable discovery", cert.VolumeMounts)
 	}
 }
@@ -422,14 +414,78 @@ func TestParseAnnotationsRejectsInvalidDiscoveryPublicTLSMode(t *testing.T) {
 		Annotations: map[string]string{
 			AnnotationWorkload:               "api",
 			AnnotationDiscoveryVolume:        "discovery",
-			AnnotationDiscoveryMountPath:     "/discovery",
-			AnnotationDiscoveryOut:           "/discovery/discovery.json",
+			AnnotationDiscoveryOut:           "/run/c8s/discovery/discovery.json",
 			AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
 			AnnotationDiscoveryPublicTLSMode: "invalid",
 		},
 	})
 	if !errors.Is(err, errInvalidInjectionAnnotation) {
 		t.Fatalf("parseAnnotations error = %v, want invalid annotation", err)
+	}
+}
+
+// The allowlist pins each injected sidecar's mount table, so the annotations
+// that used to move a sidecar mount are refused unless they name the fixed
+// destination, and the sidecars mount there whatever the pod says.
+func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
+	for _, tc := range []struct {
+		annotation, value string
+		ok                bool
+	}{
+		{AnnotationCertDir, "/tls", false},
+		{AnnotationCertDir, certDir, true},
+		{AnnotationSecretDir, "/var/run/app-secrets", false},
+		{AnnotationSecretDir, defaultSecretDir, true},
+		{AnnotationDiscoveryMountPath, "/discovery", false},
+		{AnnotationDiscoveryMountPath, discoveryMountPath, true},
+		{AnnotationReloadWatchMountPath, "/etc/nginx/certs", false},
+		{AnnotationReloadWatchMountPath, reloadWatchMountPath, true},
+	} {
+		t.Run(tc.annotation+"="+tc.value, func(t *testing.T) {
+			_, err := parseAnnotations(&corev1.Pod{Annotations: map[string]string{
+				AnnotationWorkload: "api",
+				tc.annotation:      tc.value,
+			}})
+			if (err == nil) != tc.ok {
+				t.Fatalf("parseAnnotations(%s=%s) error = %v, want ok %v", tc.annotation, tc.value, err, tc.ok)
+			}
+			if err != nil && (!errors.Is(err, errInvalidInjectionAnnotation) || !strings.Contains(err.Error(), tc.annotation)) {
+				t.Fatalf("parseAnnotations(%s=%s) error = %v, want an invalid-annotation error naming it", tc.annotation, tc.value, err)
+			}
+		})
+	}
+}
+
+func TestMutatePodMountsSidecarsAtFixedDestinations(t *testing.T) {
+	pod := podWithApp()
+	pod.Annotations = map[string]string{
+		AnnotationWorkload:               "api",
+		AnnotationSecrets:                "DB=/api/db",
+		AnnotationReloadWatchVolume:      "public-tls",
+		AnnotationReloadWatchPaths:       reloadWatchMountPath + "/tls.crt",
+		AnnotationDiscoveryVolume:        "discovery",
+		AnnotationDiscoveryOut:           discoveryMountPath + "/discovery.json",
+		AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+		AnnotationDiscoveryPublicTLSMode: "cds",
+	}
+	inj, err := parseAnnotations(pod)
+	if err != nil {
+		t.Fatalf("parseAnnotations: %v", err)
+	}
+	mutatePod(pod, inj, Config{GetCertImage: "image", CDSURL: "http://cds"})
+	want := map[string][]string{
+		reservedCertContainerName:     {certDir, discoveryMountPath, reloadWatchMountPath},
+		reservedCertWaitContainerName: {certDir, discoveryMountPath},
+		reservedSecretContainerName:   {certDir, discoveryMountPath, defaultSecretDir},
+	}
+	for _, c := range pod.Spec.InitContainers {
+		var got []string
+		for _, m := range c.VolumeMounts {
+			got = append(got, m.MountPath)
+		}
+		if !slices.Equal(got, want[c.Name]) {
+			t.Errorf("%s mounts at %q, want %q", c.Name, got, want[c.Name])
+		}
 	}
 }
 
@@ -481,7 +537,6 @@ func TestHandleDerivesServiceSAN(t *testing.T) {
 			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 			CDSURL:            "http://cds.c8s-system.svc:8443",
 			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-			CertDir:           "/etc/c8s/certs",
 		},
 	}
 	pod := &corev1.Pod{
@@ -522,7 +577,6 @@ func TestHandleRejectsCWHostNetwork(t *testing.T) {
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
 			CDSURL:       "http://cds.c8s-system.svc:8443",
-			CertDir:      "/etc/c8s/certs",
 		},
 	}
 	pod := &corev1.Pod{
@@ -616,7 +670,6 @@ func TestHandleSANOverrideWinsOverDerivation(t *testing.T) {
 			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 			CDSURL:            "http://cds.c8s-system.svc:8443",
 			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-			CertDir:           "/etc/c8s/certs",
 		},
 	}
 	pod := &corev1.Pod{
@@ -669,7 +722,6 @@ func TestMutatePodReplacesPreexistingCertContainer(t *testing.T) {
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 		CDSURL:            "http://cds.c8s-system.svc:8443",
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-		CertDir:           "/etc/c8s/certs",
 	})
 
 	certs := 0
@@ -708,7 +760,6 @@ func TestMutatePodInjectionIsIdempotent(t *testing.T) {
 		GetCertImage:      "img",
 		CDSURL:            "http://cds",
 		AttestationApiURL: "http://attestation-api",
-		CertDir:           "/etc/c8s/certs",
 	}
 	mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
 	mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
@@ -751,7 +802,6 @@ func TestHandleRejectsReservedCertContainerName(t *testing.T) {
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
 			CDSURL:       "http://cds.c8s-system.svc:8443",
-			CertDir:      "/etc/c8s/certs",
 		},
 	}
 	pod := &corev1.Pod{
@@ -786,7 +836,6 @@ func TestHandleRejectsReservedCertVolumeCollision(t *testing.T) {
 		cfg: Config{
 			GetCertImage: "ghcr.io/confidential-dot-ai/c8s-operator:test",
 			CDSURL:       "http://cds.c8s-system.svc:8443",
-			CertDir:      "/etc/c8s/certs",
 		},
 	}
 	// The default reserved cert volume name (see withDefaults / certsVolume).
@@ -853,7 +902,6 @@ func TestHandleInjectsDespitePresetInjectedMarker(t *testing.T) {
 			GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
 			CDSURL:            "http://cds.c8s-system.svc:8443",
 			AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
-			CertDir:           "/etc/c8s/certs",
 		},
 	}
 	pod := &corev1.Pod{
@@ -888,10 +936,9 @@ func TestParseAnnotationsWatchPathsImplyNginxReload(t *testing.T) {
 		{
 			name: "watch paths turn the reload on",
 			annotations: map[string]string{
-				AnnotationWorkload:             "api",
-				AnnotationReloadWatchPaths:     "/etc/nginx/certs/upstream.crt",
-				AnnotationReloadWatchVolume:    "upstream-certs",
-				AnnotationReloadWatchMountPath: "/etc/nginx/certs",
+				AnnotationWorkload:          "api",
+				AnnotationReloadWatchPaths:  "/mnt/c8s-data/c8s-reload-watch/upstream.crt",
+				AnnotationReloadWatchVolume: "upstream-certs",
 			},
 			wantNginx: true,
 		},
@@ -1016,15 +1063,7 @@ func TestMutatePodInitializesNilAnnotationsAndLabels(t *testing.T) {
 }
 
 func TestConfigWithDefaultsPreservesExplicitValues(t *testing.T) {
-	custom := Config{CertDir: "/custom/certs"}.withDefaults()
-	if custom.CertDir != "/custom/certs" {
-		t.Fatalf("CertDir = %q, want the explicit value kept", custom.CertDir)
-	}
-
 	def := Config{}.withDefaults()
-	if def.CertDir != "/etc/c8s/certs" {
-		t.Fatalf("default CertDir = %q", def.CertDir)
-	}
 	// Pinned against the constant, not a literal: the default must stay
 	// strictly below issuer.MaxNamedLeafTTL so a named leaf always has a
 	// renewal attempt left before it expires.
