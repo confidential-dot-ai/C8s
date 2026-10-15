@@ -341,8 +341,11 @@ probe-file` — *and* some entry admits its digest running that binary under an
 **unconstrained args policy**: `command` exact at the invocation (`/c8s
 get-cert`) with `args: any`, the sidecar shapes the chart seeds the C8s image
 with, `command` exact at `/c8s` with `args: any`, or `command` and `args` both
-`any`, the shapes earlier releases seeded. The shared predicate is
-`allowlist.AdmitsAnyArgs`. Both conditions are required. Admission alone
+`any`, the shapes earlier releases seeded. The same entry container must
+admit the complete observed launch, mounts and environment included, under its
+own policies; a second entry cannot supply the mount or environment half of a
+decision whose open arguments came from the first. The shared predicate is
+`allowlist.AdmitsInjected`. Both conditions are required. Admission alone
 would let a pod add any component image with its entrypoint overridden — and
 have it ignored. The mode matters for the same reason. The C8s image in any
 other mode — `cds-attest`, `allowlist-proxy`, or a mode a pod author chose — is
