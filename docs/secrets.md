@@ -353,10 +353,28 @@ To migrate an entry, do these steps before you roll out the upgrade:
 
 1. In the env file, delete every `<SERVICE>_SERVICE_*` and `<SERVICE>_PORT*`
    variable from each container's policy, under `values` for `exact` and under
-   `variables` for `match`. Keep the `KUBERNETES_*` variables.
-2. Derive the entry under a new name and apply it beside the old one, so pods
-   started before the upgrade keep matching the old entry.
-3. Delete the old entry once no pod started before the upgrade runs.
+   `variables` for `match`. Keep `HOSTNAME`, `PATH` and the `KUBERNETES_*`
+   variables: the runtime sets them in every container.
+2. Derive the entry under a new name into a file.
+3. Copy the old entry's whole `secrets` block into the derived entry. Get it
+   with `c8s allowlist get OLD_NAME`.
+4. Apply the derived entry beside the old one, so pods started before the
+   upgrade keep matching the old entry.
+5. Delete the old entry once no pod started before the upgrade runs.
+
+Copy the `secrets` block in step 3 rather than passing `--secret-read` to
+`derive`. `derive` emits only read grants, so it drops the old entry's
+`write` paths, and turning a write-only path into a read grant releases its
+value.
+
+A policy lists the complete environment the container starts with: the
+image config's variables, the pod spec's, `HOSTNAME`, and the API-server
+variables the kubelet adds. To see them, run `kubectl exec POD_NAME -c
+CONTAINER -- env` in a pod started with service links off, or read the
+image's `Env` with `crane config IMAGE`. An `exact` policy pins
+every value, `HOSTNAME` included, so it fits only a pod whose hostname is fixed,
+such as a StatefulSet replica. Use `match` with `present` for a value that
+differs per pod.
 
 This env file shows a `match` and an `exact` policy after step 1, with
 `DB_SERVICE_HOST`, `DB_SERVICE_PORT` and `DB_PORT*` removed:
@@ -366,26 +384,42 @@ This env file shows a `match` and an `exact` policy after step 1, with
   "app": {"policy": "match", "variables": {
     "PATH": {"exact": "/usr/bin:/bin"},
     "HOSTNAME": {"present": true},
-    "KUBERNETES_SERVICE_HOST": {"present": true}
+    "KUBERNETES_SERVICE_HOST": {"present": true},
+    "KUBERNETES_SERVICE_PORT": {"exact": "443"},
+    "KUBERNETES_SERVICE_PORT_HTTPS": {"exact": "443"},
+    "KUBERNETES_PORT": {"present": true},
+    "KUBERNETES_PORT_443_TCP": {"present": true},
+    "KUBERNETES_PORT_443_TCP_ADDR": {"present": true},
+    "KUBERNETES_PORT_443_TCP_PORT": {"exact": "443"},
+    "KUBERNETES_PORT_443_TCP_PROTO": {"exact": "tcp"}
   }},
   "worker": {"policy": "exact", "values": {
     "PATH": "/usr/bin:/bin",
     "MODE": "batch",
-    "KUBERNETES_SERVICE_HOST": "10.43.0.1"
+    "HOSTNAME": "worker-0",
+    "KUBERNETES_SERVICE_HOST": "10.43.0.1",
+    "KUBERNETES_SERVICE_PORT": "443",
+    "KUBERNETES_SERVICE_PORT_HTTPS": "443",
+    "KUBERNETES_PORT": "tcp://10.43.0.1:443",
+    "KUBERNETES_PORT_443_TCP": "tcp://10.43.0.1:443",
+    "KUBERNETES_PORT_443_TCP_ADDR": "10.43.0.1",
+    "KUBERNETES_PORT_443_TCP_PORT": "443",
+    "KUBERNETES_PORT_443_TCP_PROTO": "tcp"
   }}
 }
 ```
 
-This command derives and applies the post-upgrade entry for step 2:
+These commands derive the post-upgrade entry for step 2, then apply it for
+step 4 once you have added the `secrets` block:
 
 ```sh
-c8s allowlist derive NEW_NAME POD_FILE --env-file env.json --mounts-file mounts.json \
-  --secret-read SECRET_PATH | c8s allowlist apply -
+c8s allowlist derive NEW_NAME POD_FILE --env-file env.json --mounts-file mounts.json > entry.json
+c8s allowlist apply entry.json
 ```
 
 - `NEW_NAME`: a name no entry uses, such as the old name with a `-v2` suffix.
 - `POD_FILE`: the workload's Pod or Deployment manifest.
-- `SECRET_PATH`: each secret path the old entry grants; repeat the flag per path.
+- `OLD_NAME`: the entry you are replacing.
 
 Pass the same mount flags the old entry was derived with.
 

@@ -691,6 +691,7 @@ func TestLintComponentEntryEnv(t *testing.T) {
 		{"application image", "registry.example.com/app@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, "", ""},
 		{"any command", operator, `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "command any"},
 		{"any command on a flattened mirror", "123456789012.dkr.ecr.us-east-1.amazonaws.com/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111", `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "command any"},
+		{"any command on a third-party image sharing a basename", "registry.example.com/team/volumed@sha256:1111111111111111111111111111111111111111111111111111111111111111", `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "shares only its name"},
 		{"pinned args", operator, `"command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":["operator"]},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

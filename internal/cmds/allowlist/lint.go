@@ -255,18 +255,20 @@ func componentEnvFindings(al *pkgallowlist.Allowlist) []finding {
 			if match == noComponent {
 				continue
 			}
-			if c.Command.Policy == pkgallowlist.PolicyAny {
-				out = append(out, warnf("workload %q container %s runs a C8s component image under command any, so the image runs any program with any environment; replace the entry's containers with the seed's (ConfigMap c8s-cds-allowlist-seed)", name, c.Digest))
-				continue
-			}
-			if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyAny {
-				continue
-			}
 			report := errorf
 			if match == componentBasename {
 				report = func(format string, args ...any) finding {
 					return warnf(format+"; the image shares only its name with a C8s component, so check it is one", args...)
 				}
+			}
+			if c.Command.Policy == pkgallowlist.PolicyAny {
+				warning := report("workload %q container %s runs a C8s component image under command any, so the image runs any program with any environment; replace the entry's containers with the seed's (ConfigMap c8s-cds-allowlist-seed)", name, c.Digest)
+				warning.err = false
+				out = append(out, warning)
+				continue
+			}
+			if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyAny {
+				continue
 			}
 			switch c.Env.Policy {
 			case pkgallowlist.PolicyAny, "":

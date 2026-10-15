@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,7 +77,7 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
 	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json and images.txt (required)")
-	cmd.AddCommand(render)
+	cmd.AddCommand(render, newNodeImageCheckImagesCmd())
 	return cmd
 }
 
@@ -351,16 +352,10 @@ func collectNodeImageArtifacts(rendered []byte, entrypoints map[string]entrypoin
 	// arguments, environment and mounts its manifest gives it: the seed must
 	// leave args and mounts to the pod, pin at most the executable, and match
 	// env at most by name; a pin must admit every invocation the manifests
-	// run, and a match must agree with the variables they set. The image's
-	// variables are not known here; the chart tests check those.
-	seedContainers := make(map[string][]pkgallowlist.Container)
-	for _, workload := range seed.Workloads {
-		for _, c := range append(workload.InitContainers, workload.Containers...) {
-			if c.PinsAtMostCommand() {
-				seedContainers[c.Digest.String()] = append(seedContainers[c.Digest.String()], c)
-			}
-		}
-	}
+	// run, and a match must agree with the variables they and the runtime
+	// set. The image's variables are not known here: check-images checks
+	// them against the preloaded images.
+	seedContainers := launchSeeds(seed)
 	index := seed.BuildIndex()
 	for image, baked := range images {
 		if len(seedContainers[baked.digest]) == 0 {
@@ -370,7 +365,7 @@ func collectNodeImageArtifacts(rendered []byte, entrypoints map[string]entrypoin
 			if c.argv != nil && !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: c.argv}) {
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, c.argv)
 			}
-			if !slices.ContainsFunc(seedContainers[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c) }) {
+			if !slices.ContainsFunc(seedContainers[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c, nil) }) {
 				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q matches the variables its manifest sets %q (envFrom cannot be checked)", image, c.argv, c.names())
 			}
 		}
@@ -408,11 +403,12 @@ type bakedImage struct {
 }
 
 // bakedContainer is the argv a baked container runs, nil when it sets no
-// command and the chart pins no entrypoint for its image; the variables its
-// manifest sets; and whether it also imports some (envFrom), whose names this
-// cannot resolve.
+// command and the chart pins no entrypoint for its image; the args it passes
+// without a command; the variables its manifest sets; and whether it also
+// imports some (envFrom), whose names this cannot resolve.
 type bakedContainer struct {
 	argv    []string
+	args    []string
 	env     []bakedVariable
 	envFrom bool
 }
@@ -433,14 +429,30 @@ func (c bakedContainer) names() []string {
 	return names
 }
 
+// launchSeeds indexes by digest the seed containers a baked component can
+// start under: those that pin at most the command.
+func launchSeeds(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Container {
+	out := make(map[string][]pkgallowlist.Container)
+	for _, workload := range seed.Workloads {
+		for _, c := range append(workload.InitContainers, workload.Containers...) {
+			if c.PinsAtMostCommand() {
+				out[c.Digest.String()] = append(out[c.Digest.String()], c)
+			}
+		}
+	}
+	return out
+}
+
 // seedLaunches reports whether seed, an entry container that pins at most the
-// command, admits c's command and environment: every variable c's manifest
-// sets is listed, with the value an exact matcher pins, and every variable
-// the seed matches present is set by the manifest or the runtime. A variable
-// the seed pins exact and the manifest leaves unset is the image's. A value
-// the kubelet expands is refused under an exact pin: its result is unknown.
-// An optional key reference is refused: whether it sets its variable is unknown.
-func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
+// command, admits c's command and environment: the complete environment the
+// container starts with, from its manifest, its image and the runtime, is
+// listed, with the values exact matchers pin, and every variable the seed
+// matches present is set. image is the image config's environment, or nil
+// when unknown: a variable the seed pins exact and the manifest leaves unset
+// is then taken to be the image's. A value the kubelet expands is refused
+// under an exact pin: its result is unknown. An optional key reference is
+// refused: whether it sets its variable is unknown.
+func seedLaunches(seed pkgallowlist.Container, c bakedContainer, image map[string]string) bool {
 	if seed.Command.Policy == pkgallowlist.PolicyExact {
 		if len(c.argv) < len(seed.Command.Argv) || !slices.Equal(c.argv[:len(seed.Command.Argv)], seed.Command.Argv) {
 			return false
@@ -453,7 +465,18 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 		return false
 	}
 	exact := seed.Env.ExactValues()
-	set := make(map[string]bool, len(c.env))
+	for _, name := range runtimeVariables {
+		if _, listed := seed.Env.Variables[name]; !listed {
+			return false
+		}
+	}
+	inherited := maps.Clone(image)
+	if image != nil {
+		if _, ok := inherited["PATH"]; !ok {
+			inherited["PATH"] = containerdDefaultPath
+		}
+	}
+	set := make(map[string]bool, len(c.env)+len(inherited))
 	for _, v := range c.env {
 		if _, listed := seed.Env.Variables[v.name]; !listed || v.optional {
 			return false
@@ -462,11 +485,22 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 			return false
 		}
 		set[v.name] = true
+		delete(inherited, v.name)
 	}
-	for name := range seed.Env.Variables {
-		if _, pinned := exact[name]; !pinned && !set[name] && !runtimeVariable(name) {
+	for name, value := range inherited {
+		if _, listed := seed.Env.Variables[name]; !listed {
 			return false
 		}
+		if want, pinned := exact[name]; pinned && value != want {
+			return false
+		}
+		set[name] = true
+	}
+	for name := range seed.Env.Variables {
+		if _, pinned := exact[name]; set[name] || slices.Contains(runtimeVariables, name) || pinned && image == nil {
+			continue
+		}
+		return false
 	}
 	return true
 }
@@ -488,17 +522,18 @@ func kubeletExpands(value string) bool {
 	return strings.Contains(value, "$(") || strings.Contains(value, "$$")
 }
 
-// runtimeVariable reports whether the runtime sets name in every container:
-// containerd's HOSTNAME and the kubelet's API-server variables. Keep in step
-// with c8s.runtimeEnv in the chart.
-func runtimeVariable(name string) bool {
-	switch name {
-	case "HOSTNAME", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBERNETES_SERVICE_PORT_HTTPS",
-		"KUBERNETES_PORT", "KUBERNETES_PORT_443_TCP", "KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT", "KUBERNETES_PORT_443_TCP_PROTO":
-		return true
-	}
-	return false
+// runtimeVariables are set in every container whatever its manifest and
+// image set: containerd's HOSTNAME and PATH (its default when the image sets
+// none), and the kubelet's API-server variables. Keep in step with
+// c8s.runtimeEnv in the chart.
+var runtimeVariables = []string{
+	"HOSTNAME", "PATH", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBERNETES_SERVICE_PORT_HTTPS",
+	"KUBERNETES_PORT", "KUBERNETES_PORT_443_TCP", "KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT", "KUBERNETES_PORT_443_TCP_PROTO",
 }
+
+// containerdDefaultPath is the PATH containerd sets when the image sets none
+// (oci.WithDefaultPathEnv).
+const containerdDefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 // collectWorkloadImages records every container image a baked workload runs,
 // keyed by reference. The rootfs preloads exactly these, so an unpinned or
@@ -532,11 +567,14 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		container := bakedContainer{envFrom: len(c.EnvFrom) > 0}
 		if len(c.Command) > 0 {
 			container.argv = slices.Concat(c.Command, c.Args)
-		} else if pin, ok := entrypoints[baked.digest]; ok {
-			if pin.withCmd && len(c.Args) > 0 {
-				return fmt.Errorf("node-image workload %s container %q sets args without a command, but the pin %q of its image ends in CMD tokens that args replace: set command", key, c.Name, pin.argv)
+		} else {
+			container.args = c.Args
+			if pin, ok := entrypoints[baked.digest]; ok {
+				if pin.withCmd && len(c.Args) > 0 {
+					return fmt.Errorf("node-image workload %s container %q sets args without a command, but the pin %q of its image ends in CMD tokens that args replace: set command", key, c.Name, pin.argv)
+				}
+				container.argv = slices.Concat(pin.argv, c.Args)
 			}
-			container.argv = slices.Concat(pin.argv, c.Args)
 		}
 		for _, e := range c.Env {
 			container.env = append(container.env, bakedVariable{name: e.Name, value: e.Value, literal: e.ValueFrom == nil, optional: optionalReference(e.ValueFrom)})

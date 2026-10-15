@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"os/exec"
@@ -599,7 +600,7 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 // its subcommand with its env matched by name; the baked command is admitted
 // by one of them.
 func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
-	env := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"HOSTNAME":{"present":true}}}`
+	env := seedEnv(t, `"PATH":{"exact":"/usr/bin:/bin"}`)
 	input := strings.Replace(nodeImageCollectFixture(),
 		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
 		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+env+`},`+
@@ -615,8 +616,8 @@ func TestNodeImageCollectAcceptsMatchedEnvInvocations(t *testing.T) {
 // A matched env must list every variable a baked manifest sets: a missing one
 // would deny the component on its own node before CDS serves.
 func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
-	mesh := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"NODE_IP":{"present":true},"MODE":{"exact":"mesh"},"HOSTNAME":{"present":true}}}`
-	bare := `"env":{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"}}}`
+	mesh := seedEnv(t, `"PATH":{"exact":"/usr/bin:/bin"},"NODE_IP":{"present":true},"MODE":{"exact":"mesh"}`)
+	bare := seedEnv(t, `"PATH":{"exact":"/usr/bin:/bin"}`)
 	seeded := strings.Replace(nodeImageCollectFixture(),
 		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
 		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+mesh+`},`+
@@ -652,13 +653,17 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 
 // The guard compares a manifest's value as the kubelet sets it, so it refuses
 // an exact-pinned value the kubelet would expand, and it counts as
-// runtime-supplied only the variables c8s.runtimeEnv lists.
+// runtime-supplied only the variables c8s.runtimeEnv lists, and requires the
+// seed to list each of those: the runtime sets them in every container.
 func TestNodeImageCollectChecksRuntimeEnv(t *testing.T) {
 	for name, tc := range map[string]struct {
-		seed, env string
-		wantErr   bool
+		seed, env, omit string
+		wantErr         bool
 	}{
 		"runtime variable unset":  {seed: `"KUBERNETES_SERVICE_HOST":{"present":true}`, env: `env: []`},
+		"HOSTNAME unlisted":       {env: `env: []`, omit: "HOSTNAME", wantErr: true},
+		"PATH unlisted":           {env: `env: []`, omit: "PATH", wantErr: true},
+		"kubelet port unlisted":   {env: `env: []`, omit: "KUBERNETES_PORT_443_TCP_PROTO", wantErr: true},
 		"unknown prefixed name":   {seed: `"KUBERNETES_CUSTOM":{"present":true}`, env: `env: []`, wantErr: true},
 		"plain exact value":       {seed: `"MODE":{"exact":"a$b"}`, env: `env: [{name: MODE, value: "a$b"}]`},
 		"exact value with a ref":  {seed: `"MODE":{"exact":"$(NODE_IP)"}`, env: `env: [{name: MODE, value: "$(NODE_IP)"}]`, wantErr: true},
@@ -667,7 +672,7 @@ func TestNodeImageCollectChecksRuntimeEnv(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			seeded := strings.Replace(nodeImageCollectFixture(),
 				`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
-				`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"match","variables":{`+tc.seed+`}}}`, 1)
+				`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+seedEnv(t, tc.seed, tc.omit)+`}`, 1)
 			input := strings.Replace(seeded, `          args: ["--platform", "snp"]`, `          args: ["--platform", "snp"]
           `+tc.env, 1)
 			if input == seeded {
@@ -715,4 +720,24 @@ func TestNodeImageCollectChecksEntrypointInvocations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// seedEnv is the env field of a seed container matching variables, a JSON
+// object body, plus each runtime variable not omitted, matched present.
+func seedEnv(t *testing.T, variables string, omit ...string) string {
+	t.Helper()
+	matchers := map[string]any{}
+	if err := json.Unmarshal([]byte("{"+variables+"}"), &matchers); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range runtimeVariables {
+		if _, ok := matchers[name]; !ok && !slices.Contains(omit, name) {
+			matchers[name] = map[string]bool{"present": true}
+		}
+	}
+	env, err := json.Marshal(map[string]any{"policy": "match", "variables": matchers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return `"env":` + string(env)
 }

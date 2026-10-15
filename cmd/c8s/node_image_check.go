@@ -1,0 +1,189 @@
+//go:build !c8s_node
+
+package main
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"maps"
+	"os"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/spf13/cobra"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
+
+	"github.com/confidential-dot-ai/c8s/internal/crane"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+)
+
+// nodeImageArchitecture is the platform the measured node image runs.
+const nodeImageArchitecture = "amd64"
+
+func newNodeImageCheckImagesCmd() *cobra.Command {
+	var outputDir, layoutDir string
+	cmd := &cobra.Command{
+		Use:   "check-images",
+		Short: "Check that the preloaded core images start under the bootstrap seed",
+		Long:  "Read the config of every image node-image render listed from its preloaded OCI layout, and check that each baked container's complete launch environment, the image's variables included, matches the bootstrap seed. Run it after airgap-images.sh, before the image is sealed.",
+		Args:  cobra.NoArgs,
+		RunE: func(*cobra.Command, []string) error {
+			return checkNodeImages(outputDir, layoutDir)
+		},
+	}
+	f := cmd.Flags()
+	f.StringVar(&outputDir, "output-dir", "", "directory node-image render wrote (required)")
+	f.StringVar(&layoutDir, "layouts", "", "directory holding each image's OCI layout as oci-<sha256 hex> (required)")
+	for _, name := range []string{"output-dir", "layouts"} {
+		if err := cmd.MarkFlagRequired(name); err != nil {
+			panic(err)
+		}
+	}
+	return cmd
+}
+
+// checkNodeImages checks the render in outputDir against the image configs
+// in layoutDir: render alone knows only the image env the chart declares.
+func checkNodeImages(outputDir, layoutDir string) error {
+	rendered, err := os.ReadFile(filepath.Join(outputDir, "c8s-integration.yaml"))
+	if err != nil {
+		return err
+	}
+	rawSeed, err := os.ReadFile(filepath.Join(outputDir, "allowlist-seed.json"))
+	if err != nil {
+		return err
+	}
+	seed, err := pkgallowlist.ParseJSON(rawSeed)
+	if err != nil {
+		return fmt.Errorf("decode node-image bootstrap seed: %w", err)
+	}
+	images := make(map[string]*bakedImage)
+	decoder := k8syaml.NewYAMLOrJSONDecoder(bytes.NewReader(rendered), 4096)
+	for {
+		var raw runtime.RawExtension
+		if err := decoder.Decode(&raw); err == io.EOF {
+			break
+		} else if err != nil {
+			return fmt.Errorf("decode node integration: %w", err)
+		}
+		if len(raw.Raw) == 0 || bytes.Equal(raw.Raw, []byte("null")) {
+			continue
+		}
+		var object unstructured.Unstructured
+		if err := object.UnmarshalJSON(raw.Raw); err != nil {
+			return fmt.Errorf("decode node integration resource: %w", err)
+		}
+		if kind := object.GetKind(); kind == "Deployment" || kind == "DaemonSet" {
+			if err := collectWorkloadImages(object, kind+"/"+object.GetName(), images, nil); err != nil {
+				return err
+			}
+		}
+	}
+	if len(images) == 0 {
+		return fmt.Errorf("node integration in %s runs no images", outputDir)
+	}
+	seeds := launchSeeds(seed)
+	for _, image := range slices.Sorted(maps.Keys(images)) {
+		baked := images[image]
+		config, err := layoutImageConfig(filepath.Join(layoutDir, "oci-"+strings.TrimPrefix(baked.digest, "sha256:")), baked.digest)
+		if err != nil {
+			return fmt.Errorf("node-image image %s: %w", image, err)
+		}
+		env := make(map[string]string, len(config.Config.Env))
+		for _, entry := range config.Config.Env {
+			name, value, _ := strings.Cut(entry, "=")
+			env[name] = value
+		}
+		for _, c := range baked.containers {
+			if c.argv == nil {
+				c.argv = slices.Concat(config.Config.Entrypoint, config.Config.Cmd)
+				if len(c.args) > 0 {
+					c.argv = slices.Concat(config.Config.Entrypoint, c.args)
+				}
+			}
+			if !slices.ContainsFunc(seeds[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c, env) }) {
+				return fmt.Errorf("node-image image %s: no bootstrap seed entry admits %q with the variables its image sets %q and its manifest sets %q", image, c.argv, config.Config.Env, c.names())
+			}
+		}
+	}
+	return nil
+}
+
+// layoutImageConfig reads the config of the image digest names from the OCI
+// layout at dir, choosing the linux/amd64 manifest of an index. Every blob is
+// checked against its digest.
+func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
+	var layout ocispec.Index
+	if err := readJSON(filepath.Join(dir, "index.json"), &layout); err != nil {
+		return nil, err
+	}
+	if !slices.ContainsFunc(layout.Manifests, func(d ocispec.Descriptor) bool { return d.Digest.String() == digest }) {
+		return nil, fmt.Errorf("OCI layout %s does not hold %s", dir, digest)
+	}
+	var root struct {
+		ocispec.Manifest
+		Manifests []ocispec.Descriptor `json:"manifests"`
+	}
+	if err := readBlob(dir, digest, &root); err != nil {
+		return nil, err
+	}
+	manifest := root.Manifest
+	if len(root.Manifests) > 0 {
+		i := slices.IndexFunc(root.Manifests, func(d ocispec.Descriptor) bool {
+			return d.Platform != nil && d.Platform.OS == "linux" && d.Platform.Architecture == nodeImageArchitecture
+		})
+		if i < 0 {
+			return nil, fmt.Errorf("image index %s has no linux/%s manifest", digest, nodeImageArchitecture)
+		}
+		if err := readBlob(dir, root.Manifests[i].Digest.String(), &manifest); err != nil {
+			return nil, err
+		}
+	}
+	if manifest.Config.Digest == "" {
+		return nil, fmt.Errorf("image %s has no config", digest)
+	}
+	var config crane.ImageConfig
+	if err := readBlob(dir, manifest.Config.Digest.String(), &config); err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
+
+// readBlob decodes the layout blob digest names into v, refusing content
+// whose sha256 differs.
+func readBlob(dir, digest string, v any) error {
+	hexDigest, ok := strings.CutPrefix(digest, "sha256:")
+	if !ok {
+		return fmt.Errorf("blob digest %s is not sha256", digest)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "blobs", "sha256", hexDigest))
+	if err != nil {
+		return err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != hexDigest {
+		return fmt.Errorf("blob %s in %s does not match its digest", digest, dir)
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("decode blob %s: %w", digest, err)
+	}
+	return nil
+}
+
+func readJSON(path string, v any) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
+	}
+	return nil
+}

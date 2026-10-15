@@ -607,7 +607,9 @@ digest>` with one container per way the chart or the webhook runs the image:
 and injected pods run with `enableServiceLinks: false`, so no other Service
 adds a variable; a loader variable such as `LD_PRELOAD` is never listed, so
 `match` refuses it. `c8s install --resolve-digests` refuses an image whose
-config sets other variables than `imageEnv`, and `c8s allowlist lint` reports
+config sets other variables than `imageEnv`, the node-image build runs
+`c8s node-image check-images` to refuse a preloaded image whose config does
+not match the seed, and `c8s allowlist lint` reports
 a component entry whose `env` is `any`, or whose `match` lists a loader
 variable as `present`, as an error. Lint recognizes a component by its
 repository path, such as `confidential-dot-ai/c8s-operator`, under any registry.
@@ -641,27 +643,61 @@ a component entry with `env: any` as an error. It warns on a component image
 under `command: any`, the shape stored before the entrypoint pins. `upload`
 refuses a document that holds an error, and `apply` refuses one among the
 entries it applies, but neither checks the entries already stored, and
-`edit` does not lint. To migrate the stored entries after upgrading:
-
-1. Lint the live document: `c8s allowlist export | c8s allowlist lint -`.
-2. For each component entry it reports, error or warning, replace the
-   entry's whole container list with the containers of the same-named entry
-   in the rendered seed (ConfigMap `c8s-cds-allowlist-seed`). The seed holds
-   one container per invocation, each with its own env match: `operator`
-   requires `POD_NAME`, the injected fetchers `C8S_WORKLOAD_ID`,
-   `C8S_POD_NAME`, `C8S_POD_UID` and `HOST_IP`. Replacing only one
-   container's `env` denies the other invocations.
-3. Keep the fields you reviewed at the entry level, such as `label` and
-   `secrets`, and apply the entry with `c8s allowlist edit`.
-
-On a mirror that flattens repository paths, every component entry gets a
-warning rather than an error; treat each one as reported. During an upgrade an enforcer that pulls the old document shape
+`edit` does not lint. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes
 those digests from the local floors. Their first startup may wait for the
 plugin's first successful policy pull and kubelet retry.
+
+### Migrate stored component entries
+
+Pods keep the `enableServiceLinks` setting they were created with. An
+injected pod created before the upgrade still receives service-link
+variables, so a tightened entry denies its fetchers when they restart. Keep
+the old entries until those pods are gone. To migrate the stored entries
+after upgrading the chart:
+
+1. Recreate every confidential pod created before the upgrade, so the webhook
+   injects it with service links off. Keep the stored entries unchanged
+   while you do.
+2. Save the live document and lint it: `c8s allowlist export before.json`,
+   then `c8s allowlist lint before.json`.
+   On a mirror that flattens repository paths, every component entry gets a
+   warning rather than an error; treat each one as reported.
+3. Split the reported entries by digest. An entry is current when the
+   rendered seed (ConfigMap `c8s-cds-allowlist-seed`) holds an entry with
+   the same container digest, whatever the stored entry is named. Every
+   other reported entry is historical: an earlier image the seed no longer
+   renders, or an entry named by hand.
+4. For each current entry, replace its whole container list with the
+   containers of the seed entry holding that digest. The seed holds one
+   container per invocation, each with its own env match: `operator`
+   requires `POD_NAME`, the injected fetchers `C8S_WORKLOAD_ID`,
+   `C8S_POD_NAME`, `C8S_POD_UID` and `HOST_IP`. Replacing only one
+   container's `env` denies the other invocations. Keep the fields you
+   reviewed at the entry level, such as `label` and `secrets`, and apply the
+   entry with `c8s allowlist edit`.
+5. Leave each historical entry as stored. Delete it with `c8s allowlist
+   delete` once no pod runs its digest. To list the digests pods run, use
+   `kubectl get pods -A -o jsonpath='{..imageID}'`.
+
+The migration is complete when all of these hold:
+
+- No pod created before the upgrade runs: each confidential pod shows
+  `enableServiceLinks: false`.
+- Lint reports no component entry of a digest the seed renders.
+- Every restarted confidential pod reaches `Ready`, its fetchers are
+  admitted, and its certificate renews: check that the next renewal
+  succeeds in the get-cert sidecar's log.
+- No historical entry remains, or each one still names a digest a running
+  pod uses.
+
+To roll back, restore the entry you replaced from `before.json` with `c8s
+allowlist edit`; `apply` refuses its `env: any`. Do this when a component pod
+or a fetcher is denied after a step. The stored entry and the base are
+separate, so the restored entry admits the pod again at the next policy pull.
 
 ## CLI
 

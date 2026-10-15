@@ -287,6 +287,9 @@ render_node_integration() {
     bash "$SRCDIR/mkosi.profiles/c8s/airgap-images.sh" \
         "$out/images.txt" "$CACHE_DIR/core-images" "$AIRGAP_DIR" \
         "$LOCAL_IMAGES_DIR" "$C8S_REGISTRY"
+    # Render knows the image env only as the chart declares it; check the
+    # preloaded configs against the seed before they are sealed.
+    "$C8S_TARGET" node-image check-images --output-dir "$out" --layouts "$CACHE_DIR/core-images"
 }
 
 # Download <url> to <dest>, verifying its sha256. Skip if dest exists and
