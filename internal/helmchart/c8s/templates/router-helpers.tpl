@@ -620,6 +620,12 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- with .expectedWorkload -}}
 {{- $args = append $args (printf "--expected-workload=%s" .) -}}
 {{- end -}}
+{{- /* The NRI plugin's measured-policy journal, under the
+       attestation-api-socket mount (validations.yaml requires it); absent
+       until the plugin measures. */ -}}
+{{- if $root.Values.nriImagePolicy.measurePolicies -}}
+{{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
+{{- end -}}
 {{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the
        optional publicTLS Secret. */ -}}
 {{- $args = append $args (printf "--mesh-identity-cert-file=%s/cert.pem" $v.tlsMountPath) -}}
