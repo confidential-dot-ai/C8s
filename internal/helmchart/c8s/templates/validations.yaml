@@ -55,9 +55,10 @@
 {{- end -}}
 {{- /*
   In fail-closed mode with deriveComponents off, every enabled C8s component
-  that is digest-pinned must be admitted with open args, env and mounts — under
-  any command, or pinned to its entrypoint — by a bootstrapAllowlist.workloads
-  entry (c8s.openArgsEntries), the shapes that reach the base; otherwise the
+  that is digest-pinned must be admitted — under any command, or pinned to its
+  entrypoint — by a bootstrapAllowlist.workloads entry that reaches the base:
+  one with open args, env and mounts (c8s.openArgsEntries), or one that pins
+  them for the component's digest (c8s.pinnedComponentEntries); otherwise the
   NRI plugin would deny that component's pod on its own node. cds.image is exempt: it is always in
   the base via the seed self-entry, independent of derivation. argvPinned
   components are exempt too: the chart seeds them argv-pinned
@@ -67,6 +68,7 @@
 */ -}}
 {{- if and .Values.nriImagePolicy.enabled (eq .Values.nriImagePolicy.policy.mode "fail-closed") (not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents) -}}
 {{- $covered := include "c8s.openArgsEntries" . | fromJson -}}
+{{- $operatorPins := include "c8s.pinnedComponentEntries" . | fromJson -}}
 {{- range $c := (include "c8s.components" . | fromJsonArray) -}}
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "cdsExempt")) (not (get $c "argvPinned")) (get $img "digest") -}}
@@ -74,16 +76,23 @@
        component's entrypoint: a pin on another executable would reach the
        base and still deny the component on its own node. */ -}}
 {{- $ok := false -}}
+{{- $pins := list -}}
 {{- if hasKey $covered (get $img "digest") -}}
-{{- $pin := get (get $covered (get $img "digest")) "entrypoint" -}}
+{{- $pins = append $pins (get (get $covered (get $img "digest")) "entrypoint") -}}
+{{- end -}}
+{{- range $container := (get $operatorPins (get $img "digest") | default list) -}}
+{{- $pins = append $pins (dig "command" "argv" list $container) -}}
+{{- end -}}
 {{- $entrypoint := get $c "entrypoint" -}}
+{{- range $pin := $pins -}}
 {{- if le (len $pin) (len $entrypoint) -}}
-{{- $ok = true -}}
-{{- range $i, $tok := $pin -}}{{- if ne $tok (index $entrypoint $i) -}}{{- $ok = false -}}{{- end -}}{{- end -}}
+{{- $prefix := true -}}
+{{- range $i, $tok := $pin -}}{{- if ne $tok (index $entrypoint $i) -}}{{- $prefix = false -}}{{- end -}}{{- end -}}
+{{- if $prefix -}}{{- $ok = true -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- if not $ok -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args, env and mounts unconstrained for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry for that digest has its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
