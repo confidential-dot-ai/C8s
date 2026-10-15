@@ -332,6 +332,9 @@ for what the admission inventory contributes to a release decision.
 ```
 
 - `allow` or `deny` only; there is deliberately no `any`.
+- An `allow` grant requires every container to pin its argv (`command` and
+  `args` `exact` or `deny`) and its mounts (`deny`, or `exact` with no `host`
+  rule). The write path refuses the entry; release refuses one stored earlier.
 - `write` requires `read`.
 - Paths are absolute and clean (no `.`/`..`); the only wildcard is a trailing
   `/**` (subtree), which matches strictly beneath its base.

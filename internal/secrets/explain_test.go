@@ -160,7 +160,7 @@ func TestExplainNamesUnpinnedGrant(t *testing.T) {
 	if resp.Match != "api" {
 		t.Fatalf("match = %q, want api", resp.Match)
 	}
-	if resp.Grant != nil || !strings.Contains(resp.Refusal, "unconstrained") {
+	if resp.Grant != nil || !strings.Contains(resp.Refusal, "command and args policy") {
 		t.Fatalf("refusal = %q, grant = %v; want the unpinned argv named and no grant", resp.Refusal, resp.Grant)
 	}
 }

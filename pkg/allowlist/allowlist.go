@@ -204,17 +204,20 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := normalizeSecrets(&w.Secrets); err != nil {
 		return nil, fmt.Errorf("entry secrets: %w", err)
 	}
-	if w.Secrets != nil && !w.ArgvPinned() {
-		return nil, fmt.Errorf("entry: %w", errGrantUnpinned)
+	if w.Secrets != nil {
+		if err := w.PinnedForGrant(); err != nil {
+			return nil, fmt.Errorf("entry: %w", err)
+		}
 	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
 }
 
-// errGrantUnpinned refuses a secrets grant on an entry that leaves any
-// container's argv to the host.
-var errGrantUnpinned = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+var (
+	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules")
+)
 
 // Digests returns every container digest in the workload (init and main), for
 // building a digest index.
@@ -271,6 +274,32 @@ func (w Workload) ArgvPinned() bool {
 		}
 	}
 	return true
+}
+
+// MountsPinned reports whether every container's mounts policy is deny, or
+// exact with no host rule, so the host neither adds a mount nor chooses what
+// one holds. A secrets grant requires it (docs/secrets.md).
+func (w Workload) MountsPinned() bool {
+	for _, c := range w.containers() {
+		if !(mountConstraint{policy: &c.Mounts}).hostIndependent() {
+			return false
+		}
+	}
+	return true
+}
+
+// PinnedForGrant reports why a secrets grant on w would release a value to a
+// launch the host shaped, or nil when the entry pins its argv and mounts. Env
+// is not required until a policy can pin it on a real pod: exact fingerprints
+// the whole environment, including the pod-specific HOSTNAME.
+func (w Workload) PinnedForGrant() error {
+	if !w.ArgvPinned() {
+		return errGrantUnpinnedArgv
+	}
+	if !w.MountsPinned() {
+		return errGrantUnpinnedMounts
+	}
+	return nil
 }
 
 // HostIndependent reports whether every runtime field that can change what a
@@ -407,8 +436,10 @@ func (a *Allowlist) normalize(strict bool) error {
 		if err := normalizeSecrets(&w.Secrets); err != nil {
 			return fmt.Errorf("workload %q secrets: %w", name, err)
 		}
-		if strict && w.Secrets != nil && !w.ArgvPinned() {
-			return fmt.Errorf("workload %q: %w", name, errGrantUnpinned)
+		if strict && w.Secrets != nil {
+			if err := w.PinnedForGrant(); err != nil {
+				return fmt.Errorf("workload %q: %w", name, err)
+			}
 		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)

@@ -86,6 +86,19 @@ func TestLintAcceptsDeriveOutput(t *testing.T) {
 	}
 }
 
+// A derived grant with open mounts is refused by the parser lint shares with
+// the write path, before any finding is reported.
+func TestLintRefusesGrantWithOpenMounts(t *testing.T) {
+	pod := writeFile(t, "pod.json", deployJSON())
+	derived, _, err := runCmd("derive", "dynamo", pod, "--env=deny", "--mounts=any", "--secret-read", "/test/hello")
+	if err != nil {
+		t.Fatalf("derive: %v", err)
+	}
+	if _, _, err := runCmd("lint", writeFile(t, "entry.json", derived)); err == nil || !strings.Contains(err.Error(), "mounts policy") {
+		t.Fatalf("lint = %v, want the grant refused over its mounts policy", err)
+	}
+}
+
 // Accepting the shapes 'apply' accepts must not make lint lenient. Wrapping a
 // bare map into a document puts it under the document rules, so everything
 // ParseJSON refuses on the way in is still refused.
