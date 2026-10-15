@@ -517,10 +517,7 @@ operator public keys it pins. Each token authorizes one allowlist write: CDS
 remembers every spent token and answers a replay with 409. Without
 `cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
 token issued before its start plus `--jwt-clock-skew`; after a restart, wait
-that long and mint a fresh token. CDS publishes the token of a whole-document
-upload (see [Operator-signed allowlists](#operator-signed-allowlists)), and
-another CDS pinning the same keys accepts it until it expires: give each
-cluster its own operator key.
+that long and mint a fresh token.
 
 ### Refresh and anti-rollback
 
