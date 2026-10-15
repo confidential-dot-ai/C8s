@@ -72,6 +72,14 @@ image_alias() { return $UNSUPPORTED; }
 # bundle's key is the run's operator key; the token minter is built from the
 # checkout on first use, with the Go toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
+# The route relays the /allowlist routes alone; the CDS's others are out of
+# reach.
+cds_request() {
+    case "$2" in
+        /allowlist | /allowlist/*) http_request "$(cds_url)" "$@" ;;
+        *) return "$UNSUPPORTED" ;;
+    esac
+}
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 cds_document_path() {
     case "$1" in

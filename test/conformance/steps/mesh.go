@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -422,8 +423,11 @@ func podRunning(ctx context.Context, name string) error {
 func (w *world) helloListening(p *pod) error {
 	for _, port := range p.hello {
 		var last string
-		ok, _ := poll(30*time.Second, func() (bool, error) {
+		ok, err := poll(30*time.Second, func() (bool, error) {
 			r, err := w.exec(p, fmt.Sprintf("wget -qO- -T 2 http://127.0.0.1:%d/ 2>&1", port))
+			if errors.Is(err, godog.ErrSkip) {
+				return false, err
+			}
 			if err != nil {
 				last = err.Error()
 				return false, nil
@@ -431,6 +435,9 @@ func (w *world) helloListening(p *pod) error {
 			last = r.out
 			return r.rc == 0, nil
 		})
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return fmt.Errorf("the hello API of %q on port %d did not answer within 30s:\n%s", p.name, port, last)
 		}

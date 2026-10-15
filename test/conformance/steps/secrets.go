@@ -1674,6 +1674,9 @@ func outputHoldsFile(ctx context.Context, name, logical string) error {
 	var content []byte
 	ok, err := poll(observe, func() (bool, error) {
 		content, err = w.readSecretFile(p, logical)
+		if errors.Is(err, godog.ErrSkip) {
+			return false, err
+		}
 		return err == nil, nil
 	})
 	if err != nil {
