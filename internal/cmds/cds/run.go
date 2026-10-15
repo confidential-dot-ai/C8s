@@ -47,6 +47,7 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	cfg.attestationApiURL = cmdsutil.ExpandHostIP(cfg.attestationApiURL)
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.attestationApiURL); err != nil {
 		return err
 	}
@@ -201,7 +202,7 @@ func run(cfg config) error {
 	// posture /attest already takes above, so a dev cluster still issues
 	// sandbox-bound leaves (and can still receive secrets) instead of failing
 	// every workload.
-	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs, cfg.kubeconfig)
+	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs)
 	if err != nil {
 		return err
 	}
