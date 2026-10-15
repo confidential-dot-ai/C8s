@@ -22,6 +22,15 @@ type EnvObservation struct {
 
 const EnvFormat = "c8s.env/v1"
 
+// Per-variable evidence rides in every inventory record, whose response CDS
+// caps at 1 MiB. Above these bounds VariableDigests is nil: only match
+// policies read it, and they fail closed. A match policy lists every
+// variable, so a service-link-heavy environment is out of its reach anyway.
+const (
+	maxVariableEvidence          = 128
+	maxVariableEvidenceNameBytes = 4 << 10
+)
+
 // ObserveEnv validates before canonicalizing: duplicate names and malformed
 // entries must not disappear into a map and later satisfy a constrained grant.
 // Errors contain no environment names or values.
@@ -38,11 +47,25 @@ func ObserveEnv(entries []string) (*EnvObservation, error) {
 		values[name] = value
 	}
 	observation := fingerprintEnv(values)
+	if !variableEvidenceFits(values) {
+		return observation, nil
+	}
 	observation.VariableDigests = make(map[string]string, len(values))
 	for name, value := range values {
 		observation.VariableDigests[name] = fingerprintEnvVariable(name, value)
 	}
 	return observation, nil
+}
+
+func variableEvidenceFits(values map[string]string) bool {
+	if len(values) > maxVariableEvidence {
+		return false
+	}
+	nameBytes := 0
+	for name := range values {
+		nameBytes += len(name)
+	}
+	return nameBytes <= maxVariableEvidenceNameBytes
 }
 
 // ObserveLaunchEnv keeps the last value per name, matching runc's launch environment.

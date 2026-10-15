@@ -6,6 +6,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -381,5 +382,46 @@ func TestDocumentedEnvExamplesParse(t *testing.T) {
 		if _, err := ParseEnvPoliciesJSON([]byte(`{"app":` + string(example[1]) + `}`)); err != nil {
 			t.Errorf("ParseEnvPoliciesJSON(%s) error = %v", example[1], err)
 		}
+	}
+}
+
+func TestObserveEnvBoundsVariableEvidence(t *testing.T) {
+	numbered := func(n int, prefix string) []string {
+		env := make([]string, n)
+		for i := range env {
+			env[i] = prefix + strconv.Itoa(i) + "=v"
+		}
+		return env
+	}
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want bool
+	}{
+		{"at variable cap", numbered(maxVariableEvidence, "V"), true},
+		{"over variable cap", numbered(maxVariableEvidence+1, "V"), false},
+		{"at name bytes cap", []string{strings.Repeat("N", maxVariableEvidenceNameBytes) + "=v"}, true},
+		{"over name bytes cap", numbered(2, strings.Repeat("N", maxVariableEvidenceNameBytes/2)), false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			o, err := ObserveEnv(tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := o.VariableDigests != nil; got != tc.want {
+				t.Fatalf("ObserveEnv(%d variables) has variable digests = %t, want %t", len(tc.env), got, tc.want)
+			}
+			if !o.Valid() {
+				t.Fatal("observation invalid")
+			}
+			values := make(map[string]string, len(tc.env))
+			for _, entry := range tc.env {
+				name, value, _ := strings.Cut(entry, "=")
+				values[name] = value
+			}
+			if !(EnvPolicy{Policy: PolicyExact, Values: values}).admitsObservation(o) {
+				t.Fatal("exact policy rejected the observation")
+			}
+		})
 	}
 }

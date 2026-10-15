@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
@@ -472,5 +473,43 @@ func TestFetchSandboxReadsALargeBody(t *testing.T) {
 		if len(out.Containers) != 1 {
 			t.Fatalf("containers = %d, want 1", len(out.Containers))
 		}
+	}
+}
+
+// Service links inject seven variables per Service in the namespace, and each
+// value change adds a record to the high-water history.
+func TestFetchSandboxDecodesServiceLinkHistory(t *testing.T) {
+	var containers []SandboxContainer
+	for c := range 4 {
+		for generation := range 8 {
+			var env []string
+			for s := range 100 {
+				prefix := "BACKEND_SERVICE_" + strconv.Itoa(s) + "_"
+				for _, suffix := range []string{"SERVICE_HOST", "SERVICE_PORT", "PORT", "PORT_8080_TCP", "PORT_8080_TCP_PROTO", "PORT_8080_TCP_PORT", "PORT_8080_TCP_ADDR"} {
+					env = append(env, prefix+suffix+"=10.0."+strconv.Itoa(generation)+"."+strconv.Itoa(s))
+				}
+			}
+			observation, err := allowlist.ObserveEnv(env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			containers = append(containers, SandboxContainer{
+				Digest: "sha256:" + strings.Repeat(strconv.Itoa(c), 64),
+				Argv:   []string{"/app"},
+				Env:    observation,
+				Mounts: []allowlist.ObservedMount{},
+			})
+		}
+	}
+	c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(SandboxDigestsResponse{Containers: containers})
+	}))
+	c.http.Transport.(*http.Transport).TLSClientConfig.ServerName = "example.com"
+	out, err := c.FetchSandbox(context.Background(), host, "sandbox-1")
+	if err != nil {
+		t.Fatalf("FetchSandbox: %v", err)
+	}
+	if len(out.Containers) != len(containers) {
+		t.Fatalf("containers = %d, want %d", len(out.Containers), len(containers))
 	}
 }
