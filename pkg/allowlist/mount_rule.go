@@ -36,8 +36,8 @@ type emptyDirRule struct {
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly || r.ContentSHA256 != "" {
-		return fmt.Errorf("mount kind %q does not support source, readOnly or contentSHA256", r.Kind)
+	if r.Source != "" || r.ReadOnly || r.Provenance != "" || r.VerityDigest != "" {
+		return fmt.Errorf("mount kind %q does not support source, readOnly or provenance", r.Kind)
 	}
 	return nil
 }
@@ -69,14 +69,21 @@ type hostRule struct {
 }
 
 func (r hostRule) validate() error {
-	if r.ContentSHA256 != "" {
-		decoded, err := hex.DecodeString(r.ContentSHA256)
-		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != r.ContentSHA256 {
-			return fmt.Errorf("contentSHA256 must be 64 lowercase hexadecimal digits")
+	switch r.Provenance {
+	case "", ProvenanceNodeRoot:
+		if r.VerityDigest != "" {
+			return fmt.Errorf("verityDigest requires fs-verity provenance")
 		}
-		if !r.ReadOnly {
-			return fmt.Errorf("contentSHA256 requires readOnly: true")
+	case ProvenanceFSVerity:
+		decoded, err := hex.DecodeString(r.VerityDigest)
+		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != r.VerityDigest {
+			return fmt.Errorf("verityDigest must be 64 lowercase hexadecimal digits")
 		}
+	default:
+		return fmt.Errorf("unsupported mount provenance %q", r.Provenance)
+	}
+	if r.Provenance != "" && !r.ReadOnly {
+		return fmt.Errorf("mount provenance requires readOnly: true")
 	}
 	_, err := HostSourceDigest(r.Source)
 	return err
@@ -84,7 +91,7 @@ func (r hostRule) validate() error {
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.ContentSHA256 == "" || m.ContentSHA256 == r.ContentSHA256)
+	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.Provenance == "" || m.Provenance == r.Provenance && m.VerityDigest == r.VerityDigest)
 }
 
 func (hostRule) hostIndependent() bool {

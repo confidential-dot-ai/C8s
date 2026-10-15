@@ -529,8 +529,11 @@ func TestLintAllowsContentPinnedHostExecutables(t *testing.T) {
 		refused       bool
 	}{
 		{"path alone", "", true},
-		{"reviewed bytes", `,"contentSHA256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, false},
-		{"invalid bytes pin", `,"contentSHA256":"not-a-hash"`, true},
+		{"measured node root", `,"provenance":"node-root"`, false},
+		{"untrusted verity device", `,"provenance":"dm-verity"`, true},
+		{"unbound fs-verity", `,"provenance":"fs-verity"`, true},
+		{"reviewed bytes", `,"provenance":"fs-verity","verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, false},
+		{"invalid bytes pin", `,"provenance":"fs-verity","verityDigest":"not-a-hash"`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +

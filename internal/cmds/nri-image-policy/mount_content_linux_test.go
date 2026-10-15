@@ -3,8 +3,6 @@
 package nriimagepolicy
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,50 +12,14 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestRegularFileSHA256(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nvidia-smi")
-	bytes := []byte("reviewed executable bytes")
-	if err := os.WriteFile(path, bytes, 0600); err != nil {
-		t.Fatal(err)
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	sum := sha256.Sum256(bytes)
-	if got := regularFileSHA256(file); got != hex.EncodeToString(sum[:]) {
-		t.Fatalf("file digest = %q", got)
-	}
-	dir, err := os.Open(filepath.Dir(path))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer dir.Close()
-	if got := regularFileSHA256(dir); got != "" {
-		t.Fatal("hashed a directory")
-	}
-	large, err := os.Create(filepath.Join(t.TempDir(), "large"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer large.Close()
-	if err := large.Truncate(maxHostContentBytes + 1); err != nil {
-		t.Fatal(err)
-	}
-	if got := regularFileSHA256(large); got != "" {
-		t.Fatal("hashed an oversized file")
-	}
-}
-
 func TestHostContentRequiresImmutableRoot(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nvidia-smi")
 	if err := os.WriteFile(path, []byte("reviewed executable bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	for _, source := range []string{path, "/dev/null", "/proc/self/cmdline", "relative", "/usr/../usr/bin/nvidia-smi"} {
-		if got := hostFileContentDigest(source); got != "" {
-			t.Fatalf("reported content authority for %s: %s", source, got)
+		if got := nodeRootFile(source); got {
+			t.Fatalf("reported node-root authority for %s: %v", source, got)
 		}
 	}
 }
@@ -166,5 +128,58 @@ func TestRootFileCannotTraverseSymlinksOrMounts(t *testing.T) {
 	if err == nil {
 		file.Close()
 		t.Fatal("crossed a mount boundary")
+	}
+}
+
+func TestBootRootHash(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	for _, tc := range []struct{ cmdline, expected string }{
+		{"quiet roothash=" + hash + " ro", hash},
+		{"quiet", ""}, {"roothash=abc", ""},
+		{"roothash=" + hash + " roothash=" + hash, ""},
+		{"roothash=" + strings.ToUpper(hash), ""},
+	} {
+		if got := bootRootHash(tc.cmdline); got != tc.expected {
+			t.Fatalf("bootRootHash(%q)=%q", tc.cmdline, got)
+		}
+	}
+	if verityTableRootHash(verityTableFixture(""), 123) != hash {
+		t.Fatal("lost active root hash")
+	}
+}
+
+func TestDMVerityMountedRootIntegration(t *testing.T) {
+	root, expected := os.Getenv("C8S_TEST_DM_VERITY_ROOT"), os.Getenv("C8S_TEST_DM_VERITY_HASH")
+	if root == "" {
+		t.Skip("requires private mount namespace and disposable dm-verity device")
+	}
+	fd, err := unix.Open(root, unix.O_RDONLY|unix.O_DIRECTORY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	var st unix.Stat_t
+	var fs unix.Statfs_t
+	if err := unix.Fstat(fd, &st); err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Fstatfs(fd, &fs); err != nil || fs.Flags&unix.ST_RDONLY == 0 {
+		t.Fatal("test root is not read-only")
+	}
+	if got := deviceVerityRootHash(uint64(st.Dev)); got != expected {
+		t.Fatalf("kernel root hash=%q, expected %q", got, expected)
+	}
+	file, err := openRootFile(fd, "/binary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	buffer := make([]byte, 32)
+	count, err := file.Read(buffer)
+	if err != nil || string(buffer[:count]) != "approved executable" {
+		t.Fatalf("verity file=%q, %v", buffer[:count], err)
+	}
+	if rootDeviceVerity(uint64(st.Dev)) {
+		t.Fatal("operator-created verity device matched host measured boot root")
 	}
 }

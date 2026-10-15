@@ -2,4 +2,4 @@
 
 package nriimagepolicy
 
-func hostFileContentDigest(string) string { return "" }
+func nodeRootFile(string) bool { return false }

@@ -284,46 +284,75 @@ the path pin grants access to the contents at that node path. Read-only mode
 applies to the mount itself; nested mounts retain their own flags. Recursive
 read-only/write mount options leave the host source commitment unavailable.
 
-A read-only host **file** can also pin its bytes with `contentSHA256`:
+A read-only host **file** can declare authenticated provenance instead of
+being treated as operator-supplied executable content. Two forms are supported:
 
 ```json
-{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"contentSHA256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"provenance":"node-root"}
 ```
 
-Replace the example hash with the SHA-256 of the approved binary, encoded as
-64 lowercase hexadecimal digits without a `sha256:` prefix. Derive it from a
-trusted node-image artifact (for example, `sha256sum` on its extracted file),
-not from a first unrestricted workload launch. Supply the rule through
-`allowlist derive --mounts-file`, or include it in an exact mount policy.
-Existing source path and destination checks still apply; the source must be
-its canonical path without symlink components.
+`node-root` requires a regular file reached directly through the node's
+read-only dm-verity root. The enforcer opens the source without symlinks or
+intervening mounts, checks the active kernel table for a single strict read-only
+dm-verity target, and compares its SHA-256 root hash with `roothash=` in the
+measured boot command line. Writable overlays, foreign verity devices, bind
+aliases, directories, missing evidence, and permissive corruption handling do
+not qualify. The approved node launch measurement authenticates the image,
+including its kernel command line and root hash; no separate file hash is needed.
+Customer verification must approve that measurement. A dev image or an unchecked
+measurement does not become trustworthy merely because it uses dm-verity.
 
-The node verifies content during blocking `ValidateContainerAdjustment`,
-before container creation, and again when observing the final launch. It
-reports a content digest only for a regular file of at most 256 MiB reachable
-directly from the node's read-only root, with no symlinks or intervening mounts.
-The node queries the root device's active kernel table and requires a single
-read-only dm-verity target with strict corruption handling. An unsupported
-kernel, missing device-mapper access, writable root, foreign mount, directory,
-unsafe verity option, unreadable file, wrong hash, or missing evidence rejects
-the content-pinned rule. A container's `readOnly: true` alone is insufficient:
-it does not prevent someone changing the source after it has been checked.
+```json
+{"destination":"/usr/bin/tool","kind":"host","source":"/opt/tools/tool","readOnly":true,"provenance":"fs-verity","verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+```
 
-The digest travels through the trusted inventory and participates in admission
-history identity and CDS workload matching. Lint permits these content-pinned
-host files on `PATH` or loader search paths: their bytes are explicitly
-operator-authorized and the runtime must prove them immutable. Unpinned host
-files and data mounts retain the existing search-path rejection. This does not
-approve other libraries, environment changes, hooks, or GPU device counts.
-Attestation binds the enforcing node and policy; reviewing the pinned binary
-and its dependencies remains the policy author's responsibility.
+`fs-verity` requires the kernel's SHA-256 **fs-verity digest**, encoded as 64
+lowercase hexadecimal digits. This is a Merkle/descriptor digest, different
+from `sha256sum` of the file. Enable fs-verity on an approved artifact and obtain
+its digest with `fsverity measure`; review that artifact before pinning it in
+policy. Enabling fs-verity on arbitrary operator bytes does not authorize them.
+The kernel digest must match a rule in the active policy.
 
-Upgrade the CDS/CLI consumers first, then the node enforcer, before publishing
-rules with `contentSHA256`. Old parsers reject the new field, and absent content
-evidence cannot satisfy the pin. A baked enforcer requires a node-image rebuild;
-a CLI update alone cannot enforce this feature. Existing rules without the
-field retain their path-and-access-mode behavior. This is the runtime-backed
-solution related to #868, not its proposed temporary lint acceptance record.
+At NRI create time the measured node opens the source without symlinks, obtains
+`FS_IOC_MEASURE_VERITY`, and bind-mounts that **opened inode** into node-owned
+staging. The staging mount is private and read-only; the container receives
+that source rather than reopening an operator-controlled pathname. Renaming or
+replacing the original file cannot substitute new executable bytes. Staging
+requires a native node enforcer with mount privileges and visibility to the
+runtime; unsupported kernels/filesystems or failed staging deny the rule.
+Only explicitly declared fs-verity rules cause staging. Files introduced later
+by other plugins are rejected unless they already have valid node-root evidence.
+
+Blocking adjustment validation checks provenance before creation, and the
+persisted launch is checked again. Evidence includes provenance and, for
+fs-verity, the enforced digest, through inventory, admission history and CDS
+workload matching. `node-root` bytes are bound to the attested node image;
+fs-verity bytes are bound to the attested allowlist and admitted workload.
+Verification must check both the approved node measurement and the active
+policy. An operator can update policy, but that changes the policy binding
+visible to a verifier; it cannot silently substitute bytes under a pinned rule.
+
+Lint permits these validated provenance rules on `PATH` and loader search
+paths. Path-only host rules and data mounts retain search-path rejection.
+Source, destination and access-mode constraints still apply. Use
+`allowlist derive --mounts-file` to supply the rules. This covers the measured
+NVIDIA files in #868 without a blanket NVIDIA exemption or lint bypass.
+
+This exception is scoped to read-only regular files. It does not implement
+whole-volume provenance, arbitrary dm-verity volume trust, directory mounts,
+IMA/IPE policy, dependency approval, or a general prohibition on interpreters
+reading executable scripts from data. Keep exact env/mount policies and review
+arguments and dependencies. Existing permissive policies retain their behavior.
+
+Upgrade CDS/CLI consumers, then the node enforcer, before publishing the new
+fields. Old parsers reject them and missing evidence denies admission. The
+node kernel fragment enables `CONFIG_FS_VERITY`; filesystem support must also
+be enabled when preparing an fs-verity artifact. Baked enforcers require a
+node-image rebuild. The fs-verity staging registry is boot-process-local and
+bounded to 1024 mounts; container removal releases its pins. An enforcer restart
+loses those bindings and fails closed for affected existing containers, which
+must be recreated. Stale staging is discarded at node reboot. No fs-verity
+registry entry is inferred from an operator-supplied file or mount name.
 
 The pod UID embedded in a kubelet source must equal the pod being admitted, and
 containerd sandbox sources must name its exact sandbox. These runtime IDs prove
@@ -697,3 +726,15 @@ README and [`operator.md`](operator.md). Rotating the pinned set rolls CDS, and
 a verifier detects a changed write policy by comparing the served
 `/operator-keys` list against its own bundle. Secret grants (`secrets`) are
 managed with the same `edit`/`apply` flow.
+
+For kernel-level provenance checks on a disposable Linux build host with root,
+`mkfs.ext4`, `veritysetup`, loop devices and fs-verity support:
+
+```sh
+go test -c -o /tmp/nri-verity.test ./internal/cmds/nri-image-policy
+sudo bash node-guest-image/tests/mount-verity-test.sh /tmp/nri-verity.test
+```
+
+The script creates private mounts and disposable images, exercises fs-verity
+source replacement and blocking admission, and checks a real dm-verity table.
+It does not boot an attested node or deploy a GPU workload.

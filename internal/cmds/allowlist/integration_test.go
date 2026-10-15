@@ -290,7 +290,7 @@ func TestContentPinnedExecutableWritesRemainAuthorized(t *testing.T) {
 					key, _ = newOperatorKeypair(t, dir, "untrusted.key")
 				}
 				hash := strings.Repeat("b", 64)
-				content := `,"contentSHA256":"` + hash + `"`
+				content := `,"provenance":"fs-verity","verityDigest":"` + hash + `"`
 				if mode == "path only" {
 					content = ""
 				}
@@ -315,7 +315,7 @@ func TestContentPinnedExecutableWritesRemainAuthorized(t *testing.T) {
 					t.Fatalf("content-pinned %s: %v", command, err)
 				}
 				worker, ok := cds.workload("worker")
-				if !ok || worker.Containers[0].Mounts.Rules[0].ContentSHA256 != hash {
+				if !ok || worker.Containers[0].Mounts.Rules[0].VerityDigest != hash {
 					t.Fatal("lost the content pin on the signed write path")
 				}
 			})

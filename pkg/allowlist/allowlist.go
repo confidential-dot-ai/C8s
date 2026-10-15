@@ -100,9 +100,10 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
-	// ContentSHA256 pins a regular file from the read-only dm-verity node root.
-	// It is supported only for read-only host rules and is lowercase hex.
-	ContentSHA256 string `json:"contentSHA256,omitempty" yaml:"contentSHA256,omitempty"`
+	// Provenance requires node-root (measured dm-verity root) or fs-verity.
+	Provenance string `json:"provenance,omitempty" yaml:"provenance,omitempty"`
+	// VerityDigest pins the kernel fs-verity SHA-256 digest, not a file SHA-256.
+	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
 // MountClass identifies who controls the content behind a bind mount.
@@ -113,6 +114,9 @@ const (
 	MountEmptyDir MountClass = "emptyDir"
 	MountData     MountClass = "data"
 	MountHost     MountClass = "host"
+
+	ProvenanceNodeRoot = "node-root"
+	ProvenanceFSVerity = "fs-verity"
 )
 
 // MountStorage records the storage guarantee established by the node.

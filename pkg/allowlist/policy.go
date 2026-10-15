@@ -137,3 +137,23 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 	}
 	return false
 }
+
+// FSVerityMountRules returns staging candidates, not an admission decision.
+// The enforcer must still match the complete finalized container against policy.
+func (i *Index) FSVerityMountRules(digest string) []MountRule {
+	if i == nil {
+		return nil
+	}
+	var rules []MountRule
+	for _, container := range i.byDigest[digest] {
+		if container.Mounts.Policy != PolicyExact {
+			continue
+		}
+		for _, rule := range container.Mounts.Rules {
+			if rule.Kind == MountHost && rule.ReadOnly && rule.Provenance == ProvenanceFSVerity {
+				rules = append(rules, rule)
+			}
+		}
+	}
+	return rules
+}

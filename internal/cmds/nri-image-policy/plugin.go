@@ -226,6 +226,7 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	)
 
 	var mask api.EventMask
+	mask.Set(api.Event_REMOVE_CONTAINER)
 	mask.Set(api.Event_CREATE_CONTAINER)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
@@ -241,9 +242,10 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 }
 
 // RemoveContainer evicts a stopped container from caller resolution; the
-// sandbox's record keeps it (inventory.remove). Only subscribed when the
-// inventory is enabled (see Configure).
+// sandbox's record keeps it (inventory.remove). It also releases inode pins,
+// so removal is subscribed even when inventory is disabled.
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	releaseVerifiedMounts(ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -901,7 +903,20 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		}
 		return nil, nil, fmt.Errorf("%s", reason)
 	}
-	return p.socketDirAdjustment(pod, ctr), nil, nil
+	var rules []allowlist.MountRule
+	if p.policy != nil && len(ctr.GetMounts()) > 0 {
+		digest := p.resolveDigest(ctx, ctr.GetAnnotations()[annotationImageName])
+		rules = append(rules, p.policy.base.FSVerityMountRules(digest)...)
+		if snap := p.policy.current(); snap != nil {
+			rules = append(rules, snap.index.FSVerityMountRules(digest)...)
+		}
+	}
+	adjust, err := stageVerityMounts(pod, ctr, p.socketDirAdjustment(pod, ctr), rules)
+	if err != nil {
+		releaseVerifiedMounts(ctr.GetId())
+		return nil, nil, err
+	}
+	return adjust, nil, nil
 }
 
 // StartContainer runs before task.Start/execve. Its environment is the final

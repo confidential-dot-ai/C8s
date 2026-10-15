@@ -78,21 +78,21 @@ func TestHostSourceDigestRejectsInvalidPaths(t *testing.T) {
 
 func TestContentPinnedHostMount(t *testing.T) {
 	const hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, ContentSHA256: hash}}}
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: hash}}}
 	if err := normalizeMounts(&policy); err != nil {
 		t.Fatal(err)
 	}
 	source, _ := HostSourceDigest("/usr/bin/nvidia-smi")
-	mount := ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: MountHost, HostSourceDigest: source, ReadOnly: true, ContentSHA256: hash}
+	mount := ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: MountHost, HostSourceDigest: source, ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: hash}
 	for _, tc := range []struct {
 		name    string
 		change  func(*ObservedMount)
 		allowed bool
 	}{
 		{"reviewed bytes", func(*ObservedMount) {}, true},
-		{"old node without content evidence", func(m *ObservedMount) { m.ContentSHA256 = "" }, false},
+		{"old node without content evidence", func(m *ObservedMount) { m.VerityDigest = "" }, false},
 		{"different bytes", func(m *ObservedMount) {
-			m.ContentSHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+			m.VerityDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 		}, false},
 		{"different source", func(m *ObservedMount) { m.HostSourceDigest = "other" }, false},
 		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }, false},
@@ -117,7 +117,8 @@ func TestContentPinnedHostMount(t *testing.T) {
 		t.Fatal("content evidence lost during serialization")
 	}
 	// Existing rules remain path/mode-only even if a new node supplies bytes.
-	policy.Rules[0].ContentSHA256 = ""
+	policy.Rules[0].VerityDigest = ""
+	policy.Rules[0].Provenance = ""
 	if !policy.admits([]ObservedMount{mount}) {
 		t.Fatal("changed legacy host rule behavior")
 	}
@@ -138,7 +139,7 @@ func TestContentPinRequiresReadOnlyHostAndCanonicalSHA256(t *testing.T) {
 		{"data", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", MountData, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			rule := MountRule{Destination: "/mnt/c8s-data/tools", Kind: tc.kind, ContentSHA256: tc.hash, ReadOnly: tc.readOnly}
+			rule := MountRule{Destination: "/mnt/c8s-data/tools", Kind: tc.kind, Provenance: ProvenanceFSVerity, VerityDigest: tc.hash, ReadOnly: tc.readOnly}
 			if tc.kind == MountHost {
 				rule.Source = "/usr/bin/nvidia-smi"
 			}
@@ -147,5 +148,38 @@ func TestContentPinRequiresReadOnlyHostAndCanonicalSHA256(t *testing.T) {
 				t.Fatal("accepted invalid content pin")
 			}
 		})
+	}
+}
+
+func TestNodeRootHostMount(t *testing.T) {
+	rule := MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	if err := normalizeMounts(&policy); err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := HostSourceDigest(rule.Source)
+	mount := ObservedMount{Destination: rule.Destination, Class: MountHost, HostSourceDigest: digest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	if !policy.admits([]ObservedMount{mount}) {
+		t.Fatal("rejected measured-root evidence")
+	}
+	for _, provenance := range []string{"", ProvenanceFSVerity, "dm-verity"} {
+		mount.Provenance = provenance
+		if policy.admits([]ObservedMount{mount}) {
+			t.Fatalf("accepted provenance %q", provenance)
+		}
+	}
+	rule.Provenance = "arbitrary"
+	if err := rule.behavior().validate(); err == nil {
+		t.Fatal("accepted unknown provenance")
+	}
+	rule.Provenance = ProvenanceNodeRoot
+	rule.ReadOnly = false
+	if err := rule.behavior().validate(); err == nil {
+		t.Fatal("accepted writable measured-root mount")
+	}
+	rule.ReadOnly = true
+	rule.VerityDigest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if err := rule.behavior().validate(); err == nil {
+		t.Fatal("accepted redundant file digest")
 	}
 }

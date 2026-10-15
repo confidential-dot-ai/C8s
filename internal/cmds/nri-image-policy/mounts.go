@@ -79,6 +79,9 @@ func isBindMount(m *api.Mount) bool {
 }
 
 func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.ObservedMount {
+	if mount, ok := verifiedHostMount(ctx, m); ok {
+		return mount
+	}
 	for _, handler := range o.handlers {
 		if mount, ok := handler.Observe(ctx, m); ok {
 			return mount
@@ -211,7 +214,9 @@ func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 	}
 	mount.HostSourceDigest = digest
 	if mount.ReadOnly {
-		mount.ContentSHA256 = hostFileContentDigest(m.GetSource())
+		if nodeRootFile(m.GetSource()) {
+			mount.Provenance = allowlist.ProvenanceNodeRoot
+		}
 	}
 	return mount
 }

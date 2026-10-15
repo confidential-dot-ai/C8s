@@ -19,13 +19,14 @@ func TestContentPinRejectsWritableSourceBeforeCreation(t *testing.T) {
 	}
 	sum := sha256.Sum256([]byte("reviewed bytes"))
 	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: allowlist.MountHost, Source: file, ReadOnly: true, ContentSHA256: hex.EncodeToString(sum[:])}}}
+	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: allowlist.MountHost, Source: file, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: hex.EncodeToString(sum[:])}}}
 	if err := al.Normalize(); err != nil {
 		t.Fatal(err)
 	}
 	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
 	p.SetReady()
 	pod := makePod("default", "pod")
+	pod.Uid = "pod-uid"
 	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestB)
 	ctr.Args = []string{"/bin/app"}
 	ctr.Mounts = []*api.Mount{{Type: "bind", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"bind", "ro"}}}

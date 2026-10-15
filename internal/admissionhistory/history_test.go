@@ -148,7 +148,7 @@ func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 func TestHistoryRetainsDistinctHostContent(t *testing.T) {
 	var h History
 	for _, hash := range []string{"", "reviewed", "different"} {
-		h.Record("same-id", "sha256:a", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, ContentSHA256: hash})
+		h.Record("same-id", "sha256:a", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: hash})
 	}
 	_, containers, err := h.Snapshot()
 	if err != nil || len(containers) != 3 {

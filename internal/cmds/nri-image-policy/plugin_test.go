@@ -1623,6 +1623,7 @@ func TestConfigure_SetsCreateContainerMask(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	var want api.EventMask
+	want.Set(api.Event_REMOVE_CONTAINER)
 	want.Set(api.Event_CREATE_CONTAINER)
 	want.Set(api.Event_START_CONTAINER)
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
