@@ -339,6 +339,19 @@ cannot admit `cds.persistence` on any supported node, and the chart refuses
 `cds.persistence.enabled=true` unless the image policy runs in `audit` mode.
 The chart's defaults use no persistent volume.
 
+On the measured image this holds even though the bytes are encrypted: CDS's
+entry pins `/mnt/c8s-data/cds` with an exact `data` rule, and a local-path
+volume observes as `host`, so the rule refuses it by kind before storage is
+considered. CDS's store is therefore a memory `emptyDir`, and every new CDS
+pod starts the allowlist from the seed with its version counter reset. Each
+node's plugin keeps the highest version it applied (see
+[Refresh and anti-rollback](#refresh-and-anti-rollback)), so after a CDS
+restart a plugin that had applied version N ignores the restarted CDS's
+versions up to N: it keeps enforcing its last policy, operator-added entries
+included, and takes no new write until CDS counts past N or the plugin itself
+restarts. Re-applying the operator's entries after the restart both restores
+them in CDS and advances the counter.
+
 The initrd that creates scratch and generates its random in-memory key is part
 of the measured node image. Before RKE2 starts, `scratch-enforce` verifies the
 crypt mapping and backing device and writes a record tied to the current boot ID
@@ -584,7 +597,10 @@ update fail toward the last-known-good policy, not toward the laxest one; a CDS
 outage degrades to "stale", never to "open". The high-water-mark is
 process-local, so this rejects rollback only within a consumer's lifetime: after
 a restart the first version seen is
-trusted and state re-syncs from CDS. A reboot-durable guarantee needs an
+trusted and state re-syncs from CDS. CDS's own counter resets with its store,
+which is in memory on every supported node, so a CDS restart leaves each
+plugin on its last policy until the counter passes it again (see
+[Storage on the measured node image](#storage-on-the-measured-node-image)). A reboot-durable guarantee needs an
 attested freshness / monotonic-counter mechanism the host cannot reset — a
 tracked follow-on.
 
