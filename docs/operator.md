@@ -1162,7 +1162,8 @@ accept the history:
 | `--pin-policy sha256:<hex>` (repeatable) | Only these digests, for every history entry and for the policy the leaf was issued under | `policy_history_not_pinned` |
 | `--trust-operator --trust-operator-keys <pem>` | Every history entry, and the policy the leaf was issued under, whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
 
-Both flags require `--operator-pkey` or `--image-policy-file`, and exclude each other. Both fail with
+Both flags require `--operator-pkey` or an `--image-policy-file` image pinning an
+`approver_key`, and exclude each other. Both fail with
 `policy_history_absent` when nothing replays: a node that does not measure
 proves nothing about the policies it enforced. Both also fail when the leaf's
 matched-workload stamp is unreadable; that stamp is CA-vouched, so without
@@ -1184,7 +1185,7 @@ themselves against the replayed digests, so any router replica may serve
 them.
 
 To review the documents before pinning them, add `--fetch-allowlists DIR`
-(also requires `--operator-pkey` or `--image-policy-file`): `verify` saves each one as
+(also requires `--operator-pkey` or an anchored `--image-policy-file` image): `verify` saves each one as
 `DIR/<hex>.json`, and a failed fetch or write fails the verdict with
 `allowlist_fetch_failed`.
 
