@@ -56,10 +56,10 @@ func pinFSVerityFile(source string, capacity bool, accepted []string) (string, s
 		return "", "", nil
 	}
 	if !slices.Contains(accepted, digest) {
-		return "", "", fmt.Errorf("fs-verity digest is not pinned in workload policy")
+		return "", "", errVerityNotPinned
 	}
 	if !capacity {
-		return "", "", fmt.Errorf("verified mount limit reached")
+		return "", "", errVerityCapacity
 	}
 	if err := os.MkdirAll(verifiedMountRoot, 0700); err != nil {
 		return "", "", err

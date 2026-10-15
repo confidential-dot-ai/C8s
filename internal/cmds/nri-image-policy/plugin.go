@@ -911,10 +911,14 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 			rules = append(rules, snap.index.FSVerityMountRules(digest)...)
 		}
 	}
-	adjust, err := stageVerityMounts(pod, ctr, p.socketDirAdjustment(pod, ctr), rules)
+	adjust, err := stageVerityMounts(p.logger, pod, ctr, p.socketDirAdjustment(pod, ctr), rules)
 	if err != nil {
 		releaseVerifiedMounts(ctr.GetId())
-		return nil, nil, err
+		if p.cfg.Policy.Mode != ModeAudit {
+			return nil, nil, err
+		}
+		p.logger.Warn("would deny container creation (audit mode)", "container", ctr.GetId(), "error", err)
+		return p.socketDirAdjustment(pod, ctr), nil, nil
 	}
 	return adjust, nil, nil
 }
@@ -928,6 +932,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	imageRef := ctr.GetAnnotations()[annotationImageName]
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
+			releaseVerifiedMounts(ctr.GetId())
 			return err
 		}
 		p.recordUncheckedForInventory(pod, ctr, imageRef)
@@ -935,6 +940,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
+		releaseVerifiedMounts(ctr.GetId())
 		return fmt.Errorf("%s", reason)
 	}
 	p.recordForInventory(ctx, pod, ctr, imageRef)

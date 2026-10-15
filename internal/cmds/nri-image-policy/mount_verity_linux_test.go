@@ -3,6 +3,7 @@
 package nriimagepolicy
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -79,15 +80,15 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	ctr.Mounts = []*api.Mount{{Type: "bind", Source: source, Destination: "/usr/bin/tool", Options: []string{"bind", "ro"}}}
 	// Create-time staging returns the immutable inode's node-owned mount path.
 	rule := allowlist.MountRule{Destination: "/usr/bin/tool", Kind: allowlist.MountHost, Source: source, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: digest}
-	if adjust, err := stageVerityMounts(pod, ctr, nil, nil); err != nil || adjust != nil {
+	if adjust, err := stageVerityMounts(slog.New(slog.DiscardHandler), pod, ctr, nil, nil); err != nil || adjust != nil {
 		t.Fatal("staged fs-verity without a policy pin")
 	}
 	wrong := rule
 	wrong.VerityDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if _, err := stageVerityMounts(pod, ctr, nil, []allowlist.MountRule{wrong}); err == nil {
-		t.Fatal("staged an unapproved kernel digest")
+	if adjust, err := stageVerityMounts(slog.New(slog.DiscardHandler), pod, ctr, nil, []allowlist.MountRule{wrong}); err != nil || adjust != nil {
+		t.Fatalf("stageVerityMounts(unpinned digest) = %v, %v, want no staging and no error", adjust, err)
 	}
-	adjust, err := stageVerityMounts(pod, ctr, nil, []allowlist.MountRule{rule})
+	adjust, err := stageVerityMounts(slog.New(slog.DiscardHandler), pod, ctr, nil, []allowlist.MountRule{rule})
 	if err != nil {
 		t.Fatal(err)
 	}
