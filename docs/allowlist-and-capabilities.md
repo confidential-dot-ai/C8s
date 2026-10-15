@@ -514,7 +514,11 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins.
+operator public keys it pins. Each token authorizes one allowlist write: CDS
+remembers every spent token and answers a replay with 409. Without
+`cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
+token issued before its start plus `--jwt-clock-skew`; after a restart, wait
+that long and mint a fresh token.
 
 ### Refresh and anti-rollback
 
@@ -547,6 +551,38 @@ The chart's component entries pin the executable and explicitly allow mounts,
 leaving the arguments and environment unconstrained so the platform can start
 before CDS is reachable; the node image's generated RKE2 system entries leave
 command and args open as well.
+
+### Allowlist history
+
+CDS keeps an append-only history of every document it served, in the
+allowlist database. Each write that changes the document appends an entry,
+and so does CDS's start when the document differs from the last entry; a
+fresh database starts with the document CDS first serves. A write that leaves
+the document unchanged bumps the ETag but appends nothing. A policy digest is
+`sha256:<hex>` of the exact bytes `GET /allowlist` serves. The routes are
+unauthenticated reads like `GET /allowlist`, and the router and
+`c8s allowlist-proxy` pass them through:
+
+| Route | Returns |
+|---|---|
+| `GET /allowlist/history` | `{"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
+| `GET /allowlist/objects/sha256/<hex>` | The exact bytes of a document in the history |
+| `GET /allowlist/objects/sha256/<hex>/signature` | Its operator signature, as `text/plain`; 404 when unsigned |
+
+CDS refuses to start when a stored document no longer hashes to its digest.
+Without `cds.persistence.enabled`, the history restarts with each CDS start.
+
+#### Operator-signed allowlists
+
+A document's operator signature is the write token of a `PUT /allowlist`
+whose body is exactly its canonical bytes; the token's `pbh` claim hashes that
+body. `c8s allowlist upload` sends canonical bytes, so its writes are signed.
+A per-workload write (`add`, `apply`, `edit`, `delete`) signs nothing:
+upload the whole document to sign it. A signature belongs to a document, not
+to an entry, so `signed` is true on every entry with that digest. `operatorauth.VerifyStored` checks a
+stored token: signature, method, path and body, but not its expiry.
+`pkg/operatorauth/testdata/operator_signature_vector.json` is a test vector
+for other verifiers.
 
 ## Bootstrap
 

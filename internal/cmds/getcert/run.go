@@ -3,7 +3,6 @@
 package getcert
 
 import (
-	"bytes"
 	"context"
 	"crypto"
 	"crypto/ecdsa"
@@ -1074,15 +1073,18 @@ func servedCAStale(ctx context.Context, client attestclient.Client, caOutPath st
 // are not seen here; the CA watch covers a CDS restart. The fetch rides the
 // armTLS-verified client, like servedCAStale's.
 func stampedPolicyStale(ctx context.Context, client allowlistclient.Client, version string, digest []byte) (string, bool, error) {
-	body, served, notModified, err := client.FetchCanonical(ctx, `W/"`+version+`"`)
+	served, notModified, err := client.FetchServed(ctx, `W/"`+version+`"`)
 	if err != nil {
 		return "", false, fmt.Errorf("fetch allowlist from cds: %w", err)
 	}
 	if notModified {
 		return version, false, nil
 	}
-	sum := sha256.Sum256(body)
-	return served, !bytes.Equal(sum[:], digest), nil
+	servedVersion := allowlistclient.VersionFromETag(served.ETag)
+	if servedVersion == "" {
+		return "", false, fmt.Errorf("fetch allowlist from cds: ETag %q is not a weak ETag W/\"N\"", served.ETag)
+	}
+	return servedVersion, served.Digest != "sha256:"+hex.EncodeToString(digest), nil
 }
 
 // stampedPolicyVersion is the allowlist version leaf's stamp names, or "" when

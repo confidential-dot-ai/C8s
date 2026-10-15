@@ -55,10 +55,13 @@ func newRouter(deps dependencies) http.Handler {
 	r.Method(http.MethodPost, "/authenticate", deps.challengeProtected(attestation.HandleAuthenticate(deps.AttestHandler.Challenges)))
 	r.Method(http.MethodPost, "/attest", deps.protected(http.HandlerFunc(deps.AttestHandler.HandleAttest)))
 
-	// GET is unauthenticated (armTLS integrity only); every mutation goes
+	// GETs are unauthenticated (armTLS integrity only); every mutation goes
 	// through allowlistWrite (operator-JWT auth in the handler + rate limit +
 	// 1 MiB body cap).
 	r.Get("/allowlist", deps.AllowlistHandler.HandleList)
+	r.Get("/allowlist/history", deps.AllowlistHandler.HandleHistory)
+	r.Get("/allowlist/objects/sha256/{hex}", deps.AllowlistHandler.HandleObject)
+	r.Get("/allowlist/objects/sha256/{hex}/signature", deps.AllowlistHandler.HandleSignature)
 	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
 	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
 	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
