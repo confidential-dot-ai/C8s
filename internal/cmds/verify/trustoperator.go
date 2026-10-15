@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -21,8 +22,9 @@ import (
 var policyDigestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // checkHistoryFlags validates --pin-policy, --trust-operator and
-// --fetch-allowlists, and returns the parsed --trust-operator-keys.
-func checkHistoryFlags(cfg config) ([]*ecdsa.PublicKey, error) {
+// --fetch-allowlists against images, the parsed --image-policy-file pins, and
+// returns the parsed --trust-operator-keys.
+func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey, error) {
 	for _, d := range cfg.pinPolicies {
 		if !policyDigestRE.MatchString(d) {
 			return nil, fmt.Errorf("--pin-policy %q is not sha256:<64 lowercase hex>", d)
@@ -45,8 +47,8 @@ func checkHistoryFlags(cfg config) ([]*ecdsa.PublicKey, error) {
 	default:
 		return nil, nil
 	}
-	if cfg.operatorPubkey == "" && cfg.measurementsConfig == "" {
-		return nil, fmt.Errorf("%s requires --operator-pkey or --image-policy-file: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
+	if cfg.operatorPubkey == "" && !slices.ContainsFunc(images, anchored) {
+		return nil, fmt.Errorf("%s requires --operator-pkey or an --image-policy-file image pinning an approver_key: the node's policy history counts only as far as it replays against RTMR[3] after the operator-key seed", flag)
 	}
 	if !cfg.trustOperator {
 		return nil, nil

@@ -129,6 +129,19 @@ func TestHistoryFlags(t *testing.T) {
 	}
 }
 
+// An --image-policy-file with no approver_key replays nothing, so the history
+// flags are a usage error rather than a policy_history_absent on every run.
+func TestHistoryFlagsNeedAnchoredImage(t *testing.T) {
+	policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
+		Family: teetypes.FamilyTDX,
+		Images: []remote.ImagePin{{Name: "node", Digest: make([]byte, 48)}},
+	})
+	_, err := buildPolicy(config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}})
+	if err == nil || !strings.Contains(err.Error(), "pinning an approver_key") {
+		t.Errorf("buildPolicy(unanchored image policy, --pin-policy) = %v, want an approver_key usage error", err)
+	}
+}
+
 func TestPinPolicy(t *testing.T) {
 	stampP, _ := hex.DecodeString(strings.TrimPrefix(testPolicyP, "sha256:"))
 	stampR, _ := hex.DecodeString(strings.TrimPrefix(testPolicyR, "sha256:"))
