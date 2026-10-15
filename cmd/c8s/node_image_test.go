@@ -589,6 +589,7 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 	mesh := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]}}`
 	entrypoint := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
 	const router = "        - name: router\n          image: registry.example.com/operator@" + testDigest
+	urlArgs := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"exact","argv":["--url=http://$(HOST_IP):8080"]}}`
 	tmpRule := func(rule string) string {
 		return `,{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"},"mounts":{"policy":"exact","rules":[` + rule + `]}}`
 	}
@@ -607,6 +608,9 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		{"host mount pinned writable", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
 		{"subpath pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
 		{"subpath pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
+		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
+		{"escape not expanded", mesh + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
+		{"defined variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]\n          env: [{name: HOST_IP, value: 10.0.0.1}]", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := strings.Replace(nodeImageCollectFixture(), core, tc.seed, 1)

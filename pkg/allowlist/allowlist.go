@@ -246,16 +246,6 @@ func (c Container) IsUnconstrained() bool {
 	return true
 }
 
-// IsComponentShape reports whether the container has the shape of a
-// component entry's container: its command is exact, pinning the image's
-// executable, or any. Args, mounts and environment may be open or pinned: the
-// chart pins all of them for a component's own pods, while a sidecar the
-// webhook injects leaves its args to the pod. A deny command admits no
-// process, so it starts no component.
-func (c Container) IsComponentShape() bool {
-	return c.Command.Policy == PolicyAny || c.Command.Policy == PolicyExact
-}
-
 // ArgvPinned reports whether every container's command and args policy is
 // exact or deny, so nothing about the entry's argv is left to the host. A
 // secrets grant requires it (docs/secrets.md).

@@ -137,30 +137,6 @@ func TestAdmitsAnyArgs(t *testing.T) {
 	}
 }
 
-func TestIsComponentShape(t *testing.T) {
-	any := ArgvPolicy{Policy: PolicyAny}
-	command := ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}
-	exactArgs := ArgvPolicy{Policy: PolicyExact, Argv: []string{"operator"}}
-	exactMounts := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/tmp", Kind: MountEmptyDir}}}
-	for name, tc := range map[string]struct {
-		c    Container
-		want bool
-	}{
-		"any argv, any mounts":             {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, true},
-		"pinned command, open args":        {Container{Command: command, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyAny}}, true},
-		"pinned command, args and mounts":  {Container{Command: command, Args: exactArgs, Mounts: exactMounts}, true},
-		"sidecar: open args, exact mounts": {Container{Command: command, Args: any, Mounts: exactMounts}, true},
-		"pinned env":                       {Container{Command: command, Args: exactArgs, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, true},
-		"denied command":                   {Container{Command: ArgvPolicy{Policy: PolicyDeny}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := tc.c.IsComponentShape(); got != tc.want {
-				t.Fatalf("IsComponentShape() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestParseJSON_AbsentPolicyDefaultsToDeny(t *testing.T) {
 	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"`+digestA+`"}]}}}`)
 	c := al.Workloads["w"].Containers[0]

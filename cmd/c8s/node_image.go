@@ -298,22 +298,20 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		return nil, fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
 	// A baked component must start before CDS serves policy, with the
-	// arguments and mounts its manifest gives it: the seed must carry a
-	// component entry for its image with a container admitting each.
-	components := make(map[string][]pkgallowlist.Container)
+	// arguments and mounts its manifest gives it: the seed must carry an
+	// entry for its image with a container admitting each.
+	seeded := make(map[string][]pkgallowlist.Container)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
-			if c.IsComponentShape() {
-				components[c.Digest.String()] = append(components[c.Digest.String()], c)
-			}
+			seeded[c.Digest.String()] = append(seeded[c.Digest.String()], c)
 		}
 	}
 	for image, baked := range images {
-		if len(components[baked.digest]) == 0 {
-			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed component entry", image)
+		if len(seeded[baked.digest]) == 0 {
+			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry", image)
 		}
 		for _, k := range baked.containers {
-			if !slices.ContainsFunc(components[baked.digest], func(c pkgallowlist.Container) bool { return admitsBaked(c, baked.digest, k) }) {
+			if !slices.ContainsFunc(seeded[baked.digest], func(c pkgallowlist.Container) bool { return admitsBaked(c, baked.digest, k) }) {
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit container %s with argv %q and mounts %+v", image, k.name, k.argv(), k.mounts)
 			}
 		}
@@ -453,7 +451,15 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
-		k := bakedContainer{name: c.Name, command: c.Command, args: c.Args}
+		command, err := kubeletArgv(c.Command, c.Env)
+		if err != nil {
+			return fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
+		}
+		args, err := kubeletArgv(c.Args, c.Env)
+		if err != nil {
+			return fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
+		}
+		k := bakedContainer{name: c.Name, command: command, args: args}
 		for _, m := range c.VolumeMounts {
 			rule, err := mountRule(m, volumes)
 			if err != nil {
@@ -464,6 +470,24 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		baked.containers = append(baked.containers, k)
 	}
 	return nil
+}
+
+// kubeletArgv is the argv the kubelet hands the runtime for a manifest's
+// command or args: $$ becomes $. A $(NAME) for a variable the container defines
+// would become its per-node value, which no pinned argv can match, so it is an
+// error, as it is in the chart's c8s.kubeletExpand.
+func kubeletArgv(argv []string, env []corev1.EnvVar) ([]string, error) {
+	out := make([]string, 0, len(argv))
+	for _, token := range argv {
+		escaped := strings.ReplaceAll(token, "$$", "\x00")
+		for _, e := range env {
+			if strings.Contains(escaped, "$("+e.Name+")") {
+				return nil, fmt.Errorf("%q references $(%s); pass the value another way", token, e.Name)
+			}
+		}
+		out = append(out, strings.ReplaceAll(escaped, "\x00", "$"))
+	}
+	return out, nil
 }
 
 // collectConfigMapArtifact lifts the two ConfigMaps the build consumes as
