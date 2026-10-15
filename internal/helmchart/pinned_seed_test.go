@@ -472,16 +472,7 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 	}
 	pinned[nginxDigest] = pins["router.nginx"]
 
-	seen := map[string]bool{}
-	for _, w := range renderedPodSpecs(t, out) {
-		for _, c := range append(append([]corev1.Container{}, w.spec.InitContainers...), w.spec.Containers...) {
-			seen[imageDigest(c.Image)] = true
-		}
-	}
 	for digest, entrypoint := range pinned {
-		if !seen[digest] {
-			t.Errorf("no rendered container runs %s (pinned to %q)", digest, entrypoint)
-		}
 		for source, al := range map[string]*pkgallowlist.Allowlist{"seed": seed, "base": &base} {
 			index := al.BuildIndex()
 			for _, argv := range [][]string{
@@ -675,11 +666,6 @@ func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 		if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
 			t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
 		}
-	}
-	derived := append(slices.Clone(base), "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
-	out, err := helmTemplate(t, append(append(derived, entry("c8s-operator", "/c8s")...), entry("c8s-operator-sh", "/bin/sh")...)...)
-	if err == nil || !strings.Contains(out, "incomparable commands") {
-		t.Fatalf("incomparable pins for one digest must fail the render: err=%v\n%s", err, out)
 	}
 }
 

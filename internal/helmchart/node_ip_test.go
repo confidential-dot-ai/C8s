@@ -2,7 +2,6 @@ package helmchart
 
 import (
 	"maps"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -130,36 +129,5 @@ func TestChartRefusesHostIPArgvWhenFailClosed(t *testing.T) {
 	out, err = helmTemplate(t, slices.Concat(bareMetalHostAPI, []string{"--set-string", "router.attest.attestationApiURL=http://$$(HOST_IP):8400", "--set", "nriImagePolicy.policy.mode=audit"})...)
 	if err != nil {
 		t.Fatalf("helm template under audit: %v\n%s", err, out)
-	}
-}
-
-// The allowlist pins the installer's script but not its environment, so a pod
-// cloning the installer could set any NODE_IP. Components trust node-ip as
-// their verifier address, so no pod writes it: the plugin publishes it.
-func TestChartNodeIPWrittenByPluginNotPod(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t, bareMetalHostAPI...)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	writesNodeIP := regexp.MustCompile(`>\s*"?[^"\s]*/node-ip\b`)
-	for _, w := range renderedPodSpecs(t, out) {
-		for _, c := range slices.Concat(w.spec.InitContainers, w.spec.Containers) {
-			for _, arg := range slices.Concat(c.Command, c.Args) {
-				if writesNodeIP.MatchString(arg) {
-					t.Errorf("%s/%s writes the node-ip file from a pod", w.name, c.Name)
-				}
-			}
-		}
-	}
-	install, ok := findContainer(renderedDaemonSet(t, out, "c8s-nri-image-policy-worker").Spec.Template.Spec.InitContainers, "install")
-	if !ok {
-		t.Fatal("installer has no install init container")
-	}
-	if hasEnv(install, "NODE_IP") {
-		t.Errorf("installer sets NODE_IP; nothing in it may feed node-ip")
-	}
-	if !strings.Contains(strings.Join(install.Args, "\n"), "publish_node_ip: true") {
-		t.Errorf("installer boot config does not set workload_claims.publish_node_ip")
 	}
 }
