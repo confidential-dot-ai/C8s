@@ -251,7 +251,36 @@ pod_cert_file() {
 }
 requester_request() { return "$UNSUPPORTED"; }
 mesh_member() { return "$UNSUPPORTED"; }
-mesh_metrics() { return "$UNSUPPORTED"; }
+
+# No exec into a kept scraper: each scrape is a pod of its own whose log is
+# the scrape, admitted by the scraper's entry, which teardown deletes.
+mesh_metrics() {
+    local addr port image digest entry name phase body _
+    addr="$(cached "node-ipv4-$1" node_address "$1" ipv4)" || return
+    port="$(cached mesh-health-port mesh_arg health-port)"
+    port="${port:-15021}"
+    image="$(image_ref requester)" || return
+    entry="$(scratch)/cache-mesh-scrape-entry"
+    if [ ! -e "$entry" ]; then
+        kubectl create namespace "$MESH_SCRAPER_NS" >/dev/null 2>&1 || true
+        digest="$(image_digest "$image")" || return
+        any_workload "$digest" "$image" > "$entry.json"
+        allowlist_put "$MESH_SCRAPER" "$entry.json" || return
+        touch "$entry"
+    fi
+    name="mesh-scrape-$(date +%s%N | tail -c 10)"
+    render_pod -- "$name" "$MESH_SCRAPER_NS" "$(node_name one)" "$image" \
+        curl -sf --max-time 10 "http://$addr:$port/metrics" | kubectl apply -f - >/dev/null || return
+    for _ in $(seq 90); do
+        phase="$(kubectl -n "$MESH_SCRAPER_NS" get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null)"
+        case "$phase" in Succeeded | Failed) break ;; esac
+        sleep 1
+    done
+    body="$(kubectl -n "$MESH_SCRAPER_NS" logs "$name" 2>/dev/null)"
+    kubectl -n "$MESH_SCRAPER_NS" delete pod "$name" --wait=false >/dev/null 2>&1
+    [ "$phase" = Succeeded ] || { echo "backend: no scrape of $addr:$port (pod $name: ${phase:-no phase})" >&2; return 1; }
+    printf '%s\n' "$body"
+}
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 
