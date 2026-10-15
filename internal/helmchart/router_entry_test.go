@@ -135,6 +135,7 @@ func assertRouterMatches(t *testing.T, out string) {
 }
 
 func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -247,6 +248,7 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 }
 
 func TestChartRouterEntryPresence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -281,6 +283,7 @@ func TestChartRouterEntryPresence(t *testing.T) {
 }
 
 func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
+	t.Parallel()
 	noHostPort := []string{"--set", "router.hostPort.enabled=false"}
 	for _, tc := range []struct {
 		name    string
@@ -344,6 +347,7 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 
 // A changed digest or argv must seed a new entry: CDS skips a name it holds.
 func TestChartRouterEntryNameTracksContent(t *testing.T) {
+	t.Parallel()
 	name := func(args ...string) string {
 		t.Helper()
 		out, err := helmTemplate(t, slices.Concat(bakedArgs, args)...)
@@ -383,6 +387,7 @@ func expectedWorkloadArg(c corev1.Container) string {
 
 // Freezing the rendered default gate must keep the entry's name.
 func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, gateArgs...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -430,6 +435,7 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 // A gate naming another entry is the operator's own router entry: the chart
 // seeds none and passes the name through unchecked.
 func TestChartRouterOperatorGate(t *testing.T) {
+	t.Parallel()
 	nginxDigest := "sha256:" + strings.Repeat("5", 64)
 	var containers []string
 	for _, digest := range []string{nginxDigest, c8sDigest} {
@@ -483,6 +489,7 @@ func certExpectedWorkload(t *testing.T, out string) string {
 // The schema rejects the type before rendering; router.expectedWorkload
 // repeats the check for renders that skip schema validation.
 func TestChartRouterExpectedWorkloadType(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
 	// Helm's schema error wording changes across releases; the template's
 	// own message would mean the schema let the value through.

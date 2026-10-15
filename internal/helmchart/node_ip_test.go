@@ -58,6 +58,7 @@ func hasEnv(c corev1.Container, name string) bool {
 // from HOST_IP. The operator keeps $(HOST_IP): it hands the URL to injected
 // sidecars, whose args and env the webhook writes.
 func TestChartBareMetalReadsNodeIPFile(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		bareMetalHostAPI,
 		// With the installer off, the node image's baked plugin enforces.
@@ -102,6 +103,7 @@ func assertNodeIPFile(t *testing.T, args []string) {
 // Under audit nothing is refused, so the chart keeps $(HOST_IP) from the
 // downward API.
 func TestChartBareMetalAuditKeepsHostIP(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, slices.Concat(bareMetalHostAPI, []string{"--set", "nriImagePolicy.policy.mode=audit"})...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -117,6 +119,7 @@ func TestChartBareMetalAuditKeepsHostIP(t *testing.T) {
 }
 
 func TestChartRefusesHostIPArgvWhenFailClosed(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, slices.Concat(bareMetalHostAPI, []string{"--set-string", "router.attest.attestationApiURL=http://$$(HOST_IP):8400"})...)
 	if err == nil {
 		t.Fatalf("helm template succeeded with $$(HOST_IP) in a fail-closed component argv\n%s", out)
@@ -134,6 +137,7 @@ func TestChartRefusesHostIPArgvWhenFailClosed(t *testing.T) {
 // cloning the installer could set any NODE_IP. Components trust node-ip as
 // their verifier address, so no pod writes it: the plugin publishes it.
 func TestChartNodeIPWrittenByPluginNotPod(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, bareMetalHostAPI...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)

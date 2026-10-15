@@ -16,6 +16,7 @@ import (
 // enforcing from its in-memory snapshot, a pin the sweep's argv does not
 // satisfy deadlocks the uninstall fail-closed.
 func TestChartPinnedSeedAdmitsHostSweepArgv(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		nil,
 		{"--set", "nriImagePolicy.baked=true"},
@@ -39,6 +40,7 @@ func TestChartPinnedSeedAdmitsHostSweepArgv(t *testing.T) {
 // shape not running /bin/sh -c. Each rule must match exactly one pinned
 // container — a second match makes the replay ambiguous and fails it closed.
 func TestChartPinnedSeedHostSweepShapesUnique(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(HostSweepScript(), "c8s host sweep") {
 		t.Fatal("HostSweepScript lost its \"c8s host sweep\" banner — resolveSweepArgvs selects the script shape by it")
 	}

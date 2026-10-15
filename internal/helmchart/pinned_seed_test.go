@@ -86,6 +86,7 @@ func denyArgvs(t *testing.T, seed *pkgallowlist.Allowlist, digest string, argv [
 // uninstall init and pause — must be admitted by the seed under its exact
 // rendered argv, and nothing else from that image may be admitted.
 func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -110,6 +111,7 @@ func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 // The node-as-CVM (baked) installer runs the pins script instead of the
 // install script; the seed must admit exactly that argv from the nri image.
 func TestChartPinnedSeedAdmitsBakedPinsArgv(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, "--set", "nriImagePolicy.baked=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -126,6 +128,7 @@ func TestChartPinnedSeedAdmitsBakedPinsArgv(t *testing.T) {
 // busybox prep image under the prep script; the seed must admit that exact
 // argv and no other from that image.
 func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, "--set", "nriImagePolicy.distro=rke2")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -144,6 +147,7 @@ func TestChartPinnedSeedAdmitsRKE2ContainerdPrepArgv(t *testing.T) {
 // The local-path helper entry pins the node image's baked helper pod to its
 // two provisioner command prefixes; the per-PVC flags stay open.
 func TestChartPinnedSeedAdmitsLocalPathHelperArgv(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -167,6 +171,7 @@ func TestChartPinnedSeedAdmitsLocalPathHelperArgv(t *testing.T) {
 // would bypass the pin. Neither the installer image nor any busybox may
 // appear, in either the k8s or the rke2 shape.
 func TestChartPinnedDigestsAbsentFromBootConfig(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		nil,
 		{"--set", "nriImagePolicy.distro=rke2"},
@@ -237,6 +242,7 @@ func localPathHelperDigest(t *testing.T) string {
 // one for the installer or busybox images — the argvPinned skip is the only
 // thing between the pin and a silent any-argv shadow.
 func TestChartPinnedSeedHasNoAnyArgvShadow(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t,
 		"--set", "nriImagePolicy.distro=rke2",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
@@ -285,6 +291,7 @@ func importedFloorValues() string {
 // evaluation leaves the installer's launch matching no entry, and the
 // enforcer kills the container that is installing it.
 func TestChartInstallerArgvPinIsRenderDeterministic(t *testing.T) {
+	t.Parallel()
 	values := filepath.Join(t.TempDir(), "floor.yaml")
 	if err := os.WriteFile(values, []byte(importedFloorValues()), 0o600); err != nil {
 		t.Fatalf("write the floor values: %v", err)
@@ -390,6 +397,7 @@ func dockerfileEntrypoint(t *testing.T, path string) []string {
 // nginx, the published image's config (`crane config <ref>`), kept beside the
 // digest the chart pins.
 func TestChartComponentPinsMatchImageEntrypoints(t *testing.T) {
+	t.Parallel()
 	pins := componentPinValues(t)
 	for valuePath, want := range map[string][]string{
 		"image":                dockerfileEntrypoint(t, "../../cmd/c8s/Dockerfile"),
@@ -441,6 +449,7 @@ func imageDigest(image string) string {
 // shell, and not the pinned path with a volume bound over it.
 // TestChartComponentShapesAreExact covers what the rendered containers run.
 func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
+	t.Parallel()
 	out := componentRender(t)
 	seed := renderedSeed(t, out)
 	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
@@ -499,6 +508,7 @@ func TestChartComponentEntriesPinEntrypoints(t *testing.T) {
 // With derivation off, the seed and the base still carry the CDS and nginx
 // self-entries, pinned the same way.
 func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -529,6 +539,7 @@ func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
 // (TestChartOperatorEntryPinMustMatchEntrypoint); one that pins args and
 // mounts does (TestChartPinnedOperatorEntryCoversComponent).
 func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
+	t.Parallel()
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
 	out, err := helmTemplate(t,
@@ -561,6 +572,7 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 // injected sidecar shape among them, or pinning env, it does not cover the
 // component.
 func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
+	t.Parallel()
 	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000011"
 	derived, err := helmTemplate(t, "--set-string", "image.digest="+opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
 	if err != nil {
@@ -642,6 +654,7 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 // lint refuses that shape. Two open-args entries pinning one digest
 // differently cannot both reach the base, so the render fails.
 func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
+	t.Parallel()
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	entry := func(name, argv0 string) []string {
 		p := "nriImagePolicy.bootstrapAllowlist.workloads." + name + ".containers[0]."
@@ -675,6 +688,7 @@ func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 // beside a `/c8s cds-attest` application entry keeps rendering, as it did
 // before pinned entries reached the base.
 func TestChartOverlappingOperatorPinsKeepTheWider(t *testing.T) {
+	t.Parallel()
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	attest := "nriImagePolicy.bootstrapAllowlist.workloads.attest.containers[0]."
 	args := append([]string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"},
@@ -701,6 +715,7 @@ func TestChartOverlappingOperatorPinsKeepTheWider(t *testing.T) {
 // pinned to another invocation does not displace the component's own pin from
 // the base: both are admitted there, so neither is refused on a cold node.
 func TestChartOperatorPinBesideDerivedComponentPin(t *testing.T) {
+	t.Parallel()
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	attest := "nriImagePolicy.bootstrapAllowlist.workloads.attest.containers[0]."
 	out, err := helmTemplate(t,

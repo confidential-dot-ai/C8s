@@ -21,6 +21,7 @@ import (
 // recreated; it reseeds when the mounted seed changes (cds.followSeed), and
 // after that the old and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
+	t.Parallel()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
@@ -128,6 +129,7 @@ func cdsShapeAnnotation(t *testing.T, out string) string {
 // A changed CDS command line fails the upgrade until its entry is published:
 // otherwise the old CDS stops and the enforcers refuse the new one.
 func TestCDSShapeGuard(t *testing.T) {
+	t.Parallel()
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm CLI not found")
 	}
@@ -177,6 +179,7 @@ func TestCDSShapeGuard(t *testing.T) {
 // Matching ignores the image label, so a mirror of the same digest keeps the
 // entry's name: seeding it again adds nothing and the match stays unambiguous.
 func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
+	t.Parallel()
 	const cdsDigest = "sha256:0000000000000000000000000000000000000000000000000000000000000001"
 	names := func(out string) []string {
 		var got []string

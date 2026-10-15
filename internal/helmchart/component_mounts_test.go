@@ -158,6 +158,7 @@ func injectedShape(c pkgallowlist.Container) bool {
 // leaves args or mounts open except the injected sidecar shapes, whose args
 // are per pod.
 func TestChartComponentShapesAreExact(t *testing.T) {
+	t.Parallel()
 	digests := []string{}
 	for valuePath, digest := range componentTestDigests {
 		digests = append(digests, "--set", valuePath+".digest="+digest)
@@ -270,6 +271,7 @@ func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, diges
 // The plugin and CDS refuse a seed whose mount rules they cannot pin; the
 // chart fails the render first, naming the path.
 func TestChartRefusesUnpinnableComponentMounts(t *testing.T) {
+	t.Parallel()
 	derived := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set", "image.digest=" + componentTestDigests["image"]}
 	for _, tc := range []struct {
 		name, want string
@@ -297,6 +299,7 @@ func TestChartRefusesUnpinnableComponentMounts(t *testing.T) {
 }
 
 func TestKubeletExpand(t *testing.T) {
+	t.Parallel()
 	env := map[string]string{"HOST_IP": "192.0.2.1"}
 	for _, tc := range []struct{ in, want string }{
 		{"http://$(HOST_IP):8400", "http://192.0.2.1:8400"},
@@ -315,6 +318,7 @@ func TestKubeletExpand(t *testing.T) {
 // sizeLimit a full volume OOM-kills the pod instead of failing writes.
 // An empty or null limit would render sizeLimit as null, an uncapped store.
 func TestChartRejectsMissingCDSMemorySizeLimit(t *testing.T) {
+	t.Parallel()
 	for _, set := range []string{"cds.persistence.memorySizeLimit=", "cds.persistence.memorySizeLimit=null", "cds.persistence.memorySizeLimit=0"} {
 		if out, err := helmTemplate(t, "--set", set); err == nil {
 			t.Errorf("helm template --set %s succeeded, want an error\n%s", set, out)
@@ -323,6 +327,7 @@ func TestChartRejectsMissingCDSMemorySizeLimit(t *testing.T) {
 }
 
 func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -342,6 +347,7 @@ func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
 // The schema accepts any positive Kubernetes quantity as the store's memory
 // limit and renders it as the volume's sizeLimit.
 func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		flag, value, want string
 	}{

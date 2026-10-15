@@ -15,6 +15,7 @@ import (
 const operatorScopePolicyPath = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/operator-scope-policy.yaml"
 
 func TestOperatorScopePolicyShape(t *testing.T) {
+	t.Parallel()
 	vap, binding := loadImagePolicy(t, operatorScopePolicyPath, "confos-operator-scope")
 	checkDenyPolicyShape(t, vap, binding)
 	// The principal test is a match condition, so other callers leave before
@@ -106,6 +107,7 @@ func evalOperatorScope(t *testing.T, vap admissionregv1.ValidatingAdmissionPolic
 }
 
 func TestOperatorScopePolicyExpression(t *testing.T) {
+	t.Parallel()
 	vap, _ := loadImagePolicy(t, operatorScopePolicyPath, "confos-operator-scope")
 	op := []string{"system:authenticated", "c8s:node-operators"}
 	logs := []string{"system:authenticated", "c8s:log-readers"}

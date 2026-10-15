@@ -138,6 +138,7 @@ func container(name, image string, runAsUser *int64) map[string]any {
 }
 
 func TestDenyARMTLSMeshUidPodPolicyBehaviors(t *testing.T) {
+	t.Parallel()
 	policies := renderedUIDPolicies(t)
 	validations := policies["deny-armtls-mesh-uid"]
 
@@ -180,6 +181,7 @@ func TestDenyARMTLSMeshUidPodPolicyBehaviors(t *testing.T) {
 }
 
 func TestDenyARMTLSMeshUidEphemeralPolicyBehaviors(t *testing.T) {
+	t.Parallel()
 	policies := renderedUIDPolicies(t)
 	validations := policies["deny-armtls-mesh-uid-ephemeral"]
 
