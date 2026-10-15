@@ -4,10 +4,14 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
+	"io/fs"
+	"time"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 )
 
 // The armTLS extension, its wire format and its verification live in
@@ -35,6 +39,10 @@ const (
 	// SNPMeasurementSize is the size of an SEV-SNP launch measurement
 	// (SHA-384 digest = 48 bytes).
 	SNPMeasurementSize = runtimemeasure.Size
+
+	// MaxRuntimeExtensions caps Attestation.RuntimeExtensions: a longer list
+	// cannot be encoded, and verifiers refuse it.
+	MaxRuntimeExtensions = agarmtls.MaxRuntimeExtensions
 )
 
 // OID arc: 1.3.6.1.4.1.66378 is the C8s Private Enterprise Number. The library
@@ -57,6 +65,59 @@ var (
 func MarshalExtension(att *Attestation) (pkix.Extension, error) {
 	return att.MarshalExtension(OIDARMTLSAttestation)
 }
+
+// WithRuntimeExtensions returns att carrying this node's [RuntimeExtensions]
+// when it is TDX evidence without a list of its own, so peers can replay
+// RTMR[3]; otherwise att itself. Producers call it after obtaining the
+// evidence.
+func WithRuntimeExtensions(att *Attestation) (*Attestation, error) {
+	if att.Family != TEETypeTDX || att.RuntimeExtensions != nil {
+		return att, nil
+	}
+	list, err := RuntimeExtensions()
+	if err != nil {
+		return nil, err
+	}
+	withList := *att
+	withList.RuntimeExtensions = list
+	return &withList, nil
+}
+
+// runtimeJournals are where this node's measured-policy journal may be; the
+// first that exists wins. Var so tests can move it.
+var runtimeJournals = []string{policymeasure.NodeJournal, policymeasure.SidecarJournal}
+
+// RuntimeExtensions returns the RTMR[3] runtime extensions this node
+// journaled, nil when it journals none. Call it after obtaining the evidence:
+// the journal records before it extends, so it may run ahead of the quote,
+// which verifiers allow for, but must not lag it.
+func RuntimeExtensions() ([]string, error) {
+	for _, path := range runtimeJournals {
+		if list, err := readJournal(path); err != nil || list != nil {
+			return list, err
+		}
+	}
+	return nil, nil
+}
+
+// readJournal retries a permission error: after a failed extend the plugin
+// rewrites the journal 0600 and restores 0644 right after.
+func readJournal(path string) ([]string, error) {
+	var err error
+	for range journalReadAttempts {
+		var list []string
+		if list, err = runtimemeasure.ReadJournal(path); !errors.Is(err, fs.ErrPermission) {
+			return list, err
+		}
+		time.Sleep(journalRetryDelay)
+	}
+	return nil, err
+}
+
+const (
+	journalReadAttempts = 5
+	journalRetryDelay   = 20 * time.Millisecond
+)
 
 // ExtractAttestation parses the extension under OIDARMTLSAttestation out of a
 // certificate, failing with ErrNoAttestation when there is none.

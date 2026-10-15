@@ -13,8 +13,10 @@ import (
 
 // attestCredentialRelease requests a fresh report over the verified armTLS
 // channel. Only an operator holding the measured launch key can ask the
-// credential service to call the guest's loopback attester.
-func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL string, keyPEM []byte, exp platformVerifier) error {
+// credential service to call the guest's loopback attester. The response's
+// runtime extensions, read after the quote and authenticated by the channel,
+// replace the leaf's list, which may predate the node's latest policy.
+func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL string, keyPEM []byte, exp measuredPolicy) error {
 	nonce := make([]byte, 32)
 	if _, err := rand.Read(nonce); err != nil {
 		return fmt.Errorf("nonce: %w", err)
@@ -35,6 +37,10 @@ func attestCredentialRelease(ctx context.Context, client *http.Client, baseURL s
 	evidence, err := readAttestationResponse(client, req)
 	if err != nil {
 		return fmt.Errorf("credential-service attestation: %w", err)
+	}
+	var response credrelease.AttestResponse
+	if json.Unmarshal(evidence, &response) == nil && exp.policies != nil && response.RuntimeExtensions != nil {
+		exp.policies = &policyList{list: response.RuntimeExtensions}
 	}
 	_, err = verifyEvidence(evidence, nonce, exp)
 	return err

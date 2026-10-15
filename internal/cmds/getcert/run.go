@@ -1205,9 +1205,10 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 			MeshCAURL:         cfg.DiscoveryMeshCAURL,
 		},
 		Attestation: types.AttestationDiscovery{
-			Challenge: result.Challenge,
-			Platform:  string(result.Platform),
-			Evidence:  result.Evidence,
+			Challenge:         result.Challenge,
+			Platform:          string(result.Platform),
+			Evidence:          result.Evidence,
+			RuntimeExtensions: result.RuntimeExtensions,
 		},
 	}, nil
 }

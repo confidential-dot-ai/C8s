@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -76,8 +77,10 @@ func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 	result := attestclient.CertificateResult{
 		Certificate: certPEM,
 		Challenge:   "dGVzdC1jaGFsbGVuZ2U=",
-		Platform:    "snp",
+		Platform:    "tdx",
 		Evidence:    json.RawMessage(`{"quote":"abc"}`),
+
+		RuntimeExtensions: []string{"sha256:" + strings.Repeat("1", 64)},
 	}
 
 	doc, err := buildDiscoveryDocument(config{
@@ -114,8 +117,11 @@ func TestBuildDiscoveryDocumentIncludesCertificateAndEvidence(t *testing.T) {
 	if doc.Attestation.Challenge != result.Challenge {
 		t.Fatalf("challenge = %q", doc.Attestation.Challenge)
 	}
-	if doc.Attestation.Platform != "snp" {
+	if doc.Attestation.Platform != "tdx" {
 		t.Fatalf("platform = %q", doc.Attestation.Platform)
+	}
+	if !slices.Equal(doc.Attestation.RuntimeExtensions, result.RuntimeExtensions) {
+		t.Fatalf("runtime extensions = %v, want %v", doc.Attestation.RuntimeExtensions, result.RuntimeExtensions)
 	}
 	if !strings.Contains(string(doc.Attestation.Evidence), `"quote":"abc"`) {
 		t.Fatalf("evidence = %s", doc.Attestation.Evidence)

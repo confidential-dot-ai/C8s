@@ -3,14 +3,17 @@ package getkubeconfig
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 )
@@ -82,6 +85,10 @@ func Run(ctx context.Context, cfg Config) error {
 	exp, err := policyFor(cfg.ImageManifestPath, pubPEM, cfg.WorkloadImages)
 	if err != nil {
 		return err
+	}
+	if exp.identity.Family() == teetypes.FamilyTDX {
+		exp.policies = &policyList{}
+		exp.policies.refresh = func() { dialRelease(ctx, cfg, releaseURL, exp) }
 	}
 
 	// 1. Verify the channel and a fresh nonce-bound report before releasing
@@ -171,4 +178,22 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
+}
+
+// dialRelease completes one armTLS handshake with cred-release, so the
+// verified leaf records its runtime extensions. A failed dial records
+// nothing and leaves the gate to fail on the list it has.
+func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platformVerifier) {
+	port := releaseURL.Port()
+	if port == "" {
+		port = "443"
+	}
+	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+	defer cancel()
+	dialer := tls.Dialer{Config: armTLSConfig(exp)}
+	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
+	if err != nil {
+		return
+	}
+	_ = conn.Close() // the handshake was the point
 }
