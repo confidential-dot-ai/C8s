@@ -60,12 +60,18 @@ const hostIPReference = "$(HOST_IP)"
 // ExpandHostIP replaces $(HOST_IP) in an attestation-api URL with the HOST_IP
 // environment variable. A component's arguments are pinned exactly in the
 // allowlist, so the chart cannot let the kubelet substitute the node's address
-// into them; the binary does it instead.
-func ExpandHostIP(u string) string {
+// into them; the binary does it instead. It fails when the URL names the
+// variable and HOST_IP is not an IP address: an empty host would dial the
+// container's own loopback instead of the node.
+func ExpandHostIP(u string) (string, error) {
 	if !strings.Contains(u, hostIPReference) {
-		return u
+		return u, nil
 	}
-	return strings.ReplaceAll(u, hostIPReference, os.Getenv("HOST_IP"))
+	hostIP := os.Getenv("HOST_IP")
+	if net.ParseIP(hostIP) == nil {
+		return "", fmt.Errorf("attestation-api URL %q names $(HOST_IP), but HOST_IP is %q, not an IP address", u, hostIP)
+	}
+	return strings.ReplaceAll(u, hostIPReference, hostIP), nil
 }
 
 // RequireRAMBackedDir returns an error unless dir sits on tmpfs/ramfs

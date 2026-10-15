@@ -204,7 +204,11 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 	}
 	c.nodeIP = canonicalNodeIP
 
-	c.attestationApiURL = cmdsutil.ExpandHostIP(c.attestationApiURL)
+	attestationURL, err := cmdsutil.ExpandHostIP(c.attestationApiURL)
+	if err != nil {
+		return err
+	}
+	c.attestationApiURL = attestationURL
 	if err := validateConfig(c.attestationApiURL, c.outboundPort, c.inboundPort, c.healthPort, c.certTTL); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}

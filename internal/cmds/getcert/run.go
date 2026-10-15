@@ -241,7 +241,11 @@ func run(cfg config) error {
 	}
 	slog.Info("starting get-cert", "san", cfg.SAN)
 
-	cfg.AttestationApiURL = cmdsutil.ExpandHostIP(cfg.AttestationApiURL)
+	attestationURL, err := cmdsutil.ExpandHostIP(cfg.AttestationApiURL)
+	if err != nil {
+		return err
+	}
+	cfg.AttestationApiURL = attestationURL
 	if err := validateConfig(cfg); err != nil {
 		return err
 	}

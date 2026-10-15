@@ -76,7 +76,11 @@ func run(cfg config) error {
 type listenFunc func(network, address string) (net.Listener, error)
 
 func runContext(ctx context.Context, cfg config, listen listenFunc) error {
-	cfg.attestationAPIURL = cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
+	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
+	if err != nil {
+		return err
+	}
+	cfg.attestationAPIURL = attestationURL
 	addr, err := listenAddress(cfg.host, cfg.port)
 	if err != nil {
 		return err

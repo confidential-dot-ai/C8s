@@ -220,17 +220,21 @@ func TestWarnIfCDSUnpinned(t *testing.T) {
 }
 
 func TestExpandHostIP(t *testing.T) {
-	t.Setenv("HOST_IP", "192.0.2.7")
 	for _, tc := range []struct {
-		name, in, want string
+		name, hostIP, in, want string
+		wantErr                bool
 	}{
-		{"reference", "http://$(HOST_IP):8400", "http://192.0.2.7:8400"},
-		{"unix socket", "unix:///run/attestation-api.sock", "unix:///run/attestation-api.sock"},
-		{"other variable", "http://$(NODE_IP):8400", "http://$(NODE_IP):8400"},
+		{name: "reference", hostIP: "192.0.2.7", in: "http://$(HOST_IP):8400", want: "http://192.0.2.7:8400"},
+		{name: "unix socket", in: "unix:///run/attestation-api.sock", want: "unix:///run/attestation-api.sock"},
+		{name: "other variable", in: "http://$(NODE_IP):8400", want: "http://$(NODE_IP):8400"},
+		{name: "unset", in: "http://$(HOST_IP):8400", wantErr: true},
+		{name: "not an address", hostIP: "node-a", in: "http://$(HOST_IP):8400", wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ExpandHostIP(tc.in); got != tc.want {
-				t.Fatalf("ExpandHostIP(%q) = %q, want %q", tc.in, got, tc.want)
+			t.Setenv("HOST_IP", tc.hostIP)
+			got, err := ExpandHostIP(tc.in)
+			if (err != nil) != tc.wantErr || got != tc.want {
+				t.Fatalf("ExpandHostIP(%q) = %q, %v, want %q, error %v", tc.in, got, err, tc.want, tc.wantErr)
 			}
 		})
 	}

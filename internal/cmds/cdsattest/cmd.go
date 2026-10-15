@@ -129,7 +129,11 @@ func loadFiles(cfg *config) error {
 
 func run(cfg config) error {
 	logger := newLogger(cfg.logLevel)
-	cfg.attestationAPIURL = cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
+	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
+	if err != nil {
+		return err
+	}
+	cfg.attestationAPIURL = attestationURL
 	if err := loadFiles(&cfg); err != nil {
 		return err
 	}
