@@ -3,6 +3,7 @@ package verify
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -135,6 +136,10 @@ type config struct {
 	minTCBSNP          uint
 	minTCBMicrocode    uint
 	expectedRDHex      string
+	pinPolicies        []string
+	trustOperator      bool
+	trustOperatorKeys  string
+	fetchAllowlists    string
 
 	output       string
 	showEvidence bool
@@ -229,7 +234,7 @@ responder chose).`,
 	f.StringVar(&cfg.measurementsFile, "measurements-file", "", "text file of allowed launch measurements, one hex digest per line; use --image-policy-file for complete JSON policies; excludes --image-manifest")
 	f.StringVar(&cfg.imageManifest, "image-manifest", "", "build-artifact manifest of the expected TDX guest image (JSON object with mrtd, rtmr1, rtmr2, each 96 lowercase hex chars, published with the image build); all three registers are pinned exactly against this one manifest, so the guest kernel and rootfs are verified rather than only the firmware. Since it pins MRTD exactly it replaces --measurements/--measurements-file rather than combining with them. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringVar(&cfg.expectedRTMR3Hex, "expected-rtmr3", "", "DEPRECATED, prefer --rtmr 3=<sha384-hex>: identical pin under identical rules, one flag for every register. Retained so existing invocations keep working")
-	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the operator PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by `openssl ec -pubout`) — derives and pins RTMR[3] as the bare operator-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. The bare seed is the value a node with no per-workload RTMR[3] extends reports, which today is every node. TDX evidence only — with SNP evidence this is a policy error")
+	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the operator PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by `openssl ec -pubout`) — derives and pins RTMR[3] as the bare operator-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. A node that measures its allowlist policies reports the seed followed by them: verify then replays the list the evidence carries (an attest-pq or attest-lb bundle's measured_policies, or a TDX certificate's or discovery document's runtime extensions) and reports the longest prefix that matches as the node's policy history, which --pin-policy and --trust-operator check; without either, a non-empty history leaves the verdict partial. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy against it, unless --served-policy-file names the set for that check; excludes --measurements, --measurements-file and --image-manifest")
 	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=cds: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind cds")
@@ -247,6 +252,10 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBTEE, "min-tcb-tee", 0, "minimum TEE TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
+	f.StringSliceVar(&cfg.pinPolicies, "pin-policy", nil, "accepted allowlist policy digest(s) sha256:<hex> (repeatable / comma-separated): every policy in the node's replayed history, and the policy the leaf was issued under, must be one of these. The leaf's stamp counts as proven only with --mesh-ca; without it the verdict stays partial. Requires --operator-pkey or --image-policy-file; excludes --trust-operator")
+	f.BoolVar(&cfg.trustOperator, "trust-operator", false, "accept every policy in the node's replayed history, and the policy the leaf was issued under, only when it carries a valid operator signature: each one is fetched from <target>/allowlist/objects/sha256/<hex>, re-hashed, and its stored write token checked against --trust-operator-keys. Only a document uploaded whole with a signed PUT /allowlist carries a token; a per-workload edit yields an unsigned policy. Requires --operator-pkey or --image-policy-file, and --trust-operator-keys")
+	f.StringVar(&cfg.trustOperatorKeys, "trust-operator-keys", "", "PEM bundle of the operator public keys --trust-operator accepts signatures from. Requires --trust-operator; --operator-keys does not feed it")
+	f.StringVar(&cfg.fetchAllowlists, "fetch-allowlists", "", "directory to save each policy in the node's replayed history to, as <hex>.json, after checking it hashes to its digest. A failed fetch or write fails the verdict (allowlist_fetch_failed). Requires --operator-pkey or --image-policy-file")
 	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer); refused in --mode attest-pq and attest-lb")
 
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
@@ -416,6 +425,7 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		oc.RouteRevision = ev.route.revision
 		oc.RouteNote = ev.route.note
 	}
+	checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
 	applyInitDataNote(&oc, result, plan)
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
@@ -429,6 +439,8 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 func applyVerdictPolicies(oc *Outcome, cfg config, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, plan *verifyPlan, servedMeasurements measurementsReport) {
 	applySandboxPolicy(oc, cfg, ev, opKeys, plan, servedMeasurements)
 	applyWorkloadPolicy(oc, cfg, ev, held)
+	applyPinPolicy(oc, cfg, ev)
+	applyUncheckedHistoryPolicy(oc, cfg)
 	applyFrontDoorPolicy(oc, ev)
 	applyChainAnchorPolicy(oc, cfg, ev)
 	applyCDSIdentityWarning(oc, cfg, plan.refValues)
@@ -550,6 +562,8 @@ type verifyPlan struct {
 	served *servedSet
 	// routes is the route digest check, nil when the run checks none.
 	routes *routeCheck
+	// trustKeys is the parsed --trust-operator-keys bundle, nil when unset.
+	trustKeys []*ecdsa.PublicKey
 }
 
 // servedSet pairs the policy the target must serve and enforce at
@@ -684,6 +698,11 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		return nil, fmt.Errorf("--allowlist requires --mesh-ca: the stamped policy digest is vouched by CDS's signature on the leaf, not by the hardware evidence")
 	}
 
+	trustKeys, err := checkHistoryFlags(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	initDataHash, err := parseInitDataPin(cfg.initDataHex)
 	if err != nil {
 		return nil, err
@@ -709,6 +728,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		refValues:    refValues,
 		served:       served,
 		routes:       routes,
+		trustKeys:    trustKeys,
 	}, nil
 }
 
@@ -743,6 +763,10 @@ func parseInitDataPin(flag string) ([]byte, error) {
 type rtmrPins struct {
 	image runtimemeasure.ImageIdentity
 	rtmr3 []byte
+	// anchor is the --operator-pkey PEM rtmr3 was seeded from, nil otherwise.
+	// Only with it can RTMR[3] be replayed as the seed followed by measured
+	// policies.
+	anchor []byte
 	// manual holds --rtmr <index>=<hex>. It is enforced here, next to the
 	// other two, rather than left to armtls.VerifyPolicy.Policy.RTMRs: that field is
 	// read only by attestation-go/remote, on the delegated attestation-api
@@ -849,6 +873,7 @@ func resolveRTMRPins(cfg config) (rtmrPins, error) {
 		// verbatim — the check above only inspects them.
 		seed := runtimemeasure.Seed(pubPEM)
 		pins.rtmr3 = seed[:]
+		pins.anchor = pubPEM
 	}
 	if v, ok := manual[3]; ok {
 		pins.rtmr3 = v
@@ -1184,6 +1209,19 @@ type Outcome struct {
 	RouteDigest   string `json:"route_digest,omitempty"`
 	RouteRevision uint64 `json:"route_revision,omitempty"`
 	RouteNote     string `json:"route_note,omitempty"`
+
+	// MeasuredPolicies is the node's allowlist policy history since boot:
+	// the prefix of the bundle's measured list that replays against RTMR[3]
+	// after the --operator-pkey seed. --pin-policy and --trust-operator
+	// failures land in Error (policy_history_absent,
+	// policy_history_not_pinned, policy_history_unsigned).
+	MeasuredPolicies []string `json:"measured_policies,omitempty"`
+
+	// LeafStamped says whether the leaf carries a readable matched-workload
+	// stamp, nil when the evidence carries no leaf. An unstamped leaf caps
+	// --pin-policy and --trust-operator at partial. True does not mean the
+	// stamp was authenticated: that takes --mesh-ca (see WorkloadNote).
+	LeafStamped *bool `json:"leaf_stamped,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1388,6 +1426,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)
+		stamped := ev.workload != nil
+		oc.LeafStamped = &stamped
 	}
 	if verr != nil {
 		oc.Error = verr.Error()
@@ -1421,16 +1461,17 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 			return oc
 		}
 		response := remote.VerifyResponse{Result: *result}
-		if err := remote.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform)); err != nil {
+		if err := armtls.EnforceImages(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured); err != nil {
 			oc.Error = fmt.Sprintf("--image-policy-file: %v", err)
 			return oc
 		}
+		oc.MeasuredPolicies = replayedHistory(result, plan.refValues.Images, ev.measured)
 		// A TDX tuple covers the guest only when the matching entry pins both
 		// kernel and rootfs registers. A weak alternative must not borrow the
 		// completeness of an unrelated entry in the same policy.
 		for _, entry := range plan.refValues.Images {
 			if len(entry.Registers[1]) != 0 && len(entry.Registers[2]) != 0 &&
-				remote.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform)) == nil {
+				armtls.EnforceImages(response, []remote.ImagePin{entry}, teetypes.NormalizePlatform(oc.Platform), ev.measured) == nil {
 				fullImagePinned = true
 				break
 			}
@@ -1486,12 +1527,35 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 			oc.Warnings = append(oc.Warnings, mrtdOnly)
 		}
 	}
-	if !applyRTMRPins(&oc, plan.pins, result) {
+	if !applyRTMRPins(&oc, plan.pins, ev.measured, result) {
 		return oc
+	}
+	if len(ev.measured) > 0 && plan.pins.anchor == nil && !slices.ContainsFunc(plan.refValues.Images, anchored) && isTDX(oc.Platform) {
+		oc.Warnings = append(oc.Warnings, "the node reported a measured allowlist policy history that was not replayed: pass --operator-pkey, or an --image-policy-file pinning an approver_key, to check it against RTMR[3]")
 	}
 	oc.Verified = true
 
 	return oc
+}
+
+// anchored reports whether img pins a launch anchor.
+func anchored(img remote.ImagePin) bool { return img.Anchor != nil }
+
+// replayedHistory returns the prefix of measured that RTMR[3] proves on top of
+// the seed of an anchor images pin, nil when none replays.
+func replayedHistory(result *teetypes.VerificationResult, images []remote.ImagePin, measured []string) []string {
+	if len(measured) == 0 {
+		return nil
+	}
+	for _, img := range images {
+		if !anchored(img) {
+			continue
+		}
+		if k, err := runtimemeasure.MatchBindingPrefix(result, img.Anchor, measured); err == nil && k > 0 {
+			return slices.Clone(measured[:k])
+		}
+	}
+	return nil
 }
 
 // enforceMinTCB settles the --min-tcb-* floor on the signature-verified
@@ -1553,11 +1617,13 @@ func isTDX(platform string) bool {
 }
 
 // applyRTMRPins enforces the --image-manifest RTMR[1]/[2] and the RTMR[3] pin
-// on the verified claims, recording what was enforced in RTMRsPinned.
+// on the verified claims, recording what was enforced in RTMRsPinned. With an
+// --operator-pkey seed, RTMR[3] may also be the seed extended by the longest
+// prefix of measured that replays; that prefix becomes MeasuredPolicies.
 // The pins come from the plan resolved once in buildPolicy, and newOutcome has
 // already gated the platform. Returns false (with oc.Error set) on an absent
 // or malformed claim, or a mismatch — never an ignored option.
-func applyRTMRPins(oc *Outcome, pins rtmrPins, result *teetypes.VerificationResult) bool {
+func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetypes.VerificationResult) bool {
 	if !pins.any() {
 		return true
 	}
@@ -1586,8 +1652,20 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, result *teetypes.VerificationResu
 			}
 		}
 	}
-	if pins.rtmr3 != nil && !check(3, "runtime operator-key/workload chain", pins.rtmr3) {
-		return false
+	if pins.rtmr3 != nil {
+		want := pins.rtmr3
+		if pins.anchor != nil {
+			if k, err := runtimemeasure.MatchBindingPrefix(result, pins.anchor, measured); err == nil && k > 0 {
+				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.anchor), measured[:k])
+				want, oc.MeasuredPolicies = reg[:], slices.Clone(measured[:k])
+			}
+		}
+		if !check(3, "runtime operator-key/workload chain", want) {
+			if pins.anchor != nil && len(measured) > 0 {
+				oc.Error += fmt.Sprintf("; no prefix of the %d measured policies the evidence lists replays to it", len(measured))
+			}
+			return false
+		}
 	}
 	// Ascending index, so a target missing several pinned registers always
 	// names the same one first and a failing verdict is reproducible.
@@ -1728,6 +1806,9 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 	for _, p := range oc.RTMRsPinned {
 		idx, hexVal, _ := strings.Cut(p, ":")
 		fmt.Fprintf(out, "  RTMR[%s]:      %s (matched)\n", idx, hexVal)
+	}
+	if len(oc.MeasuredPolicies) > 0 {
+		fmt.Fprintf(out, "  history:      %s (enforced on this node since boot, RTMR[3])\n", strings.Join(oc.MeasuredPolicies, ", "))
 	}
 	if oc.InitDataNote != "" {
 		if oc.InitData != "" {
