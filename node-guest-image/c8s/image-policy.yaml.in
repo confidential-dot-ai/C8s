@@ -195,6 +195,9 @@ allowlist:
     timeout: "30s"
     attestation_api_url: "http://127.0.0.1:8400"
     cds_measurements_config: "/run/confos/launch/cds.json"
+    # measure_policies (extend RTMR[3] with each pulled allowlist) is off
+    # here; the chart's pins installer patches it from
+    # nriImagePolicy.measurePolicies.
 
 containerd:
   socket: "/run/k3s/containerd/containerd.sock"

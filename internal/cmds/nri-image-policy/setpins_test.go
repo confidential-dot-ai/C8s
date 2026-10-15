@@ -273,3 +273,46 @@ func TestRunDispatchesThesetCDSPinsVerb(t *testing.T) {
 		t.Errorf("cds_measurements = %v, want one pin", cfg.Allowlist.Pull.CDSMeasurements)
 	}
 }
+
+// The policy-measurement switch is patched like the pins, and re-running with
+// the same value is not a change.
+func TestSetCDSPinsSetsMeasurePolicies(t *testing.T) {
+	path := writeConfig(t, bakedConfig)
+	if got := setPins(t, path, "--measure-policies"); got != pinsUpdated {
+		t.Fatalf("enable outcome = %q, want %q", got, pinsUpdated)
+	}
+	if !loadPatched(t, path).Allowlist.Pull.MeasurePolicies {
+		t.Fatal("measure_policies not set")
+	}
+	if got := setPins(t, path, "--measure-policies"); got != pinsUnchanged {
+		t.Fatalf("re-run outcome = %q, want %q", got, pinsUnchanged)
+	}
+	if got := setPins(t, path, "--cds-measurements", pinA); got != pinsUpdated {
+		t.Fatalf("pins-only outcome = %q, want %q", got, pinsUpdated)
+	}
+	if cfg := loadPatched(t, path); !cfg.Allowlist.Pull.MeasurePolicies {
+		t.Fatal("a run without --measure-policies turned measuring off")
+	}
+	if got := setPins(t, path, "--cds-measurements", pinA); got != pinsUnchanged {
+		t.Fatalf("re-run without --measure-policies outcome = %q, want %q", got, pinsUnchanged)
+	}
+	if got := setPins(t, path, "--cds-measurements", pinA, "--measure-policies=false"); got != pinsUpdated {
+		t.Fatalf("disable outcome = %q, want %q", got, pinsUpdated)
+	}
+	if cfg := loadPatched(t, path); cfg.Allowlist.Pull.MeasurePolicies {
+		t.Fatal("--measure-policies=false left measuring on")
+	}
+}
+
+func loadPatched(t *testing.T, path string) *config {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseConfig(data)
+	if err != nil {
+		t.Fatalf("patched config does not load: %v\n%s", err, data)
+	}
+	return cfg
+}
