@@ -474,3 +474,34 @@ func TestAuthorizeKeyRejectsUnparsedServerKey(t *testing.T) {
 		})
 	}
 }
+
+// TestNodePasswordIsStablePerNode: a rebooted node stages the same RKE2 node
+// password, so the server accepts its name again; different nodes or
+// clusters get different ones.
+func TestNodePasswordIsStablePerNode(t *testing.T) {
+	doc, key, pub := testDocument(t, "tdx", Agent)
+	testLoader(t, doc, pub)
+	stageOnce := func() string {
+		cfg := testConfig(t, doc, key)
+		if err := Stage(context.Background(), cfg); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(cfg.path(nodePasswordPath))
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, _ := os.Stat(cfg.path(nodePasswordPath))
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("node password mode %v", info.Mode().Perm())
+		}
+		return string(data)
+	}
+	first, second := stageOnce(), stageOnce()
+	if first != second || len(strings.TrimSpace(first)) != 64 {
+		t.Fatalf("node password not stable across boots: %q %q", first, second)
+	}
+	if NodePassword(doc.RKE2.AgentToken, "other-node") == strings.TrimSpace(first) ||
+		NodePassword(strings.Repeat("b", 64), doc.Node.Name) == strings.TrimSpace(first) {
+		t.Fatal("node password does not depend on node name and cluster token")
+	}
+}
