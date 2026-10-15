@@ -608,6 +608,7 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		{"host mount pinned writable", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
 		{"subpath pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
 		{"subpath pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
+		{"entrypoint under a denied command", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"deny"},"args":{"policy":"any"}}`, "", false},
 		{"env pinned", strings.Replace(mesh, `"args"`, `"env":{"policy":"deny"},"args"`, 1) + "," + entrypoint, "", false},
 		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
 		{"escape not expanded", mesh + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
@@ -638,5 +639,35 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	}
 	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
+	}
+}
+
+func TestKubeletArgv(t *testing.T) {
+	env := []corev1.EnvVar{{Name: "HOST_IP", Value: "10.0.0.1"}}
+	for _, tc := range []struct {
+		name, in, want string
+		err            bool
+	}{
+		{name: "plain", in: "--port=1", want: "--port=1"},
+		{name: "escape", in: "$$(HOST_IP)", want: "$(HOST_IP)"},
+		{name: "escaped dollar", in: "a$$b", want: "a$b"},
+		{name: "undefined reference stays verbatim", in: "echo $(echo $$)", want: "echo $(echo $$)"},
+		{name: "unclosed reference", in: "$(a $$", want: "$(a $"},
+		{name: "trailing dollar", in: "a$", want: "a$"},
+		{name: "lone dollar", in: "$x", want: "$x"},
+		{name: "defined reference", in: "http://$(HOST_IP):1", err: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := kubeletArgv([]string{tc.in}, env)
+			if tc.err {
+				if err == nil {
+					t.Fatalf("kubeletArgv(%q) = %q, want an error", tc.in, got)
+				}
+				return
+			}
+			if err != nil || len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("kubeletArgv(%q) = %q, %v, want %q", tc.in, got, err, tc.want)
+			}
+		})
 	}
 }

@@ -378,7 +378,7 @@ func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool
 		switch {
 		case c.Command.Policy == pkgallowlist.PolicyExact:
 			argv = slices.Concat(c.Command.Argv, k.args)
-		case c.Args.Policy != pkgallowlist.PolicyAny:
+		case c.Command.Policy != pkgallowlist.PolicyAny || c.Args.Policy != pkgallowlist.PolicyAny:
 			return false
 		}
 	}
@@ -478,19 +478,41 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 }
 
 // kubeletArgv is the argv the kubelet hands the runtime for a manifest's
-// command or args: $$ becomes $. A $(NAME) for a variable the container defines
-// would become its per-node value, which no pinned argv can match, so it is an
-// error, as it is in the chart's c8s.kubeletExpand.
+// command or args, following its expansion (k8s.io/kubernetes
+// third_party/forked/golang/expansion): $$ becomes $, a $(NAME) reference with
+// no matching variable stays verbatim, and an unclosed $( is literal. A
+// reference to a variable the container defines would become its per-node
+// value, which no pinned argv can match, so it is an error, as it is in the
+// chart's c8s.kubeletExpand.
 func kubeletArgv(argv []string, env []corev1.EnvVar) ([]string, error) {
+	defined := make(map[string]bool, len(env))
+	for _, e := range env {
+		defined[e.Name] = true
+	}
 	out := make([]string, 0, len(argv))
 	for _, token := range argv {
-		escaped := strings.ReplaceAll(token, "$$", "\x00")
-		for _, e := range env {
-			if strings.Contains(escaped, "$("+e.Name+")") {
-				return nil, fmt.Errorf("%q references $(%s); pass the value another way", token, e.Name)
+		var b strings.Builder
+		for i := 0; i < len(token); i++ {
+			if token[i] != '$' || i+1 == len(token) {
+				b.WriteByte(token[i])
+				continue
+			}
+			switch next := token[i+1:]; {
+			case next[0] == '$':
+				b.WriteByte('$')
+				i++
+			case next[0] == '(' && strings.IndexByte(next, ')') > 0:
+				end := strings.IndexByte(next, ')')
+				if name := next[1:end]; defined[name] {
+					return nil, fmt.Errorf("%q references $(%s); pass the value another way", token, name)
+				}
+				b.WriteString(token[i : i+2+end])
+				i += 1 + end
+			default:
+				b.WriteByte('$')
 			}
 		}
-		out = append(out, strings.ReplaceAll(escaped, "\x00", "$"))
+		out = append(out, b.String())
 	}
 	return out, nil
 }

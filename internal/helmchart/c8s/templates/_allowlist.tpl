@@ -140,20 +140,24 @@
 {{ $out | toJson }}
 {{- end -}}
 
-{{/* The argv the kubelet hands the runtime: $$ becomes $, and $(NAME) for a
-     variable the container defines becomes its value. A per-node value
-     cannot be pinned, so a component's argv must not reference one; escape
-     it as $$(NAME) and expand it in the binary instead. */ -}}
+{{/* The argv the kubelet hands the runtime: $$ becomes $, an unresolved
+     $(NAME) stays verbatim, and $(NAME) for a variable the container defines
+     becomes its value. One leftmost scan, as the kubelet's expansion does. A
+     per-node value cannot be pinned, so a component's argv must not
+     reference one; escape it as $$(NAME) and expand it in the binary
+     instead. */ -}}
 {{- define "c8s.kubeletExpand" -}}
 {{- $out := list -}}
 {{- range $token := .argv -}}
-{{- $token = replace "$$" "\x00" (toString $token) -}}
+{{- $token = toString $token -}}
+{{- range $ref := regexFindAll `\$\$|\$\([^)]*\)` $token -1 -}}
 {{- range $e := $.env -}}
-{{- if contains (printf "$(%s)" $e.name) $token -}}
+{{- if eq $ref (printf "$(%s)" $e.name) -}}
 {{- fail (printf "%s references $(%s) in its argv; the allowlist pins the argv exactly, so pass the value another way" $.where $e.name) -}}
 {{- end -}}
 {{- end -}}
-{{- $out = append $out (replace "\x00" "$" $token) -}}
+{{- end -}}
+{{- $out = append $out (regexReplaceAll `\$(\$)|(\$\([^)]*\))` $token "${1}${2}") -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}
