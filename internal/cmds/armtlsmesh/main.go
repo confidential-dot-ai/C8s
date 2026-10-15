@@ -23,7 +23,6 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
@@ -56,7 +55,7 @@ var newKubeClientset = func(kubeconfigPath string) (kubernetes.Interface, error)
 	var restCfg *rest.Config
 	var err error
 	if kubeconfigPath != "" {
-		restCfg, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
+		restCfg, err = cmdsutil.StaticKubeconfig(kubeconfigPath)
 		if err != nil {
 			return nil, fmt.Errorf("k8s config from --kubeconfig %s: %w", kubeconfigPath, err)
 		}

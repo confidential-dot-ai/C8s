@@ -12,8 +12,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
-	"k8s.io/client-go/tools/clientcmd"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -42,7 +42,7 @@ var newInClusterKubeClientset = func() (kubernetes.Interface, error) {
 
 // newKubeClientsetFromFile uses only the explicitly selected kubeconfig.
 func newKubeClientsetFromFile(kubeconfig string) (kubernetes.Interface, error) {
-	restCfg, err := clientcmd.BuildConfigFromFlags("", kubeconfig)
+	restCfg, err := cmdsutil.StaticKubeconfig(kubeconfig)
 	if err != nil {
 		return nil, fmt.Errorf("load node inventory kubeconfig: %w", err)
 	}

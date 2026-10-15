@@ -392,3 +392,19 @@ func TestRunProxyFullLifecycle(t *testing.T) {
 		t.Fatal("runProxy did not shut down after cancel")
 	}
 }
+
+func TestMeshKubeconfigRejectsAuthenticationPlugins(t *testing.T) {
+	for _, auth := range []string{
+		`{"exec":{"apiVersion":"client.authentication.k8s.io/v1","command":"/operator/evil","interactiveMode":"Never"}}`,
+		`{"auth-provider":{"name":"oidc","config":{"cmd-path":"/operator/evil"}}}`,
+	} {
+		path := filepath.Join(t.TempDir(), "config")
+		text := `{"apiVersion":"v1","kind":"Config","clusters":[{"name":"c","cluster":{"server":"https://127.0.0.1:1"}}],"contexts":[{"name":"c","context":{"cluster":"c","user":"u"}}],"current-context":"c","users":[{"name":"u","user":` + auth + `}]}`
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if client, err := newKubeClientset(path); err == nil || client != nil {
+			t.Fatalf("authentication plugin accepted: %v %v", client, err)
+		}
+	}
+}
