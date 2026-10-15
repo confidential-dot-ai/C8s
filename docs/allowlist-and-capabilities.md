@@ -152,9 +152,10 @@ and at CDS matching.
 An absent policy normalizes to `deny`, so a minimally specified container is
 maximally restrictive. `command: deny` requires an empty argv and therefore can
 never start (a workload that wants any argv should say `command: any`); `lint`
-flags it. Because `command`/`args` map 1:1 to the Kubernetes fields, `derive` (on
-its own branch) reads them straight off a pod spec, and `inspect-image` shows an
-image's baked `ENTRYPOINT`/`CMD` so an operator can see what to pin.
+flags it. `derive` reads `command`/`args` off a pod spec and fills what the spec
+leaves unset the way the runtime does: an unset command is the image's
+`ENTRYPOINT`, and unset args are its `CMD` when the command is unset too. It
+reads the image config with `crane`, as `inspect-image` does.
 
 ### A digest may run many ways
 
