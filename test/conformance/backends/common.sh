@@ -36,6 +36,10 @@
 #                                    ready, so each bootstraps from the CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
+#   applied_version                  the allowlist version the admission plugin
+#                                    on the node decides with, from its health
+#                                    endpoint, or 77 where the node cannot be
+#                                    reached
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
 #   pod_manifest [options] -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
@@ -234,9 +238,9 @@ dialer_bin() {
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
 # which the node image bakes as the equal value (node-guest-image/c8s/
-# image-policy.yaml.in, allowlist.pull.interval). The plugin exposes nothing
-# about the version it holds, and containerd discards its log, so the steps
-# wait this out rather than observe it.
+# image-policy.yaml.in, allowlist.pull.interval). The steps poll
+# applied_version for the served version, with a deadline in these; where the
+# backend cannot reach the plugin they wait this out instead.
 pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after

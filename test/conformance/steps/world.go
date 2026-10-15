@@ -34,8 +34,9 @@ type world struct {
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
-	// appliedVersion is the served version the plugin had applied when the
-	// scenario last waited for it.
+	// appliedVersion is the allowlist version the plugin reported applied when
+	// the scenario last waited for it, or the served one where the backend
+	// cannot ask the plugin.
 	appliedVersion string
 	// running maps an image to the pod a scenario started a container of.
 	running map[string]*pod

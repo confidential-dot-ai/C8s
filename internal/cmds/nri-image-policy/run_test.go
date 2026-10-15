@@ -690,7 +690,62 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 		t.Fatalf("startHealthServer: %v", err)
 	}
 
-	httpClient := &http.Client{
+	httpClient := unixHealthClient(sock)
+
+	// Not ready yet → 503.
+	if code, body := healthz(t, httpClient); code != http.StatusServiceUnavailable || body.Status != "not ready" {
+		t.Fatalf("not ready: status %d body %+v, want 503 \"not ready\"", code, body)
+	}
+
+	p.SetReady()
+	if code, body := healthz(t, httpClient); code != http.StatusOK || body.Status != "ok" {
+		t.Fatalf("ready: status %d body %+v, want 200 \"ok\"", code, body)
+	}
+
+	cancel()
+}
+
+// The body reports the version admission decides with: what apply accepted,
+// unmoved by a pull it refused as a rollback.
+func TestStartHealthServer_HealthzReportsAppliedAllowlistVersion(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "health.sock")
+	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+	p.policy = newPolicyStore(nil)
+	p.SetReady()
+	if err := startHealthServer(t.Context(), healthServerConfig{
+		logger:       discardLogger(),
+		plugin:       p,
+		addr:         "unix://" + sock,
+		readTimeout:  time.Second,
+		writeTimeout: time.Second,
+	}); err != nil {
+		t.Fatalf("startHealthServer: %v", err)
+	}
+	httpClient := unixHealthClient(sock)
+
+	for _, step := range []struct {
+		pulled uint64
+		want   uint64
+	}{
+		{0, 0},   // nothing applied yet
+		{42, 42}, // first pull
+		{41, 42}, // a rollback is ignored, and does not show
+		{43, 43}, // a forward version applies
+	} {
+		if step.pulled != 0 {
+			p.policy.apply(&allowlist.Allowlist{}, step.pulled)
+		}
+		code, body := healthz(t, httpClient)
+		if code != http.StatusOK || body.AllowlistVersion != step.want {
+			t.Fatalf("after pull %d: status %d allowlist_version %d, want 200 and %d", step.pulled, code, body.AllowlistVersion, step.want)
+		}
+	}
+}
+
+// unixHealthClient dials the health server's Unix socket whatever host the
+// URL names.
+func unixHealthClient(sock string) *http.Client {
+	return &http.Client{
 		Timeout: 2 * time.Second,
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -699,28 +754,21 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 			},
 		},
 	}
+}
 
-	// Not ready yet → 503.
-	resp, err := httpClient.Get("http://unix/healthz")
+// healthz reads GET /healthz: the status code and the decoded body.
+func healthz(t *testing.T, client *http.Client) (int, healthResponse) {
+	t.Helper()
+	resp, err := client.Get("http://unix/healthz")
 	if err != nil {
-		t.Fatalf("GET /healthz (not ready): %v", err)
+		t.Fatalf("GET /healthz: %v", err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("not-ready status = %d, want 503", resp.StatusCode)
+	defer resp.Body.Close()
+	var body healthResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /healthz body: %v", err)
 	}
-
-	p.SetReady()
-	resp2, err := httpClient.Get("http://unix/healthz")
-	if err != nil {
-		t.Fatalf("GET /healthz (ready): %v", err)
-	}
-	resp2.Body.Close()
-	if resp2.StatusCode != http.StatusOK {
-		t.Fatalf("ready status = %d, want 200", resp2.StatusCode)
-	}
-
-	cancel()
+	return resp.StatusCode, body
 }
 
 func TestStartHealthServer_InvalidAddr(t *testing.T) {

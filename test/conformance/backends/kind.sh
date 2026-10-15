@@ -357,6 +357,11 @@ plugin_healthy() {
     node_exec curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
 }
 
+# The version in that answer, whatever its status: the one the plugin applied.
+applied_version() {
+    node_exec sh -c 'curl -s --max-time 2 --unix-socket "$1" http://localhost/healthz | jq -r .allowlist_version' _ "$PLUGIN_HEALTH"
+}
+
 # Ready within the installer's budget: a containerd restart, then the first
 # pull's bounded retries (2+4+8+16s between attempts) when the CDS is away.
 plugin_ready() {

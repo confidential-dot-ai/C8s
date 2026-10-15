@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -421,11 +422,14 @@ func (w *world) sync() error {
 	return w.awaitApplied()
 }
 
-// awaitApplied waits until two pull intervals have passed since the last
-// write or delete: a pull that started just before it has then been followed
-// by one that saw it. The plugin exposes nothing about the version it holds,
-// so this is a wait, not an observation; the served version afterwards is
-// what it applied, unless the pull is blocked.
+// awaitApplied waits for the plugin to hold what the CDS serves now, and
+// records the version it holds. It polls the version the plugin reports until
+// it reaches the served one, within three pull intervals of the last write or
+// delete; a pull loop that stalls fails the step naming both versions. A
+// served version below the applied one is the anti-rollback case: the plugin
+// ignores it by design, so nothing observable says it has pulled, and the wait
+// is the clock, two intervals, as it is where the backend cannot reach the
+// plugin or the pull is blocked.
 func (w *world) awaitApplied() error {
 	s, err := w.be.call("pull_interval")
 	if err != nil {
@@ -435,14 +439,52 @@ func (w *world) awaitApplied() error {
 	if err != nil {
 		return fmt.Errorf("pull interval %q: %w", s, err)
 	}
-	time.Sleep(time.Until(lastMutation.Add(2 * interval)))
+	waitOut := func() { time.Sleep(time.Until(lastMutation.Add(2 * interval))) }
 	if w.cdsBlocked {
+		waitOut()
 		return nil
 	}
-	version, err := w.be.call("served_version")
-	if err != nil && !errors.Is(err, godog.ErrSkip) {
+	served, err := w.be.call("served_version")
+	if errors.Is(err, godog.ErrSkip) {
+		waitOut()
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	w.appliedVersion = version
-	return nil
+	servedN, err := strconv.ParseUint(served, 10, 64)
+	if err != nil {
+		return fmt.Errorf("served version %q: %w", served, err)
+	}
+	// At least one interval from now: a scenario may ask before it has
+	// written anything, and a plugin that is restarting answers nothing for
+	// a moment, which is "not yet", not a broken harness.
+	deadline := lastMutation.Add(3 * interval)
+	if floor := time.Now().Add(interval); deadline.Before(floor) {
+		deadline = floor
+	}
+	for {
+		applied, err := w.be.call("applied_version")
+		if errors.Is(err, godog.ErrSkip) {
+			waitOut()
+			w.appliedVersion = served
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		appliedN, parseErr := strconv.ParseUint(applied, 10, 64)
+		switch {
+		case parseErr == nil && appliedN == servedN:
+			w.appliedVersion = applied
+			return nil
+		case parseErr == nil && appliedN > servedN:
+			waitOut()
+			w.appliedVersion = applied
+			return nil
+		case time.Now().After(deadline):
+			return fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves %s, %s after the write with a pull every %s", applied, served, time.Since(lastMutation).Round(time.Millisecond), interval)
+		}
+		time.Sleep(interval / 5)
+	}
 }

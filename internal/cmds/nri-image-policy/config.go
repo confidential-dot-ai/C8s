@@ -35,7 +35,8 @@ type config struct {
 type pluginConfig struct {
 	// HealthAddr is the listen address for the readiness/liveness HTTP
 	// server. `host:port` selects TCP; `unix:///path/to.sock` selects a
-	// Unix socket.
+	// Unix socket. GET /healthz answers 200 once the first pull applied and
+	// 503 before, with a JSON body carrying the applied allowlist version.
 	HealthAddr string `yaml:"health_addr"`
 }
 
