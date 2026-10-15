@@ -93,23 +93,26 @@ var runtimeJournals = []string{policymeasure.NodeJournal, policymeasure.SidecarJ
 // which verifiers allow for, but must not lag it.
 func RuntimeExtensions() ([]string, error) {
 	for _, path := range runtimeJournals {
-		if list, err := readJournal(path); err != nil || list != nil {
+		if list, err := ReadJournal(path); err != nil || list != nil {
 			return list, err
 		}
 	}
 	return nil, nil
 }
 
-// readJournal retries a permission error: after a failed extend the plugin
-// rewrites the journal 0600 and restores 0644 right after.
-func readJournal(path string) ([]string, error) {
+// ReadJournal is [runtimemeasure.ReadJournal] retrying a permission error:
+// after a failed extend the plugin rewrites the journal 0600 and restores 0644
+// right after. A missing journal is nil, nil.
+func ReadJournal(path string) ([]string, error) {
 	var err error
-	for range journalReadAttempts {
+	for attempt := range journalReadAttempts {
 		var list []string
 		if list, err = runtimemeasure.ReadJournal(path); !errors.Is(err, fs.ErrPermission) {
 			return list, err
 		}
-		time.Sleep(journalRetryDelay)
+		if attempt < journalReadAttempts-1 {
+			time.Sleep(journalRetryDelay)
+		}
 	}
 	return nil, err
 }

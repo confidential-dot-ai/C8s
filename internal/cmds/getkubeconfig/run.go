@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -181,8 +182,8 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 }
 
 // dialRelease completes one armTLS handshake with cred-release, so the
-// verified leaf records its runtime extensions. A failed dial records
-// nothing and leaves the gate to fail on the list it has.
+// verified leaf records its runtime extensions. A failed dial is logged,
+// records nothing, and leaves the gate to fail on the list it has.
 func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platformVerifier) {
 	port := releaseURL.Port()
 	if port == "" {
@@ -193,6 +194,7 @@ func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platf
 	dialer := tls.Dialer{Config: armTLSConfig(exp)}
 	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
 	if err != nil {
+		slog.Warn("refresh cred-release measured policies", "error", err)
 		return
 	}
 	_ = conn.Close() // the handshake was the point

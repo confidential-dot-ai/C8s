@@ -21,6 +21,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -195,7 +196,7 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 // the measured allowlist policies. The journal is read after the report, so it
 // may hold extends the report does not.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error {
-	policies, err := runtimemeasure.ReadJournal(measuredPoliciesPath)
+	policies, err := armtls.ReadJournal(measuredPoliciesPath)
 	if err != nil {
 		return fmt.Errorf("read measured policies: %w", err)
 	}

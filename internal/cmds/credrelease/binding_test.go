@@ -29,8 +29,14 @@ func TestMain(m *testing.M) {
 	attestationReadyTimeout = 300 * time.Millisecond
 	attestationReadyInterval = 20 * time.Millisecond
 	// Keep the host's own journal, if any, out of every binding check.
-	measuredPoliciesPath = filepath.Join(os.TempDir(), "credrelease-test-no-journal")
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "credrelease-test")
+	if err != nil {
+		panic(err)
+	}
+	measuredPoliciesPath = filepath.Join(dir, "no-journal")
+	code := m.Run()
+	_ = os.RemoveAll(dir) // best effort: the process exits next
+	os.Exit(code)
 }
 
 // stageOperatorPubkey points the package's staging path at a temp file and

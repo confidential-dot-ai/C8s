@@ -170,6 +170,9 @@ func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
 // A journal briefly unreadable while the plugin rewrites it is read once its
 // mode is restored.
 func TestRuntimeExtensionsRetriesUnreadableJournal(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a mode 0 file, so no retry happens")
+	}
 	p := "sha256:" + strings.Repeat("1", 64)
 	journal := filepath.Join(t.TempDir(), "measured-policies")
 	if err := os.WriteFile(journal, []byte(p+"\n"), 0o000); err != nil {
