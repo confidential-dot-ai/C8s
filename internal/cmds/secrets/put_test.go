@@ -377,8 +377,11 @@ func TestExplainPrintsANearMiss(t *testing.T) {
 	_, _, url := explainServer(t, intsecrets.ExplainResponse{
 		SandboxID: testSandboxID,
 		Entries: []intsecrets.EntryVerdict{{
-			Name:         "api",
-			Foreign:      []intsecrets.ReportedContainer{{Digest: "sha256:busybox", Argv: []string{"sh", "-c", "sleep"}}},
+			Name: "api",
+			Foreign: []intsecrets.ReportedContainer{
+				{Digest: "sha256:busybox", Argv: []string{"sh", "-c", "sleep"}},
+				{Digest: "sha256:matched", Argv: []string{"/serve"}, EnvEvidence: "evicted"},
+			},
 			MissingMains: []intsecrets.MissingContainer{{Digest: "sha256:app", Image: "ghcr.io/x/app"}},
 		}},
 		Refusal: "no entry describes the candidate set",
@@ -393,6 +396,7 @@ func TestExplainPrintsANearMiss(t *testing.T) {
 		"api  NEAR MISS",
 		"foreign  sha256:busybox",
 		"no container in this entry declares it",
+		"env evidence evicted: the node evicted the per-variable digests",
 		"missing  sha256:app (ghcr.io/x/app)",
 		"nothing is released: no entry describes the candidate set",
 	} {
