@@ -371,16 +371,17 @@
 {{- define "c8s.pinnedComponentEntries" -}}
 {{- $componentDigests := list -}}
 {{- range $c := (include "c8s.components" . | fromJsonArray) -}}
-{{- with get (get $c "image") "digest" -}}{{- $componentDigests = append $componentDigests . -}}{{- end -}}
+{{- with get (get $c "image") "digest" -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
 {{- end -}}
-{{- with .Values.router.nginx.image.digest -}}{{- $componentDigests = append $componentDigests . -}}{{- end -}}
+{{- with .Values.router.nginx.image.digest -}}{{- $componentDigests = append $componentDigests (lower .) -}}{{- end -}}
 {{- $digests := dict -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
 {{- $command := dig "command" "policy" "" $c -}}
 {{- $open := and (eq (dig "args" "policy" "" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (eq (dig "mounts" "policy" "deny" $c) "any") -}}
-{{- if and (or (eq $command "any") (eq $command "exact")) (not $open) (has $c.digest $componentDigests) -}}
-{{- $_ := set $digests $c.digest (append (get $digests $c.digest | default list) $c) -}}
+{{- $digest := lower (toString $c.digest) -}}
+{{- if and (or (eq $command "any") (eq $command "exact")) (not $open) (has $digest $componentDigests) -}}
+{{- $_ := set $digests $digest (append (get $digests $digest | default list) $c) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -399,23 +400,28 @@
 {{- $openArgs := include "c8s.openArgsEntries" . | fromJson -}}
 {{- $operatorPins := include "c8s.pinnedComponentEntries" . | fromJson -}}
 {{- $components := include "c8s.componentShapes" . | fromJson -}}
+{{- /* Keyed by the lowercased digest, as the entry name is: two spellings of
+       one digest are one entry. */ -}}
 {{- $images := dict -}}
 {{- $containers := dict -}}
 {{- range $digest, $entry := $components -}}
-{{- $_ := set $images $digest (get $entry "image") -}}
-{{- $_ := set $containers $digest (get $entry "containers") -}}
+{{- $_ := set $images (lower $digest) (get $entry "image") -}}
+{{- $_ := set $containers (lower $digest) (get $entry "containers") -}}
 {{- end -}}
 {{- range $digest, $entry := $openArgs -}}
-{{- if not (hasKey $images $digest) -}}{{- $_ := set $images $digest (get $entry "image") -}}{{- end -}}
+{{- $key := lower $digest -}}
+{{- if not (hasKey $images $key) -}}{{- $_ := set $images $key (get $entry "image") -}}{{- end -}}
 {{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $entry) | fromJson -}}
-{{- $_ := set $containers $digest (append (get $containers $digest | default list) $container) -}}
+{{- $_ := set $containers $key (append (get $containers $key | default list) $container) -}}
 {{- end -}}
 {{- range $digest, $list := $operatorPins -}}
 {{- if not (hasKey $images $digest) -}}{{- $_ := set $images $digest (default "" (get (first $list) "image")) -}}{{- end -}}
 {{- $_ := set $containers $digest (concat (get $containers $digest | default list) $list) -}}
 {{- end -}}
+{{- $excluded := list -}}
+{{- range $d := $pinnedDigests -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
 {{- range $digest, $list := $containers -}}
-{{- if not (has $digest $pinnedDigests) -}}
+{{- if not (has $digest $excluded) -}}
 {{- $image := get $images $digest -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
 {{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $list) -}}

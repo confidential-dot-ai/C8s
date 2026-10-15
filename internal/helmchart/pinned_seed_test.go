@@ -560,7 +560,7 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 // verbatim. Missing any container the chart runs the executable in, it does
 // not cover the component.
 func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
-	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
+	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000011"
 	derived, err := helmTemplate(t, "--set-string", "image.digest="+opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, derived)
@@ -574,24 +574,36 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 		}
 	}
 	operatorArgv := runtimeArgv(renderedDeploymentContainer(t, derived, "c8s-operator", "operator"), []string{"/c8s"})
+	resolvedLayout := func(c pkgallowlist.Container) bool {
+		return slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return strings.HasPrefix(r.Source, "/run/nri-image-policy") })
+	}
 	for _, tc := range []struct {
-		name    string
-		drop    bool
-		covered bool
+		name      string
+		drop      func(pkgallowlist.Container) bool
+		uppercase bool
+		covered   bool
 	}{
-		{"the chart's entry", false, true},
-		{"without the operator's container", true, false},
+		{name: "the chart's entry", covered: true},
+		{name: "uppercase digest", uppercase: true, covered: true},
+		{name: "without the operator's container", drop: func(c pkgallowlist.Container) bool {
+			return c.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(c.Args.Argv, operatorArgv[1:])
+		}},
+		{name: "without the resolved layout of a host mount", drop: resolvedLayout},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			entry := slices.DeleteFunc(slices.Clone(containers), func(c pkgallowlist.Container) bool {
-				return tc.drop && c.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(c.Args.Argv, operatorArgv[1:])
-			})
-			if tc.drop && len(entry) == len(containers) {
-				t.Fatal("the derived entry has no container for the operator")
+			entry := slices.Clone(containers)
+			if tc.drop != nil {
+				entry = slices.DeleteFunc(entry, tc.drop)
+				if len(entry) == len(containers) {
+					t.Fatal("the derived entry has no container to drop")
+				}
 			}
 			raw, err := json.Marshal(map[string]any{"containers": entry})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if tc.uppercase {
+				raw = []byte(strings.ReplaceAll(string(raw), `"digest":"`+opD, `"digest":"sha256:`+strings.ToUpper(strings.TrimPrefix(opD, "sha256:"))))
 			}
 			out, err := helmTemplate(t,
 				"--set-string", "image.digest="+opD,

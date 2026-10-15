@@ -85,8 +85,9 @@
 {{- if has (dig "command" "policy" "" $c) (list "any" "exact") -}}{{- $operator = append $operator $c -}}{{- end -}}
 {{- end -}}
 {{- end -}}
-{{- /* Covered per container: a container with a hostPath under /var/run has
-       a shape per host layout, and the node produces one of them. */ -}}
+{{- /* Covered per shape: a container with a hostPath under /var/run has a
+       shape per host layout, and each must be admitted, since the node's
+       layout is not known here. */ -}}
 {{- $covered := dict -}}
 {{- $argvs := dict -}}
 {{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
@@ -97,7 +98,7 @@
        another invocation (the volumed teardown hook) is seed-only. */ -}}
 {{- if and (ge (len $command) (len $entrypoint)) (eq (slice $command 0 (len $entrypoint) | toJson) ($entrypoint | toJson)) -}}
 {{- $argv := concat $command (dig "args" "argv" list $shape) -}}
-{{- $key := list (get $shape "digest") $argv | toJson -}}
+{{- $key := $shape | toJson -}}
 {{- $_ := set $argvs $key $argv -}}
 {{- if not (get $covered $key) -}}
 {{- $ok := false -}}
@@ -111,7 +112,7 @@
 {{- end -}}
 {{- range $key, $ok := $covered -}}
 {{- if not $ok -}}
-{{- $digest := first (fromJsonArray $key) -}}
+{{- $digest := get (fromJson $key) "digest" -}}
 {{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts. The plugin would deny it on its own node. Add an entry with open args, env and mounts under any command or one pinned to the image's entrypoint %s (c8s allowlist add writes the any-command shape), copy the chart's own entry for the digest, set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson) (get $pins $digest | toJson)) -}}
 {{- end -}}
 {{- end -}}
