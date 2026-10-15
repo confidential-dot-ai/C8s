@@ -146,29 +146,51 @@ func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
 // cyclic layout fails instead of recursing forever.
 const maxIndexDepth = 8
 
-// layoutManifest reads the image manifest digest names in the layout at dir,
-// following the linux/amd64 entry of each index it meets.
+// layoutManifest reads the image manifest digest names in the layout at dir:
+// the first linux/amd64 manifest below it, through nested indexes. An index
+// entry may omit its platform when it points to another index.
 func layoutManifest(dir, digest string) (*ocispec.Manifest, error) {
-	for range maxIndexDepth {
-		var blob struct {
-			ocispec.Manifest
-			Manifests []ocispec.Descriptor `json:"manifests"`
-		}
-		if err := readBlob(dir, digest, &blob); err != nil {
-			return nil, err
-		}
-		if len(blob.Manifests) == 0 {
-			return &blob.Manifest, nil
-		}
-		i := slices.IndexFunc(blob.Manifests, func(d ocispec.Descriptor) bool {
-			return d.Platform != nil && d.Platform.OS == "linux" && d.Platform.Architecture == nodeImageArchitecture
-		})
-		if i < 0 {
-			return nil, fmt.Errorf("image index %s has no linux/%s manifest", digest, nodeImageArchitecture)
-		}
-		digest = blob.Manifests[i].Digest.String()
+	manifest, err := findManifest(dir, digest, maxIndexDepth)
+	if err != nil {
+		return nil, fmt.Errorf("image %s: %w", digest, err)
 	}
-	return nil, fmt.Errorf("image %s nests indexes deeper than %d levels", digest, maxIndexDepth)
+	if manifest == nil {
+		return nil, fmt.Errorf("image %s has no linux/%s manifest", digest, nodeImageArchitecture)
+	}
+	return manifest, nil
+}
+
+// findManifest returns the first linux/amd64 manifest at or below digest, nil
+// when there is none, descending at most depth indexes.
+func findManifest(dir, digest string, depth int) (*ocispec.Manifest, error) {
+	if depth == 0 {
+		return nil, fmt.Errorf("indexes nest deeper than %d levels", maxIndexDepth)
+	}
+	var blob struct {
+		ocispec.Manifest
+		Manifests []ocispec.Descriptor `json:"manifests"`
+	}
+	if err := readBlob(dir, digest, &blob); err != nil {
+		return nil, err
+	}
+	if len(blob.Manifests) == 0 {
+		return &blob.Manifest, nil
+	}
+	for _, d := range blob.Manifests {
+		amd64 := d.Platform != nil && d.Platform.OS == "linux" && d.Platform.Architecture == nodeImageArchitecture
+		if !amd64 && (d.Platform != nil || !isIndexMediaType(d.MediaType)) {
+			continue
+		}
+		manifest, err := findManifest(dir, d.Digest.String(), depth-1)
+		if manifest != nil || err != nil {
+			return manifest, err
+		}
+	}
+	return nil, nil
+}
+
+func isIndexMediaType(mediaType string) bool {
+	return mediaType == ocispec.MediaTypeImageIndex || mediaType == "application/vnd.docker.distribution.manifest.list.v2+json"
 }
 
 // readBlob decodes the layout blob digest names into v, refusing content

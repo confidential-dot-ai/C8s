@@ -597,7 +597,9 @@ command and args open as well.
 The chart renders the seed (`--allowlist-seed`) from the resolved component
 digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
 component digest becomes one entry named `<image basename>-<first 12 hex of
-digest>` with one container per way the chart or the webhook runs the image:
+digest>` with one init container per way the chart or the webhook runs the
+image, and no main container, so a pod running some of the invocations
+matches the entry:
 `command: exact` at the image's entrypoint (`c8sComponents[].entrypoint`,
 `router.nginx.entrypoint`) plus the subcommand, `args: any`, `mounts: any` and
 `env: match`. The match lists the image config's variables pinned `exact`
@@ -656,12 +658,28 @@ plugin's first successful policy pull and kubelet retry.
 Pods keep the `enableServiceLinks` setting they were created with. An
 injected pod created before the upgrade still receives service-link
 variables, so a tightened entry denies its fetchers when they restart. Keep
-the old entries until those pods are gone. To migrate the stored entries
-after upgrading the chart:
+the old entries until those pods are gone.
+
+Before you upgrade the chart, finish these prerequisites:
+
+1. Migrate every workload entry whose env policy lists service-link
+   variables ([Migrate env policies that list service
+   links](secrets.md#migrate-env-policies-that-list-service-links)). A pod
+   recreated after the upgrade loses those variables, so its old entry stops
+   matching and CDS refuses it a certificate and secrets.
+2. Prepare every client that pins the allowlist document ([Move clients
+   that pin the old name](secrets.md#move-clients-that-pin-the-old-name)).
+   Each `edit` and `delete` below changes the document for every workload.
+3. Check the prerequisites: `c8s allowlist lint` reports no error on the
+   exported document, and `c8s secrets explain` reports a match for one
+   running pod of each migrated workload.
+
+To migrate the stored entries after upgrading the chart:
 
 1. Recreate every confidential pod created before the upgrade, so the webhook
    injects it with service links off. Keep the stored entries unchanged
-   while you do.
+   while you do. Continue once each recreated pod reaches `Ready` and
+   `c8s secrets explain` reports a match for it.
 2. Save the live document and lint it: `c8s allowlist export before.json`,
    then `c8s allowlist lint before.json`.
    On a mirror that flattens repository paths, every component entry gets a
@@ -671,23 +689,28 @@ after upgrading the chart:
    the same container digest, whatever the stored entry is named. Every
    other reported entry is historical: an earlier image the seed no longer
    renders, or an entry named by hand.
-4. For each current entry, replace its whole container list with the
-   containers of the seed entry holding that digest. The seed holds one
-   container per invocation, each with its own env match: `operator`
-   requires `POD_NAME`, the injected fetchers `C8S_WORKLOAD_ID`,
-   `C8S_POD_NAME`, `C8S_POD_UID` and `HOST_IP`. Replacing only one
-   container's `env` denies the other invocations. Keep the fields you
-   reviewed at the entry level, such as `label` and `secrets`, and apply the
-   entry with `c8s allowlist edit`.
+4. For each current entry, replace its `initContainers` and `containers`
+   with those of the seed entry holding that digest. The seed holds one init
+   container per invocation, each with its own env match, and no main
+   container: `operator` requires `POD_NAME`, the injected fetchers
+   `C8S_WORKLOAD_ID`, `C8S_POD_NAME`, `C8S_POD_UID` and `HOST_IP`. Replacing
+   only one container's `env` denies the other invocations, and listing the
+   invocations as main containers makes every pod miss the entry. Keep the
+   fields you reviewed at the entry level, such as `label` and `secrets`, and
+   apply the entry with `c8s allowlist edit`. After each edit, confirm that
+   the component pods of that digest stay `Ready`.
 5. Leave each historical entry as stored. Delete it with `c8s allowlist
    delete` once no pod runs its digest. To list the digests pods run, use
    `kubectl get pods -A -o jsonpath='{..imageID}'`.
-6. On measured nodes (`nriImagePolicy.baked=true`), replace every node. A
-   chart upgrade updates the served entries but not the base measured into
-   the node image, which keeps `env: any` for the components. Rebuild the
-   node image from this release, put only its measurements in the launch
-   bundle's `server.json` and `peers.json`, and relaunch each node on it.
-   Drain and delete each old node once its replacement is `Ready`.
+6. On measured nodes (`nriImagePolicy.baked=true`), a chart upgrade updates
+   the served entries but not the base measured into the node image, which
+   keeps `env: any` for the components. Rebuild the node image from this
+   release, and move the cluster onto it with the procedure [Default install
+   behavior](operator.md#default-install-behavior) supports: replace the
+   cluster, or relaunch every node with coordinated downtime. Measured
+   images do not support a rolling upgrade. Hardening on measured nodes is
+   complete only once every node runs an image whose base carries the match
+   policies.
 
 The migration is complete when all of these hold:
 
@@ -699,11 +722,10 @@ The migration is complete when all of these hold:
   succeeds in the get-cert sidecar's log.
 - No historical entry remains, or each one still names a digest a running
   pod uses.
-- On measured nodes, every node runs the rebuilt image: `kubectl get nodes`
-  lists only replacement nodes, and `c8s cds verify` with
-  `--served-policy-file peers.json` passes against a `peers.json` that holds
-  no measurement of an earlier image. CDS then admits no node whose base
-  still carries `env: any`.
+- On measured nodes, every node runs an image whose base carries the match
+  policies, and `c8s cds verify --served-policy-file peers.json` passes
+  against the `peers.json` that `c8s node launch-config new` wrote for that
+  image.
 
 To roll back, restore the entry you replaced from `before.json` with `c8s
 allowlist edit`; `apply` refuses its `env: any`. Do this when a component pod

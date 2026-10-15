@@ -11,7 +11,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	sigsyaml "sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // runtimeTestEnv is what containerd and the kubelet add to a component
@@ -240,6 +242,65 @@ func TestChartComponentEntriesPinLoaderVariables(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// A component pod runs some of its image's invocations, never all of them:
+// the seed entry still names it, so the pod's certificate carries a workload
+// identity.
+func TestChartComponentEntriesIdentifyPods(t *testing.T) {
+	out := componentRender(t)
+	seed := renderedSeed(t, out)
+	running := map[string][]pkgallowlist.RunningContainer{}
+	for _, cc := range renderedComponentContainers(t, out) {
+		argv := effectiveArgv(cc.container)
+		if len(cc.container.Command) == 0 {
+			argv = append(slices.Clone(cc.image.entrypoint), cc.container.Args...)
+		}
+		key := cc.workload + " " + cc.digest
+		running[key] = append(running[key], pkgallowlist.RunningContainer{Digest: cc.digest, Argv: argv, Mounts: []pkgallowlist.ObservedMount{}, Env: launchEnv(t, cc.image.env, cc.container)})
+	}
+	for key, set := range running {
+		name, _, err := seed.MatchWorkload(set)
+		if err != nil {
+			t.Errorf("MatchWorkload(%s) = %v, want the component entry", key, err)
+			continue
+		}
+		if want := set[0].Digest[len("sha256:") : len("sha256:")+12]; !strings.HasSuffix(name, want) {
+			t.Errorf("MatchWorkload(%s) = %q, want the entry of its digest", key, name)
+		}
+	}
+}
+
+// An application pod's injected fetchers are dropped against the seed's
+// invocations, so the pod matches its own entry and receives its grant.
+func TestChartComponentEntriesReleaseAppSecrets(t *testing.T) {
+	seed := renderedSeed(t, componentRender(t))
+	const appDigest = "sha256:2222000000000000000000000000000000000000000000000000000000000001"
+	app, err := pkgallowlist.ParseWorkloadJSON([]byte(`{"containers":[{"digest":"` + appDigest + `","command":{"policy":"exact","argv":["/serve"]},"args":{"policy":"exact","argv":["--port=80"]}}],"secrets":{"policy":"allow","read":["/app/db"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	seed.Workloads["app"] = *app
+	digest := componentTestDigests["image"]
+	imageEnv := componentImages(t)["ghcr.io/confidential-dot-ai/c8s-operator"].env
+	fieldRef := &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}
+	sidecar := corev1.Container{Env: []corev1.EnvVar{
+		{Name: "C8S_WORKLOAD_ID", Value: "app"},
+		{Name: "C8S_POD_NAME", ValueFrom: fieldRef},
+		{Name: "C8S_POD_UID", ValueFrom: fieldRef},
+		{Name: "HOST_IP", ValueFrom: fieldRef},
+	}}
+	reported := []workloadclaims.SandboxContainer{{Digest: appDigest, Argv: []string{"/serve", "--port=80"}, Mounts: []pkgallowlist.ObservedMount{}}}
+	for _, mode := range []string{"get-cert", "get-secret"} {
+		reported = append(reported, workloadclaims.SandboxContainer{Digest: digest, Argv: []string{"/c8s", mode}, Mounts: []pkgallowlist.ObservedMount{}, Env: launchEnv(t, imageEnv, sidecar)})
+	}
+	name, workload, err := seed.MatchWorkload(secrets.WorkloadContainers(seed, reported))
+	if err != nil || name != "app" {
+		t.Fatalf("MatchWorkload(app with injected fetchers) = %q, %v, want app", name, err)
+	}
+	if workload.Secrets == nil || !workload.ArgvPinned() {
+		t.Fatalf("app entry releases nothing: secrets %v, argv pinned %v", workload.Secrets, workload.ArgvPinned())
 	}
 }
 

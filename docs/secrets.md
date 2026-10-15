@@ -369,9 +369,13 @@ value.
 
 A policy lists the complete environment the container starts with: the
 image config's variables, the pod spec's, `HOSTNAME`, and the API-server
-variables the kubelet adds. To see them, run `kubectl exec POD_NAME -c
-CONTAINER -- env` in a pod started with service links off, or read the
-image's `Env` with `crane config IMAGE`. An `exact` policy pins
+variables the kubelet adds. To list them, run `c8s secrets explain --sandbox
+SANDBOX_ID --json` against a running pod of the workload: each reported
+container's `env.variableDigests` names every variable it started with, the
+image's and the runtime's included. This works on locked measured nodes,
+which deny `kubectl exec`. Read the values the pod spec sets with `kubectl
+get pod POD_NAME -o yaml` and the image's with `crane config IMAGE`. An
+`exact` policy pins
 every value, `HOSTNAME` included, so it fits only a pod whose hostname is fixed,
 such as a StatefulSet replica. Use `match` with `present` for a value that
 differs per pod.
@@ -420,6 +424,8 @@ c8s allowlist apply entry.json
 - `NEW_NAME`: a name no entry uses, such as the old name with a `-v2` suffix.
 - `POD_FILE`: the workload's Pod or Deployment manifest.
 - `OLD_NAME`: the entry you are replacing.
+- `SANDBOX_ID`: the sandbox ID on the pod's certificate; `c8s verify` prints
+  it.
 
 Pass the same mount flags the old entry was derived with.
 
@@ -428,28 +434,36 @@ Pass the same mount flags the old entry was derived with.
 CDS stamps the matched entry's name and the policy snapshot into each
 workload certificate (see [Matched workload](armtls.md#matched-workload-which-allowlist-entry-is-behind-a-key)).
 After step 4, a restarted pod renews under `NEW_NAME`, so a client running
-`c8s verify --workload OLD_NAME` rejects it, and a client pinning the
-document with `--allowlist FILE` rejects every renewed certificate. Secret
-grants carry over through the copied `secrets` block; name pins do not.
+`c8s verify --workload OLD_NAME` rejects it. A client pinning the document
+with `--allowlist FILE` is affected beyond this workload: every `apply` or
+`delete` changes the document, every workload renews against the new
+snapshot, and each such client rejects every renewed certificate until it
+holds the new document. Secret grants carry over through the copied
+`secrets` block; name and document pins do not.
 
 To move the clients, alongside the steps above:
 
-1. Before step 4, list every client that passes `--workload OLD_NAME` or
-   `--allowlist FILE` for this workload.
-2. After step 4, export the document with `c8s allowlist export FILE` and
-   give it to each client that pins the document.
-3. As pods restart, switch each client to `--workload NEW_NAME`. A client
+1. Before step 4, list every client that passes `--workload OLD_NAME`, and
+   every client that passes `--allowlist FILE`, whichever workload it
+   reaches.
+2. Plan each document write, step 4 and step 5, as one cutover: the write,
+   the certificate renewals that follow it, and the new document on every
+   client that pins it. When a client cannot take the new document before
+   the first certificate renews against it, schedule a maintenance window
+   for that client's traffic.
+3. After each write, export the document with `c8s allowlist export FILE`
+   and give it to every client that pins the document.
+4. As pods restart, switch each client to `--workload NEW_NAME`. A client
    pinned to one name rejects pods under the other until the rollout ends,
    so switch a client once the pods it reaches have restarted.
-4. Verify each switched client: `c8s verify` reports `workload_verified`
+5. Verify each switched client: `c8s verify` reports `workload_verified`
    for a restarted pod.
-5. After step 5, export the document again for the clients that pin it.
 
 To roll back before step 5, delete the new entry with `c8s allowlist
 delete NEW_NAME`, switch the clients back to `--workload OLD_NAME`, and
-restore their previous document. Pods started before the upgrade renew
-under `OLD_NAME`. A pod started after it matches no entry until you apply a
-new one again.
+give the clients that pin the document the export taken after the delete.
+Pods started before the upgrade renew under `OLD_NAME`. A pod started after
+it matches no entry until you apply a new one again.
 
 ### The injected drop set
 

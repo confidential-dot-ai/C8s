@@ -35,8 +35,9 @@ func writeBlob(t *testing.T, layout string, v any) string {
 }
 
 // writeLayout writes a multi-platform image whose linux/amd64 config sets env,
-// under nested further indexes, and returns the image digest.
-func writeLayout(t *testing.T, layouts string, env []string, nested int) string {
+// under nested further indexes, whose entries omit their platform when
+// platformless is set, and returns the image digest.
+func writeLayout(t *testing.T, layouts string, env []string, nested int, platformless bool) string {
 	t.Helper()
 	staging := filepath.Join(layouts, "staging")
 	config := writeBlob(t, staging, map[string]any{"config": map[string]any{"Entrypoint": []string{"/app/c8s"}, "Cmd": []string{"armtls-mesh"}, "Env": env}})
@@ -54,9 +55,13 @@ func writeLayout(t *testing.T, layouts string, env []string, nested int) string 
 		},
 	})
 	for range nested {
+		entry := map[string]any{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": index, "size": 1}
+		if !platformless {
+			entry["platform"] = map[string]string{"os": "linux", "architecture": "amd64"}
+		}
 		index = writeBlob(t, staging, map[string]any{
 			"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
-			"manifests": []any{map[string]any{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": index, "size": 1, "platform": map[string]string{"os": "linux", "architecture": "amd64"}}},
+			"manifests": []any{entry},
 		})
 	}
 	layout := filepath.Join(layouts, "oci-"+strings.TrimPrefix(index, "sha256:"))
@@ -78,16 +83,18 @@ func writeLayout(t *testing.T, layouts string, env []string, nested int) string 
 func TestNodeImageCheckImagesReadsImageEnv(t *testing.T) {
 	path := []string{"PATH=/usr/bin:/bin"}
 	for name, tc := range map[string]struct {
-		env     []string
-		seed    string
-		nested  int
-		wantErr bool
+		env          []string
+		seed         string
+		nested       int
+		platformless bool
+		wantErr      bool
 	}{
 		"declared env":         {env: path},
 		"undeclared variable":  {env: []string{"PATH=/usr/bin:/bin", "LD_LIBRARY_PATH=/opt/lib"}, wantErr: true},
 		"other PATH":           {env: []string{"PATH=/opt/bin:/usr/bin:/bin"}, wantErr: true},
 		"default PATH instead": {env: nil, wantErr: true},
 		"nested index":         {env: path, nested: 2},
+		"platformless index":   {env: path, nested: 2, platformless: true},
 		// The kubelet sets its variables over the image's.
 		"kubelet port over the image's":  {env: append(path, "KUBERNETES_SERVICE_PORT=9999"), seed: `,"KUBERNETES_SERVICE_PORT":{"exact":"443"}`},
 		"image port pinned":              {env: append(path, "KUBERNETES_SERVICE_PORT=9999"), seed: `,"KUBERNETES_SERVICE_PORT":{"exact":"9999"}`, wantErr: true},
@@ -96,7 +103,7 @@ func TestNodeImageCheckImagesReadsImageEnv(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			layouts, out := t.TempDir(), t.TempDir()
-			digest := writeLayout(t, layouts, tc.env, tc.nested)
+			digest := writeLayout(t, layouts, tc.env, tc.nested, tc.platformless)
 			integration := `apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -104,6 +111,7 @@ metadata:
 spec:
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: mesh
           image: registry.example.com/c8s@` + digest + `
@@ -126,13 +134,29 @@ spec:
 
 func TestNodeImageCheckImagesRejectsTamperedBlob(t *testing.T) {
 	layouts := t.TempDir()
-	digest := writeLayout(t, layouts, []string{"PATH=/usr/bin:/bin"}, 0)
+	digest := writeLayout(t, layouts, []string{"PATH=/usr/bin:/bin"}, 0, false)
 	layout := filepath.Join(layouts, "oci-"+strings.TrimPrefix(digest, "sha256:"))
 	if err := os.WriteFile(filepath.Join(layout, "blobs", "sha256", strings.TrimPrefix(digest, "sha256:")), []byte("{}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := layoutImageConfig(layout, digest); err == nil {
 		t.Fatal("layoutImageConfig accepted a blob that does not match its digest")
+	}
+}
+
+// A refusal names the digest the operator pinned, not an inner index's.
+func TestLayoutManifestNamesPinnedDigest(t *testing.T) {
+	layout := t.TempDir()
+	arm := writeBlob(t, layout, map[string]any{"schemaVersion": 2, "config": map[string]any{"digest": writeBlob(t, layout, map[string]any{"config": map[string]any{}})}})
+	inner := writeBlob(t, layout, map[string]any{"schemaVersion": 2, "manifests": []any{
+		map[string]any{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": arm, "size": 1, "platform": map[string]string{"os": "linux", "architecture": "arm64"}},
+	}})
+	top := writeBlob(t, layout, map[string]any{"schemaVersion": 2, "manifests": []any{
+		map[string]any{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": inner, "size": 1, "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
+	}})
+	_, err := layoutManifest(layout, top)
+	if err == nil || !strings.Contains(err.Error(), top) {
+		t.Fatalf("layoutManifest(arm64-only image %s) = %v, want an error naming it", top, err)
 	}
 }
 
@@ -168,15 +192,25 @@ func TestDocumentedMigrationEnvListsRuntimeVariables(t *testing.T) {
 }
 
 // Each migration guide must close the gap its rename or rebuild opens: a
-// measured node keeps its base until it is replaced, and a client pinning the
-// old workload name rejects the renamed entry's certificates.
+// measured node keeps its base until the cluster moves to a rebuilt image by
+// a supported procedure, a document write reaches every client pinning the
+// document, and a locked node denies exec.
 func TestDocumentedMigrationsCoverStalePins(t *testing.T) {
 	for _, tc := range []struct {
 		file, section string
-		want          []string
+		want, forbid  []string
 	}{
-		{"../../docs/allowlist-and-capabilities.md", "### Migrate stored component entries", []string{"nriImagePolicy.baked=true", "--served-policy-file"}},
-		{"../../docs/secrets.md", "#### Move clients that pin the old name", []string{"--workload NEW_NAME", "To roll back"}},
+		{
+			"../../docs/allowlist-and-capabilities.md", "### Migrate stored component entries",
+			[]string{
+				"nriImagePolicy.baked=true", "--served-policy-file", "operator.md#default-install-behavior",
+				"every node runs an image whose base carries the match policies",
+				"Before you upgrade the chart", "secrets.md#migrate-env-policies-that-list-service-links", "secrets.md#move-clients-that-pin-the-old-name",
+			},
+			[]string{"Drain", "server.json"},
+		},
+		{"../../docs/secrets.md", "#### Move clients that pin the old name", []string{"--workload NEW_NAME", "To roll back", "every client that passes `--allowlist FILE`", "maintenance window"}, []string{"for this workload"}},
+		{"../../docs/secrets.md", "#### Migrate env policies that list service links", []string{"c8s secrets explain"}, []string{"kubectl exec POD_NAME"}},
 	} {
 		doc, err := os.ReadFile(tc.file)
 		if err != nil {
@@ -187,10 +221,16 @@ func TestDocumentedMigrationsCoverStalePins(t *testing.T) {
 			t.Errorf("%s lacks %q", tc.file, tc.section)
 			continue
 		}
-		section, _, _ = strings.Cut(section, "\n## ")
+		section, _, _ = strings.Cut(section, "\n#")
+		section = strings.Join(strings.Fields(section), " ")
 		for _, want := range tc.want {
 			if !strings.Contains(section, want) {
 				t.Errorf("%s %q does not mention %s", tc.file, tc.section, want)
+			}
+		}
+		for _, forbid := range tc.forbid {
+			if strings.Contains(section, forbid) {
+				t.Errorf("%s %q mentions %s", tc.file, tc.section, forbid)
 			}
 		}
 	}

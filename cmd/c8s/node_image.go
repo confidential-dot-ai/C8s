@@ -366,7 +366,7 @@ func collectNodeImageArtifacts(rendered []byte, entrypoints map[string]entrypoin
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, c.argv)
 			}
 			if !slices.ContainsFunc(seedContainers[baked.digest], func(s pkgallowlist.Container) bool { return seedLaunches(s, c, nil) }) {
-				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q matches the variables its manifest sets %q (envFrom cannot be checked)", image, c.argv, c.names())
+				return nil, fmt.Errorf("node-image image %s: no bootstrap seed entry admitting %q matches the variables its manifest sets %q (envFrom and service links cannot be checked)", image, c.argv, c.names())
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -405,12 +405,14 @@ type bakedImage struct {
 // bakedContainer is the argv a baked container runs, nil when it sets no
 // command and the chart pins no entrypoint for its image; the args it passes
 // without a command; the variables its manifest sets; and whether it also
-// imports some (envFrom), whose names this cannot resolve.
+// imports some (envFrom) or receives the namespace's Service variables
+// (service links not disabled), whose names this cannot resolve.
 type bakedContainer struct {
-	argv    []string
-	args    []string
-	env     []bakedVariable
-	envFrom bool
+	argv         []string
+	args         []string
+	env          []bakedVariable
+	envFrom      bool
+	serviceLinks bool
 }
 
 // bakedVariable is one variable a manifest sets. literal is false for a
@@ -508,10 +510,11 @@ const (
 // runtime's order, each source overriding the one before: containerd's
 // HOSTNAME, the image's variables (containerd's default PATH when it sets
 // none), the kubelet's API-server variables, then the manifest's. It is not
-// ok when the manifest imports variables (envFrom) or sets one through an
-// optional key reference: which variables are set is then unknown.
+// ok when the manifest imports variables (envFrom), sets one through an
+// optional key reference, or leaves service links on: which variables are
+// set is then unknown.
 func launchEnvironment(c bakedContainer, image map[string]string) (map[string]launchValue, bool) {
-	if c.envFrom {
+	if c.envFrom || c.serviceLinks {
 		return nil, false
 	}
 	env := map[string]launchValue{"HOSTNAME": {source: sourceDynamic}}
@@ -613,7 +616,7 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
-		container := bakedContainer{envFrom: len(c.EnvFrom) > 0}
+		container := bakedContainer{envFrom: len(c.EnvFrom) > 0, serviceLinks: spec.EnableServiceLinks == nil || *spec.EnableServiceLinks}
 		if len(c.Command) > 0 {
 			container.argv = slices.Concat(c.Command, c.Args)
 		} else {

@@ -641,7 +641,7 @@ func TestChartOperatorMatchedEntryCoversComponent(t *testing.T) {
 		t.Fatalf("seed derives no operator entry: %v", seed.Workloads)
 	}
 	render := func(edit func([]map[string]any) []map[string]any) (string, error) {
-		raw, err := json.Marshal(derived.Containers)
+		raw, err := json.Marshal(derived.InitContainers)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -650,7 +650,7 @@ func TestChartOperatorMatchedEntryCoversComponent(t *testing.T) {
 			t.Fatal(err)
 		}
 		values, err := json.Marshal(map[string]any{"nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{
-			"workloads": map[string]any{"c8s-operator": map[string]any{"containers": edit(containers)}},
+			"workloads": map[string]any{"c8s-operator": map[string]any{"initContainers": edit(containers), "containers": []any{}}},
 		}}})
 		if err != nil {
 			t.Fatal(err)

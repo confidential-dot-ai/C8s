@@ -162,7 +162,9 @@
 {{/* The allowlist containers for one component image: one per invocation
      (c8s.componentInvocations), command exact at the entrypoint plus its
      subcommand, args and mounts any, env matched. Admission is the union
-     across them. */ -}}
+     across them. An entry lists them as initContainers: workload matching
+     requires every main container to run, and a pod runs only some
+     invocations. */ -}}
 {{- define "c8s.componentContainers" -}}
 {{- $component := .component -}}
 {{- if not (hasKey $component "imageEnv") -}}
@@ -295,7 +297,7 @@
 {{- end -}}
 {{- if $wider -}}{{- $containers = $operator -}}{{- else -}}{{- $containers = concat $containers $operator -}}{{- end -}}
 {{- end -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- $_ := set $workloads $name (dict "label" $image "initContainers" $containers "containers" list) -}}
 {{- end -}}
 {{- end -}}
 {{- range $digest, $entry := $openArgs -}}
@@ -394,7 +396,7 @@
 {{- if eq $digest (default "" $root.Values.volumed.image.digest) -}}
 {{- $containers = concat $containers $hookContainers -}}
 {{- end -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $containers) -}}
+{{- $_ := set $workloads $name (dict "label" $image "initContainers" $containers "containers" list) -}}
 {{- end -}}
 {{- end -}}
 {{- range $name, $entry := (include "c8s.argvPinnedEntries" . | fromJson) -}}

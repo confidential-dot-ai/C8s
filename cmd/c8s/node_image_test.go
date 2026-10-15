@@ -299,6 +299,7 @@ metadata:
 spec:
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: operator
           image: registry.example.com/operator@CORE_DIGEST
@@ -314,6 +315,7 @@ metadata:
 spec:
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: cds
           image: registry.example.com/operator@CORE_DIGEST
@@ -325,6 +327,7 @@ metadata:
 spec:
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: router
           image: registry.example.com/operator@CORE_DIGEST
@@ -336,6 +339,7 @@ metadata:
 spec:
   template:
     spec:
+      enableServiceLinks: false
       containers:
         - name: mesh
           image: registry.example.com/operator@CORE_DIGEST
@@ -646,6 +650,34 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 			_, err := collectNodeImageArtifacts([]byte(input), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s"}}})
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("collectNodeImageArtifacts(%s) = %v, want error %v", tc.env, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// A matched env lists no Service variables, so the guard refuses a pod that
+// leaves service links on, whether it omits the field or enables it.
+func TestNodeImageCollectRequiresServiceLinksOff(t *testing.T) {
+	seeded := strings.Replace(nodeImageCollectFixture(),
+		`{"digest":"`+testDigest+`","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`,
+		`{"digest":"`+testDigest+`","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},`+seedEnv(t, `"PATH":{"exact":"/usr/bin:/bin"}`)+`}`, 1)
+	for name, tc := range map[string]struct {
+		links   string
+		wantErr bool
+	}{
+		"disabled": {links: "      enableServiceLinks: false\n"},
+		"omitted":  {links: "", wantErr: true},
+		"enabled":  {links: "      enableServiceLinks: true\n", wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := strings.Replace(seeded, "  name: c8s-armtls-mesh\nspec:\n  template:\n    spec:\n      enableServiceLinks: false\n",
+				"  name: c8s-armtls-mesh\nspec:\n  template:\n    spec:\n"+tc.links, 1)
+			if input == seeded && name != "disabled" {
+				t.Fatal("fixture did not change")
+			}
+			_, err := collectNodeImageArtifacts([]byte(input), map[string]entrypointPin{testDigest: {argv: []string{"/app/c8s"}}})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("collectNodeImageArtifacts(service links %s) = %v, want error %v", name, err, tc.wantErr)
 			}
 		})
 	}

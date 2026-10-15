@@ -29,6 +29,9 @@ and derives from its own image values (`router.nginx.entrypoint`,
 `c8s.componentInvocations` lists for the component (its entrypoint alone when
 none is listed), `command` exact at the entrypoint plus the invocation's
 subcommand, `args` and `mounts` any, and `env` from `c8s.componentEnv`.
+The seed and the base list them as `initContainers` with no main container:
+workload matching requires every main container to run, and a component pod
+runs only some invocations.
 
 `c8s.componentInvocations` lists, by component name, every way the chart's
 templates and the webhook's sidecars (`getCertEnv` in

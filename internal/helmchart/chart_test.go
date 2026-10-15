@@ -5522,7 +5522,7 @@ func podVolume(spec corev1.PodSpec, name string) (corev1.Volume, bool) {
 // seedEntry finds the seed entry whose single container carries digest.
 func seedEntry(seed *pkgallowlist.Allowlist, digest string) (pkgallowlist.Workload, bool) {
 	for _, w := range seed.Workloads {
-		for _, c := range w.Containers {
+		for _, c := range append(slices.Clone(w.InitContainers), w.Containers...) {
 			if c.Digest.String() == digest {
 				return w, true
 			}
