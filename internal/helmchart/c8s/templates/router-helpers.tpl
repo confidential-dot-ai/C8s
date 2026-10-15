@@ -621,9 +621,10 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args (printf "--expected-workload=%s" .) -}}
 {{- end -}}
 {{- /* The NRI plugin's measured-policy journal, under the
-       attestation-api-socket mount (validations.yaml requires it); absent
-       until the plugin measures. */ -}}
-{{- if $root.Values.nriImagePolicy.measurePolicies -}}
+       attestation-api-socket mount. Passed whatever measurePolicies says:
+       RTMR[3] keeps its extends until reboot after measuring is turned off,
+       and an absent journal omits the list. */ -}}
+{{- if include "c8s.attestationApiSocketPresent" $root -}}
 {{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}
 {{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -377,9 +379,10 @@ func (c *config) Validate() error {
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
 	}
-	// The router and cred-release read the journal from the runtime directory.
-	if c.Allowlist.Pull.MeasurePolicies && c.WorkloadClaims.SocketDir == "" {
-		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir: the measured-policy journal lives there")
+	// Certificate producers read the journal only from the default runtime directory.
+	journalDir := filepath.Dir(policymeasure.NodeJournal)
+	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
 	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")

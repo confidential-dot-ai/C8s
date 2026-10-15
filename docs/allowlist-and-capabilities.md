@@ -607,9 +607,11 @@ measure is not applied, and a return to an earlier document does not extend
 again.
 
 Set `nriImagePolicy.measurePolicies: true` to turn it on. The chart renders
-it as `allowlist.pull.measure_policies` in the plugin's boot config, and on a
-baked node patches it in through `set-cds-pins`. The key requires
-`workload_claims.socket_dir`, and is a no-op on SEV-SNP, which has no runtime
+it as `allowlist.pull.measure_policies` in the plugin's boot config, and with
+`nriImagePolicy.baked` patches it into the node image's config through
+`set-cds-pins`. Under `node.baked` the image owns the plugin config, so the
+chart refuses the value. The key requires `workload_claims.socket_dir` to be
+the default runtime directory, and is a no-op on SEV-SNP, which has no runtime
 register. On TDX without the launch operator key, or with a journal that no
 longer matches the register, the plugin applies no pulled allowlist and keeps
 enforcing the one it holds: at startup, the base allowlist alone.
@@ -618,11 +620,12 @@ enforcing the one it holds: at startup, the base allowlist alone.
 > Measuring is off by default. c8s's own checks accept a node that measures,
 > but two kinds of check still require the bare operator-key seed and reject
 > it: armTLS verifiers built on attestation-go releases that predate runtime
-> extensions, and flat RTMR[3] pins (`--rtmrs 3=…`,
-> `allowlist.pull.cds_rtmrs`). Producers find the journal only under the
-> default `nriImagePolicy.hostPaths.runtimeDir`, mounted beside the
-> attestation-api socket, so the chart refuses `measurePolicies` with any
-> other directory, or without `attestationApi.enabled` or `node.baked`. A
+> extensions, flat RTMR[3] pins (`--rtmrs 3=…`, `allowlist.pull.cds_rtmrs`),
+> and `c8s verify --image-policy-file` with an `approver_key`. Producers find
+> the journal only under the default `nriImagePolicy.hostPaths.runtimeDir`,
+> mounted beside the attestation-api socket, so the chart refuses
+> `measurePolicies` with any other directory or without
+> `attestationApi.enabled`. A
 > node stops measuring, and so stops applying new policies, after 256 of them
 > (the most a certificate carries) until it reboots.
 
@@ -636,14 +639,14 @@ verifier trusts it only as far as it replays against a quote's RTMR[3]:
   or, in an injected sidecar, `/run/c8s/workload-claims/measured-policies`.
   It sends the list with the evidence: in the armTLS certificate extension,
   in the CDS `/attest` request as `runtime_extensions`, and in the router's
-  discovery document. Every anchored image pin c8s enforces (CDS node
-  identity, armTLS peers, `c8s allowlist` and `c8s secrets`,
-  `c8s verify --image-policy-file`) accepts the seed followed by any prefix
-  of the list that replays. The replay proves which policies the node
+  discovery document. The anchored image pins CDS, armTLS peers,
+  `c8s allowlist` and `c8s secrets` enforce accept the seed followed by any
+  prefix of the list that replays. The replay proves which policies the node
   enforced, not that they are acceptable.
-- **Router.** With `measurePolicies` on, the chart passes
-  `cds-attest --measured-policies-file`, which adds the list to attest-pq and
-  attest-lb bundles as `measured_policies`. An unreadable journal omits it.
+- **Router.** Wherever the router mounts the runtime directory, the chart
+  passes `cds-attest --measured-policies-file`, which adds the list to
+  attest-pq and attest-lb bundles as `measured_policies`. An absent or
+  unreadable journal omits it.
 - **cred-release.** It accepts its own binding as the seed followed by a
   prefix of the list, and carries the list in its armTLS certificate and in
   its `/attest` response.

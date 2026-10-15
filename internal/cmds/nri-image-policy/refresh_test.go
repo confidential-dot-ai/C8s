@@ -864,10 +864,21 @@ func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
 }
 
 func TestValidateMeasurePoliciesNeedsSocketDir(t *testing.T) {
-	cfg := validConfig()
-	cfg.Allowlist.Pull.MeasurePolicies = true
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate() = nil, want an error for measure_policies without workload_claims.socket_dir")
+	for _, tc := range []struct {
+		socketDir string
+		wantErr   bool
+	}{
+		{socketDir: "", wantErr: true},
+		{socketDir: "/run/custom-nri", wantErr: true},
+		{socketDir: filepath.Dir(policymeasure.NodeJournal)},
+		{socketDir: filepath.Dir(policymeasure.NodeJournal) + "/"},
+	} {
+		cfg := validConfig()
+		cfg.Allowlist.Pull.MeasurePolicies = true
+		cfg.WorkloadClaims.SocketDir = tc.socketDir
+		if err := cfg.Validate(); (err != nil) != tc.wantErr {
+			t.Errorf("Validate() with socket_dir %q = %v, want error %v", tc.socketDir, err, tc.wantErr)
+		}
 	}
 }
 
