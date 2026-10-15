@@ -403,7 +403,8 @@
 {{ $digests | toJson }}
 {{- end -}}
 
-{{/* The plugin boot base, as allowlist workloads keyed by DigestEntryName:
+{{/* The plugin boot base, as allowlist workloads keyed by entry name
+     (c8s.shapeWorkloadName for a component, else c8s.digestWorkloadName):
      the chart's component shapes (c8s.componentShapes), every digest an
      operator entry admits with open args (c8s.openArgsEntries) under the
      command that entry pins or under any, and the operator's own entries for
@@ -467,12 +468,24 @@
 
 {{/* A generated entry's name: c8s.digestWorkloadName with its image segment
      cut to 41 characters, then the first 8 hex of sha256 over its
-     containers, 63 characters at most. A configuration change that alters
+     containers without their image labels, which matching ignores, 63
+     characters at most. A configuration change that alters
      an argv, env or mount table names a new entry, which CDS's additive
      seeding adds beside the old one. See
      ../helpers/allowlist/README.md#entry-names. */ -}}
 {{- define "c8s.shapeWorkloadName" -}}
-{{- printf "%s-%s" (include "c8s.digestWorkloadName" (dict "digest" .digest "image" .image "baseMax" 41)) (.containers | toJson | sha256sum | trunc 8) -}}
+{{- $matched := list -}}
+{{- range $c := .containers -}}{{- $matched = append $matched (omit $c "image") -}}{{- end -}}
+{{- printf "%s-%s" (include "c8s.digestWorkloadName" (dict "digest" .digest "image" .image "baseMax" 41)) ($matched | toJson | sha256sum | trunc 8) -}}
+{{- end -}}
+
+{{/* The seed entry name of CDS's own shape, or "" when CDS is not
+     digest-pinned. */ -}}
+{{- define "c8s.cdsShapeName" -}}
+{{- $digest := .Values.cds.image.digest -}}
+{{- with get (include "c8s.componentShapes" . | fromJson) (default "" $digest) -}}
+{{- include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get . "image") "containers" (include "c8s.seedContainers" (get . "containers") | fromJsonArray)) -}}
+{{- end -}}
 {{- end -}}
 
 {{/* The seed form of a component's containers: the shape with env any. */ -}}

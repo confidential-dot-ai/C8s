@@ -88,6 +88,7 @@ func TestPublishNodeIP(t *testing.T) {
 		name          string
 		advertiseHost string
 		kubeletArgs   []string
+		podArgs       []string
 		hostIP        net.IP
 		hostErr       error
 		writeErr      error
@@ -99,6 +100,12 @@ func TestPublishNodeIP(t *testing.T) {
 		{name: "kubelet node-ip wins over the default route", kubeletArgs: []string{"--v=2", "--node-ip=192.0.2.30,2001:db8::30"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.30\n"},
 		{name: "kubelet node-ip as a separate argument", kubeletArgs: []string{"--node-ip", "192.0.2.31"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.31\n"},
 		{name: "kubelet without node-ip falls back to the default route", kubeletArgs: []string{"--v=2"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.10\n"},
+		{name: "unspecified kubelet node-ip falls back to the default route", kubeletArgs: []string{"--node-ip=::"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.10\n"},
+		{name: "unspecified IPv4 kubelet node-ip falls back to the default route", kubeletArgs: []string{"--node-ip=0.0.0.0"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.10\n"},
+		{name: "loopback kubelet node-ip falls back to the default route", kubeletArgs: []string{"--node-ip=127.0.0.1"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.10\n"},
+		{name: "unspecified advertise host empties a stale file", advertiseHost: "::", hostIP: net.ParseIP("192.0.2.10")},
+		{name: "pod named kubelet is ignored", kubeletArgs: []string{"--node-ip=192.0.2.30"}, podArgs: []string{"--node-ip=203.0.113.9"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.30\n"},
+		{name: "pod named kubelet does not replace the default route", podArgs: []string{"--node-ip=203.0.113.9"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.10\n"},
 		{name: "no address empties a stale file", hostErr: errors.New("no route")},
 		{name: "failed write empties a stale file", hostIP: net.ParseIP("192.0.2.10"), writeErr: errors.New("disk full")},
 	} {
@@ -112,7 +119,7 @@ func TestPublishNodeIP(t *testing.T) {
 			cfg := &config{}
 			cfg.WorkloadClaims.SocketDir = t.TempDir()
 			cfg.WorkloadClaims.AdvertiseHost = tc.advertiseHost
-			cfg.WorkloadClaims.ProcRoot = kubeletProc(t, tc.kubeletArgs)
+			cfg.WorkloadClaims.ProcRoot = kubeletProc(t, tc.kubeletArgs, tc.podArgs)
 			path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
 			if err := os.WriteFile(path, []byte("203.0.113.66\n"), 0o644); err != nil {
 				t.Fatal(err)
@@ -141,8 +148,9 @@ func TestPublishNodeIP(t *testing.T) {
 }
 
 // kubeletProc is a proc root with an unrelated process and, when args is not
-// nil, a kubelet running with them.
-func kubeletProc(t *testing.T, args []string) string {
+// nil, a host kubelet running with them. When podArgs is not nil, a pod process
+// that named itself kubelet runs with them at a PID ReadDir lists first.
+func kubeletProc(t *testing.T, args, podArgs []string) string {
 	t.Helper()
 	root := t.TempDir()
 	write := func(pid, name, content string) {
@@ -153,11 +161,26 @@ func kubeletProc(t *testing.T, args []string) string {
 			t.Fatal(err)
 		}
 	}
+	mountNS := func(pid, ns string) {
+		if err := os.MkdirAll(filepath.Join(root, pid, "ns"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(ns, filepath.Join(root, pid, "ns", "mnt")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	write("1", "comm", "systemd\n")
 	write("1", "cmdline", "/sbin/init\x00--node-ip=198.51.100.1\x00")
+	mountNS("1", "mnt:[4026531841]")
 	if args != nil {
 		write("42", "comm", "kubelet\n")
 		write("42", "cmdline", "kubelet\x00"+strings.Join(args, "\x00")+"\x00")
+		mountNS("42", "mnt:[4026531841]")
+	}
+	if podArgs != nil {
+		write("10001", "comm", "kubelet\n")
+		write("10001", "cmdline", "sh\x00"+strings.Join(podArgs, "\x00")+"\x00")
+		mountNS("10001", "mnt:[4026532999]")
 	}
 	return root
 }
@@ -177,7 +200,7 @@ func TestNodeIPPublisherRetriesAndFollowsChanges(t *testing.T) {
 	t.Cleanup(func() { chooseHostInterface = orig })
 	cfg := &config{}
 	cfg.WorkloadClaims.SocketDir = t.TempDir()
-	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, nil)
+	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, nil, nil)
 	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
 	p := &nodeIPPublisher{cfg: cfg, logger: slog.New(slog.DiscardHandler)}
 
@@ -282,7 +305,7 @@ func TestFollowSandboxHost(t *testing.T) {
 		if err := os.WriteFile(path, []byte(tc.file), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		followSandboxHost(cfg, logger, &signer)
+		followSandboxHost(cfg, logger, &signer, true)
 		s := signer.Load()
 		if s.Host() != tc.want {
 			t.Errorf("%s: host = %s, want %s", tc.name, s.Host(), tc.want)
@@ -307,4 +330,36 @@ func shrinkRetries(t *testing.T) {
 	minDelay, maxDelay, recheck := nodeRetryMinDelay, nodeRetryMaxDelay, nodeIPRecheckInterval
 	nodeRetryMinDelay, nodeRetryMaxDelay, nodeIPRecheckInterval = time.Millisecond, 4*time.Millisecond, 2*time.Millisecond
 	t.Cleanup(func() { nodeRetryMinDelay, nodeRetryMaxDelay, nodeIPRecheckInterval = minDelay, maxDelay, recheck })
+}
+
+// The recheck runs every minute: an address that stays unresolved warns once,
+// and again only after it resolved in between.
+func TestFollowSandboxHostWarnsOnStateChange(t *testing.T) {
+	t.Setenv("C8S_SANDBOX_DIGESTS_ADVERTISE_HOST", "")
+	cfg := &config{}
+	cfg.WorkloadClaims.SocketDir = t.TempDir()
+	cfg.Allowlist.Pull.URL = "https://127.0.0.1:30808"
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	first, err := workloadclaims.NewSandboxTokenSigner("192.0.2.10")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
+	signer.Store(first)
+
+	ok := true
+	for i, file := range []string{"", "", "192.0.2.11\n", "", ""} {
+		if err := os.WriteFile(path, []byte(file), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		ok = followSandboxHost(cfg, logger, &signer, ok)
+		if ok != (file != "") {
+			t.Fatalf("recheck %d with node-ip %q: resolved = %t", i, file, ok)
+		}
+	}
+	if got := strings.Count(logs.String(), "level=WARN"); got != 2 {
+		t.Errorf("warnings = %d, want 2:\n%s", got, logs.String())
+	}
 }

@@ -249,6 +249,9 @@ spec:
   {{- end }}
 ---
 {{- end }}
+{{- $cdsShape := include "c8s.cdsShapeName" . }}
+{{- $liveCDS := lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) | default dict }}
+{{- include "c8s.cdsShapeGuard" (dict "live" (dig "metadata" "annotations" "confidential.ai/cds-shape" "" $liveCDS) "want" $cdsShape "published" (default "" .Values.cds.publishedShape)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -259,6 +262,9 @@ metadata:
     app.kubernetes.io/component: cds
   annotations:
     confidential.ai/trust-root-mode: "inMemory"
+    {{- with $cdsShape }}
+    confidential.ai/cds-shape: {{ . }}
+    {{- end }}
 spec:
   {{/* Fixed at 1: mesh CA keys are per pod, so a second Ready endpoint
        would issue leaves from a different trust root. */}}

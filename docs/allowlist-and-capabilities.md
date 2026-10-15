@@ -689,8 +689,29 @@ beside the old one, which pods still running the old shape keep matching
 while they recycle, and which a rollback matches again. The argv-pinned
 installer entries are named the same way. The seed never overwrites an entry
 the store already holds, so an edit made with `workload apply` survives a
-restart, while a deleted entry returns on the next CDS start for as long as
-the chart still renders it — to remove an image, roll the chart with it gone.
+restart, while a deleted entry returns on the next CDS start or seed change
+for as long as the chart still renders it — to remove an image, roll the
+chart with it gone.
+
+A running CDS rereads its mounted seed every 30 seconds and seeds it again
+when it changed. A configuration-only upgrade therefore publishes its new
+entries through the running CDS without restarting it, so the store and its
+version continue. The enforcers admit the new shapes on their next pull, and
+the kubelet's retries start the new pods. A rollback needs no publication: the
+store still holds the previous release's entries.
+
+CDS itself is recreated, not rolled, so it cannot publish its own new shape:
+the old CDS stops before the new one starts. The chart records CDS's entry
+name on its Deployment, and an upgrade that changes CDS's command line or
+mounts fails until you publish the new entry:
+
+1. Run the failed upgrade's values through `helm template` and save the
+   `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap.
+2. Copy the entry the error names into a file and publish it:
+   `c8s allowlist apply ENTRY_FILE`.
+3. Wait until every node's image policy plugin has pulled the new version.
+4. Rerun the upgrade with `--set cds.publishedShape=<NAME>`, where `NAME` is
+   the entry name from the error.
 
 Old shapes stay admitted until you retire them. To retire them once no pod
 runs them and no rollback needs them:
@@ -715,10 +736,8 @@ the `/run` path containerd resolves it to where `/var/run` is `/run`, so on a
 node where it is its own directory the router's leaf stays unnamed. It is the
 only entry the router pod matches, so the router's mesh leaf is stamped with
 that name. An upgrade that changes the router's image repositories, digests,
-arguments or mounts seeds a new entry beside the old one. CDS
-reads the seed only at start, so after an upgrade that rolls the router but not
-CDS, the router's leaf stays unnamed until CDS restarts or you add the new
-entry with `c8s allowlist apply`. Old entries persist like the
+arguments or mounts seeds a new entry beside the old one. Until the running
+CDS rereads the changed seed, the router's leaf stays unnamed. Old entries persist like the
 digest-named ones; remove them with `c8s allowlist delete`. Remove a
 superseded `c8s-router-*` entry after the upgrade: when the two differ only in
 image repositories, both match the router pod, and so do two that differ only

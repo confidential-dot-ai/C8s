@@ -493,10 +493,12 @@ func (p *nodeIPPublisher) run(ctx context.Context, wait time.Duration) {
 
 // publishNodeIP writes NodeIPFile from the node's own view, unless it already
 // holds that address. The address is advertise_host when it is an IP, else
-// the kubelet's --node-ip, which is the Node's registered InternalIP and its
-// pods' status.hostIP (RKE2 and k3s always pass it), else the default-route
-// interface's address, which a kubelet without --node-ip usually registers. A
-// pod could otherwise pick the attestation verifier components dial.
+// the --node-ip of a kubelet in the host's mount namespace, which is the
+// Node's registered InternalIP and its pods' status.hostIP, else the
+// default-route interface's address, which a kubelet without --node-ip
+// usually registers. k3s runs its kubelet inside the k3s process, so a k3s
+// node with several interfaces needs advertise_host. A pod could otherwise
+// pick the attestation verifier components dial.
 //
 // Components bind-mount the file itself, so it is rewritten in place: a
 // renamed replacement would leave their mount on the old inode. On any
@@ -525,11 +527,18 @@ func publishNodeIP(cfg *config) (host string, changed bool, err error) {
 	return host, changed, nil
 }
 
-// kubeletNodeIP is the first address of a running kubelet's --node-ip flag,
-// read from procRoot (default /proc), or "" when no kubelet passes one.
+// kubeletNodeIP is the first address of a host kubelet's --node-ip flag, read
+// from procRoot (default /proc), or "" when no host kubelet passes a usable
+// one. A pod's processes show up in procRoot too and can name themselves
+// kubelet, but cannot join the host's mount namespace, which is init's.
+// --node-ip=:: or 0.0.0.0 selects an address family, not an address.
 func kubeletNodeIP(procRoot string) string {
 	if procRoot == "" {
 		procRoot = "/proc"
+	}
+	hostMounts, err := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
+	if err != nil {
+		return ""
 	}
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
@@ -539,11 +548,15 @@ func kubeletNodeIP(procRoot string) string {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
-		comm, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "comm"))
+		dir := filepath.Join(procRoot, e.Name())
+		comm, err := os.ReadFile(filepath.Join(dir, "comm"))
 		if err != nil || strings.TrimSpace(string(comm)) != "kubelet" {
 			continue
 		}
-		cmdline, err := os.ReadFile(filepath.Join(procRoot, e.Name(), "cmdline"))
+		if mounts, err := os.Readlink(filepath.Join(dir, "ns", "mnt")); err != nil || mounts != hostMounts {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
 		if err != nil {
 			continue
 		}
@@ -557,7 +570,7 @@ func kubeletNodeIP(procRoot string) string {
 				continue
 			}
 			first, _, _ := strings.Cut(value, ",")
-			if ip := net.ParseIP(first); ip != nil {
+			if ip := net.ParseIP(first); usableNodeIP(ip) {
 				return ip.String()
 			}
 		}
@@ -565,7 +578,17 @@ func kubeletNodeIP(procRoot string) string {
 	return ""
 }
 
+// usableNodeIP reports whether components can dial ip as the node: an
+// unspecified or loopback address reaches the dialing pod's own network
+// namespace instead.
+func usableNodeIP(ip net.IP) bool {
+	return ip != nil && ip.IsGlobalUnicast()
+}
+
 func writeNodeIP(dir, path, host string) (bool, error) {
+	if !usableNodeIP(net.ParseIP(host)) {
+		return false, fmt.Errorf("node address %q is not a unicast address other pods can dial", host)
+	}
 	content := host + "\n"
 	if b, err := os.ReadFile(path); err == nil && string(b) == content {
 		return false, nil
@@ -660,7 +683,8 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 	if host == "" {
 		host = strings.TrimSpace(os.Getenv("C8S_SANDBOX_DIGESTS_ADVERTISE_HOST"))
 	}
-	// Bounds the resolver; runs once at startup with no caller ctx to inherit.
+	// Bounds the resolver: it runs at startup and on every node address
+	// recheck, with no caller ctx to inherit.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.Allowlist.Pull.URL)
@@ -729,8 +753,9 @@ func initSandboxTokens(ctx context.Context, logger *slog.Logger, cfg *config, si
 				logger.Error("sandbox-digests endpoint disabled; CDS will refuse requests carrying a sandbox token", "error", err)
 			}
 			signer.Store(s)
+			ok := true
 			for sleepCtx(ctx, nodeIPRecheckInterval) {
-				followSandboxHost(cfg, logger, signer)
+				ok = followSandboxHost(cfg, logger, signer, ok)
 			}
 			return
 		}
@@ -745,24 +770,23 @@ func initSandboxTokens(ctx context.Context, logger *slog.Logger, cfg *config, si
 // followSandboxHost re-signs with the current node address when it changed,
 // keeping the key the digests endpoint serves. Tokens naming a stale address
 // would send CDS to a dead or foreign digests endpoint. When the address
-// cannot be resolved it keeps the last one: CDS then fails closed on it.
-func followSandboxHost(cfg *config, logger *slog.Logger, signer *atomic.Pointer[workloadclaims.SandboxTokenSigner]) {
+// cannot be resolved it keeps the last one: CDS then fails closed on it. It
+// reports whether the address resolved, and warns only when wasOK was true,
+// so an address that stays unresolved logs once rather than every recheck.
+func followSandboxHost(cfg *config, logger *slog.Logger, signer *atomic.Pointer[workloadclaims.SandboxTokenSigner], wasOK bool) bool {
 	current := signer.Load()
 	host, err := digestsAdvertiseHost(cfg)
-	if err != nil {
+	if err == nil && host != current.Host() {
+		var next *workloadclaims.SandboxTokenSigner
+		if next, err = current.WithHost(host); err == nil {
+			signer.Store(next)
+			logger.Info("sandbox tokens follow the node address", "digests_host", host, "previous", current.Host())
+		}
+	}
+	if err != nil && wasOK {
 		logger.Warn("node address unresolved; sandbox tokens keep naming the last one", "error", err, "digests_host", current.Host())
-		return
 	}
-	if host == current.Host() {
-		return
-	}
-	next, err := current.WithHost(host)
-	if err != nil {
-		logger.Warn("node address rejected; sandbox tokens keep naming the last one", "error", err, "digests_host", current.Host())
-		return
-	}
-	signer.Store(next)
-	logger.Info("sandbox tokens follow the node address", "digests_host", host, "previous", current.Host())
+	return err == nil
 }
 
 // healthListener returns a TCP listener for `host:port` or a Unix socket

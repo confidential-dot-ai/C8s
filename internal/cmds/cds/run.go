@@ -183,9 +183,11 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		if err := seedStore(&allowlistStore, cfg.allowlistSeed); err != nil {
+		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
+		if err != nil {
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
+		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
 	}
 
 	if err := allowlistStore.StartJournal(); err != nil {

@@ -191,6 +191,11 @@ cds:
     digest: ""
     pullPolicy: IfNotPresent
   port: 8443
+  ## An upgrade that changes CDS's own command line or mounts fails until the
+  ## running enforcers admit the new CDS. The failure names the new seed entry:
+  ## publish it with `c8s allowlist apply`, wait for every node to pull it, and
+  ## set this to its name (docs/allowlist-and-capabilities.md).
+  publishedShape: ""
   ## CIDR(s) holding this cluster's node addresses. CDS dials a node's admission
   ## inventory inside them and nowhere else, which is what stops a workload
   ## pointing the sandbox-digests callback at its own pod IP and answering as
@@ -754,12 +759,13 @@ nriImagePolicy:
   ## distinguishes this inventory from a workload sharing the node measurement.
   ## CDS must be able to reach every node on it.
   ##
-  ## The advertised host defaults to the kubelet's --node-ip, which RKE2 and
-  ## k3s always pass, else the default-route interface's address. The plugin
-  ## follows a changed address in node-ip and in the tokens it signs, and
-  ## components dialing node-ip restart onto it. Set it on nodes whose kubelet
-  ## registers an address neither finds: CDS checks tokens against the Node's
-  ## InternalIP. An IP here is also the node-ip that components dial the
+  ## The advertised host defaults to the --node-ip of a separate kubelet
+  ## process, as RKE2 runs it, else the default-route interface's address. k3s
+  ## runs its kubelet inside the k3s process, so set this on a k3s node with
+  ## more than one interface. The plugin follows a changed address in node-ip
+  ## and in the tokens it signs, and components dialing node-ip restart onto
+  ## it. Set it on nodes whose kubelet registers an address neither finds: CDS
+  ## checks tokens against the Node's InternalIP. An IP here is also the node-ip that components dial the
   ## attestation-api on.
   sandboxDigests:
     advertiseHost: ""

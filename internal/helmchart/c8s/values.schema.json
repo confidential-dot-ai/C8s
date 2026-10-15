@@ -55,6 +55,9 @@
           "type": "string"
         },
         "namedCertTTL": {},
+        "publishedShape": {
+          "type": "string"
+        },
         "node": {
           "type": [
             "object",
