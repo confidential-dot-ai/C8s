@@ -424,12 +424,13 @@ func (w *world) sync() error {
 
 // awaitApplied waits for the plugin to hold what the CDS serves now, and
 // records the version it holds. It polls the version the plugin reports until
-// it reaches the served one, within three pull intervals of the last write or
-// delete; a pull loop that stalls fails the step naming both versions. A
-// served version below the applied one is the anti-rollback case: the plugin
-// ignores it by design, so nothing observable says it has pulled, and the wait
-// is the clock, two intervals, as it is where the backend cannot reach the
-// plugin or the pull is blocked.
+// it reaches the served one, failing when the pull loop has not followed
+// within three pull intervals of the last write or delete. Where nothing can
+// be observed, the wait is the clock: two pull intervals, so a pull that
+// started just before the write has been followed by one that saw it. That is
+// the case where the pull is blocked, where the backend cannot ask the CDS or
+// the plugin, and where the served version is below the applied one: the
+// plugin ignores that pull by design, so nothing says it happened.
 func (w *world) awaitApplied() error {
 	s, err := w.be.call("pull_interval")
 	if err != nil {
@@ -439,22 +440,28 @@ func (w *world) awaitApplied() error {
 	if err != nil {
 		return fmt.Errorf("pull interval %q: %w", s, err)
 	}
-	waitOut := func() { time.Sleep(time.Until(lastMutation.Add(2 * interval))) }
-	if w.cdsBlocked {
-		waitOut()
-		return nil
-	}
-	served, err := w.be.call("served_version")
-	if errors.Is(err, godog.ErrSkip) {
-		waitOut()
-		return nil
-	}
-	if err != nil {
+	observed, err := w.observeApplied(interval)
+	if err != nil || observed {
 		return err
 	}
-	servedN, err := strconv.ParseUint(served, 10, 64)
+	time.Sleep(time.Until(lastMutation.Add(2 * interval)))
+	return nil
+}
+
+// observeApplied polls the plugin's applied version until it is at or past
+// the served one, records it, and says whether it saw the served version
+// itself; false where either version cannot be asked for or the plugin is
+// ahead of the CDS.
+func (w *world) observeApplied(interval time.Duration) (bool, error) {
+	if w.cdsBlocked {
+		return false, nil
+	}
+	served, err := w.servedVersion()
+	if errors.Is(err, godog.ErrSkip) {
+		return false, nil
+	}
 	if err != nil {
-		return fmt.Errorf("served version %q: %w", served, err)
+		return false, err
 	}
 	// At least one interval from now: a scenario may ask before it has
 	// written anything, and a plugin that is restarting answers nothing for
@@ -463,28 +470,39 @@ func (w *world) awaitApplied() error {
 	if floor := time.Now().Add(interval); deadline.Before(floor) {
 		deadline = floor
 	}
-	for {
-		applied, err := w.be.call("applied_version")
-		if errors.Is(err, godog.ErrSkip) {
-			waitOut()
-			w.appliedVersion = served
-			return nil
+	var answer string
+	var applied int
+	caughtUp, err := pollEvery(interval/5, time.Until(deadline), func() (bool, error) {
+		var err error
+		if answer, err = w.be.call("applied_version"); err != nil {
+			return false, err
 		}
-		if err != nil {
-			return err
-		}
-		appliedN, parseErr := strconv.ParseUint(applied, 10, 64)
-		switch {
-		case parseErr == nil && appliedN == servedN:
-			w.appliedVersion = applied
-			return nil
-		case parseErr == nil && appliedN > servedN:
-			waitOut()
-			w.appliedVersion = applied
-			return nil
-		case time.Now().After(deadline):
-			return fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves %s, %s after the write with a pull every %s", applied, served, time.Since(lastMutation).Round(time.Millisecond), interval)
-		}
-		time.Sleep(interval / 5)
+		applied, err = strconv.Atoi(answer)
+		return err == nil && applied >= served, nil
+	})
+	if errors.Is(err, godog.ErrSkip) {
+		w.appliedVersion = strconv.Itoa(served)
+		return false, nil
 	}
+	if err != nil {
+		return false, err
+	}
+	if !caughtUp {
+		return false, fmt.Errorf("the admission plugin still reports allowlist version %q while the CDS serves %d, %s after the write with a pull every %s", answer, served, time.Since(lastMutation).Round(time.Millisecond), interval)
+	}
+	w.appliedVersion = answer
+	return applied == served, nil
+}
+
+// servedVersion is the version of the allowlist the CDS serves now.
+func (w *world) servedVersion() (int, error) {
+	s, err := w.be.call("served_version")
+	if err != nil {
+		return 0, err
+	}
+	n, err := strconv.Atoi(s)
+	if err != nil {
+		return 0, fmt.Errorf("served version %q: %w", s, err)
+	}
+	return n, nil
 }

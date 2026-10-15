@@ -677,10 +677,7 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := startHealthServer(ctx, healthServerConfig{
+	if err := startHealthServer(t.Context(), healthServerConfig{
 		logger:       discardLogger(),
 		plugin:       p,
 		addr:         addr,
@@ -701,8 +698,6 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 	if code, body := healthz(t, httpClient); code != http.StatusOK || body.Status != "ok" {
 		t.Fatalf("ready: status %d body %+v, want 200 \"ok\"", code, body)
 	}
-
-	cancel()
 }
 
 // The body reports the version admission decides with: what apply accepted,
@@ -710,7 +705,6 @@ func TestStartHealthServer_HealthzReflectsReadiness(t *testing.T) {
 func TestStartHealthServer_HealthzReportsAppliedAllowlistVersion(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "health.sock")
 	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
-	p.policy = newPolicyStore(nil)
 	p.SetReady()
 	if err := startHealthServer(t.Context(), healthServerConfig{
 		logger:       discardLogger(),
@@ -723,18 +717,18 @@ func TestStartHealthServer_HealthzReportsAppliedAllowlistVersion(t *testing.T) {
 	}
 	httpClient := unixHealthClient(sock)
 
+	if code, body := healthz(t, httpClient); code != http.StatusOK || body.AllowlistVersion != 0 {
+		t.Fatalf("before any pull: status %d allowlist_version %d, want 200 and 0", code, body.AllowlistVersion)
+	}
 	for _, step := range []struct {
 		pulled uint64
 		want   uint64
 	}{
-		{0, 0},   // nothing applied yet
 		{42, 42}, // first pull
 		{41, 42}, // a rollback is ignored, and does not show
 		{43, 43}, // a forward version applies
 	} {
-		if step.pulled != 0 {
-			p.policy.apply(&allowlist.Allowlist{}, step.pulled)
-		}
+		p.policy.apply(&allowlist.Allowlist{}, step.pulled)
 		code, body := healthz(t, httpClient)
 		if code != http.StatusOK || body.AllowlistVersion != step.want {
 			t.Fatalf("after pull %d: status %d allowlist_version %d, want 200 and %d", step.pulled, code, body.AllowlistVersion, step.want)

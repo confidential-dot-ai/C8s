@@ -411,15 +411,12 @@ type healthServerConfig struct {
 	writeTimeout time.Duration
 }
 
-// healthResponse is the body of GET /healthz. The status code says whether the
-// plugin is ready (the installer and probes read nothing else); the body says
-// which allowlist it is deciding with, so a writer can watch an entry take
-// effect instead of waiting out the pull interval.
+// healthResponse is the body of GET /healthz. Probes and the installer read
+// only the status code; the body says which allowlist version admission
+// decides with, so a writer can watch an entry take effect.
 type healthResponse struct {
-	Status string `json:"status"`
-	// AllowlistVersion is plugin.AppliedAllowlistVersion: the CDS version the
-	// plugin applied, which a rolled-back pull does not move.
-	AllowlistVersion uint64 `json:"allowlist_version"`
+	Status           string `json:"status"`
+	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
 }
 
 // startHealthServer starts an HTTP server for readiness/liveness probes.
