@@ -598,6 +598,7 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		return `,{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"},"mounts":{"policy":"exact","rules":[` + rule + `]}}`
 	}
 	hostTmp := router + "\n          volumeMounts: [{name: tmp, mountPath: /tmp, readOnly: true}]\n      volumes:\n        - name: tmp\n          hostPath: {path: /var/tmp}"
+	placeholder := router + "\n          volumeMounts: [{name: c8s-volume-db, mountPath: /mnt/c8s-data/db}]\n      volumes:\n        - name: c8s-volume-db\n          emptyDir: {}"
 	subPath := router + "\n          volumeMounts: [{name: cache, mountPath: /mnt/c8s-data/cache, subPath: cache}]\n      volumes:\n        - name: cache\n          emptyDir: {}"
 	for _, tc := range []struct {
 		name, seed, manifest string
@@ -615,6 +616,8 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		{"host mount pinned writable", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
 		{"subpath pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
 		{"subpath pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
+		{"volumed placeholder pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"data"}`), placeholder, true},
+		{"volumed placeholder pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"emptyDir"}`), placeholder, false},
 		{"entrypoint under a denied command", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"deny"},"args":{"policy":"any"}}`, "", false},
 		{"env pinned", strings.Replace(mesh, `"args"`, `"env":{"policy":"deny"},"args"`, 1) + "," + entrypoint, "", false},
 		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},

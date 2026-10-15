@@ -80,9 +80,10 @@ func (c Client) GenerateEvidence(attestationApiURL string, reportData []byte) (r
 }
 
 // GenerateEvidenceContext is GenerateEvidence with caller-controlled
-// cancellation.
+// cancellation. The request keeps the client's timeout but not its transport:
+// it goes over [armtls.NewDirectHTTPClient], never through a proxy.
 func (c Client) GenerateEvidenceContext(ctx context.Context, attestationApiURL string, reportData []byte) (remote.AttestResponse, error) {
-	asClient := remote.NewClientWithHTTP(attestationApiURL, c.httpClient)
+	asClient := remote.NewClientWithHTTP(attestationApiURL, armtls.NewDirectHTTPClient(c.httpClient.Timeout))
 	return asClient.Attest(contextOrBackground(ctx), remote.AttestRequest{
 		ReportData: reportData,
 		Platform:   remote.PlatformAuto,

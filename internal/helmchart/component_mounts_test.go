@@ -312,6 +312,15 @@ func TestKubeletExpand(t *testing.T) {
 
 // A memory emptyDir counts toward the container's memory limit; without a
 // sizeLimit a full volume OOM-kills the pod instead of failing writes.
+// An empty or null limit would render sizeLimit as null, an uncapped store.
+func TestChartRejectsMissingCDSMemorySizeLimit(t *testing.T) {
+	for _, set := range []string{"cds.persistence.memorySizeLimit=", "cds.persistence.memorySizeLimit=null", "cds.persistence.memorySizeLimit=0"} {
+		if out, err := helmTemplate(t, "--set", set); err == nil {
+			t.Errorf("helm template --set %s succeeded, want an error\n%s", set, out)
+		}
+	}
+}
+
 func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
 	out, err := helmTemplate(t)
 	if err != nil {
