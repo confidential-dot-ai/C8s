@@ -56,6 +56,72 @@ func TestFetchNotModified(t *testing.T) {
 	}
 }
 
+func TestFetchCanonical(t *testing.T) {
+	const doc = `{"schema":"c8s.allowlist/v1","workloads":{"cds":{"containers":[{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
+	tests := []struct {
+		name            string
+		status          int
+		etag            string
+		wantBody        string
+		wantVersion     string
+		wantNotModified bool
+		wantErr         bool
+	}{
+		{name: "304", status: http.StatusNotModified, wantNotModified: true},
+		{name: "200", status: http.StatusOK, etag: `W/"8"`, wantBody: doc, wantVersion: "8"},
+		{name: "200 without ETag", status: http.StatusOK, wantErr: true},
+		{name: "200 with strong ETag", status: http.StatusOK, etag: `"8"`, wantErr: true},
+		{name: "5xx", status: http.StatusInternalServerError, wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("If-None-Match"); got != `W/"7"` {
+					t.Errorf("If-None-Match = %q, want W/\"7\"", got)
+				}
+				if tt.etag != "" {
+					w.Header().Set("ETag", tt.etag)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				if tt.status == http.StatusOK {
+					io.WriteString(w, doc)
+				}
+			}))
+			defer srv.Close()
+
+			body, version, notModified, err := NewClient(srv.URL).FetchCanonical(context.Background(), `W/"7"`)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("FetchCanonical() error = %v, want error %v", err, tt.wantErr)
+			}
+			if string(body) != tt.wantBody || version != tt.wantVersion || notModified != tt.wantNotModified {
+				t.Fatalf("FetchCanonical() = %q, %q, %v; want %q, %q, %v", body, version, notModified, tt.wantBody, tt.wantVersion, tt.wantNotModified)
+			}
+		})
+	}
+}
+
+func TestVersionFromETag(t *testing.T) {
+	tests := []struct {
+		name string
+		etag string
+		want string
+	}{
+		{name: "weak", etag: `W/"7"`, want: "7"},
+		{name: "strong", etag: `"7"`, want: ""},
+		{name: "empty weak", etag: `W/""`, want: ""},
+		{name: "missing", etag: "", want: ""},
+		{name: "unclosed", etag: `W/"7`, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VersionFromETag(tt.etag); got != tt.want {
+				t.Errorf("VersionFromETag(%q) = %q, want %q", tt.etag, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPutWorkloadBindsBody(t *testing.T) {
 	var gotPath, gotMethod string
 	var gotBody []byte

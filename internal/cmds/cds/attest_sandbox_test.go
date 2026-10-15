@@ -178,9 +178,7 @@ func TestAttest_SandboxToken_RejectsWrongRequesterKey(t *testing.T) {
 	// Token issued for the victim's key, replayed with the attacker's CSR.
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, attackerCSR, signedSandboxToken(t, signer, victimCSR, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // A token signed by a key other than the inventory key CDS resolves must be
@@ -194,9 +192,7 @@ func TestAttest_SandboxToken_RejectsForeignInventoryEAR(t *testing.T) {
 
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, foreignSigner, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // The core of the design: a token signed by a key the inventory does not hold
@@ -216,9 +212,7 @@ func TestAttest_SandboxToken_RejectsKeyTheInventoryDoesNotHold(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, impostor, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // A token naming a host outside the operator's node CIDRs is refused before
@@ -236,9 +230,7 @@ func TestAttest_SandboxToken_RejectsHostOutsideNodeCIDRs(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // With no CIDRs configured CDS has no boundary to apply, so it refuses tokens
@@ -251,9 +243,7 @@ func TestAttest_SandboxToken_RejectsWithoutConfiguredCIDRs(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // The freshness guarantee: a validly-signed token whose nonce is some other
@@ -267,9 +257,7 @@ func TestAttest_SandboxToken_RejectsStaleNonce(t *testing.T) {
 	// Token is bound to a different challenge than the request carries.
 	staleChallenge := base64.StdEncoding.EncodeToString([]byte("a-different-challenge"))
 	w := postAttestSandbox(t, h, issueChallenge(t, h), csrPEM, signedSandboxToken(t, signer, csrPEM, staleChallenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // A CDS without an inventory resolver cannot verify sandbox tokens and must
@@ -282,9 +270,7 @@ func TestAttest_SandboxToken_RejectsWhenUnverifiable(t *testing.T) {
 
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 }
 
 // A malformed token envelope, and one whose signed bytes are not a token, are
@@ -303,9 +289,7 @@ func TestAttest_SandboxToken_RejectsMalformedEnvelope(t *testing.T) {
 			h, _ := newSandboxTestEnv(t, stub.URL())
 			csrPEM, _ := generateCSR(t)
 			w := postAttestSandbox(t, h, issueChallenge(t, h), csrPEM, tc.token)
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-			}
+			wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 		})
 	}
 }
@@ -341,9 +325,7 @@ func TestAttest_SandboxToken_RejectsMalformedSandboxID(t *testing.T) {
 
 			challenge := issueChallenge(t, h)
 			w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, tc.id))
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-			}
+			wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 			if len(binder.calls) != 0 {
 				t.Fatalf("Record called %d times for a rejected sandbox ID, want 0", len(binder.calls))
 			}

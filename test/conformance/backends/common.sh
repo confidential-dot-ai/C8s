@@ -10,7 +10,10 @@
 # skip), anything else when the harness is broken.
 #   subject                          the system under test, for the run summary
 #   kubeconfig                       the file every kubectl call of a run uses
-#   setup / teardown                 once per run, before and after the scenarios
+#   setup                            once per run, before the scenarios
+#   teardown                         once per run, after them; shared: what
+#                                    every backend kept, then teardown_backend
+#   teardown_backend                 what this backend alone kept for the run
 #   node_name <logical>              the Kubernetes node behind a scenario's node
 #   image_ref <logical>              a pullable reference for a scenario's image
 #   image_digest <ref>               the digest the plugin compares for ref
@@ -29,12 +32,19 @@
 #   node_refuses <port>              yes/no: a connection from the node to 127.0.0.1:<port>
 #                                    is refused now; a backend without a node shell answers yes
 #   cds_restart                      restart the CDS and wait until it serves again
+#   mesh_restart                     restart every mesh proxy and wait until all are
+#                                    ready, so each bootstraps from the CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
-#   pod_manifest <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
+#   pod_manifest [options] -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
-#                                    container per +-separated group
+#                                    container per +-separated group; the
+#                                    options, before the --, are
+#                                    --host-network, --run-as-user <uid>,
+#                                    --add-capability <cap>, --label <k=v>,
+#                                    --annotation <k=v>,
+#                                    --init-container '<image> <command...>'
 #   image_entrypoint <ref>           the argv the image starts with when the pod
 #                                    spec overrides nothing, one word per line
 #   operator_keys                    yes/no: the CDS holds an operator key
@@ -43,9 +53,6 @@
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
 #                                    that is not an operator key
-#   allowlist_request <method> <path> <body-file> [authorization]
-#                                    send the write as given, authorization
-#                                    included only when given; prints the status
 #   allowlist_get [version]          read the allowlist, naming version in
 #                                    If-None-Match when given; prints
 #                                    "<status> <version>", then the body
@@ -76,9 +83,6 @@
 #                                    in the files of the node
 #   attest_direct                    one issuance against the CDS process from
 #                                    an admitted TEE; prints the chain, PEM
-#   cw_pod_manifest <name> <ns> <node> <image> <command...> [+ ...]
-#                                    pod_manifest's pod carrying a workload ID,
-#                                    renewing its leaf every 30s
 #   requester_manifest <name> <ns> <node>
 #                                    a pod on node that relays HTTP for the
 #                                    steps and can reach the node's sandbox
@@ -90,8 +94,6 @@
 #   cds_pod_url                      the CDS address a pod's requester dials
 #   cds_arg <flag>                   the value of --<flag>= the CDS runs with,
 #                                    empty when it is not set
-#   challenge_ttl                    how long the CDS keeps a challenge, as a
-#                                    Go duration
 #   evidence <ns> <pod> <report-data-hex> [launch-digest-hex]
 #                                    evidence from the local attestation
 #                                    service of the pod's node over the report
@@ -109,13 +111,72 @@
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
 #                                    prints accepts or rejects
-# node_name, image_ref, image_digest, pull_interval and cds_pod_url answer the
-# same for a whole run; callers may cache them. The allowlist is state:
-# served_allowlist answers for the moment of the call.
+#   mesh_ready <node>                wait until the node's mesh proxy runs; 77
+#                                    where the mesh is not installed
+#   mesh_member <node> <interception|guard> <ip>
+#                                    yes/no: the address is in the node's
+#                                    interception membership (a local
+#                                    eligible pod) or its guard membership
+#   mesh_counter <node> <inbound_connections|guard_drops>...
+#                                    the node's count of connections its
+#                                    inbound proxy accepted, or of packets its
+#                                    inbound guard dropped, one per line from
+#                                    one scrape
+#   mesh_port <outbound|inbound>     the port of that mesh listener
+#   mesh_uids                        the proxy UID, then the excluded UIDs,
+#                                    one per line
+#   mesh_cert_mode <node>            cds or self-signed: the certificate the
+#                                    node's mesh proxy presents (both roles
+#                                    switch together)
+#   mesh_chain_ready <node>          wait until the mesh proxy's verify set
+#                                    holds the mesh CA
+#   mesh_pins_satisfied <node>       yes/no: the node's evidence satisfies
+#                                    the pins its mesh proxy verifies with
+#   mesh_platform                    the evidence family the mesh produces,
+#                                    sev-snp or tdx
+#   node_address <node> <ipv4|ipv6>  the node's address of that family; 77
+#                                    when it has none
+#   excluded_namespace               a namespace the mesh excludes
+#   host_namespace_ns                a namespace admitting pods in the node's
+#                                    network namespace and root pods
+#   external_endpoint                <address>:<port> of a hello API outside
+#                                    the cluster, or 77
+#   attestation_endpoint             the URL a pod obtains evidence from, or 77
+#   dialer_bin                       the armtls-dial binary for the node's
+#                                    architecture, built once per run; 77
+#                                    without a Go toolchain
+#   cert_paths                       the certificate and key paths of a pod
+#                                    carrying a workload ID, one per line
+#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
+#                                    send the request to the CDS from here, as
+#                                    given (empty arguments are omitted);
+#                                    prints the status (000 when nothing
+#                                    answered), then the body
+#   router_request <method> <path> [body-file] [authorization]
+#                                    the same to the router's public address
+#   router_headers <path>            GET path at the router; prints the status,
+#                                    then the response headers, one per line
+#   router_serving_cert              the leaf the router presents on its public
+#                                    address, PEM
+#   router_nginx_conf                the router's rendered nginx configuration
+#   router_tls_mode                  cds, webpki or acme: the public TLS
+#                                    credential the router selects
+#   cds_relay_block / cds_relay_unblock
+#                                    leave the CDS Service with no endpoints, so
+#                                    the router's allowlist relay cannot reach
+#                                    the CDS, and undo it; each returns once
+#                                    the Service's endpoints say so
+# node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
+# node_address, mesh_port, mesh_uids, mesh_platform, excluded_namespace,
+# host_namespace_ns and attestation_endpoint answer the same for a whole run;
+# callers may cache them. The allowlist is state: served_allowlist answers for
+# the moment of the call.
 #
 # The implementations below that are the same everywhere need these from the
 # backend, which the steps never call:
 #   cds_url                          the base URL of the CDS, reachable from here
+#   router_url                       the base URL of the router's public HTTPS
+#                                    address, reachable from here
 #   cds_plain_url                    the same listener over http://, or 77
 #   operator_key                     the operator's private key, PEM
 #   optoken_bin                      the token minter built from
@@ -139,18 +200,34 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
-# undeclared while a scenario admits this one.
+# undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
+# tar for the copy, which no other logical image shares.
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/$WORKLOAD_IMAGE" ;;
-        tenant-app) echo "docker.io/library/busybox:1.36.1" ;;
+        tenant-app) echo "docker.io/library/python:3.12-alpine" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
+        mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
         *) return $UNSUPPORTED ;;
     esac
+}
+
+# The mesh peer the steps drive, built from this checkout for the node's
+# architecture (the steps call this once per run and copy the binary into the
+# pod that dials), into a fresh directory: never an earlier run's binary, and
+# never the results a metal lane uploads.
+dialer_bin() {
+    local bin arch
+    command -v go >/dev/null || return "$UNSUPPORTED"
+    bin="$(mktemp -d)/armtls-dial" || return
+    arch="$(kubectl get node "$(node_name one)" -o jsonpath='{.status.nodeInfo.architecture}')" || return
+    CGO_ENABLED=0 GOOS=linux GOARCH="$arch" go build -C "$C8S_ROOT" -ldflags='-s -w' -o "$bin" ./test/conformance/tools/armtls-dial >&2 || return 1
+    echo "$bin"
 }
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
@@ -162,15 +239,14 @@ pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
 # the first are the fixture's --container groups, one shell-quoted string each.
-pod_manifest() { render_pod -- "$@"; }
-
-# The renew interval a pod carrying a workload ID is given: short enough to
-# observe a renewal, and below the CDS's named leaf TTL.
-CW_RENEW_INTERVAL=10s
-
-cw_pod_manifest() {
-    render_pod --annotation "confidential.ai/cw=$1" --annotation "confidential.ai/c8s-renew-interval=$CW_RENEW_INTERVAL" -- "$@"
-}
+# Options before -- are the fixture's own, named in the header; every pod may
+# send an echo request over an ICMP datagram socket (a safe sysctl, which the
+# chart's admission policy admits where NET_RAW is refused; the fixture leaves
+# it out of a pod in the node's network namespace, where kubelet refuses every
+# net.* sysctl). The tenant-app image is Alpine's python, whose ping uses that
+# socket; the library busybox image's cannot.
+PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
+pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@"; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
@@ -188,6 +264,7 @@ requester_manifest() {
 render_pod() {
     local -a flags=()
     while [ "$1" != -- ]; do
+        [ $# -gt 1 ] || { echo "backend: render_pod: no -- before the pod" >&2; return 2; }
         flags+=("$1")
         shift
     done
@@ -249,13 +326,6 @@ cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].a
 
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }
-
-# The CDS's --challenge-ttl, or its built-in default.
-challenge_ttl() {
-    local ttl
-    ttl="$(cds_arg challenge-ttl)" || return
-    echo "${ttl:-60s}"
-}
 
 # Every plugin pulls from https://127.0.0.1:<node port of the CDS Service>
 # (the chart's nriImagePolicy.allowlist.pull.url default and the node image's
@@ -319,9 +389,13 @@ cds_volatile() {
 #   optoken_bin    the token minter built from test/integration/cluster/optoken
 #   scratch        a directory kept for the run
 
+# The status is the first line of the read. Taking it with head would close
+# the pipe before cds_read has written the body, and that SIGPIPE is the
+# function's status under pipefail.
 operator_keys() {
-    local code
-    code="$(cds_read operator-key-set | head -1)" || return
+    local answer code
+    answer="$(cds_read operator-key-set)" || return
+    code="${answer%%$'\n'*}"
     case "$code" in
         200) echo yes ;;
         404) echo no ;;
@@ -360,17 +434,6 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
-# Always exit 0: curl prints 000 on transport failure, and the steps assert on
-# the code itself.
-allowlist_request() {
-    local url
-    url="$(cds_url)" || return
-    local -a auth=()
-    [ -z "${4:-}" ] || auth=(-H "Authorization: $4")
-    curl -sSk -o /dev/null -w '%{http_code}' -X "$1" -H 'Content-Type: application/json' \
-        --data-binary "@$3" ${auth[@]+"${auth[@]}"} "$url$2" || true
-}
-
 allowlist_get() {
     local url headers body status
     url="$(cds_url)" || return
@@ -398,7 +461,33 @@ cds_document_path() {
     esac
 }
 
-# curl appends the status to the body; it moves to the first line here.
+# The request as the scenario shaped it: a body, an Authorization and a
+# client certificate only when given. curl appends the status to the body; it
+# moves to the first line here, as in cds_read.
+cds_request() {
+    local url
+    url="$(cds_url)" || return
+    http_request "$url" "$@"
+}
+
+router_request() {
+    local url
+    url="$(router_url)" || return
+    http_request "$url" "$@"
+}
+
+# http_request <base-url> <method> <route> [body-file] [authorization] [client-cert] [client-key]
+http_request() {
+    local url="$1" method="$2" route="$3" body="${4:-}" authorization="${5:-}" cert="${6:-}" key="${7:-}" answer
+    local -a opts=(-sk --max-time 30 -X "$method" -w $'\n%{http_code}')
+    [ -z "$body" ] || opts+=(-H 'Content-Type: application/json' --data-binary "@$body")
+    [ -z "$authorization" ] || opts+=(-H "Authorization: $authorization")
+    [ -z "$cert" ] || opts+=(--cert "$cert" --key "$key")
+    answer="$(curl "${opts[@]}" "$url$route" 2>/dev/null)" || answer=$'\n000'
+    echo "${answer##*$'\n'}"
+    printf '%s' "${answer%$'\n'*}"
+}
+
 cds_read() {
     local url path answer
     path="$(cds_document_path "$1")" || return
@@ -412,13 +501,352 @@ cds_read() {
     printf '%s' "${answer%$'\n'*}"
 }
 
-cds_serving_cert() {
-    local url host
-    url="$(cds_url)" || return
-    host="${url#https://}"
+cds_serving_cert() { local url; url="$(cds_url)" || return; serving_cert "$url"; }
+
+serving_cert() {
+    local host="${1#https://}"
     host="${host%%/*}"
     openssl s_client -connect "$host" </dev/null 2>/dev/null | openssl x509
 }
+
+# --- The router ---
+# The chart's router Deployment and its nginx ConfigMap in $NS, whether the
+# chart or a node image's launch configuration drives it.
+ROUTER_DEPLOY=c8s-router
+CDS_SELECTOR_ANNOTATION=c8s-conformance/selector
+
+router_serving_cert() { local url; url="$(router_url)" || return; serving_cert "$url"; }
+
+router_headers() {
+    local url answer
+    url="$(router_url)" || return
+    answer="$(curl -sk --max-time 30 -o /dev/null -D - "$url$1" 2>/dev/null | tr -d '\r')" || answer=""
+    if [ -z "$answer" ]; then
+        echo 000
+        return
+    fi
+    echo "${answer%%$'\n'*}" | awk '{print $2}'
+    printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
+}
+
+router_nginx_conf() {
+    local cm
+    cm="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}' |
+        tr ' ' '\n' | grep -- '-nginx$' | head -1)"
+    [ -n "$cm" ] || { echo "backend: the router mounts no nginx ConfigMap" >&2; return 1; }
+    kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
+}
+
+# The attest container is started with --front-door-mode, or, where a launch
+# configuration drives the router, with the file that holds it. get-cert
+# reads the same file into the discovery document it writes, so that mode is
+# read from the document the router serves, which needs no exec.
+router_tls_mode() {
+    local args mode out path
+    args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
+        jq -r '.spec.template.spec.containers[] | (.args // [])[]')" || return
+    mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
+    if [ -z "$mode" ]; then
+        grep -q '^--front-door-mode-file=' <<<"$args" || { echo "backend: the router names no front-door mode" >&2; return 1; }
+        out="$(sed -n 's/^--discovery-out=//p' <<<"$args" | head -1)"
+        [ -n "$out" ] || { echo "backend: the router publishes no discovery document" >&2; return 1; }
+        path="$(router_nginx_conf | awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}')"
+        [ -n "$path" ] || { echo "backend: no router location serves $out" >&2; return 1; }
+        mode="$(curl -sk --max-time 30 "$(router_url)$path" | jq -r '.public_tls.mode // empty')" || return
+    fi
+    echo "$mode" | tr -d '[:space:]'
+}
+
+# The selector the Service had is kept in an annotation on it, so
+# cds_relay_unblock restores it from any process. Established connections
+# outlive the endpoints, so the block holds only once the relay's pooled ones
+# have idled out (the armTLS client's IdleConnTimeout, 30s).
+RELAY_IDLE_SECONDS=31
+cds_relay_block() {
+    local selector
+    [ -z "$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_SELECTOR_ANNOTATION}")" ] || return 0
+    selector="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.selector}')"
+    [ -n "$selector" ] || { echo "backend: the CDS Service has no selector" >&2; return 1; }
+    kubectl -n "$NS" annotate svc c8s-cds "$CDS_SELECTOR_ANNOTATION=$selector" --overwrite >/dev/null || return
+    kubectl -n "$NS" patch svc c8s-cds --type merge -p '{"spec":{"selector":{"c8s-conformance/none":"none"}}}' >/dev/null || return
+    cds_endpoints_await empty || return
+    sleep "$RELAY_IDLE_SECONDS"
+}
+
+cds_relay_unblock() {
+    local selector
+    selector="$(kubectl -n "$NS" get svc c8s-cds -o jsonpath="{.metadata.annotations.$CDS_SELECTOR_ANNOTATION}")"
+    [ -n "$selector" ] || return 0
+    kubectl -n "$NS" patch svc c8s-cds --type json \
+        -p "[{\"op\":\"replace\",\"path\":\"/spec/selector\",\"value\":$selector}]" >/dev/null || return
+    kubectl -n "$NS" annotate svc c8s-cds "$CDS_SELECTOR_ANNOTATION-" >/dev/null || return
+    cds_endpoints_await present
+}
+
+# cds_endpoints_await <empty|present>
+cds_endpoints_await() {
+    local deadline=$(($(date +%s) + 60)) ips
+    while :; do
+        ips="$(kubectl -n "$NS" get endpoints c8s-cds -o jsonpath='{.subsets[*].addresses[*].ip}')"
+        case "$1" in
+            empty) [ -n "$ips" ] || return 0 ;;
+            present) [ -z "$ips" ] || return 0 ;;
+        esac
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the CDS Service's endpoints are not $1 after 60s" >&2; return 1; }
+        sleep 1
+    done
+}
+
+# --- The armTLS mesh ---
+# Everything here goes through kubectl: the mesh DaemonSet in $NS, its pod on
+# the node, and its health port on the node address, scraped from a pod the
+# backend keeps for the run (mesh_scraper). The mesh is configured by the
+# DaemonSet's args.
+MESH_DS=c8s-armtls-mesh
+MESH_SELECTOR=app=c8s-armtls-mesh
+MESH_SYNC_CONTAINER=iptables-sync
+# The ipsets the mesh keeps (internal/cmds/armtlsmesh/pod_ipsets_linux.go):
+# local eligible pods, whose traffic is redirected, and guarded pods.
+MESH_SET_LOCAL=ARMTLS-MESH-LOCAL-PODS
+MESH_SET_GUARDED=ARMTLS-MESH-CW-PODS
+
+# cached <key> <command...>: the command's output, kept in the run's scratch
+# directory after the first call and dropped by teardown; for what does
+# not change during a run (the mesh DaemonSet's spec, the mesh pod on a node
+# until mesh_restart, the node address the proxy is scraped at). An empty answer is not kept, nor
+# a failure, whose status (77 included) is passed on.
+cached() {
+    local file rc
+    file="$(scratch)/cache-$1"
+    shift
+    if [ ! -s "$file" ]; then
+        "$@" > "$file"
+        rc=$?
+        [ "$rc" -eq 0 ] || { rm -f "$file"; return "$rc"; }
+        [ -s "$file" ] || { rm -f "$file"; return 0; }
+    fi
+    cat "$file"
+}
+
+mesh_pod_on() { cached "mesh-pod-$1" kubectl -n "$NS" get pods -l "$MESH_SELECTOR" --field-selector "spec.nodeName=$1" -o jsonpath='{.items[0].metadata.name}'; }
+
+mesh_spec() { cached mesh-ds kubectl -n "$NS" get ds "$MESH_DS" -o json; }
+
+mesh_arg() {
+    mesh_spec 2>/dev/null |
+        jq -r --arg f "--$1" '[.spec.template.spec.containers[] | .args // [] | . as $a | range(length) | select($a[.] == $f) | $a[. + 1]] | first // empty'
+}
+
+mesh_ready() {
+    kubectl -n "$NS" get ds "$MESH_DS" >/dev/null 2>&1 || return "$UNSUPPORTED"
+    kubectl -n "$NS" rollout status "ds/$MESH_DS" --timeout=240s >/dev/null
+}
+
+# A restarted CDS mints a new mesh CA, which a running proxy refuses as a
+# CA bundle with no continuity; only a proxy started after it bootstraps
+# from the new one. The mesh pods are new, so their cached names go.
+mesh_restart() {
+    kubectl -n "$NS" get ds "$MESH_DS" >/dev/null 2>&1 || return "$UNSUPPORTED"
+    kubectl -n "$NS" rollout restart "ds/$MESH_DS" >/dev/null || return
+    kubectl -n "$NS" rollout status "ds/$MESH_DS" --timeout=240s >/dev/null || return
+    rm -f "$(scratch)"/cache-mesh-pod-*
+}
+
+mesh_member() {
+    local pod set
+    pod="$(mesh_pod_on "$1")"
+    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
+    case "$2" in
+        interception) set="$MESH_SET_LOCAL" ;;
+        guard) set="$MESH_SET_GUARDED" ;;
+        *) echo "backend: mesh_member: no membership '$2'" >&2; return 2 ;;
+    esac
+    if kubectl -n "$NS" exec "$pod" -c "$MESH_SYNC_CONTAINER" -- ipset test "$set" "$3" >/dev/null 2>&1; then echo yes; else echo no; fi
+}
+
+# A pod kept for the run that scrapes the mesh's health port on the node
+# address, which no pod-IP rule intercepts; one exec per scrape instead of a
+# pod per scrape. Its image is admitted by an entry of its own, since the
+# plugin denies what no served entry declares; the entry goes with the pod.
+MESH_SCRAPER_NS=c8s-conformance-tools
+MESH_SCRAPER=mesh-scraper
+mesh_scraper() {
+    local ready
+    ready="$(scratch)/mesh-scraper.ready"
+    [ ! -e "$ready" ] || return 0
+    if ! kubectl -n "$MESH_SCRAPER_NS" get pod "$MESH_SCRAPER" >/dev/null 2>&1; then
+        kubectl create namespace "$MESH_SCRAPER_NS" >/dev/null 2>&1 || true
+        local node image digest entry
+        node="$(node_name one)" || return
+        image="$(image_ref requester)" || return
+        digest="$(image_digest "$image")" || return
+        entry="$(scratch)/mesh-scraper.json"
+        any_workload "$digest" "$image" > "$entry"
+        allowlist_put "$MESH_SCRAPER" "$entry" || return
+        render_pod -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 | kubectl apply -f - >/dev/null
+    fi
+    kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=180s >/dev/null || return
+    touch "$ready"
+}
+
+# Once per run, after the scenarios: what every backend kept for the run (the
+# scraper and its entry, the memoised answers), then what this one did.
+teardown() {
+    kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    allowlist_delete "$MESH_SCRAPER" || true
+    rm -f "$(scratch)/mesh-scraper.ready" "$(scratch)"/cache-*
+    teardown_backend
+}
+
+# The node's /metrics, scraped once; a failed scrape is an error, never
+# empty. A scraper found gone is made again, once.
+mesh_metrics() {
+    local addr port body _
+    addr="$(cached "node-ipv4-$1" node_address "$1" ipv4)" || return
+    port="$(cached mesh-health-port mesh_arg health-port)"
+    port="${port:-15021}"
+    for _ in 1 2; do
+        mesh_scraper || return
+        if body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
+            printf '%s\n' "$body"
+            return 0
+        fi
+        rm -f "$(scratch)/mesh-scraper.ready"
+    done
+    echo "backend: no scrape of $addr:$port" >&2
+    return 1
+}
+
+# The sum of the series matching the pattern in a scrape on stdin.
+metric_sum() { awk -v pat="$1" '$0 ~ pat {sum += $NF} END {printf "%d\n", sum + 0}'; }
+
+mesh_metric_on() {
+    local body
+    body="$(mesh_metrics "$1")" || return
+    metric_sum "$2" <<<"$body"
+}
+
+mesh_counter() {
+    local node="$1" body name pat
+    shift
+    body="$(mesh_metrics "$node")" || return
+    for name in "$@"; do
+        case "$name" in
+            inbound_connections) pat='^armtls_mesh_connections_total\{.*direction="inbound"' ;;
+            guard_drops) pat='^armtls_mesh_iptables_cw_inbound_drops_total' ;;
+            *) echo "backend: mesh_counter: no counter '$name'" >&2; return 2 ;;
+        esac
+        metric_sum "$pat" <<<"$body"
+    done
+}
+
+mesh_port() {
+    local port
+    case "$1" in
+        outbound) port="$(mesh_arg outbound-port)"; echo "${port:-15001}" ;;
+        inbound) port="$(mesh_arg inbound-port)"; echo "${port:-15006}" ;;
+        *) echo "backend: mesh_port: no listener '$1'" >&2; return 2 ;;
+    esac
+}
+
+mesh_uids() {
+    local uid excluded
+    uid="$(mesh_arg uid)"
+    excluded="$(mesh_arg exclude-uids)"
+    echo "${uid:-1337}"
+    tr ',' '\n' <<<"${excluded:-0}"
+}
+
+# Both roles switch to the CDS leaf together as far as the proxy reports
+# (one cert_mode gauge); the configured mode decides whether they try.
+mesh_cert_mode() {
+    local v
+    v="$(mesh_metric_on "$1" '^armtls_mesh_cert_mode\{mode="cds"\}')" || return
+    if [ "$v" -ge 1 ]; then echo cds; else echo self-signed; fi
+}
+
+# The verify set fills on the first CA refresh after the proxy switched to
+# its CDS leaf, and a failed refresh keeps the set it had. Success is logged
+# at debug level only, so the observation is the latest refresh tick (one
+# poll interval apart from "CA bundle refresh enabled") with no failure
+# logged after it; when it failed, the next tick decides.
+mesh_chain_ready() {
+    local pod interval started verdict wait tries=0
+    pod="$(mesh_pod_on "$1")"
+    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
+    [ "$(mesh_cert_mode "$1")" = cds ] || { echo "backend: the mesh proxy on $1 presents no CDS leaf" >&2; return 1; }
+    interval="$(mesh_arg ca-poll-interval)"
+    started="$(kubectl -n "$NS" get pod "$pod" -o jsonpath='{.status.containerStatuses[?(@.name=="armtls-mesh")].state.running.startedAt}')"
+    while :; do
+        read -r verdict wait < <(kubectl -n "$NS" logs "$pod" -c armtls-mesh --timestamps 2>/dev/null |
+            python3 -c "$MESH_REFRESH_PY" "${interval:-5m}" "$started")
+        case "$verdict" in
+            ok) return 0 ;;
+            failed) [ "$tries" -lt 1 ] || { echo "backend: the mesh proxy on $1 failed its last CA refresh" >&2; return 1; } ;;
+        esac
+        tries=$((tries + 1))
+        sleep "$wait"
+    done
+}
+
+# stdin: the proxy's log with timestamps; argv: the poll interval and the
+# container's start. Prints ok, failed or wait, then the seconds until the
+# next tick has had time to be logged.
+MESH_REFRESH_PY='
+import datetime, re, sys
+def ts(s):
+    s = re.sub(r"\.\d+", "", s.rstrip("Z"))
+    return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=datetime.timezone.utc).timestamp()
+units = {"h": 3600, "m": 60, "s": 1}
+interval = sum(int(n) * units[u] for n, u in re.findall(r"(\d+)([hms])", sys.argv[1]))
+anchor, failures = ts(sys.argv[2]), []
+for line in sys.stdin:
+    stamp, _, msg = line.partition(" ")
+    if "CA bundle refresh enabled" in msg:
+        anchor, failures = ts(stamp), []
+    elif "CA bundle refresh failed" in msg:
+        failures.append(ts(stamp))
+margin = 35  # a refresh is logged within --cds-op-timeout (30s) of its tick
+now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+ticks = int((now - anchor - margin) // interval)
+nxt = anchor + (ticks + 1) * interval + margin
+if ticks < 1:
+    print("wait", max(1, int(nxt - now)))
+else:
+    last = anchor + ticks * interval
+    print("failed" if any(f >= last - 1 for f in failures) else "ok", max(1, int(nxt - now)))
+'
+
+mesh_platform() {
+    local p
+    p="$(mesh_arg platform)"
+    echo "${p:-sev-snp}"
+}
+
+node_address() {
+    local pattern addr
+    case "$2" in
+        ipv4) pattern='^[^:]*$' ;;
+        ipv6) pattern=':' ;;
+        *) echo "backend: node_address: no family '$2'" >&2; return 2 ;;
+    esac
+    addr="$(kubectl get node "$1" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}' | tr ' ' '\n' | grep -m1 "$pattern")" || true
+    [ -n "$addr" ] || return "$UNSUPPORTED"
+    echo "$addr"
+}
+
+# The first namespace the mesh's rules exclude, which the chart sets to
+# kube-system; the same namespace admits pods in the node's network
+# namespace and root pods (the chart's host-namespace and UID policies leave
+# it out).
+excluded_namespace() {
+    local ns
+    ns="$(mesh_arg exclude-source-namespaces)"
+    echo "${ns:-kube-system}" | cut -d, -f1
+}
+host_namespace_ns() { echo kube-system; }
+
+cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
 
 # dispatch <function> <args...>: an unknown name is a harness error, not a skip.
 dispatch() {

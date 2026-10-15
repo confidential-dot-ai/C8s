@@ -5,6 +5,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -110,6 +111,15 @@ func TestAttest_SandboxWorkload_AllowsFloorOnlySandbox(t *testing.T) {
 	}
 }
 
+// wantWorkloadRefusal asserts the membership gate's refusal: csr_denied with
+// the same detail-free message whatever the cause.
+func wantWorkloadRefusal(t *testing.T, w *httptest.ResponseRecorder) {
+	t.Helper()
+	if resp := wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied); resp.Message != "sandbox workload not authorized" {
+		t.Fatalf("refusal message %q, want the fixed \"sandbox workload not authorized\"", resp.Message)
+	}
+}
+
 // An image the inventory reports but the allowlist does not admit blocks
 // issuance — the gate now runs on every token-bearing request, including the
 // first one, where a self-reported claim used to be empty.
@@ -122,9 +132,7 @@ func TestAttest_SandboxWorkload_RejectsUnallowlistedImage(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-	}
+	wantWorkloadRefusal(t, w)
 }
 
 // An inventory that does not know the sandbox is fail-closed: CDS cannot
@@ -138,9 +146,7 @@ func TestAttest_SandboxWorkload_UnreachableInventoryFailsClosed(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-	}
+	wantWorkloadRefusal(t, w)
 }
 
 // An inventory reporting an empty sandbox is fail-closed. "No containers" is
@@ -155,9 +161,7 @@ func TestAttest_SandboxWorkload_EmptySandboxFailsClosed(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-	}
+	wantWorkloadRefusal(t, w)
 }
 
 // Without a store or a callback client CDS cannot check what the sandbox runs,
@@ -178,9 +182,7 @@ func TestAttest_SandboxWorkload_RejectsWhenGateUnwired(t *testing.T) {
 			csrPEM, _ := generateCSR(t)
 			challenge := issueChallenge(t, h)
 			w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-			if w.Code != http.StatusForbidden {
-				t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-			}
+			wantRefusal(t, w, http.StatusForbidden, types.ErrorCodeCSRDenied)
 		})
 	}
 }
@@ -239,9 +241,7 @@ func TestAttest_SandboxWorkload_MembershipStillBitesMidLifecycle(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-	}
+	wantWorkloadRefusal(t, w)
 }
 
 // A request with no sandbox token is issued without a sandbox ID and without
@@ -299,9 +299,7 @@ func TestAttest_SandboxWorkload_UnpinnedStillEnforcesAllowlist(t *testing.T) {
 	csrPEM, _ := generateCSR(t)
 	challenge := issueChallenge(t, h)
 	w := postAttestSandbox(t, h, challenge, csrPEM, signedSandboxToken(t, signer, csrPEM, challenge, testSandboxID))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403; body = %s", w.Code, w.Body.String())
-	}
+	wantWorkloadRefusal(t, w)
 }
 
 // errStore fails every allowlist lookup, forcing the fail-closed branch.
