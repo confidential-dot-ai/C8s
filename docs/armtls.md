@@ -110,7 +110,8 @@ proves possession of the corresponding private key in either path.
    the 257th distinct policy since boot, every such node is rejected at once.
    The only signal is one warning per producer, `evidence omits the measured
    policies`. Reboot nodes, a few at a time, before their boot has seen 256
-   distinct policies.
+   distinct policies. See
+   [Measured policy history](allowlist-and-capabilities.md#measured-policy-history).
 
 The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 

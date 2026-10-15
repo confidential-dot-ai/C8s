@@ -1145,7 +1145,8 @@ optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
 `remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
 binding for that same entry. On TDX the binding may be the key's seed followed
-by a prefix of the peer's measured allowlist policies that replays.
+by a prefix of the peer's measured policies that replays
+([Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
 An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
@@ -1204,8 +1205,9 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
   A node that measures allowlist policies extends them after that chain and
   sends their list with the fresh report, or in cred-release's armTLS
   certificate; the register may then also carry the longest prefix of that
-  list that replays. That trailing part is a prefix check, not an exact
-  chain: policy and workload extends share one event encoding, so
+  list that replays (see
+  [Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+  That trailing part is a prefix check, not an exact chain: policy and workload extends share one event encoding, so
   `--workload-image` excludes an unpinned workload only while the measured
   image journals policies alone, which the image pin above enforces;
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
@@ -1489,7 +1491,8 @@ The chart passes the journal under `nriImagePolicy.hostPaths.runtimeDir`
 wherever the router mounts the attestation-api socket; an absent journal
 omits the list. `c8s verify` does not replay the list against these bundles
 yet, so a bundle from a node that measures policies still fails an exact
-RTMR[3] pin.
+RTMR[3] pin. See
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history).
 
 CDS, cred-release, the mesh, `launch-config stage` and get-cert take the
 journal from `--measured-policies-file`. It defaults to
