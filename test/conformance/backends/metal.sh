@@ -207,14 +207,14 @@ AGENT_DIR=/run/c8s-conformance-agent
 AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; base64 -d '"$AGENT_DIR"'/cmd > /tmp/.agent-cmd 2>/dev/null; sh /tmp/.agent-cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
 
 pod_manifest() {
-    render_pod --sysctl "$PING_SYSCTL" "$@" | jq -c --arg a "$AGENT" --arg dir "$AGENT_DIR" --arg script "$AGENT_SCRIPT" '
+    render_pod --sysctl "$PING_SYSCTL" "$@" | jq -c --arg a "$AGENT" --arg dir "$AGENT_DIR" --arg script "$AGENT_SCRIPT" --arg q "'" '
         if .spec.containers[0].command == ["sleep", "3600"] then
             .metadata.annotations += {($a): "yes", ($a + "-seq"): "0", ($a + "-cmd"): ""}
             | .spec.containers[0].command = ["sh", "-c", $script]
             | .spec.containers[0].volumeMounts += [{name: "c8s-conformance-agent", mountPath: $dir, readOnly: true}]
             | .spec.volumes += [{name: "c8s-conformance-agent", downwardAPI: {items: [
-                {path: "seq", fieldRef: {fieldPath: ("metadata.annotations['" + $a + "-seq']")}},
-                {path: "cmd", fieldRef: {fieldPath: ("metadata.annotations['" + $a + "-cmd']")}}]}}]
+                {path: "seq", fieldRef: {fieldPath: ("metadata.annotations[" + $q + $a + "-seq" + $q + "]")}},
+                {path: "cmd", fieldRef: {fieldPath: ("metadata.annotations[" + $q + $a + "-cmd" + $q + "]")}}]}}]
         else . end'
 }
 
