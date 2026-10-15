@@ -244,9 +244,10 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
 	if p.inventory != nil {
-		// The inventory needs eviction on stop to stay correct across pod churn,
-		// and the pod-sandbox lifecycle to keep its sandbox set (the /sandbox
-		// and /digests routes) live.
+		// The inventory needs stop and removal to stay correct across pod
+		// churn, and the pod-sandbox lifecycle to keep its sandbox set (the
+		// /sandbox and /digests routes) live.
+		mask.Set(api.Event_STOP_CONTAINER)
 		mask.Set(api.Event_REMOVE_CONTAINER)
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
@@ -254,7 +255,17 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	return mask, nil
 }
 
-// RemoveContainer evicts a stopped container from caller resolution; the
+// StopContainer marks a stopped container exited in its sandbox's record
+// (inventory.stop). Only subscribed when the inventory is enabled (see
+// Configure).
+func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
+	if p.inventory != nil {
+		p.inventory.stop(ctr.GetId())
+	}
+	return nil, nil
+}
+
+// RemoveContainer evicts a removed container from caller resolution; the
 // sandbox's record keeps it (inventory.remove). Only subscribed when the
 // inventory is enabled (see Configure).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {

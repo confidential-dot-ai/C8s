@@ -233,8 +233,9 @@ and nodes that predate it report no per-variable evidence. To start using
 4. Recreate the affected pods. Restarting their containers is not enough: the
    sandbox's admission history keeps the records from the old node software.
 
-A workload's `match` containers may together need at most 512 KiB of
-per-variable evidence, about 40 containers at both limits
+A workload's containers of `match`-listed images may together need at most
+512 KiB of per-variable evidence, about 40 containers at both limits. Restarts
+with new environments are not covered
 ([bounds](secrets.md#what-the-inventory-reports)).
 
 ## Mount policy (`mounts`)

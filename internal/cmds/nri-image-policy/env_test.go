@@ -380,9 +380,9 @@ func TestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 	}
 }
 
-// A removed container is no longer running, so churning sidecar variants lose
-// their evidence before the live main container does.
-func TestInventoryEvictsRemovedContainersEvidenceFirst(t *testing.T) {
+// A stopped or removed container is no longer running, so churning sidecar
+// variants lose their evidence before the live main container does.
+func TestInventoryEvictsExitedContainersEvidenceFirst(t *testing.T) {
 	_, envs := matchWorkloadAtLimits(t, 1)
 	observe := func(value string) *allowlist.EnvObservation {
 		env := slices.Clone(envs[0])
@@ -395,21 +395,40 @@ func TestInventoryEvictsRemovedContainersEvidenceFirst(t *testing.T) {
 		}
 		return o
 	}
-	inv := newAdmissionInventory(t.TempDir())
-	main := observe("main")
-	inv.record("main", "pod", "main", pushDigestA, []string{"/app"}, main)
-	for i := range allowlist.MaxSandboxVariableEvidenceBytes/main.VariableEvidenceBytes() + 2 {
-		id := fmt.Sprint("sidecar-", i)
-		inv.record(id, "pod", "sidecar", pushDigestB, []string{"/sidecar"}, observe(fmt.Sprint(i)))
-		inv.remove(id)
-	}
-	_, cs, _, err := inv.DigestsForSandbox("pod")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range cs {
-		if c.Env.Digest == main.Digest && c.Env.VariableDigests == nil {
-			t.Fatal("the running main container lost its per-variable evidence to removed sidecars")
-		}
+	pod := &api.PodSandbox{Id: "pod"}
+	for _, tc := range []struct {
+		name string
+		exit func(p *plugin, ctr *api.Container) error
+	}{
+		{"stopped", func(p *plugin, ctr *api.Container) error {
+			_, err := p.StopContainer(context.Background(), pod, ctr)
+			return err
+		}},
+		{"removed", func(p *plugin, ctr *api.Container) error {
+			return p.RemoveContainer(context.Background(), pod, ctr)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+			p.inventory = newAdmissionInventory(t.TempDir())
+			main := observe("main")
+			p.inventory.record("main", "pod", "main", pushDigestA, []string{"/app"}, main)
+			for i := range allowlist.MaxSandboxVariableEvidenceBytes/main.VariableEvidenceBytes() + 2 {
+				id := fmt.Sprint("sidecar-", i)
+				p.inventory.record(id, "pod", "sidecar", pushDigestB, []string{"/sidecar"}, observe(fmt.Sprint(i)))
+				if err := tc.exit(p, &api.Container{Id: id, PodSandboxId: "pod"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			_, cs, _, err := p.inventory.DigestsForSandbox("pod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range cs {
+				if c.Env.Digest == main.Digest && c.Env.VariableDigests == nil {
+					t.Fatalf("the running main container lost its per-variable evidence to %s sidecars", tc.name)
+				}
+			}
+		})
 	}
 }

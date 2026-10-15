@@ -2,7 +2,6 @@ package workloadclaims
 
 import (
 	"cmp"
-	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -18,9 +17,8 @@ func (c SandboxContainer) Key() string {
 	if c.Env == nil {
 		key.WriteString("nil")
 	} else {
-		// Marshal cannot fail: EnvObservation holds only strings and a string map.
-		encoded, _ := json.Marshal(c.Env)
-		key.Write(encoded)
+		// The aggregate digest fixes the per-variable digests.
+		fmt.Fprintf(&key, "{%q %q %t}", c.Env.Format, c.Env.Digest, c.Env.VariableDigestsEvicted)
 	}
 	key.WriteString(" mounts=")
 	if c.Mounts == nil {

@@ -449,7 +449,7 @@ func TestWorkloadVariableEvidenceBudget(t *testing.T) {
 	}
 	perContainer := variableEvidenceBytes(maps.Keys(variables))
 	fit := MaxSandboxVariableEvidenceBytes / perContainer
-	entry := func(n int) []byte {
+	entry := func(n int, extra ...map[string]any) []byte {
 		var containers []map[string]any
 		for i := range n {
 			containers = append(containers, map[string]any{
@@ -457,7 +457,7 @@ func TestWorkloadVariableEvidenceBudget(t *testing.T) {
 				"args": map[string]string{"policy": "deny"}, "env": map[string]any{"policy": "match", "variables": variables},
 			})
 		}
-		b, _ := json.Marshal(map[string]any{"containers": containers})
+		b, _ := json.Marshal(map[string]any{"containers": append(containers, extra...)})
 		return bytes.ReplaceAll(b, []byte(`"true"`), []byte(`true`))
 	}
 	if _, err := ParseWorkloadJSON(entry(fit)); err != nil {
@@ -465,6 +465,55 @@ func TestWorkloadVariableEvidenceBudget(t *testing.T) {
 	}
 	if _, err := ParseWorkloadJSON(entry(fit + 1)); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxSandboxVariableEvidenceBytes)) {
 		t.Fatalf("ParseWorkloadJSON(%d containers) error = %v, want the evidence ceiling", fit+1, err)
+	}
+
+	// A node retains evidence for every container of a match-listed image at
+	// the same priority, whatever that container's own env policy.
+	other := func(digest int, env map[string]any) map[string]any {
+		return map[string]any{
+			"digest": fmt.Sprintf("sha256:%064x", digest), "command": map[string]any{"policy": "exact", "argv": []string{"/sidecar"}},
+			"args": map[string]string{"policy": "deny"}, "env": env,
+		}
+	}
+	for _, tc := range []struct {
+		name  string
+		extra map[string]any
+		fits  bool
+	}{
+		{"any on a listed image", other(1, map[string]any{"policy": "any"}), false},
+		{"small exact on a listed image", other(1, map[string]any{"policy": "exact", "values": map[string]string{"MODE": "production"}}), true},
+		{"any on an unlisted image", other(fit+1, map[string]any{"policy": "any"}), true},
+	} {
+		_, err := ParseWorkloadJSON(entry(fit, tc.extra))
+		if tc.fits && err != nil {
+			t.Errorf("%s: ParseWorkloadJSON() = %v, want it to fit", tc.name, err)
+		}
+		if !tc.fits && (err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxSandboxVariableEvidenceBytes))) {
+			t.Errorf("%s: ParseWorkloadJSON() error = %v, want the evidence ceiling", tc.name, err)
+		}
+	}
+}
+
+// An environment at the per-record limits whose every name byte JSON escapes
+// to six bytes still fits the per-record bound.
+func TestMaxRecordVariableEvidenceBytes(t *testing.T) {
+	var sixByte []rune
+	for r := rune(1); r < 0x20; r++ {
+		if !strings.ContainsRune("\b\t\n\f\r", r) {
+			sixByte = append(sixByte, r)
+		}
+	}
+	sixByte = append(sixByte, '<', '>', '&')
+	names := map[string]string{}
+	pad := strings.Repeat("\x01", maxVariableEvidenceNameBytes/maxVariableEvidence-2)
+	for i := range maxVariableEvidence {
+		names[pad+string(sixByte[i/len(sixByte)])+string(sixByte[i%len(sixByte)])] = ""
+	}
+	if err := checkVariableEvidenceLimits(maps.Keys(names)); err != nil {
+		t.Fatal(err)
+	}
+	if got := variableEvidenceBytes(maps.Keys(names)); got > maxRecordVariableEvidenceBytes {
+		t.Fatalf("variableEvidenceBytes(worst case) = %d, want at most %d", got, maxRecordVariableEvidenceBytes)
 	}
 }
 

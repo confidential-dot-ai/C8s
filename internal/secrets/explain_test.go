@@ -363,11 +363,14 @@ func TestExplainNamesTheEnvEvidenceCase(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		env  *pkgallowlist.EnvObservation
+		argv []string
 		want string
 	}{
-		{"missing", observe("production", false, false), pkgallowlist.EnvEvidenceMissing},
-		{"evicted", observe("production", false, true), pkgallowlist.EnvEvidenceEvicted},
-		{"mismatch", observe("debug", true, false), pkgallowlist.EnvEvidenceMismatch},
+		{"missing", observe("production", false, false), nil, pkgallowlist.EnvEvidenceMissing},
+		{"evicted", observe("production", false, true), nil, pkgallowlist.EnvEvidenceEvicted},
+		{"mismatch", observe("debug", true, false), nil, pkgallowlist.EnvEvidenceMismatch},
+		// Recreating the pod does not fix an argv mismatch.
+		{"evicted with argv mismatch", observe("production", false, true), []string{"/bin/other"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			eh := newExplainHarness(t)
@@ -376,6 +379,9 @@ func TestExplainNamesTheEnvEvidenceCase(t *testing.T) {
 				t.Fatal(err)
 			}
 			eh.inv.containers[0].Env = tc.env
+			if tc.argv != nil {
+				eh.inv.containers[0].Argv = tc.argv
+			}
 			_, resp := eh.serve(testSandbox)
 			for _, e := range resp.Entries {
 				if e.Name != "api" {

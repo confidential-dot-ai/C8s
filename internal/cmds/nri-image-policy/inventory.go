@@ -74,21 +74,37 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	b.sandboxes[sandboxID] = struct{}{}
 }
 
-// remove evicts a stopped container from caller resolution only. The sandbox's
-// admission record keeps it: a stopped container must not bind a caller, but it
+// stop marks a stopped container exited in its sandbox's record, so its
+// per-variable env evidence is the first to be evicted while it awaits
+// removal. The record keeps the admission.
+func (b *admissionInventory) stop(containerID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.exited(containerID)
+}
+
+// remove evicts a removed container from caller resolution only. The sandbox's
+// admission record keeps it: a removed container must not bind a caller, but it
 // still ran here. That includes an unresolved digest, so a container
 // that stops before one resolves closes its sandbox's answer for the sandbox's
-// life. Its per-variable env evidence becomes the first to be evicted.
+// life.
 func (b *admissionInventory) remove(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if c, ok := b.containers[containerID]; ok {
-		if rec, ok := b.admitted[c.sandboxID]; ok {
-			rec.Exited(containerID)
-			b.admitted[c.sandboxID] = rec
-		}
-	}
+	b.exited(containerID)
 	delete(b.containers, containerID)
+}
+
+// exited requires b.mu.
+func (b *admissionInventory) exited(containerID string) {
+	c, ok := b.containers[containerID]
+	if !ok {
+		return
+	}
+	if rec, ok := b.admitted[c.sandboxID]; ok {
+		rec.Exited(containerID)
+		b.admitted[c.sandboxID] = rec
+	}
 }
 
 // recordSandbox notes a live pod sandbox (RunPodSandbox / Synchronize).
