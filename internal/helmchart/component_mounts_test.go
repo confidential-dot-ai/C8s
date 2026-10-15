@@ -183,6 +183,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			"--set", "cds.measurements={"+measurements+"}"), true},
 		{"acme", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
+		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["echo $(echo $$)","$(a $$","$$(POD_NAME)"]`), true},
 		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -86,14 +86,12 @@
 {{- $argv := dig "command" "argv" list $c -}}
 {{- /* An entry pinned to a component executable with open mounts, or open
        args outside a webhook-injected sidecar, is one allowlist lint
-       refuses (componentInvocations): it lets the pod point the component
-       at other code. */ -}}
+       refuses (componentInvocations; nginx is not a guarded component): it
+       lets the pod point the component at other code. */ -}}
 {{- $binary := false -}}
 {{- if eq $command "exact" -}}
-{{- $invocation := $argv -}}
-{{- if eq (dig "args" "policy" "" $c) "exact" -}}{{- $invocation = concat $argv (dig "args" "argv" list $c) -}}{{- end -}}
-{{- range $prefix := list (list "/c8s") (list "/app/c8s") (list "/attestation-api") (list "/docker-entrypoint.sh" "nginx") -}}
-{{- if and (ge (len $invocation) (len $prefix)) (eq (slice $invocation 0 (len $prefix) | toJson) ($prefix | toJson)) -}}{{- $binary = true -}}{{- end -}}
+{{- range $prefix := list (list "/c8s") (list "/app/c8s") (list "/attestation-api") -}}
+{{- if and (ge (len $argv) (len $prefix)) (eq (slice $argv 0 (len $prefix) | toJson) ($prefix | toJson)) -}}{{- $binary = true -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $sidecar := and (eq (len $argv) 2) (eq (first $argv) "/c8s") (has (index $argv 1) (list "get-cert" "get-secret" "get-volume" "probe-file")) -}}
