@@ -20,7 +20,7 @@ import (
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
 // `workload_entry_digest` indexes each container digest for membership, and
 // `allowlist_version` is the counter every mutation bumps (the worker pull
-// ETag).
+// ETag). The journal tables (journal.go) keep the history of served documents.
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
@@ -72,7 +72,7 @@ func OpenStore(path string) (Store, error) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
 
-	if _, err := db.Exec(initSQL); err != nil {
+	if _, err := db.Exec(initSQL + journalSQL); err != nil {
 		db.Close()
 		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
@@ -86,7 +86,7 @@ func OpenInMemory() (Store, error) {
 	if err != nil {
 		return Store{}, err
 	}
-	if _, err := db.Exec(initSQL); err != nil {
+	if _, err := db.Exec(initSQL + journalSQL); err != nil {
 		db.Close()
 		return Store{}, err
 	}
@@ -115,7 +115,7 @@ func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 		version = "1"
 	}
 
-	workloads, err := s.loadWorkloadsTx()
+	workloads, err := loadWorkloads(s.db)
 	if err != nil {
 		return nil, "", err
 	}
@@ -126,8 +126,14 @@ func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 	}, version, nil
 }
 
-func (s *Store) loadWorkloadsTx() (map[string]pkgallowlist.Workload, error) {
-	rows, err := s.db.Query("SELECT name, entry_json FROM workload_entry")
+// querier is *sql.DB or *sql.Tx. Inside a transaction reads must go through
+// the tx: an in-memory database is per connection.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func loadWorkloads(q querier) (map[string]pkgallowlist.Workload, error) {
+	rows, err := q.Query("SELECT name, entry_json FROM workload_entry")
 	if err != nil {
 		return nil, err
 	}
@@ -182,10 +188,13 @@ func (s *Store) Version() (string, error) {
 	return version, nil
 }
 
-// commitTx commits a mutating transaction and records the mutation for
-// snapshot-cache invalidation. Every write path goes through it.
-// Callers must hold s.mu.
+// commitTx journals the document tx leaves (see publishTx), commits, and
+// records the mutation for snapshot-cache invalidation. Every write path goes
+// through it. Callers must hold s.mu.
 func (s *Store) commitTx(tx *sql.Tx) error {
+	if err := publishTx(tx); err != nil {
+		return fmt.Errorf("journal allowlist: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}

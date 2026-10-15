@@ -125,6 +125,9 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	}
 	assertContainerHasArg(t, "c8s-cert", cert.Args, "--san-file=/run/c8s-node/tls-san")
 	assertContainerNoArgPrefix(t, "c8s-cert", cert.Args, "--san=")
+	if got, want := expectedWorkloadArg(cert), routerEntryName(t, renderedSeed(t, out)); want == "" || got != want {
+		t.Errorf("c8s-cert --expected-workload = %q, want the seeded router entry %q", got, want)
+	}
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
 	port, ok := findContainerPort(nginx, "https")
 	if !ok || port.ContainerPort != 8443 || port.HostPort != 443 {

@@ -64,7 +64,8 @@ Keep this naming rule aligned with `pkg/allowlist.DigestEntryName`.
 `c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived
 image digest outside `c8s.argvPinnedDigests`, with that digest's
 `c8s.componentShapes` containers and `env: any`, followed by
-`c8s.argvPinnedEntries` and `bootstrapAllowlist.workloads`. The volumed entry
+`c8s.argvPinnedEntries`, the [router entry](#router-entry) and
+`bootstrapAllowlist.workloads`. The volumed entry
 also carries the pre-delete teardown hook's script and pause. A same-named
 `bootstrapAllowlist.workloads` override replaces an entry whole, hook
 containers included; an override must declare them too, or the pre-delete hook
@@ -149,3 +150,71 @@ boot config. Keep the inclusion conditions of both helpers aligned.
 rejection of different argv, and exclusion from the boot config's local base.
 The operator-facing bootstrap behavior is described in
 [Allowlist and capabilities](../../../../../docs/allowlist-and-capabilities.md#bootstrap).
+
+## Router entry
+
+The router pod's non-injected containers span two images, so no single-image
+entry matches it. `c8s.routerEntry` returns the entry that does, which the
+seed names `c8s.routerWorkloadName`. It renders `router.podSpec` and pins each
+nginx and c8s-image container through `c8s.podShapes`, exactly as the
+component entries pin them: command, args and mount table as rendered, `env:
+any`.
+
+| Container | Declared as |
+|---|---|
+| nginx | main |
+| cds-attest, when `router.attest.enabled` | main, or init when it has two host layouts |
+| allowlist-proxy, when `router.renderAllowlistRoute` | main, or init when it has two host layouts |
+| acme, `c8s-cert`, `c8s-cert-wait` | init |
+
+A declared init container is admitted but not required. A main container with
+a hostPath source under `/var/run` has two mount tables (see
+`c8s.mountRules`), and a node produces only one, so it is declared once per
+table as an init container. The router's own `c8s-cert` and `c8s-cert-wait`
+are pinned to their exact args, so they are not dropped as injected
+containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
+them.
+
+`c8s.routerEntryBlocker` returns why the entry cannot be derived, or `""`: the
+router is disabled, `router.nginx.image.digest` or `image.digest` is unset,
+`bootstrapAllowlist.deriveComponents` is false (it supplies the c8s image's
+pin), or no c8s-image main container renders. An argv reference the kubelet
+would expand fails the render in `c8s.kubeletExpand`, so the pinned argv is
+the one the runtime starts.
+`c8s.routerWorkloadSeeded` returns `true` when nothing blocks the entry and
+`c8s.routerOperatorGate` is empty.
+
+`c8s.routerOperatorGate` returns `router.attest.expectedWorkload` when it is a
+non-empty string outside `c8s-router-*`. That names the operator's own router
+entry: the chart seeds none, passes the name to cds-attest and the router's
+`c8s-cert` as written, and does not check that the entry exists or matches.
+The chart does not emulate `MatchWorkload` either: a
+`bootstrapAllowlist.workloads` entry that also matches the router pod beside the
+seeded one makes the match ambiguous, and CDS issues the router's leaf
+unnamed. To supply your own router entry, name it in
+`router.attest.expectedWorkload`, which turns the seeded entry off.
+`c8s.routerEntryName` returns the seeded entry's name or the operator gate,
+which the router's `c8s-cert` receives as `--expected-workload` whenever
+workload claims are wired.
+
+`c8s.routerWorkloadName` is `c8s-router-` followed by the first 12 hex digits of
+the SHA-256 of the rendered entry, so a changed digest, argv or mount yields a
+new name. CDS seeds additively by name, so the new entry lands beside the old
+one, as with the digest-named entries. The entry's own name sits inside its
+argv: cds-attest's gate, defaulted or an explicit `c8s-router-*` value, and
+`c8s-cert`'s `--expected-workload`. The hash therefore renders the pod with
+`routerNamePlaceholder` set in the context, under which
+`c8s.routerWorkloadName` returns a fixed placeholder; freezing the rendered
+default keeps the name.
+
+`router.expectedWorkload` defaults the cds-attest readiness gate to
+`c8s.routerWorkloadName` when `router.defaultGate` holds: the gate is unset, the
+entry is seeded, `router.attest.enabled` is true, `router.hostPort.enabled` is
+false, and the inventory is reachable. An explicit string, including `""`, wins;
+any other non-null value fails the render. An explicit `c8s-router-*` value
+fails the render unless it equals the derived name; when nothing is derivable
+the message names `c8s.routerEntryBlocker`'s cause.
+
+[router_entry_test.go](../../../router_entry_test.go) feeds the rendered router
+pod, with the argv and mounts a node observes, through
+`secrets.WorkloadContainers` and `MatchWorkload`.

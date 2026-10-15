@@ -238,6 +238,9 @@ cds:
     maxUnavailable: 0
   logLevel: info
   allowlistDB: /mnt/c8s-data/cds/allowlist.db
+  # -- Operator token clock skew tolerance in seconds. Without
+  # `persistence.enabled`, CDS also refuses allowlist writes for this long
+  # after it starts, since it forgets spent tokens at restart.
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
@@ -295,9 +298,11 @@ cds:
   ## identity, UNSAFE).
   rtmrs: []
   ## PEM bundle of operator EC public keys (public material, not a secret).
-  ## When set, CDS accepts POST/PUT/DELETE /allowlist from a client presenting a
+  ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
-  ## `c8s allowlist` and the README "Operator allowlist credentials").
+  ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
+  ## token authorizes one write, and CDS publishes the token of a
+  ## whole-document upload as that document's signature.
   ## Empty = allowlist writes are rejected (reads are still served). Prefer
   ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
   ## Measurements config: the JSON document listing the VM images this cluster
@@ -1238,14 +1243,23 @@ router:
     # supplemental group on node-CVM) — without that
     # no stamp could ever arrive and the gate would hold the front door at 503
     # forever. The named entry must match the router pod's own non-injected
-    # container set (nginx).
+    # container set: nginx plus the c8s image as cds-attest, allowlist-proxy
+    # and, when enabled, the acme sidecar. The chart seeds that entry as
+    # c8s-router-<12 hex of its content hash> when router.nginx.image.digest
+    # and image.digest are set and
+    # nriImagePolicy.bootstrapAllowlist.deriveComponents is true.
     #
     # Requires attest.enabled and hostPort.enabled: false — readiness only
     # withdraws Service endpoints, while a hostPort is published by the CNI
     # portmap plugin independently of pod readiness, so the gate would withhold
-    # nothing. The chart fails the render on either mistake. Empty keeps
-    # today's always-ready behavior.
-    expectedWorkload: ""
+    # nothing. The chart fails the render on either mistake. Unset (null)
+    # defaults to that entry's name when it is seeded, attest is enabled,
+    # hostPort is off and the node inventory is reachable; otherwise the
+    # sidecar stays always-ready. "" turns the gate off. Any other name
+    # outside c8s-router-* is your own router entry: the chart seeds none and
+    # does not check that yours exists or matches. A c8s-router-* value must
+    # equal the seeded entry's name, or the render fails.
+    expectedWorkload: null
     # -- Container resource requests/limits for the sidecar.
     resources: {}
 
@@ -1258,7 +1272,8 @@ router:
       pullPolicy: IfNotPresent
     # The argv prefix the seeded allowlist entry pins this image to: its
     # ENTRYPOINT and the first CMD token, which the entrypoint script requires
-    # before it execs anything. Bump with the image if either changes.
+    # before it execs anything. Bump with the image if either changes, along
+    # with nginxEntrypoint and nginxCmd in internal/helmchart/router_entry_test.go.
     entrypoint: ["/docker-entrypoint.sh", "nginx"]
     # -- Number of nginx replicas.
     replicas: 1

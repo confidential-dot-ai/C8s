@@ -111,8 +111,6 @@ operator_key() { echo "$WORKDIR/operator.key"; }
 optoken_bin() { echo "$WORKDIR/optoken"; }
 scratch() { echo "$WORKDIR"; }
 
-served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
-
 # The same forward dialled without TLS; the listener is TLS-only.
 cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
 cds_pins() { echo "$MOCK_MEASUREMENT"; }
@@ -407,8 +405,6 @@ cds_restart() {
 }
 
 # The number in the weak entity tag W/"<n>" of GET /allowlist.
-served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
-
 node_containers() { node_exec crictl ps -a -q --image "$2"; }
 
 dispatch "$@"

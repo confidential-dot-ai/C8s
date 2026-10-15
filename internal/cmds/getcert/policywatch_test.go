@@ -334,6 +334,27 @@ func TestRenewLoopPolicyWatchIgnoresUnnamedLeaf(t *testing.T) {
 	}
 }
 
+// A leaf naming another entry than --expected-workload still renews on a
+// policy change: with the fast poll off, nothing else would re-issue it before
+// --renew-interval.
+func TestRenewLoopPolicyWatchRenewsUnexpectedWorkload(t *testing.T) {
+	cds := &fakeAllowlist{}
+	cds.set(4, policyTwoWorkloads)
+	url := cds.serve(t)
+	attempts := stubIssueUnderCurrentPolicy(t, cds)
+
+	cfg := policyWatchConfig()
+	cfg.ExpectedWorkload = "worker"
+	startRenewLoop(t, cfg, url, stampedLeaf(t, "4", policyTwoWorkloads))
+
+	cds.waitForTicks(t, 2)
+	if got := len(attempts()); got != 0 {
+		t.Fatalf("%d renewals before the allowlist changed, want 0", got)
+	}
+	cds.set(5, policyRouterOnly)
+	waitForAttempts(t, attempts, 1)
+}
+
 func TestStampedPolicyStale(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -401,6 +422,26 @@ func TestStampedPolicyStale(t *testing.T) {
 			t.Fatalf("stampedPolicyStale = %v, %v, want stale", stale, err)
 		}
 	})
+
+	for _, etag := range []string{"", `"5"`} {
+		t.Run("200 with ETag "+strconv.Quote(etag), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if etag != "" {
+					w.Header().Set("ETag", etag)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(policyRouterOnly))
+			}))
+			t.Cleanup(srv.Close)
+			stamp, err := armtls.MatchedWorkloadFromCert(stampedLeaf(t, "4", policyTwoWorkloads))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := stampedPolicyStale(context.Background(), plaintextPolicyClient(srv.URL), stamp.AllowlistVersion, stamp.AllowlistDigest); err == nil {
+				t.Fatal("stampedPolicyStale succeeded, want error without a weak ETag")
+			}
+		})
+	}
 
 	t.Run("cds error", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

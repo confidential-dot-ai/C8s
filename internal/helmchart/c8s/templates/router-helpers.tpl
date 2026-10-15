@@ -589,6 +589,145 @@ so it adds discovery output and verbose logging to the shared get-cert flow.
 {{- end }}
 {{- end }}
 
+
+{{/*
+Argv after the c8s image's /c8s entrypoint for the router's c8s-image
+containers, as JSON lists. router-deployment.yaml renders them and
+c8s.routerEntry pins them in the seed, so the two cannot drift. See
+../helpers/allowlist/README.md#router-entry.
+router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
+*/}}
+{{- define "router.cdsAttestArgs" -}}
+{{- $root := .root -}}
+{{- $v := $root.Values.router -}}
+{{- $launchDriven := eq (include "router.launchDriven" $root) "true" -}}
+{{- /* Loopback only: every endpoint (/healthz, /readyz, both attest routes,
+       /tunnel) sits on one listener; nginx proxies /readyz to it. */ -}}
+{{- $args := list "cds-attest" "--host=127.0.0.1" (printf "--port=%v" $v.attest.port) (printf "--platform=%v" $v.attest.platform) (printf "--generation=%v" $v.attest.generation) -}}
+{{- $args = append $args (printf "--attestation-api-url=%s" (default (include "c8s.attestationApiURL" $root) $v.attest.attestationApiURL)) -}}
+{{- /* attest-lb needs a TEE-held serving key (cds, acme); webpki's
+       host-visible Secret key stays attest-pq-only. */ -}}
+{{- if $launchDriven -}}
+{{- $args = append $args (printf "--front-door-mode-file=%s/front-door-mode" (include "router.launchDir" $root)) -}}
+{{- else -}}
+{{- $args = append $args (printf "--front-door-mode=%s" (include "router.publicTLSMode" $root)) -}}
+{{- end -}}
+{{- /* The exact leaf nginx presents, so attest-lb report_data commits to the
+       DER a direct-TLS client sees. Re-read per request. */ -}}
+{{- $args = append $args (printf "--serving-cert-file=%s" (include "router.publicCertPath" $root)) -}}
+{{- if $launchDriven -}}
+{{- $args = append $args (printf "--acme-serving-cert-file=%s/cert.pem" (include "router.acmeCertDir" $root)) -}}
+{{- end -}}
+{{- with .expectedWorkload -}}
+{{- $args = append $args (printf "--expected-workload=%s" .) -}}
+{{- end -}}
+{{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the
+       optional publicTLS Secret. */ -}}
+{{- $args = append $args (printf "--mesh-identity-cert-file=%s/cert.pem" $v.tlsMountPath) -}}
+{{- $args = append $args (printf "--mesh-identity-key-file=%s/key.pem" $v.tlsMountPath) -}}
+{{- $args = append $args (printf "--mesh-identity-ca-file=%s/ca.pem" $v.tlsMountPath) -}}
+{{- /* Terminate over-encryption here and forward to nginx's backend. No
+       upstream address: omit --upstream; the sidecar serves its echo backend. */ -}}
+{{- $address := $v.upstream.address -}}
+{{- if $launchDriven -}}
+{{- $args = append $args (printf "--upstream-file=%s/upstream" (include "router.launchDir" $root)) -}}
+{{- else if $address -}}
+{{- $args = append $args (printf "--upstream=%s://%s" $v.upstream.protocol $address) -}}
+{{- if eq $v.upstream.protocol "https" -}}
+{{- $args = append $args (printf "--upstream-ca=%s" (default (printf "%s/ca.pem" $v.tlsMountPath) $v.upstream.tls.trustedCAPath)) -}}
+{{- if $v.upstream.tls.useCDSClientCert -}}
+{{- $args = append $args (printf "--upstream-cert=%s/cert.pem" $v.tlsMountPath) -}}
+{{- $args = append $args (printf "--upstream-key=%s/key.pem" $v.tlsMountPath) -}}
+{{- end -}}
+{{- $args = append $args (printf "--upstream-server-name=%s" (default (include "router.serverNameFromAddress" $address) $v.upstream.tls.serverName)) -}}
+{{- end -}}
+{{- end -}}
+{{- $args | toJson -}}
+{{- end -}}
+
+{{- define "router.allowlistProxyArgs" -}}
+{{- $args := list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "c8s.int" .Values.router.allowlist.proxyPort)) (printf "--cds-url=%s" (include "c8s.cdsURL" .)) (printf "--attestation-api-url=%s" (include "c8s.attestationApiURL" .)) -}}
+{{- if .Values.node.baked -}}
+{{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
+{{- else if .Values.cds.measurementsConfig -}}
+{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
+{{- else -}}
+{{- with .Values.cds.measurements -}}
+{{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}
+{{- end -}}
+{{- with .Values.cds.rtmrs -}}
+{{- $args = append $args (printf "--cds-rtmrs=%s" (join "," .)) -}}
+{{- end -}}
+{{- end -}}
+{{- $args | toJson -}}
+{{- end -}}
+
+{{- define "router.acmeArgs" -}}
+{{- $args := list "acme" -}}
+{{- if eq (include "router.launchDriven" .) "true" -}}
+{{- /* The signed launch file names the domains. With none, the sidecar
+       stands by until the mesh leaf exists. */ -}}
+{{- $dir := include "router.launchDir" . -}}
+{{- $args = append $args (printf "--domains-file=%s/hostnames" $dir) -}}
+{{- $args = append $args (printf "--acme-email-file=%s/acme-email" $dir) -}}
+{{- $args = append $args (printf "--acme-directory-url-file=%s/acme-directory-url" $dir) -}}
+{{- $args = append $args (printf "--standby-cert-dir=%s" .Values.router.tlsMountPath) -}}
+{{- else -}}
+{{- $args = append $args (printf "--domains=%s" (include "router.sanList" . | fromJsonArray | join ",")) -}}
+{{- end -}}
+{{- with .Values.router.acme.email -}}
+{{- $args = append $args (printf "--acme-email=%s" .) -}}
+{{- end -}}
+{{- with .Values.router.acme.directoryURL -}}
+{{- $args = append $args (printf "--acme-directory-url=%s" .) -}}
+{{- end -}}
+{{- $args = append $args (printf "--challenge-port=%s" (include "router.acmeChallengePort" .)) -}}
+{{- $args = append $args (printf "--http-port=%s" (include "router.acmeHTTPPort" .)) -}}
+{{- $args = append $args (printf "--cert-dir=%s" (include "router.acmeCertDir" .)) -}}
+{{- $args = append $args (printf "--ready-port=%s" (include "router.acmeReadyPort" .)) -}}
+{{- $args | toJson -}}
+{{- end -}}
+
+{{/*
+The cds-attest readiness gate's workload name. An explicit string wins, and
+"" turns the gate off; a c8s-router-* value must be the seeded entry's name.
+Unset defaults to the seeded router entry (c8s.routerWorkloadName) where
+router.defaultGate holds.
+*/}}
+{{- define "router.expectedWorkload" -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- if not (or (kindIs "string" $explicit) (kindIs "invalid" $explicit)) -}}
+{{- fail (printf "router.attest.expectedWorkload must be a string or null, got %s %v" (kindOf $explicit) $explicit) -}}
+{{- end -}}
+{{- if kindIs "string" $explicit -}}
+{{- if and .Values.router.enabled (hasPrefix "c8s-router-" $explicit) -}}
+{{- with include "c8s.routerEntryBlocker" . -}}
+{{- fail (printf "router.attest.expectedWorkload=%s names the seeded router entry, but these values seed none because %s: leave it unset, or set it to the name of your own router entry" $explicit .) -}}
+{{- end -}}
+{{- $name := include "c8s.routerWorkloadName" . -}}
+{{- if hasKey . "routerNamePlaceholder" -}}
+{{- $explicit = $name -}}
+{{- else if ne $explicit $name -}}
+{{- fail (printf "router.attest.expectedWorkload=%s does not name the seeded router entry, which these values name %s: set it to %s, or leave it unset to follow the entry" $explicit $name $name) -}}
+{{- end -}}
+{{- end -}}
+{{- $explicit -}}
+{{- else if eq (include "router.defaultGate" .) "true" -}}
+{{- include "c8s.routerWorkloadName" . -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+"true" when an unset gate defaults on: it can render and be satisfied. The
+entry is seeded, cds-attest runs, hostPort is off, and the node inventory is
+reachable.
+*/}}
+{{- define "router.defaultGate" -}}
+{{- if and (not (kindIs "string" .Values.router.attest.expectedWorkload)) (eq (include "c8s.routerWorkloadSeeded" .) "true") .Values.router.attest.enabled (not .Values.router.hostPort.enabled) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+true
+{{- end -}}
+{{- end -}}
+
 {{/*
 "true" when the router pod must mount the node inventory's socket directory:
 workload claims are required and this is the node-CVM shape. A baked
@@ -602,7 +741,7 @@ condition true in every renderable shape today; the condition is spelled out
 anyway so the two consumers of the socket stay on one rule.
 */}}
 {{- define "router.mountInventorySocket" -}}
-{{- if and (or .Values.node.baked .Values.router.attest.expectedWorkload) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if and (or .Values.node.baked (include "router.expectedWorkload" .)) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -627,7 +766,7 @@ list.
 {{- $extraArgs = append $extraArgs "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- $sanFile = "/run/c8s-node/tls-san" -}}
 {{- end -}}
-{{- if or .Values.node.baked .Values.router.attest.expectedWorkload -}}
+{{- if or .Values.node.baked (include "router.expectedWorkload" .) -}}
 
 {{- /* A baked router needs the same workload stamp that clients pin, even
        when the optional ingress readiness gate is unset.
@@ -641,6 +780,10 @@ list.
        volume and the socket's supplemental group
        (workloadclaims.InventorySocketGID) on the same condition. */ -}}
 {{- $extraArgs = append $extraArgs "--workload-claims" -}}
+{{- /* Renew past a stamp taken while only part of the pod runs. */ -}}
+{{- with include "c8s.routerEntryName" . -}}
+{{- $extraArgs = append $extraArgs (printf "--expected-workload=%s" .) -}}
+{{- end -}}
 {{- if eq (include "router.mountInventorySocket" .) "true" -}}
 {{- $mounts = append $mounts "- name: workload-claims\n  mountPath: /run/c8s/workload-claims\n  readOnly: true" -}}
 {{- end -}}

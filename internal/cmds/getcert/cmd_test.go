@@ -34,6 +34,7 @@ func TestNewCmdFlagDefaultsAndRequired(t *testing.T) {
 		{"initial-retry-interval", "2s"},
 		{"reload-nginx", "true"},
 		{"workload-claims-timeout", "5s"},
+		{"expected-workload", ""},
 	}
 	for _, tt := range tests {
 		flag := flags.Lookup(tt.name)

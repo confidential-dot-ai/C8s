@@ -155,9 +155,10 @@ and at CDS matching.
 An absent policy normalizes to `deny`, so a minimally specified container is
 maximally restrictive. `command: deny` requires an empty argv and therefore can
 never start (a workload that wants any argv should say `command: any`); `lint`
-flags it. Because `command`/`args` map 1:1 to the Kubernetes fields, `derive` (on
-its own branch) reads them straight off a pod spec, and `inspect-image` shows an
-image's baked `ENTRYPOINT`/`CMD` so an operator can see what to pin.
+flags it. `derive` reads `command`/`args` off a pod spec and fills what the spec
+leaves unset the way the runtime does: an unset command is the image's
+`ENTRYPOINT`, and unset args are its `CMD` when the command is unset too. It
+reads the image config with `crane`, as `inspect-image` does.
 
 ### A digest may run many ways
 
@@ -559,7 +560,11 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins.
+operator public keys it pins. Each token authorizes one allowlist write: CDS
+remembers every spent token and answers a replay with 409. Without
+`cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
+token issued before its start plus `--jwt-clock-skew`; after a restart, wait
+that long and mint a fresh token.
 
 ### Refresh and anti-rollback
 
@@ -592,6 +597,38 @@ The chart's component entries carry the same exact argv and mount pins in the
 base as in the served seed, leaving only the environment open, so the platform
 can start before CDS is reachable; the node image's generated RKE2 system
 entries leave command and args open.
+
+### Allowlist history
+
+CDS keeps an append-only history of every document it served, in the
+allowlist database. Each write that changes the document appends an entry,
+and so does CDS's start when the document differs from the last entry; a
+fresh database starts with the document CDS first serves. A write that leaves
+the document unchanged bumps the ETag but appends nothing. A policy digest is
+`sha256:<hex>` of the exact bytes `GET /allowlist` serves. The routes are
+unauthenticated reads like `GET /allowlist`, and the router and
+`c8s allowlist-proxy` pass them through:
+
+| Route | Returns |
+|---|---|
+| `GET /allowlist/history` | `{"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
+| `GET /allowlist/objects/sha256/<hex>` | The exact bytes of a document in the history |
+| `GET /allowlist/objects/sha256/<hex>/signature` | Its operator signature, as `text/plain`; 404 when unsigned |
+
+CDS refuses to start when a stored document no longer hashes to its digest.
+Without `cds.persistence.enabled`, the history restarts with each CDS start.
+
+#### Operator-signed allowlists
+
+A document's operator signature is the write token of a `PUT /allowlist`
+whose body is exactly its canonical bytes; the token's `pbh` claim hashes that
+body. `c8s allowlist upload` sends canonical bytes, so its writes are signed.
+A per-workload write (`add`, `apply`, `edit`, `delete`) signs nothing:
+upload the whole document to sign it. A signature belongs to a document, not
+to an entry, so `signed` is true on every entry with that digest. `operatorauth.VerifyStored` checks a
+stored token: signature, method, path and body, but not its expiry.
+`pkg/operatorauth/testdata/operator_signature_vector.json` is a test vector
+for other verifiers.
 
 ## Bootstrap
 
@@ -631,6 +668,32 @@ reports until then. The chart moved its ConfigMap, Secret and PVC mounts under
 database under `/mnt/c8s-data/cds`), so an upgrade rolls every component pod.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
+
+When the router runs with digest-pinned nginx and c8s images and
+`deriveComponents` is on, the seed also carries `c8s-router-<first 12 hex of the
+entry's SHA-256>`: every nginx and c8s-image container of the router pod,
+pinned to the exact command line and mount table the chart renders, like the
+component entries. nginx is a required main container; `acme`, `c8s-cert`,
+`c8s-cert-wait`, and a sidecar that mounts a host path under `/var/run` (which
+has two layouts) are init containers, admitted but not required. It is the
+only entry the router pod matches, so the router's mesh leaf is stamped with
+that name. An upgrade that changes the router's image repositories, digests,
+arguments or mounts seeds a new entry beside the old one. CDS
+reads the seed only at start, so after an upgrade that rolls the router but not
+CDS, the router's leaf stays unnamed until CDS restarts or you add the new
+entry with `c8s allowlist apply`. Old entries persist like the
+digest-named ones; remove them with `c8s allowlist delete`. Remove a
+superseded `c8s-router-*` entry after the upgrade: when the two differ only in
+image repositories, both match the router pod, and so do two that differ only
+in an init container's arguments while it is not running. CDS then issues the
+router's leaf unnamed. To supply your own
+router entry instead, add it under `bootstrapAllowlist.workloads` and set
+`router.attest.expectedWorkload` to its name; the chart then seeds no
+`c8s-router-*` entry and passes that name on unchecked. The chart does not
+check whether your entries match the router pod: an entry that also matches it
+beside the seeded one makes the match ambiguous, and CDS issues the router's
+leaf unnamed. An explicit `c8s-router-*` value must equal the seeded entry's
+name, or the render fails.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes
