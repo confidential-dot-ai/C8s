@@ -53,6 +53,21 @@ func ValidateAttestationAPIURL(flagName, u string) error {
 	return ValidateHTTPURL(flagName, u)
 }
 
+// hostIPReference is the literal a chart writes as $$(HOST_IP) so the kubelet
+// passes it through unexpanded.
+const hostIPReference = "$(HOST_IP)"
+
+// ExpandHostIP replaces $(HOST_IP) in an attestation-api URL with the HOST_IP
+// environment variable. A component's arguments are pinned exactly in the
+// allowlist, so the chart cannot let the kubelet substitute the node's address
+// into them; the binary does it instead.
+func ExpandHostIP(u string) string {
+	if !strings.Contains(u, hostIPReference) {
+		return u
+	}
+	return strings.ReplaceAll(u, hostIPReference, os.Getenv("HOST_IP"))
+}
+
 // RequireRAMBackedDir returns an error unless dir sits on tmpfs/ramfs
 // (fileutil.RequireRAMBacked). The flagName is interpolated into the error so
 // callers needn't wrap. Shared by get-secret (--out-dir) and get-cert

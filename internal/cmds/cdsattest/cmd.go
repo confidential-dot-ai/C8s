@@ -16,6 +16,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -128,6 +129,7 @@ func loadFiles(cfg *config) error {
 
 func run(cfg config) error {
 	logger := newLogger(cfg.logLevel)
+	cfg.attestationAPIURL = cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
 	if err := loadFiles(&cfg); err != nil {
 		return err
 	}

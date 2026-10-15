@@ -218,3 +218,20 @@ func TestWarnIfCDSUnpinned(t *testing.T) {
 		}
 	}
 }
+
+func TestExpandHostIP(t *testing.T) {
+	t.Setenv("HOST_IP", "192.0.2.7")
+	for _, tc := range []struct {
+		name, in, want string
+	}{
+		{"reference", "http://$(HOST_IP):8400", "http://192.0.2.7:8400"},
+		{"unix socket", "unix:///run/attestation-api.sock", "unix:///run/attestation-api.sock"},
+		{"other variable", "http://$(NODE_IP):8400", "http://$(NODE_IP):8400"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ExpandHostIP(tc.in); got != tc.want {
+				t.Fatalf("ExpandHostIP(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
