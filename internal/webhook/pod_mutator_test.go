@@ -176,6 +176,47 @@ func TestMutatePodDisablesServiceLinks(t *testing.T) {
 	}
 }
 
+// An injected pod that had service links on is admitted with a warning, so
+// its author learns the variables are gone.
+func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	m := &podMutator{
+		decoder: admission.NewDecoder(scheme),
+		cfg:     Config{GetCertImage: "image", CDSURL: "http://cds", AttestationApiURL: "http://attestation-api", CertDir: "/etc/c8s/certs"},
+	}
+	for name, tc := range map[string]struct {
+		annotations map[string]string
+		links       *bool
+		want        bool
+	}{
+		"links on":      {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(true), want: true},
+		"links default": {annotations: map[string]string{AnnotationWorkload: "api"}, want: true},
+		"links off":     {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(false)},
+		"not injected":  {links: ptr.To(true)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				Annotations: tc.annotations,
+				Spec:        corev1.PodSpec{EnableServiceLinks: tc.links, Containers: []corev1.Container{{Name: "app"}}},
+			}
+			raw, err := json.Marshal(pod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := m.Handle(context.Background(), admission.Request{Namespace: "default", Object: runtime.RawExtension{Raw: raw}})
+			if !resp.Allowed {
+				t.Fatalf("Handle denied: %v", resp.Result)
+			}
+			if got := slices.Contains(resp.Warnings, serviceLinksWarning); got != tc.want {
+				t.Errorf("Handle(%s) warns about service links = %v, want %v (warnings %q)", name, got, tc.want, resp.Warnings)
+			}
+		})
+	}
+}
+
 // The chart's seeded entry for the C8s image matches the injected sidecars'
 // env by name (c8s.componentInvocations in templates/_allowlist.tpl): a
 // variable added here without it denies every injected pod.

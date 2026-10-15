@@ -633,10 +633,12 @@ plugin's base is rendered by the chart, so a chart upgrade replaces it on a
 cluster node, and a measured node image carries the pins and the match in its
 base as soon as it is rebuilt. After an image bump, delete the old digest's
 entry (`c8s allowlist delete`) once no pod runs the old image. `lint` reports
-a stored component entry with `env: any` as an error, and `upload`, `apply`
-and `edit` refuse a document that still holds one: replace its `env` with the
-match from the rendered seed (ConfigMap `c8s-cds-allowlist-seed`) first.
-During an upgrade an enforcer that pulls the old document shape
+a component entry with `env: any` as an error. `upload` refuses a document
+that holds one, and `apply` refuses one among the entries it applies, but
+neither checks the entries already stored, and `edit` does not lint. After
+upgrading, lint the live document (`c8s allowlist export | c8s allowlist
+lint -`) and replace the `env` of each entry it reports with the match from
+the rendered seed (ConfigMap `c8s-cds-allowlist-seed`). During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart

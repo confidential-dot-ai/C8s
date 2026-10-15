@@ -64,9 +64,11 @@ the operator's containers are admitted beside the component's, or replace
 them when one admits every invocation of the entrypoint with any env
 (`c8s.coversEntrypoint`). The `uncovered_component_digest` guard accepts a
 component digest when, for every invocation in `c8s.componentInvocations`,
-one of its containers starts the entrypoint plus that subcommand
-(`c8s.startsEntrypoint`), whatever its env. Workloads that pin args, env
-`exact`, or mounts remain in the served seed without reaching the base.
+one of its containers starts the entrypoint plus that subcommand under the
+env the invocation runs with (`c8s.startsInvocation`): env `any`, or a
+`match` over the same names as `c8s.componentEnv` whose `exact` values agree.
+Workloads that pin args, env `exact`, or mounts remain in the served seed
+without reaching the base.
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes

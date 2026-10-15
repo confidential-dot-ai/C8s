@@ -204,10 +204,17 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	return nil
 }
 
-// entrypoints maps each digest the render pins to the argv prefix its chart
-// component entry pins it to (c8sComponents[].entrypoint,
-// router.nginx.entrypoint): a container that sets no command starts with it.
-func (cfg nodeImageRenderConfig) entrypoints(values map[string]any) (map[string][]string, error) {
+// entrypointPin is the argv prefix a chart component entry pins an image to
+// (c8sComponents[].entrypoint, router.nginx.entrypoint). withCmd marks a pin
+// that ends in CMD tokens, so it holds only for a container that sets no args.
+type entrypointPin struct {
+	argv    []string
+	withCmd bool
+}
+
+// entrypoints maps each digest the render pins to its entrypointPin: a
+// container that sets no command starts with it.
+func (cfg nodeImageRenderConfig) entrypoints(values map[string]any) (map[string]entrypointPin, error) {
 	components, err := componentsFromValues(values)
 	if err != nil {
 		return nil, err
@@ -220,7 +227,7 @@ func (cfg nodeImageRenderConfig) entrypoints(values map[string]any) (map[string]
 	for _, input := range cfg.images() {
 		digests[input.valuePath] = input.digest
 	}
-	out := make(map[string][]string)
+	out := make(map[string]entrypointPin)
 	for _, c := range append(components, nginx) {
 		digest := digests[c.valuePrefix]
 		if digest == "" {
@@ -229,10 +236,10 @@ func (cfg nodeImageRenderConfig) entrypoints(values map[string]any) (map[string]
 		if digest == "" || len(c.entrypoint) == 0 {
 			continue
 		}
-		if prior, ok := out[digest]; ok && !slices.Equal(prior, c.entrypoint) {
-			return nil, fmt.Errorf("node-image image %s is pinned to two entrypoints, %q and %q", digest, prior, c.entrypoint)
+		if prior, ok := out[digest]; ok && !slices.Equal(prior.argv, c.entrypoint) {
+			return nil, fmt.Errorf("node-image image %s is pinned to two entrypoints, %q and %q", digest, prior.argv, c.entrypoint)
 		}
-		out[digest] = c.entrypoint
+		out[digest] = entrypointPin{argv: c.entrypoint, withCmd: c.entrypointCmd}
 	}
 	return out, nil
 }
@@ -248,7 +255,7 @@ type nodeImageArtifacts struct {
 // seed; the same inventory drives image preloading into the measured rootfs.
 // entrypoints gives, by digest, the argv a container that sets no command
 // starts with.
-func collectNodeImageArtifacts(rendered []byte, entrypoints map[string][]string) (*nodeImageArtifacts, error) {
+func collectNodeImageArtifacts(rendered []byte, entrypoints map[string]entrypointPin) (*nodeImageArtifacts, error) {
 	namespace, err := yaml.Marshal(corev1.Namespace{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Namespace"},
 		ObjectMeta: metav1.ObjectMeta{
@@ -429,7 +436,8 @@ func (c bakedContainer) names() []string {
 // command, admits c's command and environment: every variable c's manifest
 // sets is listed, with the value an exact matcher pins, and every variable
 // the seed matches present is set by the manifest or the runtime. A variable
-// the seed pins exact and the manifest leaves unset is the image's.
+// the seed pins exact and the manifest leaves unset is the image's. A value
+// the kubelet expands is refused under an exact pin: its result is unknown.
 func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 	if seed.Command.Policy == pkgallowlist.PolicyExact {
 		if len(c.argv) < len(seed.Command.Argv) || !slices.Equal(c.argv[:len(seed.Command.Argv)], seed.Command.Argv) {
@@ -448,7 +456,7 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 		if _, listed := seed.Env.Variables[v.name]; !listed {
 			return false
 		}
-		if want, pinned := exact[v.name]; pinned && (!v.literal || v.value != want) {
+		if want, pinned := exact[v.name]; pinned && (!v.literal || kubeletExpands(v.value) || v.value != want) {
 			return false
 		}
 		set[v.name] = true
@@ -461,17 +469,28 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 	return true
 }
 
+// kubeletExpands reports whether the kubelet rewrites value before the
+// container sees it: $(VAR) references and $$ escapes.
+func kubeletExpands(value string) bool {
+	return strings.Contains(value, "$(") || strings.Contains(value, "$$")
+}
+
 // runtimeVariable reports whether the runtime sets name in every container:
-// containerd's HOSTNAME and the kubelet's API-server variables (see
-// c8s.runtimeEnv in the chart).
+// containerd's HOSTNAME and the kubelet's API-server variables. Keep in step
+// with c8s.runtimeEnv in the chart.
 func runtimeVariable(name string) bool {
-	return name == "HOSTNAME" || strings.HasPrefix(name, "KUBERNETES_")
+	switch name {
+	case "HOSTNAME", "KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBERNETES_SERVICE_PORT_HTTPS",
+		"KUBERNETES_PORT", "KUBERNETES_PORT_443_TCP", "KUBERNETES_PORT_443_TCP_ADDR", "KUBERNETES_PORT_443_TCP_PORT", "KUBERNETES_PORT_443_TCP_PROTO":
+		return true
+	}
+	return false
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
 // keyed by reference. The rootfs preloads exactly these, so an unpinned or
 // tag-only image would leave the node pulling at boot: reject it here.
-func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage, entrypoints map[string][]string) error {
+func collectWorkloadImages(object unstructured.Unstructured, key string, images map[string]*bakedImage, entrypoints map[string]entrypointPin) error {
 	pod, found, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
 	if err != nil || !found {
 		return fmt.Errorf("node-image workload %s lacks a valid pod spec", key)
@@ -500,8 +519,11 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 		container := bakedContainer{envFrom: len(c.EnvFrom) > 0}
 		if len(c.Command) > 0 {
 			container.argv = slices.Concat(c.Command, c.Args)
-		} else if entrypoint, ok := entrypoints[baked.digest]; ok {
-			container.argv = slices.Concat(entrypoint, c.Args)
+		} else if pin, ok := entrypoints[baked.digest]; ok {
+			if pin.withCmd && len(c.Args) > 0 {
+				return fmt.Errorf("node-image workload %s container %q sets args without a command, but the pin %q of its image ends in CMD tokens that args replace: set command", key, c.Name, pin.argv)
+			}
+			container.argv = slices.Concat(pin.argv, c.Args)
 		}
 		for _, e := range c.Env {
 			container.env = append(container.env, bakedVariable{name: e.Name, value: e.Value, literal: e.ValueFrom == nil})
