@@ -189,13 +189,15 @@ func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platf
 	if port == "" {
 		port = "443"
 	}
-	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
-	defer cancel()
 	dialer := tls.Dialer{Config: armTLSConfig(exp)}
-	conn, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
+	err := httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+		conn, err := dialer.DialContext(stepCtx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
+		if err != nil {
+			return err
+		}
+		return conn.Close() // the handshake was the point
+	})
 	if err != nil {
 		slog.Warn("refresh cred-release measured policies", "error", err)
-		return
 	}
-	_ = conn.Close() // the handshake was the point
 }

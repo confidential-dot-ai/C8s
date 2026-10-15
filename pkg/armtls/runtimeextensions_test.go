@@ -6,12 +6,12 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
@@ -169,28 +169,33 @@ func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
 
 // A journal briefly unreadable while the plugin rewrites it is read once its
 // mode is restored.
-func TestRuntimeExtensionsRetriesUnreadableJournal(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root reads a mode 0 file, so no retry happens")
-	}
+func TestReadJournalRetriesPermissionError(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
-	journal := filepath.Join(t.TempDir(), "measured-policies")
-	if err := os.WriteFile(journal, []byte(p+"\n"), 0o000); err != nil {
-		t.Fatal(err)
-	}
-	orig := runtimeJournals
-	t.Cleanup(func() { runtimeJournals = orig })
-	runtimeJournals = []string{journal}
-	restored := make(chan error, 1)
-	go func() {
-		time.Sleep(journalRetryDelay)
-		restored <- os.Chmod(journal, 0o644)
-	}()
-	got, err := RuntimeExtensions()
-	if cerr := <-restored; cerr != nil {
-		t.Fatal(cerr)
-	}
-	if err != nil || !slices.Equal(got, []string{p}) {
-		t.Fatalf("RuntimeExtensions = %v, %v; want [%s]", got, err, p)
+	orig := readJournalFile
+	t.Cleanup(func() { readJournalFile = orig })
+	for _, tc := range []struct {
+		name     string
+		failures int
+		want     []string
+		wantErr  bool
+	}{
+		{name: "restored", failures: journalReadAttempts - 1, want: []string{p}},
+		{name: "never restored", failures: journalReadAttempts, wantErr: true},
+	} {
+		calls := 0
+		readJournalFile = func(string) ([]string, error) {
+			calls++
+			if calls <= tc.failures {
+				return nil, fs.ErrPermission
+			}
+			return []string{p}, nil
+		}
+		got, err := ReadJournal("measured-policies")
+		if (err != nil) != tc.wantErr || !slices.Equal(got, tc.want) {
+			t.Errorf("%s: ReadJournal = %v, %v; want %v, error %v", tc.name, got, err, tc.want, tc.wantErr)
+		}
+		if calls != min(tc.failures+1, journalReadAttempts) {
+			t.Errorf("%s: %d reads, want %d", tc.name, calls, min(tc.failures+1, journalReadAttempts))
+		}
 	}
 }

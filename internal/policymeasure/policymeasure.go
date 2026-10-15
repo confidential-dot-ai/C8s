@@ -1,16 +1,7 @@
-// Package policymeasure records in TDX RTMR[3] every allowlist policy a node
-// enforces, so a verifier can check the node's whole policy history since
-// boot, and lets the node's other measured consumers account for those
-// extends. See docs/allowlist-and-capabilities.md, "Measured policy history".
+// Package policymeasure names the journal of the allowlist policies a TDX
+// node extends into RTMR[3], so the node's measured consumers can send the
+// list with their evidence and verifiers can replay it.
 package policymeasure
-
-import (
-	"errors"
-	"path/filepath"
-
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-)
 
 // JournalName is the journal file in the NRI plugin's runtime directory, a
 // tmpfs that lives exactly as long as the register.
@@ -26,17 +17,3 @@ const (
 	// directory into (workloadclaims.SidecarSocketDir).
 	SidecarJournal = "/run/c8s/workload-claims/" + JournalName
 )
-
-// Open returns the journal that measures policies into this node's RTMR[3],
-// whose launch seeded it from anchor. It returns nil, nil on a platform
-// without a runtime register.
-func Open(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-	reg, err := runtimemeasure.Open(platform)
-	if errors.Is(err, runtimemeasure.ErrNoRegister) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return runtimemeasure.OpenJournalSeeded(filepath.Join(dir, JournalName), reg, runtimemeasure.Seed(anchor))
-}

@@ -107,7 +107,7 @@ func ReadJournal(path string) ([]string, error) {
 	var err error
 	for attempt := range journalReadAttempts {
 		var list []string
-		if list, err = runtimemeasure.ReadJournal(path); !errors.Is(err, fs.ErrPermission) {
+		if list, err = readJournalFile(path); !errors.Is(err, fs.ErrPermission) {
 			return list, err
 		}
 		if attempt < journalReadAttempts-1 {
@@ -121,6 +121,10 @@ const (
 	journalReadAttempts = 5
 	journalRetryDelay   = 20 * time.Millisecond
 )
+
+// readJournalFile is the single read ReadJournal retries. Var so tests can
+// fail it.
+var readJournalFile = runtimemeasure.ReadJournal
 
 // ExtractAttestation parses the extension under OIDARMTLSAttestation out of a
 // certificate, failing with ErrNoAttestation when there is none.
