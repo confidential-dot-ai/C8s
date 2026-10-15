@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
+	"k8s.io/client-go/rest"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
@@ -120,8 +121,11 @@ var podName = func() (string, error) {
 }
 
 // Production wiring hoisted to vars so Run's error paths are testable.
+// getKubeConfig is the in-cluster service-account config only: a kubeconfig
+// from KUBECONFIG or HOME could name an exec credential plugin, code the
+// operator's pinned arguments never named.
 var (
-	getKubeConfig      = ctrl.GetConfigOrDie
+	getKubeConfig      = rest.InClusterConfig
 	newManager         = ctrl.NewManager
 	newDiscoveryClient = discovery.NewDiscoveryClientForConfig
 )
@@ -136,7 +140,10 @@ func Run(ctx context.Context, opts Options) error {
 	ctrl.SetLogger(zap.New(zap.UseDevMode(false)))
 	logger := ctrl.Log.WithName("c8s-operator")
 
-	config := getKubeConfig()
+	config, err := getKubeConfig()
+	if err != nil {
+		return fmt.Errorf("in-cluster config: %w", err)
+	}
 	mgr, err := newManager(config, managerOptions(opts))
 	if err != nil {
 		return fmt.Errorf("create manager: %w", err)
