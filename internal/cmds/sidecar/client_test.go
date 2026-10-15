@@ -3,12 +3,8 @@ package sidecar
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,37 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
-
-// writeLeaf stages a certificate and key where the cert sidecar would leave
-// them.
-func writeLeaf(t *testing.T, dir string) (certPath, keyPath string, pub *ecdsa.PublicKey) {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(1),
-		Subject:      pkix.Name{CommonName: "workload"},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	certPath = filepath.Join(dir, "tls.crt")
-	keyPath = filepath.Join(dir, "tls.key")
-	write(t, certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
-	write(t, keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER}))
-	return certPath, keyPath, &key.PublicKey
-}
 
 func write(t *testing.T, path string, b []byte) {
 	t.Helper()
@@ -70,7 +39,7 @@ func testConfig(url string) Config {
 // of the certificate it presents — not a fresh one.
 func TestNewClientReturnsLeafKey(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath, want := writeLeaf(t, dir)
+	certPath, keyPath, want := testutil.WriteLeaf(t, dir)
 	cfg := testConfig("https://cds.example")
 	cfg.CertPath, cfg.KeyPath = certPath, keyPath
 
@@ -117,7 +86,7 @@ func TestNewClientWithoutLeaf(t *testing.T) {
 // picked up without restarting this one.
 func TestLeafProviderReloads(t *testing.T) {
 	dir := t.TempDir()
-	certPath, keyPath, first := writeLeaf(t, dir)
+	certPath, keyPath, first := testutil.WriteLeaf(t, dir)
 	p := leafProvider{certPath: certPath, keyPath: keyPath}
 
 	got, ttl, err := p.Provision(context.Background())
@@ -132,7 +101,7 @@ func TestLeafProviderReloads(t *testing.T) {
 		t.Fatal("first provision returned the wrong key")
 	}
 
-	_, _, second := writeLeaf(t, dir) // renewal lands on the same paths
+	_, _, second := testutil.WriteLeaf(t, dir) // renewal lands on the same paths
 	got, _, err = p.Provision(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -161,7 +130,7 @@ func TestFetchChallengeFailures(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(tc.handler)
 			defer srv.Close()
-			if _, err := fetchChallenge(context.Background(), testConfig(srv.URL), http.DefaultClient); err == nil {
+			if _, err := FetchChallenge(context.Background(), http.DefaultClient, srv.URL, 5*time.Second); err == nil {
 				t.Fatal("a bad challenge response was accepted")
 			}
 		})
@@ -170,9 +139,36 @@ func TestFetchChallengeFailures(t *testing.T) {
 
 // An unreachable CDS is an error, not a hang or a nil value.
 func TestFetchChallengeUnreachable(t *testing.T) {
-	cfg := testConfig("http://127.0.0.1:1")
-	cfg.RequestTimeout = 200 * time.Millisecond
-	if _, err := fetchChallenge(context.Background(), cfg, http.DefaultClient); err == nil {
+	if _, err := FetchChallenge(context.Background(), http.DefaultClient, "http://127.0.0.1:1", 200*time.Millisecond); err == nil {
 		t.Fatal("an unreachable CDS reported success")
+	}
+}
+
+// A nil challenge or token leaves its header unset; a non-nil one is encoded
+// the way CDS decodes it. The path is not touched on the way out.
+func TestNewStoreRequestHeadersAndPath(t *testing.T) {
+	req, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a//b%2Fc", []byte("chal"), []byte(`{"token":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.EscapedPath(); got != "/secrets/a//b%2Fc" {
+		t.Fatalf("path on the wire = %q, want it verbatim", got)
+	}
+	if got, want := req.Header.Get(secrets.ChallengeHeader), base64.StdEncoding.EncodeToString([]byte("chal")); got != want {
+		t.Fatalf("challenge header = %q, want %q", got, want)
+	}
+	if got, want := req.Header.Get("Authorization"), secrets.AuthScheme+base64.StdEncoding.EncodeToString([]byte(`{"token":"x"}`)); got != want {
+		t.Fatalf("Authorization = %q, want %q", got, want)
+	}
+
+	bare, err := NewStoreRequest(context.Background(), "https://cds.example", http.MethodGet, "/a", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := bare.Header[secrets.ChallengeHeader]; ok {
+		t.Fatal("a nil challenge set the challenge header")
+	}
+	if _, ok := bare.Header["Authorization"]; ok {
+		t.Fatal("a nil token set the Authorization header")
 	}
 }

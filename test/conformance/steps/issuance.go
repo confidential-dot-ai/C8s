@@ -72,7 +72,7 @@ func registerIssuance(sc *godog.ScenarioContext) {
 const certContainer = "c8s-cert"
 
 // renewWindow bounds how long a renewal is waited for: the pod's renew
-// interval (CW_RENEW_INTERVAL in the backends) or the unnamed fast poll, both
+// interval (issuanceRenewal) or the unnamed fast poll, both
 // at most 30s plus jitter, and the request itself.
 const renewWindow = 120 * time.Second
 
@@ -171,7 +171,7 @@ func (w *world) certFile(p *pod, file string, container ...string) ([]byte, erro
 	if !p.deployed {
 		return nil, fmt.Errorf("pod %q has not been deployed", p.name)
 	}
-	out, err := w.be.call("pod_cert_file", append([]string{w.namespace, p.name, file}, container...)...)
+	out, err := w.be.call("pod_cert_file", append([]string{p.namespace, p.name, file}, container...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +193,7 @@ func (w *world) podLeaf(p *pod) (*leaf, error) {
 
 // certLog is the log of the pod's requester so far; empty before it runs.
 func (w *world) certLog(p *pod) string {
-	out, err := kubectl(nil, "-n", w.namespace, "logs", p.name, "-c", certContainer)
+	out, err := kubectl(nil, "-n", p.namespace, "logs", p.name, "-c", certContainer)
 	if err != nil {
 		return ""
 	}
@@ -451,7 +451,7 @@ func leafSandboxIDOf(ctx context.Context, name, podName string) error {
 	if err != nil {
 		return err
 	}
-	want, err := w.be.call("pod_sandbox_id", w.namespace, p.name)
+	want, err := w.be.call("pod_sandbox_id", p.namespace, p.name)
 	if err != nil {
 		return err
 	}
@@ -666,7 +666,7 @@ func containersShareLeaf(ctx context.Context, name string) error {
 	if len(p.containers) < 2 {
 		return fmt.Errorf("%q has one container", name)
 	}
-	out, err := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "jsonpath={.spec.containers[*].name}")
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.spec.containers[*].name}")
 	if err != nil {
 		return err
 	}

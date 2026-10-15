@@ -95,17 +95,7 @@ func TestAttestTDXMatchingMRTDButWrongRTMRIsRefused(t *testing.T) {
 	h.RTMRs = rtmrPin(t, 1, testRTMR1)
 
 	csrPEM, _ := generateCSR(t)
-	w := postAttestTDX(t, h, issueChallenge(t, h), csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
-	var envelope types.ErrorResponse
-	if err := json.Unmarshal(w.Body.Bytes(), &envelope); err != nil {
-		t.Fatalf("decode error envelope: %v", err)
-	}
-	if envelope.Error != types.ErrorCodeMeasurementDenied {
-		t.Fatalf("error code = %q, want %q", envelope.Error, types.ErrorCodeMeasurementDenied)
-	}
+	wantRefusal(t, postAttestTDX(t, h, issueChallenge(t, h), csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 }
 
 // A pinned register the verdict does not report is a refusal, not a pass — a
@@ -118,10 +108,7 @@ func TestAttestTDXPinnedRTMRNotReportedIsRefused(t *testing.T) {
 	h.RTMRs = rtmrPin(t, 1, testRTMR1)
 
 	csrPEM, _ := generateCSR(t)
-	w := postAttestTDX(t, h, issueChallenge(t, h), csrPEM)
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status: got %d, want 403; body=%s", w.Code, w.Body.String())
-	}
+	wantRefusal(t, postAttestTDX(t, h, issueChallenge(t, h), csrPEM), http.StatusForbidden, types.ErrorCodeMeasurementDenied)
 }
 
 // SNP evidence has no registers and folds the guest image into its launch

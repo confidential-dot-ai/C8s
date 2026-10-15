@@ -3,6 +3,7 @@ package steps
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -47,7 +48,7 @@ func registerRequester(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" requests a leaf with that challenge( and that sandbox token)?$`, requestsLeaf)
 	sc.Step(`^"([^"]*)" repeats the same attest request$`, repeatsAttest)
 	sc.Step(`^the CDS refuses the attest request with "([^"]*)"$`, cdsRefusesAttest)
-	sc.Step(`^"([^"]*)" holds a sandbox token from the sandbox inventory on node "([^"]*)"( for a key other than its own)?$`, holdsInventoryToken)
+	sc.Step(`^"([^"]*)" holds a sandbox token from the sandbox inventory on node "([^"]*)"( for a key other than its own| for that release challenge)?$`, holdsToken)
 	sc.Step(`^"([^"]*)" has signed a sandbox token for its key with a signing key of its own$`, signsOwnToken)
 	sc.Step(`^the inventory host of that sandbox token is (.+)$`, forgedTokenHost)
 }
@@ -159,7 +160,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	p := w.describe(name, ref)
-	manifest, err := w.be.call("requester_manifest", p.name, w.namespace, k8sNode)
+	manifest, err := w.be.call("requester_manifest", p.name, p.namespace, k8sNode)
 	if err != nil {
 		return err
 	}
@@ -174,7 +175,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 	if len(st) == 0 || !st[0].running {
 		return fmt.Errorf("the requester %q is not running after %s; denials: %s", name, observe, denials(st))
 	}
-	addr, err := kubectl(nil, "-n", w.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.podIP}")
+	addr, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "jsonpath={.status.podIP}")
 	if err != nil {
 		return err
 	}
@@ -189,7 +190,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if status != 200 {
-		sockets, _ := kubectl(nil, "-n", w.namespace, "exec", p.name, "--", "ls", "-la", "/run/c8s/workload-claims")
+		sockets, _ := kubectl(nil, "-n", p.namespace, "exec", p.name, "--", "ls", "-la", "/run/c8s/workload-claims")
 		return fmt.Errorf("harness: the requester %q got %d from %s/healthz; its socket directory holds:\n%s", name, status, url, sockets)
 	}
 	return nil
@@ -199,7 +200,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 func (w *world) relay(r *requester, method, url string, body []byte, socket string) (int, []byte, error) {
 	var out string
 	send := func(bodyFile string) (err error) {
-		args := []string{w.namespace, r.pod.name, method, url}
+		args := []string{r.pod.namespace, r.pod.name, method, url}
 		if bodyFile != "" {
 			args = append(args, bodyFile)
 		}
@@ -257,18 +258,27 @@ func requestsChallenge(ctx context.Context, issued, requested string) error {
 	if status != 200 {
 		return fmt.Errorf("the CDS answered %d to a challenge request: %s", status, body)
 	}
+	challenge, err := parseChallenge(body)
+	if err != nil {
+		return err
+	}
+	r.previous, r.challenge = r.challenge, challenge
+	return nil
+}
+
+// parseChallenge is the challenge bytes of a CDS challenge response.
+func parseChallenge(body []byte) ([]byte, error) {
 	var doc struct {
 		Challenge string `json:"challenge"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
-		return fmt.Errorf("the challenge response: %w", err)
+		return nil, fmt.Errorf("the challenge response: %w", err)
 	}
 	challenge, err := base64.StdEncoding.DecodeString(doc.Challenge)
 	if err != nil {
-		return fmt.Errorf("the challenge is not base64: %w", err)
+		return nil, fmt.Errorf("the challenge is not base64: %w", err)
 	}
-	r.previous, r.challenge = r.challenge, challenge
-	return nil
+	return challenge, nil
 }
 
 func challengesDiffer(ctx context.Context, name string) error {
@@ -302,7 +312,7 @@ func presentsUnissuedChallenge(ctx context.Context, name string) error {
 }
 
 func challengeExpired(ctx context.Context) error {
-	out, err := getWorld(ctx).be.call("challenge_ttl")
+	out, err := getWorld(ctx).cdsArg("challenge-ttl")
 	if err != nil {
 		return err
 	}
@@ -374,11 +384,11 @@ func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode)
 	var err error
 	switch mode {
 	case evidenceNoSignature:
-		out, err = w.be.call("evidence_unsigned", w.namespace, r.pod.name, rd)
+		out, err = w.be.call("evidence_unsigned", r.pod.namespace, r.pod.name, rd)
 	case evidenceForeignDigest:
-		out, err = w.be.call("evidence", w.namespace, r.pod.name, rd, strings.Repeat("aa", 48))
+		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd, strings.Repeat("aa", 48))
 	default:
-		out, err = w.be.call("evidence", w.namespace, r.pod.name, rd)
+		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd)
 	}
 	if err != nil {
 		return nil, err
@@ -425,7 +435,7 @@ func (w *world) buildCSR(r *requester) ([]byte, error) {
 	case csrOwnIP:
 		tmpl.IPAddresses = []net.IP{net.ParseIP(r.addr)}
 	default:
-		tmpl.DNSNames = []string{r.pod.name + "." + w.namespace + ".svc"}
+		tmpl.DNSNames = []string{r.pod.name + "." + r.pod.namespace + ".svc"}
 	}
 	reportData, err := armtls.ReportDataForKey(&r.key.PublicKey, nil)
 	if err != nil {
@@ -470,13 +480,20 @@ func (r *requester) sandboxToken() (json.RawMessage, error) {
 	if r.forged.host == "" {
 		return nil, errors.New("the scenario has not said which inventory host the forged token names")
 	}
-	pub, err := x509.MarshalPKIXPublicKey(&r.key.PublicKey)
+	return signSandboxToken(r.forged.key, "forged-sandbox", &r.key.PublicKey, r.challenge, r.forged.host)
+}
+
+// signSandboxToken builds the inventory's token over a key and sandbox ID,
+// bound to nonce and naming host, signed by signer, as the JSON the
+// Authorization header carries.
+func signSandboxToken(signer *ecdsa.PrivateKey, sandboxID string, pub crypto.PublicKey, nonce []byte, host string) (json.RawMessage, error) {
+	pubDER, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
 		return nil, err
 	}
-	digest := sha256.Sum256(pub)
+	digest := sha256.Sum256(pubDER)
 	der, err := asn1.Marshal(sandboxTokenDER{
-		Version: 2, SandboxID: "forged-sandbox", KeyDigest: digest[:], Nonce: r.challenge, InventoryHost: r.forged.host,
+		Version: 2, SandboxID: sandboxID, KeyDigest: digest[:], Nonce: nonce, InventoryHost: host,
 	})
 	if err != nil {
 		return nil, err
@@ -484,7 +501,7 @@ func (r *requester) sandboxToken() (json.RawMessage, error) {
 	h := sha256.New()
 	h.Write(sandboxTokenDomain)
 	h.Write(der)
-	sig, err := ecdsa.SignASN1(rand.Reader, r.forged.key, h.Sum(nil))
+	sig, err := ecdsa.SignASN1(rand.Reader, signer, h.Sum(nil))
 	if err != nil {
 		return nil, err
 	}
@@ -611,6 +628,23 @@ func cdsRefusesAttest(ctx context.Context, code string) error {
 
 // holdsInventoryToken asks the node's inventory, over its socket, for a
 // token binding a key and the current challenge to the requester's sandbox.
+// holdsToken is one sentence for two holders: a requester the scenario
+// drives signs the token with its own key (issuance), a deployed pod has its
+// sidecar redeem a release challenge (secrets). Registering it twice would
+// leave godog to pick one.
+func holdsToken(ctx context.Context, name, node, suffix string) error {
+	switch suffix {
+	case " for a key other than its own":
+		return holdsInventoryToken(ctx, name, node, suffix)
+	case " for that release challenge":
+		return holdsSandboxToken(ctx, name, node, suffix)
+	}
+	if _, ok := getWorld(ctx).issuance.requesters[name]; ok {
+		return holdsInventoryToken(ctx, name, node, "")
+	}
+	return holdsSandboxToken(ctx, name, node, "")
+}
+
 func holdsInventoryToken(ctx context.Context, name, node, otherKey string) error {
 	w := getWorld(ctx)
 	r, err := w.requester(name)
