@@ -29,7 +29,7 @@ containers:
       {{- if .Values.node.baked }}
       - --image-policy-file=/run/c8s-node/cds.json
       {{- else if .Values.cds.measurementsConfig }}
-      - --image-policy-file=/etc/c8s-measurements/cds.json
+      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
       {{- else }}
       {{- range .Values.cds.measurements }}
       - --cds-measurements={{ . }}
@@ -99,7 +99,7 @@ containers:
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
       {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
       - name: measurements-config
-        mountPath: /etc/c8s-measurements
+        mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
 volumes:

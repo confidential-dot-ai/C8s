@@ -6,7 +6,7 @@ containers:
   - name: attestation-api
     image: {{ include "c8s.attestationApiImage" . }}
     imagePullPolicy: {{ .Values.attestationApi.image.pullPolicy }}
-    args: [--config, /etc/attestation-api/config.toml]
+    args: [--config, /mnt/c8s-data/attestation-api/config.toml]
     ports:
       - name: http
         containerPort: {{ .Values.attestationApi.port }}
@@ -37,7 +37,7 @@ containers:
     # binds pod loopback, which kubelet cannot dial.
     volumeMounts:
       - name: config
-        mountPath: /etc/attestation-api
+        mountPath: /mnt/c8s-data/attestation-api
         readOnly: true
       {{- if .Values.attestationApi.teeDevices.sevGuest }}
       - name: sev-guest
@@ -110,7 +110,7 @@ containers:
       timeoutSeconds: 5
     volumeMounts:
       - name: config
-        mountPath: /etc/attestation-api
+        mountPath: /mnt/c8s-data/attestation-api
         readOnly: true
       - name: socket-dir
         mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}

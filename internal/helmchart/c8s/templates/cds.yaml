@@ -46,7 +46,7 @@ containers:
       - --operator-keys=/run/c8s-node/operator-pubkey
       - --dns-san-file=/run/c8s-node/tls-san
       {{- else }}
-      - --allowlist-seed=/etc/cds/allowlist-seed.json
+      - --allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json
       {{- end }}
       - --jwt-clock-skew={{ .Values.cds.jwtClockSkew }}
       - --ca-common-name={{ .Values.cds.ca.commonName }}
@@ -74,7 +74,7 @@ containers:
       {{- if .Values.node.baked }}
       - --image-policy-file=/run/c8s-node/peers.json
       {{- else if .Values.cds.measurementsConfig }}
-      - --image-policy-file=/etc/c8s-measurements/cds.json
+      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
       {{- else }}
       {{- with .Values.cds.measurements }}
       - --measurements={{ join "," . }}
@@ -87,7 +87,7 @@ containers:
       - --sandbox-inventory-cidr={{ join "," . }}
       {{- end }}
       {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
-      - --operator-keys=/etc/cds-operator-keys/keys.pem
+      - --operator-keys=/mnt/c8s-data/cds-operator-keys/keys.pem
       {{- end }}
       - --rate-limit={{ .Values.cds.rateLimit }}
       - --rate-burst={{ .Values.cds.rateBurst }}
@@ -123,21 +123,21 @@ containers:
 {{ toYaml .Values.cds.resources | indent 6 }}
     volumeMounts:
       - name: data
-        mountPath: /data
+        mountPath: /mnt/c8s-data/cds
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
       {{- if not .Values.node.baked }}
       - name: allowlist-seed
-        mountPath: /etc/cds
+        mountPath: /mnt/c8s-data/cds-seed
         readOnly: true
       {{- if .Values.cds.operatorKeys }}
       - name: operator-keys
-        mountPath: /etc/cds-operator-keys
+        mountPath: /mnt/c8s-data/cds-operator-keys
         readOnly: true
       {{- end }}
       {{- if .Values.cds.measurementsConfig }}
       - name: measurements-config
-        mountPath: /etc/c8s-measurements
+        mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
       {{- end }}

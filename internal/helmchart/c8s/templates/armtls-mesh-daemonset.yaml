@@ -158,8 +158,6 @@ initContainers:
       - {{ .Values.armtlsMesh.excludeUids | quote }}
       - --exclude-source-namespaces
       - {{ $excludeSourceNamespaces | quote }}
-      - --node-ip
-      - $(NODE_IP)
       - --resync-period
       - {{ .Values.armtlsMesh.iptablesSync.resyncPeriod | quote }}
       - --watchdog-period
@@ -225,7 +223,7 @@ containers:
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
       {{- if .Values.armtlsMesh.measurementsConfig }}
       - name: measurements-config
-        mountPath: /etc/c8s-measurements
+        mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
     args:
@@ -257,7 +255,7 @@ containers:
       - --image-policy-file=/run/c8s-node/peers.json
       {{- else if .Values.armtlsMesh.measurementsConfig }}
       - --image-policy-file
-      - /etc/c8s-measurements/armtls-mesh.json
+      - /mnt/c8s-data/measurements/armtls-mesh.json
       {{- else }}
       {{- if .Values.armtlsMesh.measurements }}
       - --measurements

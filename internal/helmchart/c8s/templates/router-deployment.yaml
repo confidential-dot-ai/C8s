@@ -87,6 +87,18 @@ containers:
   - name: nginx
     image: {{ include "c8s-common.image" .Values.router.nginx.image }}
     imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
+    {{- /* The image's entrypoint and CMD spelled out, with the config file
+           named: the allowlist pins this argv exactly, so nothing a pod adds
+           (-g load_module, another -c) runs under the nginx entry. */}}
+    command: [{{ first .Values.router.nginx.entrypoint | quote }}]
+    args:
+      {{- range rest .Values.router.nginx.entrypoint }}
+      - {{ . | quote }}
+      {{- end }}
+      - -c
+      - {{ include "router.configDir" . }}/nginx.conf
+      - -g
+      - daemon off;
     ports:
       - name: https
         containerPort: {{ .Values.router.nginx.httpsPort }}
@@ -148,17 +160,18 @@ containers:
         mountPath: {{ .Values.router.discovery.mountPath }}
         readOnly: true
       {{- end }}
+      {{- /* The whole ConfigMap, beside the operator data rather than over
+             /etc/nginx: a component's ConfigMap mounts sit under
+             /mnt/c8s-data, and the args name the file. On a baked node the
+             launch file's tls.conf includes a snippet from the same
+             directory. */}}
       - name: nginx-config
-        mountPath: /etc/nginx/nginx.conf
-        subPath: nginx.conf
+        mountPath: {{ include "router.configDir" . }}
         readOnly: true
       {{- if $launchDriven }}
       {{- /* nginx.conf includes router/upstream.conf and router/tls.conf
-             from here; tls.conf includes a snippet from the dir below. */}}
+             from here. */}}
       {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
-      - name: nginx-config
-        mountPath: {{ include "router.tlsSnippetDir" . }}
-        readOnly: true
       {{- end }}
       - name: nginx-cache
         mountPath: /var/cache/nginx
@@ -308,7 +321,7 @@ containers:
       {{- if .Values.node.baked }}
       - --image-policy-file=/run/c8s-node/cds.json
       {{- else if .Values.cds.measurementsConfig }}
-      - --image-policy-file=/etc/c8s-measurements/cds.json
+      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
       {{- else }}
       {{- with .Values.cds.measurements }}
       - --cds-measurements={{ join "," . }}
@@ -329,7 +342,7 @@ containers:
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}
       {{- if .Values.cds.measurementsConfig }}
       - name: measurements-config
-        mountPath: /etc/c8s-measurements
+        mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
     {{- end }}

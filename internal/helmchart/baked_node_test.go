@@ -230,12 +230,12 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	assertContainerMount(t, nginx, "node-config", "/run/c8s-node")
 	snippetDir := false
 	for _, m := range nginx.VolumeMounts {
-		if m.Name == "nginx-config" && m.MountPath == "/etc/nginx/c8s" && m.ReadOnly {
+		if m.Name == "nginx-config" && m.MountPath == "/mnt/c8s-data/nginx" && m.ReadOnly {
 			snippetDir = true
 		}
 	}
 	if !snippetDir {
-		t.Error("nginx must mount the TLS snippets read-only at /etc/nginx/c8s")
+		t.Error("nginx must mount the TLS snippets read-only at /mnt/c8s-data/nginx")
 	}
 	if port, ok := findContainerPort(nginx, "http"); !ok || port.ContainerPort != 8080 || port.HostPort != 80 {
 		t.Error("launch-driven router must publish the ACME challenge port on host 80")

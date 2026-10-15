@@ -236,7 +236,7 @@ cds:
     enabled: true
     maxUnavailable: 0
   logLevel: info
-  allowlistDB: /data/allowlist.db
+  allowlistDB: /mnt/c8s-data/cds/allowlist.db
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
@@ -1128,7 +1128,7 @@ router:
     secretName: ""
     certKey: tls.crt
     keyKey: tls.key
-    mountPath: "/public-tls"
+    mountPath: "/mnt/c8s-data/public-tls"
 
   # -- ACME issuance (publicTLS.mode=acme). The sidecar answers HTTP-01 behind
   # nginx's :80 server and SIGHUPs nginx on install. Empty directoryURL is

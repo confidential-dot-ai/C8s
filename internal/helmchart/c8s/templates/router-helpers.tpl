@@ -516,10 +516,11 @@ true
 {{- define "router.launchDir" -}}/run/c8s-node/router{{- end -}}
 
 {{/*
-Where nginx finds tls-cds.conf and tls-acme.conf on a baked node. The launch
-file's tls.conf includes one of them (nodeservices.RouterTLSSnippetDir).
+Where the nginx ConfigMap is mounted: nginx.conf, and the tls-cds.conf and
+tls-acme.conf snippets the launch file's tls.conf includes on a baked node
+(nodeservices.RouterTLSSnippetDir).
 */}}
-{{- define "router.tlsSnippetDir" -}}/etc/nginx/c8s{{- end -}}
+{{- define "router.configDir" -}}/mnt/c8s-data/nginx{{- end -}}
 
 {{/*
 ACME constants shared by the acme sidecar args, the deployment mounts, the

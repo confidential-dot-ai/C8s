@@ -235,7 +235,6 @@ func TestChartRendersARMTLSHostRoutingDefaults(t *testing.T) {
 		t.Fatalf("iptables-sync init container missing; have %v", containerNames(ds.Spec.Template.Spec.InitContainers))
 	}
 	for _, pair := range [][2]string{
-		{"--node-ip", "$(NODE_IP)"},
 		{"--resync-period", "30s"},
 		{"--watchdog-period", "2s"},
 		{"--ipset-maxelem", "262144"},
@@ -248,6 +247,11 @@ func TestChartRendersARMTLSHostRoutingDefaults(t *testing.T) {
 		if !argvContainsFlagValue(sync.Command, pair[0], pair[1]) {
 			t.Errorf("iptables-sync command missing %s %s; command=%q", pair[0], pair[1], sync.Command)
 		}
+	}
+	// The node IP comes from NODE_IP: a $(NODE_IP) argument would put a
+	// per-node value in the argv the allowlist pins.
+	if slices.Contains(sync.Command, "--node-ip") || !hasNodeIPEnv(sync) {
+		t.Errorf("iptables-sync must read the node IP from NODE_IP, not --node-ip; command=%q env=%+v", sync.Command, sync.Env)
 	}
 	if slices.Contains(sync.Command, "--pod-cidrs") {
 		t.Errorf("iptables-sync must not require static --pod-cidrs; command=%q", sync.Command)
@@ -2068,11 +2072,13 @@ func hasHostIPEnv(c corev1.Container) bool {
 // TestChartBareMetalModeAttestationApiURLUsesHostIP proves cvmMode=bare-metal points the
 // pod-netns components (cds, router's cert sidecar, armtls-mesh) at the
 // node-baked host attestation-api via the $(HOST_IP) downward-API env var, since
-// there is no in-cluster Service and pods cannot reach host loopback. The
-// operator is the exception: it forwards its --attestation-api-url verbatim into
-// the tenant get-cert sidecars it injects, so the placeholder must stay
-// UNEXPANDED there — the operator container deliberately omits HOST_IP so each
-// tenant pod expands it against its own node.
+// there is no in-cluster Service and pods cannot reach host loopback. The pod
+// spec escapes it as $$(HOST_IP): the kubelet hands the binary the literal
+// $(HOST_IP), which it expands from its HOST_IP variable, so the argv the
+// allowlist pins is the same on every node. The operator forwards the literal
+// into the tenant get-cert sidecars it injects, where the kubelet expands it
+// against the tenant pod's own node; the operator container deliberately omits
+// HOST_IP.
 // KNOWN-GAP (ATTEST-ORACLE, bare-metal mode): the http://$(HOST_IP):8400 wiring
 // this test pins reaches the node image's baked attestation-api, which still
 // binds 0.0.0.0:8400 with no auth — the oracle shape this branch removes
@@ -2082,7 +2088,7 @@ func hasHostIPEnv(c corev1.Container) bool {
 // lands, the chart's bare-metal-mode branch and this test flip to the socket shape
 // together.
 func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
-	const hostIPURL = "--attestation-api-url=http://$(HOST_IP):8400"
+	const hostIPURL = "--attestation-api-url=http://$$(HOST_IP):8400"
 	// The exact shape `c8s install --cvm-mode=bare-metal` produces: the node image
 	// bakes attestation-api and nri-image-policy, so both chart components
 	// are off and consumers dial the baked host service via $(HOST_IP).
@@ -2133,8 +2139,8 @@ func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 
 	// armtls-mesh: hostNetwork, so $(HOST_IP) is its own node IP. Two-arg form.
 	mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-	if !slices.Contains(mesh.Args, "http://$(HOST_IP):8400") {
-		t.Errorf("armtls-mesh missing http://$(HOST_IP):8400 arg; have %v", mesh.Args)
+	if !slices.Contains(mesh.Args, "http://$$(HOST_IP):8400") {
+		t.Errorf("armtls-mesh missing http://$$(HOST_IP):8400 arg; have %v", mesh.Args)
 	}
 	if !hasHostIPEnv(mesh) {
 		t.Errorf("armtls-mesh missing HOST_IP downward-API env; have %+v", mesh.Env)
@@ -2316,7 +2322,7 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	out, err := helmTemplate(t, noUpstreamArgs(
 		"--set-string", "router.publicTLS.mode=webpki",
 		"--set-string", "router.publicTLS.secretName=router-public-tls",
-		"--set-string", "router.publicTLS.mountPath=/edge-tls",
+		"--set-string", "router.publicTLS.mountPath=/mnt/c8s-data/edge-tls",
 		"--set-string", "router.publicTLS.certKey=public.crt",
 		"--set-string", "router.publicTLS.keyKey=public.key",
 		"--set", "router.discovery.enabled=true",
@@ -2330,8 +2336,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	server := cfg.server(t)
-	server.assertDirective(t, "ssl_certificate", "/edge-tls/public.crt")
-	server.assertDirective(t, "ssl_certificate_key", "/edge-tls/public.key")
+	server.assertDirective(t, "ssl_certificate", "/mnt/c8s-data/edge-tls/public.crt")
+	server.assertDirective(t, "ssl_certificate_key", "/mnt/c8s-data/edge-tls/public.key")
 	ciphers := server.directives["ssl_ciphers"]
 	if len(ciphers) != 1 || len(ciphers[0]) != 1 ||
 		!slices.Contains(strings.Split(ciphers[0][0], ":"), "ECDHE-RSA-AES128-GCM-SHA256") {
@@ -2368,8 +2374,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		t.Fatalf("router missing discovery volume; volumes=%v", spec.Volumes)
 	}
 	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
-	if m, ok := containerVolumeMount(nginx, "public-tls"); !ok || m.MountPath != "/edge-tls" {
-		t.Fatalf("nginx public-tls mount = (%+v, %v), want mountPath /edge-tls", m, ok)
+	if m, ok := containerVolumeMount(nginx, "public-tls"); !ok || m.MountPath != "/mnt/c8s-data/edge-tls" {
+		t.Fatalf("nginx public-tls mount = (%+v, %v), want mountPath /mnt/c8s-data/edge-tls", m, ok)
 	}
 	cert := routerGetCertContainer(t, out, "c8s-cert")
 	assertContainerArgs(t, cert,
@@ -2377,8 +2383,8 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 		"--discovery-cds-cert-url=/.well-known/cds-cert.pem",
 		"--discovery-public-tls-mode=webpki",
 		"--discovery-mesh-ca-url=/.well-known/mesh-ca.pem",
-		"--reload-watch=/edge-tls/public.crt",
-		"--reload-watch=/edge-tls/public.key",
+		"--reload-watch=/mnt/c8s-data/edge-tls/public.crt",
+		"--reload-watch=/mnt/c8s-data/edge-tls/public.key",
 	)
 	// A WebPKI-secret front door is attest-pq-only: its host-visible serving
 	// key cannot support attest-lb's transport binding.
@@ -4884,7 +4890,7 @@ func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	for _, want := range []string{
 		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
-		"--allowlist-db=/data/allowlist.db",
+		"--allowlist-db=/mnt/c8s-data/cds/allowlist.db",
 		"--ca-common-name=c8s Mesh CA",
 		"--ca-cert-validity=8760h",
 	} {
@@ -5599,8 +5605,8 @@ func TestChartSeedsCDSAllowlistFromBootstrapEntries(t *testing.T) {
 	for _, al := range []pkgallowlist.Allowlist{*seed, worker.Allowlist.Base} {
 		for _, entry := range al.Workloads {
 			for _, c := range entry.Containers {
-				if c.Digest.String() == cdsDigest && c.Mounts.Policy != pkgallowlist.PolicyAny {
-					t.Errorf("generated CDS mount policy = %+v, want explicit any", c.Mounts)
+				if c.Digest.String() == cdsDigest && (c.Mounts.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyExact) {
+					t.Errorf("generated CDS policy = args %+v, mounts %+v, want both exact", c.Args, c.Mounts)
 				}
 			}
 		}
@@ -6078,7 +6084,7 @@ func TestChartServesAllowlistSeedInBareMetalMode(t *testing.T) {
 	}
 	// The flag/mount must be present so CDS actually loads the seed.
 	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	if !slices.Contains(cds.Args, "--allowlist-seed=/etc/cds/allowlist-seed.json") {
+	if !slices.Contains(cds.Args, "--allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json") {
 		t.Errorf("bare-metal-mode CDS missing --allowlist-seed flag; seed rendered but not loaded\nargs: %v", cds.Args)
 	}
 }
@@ -6316,14 +6322,14 @@ func TestChartWiresCDSAllowlistSeedFlagAndVolume(t *testing.T) {
 	}
 
 	cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
-	assertContainerHasArg(t, "cds", cds.Args, "--allowlist-seed=/etc/cds/allowlist-seed.json")
+	assertContainerHasArg(t, "cds", cds.Args, "--allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json")
 
 	mount, ok := containerVolumeMount(cds, "allowlist-seed")
 	if !ok {
 		t.Fatalf("cds container missing allowlist-seed volume mount; mounts=%v", cds.VolumeMounts)
 	}
-	if mount.MountPath != "/etc/cds" {
-		t.Errorf("allowlist-seed mountPath = %q, want /etc/cds", mount.MountPath)
+	if mount.MountPath != "/mnt/c8s-data/cds-seed" {
+		t.Errorf("allowlist-seed mountPath = %q, want /mnt/c8s-data/cds-seed", mount.MountPath)
 	}
 	if !mount.ReadOnly {
 		t.Errorf("allowlist-seed mount must be readOnly (cds has readOnlyRootFilesystem)")
@@ -6390,18 +6396,20 @@ func TestChartRejectsUncoveredComponentInFailClosed(t *testing.T) {
 		})
 	}
 
-	// An entry that pins a component's command line is seed-only, so it does
-	// not cover the component on its own node and the guard still fires.
+	// An entry that pins the component's command line to another executable
+	// does not start the component on its own node, so the guard still fires.
 	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
 	out, err = helmTemplate(t,
 		"--set-string", "image.digest="+opD,
 		"--set", "nriImagePolicy.policy.mode=fail-closed",
 		"--set-string", p+"digest="+opD,
 		"--set-string", p+"command.policy=exact",
-		"--set-string", p+"command.argv[0]=/c8s",
+		"--set-string", p+"command.argv[0]=/bin/sh",
+		"--set-string", p+"args.policy=exact",
+		"--set-string", p+"args.argv[0]=-c",
 	)
 	if err == nil {
-		t.Fatalf("helm template succeeded with the component covered only by a pinned entry\n%s", out)
+		t.Fatalf("helm template succeeded with the component covered only by an entry pinned to another executable\n%s", out)
 	}
 	if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
 		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)

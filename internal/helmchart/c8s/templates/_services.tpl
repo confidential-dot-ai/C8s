@@ -29,7 +29,11 @@ mounted into pods. Directory requires verified staging to have completed. */}}
 {{- if include "c8s.attestationApiSocketPresent" . -}}
 unix://{{ include "c8s.attestationApiSocket" . }}
 {{- else -}}
-http://$(HOST_IP):{{ .Values.attestationApi.port }}
+{{- /* $$ reaches the container as a literal $(HOST_IP), which the binary
+       expands (cmdsutil.ExpandHostIP): the allowlist pins a component's
+       arguments exactly, so the kubelet must not put the node's address in
+       them. */ -}}
+http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
 {{- end -}}
 
