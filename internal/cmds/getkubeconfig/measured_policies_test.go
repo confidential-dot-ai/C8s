@@ -5,13 +5,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -178,5 +181,42 @@ func TestAttestResponseListSupersedesLeaf(t *testing.T) {
 				t.Fatalf("attestCredentialRelease = %v, want error %v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// The refresh dial waits out --release-wait for a cred-release that is still
+// starting, as the other cred-release steps do.
+func TestDialReleaseRetriesRefusedConnection(t *testing.T) {
+	t.Parallel()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan struct{}, 1)
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		late, err := net.Listen("tcp", addr)
+		if err != nil {
+			return
+		}
+		defer late.Close()
+		conn, err := late.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- struct{}{}
+		_ = conn.Close()
+	}()
+
+	cfg := Config{Timeout: 2 * time.Second, ReleaseWait: 10 * time.Second}
+	dialRelease(context.Background(), cfg, &url.URL{Scheme: "https", Host: addr}, testPolicy(t, operatorPub(t)))
+	select {
+	case <-accepted:
+	default:
+		t.Fatal("dialRelease gave up before cred-release listened")
 	}
 }

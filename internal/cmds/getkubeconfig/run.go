@@ -193,7 +193,8 @@ func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platf
 	err := httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
 		conn, err := dialer.DialContext(stepCtx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
 		if err != nil {
-			return err
+			// RetryConnectionRefused retries only a refused dial under a URL error.
+			return &url.Error{Op: "Dial", URL: releaseURL.String(), Err: err}
 		}
 		return conn.Close() // the handshake was the point
 	})
