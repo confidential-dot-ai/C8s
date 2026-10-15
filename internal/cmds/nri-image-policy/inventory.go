@@ -25,6 +25,16 @@ type admissionInventory struct {
 	admitted   map[string]admissionhistory.History // sandboxID -> everything ever admitted there
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
+
+	// needsVariableEvidence reports whether a current match env policy lists
+	// a digest; records of other images are served without per-variable
+	// digests. Nil serves every record's digests.
+	needsVariableEvidence func(digest string) bool
+
+	// pendingExits holds containers that stopped (false) or were removed
+	// (true) before the startup check recorded them: containerID -> removed.
+	// Non-nil only while that check is pending.
+	pendingExits map[string]bool
 }
 
 type ctrRec struct {
@@ -57,10 +67,18 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: digest, argv: argv}
+	removed, exited := b.pendingExits[containerID]
+	delete(b.pendingExits, containerID)
+	if !removed {
+		b.containers[containerID] = ctrRec{sandboxID: sandboxID, name: name, digest: digest, argv: argv}
+	}
 
 	rec := b.admitted[sandboxID]
 	rec.Record(containerID, digest, argv, env, mounts...)
+	if exited {
+		rec.Exited(containerID)
+	}
+	rec.Bound(b.needsVariableEvidence)
 	b.admitted[sandboxID] = rec
 
 	// A container implies its sandbox, so a record arriving before (or without)
@@ -68,15 +86,64 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 	b.sandboxes[sandboxID] = struct{}{}
 }
 
-// remove evicts a stopped container from caller resolution only. The sandbox's
-// admission record keeps it: a stopped container must not bind a caller, but it
+// stop marks a stopped container exited in its sandbox's record, so its
+// per-variable env evidence is the first to be evicted while it awaits
+// removal. The record keeps the admission.
+func (b *admissionInventory) stop(containerID string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.noteExit(containerID, false)
+	b.exited(containerID)
+}
+
+// remove evicts a removed container from caller resolution only. The sandbox's
+// admission record keeps it: a removed container must not bind a caller, but it
 // still ran here. That includes an unresolved digest, so a container
 // that stops before one resolves closes its sandbox's answer for the sandbox's
 // life.
 func (b *admissionInventory) remove(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.noteExit(containerID, true)
+	b.exited(containerID)
 	delete(b.containers, containerID)
+}
+
+// awaitRecovery holds stop and removal events until recovered, so the startup
+// check does not record a container that already exited as running.
+func (b *admissionInventory) awaitRecovery() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.pendingExits == nil {
+		b.pendingExits = map[string]bool{}
+	}
+}
+
+// recovered ends awaitRecovery once the startup check has recorded every
+// container it was handed.
+func (b *admissionInventory) recovered() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pendingExits = nil
+}
+
+// noteExit requires b.mu.
+func (b *admissionInventory) noteExit(containerID string, removed bool) {
+	if b.pendingExits != nil {
+		b.pendingExits[containerID] = b.pendingExits[containerID] || removed
+	}
+}
+
+// exited requires b.mu.
+func (b *admissionInventory) exited(containerID string) {
+	c, ok := b.containers[containerID]
+	if !ok {
+		return
+	}
+	if rec, ok := b.admitted[c.sandboxID]; ok {
+		rec.Exited(containerID)
+		b.admitted[c.sandboxID] = rec
+	}
 }
 
 // recordSandbox notes a live pod sandbox (RunPodSandbox / Synchronize).
@@ -168,7 +235,7 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 	if _, ok := b.sandboxes[sandboxID]; !ok {
 		return nil, nil, false, nil
 	}
-	digests, containers, err := b.admitted[sandboxID].Snapshot()
+	digests, containers, err := b.admitted[sandboxID].Snapshot(b.needsVariableEvidence)
 	if err != nil {
 		return nil, nil, true, fmt.Errorf("sandbox %s %w", sandboxID, err)
 	}
