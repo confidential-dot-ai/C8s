@@ -3,6 +3,7 @@
 #
 # Usage:
 #   scripts/coverage-gate.sh run [profile]        run tests, write coverage profile
+#   scripts/coverage-gate.sh kernel <profile>     add real kernel verity coverage
 #   scripts/coverage-gate.sh total <profile>      print total coverage (e.g. "67.94")
 #
 # The profile is produced with -coverpkg=./... so packages without their own
@@ -47,11 +48,29 @@ run)
   [ "${#test_packages[@]}" -gt 0 ] || { echo "no Go packages to measure" >&2; exit 1; }
   go test "${test_packages[@]}" -count=1 -coverprofile="$profile" -coverpkg=./...
   ;;
+kernel)
+  # Older base revisions have no verity harness. Keep the same measurement
+  # procedure for head and base without inventing tests on the older tree.
+  if [ ! -f node-guest-image/tests/mount-verity-test.sh ]; then
+    echo "no kernel verity harness on this revision"
+    exit 0
+  fi
+  [ -s "$profile" ] || { echo "run ordinary coverage first" >&2; exit 1; }
+  kernel_scratch=$(mktemp -d)
+  trap 'rm -rf "$kernel_scratch"' EXIT
+  mkdir "$kernel_scratch/profiles"
+  go test -c -coverpkg=./... -o "$kernel_scratch/nri-verity.test" ./internal/cmds/nri-image-policy
+  sudo -n bash node-guest-image/tests/mount-verity-test.sh "$kernel_scratch/nri-verity.test" "$kernel_scratch/profiles"
+  # percent() unions covered blocks from duplicate records; retain one header.
+  for kernel_profile in "$kernel_scratch"/profiles/*.out; do
+    tail -n +2 "$kernel_profile" >> "$profile"
+  done
+  ;;
 total)
   percent "$profile" | awk '$3=="TOTAL" {print $1}'
   ;;
 *)
-  echo "usage: $0 {run|total} [profile]" >&2
+  echo "usage: $0 {run|kernel|total} [profile]" >&2
   exit 2
   ;;
 esac

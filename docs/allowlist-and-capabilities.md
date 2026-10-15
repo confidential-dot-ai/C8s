@@ -737,4 +737,7 @@ sudo bash node-guest-image/tests/mount-verity-test.sh /tmp/nri-verity.test
 
 The script creates private mounts and disposable images, exercises fs-verity
 source replacement and blocking admission, and checks a real dm-verity table.
-It does not boot an attested node or deploy a GPU workload.
+CI also runs these kernel tests and merges their instrumented coverage into
+the coverage gate. Pass an existing coverage directory as the script's second
+argument when using a test binary built with `-coverpkg=./...` to collect the
+two profiles. It does not boot an attested node or deploy a GPU workload.

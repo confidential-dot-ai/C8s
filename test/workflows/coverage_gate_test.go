@@ -140,3 +140,96 @@ func TestWorkflow(t *testing.T) { t.Fatal("workflow harness intentionally fails"
 		})
 	}
 }
+
+func TestKernelCoverageMergesProfilesAndPropagatesFailure(t *testing.T) {
+	script, err := filepath.Abs("../../scripts/coverage-gate.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const header = "mode: set\n"
+	const blocks = "fixture/a.go:1.1,1.2 1 0\nfixture/a.go:2.1,2.2 1 1\nfixture/a.go:3.1,3.2 1 0\nfixture/untested.go:1.1,1.2 1 0\n"
+	for _, name := range []string{"older base without harness", "kernel failure", "merged profiles"} {
+		t.Run(name, func(t *testing.T) {
+			fixture := t.TempDir()
+			files := map[string]string{
+				"head.out": header + blocks,
+				"fs.out":   header + "fixture/a.go:1.1,1.2 1 1\nfixture/a.go:2.1,2.2 1 0\n",
+				"dm.out":   header + "fixture/a.go:3.1,3.2 1 1\nfixture/untested.go:1.1,1.2 1 0\n",
+				"bin/go":   "#!/bin/sh\nprintf '%s\\n' \"$@\" > build.args\n",
+				"bin/sudo": `#!/bin/sh
+if [ "$C8S_TEST_KERNEL_FAIL" = yes ]; then
+ echo "kernel failure sentinel" >&2
+ exit 17
+fi
+for directory do :; done
+cp fs.out "$directory/fs-verity.out"
+cp dm.out "$directory/dm-verity.out"
+`,
+			}
+			if name != "older base without harness" {
+				files["node-guest-image/tests/mount-verity-test.sh"] = "# harness location sentinel\n"
+			}
+			for path, contents := range files {
+				full := filepath.Join(fixture, path)
+				if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(full, []byte(contents), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("PATH", filepath.Join(fixture, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+			t.Setenv("C8S_TEST_KERNEL_FAIL", "no")
+			if name == "kernel failure" {
+				t.Setenv("C8S_TEST_KERNEL_FAIL", "yes")
+			}
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", string(body), script, "kernel", "head.out")
+			cmd.Dir = fixture
+			log, err := cmd.CombinedOutput()
+			raw, readErr := os.ReadFile(filepath.Join(fixture, "head.out"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if name == "kernel failure" {
+				if err == nil || !strings.Contains(string(log), "kernel failure sentinel") {
+					t.Fatalf("lost kernel failure: %v\n%s", err, log)
+				}
+				if string(raw) != header+blocks {
+					t.Fatal("failed kernel run changed coverage")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("kernel coverage: %v\n%s", err, log)
+			}
+			if name == "older base without harness" {
+				if string(raw) != header+blocks {
+					t.Fatal("invented coverage for old base")
+				}
+				if _, err := os.Stat(filepath.Join(fixture, "build.args")); !os.IsNotExist(err) {
+					t.Fatal("built absent kernel harness")
+				}
+				return
+			}
+			args, err := os.ReadFile(filepath.Join(fixture, "build.args"))
+			if err != nil || !strings.Contains(string(args), "-coverpkg=./...") {
+				t.Fatalf("kernel binary not instrumented across production packages: %s %v", args, err)
+			}
+			if strings.Count(string(raw), "mode: set") != 1 {
+				t.Fatal("merged profile has multiple headers")
+			}
+			cmd = exec.CommandContext(t.Context(), "bash", "-c", string(body), script, "total", "head.out")
+			cmd.Dir = fixture
+			total, err := cmd.CombinedOutput()
+			// Three of four distinct statements ran. Duplicate uncovered records must
+			// not erase ordinary coverage, and untested production stays in the total.
+			if err != nil || strings.TrimSpace(string(total)) != "75.00" {
+				t.Fatalf("wrong profile union: %q %v", total, err)
+			}
+		})
+	}
+}
