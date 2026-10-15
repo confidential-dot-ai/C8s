@@ -216,27 +216,32 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	return warnings
 }
 
-// componentBinaries are the paths of the C8s binary in the component images:
-// /c8s in the operator and CDS images, /app/c8s in the mesh and volumed images.
-var componentBinaries = []string{secrets.InjectedBinary, "/app/c8s"}
+// componentInvocations are the executables the chart's component entries pin:
+// the C8s binary (/c8s in the operator and CDS images, /app/c8s in the mesh
+// and volumed images), attestation-api, and nginx through its entrypoint
+// script.
+var componentInvocations = [][]string{{secrets.InjectedBinary}, {"/app/c8s"}, {"/attestation-api"}, {"/docker-entrypoint.sh", "nginx"}}
 
-// componentFindings reports a container pinned to the C8s binary that leaves
-// its args or mounts to the pod. Either lets a pod point the component at code
-// of its choosing: --kubeconfig runs an exec credential plugin, and a volume
-// replaces what the binary reads. A shape of the sidecars the webhook injects
-// may leave its args open, since they are per pod, but not its mounts.
+// componentFindings reports a container pinned to a component executable that
+// leaves its args or mounts to the pod. Either lets a pod point the component
+// at code of its choosing: --kubeconfig runs an exec credential plugin, nginx's
+// -g loads a module, and a volume replaces what the binary reads. A shape of
+// the sidecars the webhook injects may leave its args open, since they are per
+// pod, but not its mounts.
 func componentFindings(name string, c pkgallowlist.Container) []finding {
-	if c.Command.Policy != pkgallowlist.PolicyExact || !slices.Contains(componentBinaries, c.Command.Argv[0]) {
+	if c.Command.Policy != pkgallowlist.PolicyExact || !slices.ContainsFunc(componentInvocations, func(prefix []string) bool {
+		return len(c.Command.Argv) >= len(prefix) && slices.Equal(c.Command.Argv[:len(prefix)], prefix)
+	}) {
 		return nil
 	}
 	argv := c.Command.Argv
 	sidecar := len(argv) == 2 && argv[0] == secrets.InjectedBinary && slices.Contains(secrets.InjectedModes, argv[1])
 	var out []finding
 	if c.Args.Policy == pkgallowlist.PolicyAny && !sidecar {
-		out = append(out, errorf("workload %q container %s pins the C8s binary %q but leaves args any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves args any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
 	}
 	if c.Mounts.Policy == pkgallowlist.PolicyAny {
-		out = append(out, errorf("workload %q container %s pins the C8s binary %q but leaves mounts any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves mounts any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
 	}
 	return out
 }

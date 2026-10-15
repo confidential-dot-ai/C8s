@@ -524,7 +524,7 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 	}
 }
 
-// A container pinned to the C8s binary must pin its args and mounts too:
+// A container pinned to a component executable must pin its args and mounts too:
 // either left open lets a pod point the component at code of its choosing.
 // The injected sidecar shapes keep their per-pod args, not open mounts.
 func TestLintComponentShapes(t *testing.T) {
@@ -544,13 +544,16 @@ func TestLintComponentShapes(t *testing.T) {
 		{"old seeded shape", container(`["/c8s"]`, anyPolicy, anyPolicy), []string{"leaves args any", "leaves mounts any"}},
 		{"injected sidecar", container(`["/c8s","get-cert"]`, anyPolicy, exactMounts), nil},
 		{"injected sidecar with open mounts", container(`["/c8s","get-cert"]`, anyPolicy, anyPolicy), []string{"leaves mounts any"}},
-		{"not the C8s binary", container(`["/bin/sh","-c"]`, exactArgs, anyPolicy), nil},
+		{"attestation-api open args", container(`["/attestation-api"]`, anyPolicy, exactMounts), []string{"leaves args any"}},
+		{"nginx open mounts", container(`["/docker-entrypoint.sh","nginx"]`, exactArgs, anyPolicy), []string{"leaves mounts any"}},
+		{"another entrypoint script", container(`["/docker-entrypoint.sh","postgres"]`, anyPolicy, anyPolicy), nil},
+		{"not a component executable", container(`["/bin/sh","-c"]`, exactArgs, anyPolicy), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{"c":{"containers":[`+tc.container+`]}}}`)
 			var got []string
 			for _, f := range lintOffline(al) {
-				if f.err && strings.Contains(f.msg, "C8s binary") {
+				if f.err && strings.Contains(f.msg, "component executable") {
 					got = append(got, f.msg)
 				}
 			}

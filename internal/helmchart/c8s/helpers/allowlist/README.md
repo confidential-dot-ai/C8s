@@ -47,7 +47,10 @@ reaching the base. With `deriveComponents` off, the coverage guard in
 [validations.yaml](../../templates/validations.yaml) requires every container
 the chart runs a component's executable in to be admitted by an operator
 entry: `c8s.admitsShape` checks the entry's command, args and mount rules
-against the container's derived shape, leaving env aside.
+against the container's derived shape, leaving env aside. An entry pinned to
+a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
+`/docker-entrypoint.sh nginx`) with mounts `any`, or with args `any` outside a sidecar
+invocation, covers nothing: `c8s allowlist lint` refuses that shape.
 
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference

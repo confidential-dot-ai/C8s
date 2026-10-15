@@ -524,17 +524,17 @@ func TestChartSelfEntriesPinEntrypoints(t *testing.T) {
 }
 
 // An operator entry that pins a component's entrypoint and leaves args, env
-// and mounts open can start the component on a cold node, so it covers the
-// component for the fail-closed guard and reaches the base under that pin.
-// One that pins args and mounts too covers it as well
-// (TestChartPinnedOperatorEntryCoversComponent); for any other digest, pinning
-// another field keeps the entry seed-only (TestChartBaseSkipsPinnedEntries).
-func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
+// and mounts open reaches the base under that pin, never wider. It does not
+// cover the component for the fail-closed guard
+// (TestChartOperatorEntryPinMustMatchEntrypoint); one that pins args and
+// mounts does (TestChartPinnedOperatorEntryCoversComponent).
+func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	p := "nriImagePolicy.bootstrapAllowlist.workloads.c8s-operator.containers[0]."
 	out, err := helmTemplate(t,
 		"--set-string", "image.digest="+opD,
 		"--set", "nriImagePolicy.policy.mode=fail-closed",
+		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set-string", p+"digest="+opD,
 		"--set-string", p+"command.policy=exact",
 		"--set-string", p+"command.argv[0]=/c8s",
@@ -542,7 +542,7 @@ func TestChartOperatorEntrypointEntryCoversComponent(t *testing.T) {
 		"--set-string", p+"mounts.policy=any",
 	)
 	if err != nil {
-		t.Fatalf("helm template should render with the component covered by an entrypoint-pinned entry: %v\n%s", err, out)
+		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
 	index := base.BuildIndex()
@@ -629,8 +629,9 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 
 // An open-args entry pinned to another executable does not cover the
 // component: it would reach the base and still deny the component on its
-// own node. Two open-args entries pinning one digest differently cannot both
-// reach the base, so the render fails.
+// own node. One pinned to the C8s binary does not cover it either: allowlist
+// lint refuses that shape. Two open-args entries pinning one digest
+// differently cannot both reach the base, so the render fails.
 func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 	const opD = "sha256:1111000000000000000000000000000000000000000000000000000000000011"
 	entry := func(name, argv0 string) []string {
@@ -644,14 +645,17 @@ func TestChartOperatorEntryPinMustMatchEntrypoint(t *testing.T) {
 		}
 	}
 	base := []string{"--set-string", "image.digest=" + opD, "--set", "nriImagePolicy.policy.mode=fail-closed"}
-	out, err := helmTemplate(t, append(base, entry("c8s-operator", "/bin/sh")...)...)
-	if err == nil {
-		t.Fatalf("helm template succeeded with the component covered only by an entry pinned to /bin/sh\n%s", out)
+	for _, argv0 := range []string{"/bin/sh", "/c8s"} {
+		out, err := helmTemplate(t, append(base, entry("c8s-operator", argv0)...)...)
+		if err == nil {
+			t.Fatalf("helm template succeeded with the component covered only by an open entry pinned to %s\n%s", argv0, out)
+		}
+		if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
+			t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
+		}
 	}
-	if kind := parseValidationErrorKind(out); kind != "uncovered_component_digest" {
-		t.Fatalf("validation error kind = %q, want uncovered_component_digest\n%s", kind, out)
-	}
-	out, err = helmTemplate(t, append(append(base, entry("c8s-operator", "/c8s")...), entry("c8s-operator-sh", "/bin/sh")...)...)
+	derived := append(slices.Clone(base), "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
+	out, err := helmTemplate(t, append(append(derived, entry("c8s-operator", "/c8s")...), entry("c8s-operator-sh", "/bin/sh")...)...)
 	if err == nil || !strings.Contains(out, "incomparable commands") {
 		t.Fatalf("incomparable pins for one digest must fail the render: err=%v\n%s", err, out)
 	}
