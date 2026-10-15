@@ -419,10 +419,11 @@ type bakedContainer struct {
 }
 
 // bakedVariable is one variable a manifest sets. literal is false for a
-// value taken from a reference (fieldRef, secretKeyRef, ...), unknown here.
+// value taken from a reference (fieldRef, secretKeyRef, ...), unknown here;
+// optional marks a key reference the kubelet skips when the key is missing.
 type bakedVariable struct {
-	name, value string
-	literal     bool
+	name, value       string
+	literal, optional bool
 }
 
 func (c bakedContainer) names() []string {
@@ -439,6 +440,7 @@ func (c bakedContainer) names() []string {
 // the seed matches present is set by the manifest or the runtime. A variable
 // the seed pins exact and the manifest leaves unset is the image's. A value
 // the kubelet expands is refused under an exact pin: its result is unknown.
+// An optional key reference is refused: whether it sets its variable is unknown.
 func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 	if seed.Command.Policy == pkgallowlist.PolicyExact {
 		if len(c.argv) < len(seed.Command.Argv) || !slices.Equal(c.argv[:len(seed.Command.Argv)], seed.Command.Argv) {
@@ -454,7 +456,7 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 	exact := seed.Env.ExactValues()
 	set := make(map[string]bool, len(c.env))
 	for _, v := range c.env {
-		if _, listed := seed.Env.Variables[v.name]; !listed {
+		if _, listed := seed.Env.Variables[v.name]; !listed || v.optional {
 			return false
 		}
 		if want, pinned := exact[v.name]; pinned && (!v.literal || kubeletExpands(v.value) || v.value != want) {
@@ -468,6 +470,17 @@ func seedLaunches(seed pkgallowlist.Container, c bakedContainer) bool {
 		}
 	}
 	return true
+}
+
+func optionalReference(source *corev1.EnvVarSource) bool {
+	if source == nil {
+		return false
+	}
+	if ref := source.SecretKeyRef; ref != nil && ref.Optional != nil && *ref.Optional {
+		return true
+	}
+	ref := source.ConfigMapKeyRef
+	return ref != nil && ref.Optional != nil && *ref.Optional
 }
 
 // kubeletExpands reports whether the kubelet rewrites value before the
@@ -527,7 +540,7 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			container.argv = slices.Concat(pin.argv, c.Args)
 		}
 		for _, e := range c.Env {
-			container.env = append(container.env, bakedVariable{name: e.Name, value: e.Value, literal: e.ValueFrom == nil})
+			container.env = append(container.env, bakedVariable{name: e.Name, value: e.Value, literal: e.ValueFrom == nil, optional: optionalReference(e.ValueFrom)})
 		}
 		baked.containers = append(baked.containers, container)
 	}

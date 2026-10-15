@@ -717,7 +717,11 @@ adds a variable; a loader variable such as `LD_PRELOAD` is never listed, so
 `match` refuses it. `c8s install --resolve-digests` refuses an image whose
 config sets other variables than `imageEnv`, and `c8s allowlist lint` reports
 a component entry whose `env` is `any`, or whose `match` lists a loader
-variable as `present`, as an error. An operator-authored `workloads` entry of
+variable as `present`, as an error. Lint recognizes a component by its
+repository path, such as `confidential-dot-ai/c8s-operator`, under any registry.
+A mirror that keeps only the last path element, such as
+`123456789012.dkr.ecr.us-east-1.amazonaws.com/c8s-operator`, gets a warning
+instead, which `upload` and `apply` accept. An operator-authored `workloads` entry of
 the same name replaces it whole in the rendered seed. The same component
 entries feed the host plugin's base allowlist, as does every operator entry
 that leaves args unconstrained, mounts `any` or `confined` and its
@@ -746,13 +750,25 @@ is rebuilt. After an image bump, delete the old digest's entry
 component entry with `env: any` as an error, and refuses every entry that
 pins its command, leaves args open and keeps `mounts: any`, whoever wrote
 it: a stored component entry, an operator `bootstrapAllowlist` entry, or a
-hand-written workload entry of that shape. `upload` refuses a document that
-holds one, and `apply` refuses one among the entries it applies, but neither
-checks the entries already stored, and `edit` does not lint. After
-upgrading, lint the live document (`c8s allowlist export | c8s allowlist
-lint -`), replace the `env` of each entry it reports with the match from the
-rendered seed (ConfigMap `c8s-cds-allowlist-seed`), and edit its mounts to
-`confined` with a `denyBelow` list. A plugin built before the `confined`
+hand-written workload entry of that shape. It warns on a component image
+under `command: any`, the shape stored before the entrypoint pins. `upload`
+refuses a document that holds an error, and `apply` refuses one among the
+entries it applies, but neither checks the entries already stored, and
+`edit` does not lint. To migrate the stored entries after upgrading:
+
+1. Lint the live document: `c8s allowlist export | c8s allowlist lint -`.
+2. For each component entry it reports, error or warning, replace the
+   entry's whole container list with the containers of the same-named entry
+   in the rendered seed (ConfigMap `c8s-cds-allowlist-seed`). The seed holds
+   one container per invocation, each with its own env match: `operator`
+   requires `POD_NAME`, the injected fetchers `C8S_WORKLOAD_ID`,
+   `C8S_POD_NAME`, `C8S_POD_UID` and `HOST_IP`. Replacing only one
+   container's `env` denies the other invocations.
+3. Keep the fields you reviewed at the entry level, such as `label` and
+   `secrets`, and apply the entry with `c8s allowlist edit`.
+
+On a mirror that flattens repository paths, every component entry gets a
+warning rather than an error; treat each one as reported. A plugin built before the `confined`
 policy cannot parse a served document that carries one such entry, and it
 does not stop admission. A running plugin keeps enforcing the last document
 it pulled, which may admit more than the new one: the store's older entries,
