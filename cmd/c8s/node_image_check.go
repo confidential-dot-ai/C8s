@@ -118,8 +118,8 @@ func checkNodeImages(outputDir, layoutDir string) error {
 }
 
 // layoutImageConfig reads the config of the image digest names from the OCI
-// layout at dir, choosing the linux/amd64 manifest of an index, through
-// nested indexes. Every blob is checked against its digest.
+// layout at dir: the first linux/amd64 image at or below it, through nested
+// indexes. Every blob is checked against its digest.
 func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
 	var layout ocispec.Index
 	if err := readJSON(filepath.Join(dir, "index.json"), &layout); err != nil {
@@ -128,41 +128,32 @@ func layoutImageConfig(dir, digest string) (*crane.ImageConfig, error) {
 	if !slices.ContainsFunc(layout.Manifests, func(d ocispec.Descriptor) bool { return d.Digest.String() == digest }) {
 		return nil, fmt.Errorf("OCI layout %s does not hold %s", dir, digest)
 	}
-	manifest, err := layoutManifest(dir, digest)
-	if err != nil {
-		return nil, err
-	}
-	if manifest.Config.Digest == "" {
-		return nil, fmt.Errorf("image %s has no config", digest)
-	}
-	var config crane.ImageConfig
-	if err := readBlob(dir, manifest.Config.Digest.String(), &config); err != nil {
-		return nil, err
-	}
-	return &config, nil
-}
-
-// maxIndexDepth bounds the indexes layoutManifest descends through, so a
-// cyclic layout fails instead of recursing forever.
-const maxIndexDepth = 8
-
-// layoutManifest reads the image manifest digest names in the layout at dir:
-// the first linux/amd64 manifest below it, through nested indexes. An index
-// entry may omit its platform when it points to another index.
-func layoutManifest(dir, digest string) (*ocispec.Manifest, error) {
-	manifest, err := findManifest(dir, digest, maxIndexDepth)
+	config, err := findImageConfig(dir, digest, maxIndexDepth)
 	if err != nil {
 		return nil, fmt.Errorf("image %s: %w", digest, err)
 	}
-	if manifest == nil {
-		return nil, fmt.Errorf("image %s has no linux/%s manifest", digest, nodeImageArchitecture)
+	if config == nil {
+		return nil, fmt.Errorf("image %s has no linux/%s image", digest, nodeImageArchitecture)
 	}
-	return manifest, nil
+	return &config.ImageConfig, nil
 }
 
-// findManifest returns the first linux/amd64 manifest at or below digest, nil
-// when there is none, descending at most depth indexes.
-func findManifest(dir, digest string, depth int) (*ocispec.Manifest, error) {
+// maxIndexDepth bounds the indexes findImageConfig descends through, so a
+// cyclic layout fails instead of recursing forever.
+const maxIndexDepth = 8
+
+// platformConfig is an image config with the platform it declares.
+type platformConfig struct {
+	crane.ImageConfig
+	OS           string `json:"os"`
+	Architecture string `json:"architecture"`
+}
+
+// findImageConfig returns the config of the first linux/amd64 image at or
+// below digest, nil when there is none, descending at most depth indexes. The
+// platform is read from each image's config, since a single manifest carries
+// none and an index entry may omit it.
+func findImageConfig(dir, digest string, depth int) (*platformConfig, error) {
 	if depth == 0 {
 		return nil, fmt.Errorf("indexes nest deeper than %d levels", maxIndexDepth)
 	}
@@ -173,17 +164,26 @@ func findManifest(dir, digest string, depth int) (*ocispec.Manifest, error) {
 	if err := readBlob(dir, digest, &blob); err != nil {
 		return nil, err
 	}
-	if len(blob.Manifests) == 0 {
-		return &blob.Manifest, nil
+	if blob.Manifests == nil && !isIndexMediaType(blob.MediaType) {
+		if blob.Config.Digest == "" {
+			return nil, fmt.Errorf("manifest %s has no config", digest)
+		}
+		var config platformConfig
+		if err := readBlob(dir, blob.Config.Digest.String(), &config); err != nil {
+			return nil, err
+		}
+		if config.OS != "linux" || config.Architecture != nodeImageArchitecture {
+			return nil, nil
+		}
+		return &config, nil
 	}
 	for _, d := range blob.Manifests {
-		amd64 := d.Platform != nil && d.Platform.OS == "linux" && d.Platform.Architecture == nodeImageArchitecture
-		if !amd64 && (d.Platform != nil || !isIndexMediaType(d.MediaType)) {
+		if d.Platform != nil && (d.Platform.OS != "linux" || d.Platform.Architecture != nodeImageArchitecture) {
 			continue
 		}
-		manifest, err := findManifest(dir, d.Digest.String(), depth-1)
-		if manifest != nil || err != nil {
-			return manifest, err
+		config, err := findImageConfig(dir, d.Digest.String(), depth-1)
+		if config != nil || err != nil {
+			return config, err
 		}
 	}
 	return nil, nil

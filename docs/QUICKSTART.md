@@ -57,7 +57,9 @@ digest, so this is what lets a plain install satisfy the floor: without pinned
 digests the render fails closed rather than ship a cluster whose own components
 its image policy would deny. `crane` must be on PATH. To pin the digests
 yourself instead, pass `--resolve-digests=false` and supply them via
-`-f values.yaml`.
+`-f values.yaml`. Resolution also reads each pinned image's config, so with
+the router enabled it reaches the nginx registry (`docker.io` by default). On
+a restricted network, set `router.nginx.image.repository` to a mirror.
 
 Label the node that will run CDS so the chart's default `role: cds` selector
 matches (override `cds.node.selector` for a different label):

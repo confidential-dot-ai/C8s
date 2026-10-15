@@ -376,12 +376,21 @@ any workload pod:
    entry, the store was recreated, so copy the entry from
    `pre-upgrade.json` into a name-keyed file and apply it with `c8s
    allowlist apply`. Restore every other operator-added workload entry the
-   same way; the chart re-seeds the component entries. Then apply the
-   derived entry beside the old one, so pods started before the upgrade
-   keep matching the old entry.
+   same way. The chart re-seeds only the component entries of the digests
+   it renders; the old component entries come back through the
+   compatibility values file ([Migrate stored component
+   entries](allowlist-and-capabilities.md#migrate-stored-component-entries)).
+   Then apply the derived entry beside the old one, so pods started before
+   the upgrade keep matching the old entry.
 5. Confirm both entries are stored: `c8s allowlist get OLD_NAME` and `c8s
    allowlist get NEW_NAME` each return the entry with its `secrets` block.
 6. Delete the old entry once no pod started before the upgrade runs.
+
+These steps restore entries only. The same CDS restart replaces the mesh CA,
+empties the secret store and resets the version nodes compare against; [Migrate
+stored component
+entries](allowlist-and-capabilities.md#migrate-stored-component-entries) orders
+the whole recovery.
 
 Any later CDS Pod recreation on an `emptyDir` store loses these entries
 again; re-apply them from your files. On measured nodes, the store starts

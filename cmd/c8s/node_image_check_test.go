@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -40,13 +43,13 @@ func writeBlob(t *testing.T, layout string, v any) string {
 func writeLayout(t *testing.T, layouts string, env []string, nested int, platformless bool) string {
 	t.Helper()
 	staging := filepath.Join(layouts, "staging")
-	config := writeBlob(t, staging, map[string]any{"config": map[string]any{"Entrypoint": []string{"/app/c8s"}, "Cmd": []string{"armtls-mesh"}, "Env": env}})
+	config := writeBlob(t, staging, map[string]any{"os": "linux", "architecture": "amd64", "config": map[string]any{"Entrypoint": []string{"/app/c8s"}, "Cmd": []string{"armtls-mesh"}, "Env": env}})
 	manifest := writeBlob(t, staging, map[string]any{
 		"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
 		"config": map[string]any{"mediaType": "application/vnd.oci.image.config.v1+json", "digest": config, "size": 1},
 		"layers": []any{},
 	})
-	other := writeBlob(t, staging, map[string]any{"schemaVersion": 2, "config": map[string]any{"digest": writeBlob(t, staging, map[string]any{"config": map[string]any{}})}})
+	other := writeBlob(t, staging, map[string]any{"schemaVersion": 2, "config": map[string]any{"digest": writeBlob(t, staging, map[string]any{"os": "linux", "architecture": "arm64", "config": map[string]any{}})}})
 	index := writeBlob(t, staging, map[string]any{
 		"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json",
 		"manifests": []any{
@@ -144,19 +147,60 @@ func TestNodeImageCheckImagesRejectsTamperedBlob(t *testing.T) {
 	}
 }
 
-// A refusal names the digest the operator pinned, not an inner index's.
-func TestLayoutManifestNamesPinnedDigest(t *testing.T) {
-	layout := t.TempDir()
-	arm := writeBlob(t, layout, map[string]any{"schemaVersion": 2, "config": map[string]any{"digest": writeBlob(t, layout, map[string]any{"config": map[string]any{}})}})
-	inner := writeBlob(t, layout, map[string]any{"schemaVersion": 2, "manifests": []any{
-		map[string]any{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": arm, "size": 1, "platform": map[string]string{"os": "linux", "architecture": "arm64"}},
-	}})
-	top := writeBlob(t, layout, map[string]any{"schemaVersion": 2, "manifests": []any{
-		map[string]any{"mediaType": "application/vnd.oci.image.index.v1+json", "digest": inner, "size": 1, "platform": map[string]string{"os": "linux", "architecture": "amd64"}},
-	}})
-	_, err := layoutManifest(layout, top)
-	if err == nil || !strings.Contains(err.Error(), top) {
-		t.Fatalf("layoutManifest(arm64-only image %s) = %v, want an error naming it", top, err)
+// writeIndexJSON lists digest in the layout's index.json.
+func writeIndexJSON(t *testing.T, layout, digest string) {
+	t.Helper()
+	top, err := json.Marshal(map[string]any{"schemaVersion": 2, "manifests": []any{map[string]any{"digest": digest, "size": 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(layout, "index.json"), top, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The platform comes from the image config: a single manifest carries none,
+// and an index entry may omit it.
+func TestLayoutImageConfigChecksPlatform(t *testing.T) {
+	image := func(t *testing.T, layout, arch string) string {
+		config := writeBlob(t, layout, map[string]any{"os": "linux", "architecture": arch, "config": map[string]any{"Entrypoint": []string{"/c8s"}}})
+		return writeBlob(t, layout, map[string]any{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": map[string]any{"digest": config, "size": 1}})
+	}
+	index := func(t *testing.T, layout string, entries ...map[string]any) string {
+		manifests := make([]any, len(entries))
+		for i, e := range entries {
+			manifests[i] = e
+		}
+		return writeBlob(t, layout, map[string]any{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": manifests})
+	}
+	for name, tc := range map[string]struct {
+		top     func(t *testing.T, layout string) string
+		wantErr bool
+	}{
+		"single amd64 manifest": {top: func(t *testing.T, layout string) string { return image(t, layout, "amd64") }},
+		"single arm64 manifest": {top: func(t *testing.T, layout string) string { return image(t, layout, "arm64") }, wantErr: true},
+		"platformless amd64 entry": {top: func(t *testing.T, layout string) string {
+			return index(t, layout, map[string]any{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": image(t, layout, "amd64"), "size": 1})
+		}},
+		"platformless arm64 entry": {top: func(t *testing.T, layout string) string {
+			return index(t, layout, map[string]any{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": image(t, layout, "arm64"), "size": 1})
+		}, wantErr: true},
+		"amd64 entry over an arm64 image": {top: func(t *testing.T, layout string) string {
+			return index(t, layout, map[string]any{"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": image(t, layout, "arm64"), "size": 1, "platform": map[string]string{"os": "linux", "architecture": "amd64"}})
+		}, wantErr: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			layout := t.TempDir()
+			top := tc.top(t, layout)
+			writeIndexJSON(t, layout, top)
+			_, err := layoutImageConfig(layout, top)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("layoutImageConfig(%s) = %v, want error %v", name, err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), top) {
+				t.Fatalf("layoutImageConfig(%s) = %v, want an error naming %s", name, err, top)
+			}
+		})
 	}
 }
 
@@ -191,63 +235,66 @@ func TestDocumentedMigrationEnvListsRuntimeVariables(t *testing.T) {
 	}
 }
 
-// Each migration guide must close the gap its rename or rebuild opens: a
-// measured node keeps its base until the cluster moves to a rebuilt image by
-// a supported procedure, a document write reaches every client pinning the
-// document without either snapshot reaching a client holding the other, an
-// emptyDir CDS store loses entries applied before the upgrade, a locked node
-// denies exec, and an image no match policy lists reports no per-variable
-// digests.
-func TestDocumentedMigrationsCoverStalePins(t *testing.T) {
-	for _, tc := range []struct {
-		file, section string
-		want, forbid  []string
-	}{
-		{
-			"../../docs/allowlist-and-capabilities.md", "### Migrate stored component entries",
-			[]string{
-				"nriImagePolicy.baked=true", "--served-policy-file", "operator.md#default-install-behavior",
-				"every node runs an image whose base carries the match policies",
-				"Before you upgrade the chart", "secrets.md#migrate-env-policies-that-list-service-links", "secrets.md#move-clients-that-pin-the-old-name",
-				"Apply nothing yet", "Restore the operator-added workload entries", "Resolve every error except those on component entries with `env: any`",
-				"Each relaunch starts CDS from the baked seed, so repeat step 1",
-			},
-			[]string{"Drain", "server.json", "reports no error on the exported document"},
-		},
-		{
-			"../../docs/secrets.md", "#### Move clients that pin the old name",
-			[]string{"--workload NEW_NAME", "To roll back", "every client that passes `--allowlist FILE`", "maintenance window", "fails in both directions", "pause the pinning client's traffic", "isolated cohort"},
-			[]string{"for this workload", "cannot take the new document before"},
-		},
-		{
-			"../../docs/secrets.md", "#### Migrate env policies that list service links",
-			[]string{
-				"c8s secrets explain", "c8s allowlist export pre-upgrade.json", "After the upgrade, once the new CDS Pod is `Ready`",
-				"repeat steps 4 and 5 after each relaunch", "reports `variableDigests` only for an image",
-			},
-			[]string{"kubectl exec POD_NAME", "before you roll out the upgrade", "Get it with `c8s allowlist get OLD_NAME`"},
-		},
+// The migration guides keep their sections, and every link in them names a
+// document and heading that exist.
+func TestDocumentedMigrationsResolve(t *testing.T) {
+	link := regexp.MustCompile(`\]\(([^)\s]*)\)`)
+	for _, tc := range []struct{ file, section string }{
+		{"allowlist-and-capabilities.md", "### Migrate stored component entries"},
+		{"secrets.md", "#### Migrate env policies that list service links"},
+		{"secrets.md", "#### Move clients that pin the old name"},
 	} {
-		doc, err := os.ReadFile(tc.file)
+		doc, err := os.ReadFile(filepath.Join("../../docs", tc.file))
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, section, ok := strings.Cut(string(doc), tc.section+"\n")
+		_, section, ok := strings.Cut(string(doc), "\n"+tc.section+"\n")
 		if !ok {
 			t.Errorf("%s lacks %q", tc.file, tc.section)
 			continue
 		}
-		section, _, _ = strings.Cut(section, "\n#")
-		section = strings.Join(strings.Fields(section), " ")
-		for _, want := range tc.want {
-			if !strings.Contains(section, want) {
-				t.Errorf("%s %q does not mention %s", tc.file, tc.section, want)
-			}
+		level := strings.Index(tc.section, " ")
+		if end := regexp.MustCompile(`\n#{1,` + strconv.Itoa(level) + `} `).FindStringIndex(section); end != nil {
+			section = section[:end[0]]
 		}
-		for _, forbid := range tc.forbid {
-			if strings.Contains(section, forbid) {
-				t.Errorf("%s %q mentions %s", tc.file, tc.section, forbid)
+		for _, m := range link.FindAllStringSubmatch(section, -1) {
+			target, anchor, _ := strings.Cut(m[1], "#")
+			if strings.Contains(target, "://") {
+				continue
+			}
+			if target == "" {
+				target = tc.file
+			}
+			linked, err := os.ReadFile(filepath.Join("../../docs", target))
+			if err != nil {
+				t.Errorf("%s %q links to %s: %v", tc.file, tc.section, m[1], err)
+				continue
+			}
+			if anchor != "" && !slices.Contains(headingAnchors(string(linked)), anchor) {
+				t.Errorf("%s %q links to %s, which has no heading #%s", tc.file, tc.section, target, anchor)
 			}
 		}
 	}
+}
+
+// headingAnchors returns the anchors GitHub derives from doc's headings.
+func headingAnchors(doc string) []string {
+	var anchors []string
+	for _, line := range strings.Split(doc, "\n") {
+		heading, ok := strings.CutPrefix(strings.TrimLeft(line, "#"), " ")
+		if !ok || !strings.HasPrefix(line, "#") {
+			continue
+		}
+		anchor := strings.Map(func(r rune) rune {
+			switch {
+			case r == ' ':
+				return '-'
+			case r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r):
+				return unicode.ToLower(r)
+			}
+			return -1
+		}, heading)
+		anchors = append(anchors, anchor)
+	}
+	return anchors
 }

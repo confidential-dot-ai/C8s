@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1453,12 +1454,28 @@ func TestSeedPinsRequiresImageEnvWithEntrypoint(t *testing.T) {
 	}
 }
 
+// A null imageEnv value removes a default variable, as Helm deletes null keys
+// from the values it renders.
+func TestSeedPinsDropsNullImageEnv(t *testing.T) {
+	nginx, err := routerNginxComponent(map[string]any{"router": map[string]any{"nginx": map[string]any{
+		"entrypoint": []any{"/docker-entrypoint.sh", "nginx"},
+		"imageEnv":   map[string]any{"PATH": "/bin", "NGINX_VERSION": nil},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"PATH": "/bin"}; !maps.Equal(nginx.imageEnv, want) {
+		t.Fatalf("routerNginxComponent(NGINX_VERSION: null).imageEnv = %v, want %v", nginx.imageEnv, want)
+	}
+}
+
 // An install refuses a component whose image does not start with the
 // entrypoint, or set the env, the chart seeds it under: the seed would deny
 // it on its own node.
 func TestInstallChecksComponentImages(t *testing.T) {
-	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}}
-	nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}}
+	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}, pinsPath: "c8sComponents[]"}
+	cds := c8sComponent{valuePrefix: "cds.image", repository: "ghcr.io/x/cds", entrypoint: []string{"/c8s", "cds"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}, pinsPath: "c8sComponents[]"}
+	nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}, entrypointCmd: true, pinsPath: "router.nginx"}
 	for name, tc := range map[string]struct {
 		component c8sComponent
 		config    string
@@ -1471,6 +1488,26 @@ func TestInstallChecksComponentImages(t *testing.T) {
 		"entrypoint and cmd together satisfy a longer pin": {
 			component: nginx,
 			config:    `{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["NGINX_VERSION=1.30.5","PATH=/usr/bin:/bin"]}}`,
+		},
+		"subcommand moved to CMD aborts": {
+			component: cds,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Cmd":["cds"],"Env":["PATH=/usr/bin:/bin"]}}`,
+			wantErr:   "c8sComponents[].entrypoint",
+		},
+		"nginx env mismatch names router.nginx": {
+			component: nginx,
+			config:    `{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx"],"Env":["PATH=/usr/bin:/bin"]}}`,
+			wantErr:   "router.nginx.imageEnv",
+		},
+		"nginx entrypoint mismatch names router.nginx": {
+			component: nginx,
+			config:    `{"config":{"Entrypoint":["/entrypoint.sh"],"Cmd":["nginx"],"Env":["NGINX_VERSION=1.30.5","PATH=/usr/bin:/bin"]}}`,
+			wantErr:   "router.nginx.entrypoint",
+		},
+		"unreachable registry names the repository setting": {
+			component: nginx,
+			config:    "unreachable",
+			wantErr:   "router.nginx.image.repository",
 		},
 		"moved entrypoint aborts": {
 			component: comp,
@@ -1495,7 +1532,11 @@ func TestInstallChecksComponentImages(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := newFakeBin(t)
-			f.tool(t, "crane", "echo '"+tc.config+"'")
+			if tc.config == "unreachable" {
+				f.tool(t, "crane", "echo 'dial tcp: i/o timeout' >&2; exit 1")
+			} else {
+				f.tool(t, "crane", "echo '"+tc.config+"'")
+			}
 			err := checkComponentImage(context.Background(), tc.component, testDigest)
 			if tc.wantErr == "" {
 				if err != nil {
