@@ -820,7 +820,8 @@ again.
 Set `nriImagePolicy.measurePolicies: true` to turn it on. The chart renders
 it as `allowlist.pull.measure_policies` in the plugin's boot config, and with
 `nriImagePolicy.baked` patches it into the node image's config through
-`set-cds-pins`. Under `node.baked` the image owns the plugin config, so the
+`set-cds-pins`; a plugin from a node image that predates the key ignores it.
+Under `node.baked` the image owns the plugin config, so the
 chart refuses the value. The key requires `workload_claims.socket_dir` to be
 the default runtime directory, and is a no-op on SEV-SNP, which has no runtime
 register. On TDX without the launch operator key, or with a journal that no
