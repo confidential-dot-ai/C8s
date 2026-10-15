@@ -34,6 +34,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/time/rate"
 
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/server"
@@ -154,7 +155,11 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
-	Backend          Backend // over-encrypted application backend (nil => EchoBackend)
+	// MeasuredPoliciesFile is the node's journal of allowlist policies
+	// extended into RTMR[3] (internal/policymeasure). Both bundles carry it,
+	// read after the evidence; empty omits it.
+	MeasuredPoliciesFile string
+	Backend              Backend // over-encrypted application backend (nil => EchoBackend)
 	// SessionTTL is the idle TTL: a session unused for this long is dropped.
 	SessionTTL time.Duration
 	// SessionMaxAge is the absolute session lifetime from establishment,
@@ -490,17 +495,18 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
-		Version:       types.BindingAttestPQ,
-		Platform:      platform,
-		Generation:    generation,
-		Nonce:         req.Nonce,
-		Evidence:      evidence,
-		CDSCertPEM:    string(identity.bundlePEM),
-		FrontDoorMode: s.cfg.FrontDoorMode,
-		XWingEK:       req.XWingEK,
-		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
-		SessionID:     id,
-		IdentityProof: proof,
+		Version:          types.BindingAttestPQ,
+		Platform:         platform,
+		Generation:       generation,
+		Nonce:            req.Nonce,
+		Evidence:         evidence,
+		CDSCertPEM:       string(identity.bundlePEM),
+		FrontDoorMode:    s.cfg.FrontDoorMode,
+		XWingEK:          req.XWingEK,
+		XWingCT:          base64.RawURLEncoding.EncodeToString(xwingCT),
+		SessionID:        id,
+		IdentityProof:    proof,
+		MeasuredPolicies: s.measuredPolicies(),
 	})
 }
 
@@ -564,7 +570,23 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		FrontDoorMode:     s.cfg.FrontDoorMode,
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
+		MeasuredPolicies:  s.measuredPolicies(),
 	})
+}
+
+// measuredPolicies reads the node's measured-policy journal. It is read after
+// the evidence, so it may run ahead of the quote; verifiers replay the longest
+// matching prefix. A verifier that needs the list fails closed without it, so
+// a read error only omits it.
+func (s *Server) measuredPolicies() []string {
+	if s.cfg.MeasuredPoliciesFile == "" {
+		return nil
+	}
+	policies, err := runtimemeasure.ReadJournal(s.cfg.MeasuredPoliciesFile)
+	if err != nil {
+		s.log.Warn("read measured policies", "error", err)
+	}
+	return policies
 }
 
 // meshIdentity loads the mesh credential set from the three files.

@@ -101,6 +101,12 @@ type AttestationBundle struct {
 	// observed on its own TLS connection and verify the transcript with that
 	// value — trusting the served field would let a relay substitute the leaf.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	// MeasuredPolicies (TDX node) lists the allowlist policies the router's
+	// node extended into RTMR[3] after the operator-key seed, in extend order,
+	// read after the evidence was produced: a verifier replays a prefix of it
+	// against the quote's RTMR[3]. Not part of any transcript; the replay
+	// authenticates it.
+	MeasuredPolicies []string `json:"measured_policies,omitempty"`
 }
 
 // HeaderField is one HTTP header field in a tunnel envelope, on the wire a
