@@ -573,6 +573,29 @@ the next image bump, or by editing the stored entry (`c8s allowlist edit`).
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
+When the router runs with digest-pinned nginx and c8s images and
+`deriveComponents` is on, the seed also carries `c8s-router-<first 12 hex of the
+entry's SHA-256>`: nginx plus the c8s image pinned to the exact `cds-attest`,
+`allowlist-proxy` and (as an init container) `acme` command lines the chart
+renders. It is the only entry the router pod matches, so the router's mesh leaf
+is stamped with that name. An upgrade that changes the router's image
+repositories, digests or arguments seeds a new entry beside the old one. CDS
+reads the seed only at start, so after an upgrade that rolls the router but not
+CDS, the router's leaf stays unnamed until CDS restarts or you add the new
+entry with `c8s allowlist apply`. Old entries persist like the
+digest-named ones; remove them with `c8s allowlist delete`. Remove a
+superseded `c8s-router-*` entry after the upgrade: when the two differ only in
+image repositories, both match the router pod, and so do two that differ only
+in `acme`'s arguments while `acme` is not running. CDS then issues the
+router's leaf unnamed. To supply your own
+router entry instead, add it under `bootstrapAllowlist.workloads` and set
+`router.attest.expectedWorkload` to its name; the chart then seeds no
+`c8s-router-*` entry and passes that name on unchecked. The chart does not
+check whether your entries match the router pod: an entry that also matches it
+beside the seeded one makes the match ambiguous, and CDS issues the router's
+leaf unnamed. An explicit `c8s-router-*` value must equal the seeded entry's
+name, or the render fails.
+
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes
 those digests from the local floors. Their first startup may wait for the
