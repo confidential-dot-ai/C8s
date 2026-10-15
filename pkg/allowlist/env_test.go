@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -166,7 +167,7 @@ func TestObserveLaunchEnvResolvesDuplicatesLikeTheRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *obs != *want {
+	if !reflect.DeepEqual(obs, want) {
 		t.Error("observation does not describe the environment the runtime execs")
 	}
 }
@@ -193,7 +194,7 @@ func TestObserveLaunchEnvMatchesObserveEnvWithoutDuplicates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *a != *b {
+	if !reflect.DeepEqual(a, b) {
 		t.Error("duplicate-free environments must observe identically")
 	}
 }

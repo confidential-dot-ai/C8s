@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -299,6 +300,46 @@ func TestLintShadowedEntry(t *testing.T) {
 	}
 }
 
+// Swapping which container is the main and which the init makes two entries on
+// one digest distinguishable once the init has exited.
+func TestLintSwappedMainAndInitIsNotShadowed(t *testing.T) {
+	al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{
+		"alpha":{"containers":[`+ctrJSON(digA, "/serve")+`],"initContainers":[`+ctrJSON(digA, "/seed")+`]},
+		"beta":{"containers":[`+ctrJSON(digA, "/seed")+`],"initContainers":[`+ctrJSON(digA, "/serve")+`]}}}`)
+	if n := countErrors(lintOffline(al)); n != 0 {
+		t.Fatalf("lint reported %d errors for distinguishable entries: %v", n, lintOffline(al))
+	}
+	for want, argv := range map[string]string{"alpha": "/serve", "beta": "/seed"} {
+		running := []pkgallowlist.RunningContainer{{Digest: digA, Argv: []string{argv}, Mounts: []pkgallowlist.ObservedMount{}}}
+		if got, _, err := al.MatchWorkload(running); err != nil || got != want {
+			t.Fatalf("MatchWorkload(%s) = %q, %v, want %q", argv, got, err, want)
+		}
+	}
+}
+
+func TestLintWarnsWhenSecretsPinNoEnvValue(t *testing.T) {
+	for _, tc := range []struct {
+		name, env string
+		warns     bool
+	}{
+		{"any", `{"policy":"any"}`, true},
+		{"presence only", `{"policy":"match","variables":{"GPU_SERIAL":{"present":true}}}`, true},
+		{"one exact value", `{"policy":"match","variables":{"GPU_SERIAL":{"present":true},"MODE":{"exact":"production"}}}`, false},
+		{"empty match", `{"policy":"match","variables":{}}`, false},
+		{"exact", `{"policy":"exact","values":{"MODE":"production"}}`, false},
+		{"deny", `{"policy":"deny"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{"w":{"secrets":{"policy":"allow","read":["/app/key"]},"containers":[`+
+				`{"digest":"`+digA+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":`+tc.env+`}]}}}`)
+			warned := slices.ContainsFunc(lintOffline(al), func(f finding) bool { return strings.Contains(f.msg, "without pinning environment values") })
+			if warned != tc.warns {
+				t.Fatalf("secret warning = %v, want %v", warned, tc.warns)
+			}
+		})
+	}
+}
+
 // --- indistinguishable entries ---
 
 // entryPair builds a document with two entries whose container lists are given
@@ -463,6 +504,35 @@ func TestWorkloadApplyDoesNotDoubleReportInFileCollision(t *testing.T) {
 	}
 }
 
+func TestLintRejectsHostChosenLoaderVariables(t *testing.T) {
+	for _, variable := range []string{
+		"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "PYTHONPATH", "NODE_PATH", "BASH_ENV", "ENV", "GLIBC_TUNABLES",
+		"NODE_OPTIONS", "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "PYTHONHOME", "PYTHONSTARTUP", "PERL5LIB", "PERL5OPT", "RUBYLIB", "RUBYOPT",
+	} {
+		t.Run(variable, func(t *testing.T) {
+			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+				`"env":{"policy":"match","variables":{"` + variable + `":{"present":true},"MODE":{"exact":"production"}}}}`
+			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[`+container+`]}}}`)
+			out, _, err := runCmd("lint", "--strict", file)
+			if err == nil {
+				t.Fatalf("lint --strict accepted a host-chosen %s: %s", variable, out)
+			}
+			if want := "leaves " + variable + " to the host"; !strings.Contains(out, want) {
+				t.Fatalf("lint output = %s, want %q", out, want)
+			}
+		})
+	}
+}
+
+func TestLintAcceptsPinnedLoaderVariable(t *testing.T) {
+	container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+		`"env":{"policy":"match","variables":{"LD_PRELOAD":{"exact":"/lib/a.so"},"GPU_SERIAL":{"present":true}}}}`
+	file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[`+container+`]}}}`)
+	if out, _, err := runCmd("lint", file); strings.Contains(out, "to the host;") {
+		t.Fatalf("lint flagged a pinned LD_PRELOAD (err %v): %s", err, out)
+	}
+}
+
 func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 	for _, tc := range []struct {
 		name, variable, value, kind string
@@ -478,23 +548,28 @@ func TestLintRejectsSearchPathsOverlappingDataMounts(t *testing.T) {
 		{"application data variable", "DATA_PATH", "/mnt/c8s-data/tools", "data", false},
 		{"emptyDir is not operator data", "PATH", "/mnt/c8s-data/tools", "emptyDir", false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
-				`"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/tools","kind":"` + tc.kind + `"}]},` +
-				`"env":{"policy":"exact","values":{"` + tc.variable + `":"` + tc.value + `"}}}`
-			// Use an init container as well as a main to exercise both lists.
-			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"initContainers":[`+container+`],"containers":[`+ctrJSON(digB, "/main")+`]}}}`)
-			for _, flags := range [][]string{nil, {"--cvm-mode=pod"}, {"--cvm-mode=node"}} {
-				args := append([]string{"lint", "--strict", file}, flags...)
-				out, _, err := runCmd(args...)
-				if (err != nil) != tc.refused {
-					t.Fatalf("lint %v error = %v, want refusal %v; output: %s", flags, err, tc.refused, out)
+		for _, policy := range []struct{ name, env string }{
+			{"exact", `"env":{"policy":"exact","values":{"` + tc.variable + `":"` + tc.value + `"}}`},
+			{"match", `"env":{"policy":"match","variables":{"` + tc.variable + `":{"exact":"` + tc.value + `"},"GPU_SERIAL":{"present":true}}}`},
+		} {
+			t.Run(tc.name+"/"+policy.name, func(t *testing.T) {
+				container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+					`"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/tools","kind":"` + tc.kind + `"}]},` +
+					policy.env + `}`
+				// Use an init container as well as a main to exercise both lists.
+				file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"initContainers":[`+container+`],"containers":[`+ctrJSON(digB, "/main")+`]}}}`)
+				for _, flags := range [][]string{nil, {"--cvm-mode=pod"}, {"--cvm-mode=node"}} {
+					args := append([]string{"lint", "--strict", file}, flags...)
+					out, _, err := runCmd(args...)
+					if (err != nil) != tc.refused {
+						t.Fatalf("lint %v error = %v, want refusal %v; output: %s", flags, err, tc.refused, out)
+					}
+					if tc.refused && !strings.Contains(out, "overlapping data mount") {
+						t.Fatalf("lint did not explain the search-path conflict: %s", out)
+					}
 				}
-				if tc.refused && !strings.Contains(out, "overlapping data mount") {
-					t.Fatalf("lint did not explain the search-path conflict: %s", out)
-				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -518,6 +593,76 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
 			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.ambiguous {
 				t.Fatalf("live collision = %v, want %v", got, tc.ambiguous)
+			}
+		})
+	}
+}
+
+func TestShadowByEnvMatcherSubsumption(t *testing.T) {
+	container := func(env string) string {
+		return `[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":` + env + `}]`
+	}
+	presentMode := `{"policy":"match","variables":{"MODE":{"present":true}}}`
+	for _, tc := range []struct {
+		name, alpha, beta string
+		shadowed          bool
+	}{
+		{"present covers exact", presentMode, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, true},
+		{"match does not cover exact policy", presentMode, `{"policy":"exact","values":{"MODE":"production"}}`, false},
+		{"exact policy equals all-exact match", `{"policy":"exact","values":{"MODE":"production"}}`, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, true},
+		{"different values", `{"policy":"match","variables":{"MODE":{"exact":"staging"}}}`, `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`, false},
+		{"different names", presentMode, `{"policy":"match","variables":{"MODE":{"exact":"production"},"X":{"present":true}}}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := entryPair(t, container(tc.alpha), container(tc.beta))
+			var shadowErrors []string
+			for _, f := range lintOffline(al) {
+				if f.err && strings.Contains(f.msg, "can never be the unique match") {
+					shadowErrors = append(shadowErrors, f.msg)
+				}
+			}
+			if got := len(shadowErrors); got != map[bool]int{true: 1, false: 0}[tc.shadowed] {
+				t.Fatalf("lint shadow errors = %v, want shadowed %v", shadowErrors, tc.shadowed)
+			}
+			incoming := map[string]pkgallowlist.Workload{"beta": al.Workloads["beta"]}
+			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
+			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.shadowed {
+				t.Fatalf("apply collision = %v, want %v", got, tc.shadowed)
+			}
+		})
+	}
+}
+
+// A wide entry pinning its executable under `mounts: any` refuses a mount over
+// that executable, which a narrow entry declaring such a mount admits.
+func TestShadowRespectsExecutableShadowing(t *testing.T) {
+	container := func(env, mounts string) string {
+		return `[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/mnt/c8s-data/tools/run"]},"args":{"policy":"deny"},"env":` + env + `,"mounts":` + mounts + `}]`
+	}
+	wide := container(`{"policy":"match","variables":{"MODE":{"present":true}}}`, `{"policy":"any"}`)
+	narrowEnv := `{"policy":"match","variables":{"MODE":{"exact":"production"}}}`
+	for _, tc := range []struct {
+		name, mounts string
+		shadowed     bool
+	}{
+		{"mount over executable", `{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/tools","kind":"data"}]}`, false},
+		{"mount beside executable", `{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/cfg","kind":"data"}]}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := entryPair(t, wide, container(narrowEnv, tc.mounts))
+			var shadowErrors []string
+			for _, f := range lintOffline(al) {
+				if f.err && strings.Contains(f.msg, "can never be the unique match") {
+					shadowErrors = append(shadowErrors, f.msg)
+				}
+			}
+			if got := len(shadowErrors) != 0; got != tc.shadowed {
+				t.Fatalf("lint shadow errors = %v, want shadowed %v", shadowErrors, tc.shadowed)
+			}
+			incoming := map[string]pkgallowlist.Workload{"beta": al.Workloads["beta"]}
+			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
+			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.shadowed {
+				t.Fatalf("apply collision = %v, want %v", got, tc.shadowed)
 			}
 		})
 	}
