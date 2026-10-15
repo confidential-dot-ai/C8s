@@ -227,10 +227,18 @@ var componentInvocations = [][]string{{secrets.InjectedBinary}, {"/app/c8s"}, {"
 // at code of its choosing: --kubeconfig runs an exec credential plugin, nginx's
 // -g loads a module, and a volume replaces what the binary reads. A shape of
 // the sidecars the webhook injects may leave its args open, since they are per
-// pod, but not its mounts.
+// pod, but not its mounts. The invocation is matched against the command and
+// any exact args after it, since an entry may split nginx's argv either way.
 func componentFindings(name string, c pkgallowlist.Container) []finding {
-	if c.Command.Policy != pkgallowlist.PolicyExact || !slices.ContainsFunc(componentInvocations, func(prefix []string) bool {
-		return len(c.Command.Argv) >= len(prefix) && slices.Equal(c.Command.Argv[:len(prefix)], prefix)
+	if c.Command.Policy != pkgallowlist.PolicyExact {
+		return nil
+	}
+	invocation := c.Command.Argv
+	if c.Args.Policy == pkgallowlist.PolicyExact {
+		invocation = slices.Concat(invocation, c.Args.Argv)
+	}
+	if !slices.ContainsFunc(componentInvocations, func(prefix []string) bool {
+		return len(invocation) >= len(prefix) && slices.Equal(invocation[:len(prefix)], prefix)
 	}) {
 		return nil
 	}
