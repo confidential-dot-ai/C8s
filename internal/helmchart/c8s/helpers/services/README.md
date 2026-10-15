@@ -9,7 +9,21 @@ attestation socket exists": non-empty when `attestationApi.enabled` or
 
 `c8s.attestationApiURL` selects the node-local
 `unix://<runtimeDir>/attestation-api.sock` endpoint when
-`attestationApi.enabled=true` or `node.baked=true`.
+`attestationApi.enabled=true` or `node.baked=true`. Otherwise, on
+`cvmMode=bare-metal`, it names the node-baked attestation-api by node address,
+which the binary expands (`cmdsutil.ExpandHostIP`):
+
+- Under a fail-closed image policy (`c8s.imagePolicyFailClosed`,
+  `c8s.attestationApiNodeIPFile`), it is `$(NODE_IP)`, read from
+  `<runtimeDir>/node-ip`, which the socket helpers mount read-only at
+  `/run/c8s/node-ip` from a `File` hostPath. validations.yaml refuses
+  `$(HOST_IP)` in any component argv but the operator's.
+- Otherwise it is `$(HOST_IP)`, read from the variable
+  `c8s.attestationApiHostIPEnv` sets.
+
+`c8s.sidecarAttestationApiURL` is the URL the operator hands the sidecars it
+injects: always `$(HOST_IP)` off the socket, which the kubelet expands from the
+variable the webhook sets.
 
 The chart-managed attestation API binds pod loopback. Its attest-proxy exposes
 the node-local socket in `nriImagePolicy.hostPaths.runtimeDir`.

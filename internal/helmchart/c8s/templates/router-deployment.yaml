@@ -240,7 +240,7 @@ containers:
     env:
       {{- . | nindent 6 }}
     {{- end }}
-    {{- if or (include "c8s.attestationApiSocketPresent" .) .Values.cds.measurementsConfig }}
+    {{- if or (include "c8s.attestationApiSocketPresent" .) (include "c8s.attestationApiNodeIPFile" .) .Values.cds.measurementsConfig }}
     volumeMounts:
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
       {{- include "c8s.nodeConfigMount" . | nindent 6 }}

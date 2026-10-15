@@ -23,7 +23,7 @@ containers:
       - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
       - --webhook-service-name={{ include "c8s.operatorName" . }}
       - --webhook-service-namespace={{ .Release.Namespace }}
-      - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
+      - --attestation-api-url={{ include "c8s.sidecarAttestationApiURL" . }}
       {{- /* The same measurements CDS is pinned to elsewhere: the
              injected secret fetcher verifies CDS before handing it a
              sandbox token and taking a value back. */}}

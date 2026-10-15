@@ -756,8 +756,8 @@ list.
 {{- if .Values.router.discovery.enabled -}}
 {{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" .Values.router.discovery.mountPath) -}}
 {{- end -}}
-{{- if include "c8s.attestationApiSocketPresent" . -}}
-{{- $mounts = append $mounts (printf "- name: attestation-api-socket\n  mountPath: %s\n  readOnly: true" .Values.nriImagePolicy.hostPaths.runtimeDir) -}}
+{{- with include "c8s.attestationApiSocketMount" . | trim -}}
+{{- $mounts = append $mounts . -}}
 {{- end -}}
 {{- $extraArgs := include "router.getCertCommonArgs" . | fromYamlArray -}}
 {{- $sanFile := "" -}}

@@ -28,6 +28,21 @@ mounted into pods. Directory requires verified staging to have completed. */}}
 {{- define "c8s.attestationApiURL" -}}
 {{- if include "c8s.attestationApiSocketPresent" . -}}
 unix://{{ include "c8s.attestationApiSocket" . }}
+{{- else if include "c8s.attestationApiNodeIPFile" . -}}
+{{- /* $$ reaches the container as a literal $(NODE_IP), which the binary
+       reads from the node-ip file (cmdsutil.ExpandHostIP). */ -}}
+http://$$(NODE_IP):{{ .Values.attestationApi.port }}
+{{- else -}}
+{{- include "c8s.sidecarAttestationApiURL" . -}}
+{{- end -}}
+{{- end -}}
+
+{{- /* The URL the operator hands the sidecars it injects. Their args are the
+       pod's, so the kubelet expands $(HOST_IP) in them from the variable the
+       webhook sets. */ -}}
+{{- define "c8s.sidecarAttestationApiURL" -}}
+{{- if include "c8s.attestationApiSocketPresent" . -}}
+unix://{{ include "c8s.attestationApiSocket" . }}
 {{- else -}}
 {{- /* $$ reaches the container as a literal $(HOST_IP), which the binary
        expands (cmdsutil.ExpandHostIP): the allowlist pins a component's
@@ -35,6 +50,21 @@ unix://{{ include "c8s.attestationApiSocket" . }}
        them. */ -}}
 http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
+{{- end -}}
+
+{{- /* "true" when the image policy fails closed: the plugin runs and denies
+       what the allowlist does not admit. */ -}}
+{{- define "c8s.imagePolicyFailClosed" -}}
+{{- if and .Values.nriImagePolicy.enabled (eq .Values.nriImagePolicy.policy.mode "fail-closed") -}}true{{- end -}}
+{{- end -}}
+
+{{- /* Non-empty when components reach the attestation-api by node address
+       and read it from the node-ip file the image policy installer writes:
+       bare-metal without a local socket, under a fail-closed image policy.
+       The allowlist pins the file's host path but not the environment, so
+       HOST_IP would let the pod choose the verifier. */ -}}
+{{- define "c8s.attestationApiNodeIPFile" -}}
+{{- if and (not (include "c8s.attestationApiSocketPresent" .)) (eq .Values.attestationApi.cvmMode "bare-metal") (include "c8s.imagePolicyFailClosed" .) -}}true{{- end -}}
 {{- end -}}
 
 {{- define "c8s.attestationApiSocket" -}}
@@ -47,19 +77,30 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
   hostPath:
     path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
     type: {{ ternary "Directory" "DirectoryOrCreate" .Values.node.baked }}
+{{- else if include "c8s.attestationApiNodeIPFile" . }}
+- name: node-ip
+  hostPath:
+    path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip
+    type: File
 {{- end }}
 {{- end -}}
 
+{{- /* Mounts the socket directory, or the node-ip file at cmdsutil.NodeIPPath
+       where the attestation-api URL names $(NODE_IP). */ -}}
 {{- define "c8s.attestationApiSocketMount" -}}
 {{- if include "c8s.attestationApiSocketPresent" . }}
 - name: attestation-api-socket
   mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
   readOnly: true
+{{- else if include "c8s.attestationApiNodeIPFile" . }}
+- name: node-ip
+  mountPath: /run/c8s/node-ip
+  readOnly: true
 {{- end }}
 {{- end -}}
 
 {{- define "c8s.attestationApiHostIPEnv" -}}
-{{- if and (not (include "c8s.attestationApiSocketPresent" .)) (eq .Values.attestationApi.cvmMode "bare-metal") -}}
+{{- if and (not (include "c8s.attestationApiSocketPresent" .)) (eq .Values.attestationApi.cvmMode "bare-metal") (not (include "c8s.attestationApiNodeIPFile" .)) -}}
 - name: HOST_IP
   valueFrom:
     fieldRef:

@@ -454,13 +454,18 @@ and PVC a component mounts sits under `/mnt/c8s-data/` and every hostPath
 source is named, so no volume reaches the code an entrypoint loads. The
 chart spells out each component's command rather than relying on the image's
 ENTRYPOINT and CMD, and refuses an unescaped `$(NAME)` in a component's argv:
-the kubelet would expand it from env, `envFrom` or a service variable. Three
-residuals stay open. `env` is still `any`, so `LD_PRELOAD` or a `PATH` lookup
-can still be pointed at a mounted file. On a bare-metal install without the
-attestation-api socket, CDS, the mesh and the router sidecars take the
-attestation-api address from `HOST_IP`, so a restaged pod can name its own
-`/verify` ([#880](https://github.com/confidential-dot-ai/C8s/issues/880)).
-`KUBECONFIG`, `HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
+the kubelet would expand it from env, `envFrom` or a service variable. On a
+bare-metal install without the attestation-api socket, CDS, the mesh and the
+router sidecars find the node-baked attestation-api by node address. Under a
+fail-closed policy the chart writes it as `$(NODE_IP)`, which the binary reads
+from the `node-ip` file the image policy installer writes into its socket
+directory, mounted read-only at `/run/c8s/node-ip` from a host path the entry
+pins, and the render refuses `$(HOST_IP)` in a component's argv: the binary
+would read that from the `HOST_IP` variable, and a restaged pod could set it
+to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,
+since nothing is refused anyway. Three residuals stay open. `env` is still
+`any`, so `LD_PRELOAD` or a `PATH` lookup can still be pointed at a mounted
+file. `KUBECONFIG`, `HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
 and the mesh build their Kubernetes client from the in-cluster service
 account only, and the attestation-api clients ignore proxy variables. The router's `nginx.conf` is the
 content of a listed ConfigMap: a `load_module` directive in it loads code that
