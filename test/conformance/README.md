@@ -84,9 +84,10 @@ names a digest, which containers a node's runtime holds for a digest, and a
 Restricted-compatible pod manifest to deploy. It also acts for the operator:
 when a scenario says the plugin has applied the served allowlist, the entries
 it described are written through the backend's signed path, and they are
-undone after the scenario. The plugin exposes nothing about the allowlist
-version it holds, so the steps wait until two pull intervals have passed since
-the last write before acting on it, and read the served version then.
+undone after the scenario. The steps then poll the allowlist version the
+plugin reports on its health endpoint until it is the served one, within three
+pull intervals of the write; where the backend cannot reach the plugin, or the
+plugin is meant to ignore what is served, they wait two intervals out instead.
 
 A backend also acts on the node and the CDS where a scenario asks: it stops
 and starts a node's plugin, makes the CDS unreachable for the plugins' pulls
