@@ -475,7 +475,8 @@ baked plugin, whose mode the chart cannot see), the chart writes it as
 `$(NODE_IP)`. The binary reads that from the `node-ip` file the image policy
 plugin (a host process, from the host's own view) or the node image's
 `nri-node-ip.service` writes into the socket directory, never a pod, mounted read-only at `/run/c8s/node-ip` from a host path the entry
-pins. The render refuses `$(HOST_IP)` in a component's argv there: the binary
+pins. The plugin rewrites the file in place, and the binary rereads it and
+restarts when the address changes. The render refuses `$(HOST_IP)` in a component's argv there: the binary
 would read it from the `HOST_IP` variable, and a restaged pod could set that
 to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,
 since nothing is refused anyway. Node images before this release publish
@@ -661,7 +662,8 @@ for other verifiers.
 The chart renders the seed (`--allowlist-seed`) from the resolved component
 digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
 component digest becomes one entry named `<image basename>-<first 12 hex of
-digest>`. It lists one container per shape the chart renders the image in,
+digest>-<first 8 hex of the SHA-256 of its containers>`, the basename cut to
+41 characters. It lists one container per shape the chart renders the image in,
 derived from the same pod templates the workloads render, so the two cannot
 drift: `command` exact at the entrypoint (`c8sComponents[].entrypoint`,
 `router.nginx.entrypoint`) or the container's own command, `args` exact,
@@ -669,8 +671,8 @@ drift: `command` exact at the entrypoint (`c8sComponents[].entrypoint`,
 container with the source under `/run`, because containerd resolves that
 symlink on most nodes. The chart refuses to render a component container whose
 argv references one of its own variables (`$(NAME)`): the value would differ
-per node. An operator-authored `workloads` entry of the same name replaces the
-entry whole in the rendered seed. The same component entries feed the host
+per node. An operator-authored `workloads` entry named `<image basename>-<first 12 hex
+of digest>` replaces the entry whole in the rendered seed. The same component entries feed the host
 plugin's base allowlist, as does every operator entry that leaves args,
 environment and mounts unconstrained, whether its command is `any` or pinned,
 and every operator entry for a component's digest whatever it pins; other
@@ -679,17 +681,24 @@ pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`, or
 `/docker-entrypoint.sh nginx`) with `args` or `mounts` `any` as an error; an
 injected sidecar shape may leave only its `args` open. With `deriveComponents`
 off, such a container does not cover a component for the render guard. The
-name is a function of the digest because CDS seeds **additively by name**: an
-image bump adds the new digest's entry beside the old one, which pods still
-running the old image keep matching while they recycle. The seed never
-overwrites an entry the store already holds, so an edit made with `workload
-apply` survives a restart, while a deleted entry returns on the next CDS start
-for as long as the chart still renders it — to remove an image, roll the chart
-with it gone. The same rule means a cluster installed before the component
-entries pinned their args and mounts keeps serving its stored entries for the
-digests it already had: the pins reach such a cluster with the next image
-bump, or by editing the stored entry (`c8s allowlist edit`), which lint
-reports until then. The chart moved its ConfigMap, Secret and PVC mounts under
+name is a function of the digest and the policy because CDS seeds
+**additively by name**: an image bump, or a configuration change that alters
+a component's argv, environment policy or mounts (`operator.extraArgs`,
+`statusMirror.enabled`, the installer's boot config), adds the new entry
+beside the old one, which pods still running the old shape keep matching
+while they recycle, and which a rollback matches again. The argv-pinned
+installer entries are named the same way. The seed never overwrites an entry
+the store already holds, so an edit made with `workload apply` survives a
+restart, while a deleted entry returns on the next CDS start for as long as
+the chart still renders it — to remove an image, roll the chart with it gone.
+
+Old shapes stay admitted until you retire them. To retire them once no pod
+runs them and no rollback needs them:
+
+1. Export the live allowlist: `c8s allowlist export live.json`.
+2. Save the release's seed: `kubectl get configmap <release>-cds-allowlist-seed -n <namespace> -o jsonpath='{.data.allowlist-seed\.json}' > seed.json`.
+3. List the stale shapes: `c8s allowlist lint --seed seed.json live.json`. Each `is a stale shape` warning names a generated entry, `c8s-router-*` included, whose image the seed now generates under another name.
+4. Delete each one: `c8s allowlist delete <name>`. The chart moved its ConfigMap, Secret and PVC mounts under
 `/mnt/c8s-data/` (nginx reads `/mnt/c8s-data/nginx/nginx.conf`, CDS keeps its
 database under `/mnt/c8s-data/cds`), so an upgrade rolls every component pod.
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
@@ -748,13 +757,13 @@ c8s allowlist
   edit <name>                       fetch, $EDITOR, diff, confirm, apply
   delete <name>...
   upload <file>                     replace the whole allowlist (diff-first, required-components guard)
-  lint <file|-> [--online] [--strict]
+  lint <file|-> [--online] [--strict] [--seed <file>]
   inspect-image <ref>               show an image's digest + baked entrypoint/cmd
 ```
 
-`add` writes the same entry the chart seeds for a bootstrap digest, under the
-same name (`<image basename>-<first 12 hex of digest>`), so a later chart bump
-that derives the digest adds nothing.
+`add` writes an entry named `<image basename>-<first 12 hex of digest>`, the
+name of the operator override that replaces the chart's generated entry for
+that digest in the seed.
 
 Deleting a chart-seeded component entry does not lock its image out: the NRI
 plugin's base allowlist still admits it. To block a

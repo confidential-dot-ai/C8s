@@ -80,6 +80,7 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 	if err != nil {
 		return err
 	}
+	ctx = cmdsutil.WatchNodeIP(ctx, cfg.attestationAPIURL, attestationURL)
 	cfg.attestationAPIURL = attestationURL
 	addr, err := listenAddress(cfg.host, cfg.port)
 	if err != nil {
@@ -107,9 +108,9 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 
 	slog.Info("router allowlist proxy listening", "addr", addr, "cds_url", cfg.cdsURL)
 	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
-		return err
+		return cmdsutil.NodeIPChanged(ctx, err)
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 func listenAddress(host string, port int) (string, error) {

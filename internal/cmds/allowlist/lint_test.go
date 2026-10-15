@@ -572,3 +572,39 @@ func TestLintComponentShapes(t *testing.T) {
 		})
 	}
 }
+
+// With --seed, lint names the generated entries an earlier configuration
+// seeded for an image the seed now generates under another name, and nothing
+// else: not the current entry, not an operator's own.
+func TestLintSeedNamesStaleShapes(t *testing.T) {
+	hex := digA[7:19]
+	live := writeFile(t, "live.json", `{"schema":"c8s.allowlist/v1","workloads":{
+		"c8s-`+hex+`-00000001":{"containers":[`+ctrJSON(digA, "/old")+`]},
+		"c8s-`+hex+`-00000002":{"containers":[`+ctrJSON(digA, "/new")+`]},
+		"c8s-router-000000000001":{"containers":[`+ctrJSON(digA, "/router-old")+`]},
+		"c8s-router-000000000002":{"containers":[`+ctrJSON(digA, "/router-new")+`]},
+		"mine":{"containers":[`+ctrJSON(digA, "/mine")+`]}}}`)
+	seed := writeFile(t, "seed.json", `{"schema":"c8s.allowlist/v1","workloads":{
+		"c8s-`+hex+`-00000002":{"containers":[`+ctrJSON(digA, "/new")+`]},
+		"c8s-router-000000000002":{"containers":[`+ctrJSON(digA, "/router-new")+`]}}}`)
+
+	out, _, err := runCmd("lint", "--seed", seed, live)
+	if err != nil {
+		t.Fatalf("lint: %v\n%s", err, out)
+	}
+	var stale []string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "is a stale shape") {
+			stale = append(stale, line)
+		}
+	}
+	want := []string{"c8s-" + hex + "-00000001", "c8s-router-000000000001"}
+	if len(stale) != len(want) {
+		t.Fatalf("stale findings = %q, want one each for %q", stale, want)
+	}
+	for i, name := range want {
+		if !strings.Contains(stale[i], `"`+name+`"`) {
+			t.Errorf("stale finding %d = %q, want it to name %q", i, stale[i], name)
+		}
+	}
+}

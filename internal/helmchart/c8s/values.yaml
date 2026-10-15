@@ -754,11 +754,13 @@ nriImagePolicy:
   ## distinguishes this inventory from a workload sharing the node measurement.
   ## CDS must be able to reach every node on it.
   ##
-  ## The advertised host defaults to the default-route interface's address,
-  ## which RKE2 and k3s also register when no node-ip is configured. Set it on
-  ## nodes whose kubelet registers another address (--node-ip, several NICs):
-  ## CDS checks tokens against the Node's InternalIP. An IP here is also the
-  ## node-ip that components dial the attestation-api on.
+  ## The advertised host defaults to the kubelet's --node-ip, which RKE2 and
+  ## k3s always pass, else the default-route interface's address. The plugin
+  ## follows a changed address in node-ip and in the tokens it signs, and
+  ## components dialing node-ip restart onto it. Set it on nodes whose kubelet
+  ## registers an address neither finds: CDS checks tokens against the Node's
+  ## InternalIP. An IP here is also the node-ip that components dial the
+  ## attestation-api on.
   sandboxDigests:
     advertiseHost: ""
 

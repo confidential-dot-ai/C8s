@@ -243,7 +243,8 @@ func run(cfg config) error {
 	}
 	slog.Info("starting get-cert", "san", cfg.SAN)
 
-	attestationURL, err := cmdsutil.ExpandHostIP(cfg.AttestationApiURL)
+	rawAttestationURL := cfg.AttestationApiURL
+	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
 	if err != nil {
 		return err
 	}
@@ -276,19 +277,20 @@ func run(cfg config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
+	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
 	haveCert := true
 	leaf, err := obtainCertWithRetry(ctx, cfg, client)
 	if err != nil {
 		if cfg.RenewInterval <= 0 || !cfg.ContinueOnInitialError {
-			return err
+			return cmdsutil.NodeIPChanged(ctx, err)
 		}
 		haveCert = false
 		slog.Error("initial certificate request failed, will keep retrying", "error", err)
 	} else if cfg.RenewInterval <= 0 {
 		return nil
 	}
-	return renewLoop(ctx, cfg, client, policyClient, leaf, haveCert)
+	return cmdsutil.NodeIPChanged(ctx, renewLoop(ctx, cfg, client, policyClient, leaf, haveCert))
 }
 
 // renewLoop is get-cert's daemon mode: renew with graceful shutdown, on a

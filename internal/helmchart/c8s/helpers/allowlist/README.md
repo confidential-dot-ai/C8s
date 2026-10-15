@@ -55,22 +55,35 @@ a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
 `/docker-entrypoint.sh nginx`) with mounts `any`, or with args `any` outside a sidecar
 invocation, covers nothing: `c8s allowlist lint` refuses that shape.
 
+`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived
+image digest outside `c8s.argvPinnedDigests`, with that digest's
+`c8s.componentShapes` containers and `env: any`, followed by
+`c8s.argvPinnedEntries`, the [router entry](#router-entry) and
+`bootstrapAllowlist.workloads`. The volumed entry
+also carries the pre-delete teardown hook's script and pause. A
+`bootstrapAllowlist.workloads` override named `c8s.digestWorkloadName`
+replaces a component entry whole, hook
+containers included; an override must declare them too, or the pre-delete hook
+is refused and the uninstall fails. The document must satisfy
+`pkg/allowlist.ParseJSON`.
+
+## Entry names
 
 `c8s.digestWorkloadName` takes `digest` and `image`, strips the image reference
 to its final repository segment, truncates it to 50 characters, substitutes
 `image` for an invalid name, and appends the first 12 lowercase digest hex digits.
 Keep this naming rule aligned with `pkg/allowlist.DigestEntryName`.
 
-`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived
-image digest outside `c8s.argvPinnedDigests`, with that digest's
-`c8s.componentShapes` containers and `env: any`, followed by
-`c8s.argvPinnedEntries`, the [router entry](#router-entry) and
-`bootstrapAllowlist.workloads`. The volumed entry
-also carries the pre-delete teardown hook's script and pause. A same-named
-`bootstrapAllowlist.workloads` override replaces an entry whole, hook
-containers included; an override must declare them too, or the pre-delete hook
-is refused and the uninstall fails.
-A supplied workload replaces the entire derived entry of the same name. The document must satisfy `pkg/allowlist.ParseJSON`.
+`c8s.shapeWorkloadName` names every entry the chart generates: the component
+entries, in the seed and the base alike, and the argv-pinned entries. It cuts
+the image segment to 41 characters and appends the first 8 hex digits of the
+SHA-256 over the entry's seed-form containers (`c8s.seedContainers`), so the
+name stays within 63 characters. A configuration change that alters a shape
+without changing a digest names a new entry, which CDS's additive seeding adds
+beside the old one; the old entry keeps admitting running pods and rollbacks
+until an operator deletes it. `c8s allowlist lint --seed` names such stale
+entries. The node image merges the seed into its measured base, so it carries
+the same names.
 
 ## Component shapes
 
@@ -137,10 +150,10 @@ retain the default `deny` policy. `plugin-ready` runs under `/bin/sh -c`
 because `c8s uninstall` takes the entry's one non-script shape as its sweep
 pause. Operator-supplied workload policies are preserved as authored.
 
-Names use `c8s.digestWorkloadName`. `c8s.allowlistSeedJSON` excludes these
+Names use `c8s.shapeWorkloadName`. `c8s.allowlistSeedJSON` excludes these
 digests from its component derivations, adds the pinned entries, then applies
-same-named `bootstrapAllowlist.workloads` overrides. An image bump produces
-a new entry name for additive seeding.
+`bootstrapAllowlist.workloads`. An image bump or a changed script produces a
+new entry name for additive seeding.
 
 `c8s.argvPinnedDigests` derives its matching digest set from values alone:
 calling `argvPinnedEntries` there would recurse through the install script's

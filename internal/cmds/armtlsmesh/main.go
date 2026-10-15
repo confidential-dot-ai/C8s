@@ -208,6 +208,7 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 	if err != nil {
 		return err
 	}
+	ctx = cmdsutil.WatchNodeIP(ctx, c.attestationApiURL, attestationURL)
 	c.attestationApiURL = attestationURL
 	if err := validateConfig(c.attestationApiURL, c.outboundPort, c.inboundPort, c.healthPort, c.certTTL); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
@@ -323,9 +324,9 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		CDSImages:         c.cdsPins.Images,
 	}
 	if err := runtime.run(ctx, hostMesh{c: c, resolver: resolver, cds: cdsCfg}); err != nil {
-		return fmt.Errorf("proxy: %w", err)
+		return cmdsutil.NodeIPChanged(ctx, fmt.Errorf("proxy: %w", err))
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 type hostMesh struct {

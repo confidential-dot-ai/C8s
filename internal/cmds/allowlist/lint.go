@@ -7,6 +7,7 @@ import (
 	"maps"
 	"path"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ import (
 
 func newLintCmd(o *options) *cobra.Command {
 	var online, strict bool
+	var seedPath string
 	cmd := &cobra.Command{
 		Use:   "lint <file|->",
 		Short: "Validate an allowlist file and report semantic warnings",
@@ -38,7 +40,12 @@ entries, the shapes 'apply' accepts and 'derive' emits.
 Two entries declaring the same containers with the same launch policies are an
 error: release requires exactly one entry to match, so both are refused
 forever. Errors exit non-zero on their own; --strict makes warnings do the
-same.`,
+same.
+
+--seed names the release's allowlist seed (allowlist-seed.json in the CDS seed
+ConfigMap). Lint then names each chart-generated entry, "<image>-<digest>-<policy>",
+whose image the seed generates under another name: the stale shape of an
+earlier configuration, safe to delete once no pod runs it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := readFileOrStdin(cmd, args[0])
@@ -51,6 +58,17 @@ same.`,
 			}
 			al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: entries}
 			findings := lintOffline(al)
+			if seedPath != "" {
+				data, err := readFileOrStdin(cmd, seedPath)
+				if err != nil {
+					return err
+				}
+				seed, err := pkgallowlist.ParseJSON(data)
+				if err != nil {
+					return fmt.Errorf("seed: %w", err)
+				}
+				findings = append(findings, staleShapes(al, seed)...)
+			}
 			if online {
 				if err := crane.Require(); err != nil {
 					return err
@@ -76,6 +94,7 @@ same.`,
 	}
 	cmd.Flags().BoolVar(&online, "online", false, "also check each digest exists in its registry via crane")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero if there are any warnings")
+	cmd.Flags().StringVar(&seedPath, "seed", "", "the release's allowlist seed, to name stale chart-generated entries")
 	cmd.Flags().String("cvm-mode", "", "deprecated; has no effect")
 	_ = cmd.Flags().MarkDeprecated("cvm-mode", "mount and environment policies are enforced by NRI; this flag has no effect")
 	return cmd
@@ -214,6 +233,47 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	warnings = append(warnings, shadowedEntries(al)...)
 	warnings = append(warnings, searchPathFindings(al)...)
 	return warnings
+}
+
+// generatedName matches the chart's generated entry names, capturing the
+// part one image keeps across configurations: DigestEntryName's image segment
+// and digest prefix before an 8-hex policy hash, or the router entry's prefix.
+var generatedName = regexp.MustCompile(`^(?:(.+-[0-9a-f]{12})-[0-9a-f]{8}|(c8s-router)-[0-9a-f]{12})$`)
+
+// generatedKey is the part of a generated entry name one image keeps across
+// configurations, or "" for any other name.
+func generatedKey(name string) string {
+	m := generatedName.FindStringSubmatch(name)
+	if m == nil {
+		return ""
+	}
+	return m[1] + m[2]
+}
+
+// staleShapes names each generated entry of al that seed lacks while seed
+// generates another entry for the same image: a shape an earlier
+// configuration seeded, which CDS keeps until an operator deletes it.
+func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
+	current := map[string]string{}
+	for name := range seed.Workloads {
+		if key := generatedKey(name); key != "" {
+			current[key] = name
+		}
+	}
+	var out []finding
+	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
+		key := generatedKey(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seed.Workloads[name]; ok {
+			continue
+		}
+		if now, ok := current[key]; ok {
+			out = append(out, warnf("workload %q is a stale shape: the seed now generates %q for its image; once no pod runs it, run 'c8s allowlist delete %s'", name, now, name))
+		}
+	}
+	return out
 }
 
 // componentInvocations are the executables the chart's component entries pin:

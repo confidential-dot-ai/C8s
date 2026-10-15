@@ -129,7 +129,8 @@ func loadFiles(cfg *config) error {
 
 func run(cfg config) error {
 	logger := newLogger(cfg.logLevel)
-	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
+	rawAttestationURL := cfg.attestationAPIURL
+	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
 	if err != nil {
 		return err
 	}
@@ -212,9 +213,10 @@ func run(cfg config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
 	logger.Info("LB browser-facing endpoints listening", "addr", addr)
-	return srv.Serve(ctx, httpSrv)
+	return cmdsutil.NodeIPChanged(ctx, srv.Serve(ctx, httpSrv))
 }
 
 func newLogger(level string) *slog.Logger {

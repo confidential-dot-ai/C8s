@@ -50,6 +50,7 @@ func run(cfg config) error {
 	if err != nil {
 		return err
 	}
+	ctx = cmdsutil.WatchNodeIP(ctx, cfg.attestationApiURL, attestationURL)
 	cfg.attestationApiURL = attestationURL
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.attestationApiURL); err != nil {
 		return err
@@ -374,9 +375,9 @@ func run(cfg config) error {
 
 		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
 		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			return err
+			return cmdsutil.NodeIPChanged(ctx, err)
 		}
-		return nil
+		return cmdsutil.NodeIPChanged(ctx, nil)
 	}
 
 	slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
@@ -384,9 +385,9 @@ func run(cfg config) error {
 
 	slog.Info("cds listening", "addr", addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		return err
+		return cmdsutil.NodeIPChanged(ctx, err)
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {

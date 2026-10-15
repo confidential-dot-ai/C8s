@@ -39,7 +39,8 @@ const defaultRequestTimeout = 60 * time.Second
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
-	// attestHTTP reaches the attestation-api: httpClient without a proxy.
+	// attestHTTP reaches the attestation-api. It never shares httpClient's
+	// TLS settings, which verify CDS, and never uses a proxy.
 	attestHTTP *http.Client
 }
 
@@ -66,15 +67,24 @@ func NewClient(baseURL string) Client {
 	}
 }
 
-// NewClientWithHTTP creates a new client with a custom HTTP client. Evidence
-// requests to the attestation-api keep its timeout and TLS settings but never
-// use a proxy.
+// NewClientWithHTTP creates a new client that reaches CDS through httpClient.
+// Evidence requests to the attestation-api keep only its timeout: they verify
+// the system roots, never httpClient's CDS verification, and never use a
+// proxy. [Client.WithAttestationHTTP] sets other attestation-api TLS settings.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: httpClient,
-		attestHTTP: withoutProxy(httpClient),
+		attestHTTP: armtls.NewDirectHTTPClient(httpClient.Timeout),
 	}
+}
+
+// WithAttestationHTTP returns c with evidence requests sent through
+// httpClient, for an attestation-api behind a private CA. A proxy httpClient
+// would use is still bypassed.
+func (c Client) WithAttestationHTTP(httpClient *http.Client) Client {
+	c.attestHTTP = withoutProxy(httpClient)
+	return c
 }
 
 // withoutProxy is c with proxy lookup disabled. A RoundTripper other than

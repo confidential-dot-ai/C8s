@@ -5578,6 +5578,21 @@ func seedEntry(seed *pkgallowlist.Allowlist, digest string) (pkgallowlist.Worklo
 	return pkgallowlist.Workload{}, false
 }
 
+// generatedEntryName is the one entry named prefix plus the chart's
+// 8-hex policy hash, or "" when there is not exactly one.
+func generatedEntryName(seed *pkgallowlist.Allowlist, prefix string) string {
+	var names []string
+	for name := range seed.Workloads {
+		if rest, ok := strings.CutPrefix(name, prefix+"-"); ok && len(rest) == 8 {
+			names = append(names, name)
+		}
+	}
+	if len(names) != 1 {
+		return ""
+	}
+	return names[0]
+}
+
 // seedLabel is the label of the entry admitting digest, or "" when none does.
 func seedLabel(seed *pkgallowlist.Allowlist, digest string) string {
 	w, _ := seedEntry(seed, digest)
@@ -5746,15 +5761,15 @@ func TestChartSeedEntryNameIsCaseInsensitive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
 	}
-	if _, ok := seed.Workloads["cds-abcdef000000"]; !ok {
-		t.Fatalf("seed entry cds-abcdef000000 missing\nseed: %v", seed.Workloads)
+	if generatedEntryName(seed, "cds-abcdef000000") == "" {
+		t.Fatalf("seed entry cds-abcdef000000-<policy> missing\nseed: %v", seed.Workloads)
 	}
 }
 
 // The chart derives entry names with the rule pkg/allowlist DigestEntryName
-// pins (TestDigestEntryName): the same inputs must yield the same names, tag
-// and digest stripping, the "image" fallback and the 50-byte truncation
-// included. Driven through the router nginx image, whose repository the
+// pins (TestDigestEntryName), tag and digest stripping and the "image"
+// fallback included, then appends a policy hash; the image segment is cut to
+// 41 bytes so the name stays within 63. Driven through the router nginx image, whose repository the
 // operator sets freely.
 func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 	const d = "sha256:abcdef0000000000000000000000000000000000000000000000000000000000"
@@ -5763,7 +5778,7 @@ func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 		{"registry:5000/team/app", "app"},
 		{"busybox", "busybox"},
 		{"ghcr.io/x/not a name!", "image"},
-		{"ghcr.io/x/" + strings.Repeat("y", 60), strings.Repeat("y", 50)},
+		{"ghcr.io/x/" + strings.Repeat("y", 60), strings.Repeat("y", 41)},
 	} {
 		t.Run(tc.want, func(t *testing.T) {
 			out, err := helmTemplate(t,
@@ -5778,8 +5793,8 @@ func TestChartSeedEntryNamesMatchMigration(t *testing.T) {
 			if err != nil {
 				t.Fatalf("seed JSON does not parse: %v\n%s", err, cm.Data["allowlist-seed.json"])
 			}
-			if _, ok := seed.Workloads[tc.want+"-abcdef000000"]; !ok {
-				t.Errorf("repository %q: entry %q missing\nseed: %v", tc.repository, tc.want+"-abcdef000000", seed.Workloads)
+			if generatedEntryName(seed, tc.want+"-abcdef000000") == "" {
+				t.Errorf("repository %q: entry %q-<policy> missing\nseed: %v", tc.repository, tc.want+"-abcdef000000", seed.Workloads)
 			}
 		})
 	}

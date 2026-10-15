@@ -419,9 +419,12 @@
        one digest are one entry. */ -}}
 {{- $images := dict -}}
 {{- $containers := dict -}}
+{{- $shapeNames := dict -}}
 {{- range $digest, $entry := $components -}}
 {{- $_ := set $images (lower $digest) (get $entry "image") -}}
 {{- $_ := set $containers (lower $digest) (get $entry "containers") -}}
+{{- $seed := include "c8s.seedContainers" (get $entry "containers") | fromJsonArray -}}
+{{- $_ := set $shapeNames (lower $digest) (include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" $seed)) -}}
 {{- end -}}
 {{- range $digest, $entry := $openArgs -}}
 {{- $key := lower $digest -}}
@@ -439,6 +442,7 @@
 {{- if not (has $digest $excluded) -}}
 {{- $image := get $images $digest -}}
 {{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
+{{- with get $shapeNames $digest -}}{{- $name = . -}}{{- end -}}
 {{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $list) -}}
 {{- end -}}
 {{- end -}}
@@ -456,9 +460,28 @@
 {{- end -}}
 
 {{- define "c8s.digestWorkloadName" -}}
-{{- $base := .image | splitList "@" | first | splitList "/" | last | splitList ":" | first | trunc 50 -}}
+{{- $base := .image | splitList "@" | first | splitList "/" | last | splitList ":" | first | trunc (int (default 50 .baseMax)) -}}
 {{- if not (regexMatch "^[A-Za-z0-9][A-Za-z0-9._-]*$" $base) -}}{{- $base = "image" -}}{{- end -}}
 {{- printf "%s-%s" $base (.digest | trimPrefix "sha256:" | lower | trunc 12) -}}
+{{- end -}}
+
+{{/* A generated entry's name: c8s.digestWorkloadName with its image segment
+     cut to 41 characters, then the first 8 hex of sha256 over its
+     containers, 63 characters at most. A configuration change that alters
+     an argv, env or mount table names a new entry, which CDS's additive
+     seeding adds beside the old one. See
+     ../helpers/allowlist/README.md#entry-names. */ -}}
+{{- define "c8s.shapeWorkloadName" -}}
+{{- printf "%s-%s" (include "c8s.digestWorkloadName" (dict "digest" .digest "image" .image "baseMax" 41)) (.containers | toJson | sha256sum | trunc 8) -}}
+{{- end -}}
+
+{{/* The seed form of a component's containers: the shape with env any. */ -}}
+{{- define "c8s.seedContainers" -}}
+{{- $containers := list -}}
+{{- range $c := . -}}
+{{- $containers = append $containers (merge (dict "env" (dict "policy" "any")) $c) -}}
+{{- end -}}
+{{ $containers | toJson }}
 {{- end -}}
 
 {{/* See ../helpers/allowlist/README.md#argv-pinned-entries for the seed contract. */}}
@@ -483,7 +506,7 @@
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" $sh "args" (dict "policy" "exact" "argv" (list (include "nri-image-policy.pluginReadyScript" .)))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" (.Files.Get "files/scripts/host-sweep.sh") ""))))) -}}
 {{- $containers = append $containers (dict "digest" $digest "image" $ref "command" (dict "policy" "exact" "argv" (list "/bin/sleep")) "args" (dict "policy" "exact" "argv" (list "2147483647"))) -}}
-{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $ref) -}}
+{{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $ref "containers" $containers) -}}
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
 {{- $prepScript := .Files.Get "files/scripts/containerd-prep.sh" -}}
 {{- $prepDigests := dict -}}
@@ -494,7 +517,7 @@
 {{- end -}}
 {{- range $digest, $ref := $prepDigests -}}
 {{- $container := dict "digest" $digest "image" $ref "mounts" (dict "policy" "any") "command" $sh "args" (dict "policy" "exact" "argv" (list (printf "%s\n" (regexReplaceAll "\n+$" $prepScript "")))) -}}
-{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $ref) -}}
+{{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $ref "containers" (list $container)) -}}
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" (list $container)) -}}
 {{- end -}}
 {{- end -}}
@@ -506,7 +529,7 @@
 {{- range $path := list "/script/setup" "/script/teardown" -}}
 {{- $containers = append $containers (dict "digest" $img.digest "image" $ref "mounts" (dict "policy" "any") "command" (dict "policy" "exact" "argv" (list "/bin/sh" $path)) "args" (dict "policy" "any")) -}}
 {{- end -}}
-{{- $name := include "c8s.digestWorkloadName" (dict "digest" $img.digest "image" $ref) -}}
+{{- $name := include "c8s.shapeWorkloadName" (dict "digest" $img.digest "image" $ref "containers" $containers) -}}
 {{- $_ := set $entries $name (dict "label" $ref "initContainers" list "containers" $containers) -}}
 {{- end -}}
 {{- end -}}
@@ -620,15 +643,14 @@
 {{- define "c8s.allowlistSeedJSON" -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
+{{- $overrides := .Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
 {{- range $digest, $entry := (include "c8s.componentShapes" . | fromJson) -}}
 {{- if not (has $digest $pinnedDigests) -}}
 {{- $image := get $entry "image" -}}
-{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
-{{- $containers := list -}}
-{{- range $c := get $entry "containers" -}}
-{{- $containers = append $containers (merge (dict "env" (dict "policy" "any")) $c) -}}
+{{- $containers := include "c8s.seedContainers" (get $entry "containers") | fromJsonArray -}}
+{{- if not (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image))) -}}
+{{- $_ := set $workloads (include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $image "containers" $containers)) (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
 {{- end -}}
 {{- range $name, $entry := (include "c8s.argvPinnedEntries" . | fromJson) -}}

@@ -51,10 +51,11 @@ func TestChartPinnedSeedHostSweepShapesUnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := pkgallowlist.DigestEntryName(digest, "ghcr.io/confidential-dot-ai/nri-image-policy@"+baseNRIDigest)
+	prefix := pkgallowlist.DigestEntryName(digest, "ghcr.io/confidential-dot-ai/nri-image-policy@"+baseNRIDigest)
+	name := generatedEntryName(seed, prefix)
 	entry, ok := seed.Workloads[name]
 	if !ok {
-		t.Fatalf("seed has no entry %q", name)
+		t.Fatalf("seed has no entry %q-<policy>", prefix)
 	}
 	var scriptHits, pauseHits int
 	for _, c := range entry.Containers {
