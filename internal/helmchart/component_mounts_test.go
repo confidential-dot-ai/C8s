@@ -67,12 +67,12 @@ func runtimeArgv(c corev1.Container, entrypoint []string) []string {
 }
 
 // observedMounts classifies a rendered container's mounts the way the node
-// plugin does on the measured node image, whose kubelet directory sits on
-// encrypted scratch: tmpfs-backed volumes (memory emptyDirs, Secrets,
-// projected and downward-API volumes) are memory, ConfigMaps and disk
-// emptyDirs are encrypted, and a hostPath is a host mount whose source
-// containerd resolves through symlinks (resolveVarRun: /var/run is /run). The
-// kubelet and containerd add their platform mounts too.
+// plugin does on a node without encrypted scratch, the least the chart's
+// entries must admit: tmpfs-backed volumes (memory emptyDirs, Secrets,
+// projected and downward-API volumes) are memory, ConfigMaps, PVCs and disk
+// emptyDirs are of unknown storage, and a hostPath is a host mount whose
+// source containerd resolves through symlinks (resolveVarRun: /var/run is
+// /run). The kubelet and containerd add their platform mounts too.
 func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container, resolveVarRun bool) []pkgallowlist.ObservedMount {
 	t.Helper()
 	volumes := map[string]corev1.Volume{}
@@ -88,7 +88,7 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container, resol
 		if !ok {
 			t.Fatalf("container %s mounts undeclared volume %q", c.Name, m.Name)
 		}
-		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountEncrypted}
+		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
 		switch {
 		case v.HostPath != nil:
 			source := v.HostPath.Path

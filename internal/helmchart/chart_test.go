@@ -1629,7 +1629,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 		return v.HostPath != nil && v.HostPath.Path == "/var/run/nri-image-policy"
 	})
 	assertPodVolume(t, &ds.Spec.Template.Spec, "config", func(v corev1.Volume) bool {
-		return v.ConfigMap != nil && v.ConfigMap.Name == "c8s-attestation-api"
+		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
 	assertContainerMount(t, proxy, "socket-dir", "/var/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec), against
@@ -6339,9 +6339,19 @@ func TestChartWiresCDSAllowlistSeedFlagAndVolume(t *testing.T) {
 	if !ok {
 		t.Fatalf("cds pod missing allowlist-seed volume")
 	}
-	if vol.ConfigMap == nil || vol.ConfigMap.Name != "c8s-cds-allowlist-seed" {
-		t.Errorf("allowlist-seed volume should source ConfigMap c8s-cds-allowlist-seed; got %+v", vol.ConfigMap)
+	if got := projectedConfigMap(vol); got != "c8s-cds-allowlist-seed" {
+		t.Errorf("allowlist-seed volume should project ConfigMap c8s-cds-allowlist-seed; got %+v", vol.VolumeSource)
 	}
+}
+
+// projectedConfigMap is the ConfigMap a component volume projects, or "". The
+// chart projects its ConfigMaps so they sit on tmpfs, which the component
+// entries' data rules admit on any node.
+func projectedConfigMap(v corev1.Volume) string {
+	if v.Projected == nil || len(v.Projected.Sources) != 1 || v.Projected.Sources[0].ConfigMap == nil {
+		return ""
+	}
+	return v.Projected.Sources[0].ConfigMap.Name
 }
 
 // The CDS image must be admittable by digest in the base/seed; without

@@ -151,29 +151,39 @@ containers:
       capabilities:
         drop:
           - ALL
+{{- /* Every component volume is tmpfs-backed (memory emptyDirs, ConfigMaps
+       projected): the component entry admits a volume only on storage the
+       node proves memory or encrypted, and tmpfs is that on every node. */}}
 volumes:
   - name: data
     {{- if .Values.cds.persistence.enabled }}
     persistentVolumeClaim:
       claimName: {{ include "c8s.cdsName" . }}-data
     {{- else }}
-    emptyDir: {}
+    emptyDir:
+      medium: Memory
     {{- end }}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
   {{- if not .Values.node.baked }}
   - name: allowlist-seed
-    configMap:
-      name: {{ include "c8s.cdsName" . }}-allowlist-seed
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-allowlist-seed
   {{- if .Values.cds.operatorKeys }}
   - name: operator-keys
-    configMap:
-      name: {{ include "c8s.cdsName" . }}-operator-keys
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-operator-keys
   {{- end }}
   {{- if .Values.cds.measurementsConfig }}
   - name: measurements-config
-    configMap:
-      name: {{ include "c8s.fullname" . }}-measurements
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
   {{- end }}
   {{- end }}
 {{- end -}}

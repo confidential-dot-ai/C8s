@@ -118,8 +118,10 @@ containers:
 {{ toYaml .Values.attestationApi.proxy.resources | indent 6 }}
 volumes:
   - name: config
-    configMap:
-      name: {{ include "c8s.attestationApiName" . }}
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.attestationApiName" . }}
   # hostPath.type=CharDevice forces a hard failure on nodes that
   # lack the device, instead of silently mounting an empty file —
   # attestation evidence would then be silently bogus. Toggle each

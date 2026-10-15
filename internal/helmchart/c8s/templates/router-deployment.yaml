@@ -366,8 +366,10 @@ volumes:
       sizeLimit: 1Mi
   {{- if .Values.cds.measurementsConfig }}
   - name: measurements-config
-    configMap:
-      name: {{ include "c8s.fullname" . }}-measurements
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
   {{- end }}
   {{- if eq $publicTLSMode "webpki" }}
   - name: public-tls
@@ -403,8 +405,10 @@ volumes:
       medium: Memory
       sizeLimit: 16Mi
   - name: nginx-config
-    configMap:
-      name: {{ include "router.fullname" . }}-nginx
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "router.fullname" . }}-nginx
   {{- if eq (include "router.mountInventorySocket" .) "true" }}
   # The baked router and the readiness gate need a stamped mesh leaf.
   # get-cert redeems a

@@ -64,8 +64,10 @@ volumes:
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
   {{- if .Values.armtlsMesh.measurementsConfig }}
   - name: measurements-config
-    configMap:
-      name: {{ include "c8s.fullname" . }}-measurements
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
   {{- end }}
   - name: xtables-lock
     hostPath:

@@ -322,7 +322,11 @@ state overlay, whose upper layer is the encrypted boot scratch. So on the
 measured node image a ConfigMap volume and a disk-backed `emptyDir` observe as
 `encrypted`, while a Secret, projected or downward-API volume and a
 `medium: Memory` `emptyDir` observe as `memory`. Both satisfy `emptyDir` and
-`data` rules.
+`data` rules. A node without encrypted scratch (a GKE or AKS node, or a kind
+node) observes ConfigMap and disk-backed volumes as `unknown`, so the chart
+backs every component volume with tmpfs: `medium: Memory` `emptyDir`s, and
+its ConfigMaps as projected volumes. Its component entries then hold on any
+node.
 
 The baked local-path provisioner creates `hostPath` persistent volumes under
 `/var/lib/local-path-provisioner`. Their bytes sit on the same encrypted

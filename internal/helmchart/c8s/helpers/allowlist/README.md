@@ -84,7 +84,9 @@ allowlist container:
 - `mounts` is `exact` at one rule per volume mount (`c8s.mountRules`): `host`
   with the hostPath `source` and `readOnly`, `emptyDir`, or `data` for a
   ConfigMap, Secret, projected, downward-API or PVC volume, which must sit
-  under `/mnt/c8s-data/`. A `subPath`, an unclean path or another volume source
+  under `/mnt/c8s-data/`. The node admits an `emptyDir` or `data` mount only on
+  memory or encrypted storage, so the component templates use memory
+  `emptyDir`s and project their ConfigMaps, which puts them on tmpfs. A `subPath`, an unclean path or another volume source
   fails the render. A hostPath under `/var/run` yields a second container with
   the source under `/run`, the path containerd resolves it to on most nodes.
 
