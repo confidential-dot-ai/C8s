@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -97,6 +98,8 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 		fail("policy_history_not_pinned: %v", err)
 	case d != "" && !slices.Contains(cfg.pinPolicies, d):
 		fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned", d)
+	case d != "":
+		demoteUnvouchedStamp(oc, cfg, ev, "pinned")
 	}
 }
 
@@ -132,10 +135,24 @@ func leafPolicy(ev *evidence) (string, error) {
 
 // demoteUnstamped leaves a verdict whose history was judged but whose leaf is
 // unstamped partial at best: an unstamped leaf is indistinguishable from one
-// issued to a pod that presented no sandbox token. Unlike demoteToPartial it
-// also names the gap on an already partial verdict.
+// issued to a pod that presented no sandbox token.
 func demoteUnstamped(oc *Outcome, judged string) {
-	note := fmt.Sprintf("the policy the leaf was issued under: the policy history is %s, but the leaf carries no matched-workload stamp, so its issuing policy was not checked", judged)
+	demoteNaming(oc, fmt.Sprintf("the policy the leaf was issued under: the policy history is %s, but the leaf carries no matched-workload stamp, so its issuing policy was not checked", judged))
+}
+
+// demoteUnvouchedStamp leaves a verdict partial at best when the leaf's stamp
+// was judged but nothing the operator pinned authenticated it: a CA-vouched
+// body counts only once its chain verifies against --mesh-ca.
+func demoteUnvouchedStamp(oc *Outcome, cfg config, ev *evidence, judged string) {
+	if ev.leafBody == certutil.BodySelfSigned || ev.leafChainVerified || (ev.leafChainDerived && cfg.meshCA != "") {
+		return
+	}
+	demoteNaming(oc, fmt.Sprintf("the policy the leaf was issued under: its matched-workload stamp is %s, but it is CA-vouched and no --mesh-ca chain authenticated it", judged))
+}
+
+// demoteNaming is demoteToPartial that also names the gap on an already
+// partial verdict.
+func demoteNaming(oc *Outcome, note string) {
 	if oc.Partial {
 		oc.NotProven = append(oc.NotProven, note)
 		return
@@ -175,10 +192,10 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		return
 	}
 	digests := oc.MeasuredPolicies
-	unstamped := false
+	unstamped, stamped := false, false
 	if cfg.trustOperator {
 		d, err := leafPolicy(ev)
-		unstamped = errors.Is(err, errLeafUnstamped)
+		unstamped, stamped = errors.Is(err, errLeafUnstamped), d != ""
 		if err != nil && !unstamped {
 			fail("policy_history_unsigned: %v", err)
 			return
@@ -241,7 +258,10 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 			return
 		}
 	}
-	if unstamped {
+	switch {
+	case unstamped:
 		demoteUnstamped(oc, "signed")
+	case stamped:
+		demoteUnvouchedStamp(oc, cfg, ev, "signed")
 	}
 }
