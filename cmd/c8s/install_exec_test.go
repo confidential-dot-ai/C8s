@@ -1435,6 +1435,24 @@ func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
 	}
 }
 
+// A values file written for a chart without imageEnv fails on the missing
+// field, not on an env mismatch against an empty map.
+func TestSeedPinsRequiresImageEnvWithEntrypoint(t *testing.T) {
+	_, err := componentsFromValues(map[string]any{
+		"image":         map[string]any{"repository": "ghcr.io/x/op"},
+		"c8sComponents": []any{map[string]any{"valuePath": "image", "entrypoint": []any{"/c8s"}}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "imageEnv is missing") {
+		t.Fatalf("componentsFromValues(entrypoint without imageEnv) = %v, want an error naming the missing imageEnv", err)
+	}
+	if _, err := componentsFromValues(map[string]any{
+		"image":         map[string]any{"repository": "ghcr.io/x/nri"},
+		"c8sComponents": []any{map[string]any{"valuePath": "image"}},
+	}); err != nil {
+		t.Fatalf("componentsFromValues(no entrypoint) = %v, want nil", err)
+	}
+}
+
 // An install refuses a component whose image does not start with the
 // entrypoint, or set the env, the chart seeds it under: the seed would deny
 // it on its own node.

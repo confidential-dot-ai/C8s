@@ -338,7 +338,8 @@ would deny them. A workload that reads service-link variables must resolve the
 Service by DNS instead (`<service>.<namespace>.svc`).
 
 The webhook overrides an explicit `enableServiceLinks: true` and returns an
-admission warning whenever it turns service links off.
+admission warning when it does. To silence the warning, set
+`enableServiceLinks: false` in the pod template.
 
 #### Migrate env policies that list service links
 
@@ -349,18 +350,46 @@ refuses that pod its certificate and secrets. `c8s allowlist derive` copies env
 policies from `--env-file` as written, so re-deriving with the same file keeps
 the stale names.
 
-To migrate an entry, do these steps before you roll out the upgrade:
+Prepare each entry before the upgrade and apply it after. With
+`cds.persistence.enabled=false` (the default), the CDS store is an
+`emptyDir`, and the upgrade recreates the CDS Pod, so every entry applied
+before the upgrade is lost. Applying after the upgrade works whether or not
+the store persists.
+
+Before you upgrade, export the live document: `c8s allowlist export
+pre-upgrade.json`. Keep this file: after the upgrade it is the only copy of
+the old entries and their secret grants. Then do steps 1 to 3 for each
+entry:
 
 1. In the env file, delete every `<SERVICE>_SERVICE_*` and `<SERVICE>_PORT*`
    variable from each container's policy, under `values` for `exact` and under
    `variables` for `match`. Keep `HOSTNAME`, `PATH` and the `KUBERNETES_*`
    variables: the runtime sets them in every container.
 2. Derive the entry under a new name into a file.
-3. Copy the old entry's whole `secrets` block into the derived entry. Get it
-   with `c8s allowlist get OLD_NAME`.
-4. Apply the derived entry beside the old one, so pods started before the
-   upgrade keep matching the old entry.
-5. Delete the old entry once no pod started before the upgrade runs.
+3. Copy the old entry's whole `secrets` block from `pre-upgrade.json` into
+   the derived entry.
+
+After the upgrade, once the new CDS Pod is `Ready` and before you recreate
+any workload pod:
+
+4. Restore the old entry: when `c8s allowlist get OLD_NAME` finds no
+   entry, the store was recreated, so copy the entry from
+   `pre-upgrade.json` into a name-keyed file and apply it with `c8s
+   allowlist apply`. Restore every other operator-added workload entry the
+   same way; the chart re-seeds the component entries. Then apply the
+   derived entry beside the old one, so pods started before the upgrade
+   keep matching the old entry.
+5. Confirm both entries are stored: `c8s allowlist get OLD_NAME` and `c8s
+   allowlist get NEW_NAME` each return the entry with its `secrets` block.
+6. Delete the old entry once no pod started before the upgrade runs.
+
+Any later CDS Pod recreation on an `emptyDir` store loses these entries
+again; re-apply them from your files. On measured nodes, the store starts
+from the baked seed and the signed `workloads` document after every node
+relaunch, so repeat steps 4 and 5 after each relaunch, or put the entries in
+the signed `workloads` document. When the store already persisted before
+this upgrade (`cds.persistence.enabled=true`), step 4 finds the old entry
+and only applies the derived one.
 
 Copy the `secrets` block in step 3 rather than passing `--secret-read` to
 `derive`. `derive` emits only read grants, so it drops the old entry's
@@ -373,7 +402,13 @@ variables the kubelet adds. To list them, run `c8s secrets explain --sandbox
 SANDBOX_ID --json` against a running pod of the workload: each reported
 container's `env.variableDigests` names every variable it started with, the
 image's and the runtime's included. This works on locked measured nodes,
-which deny `kubectl exec`. Read the values the pod spec sets with `kubectl
+which deny `kubectl exec`. The node reports `variableDigests` only for an
+image that a `match` env policy lists in its current base or applied
+allowlist. For an image covered only by `exact` or aggregate-digest
+policies, the report carries the aggregate digest alone. In that case,
+build the list from four sources: the old entry's env policy in
+`pre-upgrade.json`, the image config, the pod spec, and the variables the
+runtime adds (`HOSTNAME` and the `KUBERNETES_*` set in the example below). Read the values the pod spec sets with `kubectl
 get pod POD_NAME -o yaml` and the image's with `crane config IMAGE`. An
 `exact` policy pins
 every value, `HOSTNAME` included, so it fits only a pod whose hostname is fixed,
@@ -413,7 +448,7 @@ This env file shows a `match` and an `exact` policy after step 1, with
 }
 ```
 
-These commands derive the post-upgrade entry for step 2, then apply it for
+These commands derive the post-upgrade entry for step 2, then apply it in
 step 4 once you have added the `secrets` block:
 
 ```sh
@@ -443,23 +478,28 @@ holds the new document. Secret grants carry over through the copied
 
 To move the clients, alongside the steps above:
 
-1. Before step 4, list every client that passes `--workload OLD_NAME`, and
+1. Before the upgrade, list every client that passes `--workload OLD_NAME`, and
    every client that passes `--allowlist FILE`, whichever workload it
    reaches.
-2. Plan each document write, step 4 and step 5, as one cutover: the write,
-   the certificate renewals that follow it, and the new document on every
-   client that pins it. When a client cannot take the new document before
-   the first certificate renews against it, schedule a maintenance window
-   for that client's traffic.
-3. After each write, export the document with `c8s allowlist export FILE`
-   and give it to every client that pins the document.
+2. Plan each document write, step 4 and step 6, as one cutover for every
+   client that pins the document. Such a client accepts only certificates
+   stamped with its own document's snapshot, so it fails in both
+   directions: holding the old document, it rejects renewed certificates;
+   holding the new one, it rejects certificates not yet renewed. Schedule
+   a maintenance window that pauses the client's traffic, or cut over one
+   isolated cohort of peers at a time.
+3. For each write, pause the pinning client's traffic, make the write, and
+   export the document with `c8s allowlist export FILE`. Wait until every
+   peer the client reaches has renewed: `c8s verify --allowlist FILE`
+   succeeds against each one. Then install `FILE` on the client, verify it,
+   and resume its traffic. Keep the exact document pin throughout.
 4. As pods restart, switch each client to `--workload NEW_NAME`. A client
    pinned to one name rejects pods under the other until the rollout ends,
    so switch a client once the pods it reaches have restarted.
 5. Verify each switched client: `c8s verify` reports `workload_verified`
    for a restarted pod.
 
-To roll back before step 5, delete the new entry with `c8s allowlist
+To roll back before step 6, delete the new entry with `c8s allowlist
 delete NEW_NAME`, switch the clients back to `--workload OLD_NAME`, and
 give the clients that pin the document the export taken after the delete.
 Pods started before the upgrade renew under `OLD_NAME`. A pod started after

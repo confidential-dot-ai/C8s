@@ -251,8 +251,12 @@ func componentEnvFindings(al *pkgallowlist.Allowlist) []finding {
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		w := al.Workloads[name]
 		for _, c := range allContainers(w) {
-			match := matchComponentImage(cmp.Or(c.Image, w.Label))
+			image := cmp.Or(c.Image, w.Label)
+			match := matchComponentImage(image)
 			if match == noComponent {
+				if image == "" && c.Command.Policy == pkgallowlist.PolicyExact && c.Args.Policy == pkgallowlist.PolicyAny && (c.Env.Policy == pkgallowlist.PolicyAny || c.Env.Policy == "") {
+					out = append(out, warnf("workload %q container %s names no image and has the C8s component shape with env any; if it runs a C8s component, a pod could set LD_PRELOAD or PATH and load its own code (set image, or pin env with match)", name, c.Digest))
+				}
 				continue
 			}
 			report := errorf

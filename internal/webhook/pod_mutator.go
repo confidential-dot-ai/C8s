@@ -690,8 +690,10 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 			return admission.Errored(http.StatusBadRequest, err)
 		}
 		l.Info("injecting c8s get-cert containers", "workload", inj.WorkloadID)
-		// The API server defaults the field to true, so an unset one is on too.
-		if pod.Spec.EnableServiceLinks == nil || *pod.Spec.EnableServiceLinks {
+		// Only an explicit true: an unset field is the default on nearly every
+		// pod, and a controller-created pod's warning reaches the controller's
+		// log, not its author.
+		if pod.Spec.EnableServiceLinks != nil && *pod.Spec.EnableServiceLinks {
 			warnings = append(warnings, serviceLinksWarning)
 		}
 		mutatePod(pod, inj, m.cfg)
@@ -706,9 +708,9 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	return resp
 }
 
-// serviceLinksWarning tells the pod's author that mutatePod turned service
-// links off.
-const serviceLinksWarning = "c8s: enableServiceLinks set to false; the pod no longer receives <SERVICE>_SERVICE_HOST and <SERVICE>_PORT_* variables, so resolve Services by DNS and re-derive allowlist entries that pin them"
+// serviceLinksWarning tells the pod's author that mutatePod overrode an
+// explicit enableServiceLinks: true.
+const serviceLinksWarning = "c8s: enableServiceLinks set to false; the pod no longer receives <SERVICE>_SERVICE_HOST and <SERVICE>_PORT_* variables, so resolve Services by DNS and re-derive allowlist entries that pin them; set enableServiceLinks: false in the pod template to silence this warning"
 
 // workloadServiceNamePrefix marks the operator-managed headless Service inside
 // the workload namespace and keeps it from colliding with the workload's own

@@ -662,34 +662,43 @@ the old entries until those pods are gone.
 
 Before you upgrade the chart, finish these prerequisites:
 
-1. Migrate every workload entry whose env policy lists service-link
-   variables ([Migrate env policies that list service
-   links](secrets.md#migrate-env-policies-that-list-service-links)). A pod
-   recreated after the upgrade loses those variables, so its old entry stops
-   matching and CDS refuses it a certificate and secrets.
+1. Export the live document and prepare a derived entry for every workload
+   entry whose env policy lists service-link variables ([Migrate env
+   policies that list service
+   links](secrets.md#migrate-env-policies-that-list-service-links), steps 1
+   to 3). A pod recreated after the upgrade loses those variables, so its
+   old entry stops matching and CDS refuses it a certificate and secrets.
+   Apply nothing yet: with the default `emptyDir` store, the upgrade
+   recreates the CDS Pod and loses every operator-added entry.
 2. Prepare every client that pins the allowlist document ([Move clients
    that pin the old name](secrets.md#move-clients-that-pin-the-old-name)).
    Each `edit` and `delete` below changes the document for every workload.
-3. Check the prerequisites: `c8s allowlist lint` reports no error on the
-   exported document, and `c8s secrets explain` reports a match for one
-   running pod of each migrated workload.
+3. Lint the exported document with `c8s allowlist lint`. Resolve every
+   error except those on component entries with `env: any`: the steps
+   below migrate those after the upgrade, and the completion check below
+   requires them gone.
 
 To migrate the stored entries after upgrading the chart:
 
-1. Recreate every confidential pod created before the upgrade, so the webhook
+1. Restore the operator-added workload entries and apply the derived
+   entries, then confirm each is stored ([Migrate env policies that list
+   service links](secrets.md#migrate-env-policies-that-list-service-links),
+   steps 4 and 5). Continue only once `c8s allowlist get` returns every
+   entry with its `secrets` block.
+2. Recreate every confidential pod created before the upgrade, so the webhook
    injects it with service links off. Keep the stored entries unchanged
    while you do. Continue once each recreated pod reaches `Ready` and
    `c8s secrets explain` reports a match for it.
-2. Save the live document and lint it: `c8s allowlist export before.json`,
+3. Save the live document and lint it: `c8s allowlist export before.json`,
    then `c8s allowlist lint before.json`.
    On a mirror that flattens repository paths, every component entry gets a
    warning rather than an error; treat each one as reported.
-3. Split the reported entries by digest. An entry is current when the
+4. Split the reported entries by digest. An entry is current when the
    rendered seed (ConfigMap `c8s-cds-allowlist-seed`) holds an entry with
    the same container digest, whatever the stored entry is named. Every
    other reported entry is historical: an earlier image the seed no longer
    renders, or an entry named by hand.
-4. For each current entry, replace its `initContainers` and `containers`
+5. For each current entry, replace its `initContainers` and `containers`
    with those of the seed entry holding that digest. The seed holds one init
    container per invocation, each with its own env match, and no main
    container: `operator` requires `POD_NAME`, the injected fetchers
@@ -699,16 +708,18 @@ To migrate the stored entries after upgrading the chart:
    fields you reviewed at the entry level, such as `label` and `secrets`, and
    apply the entry with `c8s allowlist edit`. After each edit, confirm that
    the component pods of that digest stay `Ready`.
-5. Leave each historical entry as stored. Delete it with `c8s allowlist
+6. Leave each historical entry as stored. Delete it with `c8s allowlist
    delete` once no pod runs its digest. To list the digests pods run, use
    `kubectl get pods -A -o jsonpath='{..imageID}'`.
-6. On measured nodes (`nriImagePolicy.baked=true`), a chart upgrade updates
+7. On measured nodes (`nriImagePolicy.baked=true`), a chart upgrade updates
    the served entries but not the base measured into the node image, which
    keeps `env: any` for the components. Rebuild the node image from this
    release, and move the cluster onto it with the procedure [Default install
    behavior](operator.md#default-install-behavior) supports: replace the
    cluster, or relaunch every node with coordinated downtime. Measured
-   images do not support a rolling upgrade. Hardening on measured nodes is
+   images do not support a rolling upgrade. Each relaunch starts CDS from
+   the baked seed, so repeat step 1 after it, before you recreate workload
+   pods. Hardening on measured nodes is
    complete only once every node runs an image whose base carries the match
    policies.
 

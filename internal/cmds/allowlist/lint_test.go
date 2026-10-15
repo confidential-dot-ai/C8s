@@ -692,6 +692,8 @@ func TestLintComponentEntryEnv(t *testing.T) {
 		{"any command", operator, `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "command any"},
 		{"any command on a flattened mirror", "123456789012.dkr.ecr.us-east-1.amazonaws.com/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111", `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "command any"},
 		{"any command on a third-party image sharing a basename", "registry.example.com/team/volumed@sha256:1111111111111111111111111111111111111111111111111111111111111111", `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "shares only its name"},
+		{"component shape without an image", "", pinned, `{"policy":"any"}`, "", "names no image"},
+		{"matched env without an image", "", pinned, `{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"}}}`, "", ""},
 		{"pinned args", operator, `"command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":["operator"]},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -699,7 +701,11 @@ func TestLintComponentEntryEnv(t *testing.T) {
 			if tc.env != "" {
 				env = `,"env":` + tc.env
 			}
-			al, err := pkgallowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","image":"` + tc.image + `",` + tc.shape + env + `}]}}}`))
+			image := ""
+			if tc.image != "" {
+				image = `"image":"` + tc.image + `",`
+			}
+			al, err := pkgallowlist.ParseJSON([]byte(`{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111",` + image + tc.shape + env + `}]}}}`))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -199,10 +199,12 @@ func seedPins(m map[string]any) (entrypoint []string, imageEnv map[string]string
 		}
 	}
 	imageEnv = map[string]string{}
-	if raw, ok := m["imageEnv"].(map[string]any); ok {
-		for name, value := range raw {
-			imageEnv[name] = fmt.Sprint(value)
-		}
+	raw, ok := m["imageEnv"].(map[string]any)
+	if !ok && len(entrypoint) > 0 {
+		return nil, nil, errors.New("entrypoint is set but imageEnv is missing: list the image config's Env under imageEnv")
+	}
+	for name, value := range raw {
+		imageEnv[name] = fmt.Sprint(value)
 	}
 	return entrypoint, imageEnv, nil
 }

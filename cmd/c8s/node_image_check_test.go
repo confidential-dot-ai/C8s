@@ -194,7 +194,10 @@ func TestDocumentedMigrationEnvListsRuntimeVariables(t *testing.T) {
 // Each migration guide must close the gap its rename or rebuild opens: a
 // measured node keeps its base until the cluster moves to a rebuilt image by
 // a supported procedure, a document write reaches every client pinning the
-// document, and a locked node denies exec.
+// document without either snapshot reaching a client holding the other, an
+// emptyDir CDS store loses entries applied before the upgrade, a locked node
+// denies exec, and an image no match policy lists reports no per-variable
+// digests.
 func TestDocumentedMigrationsCoverStalePins(t *testing.T) {
 	for _, tc := range []struct {
 		file, section string
@@ -206,11 +209,24 @@ func TestDocumentedMigrationsCoverStalePins(t *testing.T) {
 				"nriImagePolicy.baked=true", "--served-policy-file", "operator.md#default-install-behavior",
 				"every node runs an image whose base carries the match policies",
 				"Before you upgrade the chart", "secrets.md#migrate-env-policies-that-list-service-links", "secrets.md#move-clients-that-pin-the-old-name",
+				"Apply nothing yet", "Restore the operator-added workload entries", "Resolve every error except those on component entries with `env: any`",
+				"Each relaunch starts CDS from the baked seed, so repeat step 1",
 			},
-			[]string{"Drain", "server.json"},
+			[]string{"Drain", "server.json", "reports no error on the exported document"},
 		},
-		{"../../docs/secrets.md", "#### Move clients that pin the old name", []string{"--workload NEW_NAME", "To roll back", "every client that passes `--allowlist FILE`", "maintenance window"}, []string{"for this workload"}},
-		{"../../docs/secrets.md", "#### Migrate env policies that list service links", []string{"c8s secrets explain"}, []string{"kubectl exec POD_NAME"}},
+		{
+			"../../docs/secrets.md", "#### Move clients that pin the old name",
+			[]string{"--workload NEW_NAME", "To roll back", "every client that passes `--allowlist FILE`", "maintenance window", "fails in both directions", "pause the pinning client's traffic", "isolated cohort"},
+			[]string{"for this workload", "cannot take the new document before"},
+		},
+		{
+			"../../docs/secrets.md", "#### Migrate env policies that list service links",
+			[]string{
+				"c8s secrets explain", "c8s allowlist export pre-upgrade.json", "After the upgrade, once the new CDS Pod is `Ready`",
+				"repeat steps 4 and 5 after each relaunch", "reports `variableDigests` only for an image",
+			},
+			[]string{"kubectl exec POD_NAME", "before you roll out the upgrade", "Get it with `c8s allowlist get OLD_NAME`"},
+		},
 	} {
 		doc, err := os.ReadFile(tc.file)
 		if err != nil {
