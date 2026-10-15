@@ -675,6 +675,10 @@ installed leaf's remaining lifetime, randomly shortened on each cycle by up to
 Unnamed fast polling retains its existing jitter; the minimum delay still applies.
 Certificate expiry is unchanged. A failed renewal retries on a short backoff
 rather than after a full interval.
+Between renewals, `--ca-watch-interval` (default 1m with `--renew-interval`
+and `--ca-out` or `--workload-claims`; `0` disables) polls CDS and renews early
+when the mesh CA at `--ca-out` is stale, or when the allowlist CDS serves no
+longer matches the leaf's stamped policy snapshot.
 Once the installed leaf has **expired** and renewals still fail, get-cert exits
 instead of retrying forever: as a native sidecar it restarts with fresh client
 state and re-runs the full issuance.

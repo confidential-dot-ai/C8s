@@ -488,11 +488,20 @@ provisioning flow.
 The router discovery endpoints (`/.well-known/mesh-ca.pem`,
 `/.well-known/cds-cert.pem`, `/v1/discovery`) track the new CA without a
 router restart: the c8s-cert sidecar polls CDS's `/ca` every
-`router.certProvisioning.caWatchInterval` (default 1m) over the same
+`router.certProvisioning.caWatchInterval` (default 1m; values below 1s are
+rejected, `"0"` disables) over the same
 armTLS-verified channel it obtains certificates on, and re-issues its leaf —
 rewriting the served CA bundle and discovery document — as soon as CDS holds
 a CA the served bundle is missing. External clients that pinned the old CA
 must still re-fetch it from the discovery endpoint.
+
+An allowlist write has a similar effect on a router that requests workload
+claims: its leaf stamps the policy snapshot it was issued under, and strict
+clients reject a leaf naming a superseded policy. The same watch tick also
+polls CDS's `/allowlist` and re-issues the leaf when the served policy moves.
+CDS answers 304 while nothing changed, so an idle poll is cheap. Strict
+clients recover without a router restart within one poll interval, plus up to
+half an interval of jitter, plus one issuance.
 
 There is **no scheduled in-process CA rotation today** — no cds flag or
 loop drives it, so every CA fingerprint change is a restart-shaped
@@ -1063,6 +1072,11 @@ get-cert \
 
 `--key-out` is idempotent: on a kubelet restart of the sidecar it reuses the
 key that's already on disk, so the previously-issued cert chain stays valid.
+The sidecar leaves `--ca-watch-interval` at get-cert's default, so it polls
+CDS once a minute and renews early when CDS's mesh CA is missing from
+`ca.crt`, or, when the pod requests workload claims, when the allowlist no
+longer matches the snapshot stamped in the leaf.
+
 `tls.crt` is the full chain (leaf first, mesh CA after); `ca.crt` is the mesh
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on

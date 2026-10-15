@@ -54,6 +54,7 @@ get-cert \
 | `--key` | | *(ephemeral)* | Path to an existing PEM private key for the CSR |
 | `--key-out` | | | Path to write the private key PEM with mode `0600` (`0640` in shared setgid directories); must be on a memory-backed filesystem |
 | `--renew-interval` | | `0` | Re-obtain the certificate at this interval; `0` runs once and exits |
+| `--ca-watch-interval` | | `1m` | Poll CDS and renew early when the mesh CA at `--ca-out` or the allowlist policy stamped by `--workload-claims` goes stale; applies only with `--renew-interval` and one of those flags, `0` disables |
 | `--reload-nginx` | | `true` | SIGHUP nginx after certificate renewal or watched file changes |
 | `--continue-on-initial-error` | | `false` | In renewal mode, keep running when the first certificate request fails |
 | `--verbose` | `-v` | `false` | Enable debug logging |

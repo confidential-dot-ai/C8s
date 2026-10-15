@@ -29,16 +29,18 @@ setup() {
     al add "$(image_digest "$ref")" "$ref" | awk '$1 == "added" {print $2}' >> "$written"
 }
 
-teardown() {
+teardown_backend() {
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true
     rm -f "$written"
 }
 
+# The lane's one node, not a Node object a scenario wrote (the steps label
+# those conformance.c8s/ghost).
 node_name() {
     case "$1" in
-        one) kubectl get nodes -o jsonpath='{.items[0].metadata.name}' ;;
+        one) kubectl get nodes -l '!conformance.c8s/ghost' -o jsonpath='{.items[0].metadata.name}' ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -50,11 +52,30 @@ image_alias() { return $UNSUPPORTED; }
 
 served_allowlist() { al export; }
 
-# The allowlist front door of the guest is the CDS's own listener, which the
-# c8s CLI's signed writes and raw reads go through. The launch bundle's key is
-# the run's operator key; the token minter is built from the checkout on
-# first use, with the Go toolchain that built the CLI.
-cds_url() { echo "$C8S_ALLOWLIST_URL"; }
+# The lane's allowlist URL is the router on the guest's public address: the
+# c8s CLI's signed writes and raw reads reach the CDS through its built-in
+# allowlist route, which forwards the /allowlist routes unchanged. The
+# operator's credential may neither exec, port-forward nor write in $NS, so
+# that route is the harness's only way to the CDS: its other documents, its
+# own serving certificate and its Service answer 77 below. The launch
+# bundle's key is the run's operator key; the token minter is built from the
+# checkout on first use, with the Go toolchain that built the CLI.
+cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
+router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
+cds_document_path() {
+    case "$1" in
+        allowlist) echo /allowlist ;;
+        *) return "$UNSUPPORTED" ;;
+    esac
+}
+cds_serving_cert() { return "$UNSUPPORTED"; }
+cds_block() { return "$UNSUPPORTED"; }
+cds_unblock() { return "$UNSUPPORTED"; }
+cds_relay_block() { return "$UNSUPPORTED"; }
+cds_relay_unblock() { return "$UNSUPPORTED"; }
+# The lane started the CDS pinning the launch bundle's key, the one
+# operator_key names.
+operator_keys() { echo yes; }
 operator_key() { echo "$C8S_OPERATOR_KEY"; }
 scratch() { echo "${SUITE_RESULTS:-${TMPDIR:-/tmp}}"; }
 optoken_bin() {
@@ -67,8 +88,6 @@ optoken_bin() {
     echo "$bin"
 }
 
-# Whether the front door is the CDS listener itself is the lane's to know;
-# a plain-HTTP probe of something else would prove nothing.
 cds_plain_url() { return "$UNSUPPORTED"; }
 
 # The pins the lane started the CDS with: a launch digest, or those of its
@@ -77,7 +96,7 @@ cds_pins() {
     if [ -n "${C8S_MEASUREMENTS:-}" ]; then
         printf '%s\n' "$C8S_MEASUREMENTS" | tr ',' '\n'
     elif [ -n "${C8S_MEASUREMENTS_CONFIG:-}" ]; then
-        jq -r '.measurements[].measurement // empty' "$C8S_MEASUREMENTS_CONFIG"
+        jq -r '.measurements[] | .measurement // .mrtd // empty' "$C8S_MEASUREMENTS_CONFIG"
     else
         echo "backend: neither C8S_MEASUREMENTS nor C8S_MEASUREMENTS_CONFIG names the CDS's pins" >&2
         return 1
@@ -91,6 +110,14 @@ attestation_service_stop() { return "$UNSUPPORTED"; }
 attestation_service_start() { return "$UNSUPPORTED"; }
 private_keys() { return "$UNSUPPORTED"; }
 attest_direct() { return "$UNSUPPORTED"; }
+
+# The lane pins the node's own measurement, so its evidence satisfies them.
+mesh_pins_satisfied() { echo yes; }
+
+# No address outside the cluster answers for the lane, and a pod that is not
+# injected has no socket to the attestation service.
+external_endpoint() { return "$UNSUPPORTED"; }
+attestation_endpoint() { return "$UNSUPPORTED"; }
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
@@ -135,11 +162,16 @@ print(json.dumps(env))
 PYEOF
 }
 
-# No node shell: the certificate volume is read through a container of the
-# pod, the first one unless named, so a leaf is seen only once it runs.
+# No node shell: the certificate volume is read through a running container
+# of the pod, the named one when given, else the first of the scenario's own
+# (the webhook mounts the volume into every container, its own included, but
+# those are distroless). Nothing while no such container runs yet.
 pod_cert_file() {
     local container="${4:-}"
-    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
+    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o json | jq -r '
+        [((.status.initContainerStatuses // []) + (.status.containerStatuses // []))[] | select(.state.running) | .name] as $running
+        | [((.spec.initContainers // []) + .spec.containers)[] | .name | select((startswith("c8s-") | not) and IN($running[]))][0] // empty')" || return
+    [ -n "$container" ] || return 0
     pod_cert_file_in "$1" "$2" "$container" "$3"
 }
 
@@ -172,15 +204,11 @@ allowlist_delete() { al delete "$1" >/dev/null 2>&1 || true; }
 
 # The base allowlist is measured into the node image and not readable without
 # a shell, so answer from what it was built from: the system images pinned in
-# node-guest-image/c8s/image-policy.yaml.in, plus c8s's own component entries,
-# which boot staging merges in and which are the images running in $NS.
+# node-guest-image/c8s/image-policy.yaml.in. c8s's own component entries,
+# which boot staging merges in, pin each image to its component's entrypoint,
+# so they declare no image for a container of the scenario's.
 base_declares() {
-    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in" ||
-        kubectl -n "$NS" get pods -o jsonpath='{.items[*].status.containerStatuses[*].imageID}' | grep -qF "$2"; then
-        echo yes
-    else
-        echo no
-    fi
+    if grep -qF "$2" "$C8S_ROOT/node-guest-image/c8s/image-policy.yaml.in"; then echo yes; else echo no; fi
 }
 
 # The lane's components-ready assert gates the suite; here only the node's
@@ -194,9 +222,7 @@ node_containers() { return $UNSUPPORTED; }
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted
 # CDS serves (its versions start over), so the CDS stays up too.
-# No shell on the node: the pull is taken to be refused as soon as the
-# Service is patched.
-node_refuses() { echo yes; }
+node_refuses() { return "$UNSUPPORTED"; }
 plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
