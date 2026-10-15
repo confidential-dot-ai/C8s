@@ -277,8 +277,10 @@ func (w Workload) ArgvPinned() bool {
 }
 
 // MountsPinned reports whether every container's mounts policy is deny, or
-// exact with no host rule, so the host neither adds a mount nor chooses what
-// one holds. A secrets grant requires it (docs/secrets.md).
+// exact with no host rule, so the host adds no mount and names no node path.
+// A data rule still mounts content the cluster chooses (a ConfigMap, a PVC)
+// at a destination the entry declares. A secrets grant requires it
+// (docs/secrets.md).
 func (w Workload) MountsPinned() bool {
 	for _, c := range w.containers() {
 		if !(mountConstraint{policy: &c.Mounts}).hostIndependent() {
