@@ -428,8 +428,19 @@ func TestUploadRequireOverridesDefaults(t *testing.T) {
 }
 
 func TestUploadStrictLint(t *testing.T) {
-	dir := t.TempDir()
-	clean := writeAllowlistFile(t, dir, coreImages())
+	workloads := anyWorkloads(t, coreImages())
+	for name, w := range workloads {
+		c := &w.Containers[0]
+		c.Command = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s"}}
+		c.Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}
+		c.Env = pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyExact, Values: map[string]string{"PATH": "/usr/bin"}}
+		workloads[name] = w
+	}
+	data, err := json.Marshal(map[string]any{"schema": pkgallowlist.Schema, "workloads": workloads})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clean := writeFile(t, "clean.json", string(data))
 	url, methods := recordingCDS(t)
 
 	if _, _, err := runCmd("upload", clean, "--url", url, "--insecure", "--strict", "--dry-run"); err != nil {
@@ -441,7 +452,7 @@ func TestUploadStrictLint(t *testing.T) {
 
 	warny := writeFile(t, "warny.json", `{"schema":"c8s.allowlist/v1","workloads":{"w":{"label":"docker.io/library/busybox:latest","containers":[
 		{"digest":"`+digA+`","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}}]}}}`)
-	_, _, err := runCmd("upload", warny, "--url", url, "--insecure", "--strict")
+	_, _, err = runCmd("upload", warny, "--url", url, "--insecure", "--strict")
 	if err == nil || !strings.Contains(err.Error(), "lint warning(s) with --strict") {
 		t.Fatalf("expected a strict lint refusal, got %v", err)
 	}

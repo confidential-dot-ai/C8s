@@ -230,7 +230,9 @@ func pinsNoEnvValue(env pkgallowlist.EnvPolicy) bool {
 
 // componentRepositories are the repository paths, without the registry, of
 // the component images the chart seeds with open args (c8sComponents and
-// router.nginx). A mirror that keeps the path still matches.
+// router.nginx). A mirror that keeps the path still matches; one that keeps
+// only the last element matches with a warning, as a third-party image may
+// share it.
 var componentRepositories = []string{
 	"confidential-dot-ai/c8s-operator", "confidential-dot-ai/cds", "confidential-dot-ai/armtls-mesh",
 	"confidential-dot-ai/volumed", "confidential-dot-ai/attestation-api", "nginxinc/nginx-unprivileged",
@@ -241,24 +243,39 @@ var componentRepositories = []string{
 // entrypoint reads code from (searchPathFindings covers loaderVariables for
 // every entry): the pinned entrypoint would load code the pod chooses. A
 // component entry is the shape the chart seeds: a component image pinned to
-// an exact command with open args. An entry under any command, as `c8s
-// allowlist add` writes, pins no entrypoint to protect.
+// an exact command with open args. A component image under any command, as
+// `c8s allowlist add` and older charts write it, gets a warning: admission
+// accepts it beside the hardened base, so it keeps the image unrestricted.
 func componentEnvFindings(al *pkgallowlist.Allowlist) []finding {
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		w := al.Workloads[name]
 		for _, c := range allContainers(w) {
-			if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyAny || !isComponentImage(cmp.Or(c.Image, w.Label)) {
+			match := matchComponentImage(cmp.Or(c.Image, w.Label))
+			if match == noComponent {
 				continue
+			}
+			if c.Command.Policy == pkgallowlist.PolicyAny {
+				out = append(out, warnf("workload %q container %s runs a C8s component image under command any, so the image runs any program with any environment; replace the entry's containers with the seed's (ConfigMap c8s-cds-allowlist-seed)", name, c.Digest))
+				continue
+			}
+			if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyAny {
+				continue
+			}
+			report := errorf
+			if match == componentBasename {
+				report = func(format string, args ...any) finding {
+					return warnf(format+"; the image shares only its name with a C8s component, so check it is one", args...)
+				}
 			}
 			switch c.Env.Policy {
 			case pkgallowlist.PolicyAny, "":
-				out = append(out, errorf("workload %q container %s runs a C8s component image with env any; a pod could set LD_PRELOAD or PATH and load its own code (pin env with match, as the chart seeds it)", name, c.Digest))
+				out = append(out, report("workload %q container %s runs a C8s component image with env any; a pod could set LD_PRELOAD or PATH and load its own code (pin env with match, as the chart seeds it)", name, c.Digest))
 			case pkgallowlist.PolicyMatch:
 				pinned := c.Env.ExactValues()
 				for _, variable := range slices.Sorted(maps.Keys(c.Env.Variables)) {
 					if _, exact := pinned[variable]; !exact && componentLoaderVariable(variable) && !slices.Contains(loaderVariables, variable) {
-						out = append(out, errorf("workload %q container %s matches loader variable %s with present; a pod could point it at its own code (pin it exact or leave it unlisted)", name, c.Digest, variable))
+						out = append(out, report("workload %q container %s matches loader variable %s with present; a pod could point it at its own code (pin it exact or leave it unlisted)", name, c.Digest, variable))
 					}
 				}
 			}
@@ -267,16 +284,32 @@ func componentEnvFindings(al *pkgallowlist.Allowlist) []finding {
 	return out
 }
 
-// isComponentImage reports whether image names a C8s component repository.
-func isComponentImage(image string) bool {
+// componentMatch is how closely an image reference names a component image.
+type componentMatch int
+
+const (
+	noComponent       componentMatch = iota
+	componentBasename                // the last path element only, as a flattening mirror keeps it
+	componentPath                    // the repository path
+)
+
+// matchComponentImage reports how image names a C8s component repository.
+func matchComponentImage(image string) componentMatch {
 	named, err := reference.ParseNormalizedNamed(image)
 	if err != nil {
-		return false
+		return noComponent
 	}
 	repository := reference.Path(named)
-	return slices.ContainsFunc(componentRepositories, func(component string) bool {
+	if slices.ContainsFunc(componentRepositories, func(component string) bool {
 		return repository == component || strings.HasSuffix(repository, "/"+component)
-	})
+	}) {
+		return componentPath
+	}
+	basename := path.Base(repository)
+	if slices.ContainsFunc(componentRepositories, func(component string) bool { return path.Base(component) == basename }) {
+		return componentBasename
+	}
+	return noComponent
 }
 
 // componentLoaderVariable reports whether the dynamic loader, a shell or a

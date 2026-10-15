@@ -631,6 +631,9 @@ func TestNodeImageCollectChecksMatchedEnvNames(t *testing.T) {
 		"other exact value":         {env: `env: [{name: NODE_IP, value: "1"}, {name: MODE, value: other}]`, wantErr: true},
 		"exact value from a ref":    {env: `env: [{name: NODE_IP, value: "1"}, {name: MODE, valueFrom: {fieldRef: {fieldPath: metadata.name}}}]`, wantErr: true},
 		"present variable unset":    {env: `env: [{name: MODE, value: mesh}]`, wantErr: true},
+		"required secret key":       {env: `env: [{name: NODE_IP, valueFrom: {secretKeyRef: {name: s, key: k}}}]`},
+		"optional secret key":       {env: `env: [{name: NODE_IP, valueFrom: {secretKeyRef: {name: s, key: k, optional: true}}}]`, wantErr: true},
+		"optional configmap key":    {env: `env: [{name: NODE_IP, valueFrom: {configMapKeyRef: {name: c, key: k, optional: true}}}]`, wantErr: true},
 		"imported variables":        {env: `envFrom: [{configMapRef: {name: settings}}]`, wantErr: true},
 	} {
 		t.Run(name, func(t *testing.T) {

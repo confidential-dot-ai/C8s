@@ -338,11 +338,56 @@ would deny them. A workload that reads service-link variables must resolve the
 Service by DNS instead (`<service>.<namespace>.svc`).
 
 The webhook overrides an explicit `enableServiceLinks: true` and returns an
-admission warning whenever it turns service links off. On upgrade, a restarted pod loses its
-service-link variables, so a workload entry whose `exact` env or aggregate env
-digest includes them stops matching, and CDS refuses that pod its certificate
-and secrets. Before you roll out the upgrade, re-derive those entries with
-`c8s allowlist derive`.
+admission warning whenever it turns service links off.
+
+#### Migrate env policies that list service links
+
+On upgrade, a restarted pod loses its service-link variables. A workload entry
+whose env policy names them stops matching: an `exact` policy pins them, a
+`match` policy lists them, and an aggregate env digest covers them. CDS then
+refuses that pod its certificate and secrets. `c8s allowlist derive` copies env
+policies from `--env-file` as written, so re-deriving with the same file keeps
+the stale names.
+
+To migrate an entry, do these steps before you roll out the upgrade:
+
+1. In the env file, delete every `<SERVICE>_SERVICE_*` and `<SERVICE>_PORT*`
+   variable from each container's policy, under `values` for `exact` and under
+   `variables` for `match`. Keep the `KUBERNETES_*` variables.
+2. Derive the entry under a new name and apply it beside the old one, so pods
+   started before the upgrade keep matching the old entry.
+3. Delete the old entry once no pod started before the upgrade runs.
+
+This env file shows a `match` and an `exact` policy after step 1, with
+`DB_SERVICE_HOST`, `DB_SERVICE_PORT` and `DB_PORT*` removed:
+
+```json
+{
+  "app": {"policy": "match", "variables": {
+    "PATH": {"exact": "/usr/bin:/bin"},
+    "HOSTNAME": {"present": true},
+    "KUBERNETES_SERVICE_HOST": {"present": true}
+  }},
+  "worker": {"policy": "exact", "values": {
+    "PATH": "/usr/bin:/bin",
+    "MODE": "batch",
+    "KUBERNETES_SERVICE_HOST": "10.43.0.1"
+  }}
+}
+```
+
+This command derives and applies the post-upgrade entry for step 2:
+
+```sh
+c8s allowlist derive NEW_NAME POD_FILE --env-file env.json --mounts-file mounts.json \
+  --secret-read SECRET_PATH | c8s allowlist apply -
+```
+
+- `NEW_NAME`: a name no entry uses, such as the old name with a `-v2` suffix.
+- `POD_FILE`: the workload's Pod or Deployment manifest.
+- `SECRET_PATH`: each secret path the old entry grants; repeat the flag per path.
+
+Pass the same mount flags the old entry was derived with.
 
 ### The injected drop set
 

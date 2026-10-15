@@ -673,23 +673,25 @@ func TestLintComponentEntryEnv(t *testing.T) {
 	pinned := `"command":{"policy":"exact","argv":["/c8s","operator"]},"args":{"policy":"any"},"mounts":{"policy":"any"}`
 	for _, tc := range []struct {
 		name, image, shape, env string
-		wantErr                 string
+		wantErr, wantWarn       string
 	}{
-		{"matched env", operator, pinned, `{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"HOSTNAME":{"present":true}}}`, ""},
-		{"env any", operator, pinned, `{"policy":"any"}`, "env any"},
-		{"env absent", operator, pinned, "", "env any"},
-		{"present PATH", operator, pinned, `{"policy":"match","variables":{"PATH":{"present":true}}}`, "leaves PATH to the host"},
-		{"present LD_PRELOAD", operator, pinned, `{"policy":"match","variables":{"LD_PRELOAD":{"present":true}}}`, "leaves LD_PRELOAD to the host"},
-		{"present BASH_ENV", operator, pinned, `{"policy":"match","variables":{"BASH_ENV":{"present":true}}}`, "leaves BASH_ENV to the host"},
-		{"present GLIBC_TUNABLES", operator, pinned, `{"policy":"match","variables":{"GLIBC_TUNABLES":{"present":true}}}`, "leaves GLIBC_TUNABLES to the host"},
-		{"present LD_BIND_NOW", operator, pinned, `{"policy":"match","variables":{"LD_BIND_NOW":{"present":true}}}`, "loader variable LD_BIND_NOW"},
-		{"mirrored component image", "registry.example.com/mirror/confidential-dot-ai/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, "env any"},
-		{"third-party image sharing a basename", "registry.example.com/team/cds@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, ""},
-		{"present nginx template dir", "docker.io/nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0", pinned, `{"policy":"match","variables":{"NGINX_ENVSUBST_TEMPLATE_DIR":{"present":true}}}`, "loader variable NGINX_ENVSUBST_TEMPLATE_DIR"},
-		{"exact loader variable", operator, pinned, `{"policy":"match","variables":{"LD_LIBRARY_PATH":{"exact":"/usr/lib"}}}`, ""},
-		{"application image", "registry.example.com/app@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, ""},
-		{"any command", operator, `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, ""},
-		{"pinned args", operator, `"command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":["operator"]},"mounts":{"policy":"any"}`, `{"policy":"any"}`, ""},
+		{"matched env", operator, pinned, `{"policy":"match","variables":{"PATH":{"exact":"/usr/bin:/bin"},"HOSTNAME":{"present":true}}}`, "", ""},
+		{"env any", operator, pinned, `{"policy":"any"}`, "env any", ""},
+		{"env absent", operator, pinned, "", "env any", ""},
+		{"present PATH", operator, pinned, `{"policy":"match","variables":{"PATH":{"present":true}}}`, "leaves PATH to the host", ""},
+		{"present LD_PRELOAD", operator, pinned, `{"policy":"match","variables":{"LD_PRELOAD":{"present":true}}}`, "leaves LD_PRELOAD to the host", ""},
+		{"present BASH_ENV", operator, pinned, `{"policy":"match","variables":{"BASH_ENV":{"present":true}}}`, "leaves BASH_ENV to the host", ""},
+		{"present GLIBC_TUNABLES", operator, pinned, `{"policy":"match","variables":{"GLIBC_TUNABLES":{"present":true}}}`, "leaves GLIBC_TUNABLES to the host", ""},
+		{"present LD_BIND_NOW", operator, pinned, `{"policy":"match","variables":{"LD_BIND_NOW":{"present":true}}}`, "loader variable LD_BIND_NOW", ""},
+		{"mirrored component image", "registry.example.com/mirror/confidential-dot-ai/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, "env any", ""},
+		{"third-party image sharing a basename", "registry.example.com/team/cds@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, "", "shares only its name"},
+		{"flattened mirror", "123456789012.dkr.ecr.us-east-1.amazonaws.com/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, "", "env any"},
+		{"present nginx template dir", "docker.io/nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0", pinned, `{"policy":"match","variables":{"NGINX_ENVSUBST_TEMPLATE_DIR":{"present":true}}}`, "loader variable NGINX_ENVSUBST_TEMPLATE_DIR", ""},
+		{"exact loader variable", operator, pinned, `{"policy":"match","variables":{"LD_LIBRARY_PATH":{"exact":"/usr/lib"}}}`, "", ""},
+		{"application image", "registry.example.com/app@sha256:1111111111111111111111111111111111111111111111111111111111111111", pinned, `{"policy":"any"}`, "", ""},
+		{"any command", operator, `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "command any"},
+		{"any command on a flattened mirror", "123456789012.dkr.ecr.us-east-1.amazonaws.com/c8s-operator@sha256:1111111111111111111111111111111111111111111111111111111111111111", `"command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", "command any"},
+		{"pinned args", operator, `"command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"exact","argv":["operator"]},"mounts":{"policy":"any"}`, `{"policy":"any"}`, "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := ""
@@ -700,11 +702,16 @@ func TestLintComponentEntryEnv(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var errs []string
+			var errs, warns []string
 			for _, f := range lintOffline(al) {
 				if f.err {
 					errs = append(errs, f.msg)
+				} else if strings.Contains(f.msg, "C8s component") {
+					warns = append(warns, f.msg)
 				}
+			}
+			if tc.wantWarn == "" && len(warns) != 0 || tc.wantWarn != "" && (len(warns) != 1 || !strings.Contains(warns[0], tc.wantWarn)) {
+				t.Errorf("lintOffline(%s) component warnings = %q, want %q", tc.name, warns, tc.wantWarn)
 			}
 			if tc.wantErr == "" {
 				if len(errs) != 0 {
