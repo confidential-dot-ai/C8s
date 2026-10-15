@@ -366,6 +366,7 @@ func TestExplainNamesTheEnvEvidenceCase(t *testing.T) {
 		argv []string
 		want string
 	}{
+		{"unavailable", nil, nil, pkgallowlist.EnvEvidenceUnavailable},
 		{"missing", observe("production", false, false), nil, pkgallowlist.EnvEvidenceMissing},
 		{"evicted", observe("production", false, true), nil, pkgallowlist.EnvEvidenceEvicted},
 		{"mismatch", observe("debug", true, false), nil, pkgallowlist.EnvEvidenceMismatch},

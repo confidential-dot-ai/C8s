@@ -7,9 +7,14 @@ import (
 
 // Why a match env policy rejected a container's environment.
 const (
-	// EnvEvidenceMissing: the node reported no per-variable digests. It had
-	// no match policy for the image when it answered, or the environment
-	// exceeds the per-variable evidence limits.
+	// EnvEvidenceUnavailable: the node reported no environment at all, because
+	// the container had no OCI process args or its CDI edits were deferred.
+	// Waiting never recovers it.
+	EnvEvidenceUnavailable = "unavailable"
+	// EnvEvidenceMissing: the node reported the aggregate digest alone. It had
+	// no match policy for the image when it answered, it recorded the
+	// container with software that predates per-variable digests, or the
+	// environment exceeds the per-variable evidence limits.
 	EnvEvidenceMissing = "missing"
 	// EnvEvidenceEvicted: the node dropped the per-variable digests to bound
 	// the sandbox's inventory.
@@ -86,9 +91,11 @@ func (w Workload) DiagnoseEnvEvidence(r RunningContainer) string {
 	switch {
 	case !matched:
 		return ""
-	case r.Env != nil && r.Env.VariableDigestsEvicted:
+	case r.Env == nil:
+		return EnvEvidenceUnavailable
+	case r.Env.VariableDigestsEvicted:
 		return EnvEvidenceEvicted
-	case r.Env == nil || r.Env.VariableDigests == nil:
+	case r.Env.VariableDigests == nil:
 		return EnvEvidenceMissing
 	default:
 		return EnvEvidenceMismatch

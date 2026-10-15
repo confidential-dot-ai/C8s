@@ -17,8 +17,10 @@ import (
 // recover (docs/secrets.md, "What the inventory reports").
 func envEvidenceReason(diagnosis string) string {
 	switch diagnosis {
+	case pkgallowlist.EnvEvidenceUnavailable:
+		return "the node reported no environment: the container had no OCI process args or deferred CDI edits; waiting does not help, fix the launch and recreate the pod"
 	case pkgallowlist.EnvEvidenceMissing:
-		return "the node reported no per-variable digests: it has not applied an allowlist version with this match policy, or the environment exceeds 128 variables or 4 KiB of names"
+		return "the node reported no per-variable digests: it has not applied an allowlist version with this match policy (wait), it recorded the container with software older than per-variable digests (recreate the pod), or the environment exceeds 128 variables or 4 KiB of names"
 	case pkgallowlist.EnvEvidenceEvicted:
 		return "the node evicted the per-variable digests to bound the sandbox inventory; recreate the pod"
 	case pkgallowlist.EnvEvidenceMismatch:

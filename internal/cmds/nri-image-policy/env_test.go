@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -430,5 +431,98 @@ func TestInventoryEvictsExitedContainersEvidenceFirst(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Startup recovery records a container that exited before or during it as
+// exited, so it cannot outrank a live container for per-variable evidence.
+func TestStartupRecoveryRecordsExitedContainersAsExited(t *testing.T) {
+	_, envs := matchWorkloadAtLimits(t, 1)
+	variant := func(value string) []string {
+		env := slices.Clone(envs[0])
+		for i := range env {
+			env[i] = strings.TrimSuffix(env[i], "x") + value
+		}
+		return env
+	}
+	probe, err := allowlist.ObserveEnv(envs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecars := allowlist.MaxSandboxVariableEvidenceBytes/probe.VariableEvidenceBytes() + 2
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		// exit runs between Synchronize and the deferred check.
+		exit  func(p *plugin, ctr *api.Container) error
+		state api.ContainerState
+	}{
+		{name: "stopped before the deferred check", exit: func(p *plugin, ctr *api.Container) error {
+			_, err := p.StopContainer(ctx, nil, ctr)
+			return err
+		}},
+		{name: "removed before the deferred check", exit: func(p *plugin, ctr *api.Container) error {
+			return p.RemoveContainer(ctx, nil, ctr)
+		}},
+		{name: "stopped at sync", state: api.ContainerState_CONTAINER_STOPPED},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}})
+			p.inventory = newAdmissionInventory(t.TempDir())
+			main := makeCtrWithImageArgs("pod", "main", "registry/main@"+pushDigestA, []string{"/app"})
+			main.Env = variant("main")
+			ctrs := []*api.Container{main}
+			for i := range sidecars {
+				ctr := makeCtrWithImageArgs("pod", fmt.Sprint("sidecar-", i), "registry/sidecar@"+pushDigestB, []string{"/sidecar"})
+				ctr.Env = variant(fmt.Sprint(i))
+				ctr.State = tc.state
+				ctrs = append(ctrs, ctr)
+			}
+			if _, err := p.Synchronize(ctx, nil, ctrs); err != nil {
+				t.Fatal(err)
+			}
+			if tc.exit != nil {
+				for _, ctr := range ctrs[1:] {
+					if err := tc.exit(p, ctr); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			p.SetReady()
+			p.RunDeferredCheck(ctx)
+
+			_, cs, _, err := p.inventory.DigestsForSandbox("pod")
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, c := range cs {
+				if c.Digest == pushDigestA && c.Env.VariableDigests == nil {
+					t.Fatal("the running main container lost its per-variable evidence to exited sidecars")
+				}
+			}
+		})
+	}
+}
+
+// A node that starts after publication logs only the initial pull, so the
+// match rollout must accept either message that applies a version.
+func TestMatchRolloutNamesEveryApplyLog(t *testing.T) {
+	doc, err := os.ReadFile("../../../docs/allowlist-and-capabilities.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rollout, _ := strings.Cut(string(doc), "To start using\n`match`:")
+	rollout, _, _ = strings.Cut(strings.TrimSpace(rollout), "\n\n")
+	source, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range []string{"initial allowlist pulled from CDS", "pull loop: allowlist refreshed"} {
+		if !strings.Contains(string(source), `"`+message+`"`) {
+			t.Fatalf("main.go no longer logs %q", message)
+		}
+		if !strings.Contains(strings.Join(strings.Fields(rollout), " "), message) {
+			t.Errorf("match rollout steps do not name %q", message)
+		}
 	}
 }

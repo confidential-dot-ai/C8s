@@ -777,6 +777,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		for _, pod := range pods {
 			p.inventory.recordSandbox(pod.GetId())
 		}
+		p.inventory.awaitRecovery()
 	}
 
 	// Ahead of every other decision: on a node image a container that already
@@ -822,11 +823,17 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		podByID[pod.GetId()] = pod
 	}
 
+	if p.inventory != nil {
+		defer p.inventory.recovered()
+	}
 	var killed, failed int
 	for _, ctr := range ctrs {
 		// Recorded ahead of the lookup that can skip it; the record needs no pod.
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
+		if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
+			p.inventory.stop(ctr.GetId())
+		}
 		p.recordForInventory(ctx, pod, ctr, imageRef)
 		if pod == nil {
 			continue
@@ -884,6 +891,9 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 
 	if len(ctrs) == 0 {
 		p.logger.Info("no deferred containers to check")
+		if p.inventory != nil {
+			p.inventory.recovered()
+		}
 		return
 	}
 
