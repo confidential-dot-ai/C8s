@@ -723,7 +723,8 @@ optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
 `remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
 binding for that same entry. On TDX the binding may be the key's seed followed
-by a prefix of the peer's measured allowlist policies that replays.
+by a prefix of the peer's measured policies that replays
+([Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
 An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
@@ -779,7 +780,8 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
   rejected). With no `--workload-image` the register must equal the bare seed.
   A node that measures allowlist policies extends them after that chain and
   lists them in cred-release's armTLS certificate; the
-  register may then also carry the longest prefix of that list that replays;
+  register may then also carry the longest prefix of that list that replays
+  (see [Measured policy history](allowlist-and-capabilities.md#measured-policy-history));
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator
@@ -1046,11 +1048,11 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
 
-When `cds-attest --measured-policies-file` names the node's measured-policy
-journal, both bundles also carry `measured_policies`: the policy digests the
-node extended into RTMR[3], read after the quote and outside any transcript.
-The chart does not set the flag. A verifier trusts the longest
-prefix that replays against the quote's RTMR[3].
+On a node that measures allowlist policies, both bundles also carry
+`measured_policies`: the policy digests the node extended into RTMR[3], read
+after the quote and outside any transcript. A verifier trusts the longest
+prefix that replays against the quote's RTMR[3]; see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history).
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode and the upstream at boot. Mode `acme`
