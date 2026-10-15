@@ -435,7 +435,8 @@ The supported deployment is chart-managed CDS running inside the intended CVM
 trust boundary.
 
 The chart installs a CDS Deployment, Service, ServiceAccount, and either an
-`emptyDir` allowlist DB or a PVC when `cds.persistence.enabled=true`. The
+`emptyDir` allowlist DB (a PVC when `cds.persistence.enabled=true`, which
+the chart accepts only in `audit` mode). The
 operator injects pods with the chart-managed CDS Service URL. Allowlist
 writes (`POST`, `PUT`, `DELETE /allowlist`) are authorized by an operator key:
 the caller presents a short-lived token signed by an operator EC private key
@@ -541,9 +542,10 @@ with `c8s allowlist add` or `apply`. With `cds.persistence.enabled=false`
 (the default), that store is an `emptyDir`: it survives a container restart,
 but drain, upgrade or scale-down can recreate the Pod and lose every
 operator-added entry. CDS logs a warning at startup when persistence is off.
-To keep dynamic entries across Pod recreation set
-`cds.persistence.enabled=true` (an RWO PVC); otherwise re-apply the entries
-after the store is recreated. The chart-seeded component entries are
+Re-apply the entries after the store is recreated. The chart refuses
+`cds.persistence.enabled=true` outside `audit` mode: CDS's component entry
+admits its store only on memory or encrypted storage, and no PVC observes as
+either (see [`allowlist-and-capabilities.md`](allowlist-and-capabilities.md)). The chart-seeded component entries are
 unaffected — they are re-seeded and, unlike dynamic entries, are also admitted
 from the plugin's base allowlist. Recreating the store also resets the
 allowlist version counter, and

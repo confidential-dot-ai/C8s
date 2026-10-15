@@ -332,10 +332,11 @@ The baked local-path provisioner creates `hostPath` persistent volumes under
 `/var/lib/local-path-provisioner`. Their bytes sit on the same encrypted
 overlay, but the container's mount source is the volume's host path, not the
 pod's volume directory, so it observes as `host` with a per-claim source no
-rule can name. A component entry therefore cannot admit `cds.persistence`
-backed by `local-path`; persistence needs a volume the kubelet mounts in the
-pod's volume directory on memory or encrypted storage. The chart's defaults
-use no persistent volume.
+rule can name. A CSI volume (a GCE PD, an Azure Disk, an EBS volume) is its
+own block device, so it observes as `unknown`. A component entry therefore
+cannot admit `cds.persistence` on any supported node, and the chart refuses
+`cds.persistence.enabled=true` unless the image policy runs in `audit` mode.
+The chart's defaults use no persistent volume.
 
 The initrd that creates scratch and generates its random in-memory key is part
 of the measured node image. Before RKE2 starts, `scratch-enforce` verifies the
@@ -451,12 +452,16 @@ client-go would run), or another volume is refused. Every ConfigMap, Secret
 and PVC a component mounts sits under `/mnt/c8s-data/` and every hostPath
 source is named, so no volume reaches the code an entrypoint loads. Three
 residuals stay open. `env` is still `any`, so `LD_PRELOAD` or a `PATH` lookup
-can still be pointed at a mounted file. The router's `nginx.conf` is the
+can still be pointed at a mounted file; `KUBECONFIG` and `HOME` are not a
+vector, since the operator, CDS and the mesh build their Kubernetes client
+from the in-cluster service account only. The router's `nginx.conf` is the
 content of a listed ConfigMap: a `load_module` directive in it loads code that
-no argument names. The local-path helper runs `/bin/sh /script/setup` from a
-`/script` ConfigMap with args and mounts `any`, so any pod running the helper
-digest can supply its own script. Both content residuals need the content
-pinned, or an image that carries the file. The node image's generated RKE2 system
+no argument names
+([#871](https://github.com/confidential-dot-ai/C8s/issues/871)). The
+local-path helper runs `/bin/sh /script/setup` from a `/script` ConfigMap with
+args and mounts `any`, so any pod running the helper digest can supply its own
+script ([#872](https://github.com/confidential-dot-ai/C8s/issues/872)). Both
+content residuals need the content pinned, or an image that carries the file. The node image's generated RKE2 system
 entries still admit their digests under `command`, `args` and `mounts` of
 `any`, so the control plane can restage one of those images — several ship a
 shell — as a privileged tenant pod and the base admits it. Closing that means
@@ -600,8 +605,10 @@ plugin's base allowlist, as does every operator entry that leaves args,
 environment and mounts unconstrained, whether its command is `any` or pinned,
 and every operator entry for a component's digest whatever it pins; other
 operator entries are seed-only. `c8s allowlist lint` reports a container
-pinned to the C8s binary (`/c8s`, `/app/c8s`) with `args` or `mounts` `any` as
-an error; an injected sidecar shape may leave only its `args` open. The
+pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`, or
+`/docker-entrypoint.sh nginx`) with `args` or `mounts` `any` as an error; an
+injected sidecar shape may leave only its `args` open. With `deriveComponents`
+off, such a container does not cover a component for the render guard. The
 name is a function of the digest because CDS seeds **additively by name**: an
 image bump adds the new digest's entry beside the old one, which pods still
 running the old image keep matching while they recycle. The seed never

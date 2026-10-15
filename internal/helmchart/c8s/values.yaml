@@ -323,9 +323,10 @@ cds:
     certValidity: 8760h
     minValidity: 1h
   ## The claim is mounted at /mnt/c8s-data/cds, and CDS's component entry
-  ## admits it only on storage the node proves memory or encrypted: a volume the
-  ## kubelet mounts in the pod's volume directory. A local-path (hostPath)
-  ## volume is refused. See docs/allowlist-and-capabilities.md.
+  ## admits it only on storage the node proves memory or encrypted. No PVC is:
+  ## a CSI volume observes as unknown and a local-path volume as a host path.
+  ## The render therefore refuses enabled=true unless
+  ## nriImagePolicy.policy.mode=audit. See docs/allowlist-and-capabilities.md.
   persistence:
     enabled: false
     size: 1Gi

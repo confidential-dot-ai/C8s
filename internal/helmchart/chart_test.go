@@ -4912,13 +4912,33 @@ func TestChartCDSAllowlistPersistentTracksPVC(t *testing.T) {
 		assertContainerHasArg(t, "cds", args, "--allowlist-persistent=false")
 	})
 	t.Run("persistence enabled renders true", func(t *testing.T) {
-		out, err := helmTemplate(t, "--set", "cds.persistence.enabled=true")
+		out, err := helmTemplate(t, "--set", "cds.persistence.enabled=true", "--set", "nriImagePolicy.policy.mode=audit")
 		if err != nil {
 			t.Fatalf("helm template: %v\n%s", err, out)
 		}
 		args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 		assertContainerHasArg(t, "cds", args, "--allowlist-persistent=true")
 	})
+}
+
+// No PVC observes as memory or encrypted storage, so CDS's component entry
+// refuses a persistent store; the render refuses it wherever the image policy
+// enforces.
+func TestChartRefusesCDSPersistenceUnderEnforcement(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"fail-closed", []string{"--set", "nriImagePolicy.policy.mode=fail-closed"}},
+		{"bare-metal without the installer", []string{"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.enabled=false", "--set", "nriImagePolicy.policy.mode=audit"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(tc.args, "--set", "cds.persistence.enabled=true")...)
+			if kind := parseValidationErrorKind(out); err == nil || kind != "cds_persistence_unadmitted" {
+				t.Fatalf("helm template = %v (kind %q), want cds_persistence_unadmitted\n%s", err, kind, out)
+			}
+		})
+	}
 }
 
 // TestChartCDSServesARMTLS confirms the cds container renders with a non-empty
