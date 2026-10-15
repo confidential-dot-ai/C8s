@@ -20,11 +20,11 @@ func kubeletExpand(token string, env map[string]string) string {
 			b.WriteByte(token[i])
 			continue
 		}
-		switch next := token[i+1]; {
-		case next == '$':
+		switch token[i+1] {
+		case '$':
 			b.WriteByte('$')
 			i++
-		case next == '(':
+		case '(':
 			end := strings.IndexByte(token[i:], ')')
 			if end < 0 {
 				b.WriteByte('$')
