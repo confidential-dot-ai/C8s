@@ -94,7 +94,7 @@ func checkComponentMounts(t *testing.T, args []string) {
 	entrypoints := map[string][]string{}
 	for _, w := range seed.Workloads {
 		for _, c := range w.Containers {
-			if c.PinsAtMostCommand() && c.Command.Policy == pkgallowlist.PolicyExact {
+			if c.Command.Policy == pkgallowlist.PolicyExact && (c.PinsAtMostCommand() || strings.Contains(c.Image, "nginx-unprivileged@")) {
 				entrypoints[c.Digest.String()] = c.Command.Argv
 			}
 		}
@@ -144,5 +144,49 @@ func TestChartRefusesUncleanMountPaths(t *testing.T) {
 				t.Fatalf("helm template %q failed without naming the path: %s", args, out)
 			}
 		})
+	}
+}
+
+func TestRouterNginxArgumentsArePinned(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	seed := renderedSeed(t, out)
+	ctr := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	digest := imageDigest(ctr.Image)
+	var command []string
+	for _, w := range seed.Workloads {
+		for _, c := range w.Containers {
+			if c.Digest.String() == digest {
+				if c.Args.Policy != pkgallowlist.PolicyExact {
+					t.Fatal("nginx still admits open arguments")
+				}
+				command = c.Command.Argv
+			}
+		}
+	}
+	if len(command) == 0 {
+		t.Fatal("nginx entry missing")
+	}
+	if !slices.Equal(ctr.Command, command) {
+		t.Fatalf("rendered command %q differs from policy %q", ctr.Command, command)
+	}
+	index := seed.BuildIndex()
+	if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: append(slices.Clone(command), ctr.Args...)}) {
+		t.Fatal("rendered nginx invocation refused")
+	}
+	for _, args := range [][]string{{"-g", "load_module /m/evil.so;"}, {"-c", "/m/nginx.conf"}, {"-p", "/m"}, {"-g", "daemon off;", "-c", "/m/nginx.conf"}, {}} {
+		if index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: append(slices.Clone(command), args...)}) {
+			t.Fatalf("nginx override accepted: %q", args)
+		}
+	}
+	// The base is used as the sandbox privilege exemption; it must enforce
+	// the same argv pin as the served entry.
+	base := bootConfigFromInstaller(t, out, "c8s-nri-image-policy-worker").Allowlist.Base
+	for _, args := range [][]string{{"-g", "load_module /m/evil.so;"}, {"-c", "/m/nginx.conf"}} {
+		if base.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: append(slices.Clone(command), args...)}) {
+			t.Fatalf("base exempted nginx override: %q", args)
+		}
 	}
 }

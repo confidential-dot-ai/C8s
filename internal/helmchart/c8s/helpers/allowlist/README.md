@@ -116,3 +116,6 @@ boot config. Keep the inclusion conditions of both helpers aligned.
 rejection of different argv, and exclusion from the boot config's local base.
 The operator-facing bootstrap behavior is described in
 [Allowlist and capabilities](../../../../../docs/allowlist-and-capabilities.md#bootstrap).
+
+The nginx component pins its arguments to `["-g", "daemon off;"]` in both
+the boot base and served seed. Other component entries retain open arguments.

@@ -531,9 +531,11 @@ system binaries it runs, the mesh's `ipset` and `iptables` and their
 longer replace that code. That closes the mounts half. The env half stays
 open: with `env` left `any`, the environment can still redirect what the
 entrypoint loads (`PATH`, `LD_PRELOAD`) to code already in the image or on a
-confined volume. Args stay open too, and some arguments load code: nginx's
-`-g 'load_module ...;'` and `-c`, and the `--kubeconfig` of the mesh and CDS,
-whose exec credential plugin client-go runs. Nginx's `nginx.conf` is also
+confined volume. The nginx entry pins args to `-g 'daemon off;'`, so `-g`,
+`-c` and `-p` overrides are refused. Mesh and CDS kubeconfig clients reject
+exec and auth-provider credential plugins before constructing a client;
+static credentials and in-cluster service-account credentials remain supported.
+Nginx's `nginx.conf` is still
 `unconfined`, so any pod using its digest can mount its own with a
 `load_module` directive. Any of these loads code from a confined volume the pod
 mounts. The node image's generated RKE2 system
@@ -603,7 +605,10 @@ seeded component entries carry `command: exact` at the image's entrypoint and
 `args: any`: the binary is pinned, the rest of the argv is not fixed and must
 not be argv-policed. Before matching, a container whose image is admitted with
 open args for its executable and running one of the invocations the webhook
-injects is dropped from the candidate set
+injects is dropped from the candidate set only when one open-args entry
+admits its complete launch specification, including its environment and that
+entry's mount restrictions. Every mount must also be confined; an
+`unconfined` policy exception cannot authorize exclusion
 ([`secrets.md`](secrets.md#the-injected-drop-set)). The same image in any other
 mode — for example, an application's `cds-attest` — is not injected, and the
 entry must declare it.
@@ -665,7 +670,8 @@ digests, argv-pinned platform entries, and `bootstrapAllowlist.workloads`. Each
 component digest becomes one entry named `<image basename>-<first 12 hex of
 digest>` with a single container under `command: exact` at the image's
 entrypoint (`c8sComponents[].entrypoint`, `router.nginx.entrypoint`),
-`args: any, env: any`, and `mounts: confined` with the image's `denyBelow`
+`args: any, env: any` (nginx instead pins `args` to `["-g", "daemon off;"]`),
+and `mounts: confined` with the image's `denyBelow`
 list (`c8sComponents[].denyBelow`, `router.nginx.denyBelow`) and, as
 `unconfined`, the destinations where the chart itself mounts a writable host
 path, a PVC or a ConfigMap; an operator-authored `workloads` entry of

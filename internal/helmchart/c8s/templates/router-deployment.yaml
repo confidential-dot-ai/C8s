@@ -151,6 +151,9 @@ spec:
         - name: nginx
           image: {{ include "c8s-common.image" .Values.router.nginx.image }}
           imagePullPolicy: {{ .Values.router.nginx.image.pullPolicy }}
+          # Keep the process argv paired with the seed and measured base.
+          command: {{ .Values.router.nginx.entrypoint | toJson }}
+          args: ["-g", "daemon off;"]
           ports:
             - name: https
               containerPort: {{ .Values.router.nginx.httpsPort }}

@@ -75,7 +75,7 @@
 {{- fail "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" -}}
 {{- end -}}
 {{- $mounts := include "c8s.componentMounts" (dict "root" . "name" "router.nginx" "denyBelow" .Values.router.nginx.denyBelow) | fromJson -}}
-{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "mounts" $mounts) -}}
+{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "mounts" $mounts "args" (dict "policy" "exact" "argv" (list "-g" "daemon off;"))) -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
@@ -144,11 +144,12 @@
 
 {{/* One allowlist container for a system image from c8s.imageAllowlist, or
      for an operator open-args entry: command pinned to the entrypoint, args
-     any, and the entry's mount policy. The seed adds an explicit env any; the
-     base leaves env absent, which normalizes to any. */ -}}
+     any unless the component supplies an exact policy, and its mount policy.
+     The seed adds an explicit env any; the base leaves env absent, which
+     normalizes to any. */ -}}
 {{- define "c8s.componentContainer" -}}
 {{- $command := dict "policy" "exact" "argv" (get .entry "entrypoint") -}}
-{{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (get .entry "mounts") "command" $command "args" (dict "policy" "any") -}}
+{{- $container := dict "digest" .digest "image" (get .entry "image") "mounts" (get .entry "mounts") "command" $command "args" (get .entry "args" | default (dict "policy" "any")) -}}
 {{- if .env -}}{{- $_ := set $container "env" (dict "policy" "any") -}}{{- end -}}
 {{ $container | toJson }}
 {{- end -}}
