@@ -366,8 +366,13 @@ func (k bakedContainer) argv() []string {
 // container that runs the image's entrypoint, only a command the seed pins
 // says what the argv starts with; a command left any admits it only with args
 // any too. The mount check compares the rules the manifest implies; whether
-// the storage behind a volume is memory or encrypted is the node's to see.
+// the storage behind a volume is memory or encrypted is the node's to see. Env
+// must be any: the image and the runtime add variables the manifest does not
+// list.
 func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool {
+	if c.Env.Policy != "" && c.Env.Policy != pkgallowlist.PolicyAny {
+		return false
+	}
 	argv := k.argv()
 	if len(k.command) == 0 {
 		switch {

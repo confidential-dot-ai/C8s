@@ -557,8 +557,9 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 // An operator entry for a component digest that pins args and mounts is a
 // component entry like the chart's own: copied from the chart's derived entry,
 // it covers the component for the fail-closed guard and reaches the base
-// verbatim. Missing any container the chart runs the executable in, it does
-// not cover the component.
+// verbatim. Missing any container the chart runs the executable in, an
+// injected sidecar shape among them, or pinning env, it does not cover the
+// component.
 func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000011"
 	derived, err := helmTemplate(t, "--set-string", "image.digest="+opD, "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true")
@@ -580,6 +581,7 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		drop      func(pkgallowlist.Container) bool
+		pinEnv    bool
 		uppercase bool
 		covered   bool
 	}{
@@ -589,9 +591,16 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 			return c.Args.Policy == pkgallowlist.PolicyExact && slices.Equal(c.Args.Argv, operatorArgv[1:])
 		}},
 		{name: "without the resolved layout of a host mount", drop: resolvedLayout},
+		{name: "without the injected sidecars", drop: injectedShape},
+		{name: "env pinned", pinEnv: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := slices.Clone(containers)
+			if tc.pinEnv {
+				for i := range entry {
+					entry[i].Env = pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyDeny}
+				}
+			}
 			if tc.drop != nil {
 				entry = slices.DeleteFunc(entry, tc.drop)
 				if len(entry) == len(containers) {

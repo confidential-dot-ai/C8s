@@ -101,11 +101,20 @@
 {{- end -}}
 {{- /* Covered per shape: a container with a hostPath under /var/run has a
        shape per host layout, and each must be admitted, since the node's
-       layout is not known here. */ -}}
+       layout is not known here. The sidecars the webhook injects with the
+       C8s image need the same entry, so their shapes count too. */ -}}
 {{- $covered := dict -}}
 {{- $argvs := dict -}}
+{{- $shapes := list -}}
 {{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
-{{- range $shape := (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "refs" dict) | fromJsonArray) -}}
+{{- $shapes = concat $shapes (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "refs" dict) | fromJsonArray) -}}
+{{- end -}}
+{{- with .Values.image.digest -}}
+{{- if hasKey $pins . -}}
+{{- $shapes = concat $shapes (include "c8s.injectedShapes" (dict "root" $ "digest" . "image" "") | fromJsonArray) -}}
+{{- end -}}
+{{- end -}}
+{{- range $shape := $shapes -}}
 {{- $entrypoint := get $pins (get $shape "digest") -}}
 {{- $command := get (get $shape "command") "argv" -}}
 {{- /* Only the component's own executable runs before CDS serves policy;
@@ -123,14 +132,19 @@
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- end -}}
 {{- range $key, $ok := $covered -}}
 {{- if not $ok -}}
 {{- $digest := get (fromJson $key) "digest" -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts. The plugin would deny it on its own node. Copy the chart's own entry for the digest (a deriveComponents=true render seeds it with command, args and mounts pinned as the chart renders them), set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts and open env. The plugin would deny it on its own node. Copy the chart's own entry for the digest (a deriveComponents=true render seeds it with command, args and mounts pinned as the chart renders them), set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- /* The store volume mounts at /mnt/c8s-data/cds and the root is read-only,
+       so a DB path elsewhere crash-loops CDS. */ -}}
+{{- $db := toString .Values.cds.allowlistDB -}}
+{{- if or (not (hasPrefix "/mnt/c8s-data/cds/" $db)) (ne (clean $db) $db) -}}
+{{- fail (printf "VALIDATION_ERROR kind=cds_allowlist_db_path: cds.allowlistDB must name a file in /mnt/c8s-data/cds/, where the store volume is mounted (got %q); the CDS root filesystem is read-only." $db) -}}
 {{- end -}}
 {{- /*
   CDS's component entry pins its store at /mnt/c8s-data/cds with a data rule,

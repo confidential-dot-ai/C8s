@@ -4921,6 +4921,32 @@ func TestChartCDSAllowlistPersistentTracksPVC(t *testing.T) {
 	})
 }
 
+func TestChartRefusesCDSAllowlistDBOutsideItsVolume(t *testing.T) {
+	for _, tc := range []struct {
+		path string
+		ok   bool
+	}{
+		{"/mnt/c8s-data/cds/allowlist.db", true},
+		{"/mnt/c8s-data/cds/other.db", true},
+		{"/data/allowlist.db", false},
+		{"/mnt/c8s-data/cds/../cds-seed/allowlist.db", false},
+		{"/mnt/c8s-data/cds-seed/allowlist.db", false},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			out, err := helmTemplate(t, "--set-string", "cds.allowlistDB="+tc.path)
+			if tc.ok {
+				if err != nil {
+					t.Fatalf("helm template(cds.allowlistDB=%s): %v\n%s", tc.path, err, out)
+				}
+				return
+			}
+			if kind := parseValidationErrorKind(out); err == nil || kind != "cds_allowlist_db_path" {
+				t.Fatalf("helm template(cds.allowlistDB=%s) = %v (kind %q), want cds_allowlist_db_path", tc.path, err, kind)
+			}
+		})
+	}
+}
+
 // No PVC observes as memory or encrypted storage, so CDS's component entry
 // refuses a persistent store; the render refuses it wherever the image policy
 // enforces.

@@ -279,9 +279,9 @@
 
 {{/* "true" when an operator-written container admits a component shape:
      its command any or a prefix of the shape's argv, its args admitting the
-     rest, and its mounts any or the shape's rule set. Env is not checked: the
-     chart cannot know what the runtime adds. Feeds the coverage guard
-     (validations.yaml). */ -}}
+     rest (any for a shape whose args are open), its mounts any or the shape's
+     rule set, and its env any: the chart cannot know every variable the image
+     and the runtime add. Feeds the coverage guard (validations.yaml). */ -}}
 {{- define "c8s.admitsShape" -}}
 {{- $c := .container -}}
 {{- $shape := .shape -}}
@@ -300,7 +300,9 @@
 {{- $ok = false -}}
 {{- end -}}
 {{- $args := dig "args" "policy" "deny" $c -}}
-{{- if eq $args "exact" -}}
+{{- if eq (dig "args" "policy" "" $shape) "any" -}}
+{{- if ne $args "any" -}}{{- $ok = false -}}{{- end -}}
+{{- else if eq $args "exact" -}}
 {{- if ne ($rest | toJson) (dig "args" "argv" list $c | toJson) -}}{{- $ok = false -}}{{- end -}}
 {{- else if eq $args "deny" -}}
 {{- if $rest -}}{{- $ok = false -}}{{- end -}}
@@ -315,6 +317,7 @@
 {{- range $r := (dig "mounts" "rules" list $c) -}}{{- $_ := set $have (toString $r.destination) (list (toString $r.kind) (default "" $r.source) (toString (default false $r.readOnly))) -}}{{- end -}}
 {{- if or (not (has $mounts (list "exact" "deny"))) (ne ($want | toJson) ($have | toJson)) -}}{{- $ok = false -}}{{- end -}}
 {{- end -}}
+{{- if ne (dig "env" "policy" "any" $c) "any" -}}{{- $ok = false -}}{{- end -}}
 {{- if $ok -}}true{{- end -}}
 {{- end -}}
 
