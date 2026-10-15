@@ -40,11 +40,11 @@ var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 // boot.
 var ErrNoOperatorKey = errors.New("no operator pubkey staged")
 
-// readOperatorPubkey reads the operator public key the initrd staged off the
+// ReadOperatorPubkey reads the operator public key the initrd staged off the
 // opkeydata disk. The bytes are exactly what the initrd hashed into the launch
 // binding, so runtimemeasure can re-derive the same digest. Absence is
 // reported as ErrNoOperatorKey; every other read failure is a hard error.
-func readOperatorPubkey() ([]byte, error) {
+func ReadOperatorPubkey() ([]byte, error) {
 	pub, err := os.ReadFile(operatorPubkeyPath)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("%w: %s — was the VM launched with an operator key?", ErrNoOperatorKey, operatorPubkeyPath)
@@ -133,7 +133,7 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 // Called once at service start: it accepts the policies the node had measured
 // by then, and does not see later extends.
 func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL, journal string) ([]byte, error) {
-	pub, err := readOperatorPubkey()
+	pub, err := ReadOperatorPubkey()
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ type MeasuredIdentity struct {
 // key is missing or its binding fails; OperatorKeyErr records that failure.
 // The returned error is reserved for self-report, image, or platform failures.
 func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, journal string) (MeasuredIdentity, error) {
-	pub, pubErr := readOperatorPubkey()
+	pub, pubErr := ReadOperatorPubkey()
 	report, err := verifiedSelfReport(ctx, attestationAPIURL)
 	if err != nil {
 		return MeasuredIdentity{}, err

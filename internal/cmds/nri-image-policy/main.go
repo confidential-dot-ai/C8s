@@ -10,12 +10,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,8 +26,11 @@ import (
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
@@ -180,11 +185,13 @@ func Run(args []string) error {
 		}
 	}
 
+	measure := policyMeasurer(cfg, logger)
 	var initialETag string
 	if cfg.PullEnabled() {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
+			measure:     measure,
 			timeout:     cfg.Allowlist.Pull.Timeout,
 			pluginErrCh: pluginErrCh,
 			logger:      logger,
@@ -221,6 +228,7 @@ func Run(args []string) error {
 		go runPullLoop(ctx, pullLoopArgs{
 			client:   wlClient,
 			store:    store,
+			measure:  measure,
 			interval: cfg.Allowlist.Pull.Interval,
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
@@ -279,6 +287,7 @@ func (cfg pullConfig) cdsPins() (armtls.Pins, error) {
 type pullArgs struct {
 	client      allowlistclient.Client
 	store       *policyStore
+	measure     func(digest string) error // nil measures nothing
 	timeout     time.Duration
 	pluginErrCh <-chan error
 	logger      *slog.Logger
@@ -304,26 +313,31 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 
 		reqCtx, reqCancel := context.WithTimeout(ctx, args.timeout)
 		args.logger.Info("fetching initial allowlist from CDS", "attempt", attempt)
-		wl, etag, notModified, err := args.client.Fetch(reqCtx, "")
+		served, notModified, err := args.client.FetchServed(reqCtx, "")
+		wl, etag := served.Allowlist, served.ETag
 		reqCancel()
 		if err == nil {
 			if notModified {
 				err = errInitialAllowlistNotModified
 			} else if wl == nil {
 				err = errInitialAllowlistNil
-			} else {
+			} else if err = measureWith(args.measure, served.Digest); err == nil {
 				version := parseVersion(etag)
 				args.store.apply(wl, version)
 				args.logger.Info("initial allowlist pulled from CDS",
 					"workloads", len(wl.Workloads),
 					"version", version,
 					"etag", etag,
+					"digest", served.Digest,
 				)
 				return etag, nil
 			}
 		}
 
 		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
+		if errors.Is(err, errPolicyRefused) {
+			return "", err // retrying cannot succeed
+		}
 		if attempt >= allowlistApiMaxRetries {
 			return "", fmt.Errorf("allowlist fetch failed after %d attempts: %w", allowlistApiMaxRetries, err)
 		}
@@ -341,6 +355,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 type pullLoopArgs struct {
 	client   allowlistclient.Client
 	store    *policyStore
+	measure  func(digest string) error // nil measures nothing
 	interval time.Duration
 	timeout  time.Duration
 	etag     string
@@ -350,12 +365,15 @@ type pullLoopArgs struct {
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
 // pulled document and advances the ETag — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 and errors leave the index untouched.
+// forward version arrives. 304 and errors leave the index untouched. A
+// version the measurer refuses for good also advances the ETag and is logged
+// once per digest.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	ticker := time.NewTicker(args.interval)
 	defer ticker.Stop()
 
 	etag := args.etag
+	var refused string // digest last logged as refused
 	for {
 		select {
 		case <-ctx.Done():
@@ -364,7 +382,8 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, args.timeout)
-		wl, newETag, notModified, err := args.client.Fetch(reqCtx, etag)
+		served, notModified, err := args.client.FetchServed(reqCtx, etag)
+		wl, newETag := served.Allowlist, served.ETag
 		cancel()
 		if err != nil {
 			args.logger.Warn("pull loop fetch failed", "error", err)
@@ -379,16 +398,35 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		version := parseVersion(newETag)
-		if !args.store.apply(wl, version) {
+		// A rolled-back document is never enforced, so it is not measured.
+		if args.store.rolledBack(version) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
 				"pulled_version", version, "etag", newETag)
 			continue
 		}
+		if err := measureWith(args.measure, served.Digest); err != nil {
+			if !errors.Is(err, errPolicyRefused) {
+				args.logger.Error("pull loop: not applying an allowlist this node could not measure",
+					"digest", served.Digest, "error", err)
+				continue
+			}
+			// Advance past the refused version so later ticks get 304
+			// instead of downloading it again.
+			etag = newETag
+			if served.Digest != refused {
+				refused = served.Digest
+				args.logger.Error("pull loop: allowlist refused; keeping current policy",
+					"digest", served.Digest, "etag", etag, "error", err)
+			}
+			continue
+		}
+		args.store.apply(wl, version)
 		etag = newETag
 		args.logger.Info("pull loop: allowlist refreshed",
 			"workloads", len(wl.Workloads),
 			"version", version,
 			"etag", etag,
+			"digest", served.Digest,
 		)
 	}
 }
@@ -904,4 +942,118 @@ func logNodeRoot(logger *slog.Logger, allowlistEnabled bool, unavailable func() 
 	default:
 		logger.Info("node-root provenance unavailable", "reason", reason)
 	}
+}
+
+// measureWith runs measure, when set, on digest.
+func measureWith(measure func(string) error, digest string) error {
+	if measure == nil {
+		return nil
+	}
+	return measure(digest)
+}
+
+// readOperatorKey reads the launch operator key that seeded RTMR[3], and
+// openPolicyJournal opens the journal over the hardware register. Vars so tests
+// can supply a key and a register.
+var (
+	readOperatorKey   = credrelease.ReadOperatorPubkey
+	openPolicyJournal = openJournal
+)
+
+// policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
+// before the node applies it, so the register records every policy the node
+// enforced since boot. It returns nil, measuring nothing, unless
+// allowlist.pull.measure_policies is set on a platform with a runtime
+// register. When measuring is on but cannot work, the hook fails every call,
+// so the node keeps its current policy rather than enforce unmeasured ones.
+func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error {
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return nil
+	}
+	platform := teetypes.PlatformType(cfg.NormalizedPlatform())
+	if !platform.HasRegisters() {
+		logger.Info("allowlist policies are not measured: no runtime register", "platform", platform)
+		return nil
+	}
+	anchor, err := readOperatorKey()
+	var journal *runtimemeasure.Journal
+	if err == nil {
+		journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
+	}
+	if journal == nil {
+		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", err)
+		return func(string) error {
+			return fmt.Errorf("%w: allowlist policy measurement unavailable: %w", errPolicyRefused, err)
+		}
+	}
+	if err != nil {
+		// A diverged journal refuses every extend, so policy updates stop.
+		logger.Error("allowlist policy measurement journal", "error", err)
+	}
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
+	// Created readable up front: the journal's first append would create it
+	// 0600, and certificate producers would fail to read it until the chmod.
+	if err := createReadable(path); err != nil {
+		logger.Error("measured-policy journal stays unreadable to the router", "error", err)
+	}
+	return func(digest string) error {
+		if err := checkJournalRoom(journal, digest); err != nil {
+			return err
+		}
+		_, err := journal.MeasureOnce(digest)
+		if errors.Is(err, runtimemeasure.ErrRegisterDiverged) {
+			err = fmt.Errorf("%w: %w", errPolicyRefused, err)
+		}
+		// Also after a failed extend, which rewrites the file: the router
+		// reads it as a non-root user, and it lists only public digests.
+		if cerr := os.Chmod(path, 0o644); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
+			logger.Error("measured-policy journal stays unreadable to the router", "error", cerr)
+		}
+		return err
+	}
+}
+
+// checkJournalRoom refuses a digest the journal does not hold once it holds
+// armtls.MaxRuntimeExtensions: certificates cannot carry a longer list, so
+// measuring it would cost the node its armTLS identity. The node keeps its
+// current policy until it reboots.
+func checkJournalRoom(journal *runtimemeasure.Journal, digest string) error {
+	measured := journal.Digests()
+	if len(measured) < armtls.MaxRuntimeExtensions {
+		return nil
+	}
+	if d, err := runtimemeasure.CanonicalDigest(digest); err == nil && slices.Contains(measured, d) {
+		return nil
+	}
+	return fmt.Errorf("%w: allowlist policy %s not applied: the node measured %d policies since boot, the most its certificates can carry; reboot to take further updates", errPolicyRefused, digest, len(measured))
+}
+
+// errPolicyRefused marks a measure failure that persists until the plugin
+// restarts, so retrying the same policy cannot succeed.
+var errPolicyRefused = errors.New("policy refused")
+
+// createReadable creates path empty and world-readable unless it exists.
+func createReadable(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
+}
+
+// openJournal opens the measured-policy journal in dir over this node's
+// RTMR[3], whose launch seeded it from anchor. It returns nil, nil on a
+// platform without a runtime register.
+func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+	reg, err := runtimemeasure.Open(platform)
+	if errors.Is(err, runtimemeasure.ErrNoRegister) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return runtimemeasure.OpenJournalSeeded(filepath.Join(dir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
 }

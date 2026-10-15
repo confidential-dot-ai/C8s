@@ -137,11 +137,17 @@ func (s *policyStore) needsVariableEvidence(digest string) bool {
 // the untrusted host a persisted file is itself host-controlled. See
 // docs/allowlist-and-capabilities.md.
 func (s *policyStore) apply(pulled *allowlist.Allowlist, version uint64) bool {
-	if cur := s.snap.Load(); cur != nil && version < cur.version {
+	if s.rolledBack(version) {
 		return false
 	}
 	s.snap.Store(&policySnapshot{index: pulled.BuildIndex(), version: version})
 	return true
+}
+
+// rolledBack reports whether version is below the applied one.
+func (s *policyStore) rolledBack(version uint64) bool {
+	cur := s.snap.Load()
+	return cur != nil && version < cur.version
 }
 
 // containerdOps is the containerd surface admission drives; internal/containerd's

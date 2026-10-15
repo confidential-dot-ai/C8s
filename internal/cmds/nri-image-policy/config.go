@@ -93,6 +93,11 @@ type pullConfig struct {
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
 	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
+	// applying it. Off by default: verifiers on attestation-go predating
+	// runtime extensions, and flat RTMR[3] pins, still require the bare
+	// operator-key seed.
+	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
 // validatePolicyInputs rejects competing CDS identity policy sources before I/O.
@@ -378,6 +383,10 @@ func (c *config) Validate() error {
 	}
 	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
 		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
+	}
+	// The router and cred-release read the journal from the runtime directory.
+	if c.Allowlist.Pull.MeasurePolicies && c.WorkloadClaims.SocketDir == "" {
+		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir: the measured-policy journal lives there")
 	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")

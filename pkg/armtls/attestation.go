@@ -82,9 +82,9 @@ func WithRuntimeExtensions(att *Attestation, journal *Journal) *Attestation {
 }
 
 // The measured-policy journal lists the allowlist policies a TDX node extends
-// into RTMR[3]. Its intended writer is the policy measurer in nri-image-policy,
-// which lands with #882 and keeps it in the plugin's runtime directory
-// (workload_claims.socket_dir, the chart's nriImagePolicy.hostPaths.runtimeDir).
+// into RTMR[3]. Its writer is the policy measurer in nri-image-policy, which
+// keeps it in the plugin's runtime directory (workload_claims.socket_dir, the
+// chart's nriImagePolicy.hostPaths.runtimeDir).
 // NodeJournal is its path on the node and in pods that mount that directory at
 // its host path; workloadclaims.MeasuredPoliciesJournal is its path in the
 // sidecars the plugin mounts the directory into.
