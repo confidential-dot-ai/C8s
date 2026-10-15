@@ -450,11 +450,18 @@ table, so restaging one with another executable, another argument (nginx's
 `-g load_module` or `-c`, a `--kubeconfig` whose exec credential plugin
 client-go would run), or another volume is refused. Every ConfigMap, Secret
 and PVC a component mounts sits under `/mnt/c8s-data/` and every hostPath
-source is named, so no volume reaches the code an entrypoint loads. Three
+source is named, so no volume reaches the code an entrypoint loads. The
+chart spells out each component's command rather than relying on the image's
+ENTRYPOINT and CMD, and refuses an unescaped `$(NAME)` in a component's argv:
+the kubelet would expand it from env, `envFrom` or a service variable. Three
 residuals stay open. `env` is still `any`, so `LD_PRELOAD` or a `PATH` lookup
-can still be pointed at a mounted file; `KUBECONFIG` and `HOME` are not a
-vector, since the operator, CDS and the mesh build their Kubernetes client
-from the in-cluster service account only. The router's `nginx.conf` is the
+can still be pointed at a mounted file. On a bare-metal install without the
+attestation-api socket, CDS, the mesh and the router sidecars take the
+attestation-api address from `HOST_IP`, so a restaged pod can name its own
+`/verify` ([#880](https://github.com/confidential-dot-ai/C8s/issues/880)).
+`KUBECONFIG`, `HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
+and the mesh build their Kubernetes client from the in-cluster service
+account only, and the attestation-api clients ignore proxy variables. The router's `nginx.conf` is the
 content of a listed ConfigMap: a `load_module` directive in it loads code that
 no argument names
 ([#871](https://github.com/confidential-dot-ai/C8s/issues/871)). The

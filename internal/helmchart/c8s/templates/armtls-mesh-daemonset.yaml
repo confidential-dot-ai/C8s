@@ -228,6 +228,7 @@ containers:
         mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "armtlsMesh.image") }}
     args:
       - --platform
       - {{ .Values.armtlsMesh.platform | quote }}

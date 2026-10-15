@@ -539,7 +539,9 @@ For chart-managed CDS:
 Pod recreation also resets the **served allowlist**. CDS seeds its store
 from the install seed at startup, then serves whatever an operator writes
 with `c8s allowlist add` or `apply`. With `cds.persistence.enabled=false`
-(the default), that store is an `emptyDir`: it survives a container restart,
+(the default), that store is a memory-backed `emptyDir` capped by
+`cds.persistence.memorySizeLimit` (64Mi) and counted toward
+`cds.resources.limits.memory`: it survives a container restart,
 but drain, upgrade or scale-down can recreate the Pod and lose every
 operator-added entry. CDS logs a warning at startup when persistence is off.
 Re-apply the entries after the store is recreated. The chart refuses

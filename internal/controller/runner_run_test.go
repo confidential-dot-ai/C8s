@@ -125,3 +125,16 @@ current-context: c
 		t.Fatalf("Run() with KUBECONFIG set off-cluster = %v, want an in-cluster config error", err)
 	}
 }
+
+func TestRunDisablesClientRateLimit(t *testing.T) {
+	stubRunWiring(t, nil, errors.New("stop"))
+	var qps float32
+	newManager = func(c *rest.Config, _ ctrl.Options) (manager.Manager, error) {
+		qps = c.QPS
+		return nil, errors.New("stop")
+	}
+	_ = Run(context.Background(), Options{}) // Only the config handed to newManager matters.
+	if qps >= 0 {
+		t.Fatalf("newManager config QPS = %v, want < 0", qps)
+	}
+}

@@ -7,6 +7,9 @@ Source: [templates/_allowlist.tpl](../../templates/_allowlist.tpl).
 `{name, image, enabled, cdsExempt, argvPinned, entrypoint}` records. `valuePath` selects the image object;
 `enabledPath` selects its boolean gate, with an empty path enabling the component;
 `entrypoint` is the argv prefix every container running the image starts with.
+`c8s.entrypoint` takes `(dict "root" $ "valuePath" "cds.image")` and returns
+that entrypoint as JSON; each component container renders it as its
+`command`, so the argv never depends on the image's ENTRYPOINT or CMD.
 The derived name is the component's `valuePath`. `c8s.valueAtPath` takes
 `(dict "root" <dict> "path" "a.b.c")` and returns the resolved value as JSON.
 Boolean gates compare that JSON text to `true`: Helm's `fromJson` expects an
@@ -80,9 +83,10 @@ allowlist container:
   it, else at the container's own command; `args` is `exact` at the rest of the
   argv, or `deny` when there is none.
 - The argv is what the kubelet hands the runtime (`c8s.kubeletExpand`): `$$`
-  becomes `$`, and a reference to one of the container's own variables fails
-  the render, since its value differs per node. Escape it as `$$(NAME)` and
-  expand it in the binary, as the attestation-api URL does with `HOST_IP`.
+  becomes `$`, and any `$(NAME)` reference fails the render, since the kubelet
+  may expand it from env, `envFrom` or a service variable. Escape it as
+  `$$(NAME)` and expand it in the binary, as the attestation-api URL does with
+  `HOST_IP`; the volumed teardown script is escaped whole.
 - A container with neither command nor args fails the render: the image's CMD
   would run, which the chart cannot pin.
 - `mounts` is `exact` at one rule per volume mount (`c8s.mountRules`): `host`

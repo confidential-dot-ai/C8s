@@ -15,9 +15,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -163,7 +163,7 @@ func run(cfg config) error {
 			"file", cfg.evidenceFixture)
 	case cfg.attestationAPIURL != "":
 		provider = LiveEvidenceProvider{
-			Client:     remote.NewClient(cfg.attestationAPIURL),
+			Client:     armtls.NewAttestationClient(cfg.attestationAPIURL),
 			Platform:   teetypes.NormalizePlatform(cfg.platform),
 			Generation: cfg.generation,
 		}

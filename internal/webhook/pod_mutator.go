@@ -501,6 +501,9 @@ func (inj *injection) validate() error {
 	if err := inj.Discovery.validate(); err != nil {
 		return err
 	}
+	if err := inj.validateDiscoveryVolume(); err != nil {
+		return err
+	}
 	if err := inj.Secrets.validate(); err != nil {
 		return err
 	}
@@ -610,8 +613,11 @@ func (d discoverySpec) validate() error {
 		return fmt.Errorf("%w: incomplete discovery annotations, missing %s", errInvalidInjectionAnnotation, strings.Join(missing, ", "))
 	}
 
-	if !below(d.Out, discoveryMountPath) {
-		return fmt.Errorf("%w: %s %q must be below %s, where get-cert mounts the discovery volume",
+	// Directly in the mount, so the directory get-cert opens to write is the
+	// mount point: a subdirectory the workload controls could be a symlink
+	// into the cert or secrets volume.
+	if !below(d.Out, discoveryMountPath) || filepath.Dir(filepath.Clean(d.Out)) != discoveryMountPath {
+		return fmt.Errorf("%w: %s %q must name a file directly in %s, where get-cert mounts the discovery volume",
 			errInvalidInjectionAnnotation, AnnotationDiscoveryOut, d.Out, discoveryMountPath)
 	}
 
@@ -621,6 +627,25 @@ func (d discoverySpec) validate() error {
 	default:
 		return fmt.Errorf("%w: %s must be %q or %q, got %q", errInvalidInjectionAnnotation, AnnotationDiscoveryPublicTLSMode, discoveryPublicTLSModeCDS, discoveryPublicTLSModeWebPKI, d.PublicTLSMode)
 	}
+}
+
+// validateDiscoveryVolume refuses a discovery volume that is also the cert,
+// secrets or an encrypted volume: get-cert writes the discovery document into
+// it, which would overwrite the key or a released value at the same name.
+func (inj *injection) validateDiscoveryVolume() error {
+	name := inj.Discovery.Volume
+	if name == "" {
+		return nil
+	}
+	certVolume := inj.Cert.Volume
+	if certVolume == "" {
+		certVolume = defaultCertVolumeName
+	}
+	if name == certVolume || name == secretsVolumeName || strings.HasPrefix(name, volume.KubeVolumePrefix) {
+		return fmt.Errorf("%w: %s %q is reserved for c8s; name a volume of its own",
+			errInvalidInjectionAnnotation, AnnotationDiscoveryVolume, name)
+	}
+	return nil
 }
 
 func (d discoverySpec) configured() bool {

@@ -22,7 +22,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -168,7 +167,7 @@ func run(cfg config) error {
 		return err
 	}
 
-	asClient := remote.NewClient(cfg.attestationApiURL)
+	asClient := armtls.NewAttestationClient(cfg.attestationApiURL)
 	challengeStore := attestation.NewChallengeStore(cfg.challengeTTL)
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.

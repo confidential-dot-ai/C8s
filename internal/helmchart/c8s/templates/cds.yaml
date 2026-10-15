@@ -34,6 +34,7 @@ containers:
   - name: cds
     image: {{ include "c8s.cdsImage" . }}
     imagePullPolicy: {{ .Values.cds.image.pullPolicy }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "cds.image") }}
     args:
       - --port={{ .Values.cds.port }}
       - --log-level={{ .Values.cds.logLevel }}
@@ -162,6 +163,7 @@ volumes:
     {{- else }}
     emptyDir:
       medium: Memory
+      sizeLimit: {{ .Values.cds.persistence.memorySizeLimit }}
     {{- end }}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}

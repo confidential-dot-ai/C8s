@@ -228,21 +228,26 @@ var componentInvocations = [][]string{{secrets.InjectedBinary}, {"/app/c8s"}, {"
 // -g loads a module, and a volume replaces what the binary reads. A shape of
 // the sidecars the webhook injects may leave its args open, since they are per
 // pod, but not its mounts. The invocation is matched against the command and
-// any exact args after it, since an entry may split nginx's argv either way.
+// any exact args after it, since an entry may split nginx's argv either way;
+// a command that open args could complete into an invocation counts too.
 func componentFindings(name string, c pkgallowlist.Container) []finding {
 	if c.Command.Policy != pkgallowlist.PolicyExact {
 		return nil
 	}
-	invocation := c.Command.Argv
+	argv := c.Command.Argv
+	invocation := argv
 	if c.Args.Policy == pkgallowlist.PolicyExact {
 		invocation = slices.Concat(invocation, c.Args.Argv)
 	}
+	openArgs := c.Args.Policy == pkgallowlist.PolicyAny || c.Args.Policy == ""
 	if !slices.ContainsFunc(componentInvocations, func(prefix []string) bool {
-		return len(invocation) >= len(prefix) && slices.Equal(invocation[:len(prefix)], prefix)
+		if len(invocation) >= len(prefix) {
+			return slices.Equal(invocation[:len(prefix)], prefix)
+		}
+		return openArgs && len(argv) > 0 && slices.Equal(prefix[:len(argv)], argv)
 	}) {
 		return nil
 	}
-	argv := c.Command.Argv
 	sidecar := len(argv) == 2 && argv[0] == secrets.InjectedBinary && slices.Contains(secrets.InjectedModes, argv[1])
 	var out []finding
 	if c.Args.Policy == pkgallowlist.PolicyAny && !sidecar {

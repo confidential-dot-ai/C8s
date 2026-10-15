@@ -25,9 +25,11 @@ initContainers:
     # The image entrypoint is ["/app/c8s", "volumed"]; this hook runs a
     # shell script instead, so it overrides both.
     command: ["/bin/sh", "-c"]
+    {{- /* $$ so the kubelet passes the script's $(( )) through unexpanded:
+           the allowlist pins this argv exactly. */}}
     args:
       - |
-{{ .Files.Get "files/scripts/volumed-teardown.sh" | indent 8 }}
+{{ .Files.Get "files/scripts/volumed-teardown.sh" | replace "$" "$$" | indent 8 }}
     volumeMounts:
       # Bidirectional: the mounts live in the host namespace, so the
       # unmount has to propagate back out of this pod.

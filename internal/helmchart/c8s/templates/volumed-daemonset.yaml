@@ -26,8 +26,7 @@ containers:
       # effective caps to a non-root process; the daemon must be root.
       runAsUser: 0
       runAsGroup: 0
-    # The image entrypoint is ["/app/c8s", "volumed"], so args start at
-    # the first flag — same as cds.yaml.
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "volumed.image") }}
     args:
       - --socket-dir
       - {{ .Values.nriImagePolicy.hostPaths.runtimeDir | quote }}

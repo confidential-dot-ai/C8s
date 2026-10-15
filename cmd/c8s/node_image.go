@@ -312,6 +312,9 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		}
 		for _, k := range baked.containers {
 			if !slices.ContainsFunc(seeded[baked.digest], func(c pkgallowlist.Container) bool { return admitsBaked(c, baked.digest, k) }) {
+				if len(k.command) == 0 {
+					return nil, fmt.Errorf("node-image image %s: container %s runs the image's entrypoint, which the bootstrap seed cannot check: give it an explicit command", image, k.name)
+				}
 				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit container %s with argv %q and mounts %+v", image, k.name, k.argv(), k.mounts)
 			}
 		}
@@ -362,10 +365,10 @@ func (k bakedContainer) argv() []string {
 	return slices.Concat(k.command, k.args)
 }
 
-// admitsBaked reports whether a seed container admits a baked one. For a
-// container that runs the image's entrypoint, only a command the seed pins
-// says what the argv starts with; a command left any admits it only with args
-// any too. The mount check compares the rules the manifest implies; whether
+// admitsBaked reports whether a seed container admits a baked one. A
+// container without a command runs the image's ENTRYPOINT and, without args,
+// its CMD, neither of which the manifest shows: only a seed leaving command
+// and args any admits it. The mount check compares the rules the manifest implies; whether
 // the storage behind a volume is memory or encrypted is the node's to see. Env
 // must be any: the image and the runtime add variables the manifest does not
 // list.
@@ -374,13 +377,8 @@ func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool
 		return false
 	}
 	argv := k.argv()
-	if len(k.command) == 0 {
-		switch {
-		case c.Command.Policy == pkgallowlist.PolicyExact:
-			argv = slices.Concat(c.Command.Argv, k.args)
-		case c.Command.Policy != pkgallowlist.PolicyAny || c.Args.Policy != pkgallowlist.PolicyAny:
-			return false
-		}
+	if len(k.command) == 0 && (c.Command.Policy != pkgallowlist.PolicyAny || c.Args.Policy != pkgallowlist.PolicyAny) {
+		return false
 	}
 	one := pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"c": {Containers: []pkgallowlist.Container{c}}}}
 	if !one.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: argv}) {
@@ -456,11 +454,11 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
-		command, err := kubeletArgv(c.Command, c.Env)
+		command, err := kubeletArgv(c.Command)
 		if err != nil {
 			return fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
 		}
-		args, err := kubeletArgv(c.Args, c.Env)
+		args, err := kubeletArgv(c.Args)
 		if err != nil {
 			return fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
 		}
@@ -479,16 +477,12 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 
 // kubeletArgv is the argv the kubelet hands the runtime for a manifest's
 // command or args, following its expansion (k8s.io/kubernetes
-// third_party/forked/golang/expansion): $$ becomes $, a $(NAME) reference with
-// no matching variable stays verbatim, and an unclosed $( is literal. A
-// reference to a variable the container defines would become its per-node
-// value, which no pinned argv can match, so it is an error, as it is in the
-// chart's c8s.kubeletExpand.
-func kubeletArgv(argv []string, env []corev1.EnvVar) ([]string, error) {
-	defined := make(map[string]bool, len(env))
-	for _, e := range env {
-		defined[e.Name] = true
-	}
+// third_party/forked/golang/expansion): $$ becomes $ and an unclosed $( is
+// literal. A closed $(NAME) is an error: the kubelet expands it from env,
+// envFrom or a service variable, values a pinned argv cannot know, so the
+// manifest must escape it as $$(NAME), as the chart's c8s.kubeletExpand
+// requires.
+func kubeletArgv(argv []string) ([]string, error) {
 	out := make([]string, 0, len(argv))
 	for _, token := range argv {
 		var b strings.Builder
@@ -502,12 +496,8 @@ func kubeletArgv(argv []string, env []corev1.EnvVar) ([]string, error) {
 				b.WriteByte('$')
 				i++
 			case next[0] == '(' && strings.IndexByte(next, ')') > 0:
-				end := strings.IndexByte(next, ')')
-				if name := next[1:end]; defined[name] {
-					return nil, fmt.Errorf("%q references $(%s); pass the value another way", token, name)
-				}
-				b.WriteString(token[i : i+2+end])
-				i += 1 + end
+				name := next[1:strings.IndexByte(next, ')')]
+				return nil, fmt.Errorf("%q references $(%s), which the kubelet may expand; escape it as $$(%s)", token, name, name)
 			default:
 				b.WriteByte('$')
 			}

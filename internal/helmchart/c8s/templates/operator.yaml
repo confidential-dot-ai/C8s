@@ -13,6 +13,7 @@ containers:
       runAsUser: 65532
       capabilities:
         drop: [ALL]
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
     args:
       - operator
       - --leader-election-namespace={{ .Release.Namespace }}
@@ -107,6 +108,7 @@ volumes:
   - name: tmp
     emptyDir:
       medium: Memory
+      sizeLimit: 16Mi
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
   {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
   - name: measurements-config

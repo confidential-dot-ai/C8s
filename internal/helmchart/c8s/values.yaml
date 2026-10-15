@@ -329,6 +329,9 @@ cds:
   ## nriImagePolicy.policy.mode=audit. See docs/allowlist-and-capabilities.md.
   persistence:
     enabled: false
+    ## With enabled=false the store (SQLite DB and WAL) is a memory emptyDir:
+    ## it counts toward cds.resources.limits.memory, so keep this below that.
+    memorySizeLimit: 64Mi
     size: 1Gi
     storageClassName: ""
   resources:
@@ -1219,7 +1222,10 @@ router:
     platform: snp
     generation: genoa
     # -- Attestation-api URL the sidecar binds each session's key exchange
-    # against. Empty defaults to this chart's attestation-api.
+    # against. Empty defaults to this chart's attestation-api. The allowlist
+    # pins the sidecar's argv, so write the node address as $$(HOST_IP): the
+    # kubelet passes it through as $(HOST_IP) and the sidecar expands it. An
+    # unescaped $(HOST_IP) fails the render.
     attestationApiURL: ""
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity

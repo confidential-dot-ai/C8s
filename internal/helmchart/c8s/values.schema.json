@@ -75,6 +75,7 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {},
+            "memorySizeLimit": {},
             "size": {},
             "storageClassName": {}
           }

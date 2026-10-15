@@ -24,6 +24,16 @@
 {{ $out | toJson }}
 {{- end -}}
 
+{{/* The command of a container running a component image: the entrypoint
+     c8sComponents declares for valuePath, as a JSON list. Spelling it out
+     makes the argv the allowlist pins independent of the image's own
+     ENTRYPOINT and CMD. Takes root and valuePath. */ -}}
+{{- define "c8s.entrypoint" -}}
+{{- range $c := .root.Values.c8sComponents -}}
+{{- if eq $c.valuePath $.valuePath -}}{{- $c.entrypoint | toJson -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{/* The chart-deployed system images the seed and the plugin base admit, as
      digest -> {image, entrypoint}. Each container that runs one is pinned to
      its exact argv and mount table (c8s.componentShapes); the entrypoint is
@@ -110,8 +120,8 @@
 {{- if contains "@" $c.image -}}{{- $digest = last (splitList "@" $c.image) -}}{{- end -}}
 {{- if hasKey $.pins $digest -}}
 {{- $where := printf "%s container %s" $pod $c.name -}}
-{{- $command := include "c8s.kubeletExpand" (dict "argv" (default list $c.command) "env" (default list $c.env) "where" $where) | fromJsonArray -}}
-{{- $args := include "c8s.kubeletExpand" (dict "argv" (default list $c.args) "env" (default list $c.env) "where" $where) | fromJsonArray -}}
+{{- $command := include "c8s.kubeletExpand" (dict "argv" (default list $c.command) "where" $where) | fromJsonArray -}}
+{{- $args := include "c8s.kubeletExpand" (dict "argv" (default list $c.args) "where" $where) | fromJsonArray -}}
 {{- if and (not $command) (not $args) -}}
 {{- fail (printf "%s runs its image's CMD: spell out its args so the allowlist can pin them" $where) -}}
 {{- end -}}
@@ -140,24 +150,22 @@
 {{ $out | toJson }}
 {{- end -}}
 
-{{/* The argv the kubelet hands the runtime: $$ becomes $, an unresolved
-     $(NAME) stays verbatim, and $(NAME) for a variable the container defines
-     becomes its value. One leftmost scan, as the kubelet's expansion does. A
-     per-node value cannot be pinned, so a component's argv must not
-     reference one; escape it as $$(NAME) and expand it in the binary
-     instead. */ -}}
+{{/* The argv the kubelet hands the runtime: $$ becomes $, scanning left to
+     right as the kubelet does. A $(NAME) reference fails the render: the
+     kubelet expands it from env, envFrom or a service variable, values the
+     pinned argv cannot know. Escape it as $$(NAME) and expand it in the
+     binary instead. */ -}}
 {{- define "c8s.kubeletExpand" -}}
 {{- $out := list -}}
 {{- range $token := .argv -}}
 {{- $token = toString $token -}}
 {{- range $ref := regexFindAll `\$\$|\$\([^)]*\)` $token -1 -}}
-{{- range $e := $.env -}}
-{{- if eq $ref (printf "$(%s)" $e.name) -}}
-{{- fail (printf "%s references $(%s) in its argv; the allowlist pins the argv exactly, so pass the value another way" $.where $e.name) -}}
+{{- if ne $ref "$$" -}}
+{{- $name := trimSuffix ")" (trimPrefix "$(" $ref) -}}
+{{- fail (printf "%s references %s in its argv, which the kubelet may expand; the allowlist pins the argv exactly, so escape it as $$(%s)" $.where $ref $name) -}}
 {{- end -}}
 {{- end -}}
-{{- end -}}
-{{- $out = append $out (regexReplaceAll `\$(\$)|(\$\([^)]*\))` $token "${1}${2}") -}}
+{{- $out = append $out (regexReplaceAll `\$(\$)` $token "${1}") -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}

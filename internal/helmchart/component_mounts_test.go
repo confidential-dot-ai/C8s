@@ -183,7 +183,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			"--set", "cds.measurements={"+measurements+"}"), true},
 		{"acme", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
-		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["echo $(echo $$)","$(a $$","$$(POD_NAME)"]`), true},
+		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)"]`), true},
 		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -218,6 +218,9 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 						continue
 					}
 					checked++
+					if len(c.Command) == 0 {
+						t.Errorf("%s/%s runs its image's ENTRYPOINT, which the allowlist cannot see; render its command", w.name, c.Name)
+					}
 					argv := runtimeArgv(c, entrypoint)
 					for _, resolve := range []bool{false, true} {
 						mounts := observedMounts(t, w.spec, c, resolve)
@@ -276,6 +279,9 @@ func TestChartRefusesUnpinnableComponentMounts(t *testing.T) {
 			"--set", "volumed.image.digest=" + componentTestDigests["volumed.image"], "--set-string", "volumed.hostPaths.cgroupRoot=/sys/fs/cgroup/"}},
 		{"public TLS outside /mnt/c8s-data", "/mnt/c8s-data/", []string{"--set", "router.publicTLS.mode=webpki", "--set", "router.publicTLS.secretName=pub", "--set-string", "router.publicTLS.mountPath=/edge-tls"}},
 		{"argument referencing a container variable", "references $(POD_NAME)", []string{"--set-json", `operator.extraArgs=["--name=$(POD_NAME)"]`}},
+		{"argument referencing a service variable", "escape it as $$(KUBERNETES_SERVICE_HOST)", []string{"--set-json", `operator.extraArgs=["--exclude-namespaces=$(KUBERNETES_SERVICE_HOST)"]`}},
+		{"argument naming no variable", "escape it as $$(echo $$)", []string{"--set-json", `operator.extraArgs=["echo $(echo $$)"]`}},
+		{"router attestation URL naming HOST_IP", "escape it as $$(HOST_IP)", []string{"--set", "router.attest.enabled=true", "--set-string", "router.attest.attestationApiURL=http://$(HOST_IP):8400"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, append(slices.Clone(derived), tc.args...)...)
@@ -300,6 +306,25 @@ func TestKubeletExpand(t *testing.T) {
 	} {
 		if got := kubeletExpand(tc.in, env); got != tc.want {
 			t.Errorf("kubeletExpand(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A memory emptyDir counts toward the container's memory limit; without a
+// sizeLimit a full volume OOM-kills the pod instead of failing writes.
+func TestChartMemoryVolumesHaveSizeLimit(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	for _, w := range renderedPodSpecs(t, out) {
+		for _, v := range w.spec.Volumes {
+			if v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory {
+				continue
+			}
+			if v.EmptyDir.SizeLimit == nil {
+				t.Errorf("%s/%s volume %q: memory emptyDir without sizeLimit", w.kind, w.name, v.Name)
+			}
 		}
 	}
 }

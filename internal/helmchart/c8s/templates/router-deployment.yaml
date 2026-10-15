@@ -29,6 +29,7 @@ initContainers:
     image: {{ include "c8s.image" . }}
     imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
     restartPolicy: Always
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
     args:
       - acme
       {{- if $launchDriven }}
@@ -185,6 +186,7 @@ containers:
   - name: cds-attest
     image: {{ include "c8s.image" . }}
     imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
     args:
       - cds-attest
       {{- /* Loopback only: every endpoint this sidecar registers
@@ -312,6 +314,7 @@ containers:
   - name: allowlist-proxy
     image: {{ include "c8s.image" . }}
     imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
     args:
       - allowlist-proxy
       - --host=127.0.0.1

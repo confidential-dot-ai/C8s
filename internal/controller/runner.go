@@ -144,6 +144,11 @@ func Run(ctx context.Context, opts Options) error {
 	if err != nil {
 		return fmt.Errorf("in-cluster config: %w", err)
 	}
+	// Match ctrl.GetConfigOrDie: QPS 0 means client-go's default 5 QPS
+	// limiter, which the manager, cache and webhook bootstrap would share.
+	if config.QPS == 0 {
+		config.QPS = -1
+	}
 	mgr, err := newManager(config, managerOptions(opts))
 	if err != nil {
 		return fmt.Errorf("create manager: %w", err)

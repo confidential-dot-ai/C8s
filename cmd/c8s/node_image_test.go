@@ -301,6 +301,7 @@ spec:
       containers:
         - name: operator
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
       initContainers:
         - name: native-sidecar
           restartPolicy: Always
@@ -316,6 +317,7 @@ spec:
       containers:
         - name: cds
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -327,6 +329,7 @@ spec:
       containers:
         - name: router
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -588,7 +591,8 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 	core := `{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
 	mesh := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]}}`
 	entrypoint := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
-	const router = "        - name: router\n          image: registry.example.com/operator@" + testDigest
+	const entrypointRouter = "        - name: router\n          image: registry.example.com/operator@" + testDigest
+	const router = entrypointRouter + "\n          command: [\"/app/c8s\"]"
 	urlArgs := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"exact","argv":["--url=http://$(HOST_IP):8080"]}}`
 	tmpRule := func(rule string) string {
 		return `,{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"},"mounts":{"policy":"exact","rules":[` + rule + `]}}`
@@ -600,6 +604,9 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		ok                   bool
 	}{
 		{"every invocation pinned", mesh + "," + entrypoint, "", true},
+		{"image entrypoint under a pinned command", mesh + "," + entrypoint, entrypointRouter, false},
+		{"image entrypoint and CMD under denied args", mesh + "," + entrypoint + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, entrypointRouter, false},
+		{"image entrypoint under any command and args", mesh + "," + entrypoint + "," + core, entrypointRouter, true},
 		{"entrypoint arguments not pinned", mesh + "," + entrypoint, router + "\n          args: [\"--other\"]", false},
 		{"mount the manifest lacks", strings.Replace(mesh, `"args"`, `"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]},"args"`, 1) + "," + entrypoint, "", false},
 		{"entrypoint under any command with pinned args", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, "", false},
@@ -613,6 +620,7 @@ func TestNodeImageCollectPinnedArgs(t *testing.T) {
 		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
 		{"escape not expanded", mesh + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
 		{"defined variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]\n          env: [{name: HOST_IP, value: 10.0.0.1}]", false},
+		{"service variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := strings.Replace(nodeImageCollectFixture(), core, tc.seed, 1)
@@ -643,7 +651,6 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 }
 
 func TestKubeletArgv(t *testing.T) {
-	env := []corev1.EnvVar{{Name: "HOST_IP", Value: "10.0.0.1"}}
 	for _, tc := range []struct {
 		name, in, want string
 		err            bool
@@ -651,14 +658,15 @@ func TestKubeletArgv(t *testing.T) {
 		{name: "plain", in: "--port=1", want: "--port=1"},
 		{name: "escape", in: "$$(HOST_IP)", want: "$(HOST_IP)"},
 		{name: "escaped dollar", in: "a$$b", want: "a$b"},
-		{name: "undefined reference stays verbatim", in: "echo $(echo $$)", want: "echo $(echo $$)"},
+		{name: "undefined reference", in: "echo $(echo $$)", err: true},
+		{name: "service variable", in: "--cds-url=https://$(C8S_CDS_SERVICE_HOST):8443", err: true},
 		{name: "unclosed reference", in: "$(a $$", want: "$(a $"},
 		{name: "trailing dollar", in: "a$", want: "a$"},
 		{name: "lone dollar", in: "$x", want: "$x"},
 		{name: "defined reference", in: "http://$(HOST_IP):1", err: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := kubeletArgv([]string{tc.in}, env)
+			got, err := kubeletArgv([]string{tc.in})
 			if tc.err {
 				if err == nil {
 					t.Fatalf("kubeletArgv(%q) = %q, want an error", tc.in, got)

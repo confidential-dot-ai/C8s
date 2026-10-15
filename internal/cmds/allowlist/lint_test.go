@@ -547,6 +547,9 @@ func TestLintComponentShapes(t *testing.T) {
 		{"attestation-api open args", container(`["/attestation-api"]`, anyPolicy, exactMounts), []string{"leaves args any"}},
 		{"nginx open mounts", container(`["/docker-entrypoint.sh","nginx"]`, exactArgs, anyPolicy), []string{"leaves mounts any"}},
 		{"nginx split across command and args", container(`["/docker-entrypoint.sh"]`, `{"policy":"exact","argv":["nginx","-g","daemon off;"]}`, anyPolicy), []string{"leaves mounts any"}},
+		{"nginx wrapper with open args", container(`["/docker-entrypoint.sh"]`, anyPolicy, exactMounts), []string{"leaves args any"}},
+		{"nginx wrapper with open args and mounts", container(`["/docker-entrypoint.sh"]`, anyPolicy, anyPolicy), []string{"leaves args any", "leaves mounts any"}},
+		{"nginx wrapper pinned to another program", container(`["/docker-entrypoint.sh"]`, `{"policy":"exact","argv":["postgres"]}`, anyPolicy), nil},
 		{"another entrypoint script", container(`["/docker-entrypoint.sh","postgres"]`, anyPolicy, anyPolicy), nil},
 		{"not a component executable", container(`["/bin/sh","-c"]`, exactArgs, anyPolicy), nil},
 	} {

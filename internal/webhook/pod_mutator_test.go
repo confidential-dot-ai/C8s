@@ -16,6 +16,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
@@ -473,6 +474,7 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 		{"discovery inside", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/discovery.json", true},
 		{"discovery elsewhere", discovery, AnnotationDiscoveryOut, "/discovery/discovery.json", false},
 		{"discovery escaping", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/../discovery.json", false},
+		{"discovery in a subdirectory", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/sub/discovery.json", false},
 		{"watch inside", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt", true},
 		{"watch elsewhere", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt,/edge-tls/tls.key", false},
 		{"cert file relative", nil, AnnotationCertFile, "server.crt", true},
@@ -489,6 +491,40 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations})
 			if (err == nil) != tc.ok {
 				t.Fatalf("parseAnnotations(%s=%s) error = %v, want ok %v", tc.key, tc.value, err, tc.ok)
+			}
+		})
+	}
+}
+
+// get-cert writes the discovery document into the discovery volume, so that
+// volume must not be one holding the key or released values.
+func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		volume      string
+		certVolume  string
+		wantRefused bool
+	}{
+		{"own volume", "discovery", "", false},
+		{"default cert volume", defaultCertVolumeName, "", true},
+		{"renamed cert volume", "edge-certs", "edge-certs", true},
+		{"secrets volume", secretsVolumeName, "", true},
+		{"encrypted volume", volume.KubeVolumePrefix + "data", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			annotations := map[string]string{
+				AnnotationWorkload:               "api",
+				AnnotationDiscoveryVolume:        tc.volume,
+				AnnotationDiscoveryOut:           discoveryMountPath + "/tls.key",
+				AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+				AnnotationDiscoveryPublicTLSMode: "cds",
+			}
+			if tc.certVolume != "" {
+				annotations[AnnotationCertVolume] = tc.certVolume
+			}
+			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations})
+			if refused := err != nil; refused != tc.wantRefused {
+				t.Fatalf("parseAnnotations(discovery volume %q) error = %v, want refused %v", tc.volume, err, tc.wantRefused)
 			}
 		})
 	}
