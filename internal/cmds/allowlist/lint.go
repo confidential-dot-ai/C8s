@@ -224,17 +224,15 @@ var componentBinaries = []string{secrets.InjectedBinary, "/app/c8s"}
 // its args or mounts to the pod. Either lets a pod point the component at code
 // of its choosing: --kubeconfig runs an exec credential plugin, and a volume
 // replaces what the binary reads. A shape of the sidecars the webhook injects
-// is the exception, since its args are per pod.
+// may leave its args open, since they are per pod, but not its mounts.
 func componentFindings(name string, c pkgallowlist.Container) []finding {
 	if c.Command.Policy != pkgallowlist.PolicyExact || !slices.Contains(componentBinaries, c.Command.Argv[0]) {
 		return nil
 	}
 	argv := c.Command.Argv
-	if len(argv) == 2 && argv[0] == secrets.InjectedBinary && slices.Contains(secrets.InjectedModes, argv[1]) {
-		return nil
-	}
+	sidecar := len(argv) == 2 && argv[0] == secrets.InjectedBinary && slices.Contains(secrets.InjectedModes, argv[1])
 	var out []finding
-	if c.Args.Policy == pkgallowlist.PolicyAny {
+	if c.Args.Policy == pkgallowlist.PolicyAny && !sidecar {
 		out = append(out, errorf("workload %q container %s pins the C8s binary %q but leaves args any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
 	}
 	if c.Mounts.Policy == pkgallowlist.PolicyAny {

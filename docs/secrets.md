@@ -468,9 +468,10 @@ The annotations that used to move these mounts —
 `confidential.ai/c8s-discovery-mount-path` and
 `confidential.ai/c8s-reload-watch-mount-path` — are refused at admission
 unless they name the fixed destination. To migrate a pod, remove the
-annotation and read the files at the fixed path; point
+annotation and read the files at the fixed path.
 `confidential.ai/c8s-discovery-out` and `confidential.ai/c8s-reload-watch-paths`
-below the fixed discovery and reload-watch destinations. A pod admitted before
+must name files below the fixed discovery and reload-watch destinations, or
+the webhook refuses the pod. A pod admitted before
 the upgrade keeps its old mounts until a sidecar restarts or the pod is
 recreated; from then on the node refuses its sidecars, and the webhook refuses
 the pod until the annotation is gone.

@@ -601,7 +601,7 @@ environment and mounts unconstrained, whether its command is `any` or pinned,
 and every operator entry for a component's digest whatever it pins; other
 operator entries are seed-only. `c8s allowlist lint` reports a container
 pinned to the C8s binary (`/c8s`, `/app/c8s`) with `args` or `mounts` `any` as
-an error, except the injected sidecar shapes. The
+an error; an injected sidecar shape may leave only its `args` open. The
 name is a function of the digest because CDS seeds **additively by name**: an
 image bump adds the new digest's entry beside the old one, which pods still
 running the old image keep matching while they recycle. The seed never

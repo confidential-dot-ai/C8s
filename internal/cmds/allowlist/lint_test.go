@@ -526,7 +526,7 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 
 // A container pinned to the C8s binary must pin its args and mounts too:
 // either left open lets a pod point the component at code of its choosing.
-// The injected sidecar shapes keep their per-pod args.
+// The injected sidecar shapes keep their per-pod args, not open mounts.
 func TestLintComponentShapes(t *testing.T) {
 	container := func(command, args, mounts string) string {
 		return `{"digest":"` + digA + `","command":{"policy":"exact","argv":` + command + `},"args":` + args + `,"mounts":` + mounts + `}`
@@ -543,6 +543,7 @@ func TestLintComponentShapes(t *testing.T) {
 		{"open mounts", container(`["/app/c8s","armtls-mesh"]`, exactArgs, anyPolicy), []string{"leaves mounts any"}},
 		{"old seeded shape", container(`["/c8s"]`, anyPolicy, anyPolicy), []string{"leaves args any", "leaves mounts any"}},
 		{"injected sidecar", container(`["/c8s","get-cert"]`, anyPolicy, exactMounts), nil},
+		{"injected sidecar with open mounts", container(`["/c8s","get-cert"]`, anyPolicy, anyPolicy), []string{"leaves mounts any"}},
 		{"not the C8s binary", container(`["/bin/sh","-c"]`, exactArgs, anyPolicy), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

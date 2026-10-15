@@ -456,6 +456,39 @@ func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
 	}
 }
 
+// The files get-cert writes and watches must sit in the volumes it mounts.
+func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
+	discovery := map[string]string{
+		AnnotationDiscoveryVolume:        "discovery",
+		AnnotationDiscoveryCDSCertURL:    "/.well-known/cds-cert.pem",
+		AnnotationDiscoveryPublicTLSMode: "cds",
+	}
+	reload := map[string]string{AnnotationReloadWatchVolume: "public-tls"}
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]string
+		key, value  string
+		ok          bool
+	}{
+		{"discovery inside", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/discovery.json", true},
+		{"discovery elsewhere", discovery, AnnotationDiscoveryOut, "/discovery/discovery.json", false},
+		{"discovery escaping", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/../discovery.json", false},
+		{"watch inside", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt", true},
+		{"watch elsewhere", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt,/edge-tls/tls.key", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			annotations := map[string]string{AnnotationWorkload: "api", tc.key: tc.value}
+			for k, v := range tc.annotations {
+				annotations[k] = v
+			}
+			_, err := parseAnnotations(&corev1.Pod{Annotations: annotations})
+			if (err == nil) != tc.ok {
+				t.Fatalf("parseAnnotations(%s=%s) error = %v, want ok %v", tc.key, tc.value, err, tc.ok)
+			}
+		})
+	}
+}
+
 func TestMutatePodMountsSidecarsAtFixedDestinations(t *testing.T) {
 	pod := podWithApp()
 	pod.Annotations = map[string]string{

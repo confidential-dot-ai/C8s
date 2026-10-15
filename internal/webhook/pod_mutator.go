@@ -569,6 +569,12 @@ func (r reloadSpec) validate() error {
 	if r.WatchVolume == "" {
 		return fmt.Errorf("%w: %s requires %s", errInvalidInjectionAnnotation, AnnotationReloadWatchPaths, AnnotationReloadWatchVolume)
 	}
+	for _, path := range r.WatchPaths {
+		if !below(path, reloadWatchMountPath) {
+			return fmt.Errorf("%w: %s path %q must be below %s, where get-cert mounts the watched volume",
+				errInvalidInjectionAnnotation, AnnotationReloadWatchPaths, path, reloadWatchMountPath)
+		}
+	}
 	return nil
 }
 
@@ -592,6 +598,11 @@ func (d discoverySpec) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("%w: incomplete discovery annotations, missing %s", errInvalidInjectionAnnotation, strings.Join(missing, ", "))
+	}
+
+	if !below(d.Out, discoveryMountPath) {
+		return fmt.Errorf("%w: %s %q must be below %s, where get-cert mounts the discovery volume",
+			errInvalidInjectionAnnotation, AnnotationDiscoveryOut, d.Out, discoveryMountPath)
 	}
 
 	switch d.PublicTLSMode {
@@ -940,6 +951,11 @@ func certWaitContainer(inj *injection, cfg Config) corev1.Container {
 		VolumeMounts:    getCertVolumeMounts(inj, false),
 		SecurityContext: getCertSecurityContext(inj),
 	}
+}
+
+// below reports whether path names a file strictly inside dir.
+func below(path, dir string) bool {
+	return filepath.IsAbs(path) && strings.HasPrefix(filepath.Clean(path), dir+"/")
 }
 
 func certPath(dir, name string) string {
