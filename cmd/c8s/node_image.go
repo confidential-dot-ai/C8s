@@ -396,7 +396,9 @@ func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool
 
 // mountRule is the rule a pod-spec volume mount needs: a host rule naming the
 // hostPath and the access mode, an emptyDir rule, or a data rule for
-// operator-supplied content. It fails on a source no rule describes.
+// operator-supplied content. A subpath of any volume is data, as the node
+// classifies the kubelet's subpath bind. It fails on a source no rule
+// describes.
 func mountRule(m corev1.VolumeMount, volumes map[string]corev1.Volume) (pkgallowlist.MountRule, error) {
 	v, ok := volumes[m.Name]
 	if !ok {
@@ -404,6 +406,8 @@ func mountRule(m corev1.VolumeMount, volumes map[string]corev1.Volume) (pkgallow
 	}
 	rule := pkgallowlist.MountRule{Destination: m.MountPath}
 	switch {
+	case m.SubPath != "" || m.SubPathExpr != "":
+		rule.Kind = pkgallowlist.MountData
 	case v.HostPath != nil:
 		rule.Kind, rule.Source, rule.ReadOnly = pkgallowlist.MountHost, v.HostPath.Path, m.ReadOnly
 	case v.EmptyDir != nil:
