@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/crane"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -26,7 +27,8 @@ func newLintCmd(o *options) *cobra.Command {
 		Long: `Parse and validate an allowlist file (or stdin with '-') and report semantic
 findings: entries with no containers, a container that can never start, digests
 whose effective policy is unconstrained, tag-form image labels (TOCTOU),
-root-subtree path grants, and pinned search paths that overlap data mounts.
+root-subtree path grants, pinned search paths that overlap data mounts, and
+C8s component containers that leave args or mounts open.
 --online additionally checks each digest exists in
 its registry via crane.
 
@@ -183,6 +185,7 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 			if argvPolicyName(c.Command) == pkgallowlist.PolicyDeny {
 				warnings = append(warnings, warnf("workload %q container %s command is deny; the effective argv must be empty, so the container can never start", name, d))
 			}
+			warnings = append(warnings, componentFindings(name, c)...)
 			if c.Image != "" && isTagForm(c.Image) {
 				warnings = append(warnings, warnf("workload %q container %s image %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, d, c.Image))
 			}
@@ -211,6 +214,33 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	warnings = append(warnings, shadowedEntries(al)...)
 	warnings = append(warnings, searchPathFindings(al)...)
 	return warnings
+}
+
+// componentBinaries are the paths of the C8s binary in the component images:
+// /c8s in the operator and CDS images, /app/c8s in the mesh and volumed images.
+var componentBinaries = []string{secrets.InjectedBinary, "/app/c8s"}
+
+// componentFindings reports a container pinned to the C8s binary that leaves
+// its args or mounts to the pod. Either lets a pod point the component at code
+// of its choosing: --kubeconfig runs an exec credential plugin, and a volume
+// replaces what the binary reads. A shape of the sidecars the webhook injects
+// is the exception, since its args are per pod.
+func componentFindings(name string, c pkgallowlist.Container) []finding {
+	if c.Command.Policy != pkgallowlist.PolicyExact || !slices.Contains(componentBinaries, c.Command.Argv[0]) {
+		return nil
+	}
+	argv := c.Command.Argv
+	if len(argv) == 2 && argv[0] == secrets.InjectedBinary && slices.Contains(secrets.InjectedModes, argv[1]) {
+		return nil
+	}
+	var out []finding
+	if c.Args.Policy == pkgallowlist.PolicyAny {
+		out = append(out, errorf("workload %q container %s pins the C8s binary %q but leaves args any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+	}
+	if c.Mounts.Policy == pkgallowlist.PolicyAny {
+		out = append(out, errorf("workload %q container %s pins the C8s binary %q but leaves mounts any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+	}
+	return out
 }
 
 // shadowedEntries reports entries that can never be the unique match because

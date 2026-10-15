@@ -278,20 +278,21 @@ func TestLintShadowedEntry(t *testing.T) {
 		t.Fatalf("identical entries should yield one indistinguishable error, got %v", got)
 	}
 
-	// A seeded component entry pins the executable and leaves the arguments
-	// open, so it still shadows an entry pinning an invocation of that binary.
-	component := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"any"}}]}`
-	attest := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`
+	// An entry that pins the executable and leaves the arguments open still
+	// shadows an entry pinning an invocation of that binary. (On the C8s
+	// binary that shape is an error of its own: TestLintComponentShapes.)
+	component := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/srv/app"]},"args":{"policy":"any"},"mounts":{"policy":"any"},"env":{"policy":"any"}}]}`
+	attest := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/srv/app","serve"]},"args":{"policy":"any"},"mounts":{"policy":"any"}}]}`
 	if got := errs(`"seeded":` + component + `,"attest":` + attest); len(got) != 1 || !strings.Contains(got[0], `workload "attest" can never be the unique match: "seeded"`) {
 		t.Fatalf("component-shaped entry did not shadow a narrower invocation: %v", got)
 	}
 	// Another executable, or an open command the pin does not cover, is
 	// distinguishable; so is a mount set the wide entry does not admit.
-	deniedMounts := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s"]},"args":{"policy":"any"},"mounts":{"policy":"deny"},"env":{"policy":"any"}}]}`
+	deniedMounts := `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/srv/app"]},"args":{"policy":"any"},"mounts":{"policy":"deny"},"env":{"policy":"any"}}]}`
 	for name, tc := range map[string]struct{ wide, narrow string }{
 		"other executable": {component, `{"containers":[` + ctrJSON(digA, "/app") + `]}`},
 		"open command":     {component, `{"containers":[{"digest":"` + digA + `","command":{"policy":"any"},"args":{"policy":"exact","argv":["x"]},"mounts":{"policy":"any"}}]}`},
-		"declared mounts":  {deniedMounts, `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/c8s","cds-attest"]},"args":{"policy":"any"},"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/cfg","kind":"data"}]}}]}`},
+		"declared mounts":  {deniedMounts, `{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/srv/app","serve"]},"args":{"policy":"any"},"mounts":{"policy":"exact","rules":[{"destination":"/mnt/c8s-data/cfg","kind":"data"}]}}]}`},
 	} {
 		if got := errs(`"seeded":` + tc.wide + `,"narrow":` + tc.narrow); len(got) != 0 {
 			t.Fatalf("%s: a distinguishable entry was reported: %v", name, got)
@@ -518,6 +519,47 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 			live := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"alpha": al.Workloads["alpha"]}}
 			if got := countErrors(collisionsWithLive(incoming, live)) != 0; got != tc.ambiguous {
 				t.Fatalf("live collision = %v, want %v", got, tc.ambiguous)
+			}
+		})
+	}
+}
+
+// A container pinned to the C8s binary must pin its args and mounts too:
+// either left open lets a pod point the component at code of its choosing.
+// The injected sidecar shapes keep their per-pod args.
+func TestLintComponentShapes(t *testing.T) {
+	container := func(command, args, mounts string) string {
+		return `{"digest":"` + digA + `","command":{"policy":"exact","argv":` + command + `},"args":` + args + `,"mounts":` + mounts + `}`
+	}
+	exactArgs := `{"policy":"exact","argv":["operator"]}`
+	exactMounts := `{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]}`
+	anyPolicy := `{"policy":"any"}`
+	for _, tc := range []struct {
+		name, container string
+		want            []string
+	}{
+		{"pinned", container(`["/c8s"]`, exactArgs, exactMounts), nil},
+		{"open args", container(`["/c8s"]`, anyPolicy, exactMounts), []string{"leaves args any"}},
+		{"open mounts", container(`["/app/c8s","armtls-mesh"]`, exactArgs, anyPolicy), []string{"leaves mounts any"}},
+		{"old seeded shape", container(`["/c8s"]`, anyPolicy, anyPolicy), []string{"leaves args any", "leaves mounts any"}},
+		{"injected sidecar", container(`["/c8s","get-cert"]`, anyPolicy, exactMounts), nil},
+		{"not the C8s binary", container(`["/bin/sh","-c"]`, exactArgs, anyPolicy), nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := mustParseAllowlist(t, `{"schema":"c8s.allowlist/v1","workloads":{"c":{"containers":[`+tc.container+`]}}}`)
+			var got []string
+			for _, f := range lintOffline(al) {
+				if f.err && strings.Contains(f.msg, "C8s binary") {
+					got = append(got, f.msg)
+				}
+			}
+			if len(got) != len(tc.want) {
+				t.Fatalf("lintOffline(%s) errors = %q, want %d naming %q", tc.container, got, len(tc.want), tc.want)
+			}
+			for i, want := range tc.want {
+				if !strings.Contains(got[i], want) {
+					t.Errorf("lintOffline(%s) error = %q, want it to say %q", tc.container, got[i], want)
+				}
 			}
 		})
 	}
