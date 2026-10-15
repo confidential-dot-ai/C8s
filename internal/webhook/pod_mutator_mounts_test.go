@@ -162,7 +162,8 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 }
 
 // A discovery or reload-watch volume the sidecar's mount rules cannot admit is
-// refused at admission rather than by the node at container creation.
+// refused at admission rather than by the node at container creation. A
+// disk-backed emptyDir and a ConfigMap pass: encrypted scratch admits them.
 func TestRejectUnpinnableSidecarVolumes(t *testing.T) {
 	memory := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory}}
 	secret := corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: "public-tls"}}

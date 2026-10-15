@@ -1227,13 +1227,17 @@ func reservedVolumeNames(pod *corev1.Pod) map[string]bool {
 // c8s.injectedShapes): discovery is an emptyDir rule, and reload-watch a data
 // rule, which the node classifies a kubelet-projected volume as. Admitting the
 // pod would only have the node refuse the sidecar at container creation.
+// A disk-backed emptyDir or a ConfigMap volume passes: both rules admit it on
+// the measured node image, whose kubelet volumes sit on encrypted scratch, and
+// the webhook cannot tell that node from one without it, where the node
+// refuses the sidecar (docs/secrets.md#fixed-sidecar-mounts).
 func rejectUnpinnableSidecarVolumes(pod *corev1.Pod, inj *injection) error {
 	for _, ref := range []struct {
 		annotation, name, want string
 		admits                 func(corev1.VolumeSource) bool
 	}{
-		{AnnotationDiscoveryVolume, inj.Discovery.Volume, "an emptyDir", func(v corev1.VolumeSource) bool { return v.EmptyDir != nil }},
-		{AnnotationReloadWatchVolume, inj.Reload.WatchVolume, "a Secret, ConfigMap, projected or downward API volume", func(v corev1.VolumeSource) bool {
+		{AnnotationDiscoveryVolume, inj.Discovery.Volume, "an emptyDir (medium: Memory unless the node has encrypted scratch)", func(v corev1.VolumeSource) bool { return v.EmptyDir != nil }},
+		{AnnotationReloadWatchVolume, inj.Reload.WatchVolume, "a Secret, ConfigMap, projected or downward API volume (a Secret or projected volume unless the node has encrypted scratch)", func(v corev1.VolumeSource) bool {
 			return v.Secret != nil || v.ConfigMap != nil || v.Projected != nil || v.DownwardAPI != nil
 		}},
 	} {

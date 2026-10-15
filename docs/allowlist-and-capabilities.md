@@ -780,6 +780,18 @@ To retire them once no pod runs them and no rollback needs them:
 4. Delete each one: `c8s allowlist delete <name>`. The chart moved its ConfigMap, Secret and PVC mounts under
 `/mnt/c8s-data/` (nginx reads `/mnt/c8s-data/nginx/nginx.conf`, CDS keeps its
 database under `/mnt/c8s-data/cds`), so an upgrade rolls every component pod.
+The webhook now pins the injected sidecars' mounts too. It refuses a pod
+whose `confidential.ai/c8s-discovery-mount-path` is anything but
+`/run/c8s/discovery` or whose `confidential.ai/c8s-reload-watch-mount-path`
+is anything but `/mnt/c8s-data/c8s-reload-watch` (likewise
+`c8s-cert-dir` and `c8s-secret-dir`), and one whose discovery or
+reload-watch volume is of a kind the sidecar's mount table cannot admit.
+Running pods keep their mounts, but their next create fails, so a rollout or
+an evicted replica of such a workload is refused after the upgrade. Before
+upgrading, remove those annotations, point `c8s-discovery-out` and
+`c8s-reload-watch-paths` at files under the fixed paths, and make the
+application read there; see
+[Fixed sidecar mounts](secrets.md#fixed-sidecar-mounts).
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
 
