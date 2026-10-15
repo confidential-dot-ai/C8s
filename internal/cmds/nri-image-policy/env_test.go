@@ -381,6 +381,83 @@ func TestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
 	}
 }
 
+// sharedMatchWorkload declares one main container whose match env policy
+// admits any value of 128 variables at the per-record limits, and n init
+// containers of the same image and argv with a small exact env policy.
+func sharedMatchWorkload(t *testing.T, n int) []byte {
+	t.Helper()
+	process := func(env map[string]any) map[string]any {
+		return map[string]any{
+			"digest":  pushDigestA,
+			"command": map[string]any{"policy": "exact", "argv": []string{"/app"}},
+			"args":    map[string]string{"policy": "deny"},
+			"env":     env,
+		}
+	}
+	variables := map[string]any{}
+	for v := range 128 {
+		variables[fmt.Sprintf("%s%03d", strings.Repeat("V", 29), v)] = map[string]bool{"present": true}
+	}
+	inits := []map[string]any{}
+	for range n {
+		inits = append(inits, process(map[string]any{"policy": "exact", "values": map[string]string{"MODE": "init"}}))
+	}
+	workload := map[string]any{
+		"containers":     []map[string]any{process(map[string]any{"policy": "match", "variables": variables})},
+		"initContainers": inits,
+	}
+	doc, err := json.Marshal(map[string]any{"schema": allowlist.Schema, "workloads": map[string]any{"shared": workload}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+// Matching lets the match declaration admit every container its image and
+// argv run, so the authoring check charges each declaration sharing them at
+// the match size. A fresh sandbox of that many distinct large environments
+// keeps every record's evidence and matches.
+func TestSharedDigestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
+	_, envs := matchWorkloadAtLimits(t, 1)
+	variant := func(value string) *allowlist.EnvObservation {
+		env := slices.Clone(envs[0])
+		for i := range env {
+			env[i] = strings.TrimSuffix(env[i], "x") + value
+		}
+		o, err := allowlist.ObserveEnv(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	fit := allowlist.MaxSandboxVariableEvidenceBytes / variant("x").VariableEvidenceBytes()
+	al, err := allowlist.ParseJSON(sharedMatchWorkload(t, fit-1))
+	if err != nil {
+		t.Fatalf("ParseJSON(%d declarations) = %v", fit, err)
+	}
+	inv := newAdmissionInventory(t.TempDir())
+	inv.needsVariableEvidence = al.BuildIndex().NeedsVariableEvidence
+	for i := range fit {
+		inv.record(fmt.Sprint("ctr-", i), "pod", "ctr", pushDigestA, []string{"/app"}, variant(fmt.Sprint(i)), []allowlist.ObservedMount{}...)
+	}
+	_, cs, _, err := inv.DigestsForSandbox("pod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		if c.Env.VariableDigests == nil {
+			t.Fatalf("record %s lost its per-variable evidence", c.Env.Digest)
+		}
+	}
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "shared" {
+		t.Fatalf("MatchWorkload() = %q, %v; want shared", name, err)
+	}
+
+	if _, err := allowlist.ParseJSON(sharedMatchWorkload(t, fit)); err == nil || !strings.Contains(err.Error(), fmt.Sprint(allowlist.MaxSandboxVariableEvidenceBytes)) {
+		t.Fatalf("ParseJSON(%d declarations) error = %v, want the evidence ceiling", fit+1, err)
+	}
+}
+
 // A stopped or removed container is no longer running, so churning sidecar
 // variants lose their evidence before the live main container does.
 func TestInventoryEvictsExitedContainersEvidenceFirst(t *testing.T) {

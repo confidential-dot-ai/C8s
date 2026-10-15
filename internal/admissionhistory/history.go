@@ -78,7 +78,7 @@ func (h *History) Record(id, digest string, argv []string, env *allowlist.EnvObs
 }
 
 // Exited marks a container as no longer running, which makes its record's
-// per-variable evidence the first Bound evicts.
+// per-variable evidence the first of its image's that Bound evicts.
 func (h *History) Exited(id string) {
 	key, ok := h.running[id]
 	if !ok {
@@ -89,10 +89,11 @@ func (h *History) Exited(id string) {
 }
 
 // Bound evicts per-variable digests until the sandbox's total fits within
-// allowlist.MaxSandboxVariableEvidenceBytes: first from records with no running
-// container, then from records whose image needed reports not needing them,
-// then the oldest. Each record keeps its aggregate digest and is marked
-// evicted. A nil needed treats every image as needing them.
+// allowlist.MaxSandboxVariableEvidenceBytes: first from records whose image
+// needed reports not needing them, then from records with no running container,
+// then the oldest. Need outranks liveness because an exited init container's
+// record still has to match. Each record keeps its aggregate digest and is
+// marked evicted. A nil needed treats every image as needing them.
 func (h *History) Bound(needed func(digest string) bool) {
 	total := 0
 	var holding []*record
@@ -107,9 +108,9 @@ func (h *History) Bound(needed func(digest string) bool) {
 	}
 	rank := func(r *record) int {
 		switch {
-		case len(r.running) == 0:
-			return 0
 		case needed != nil && !needed(r.container.Digest):
+			return 0
+		case len(r.running) == 0:
 			return 1
 		default:
 			return 2

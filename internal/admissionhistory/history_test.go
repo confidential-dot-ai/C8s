@@ -237,6 +237,25 @@ func TestHistoryEvictsUnneededBeforeOldest(t *testing.T) {
 	}
 }
 
+// An exited init container of a needed image keeps its evidence while running
+// containers of an unneeded image lose theirs.
+func TestHistoryEvictsUnneededBeforeExited(t *testing.T) {
+	var h History
+	needed := func(digest string) bool { return digest == "sha256:a" }
+	fit := allowlist.MaxSandboxVariableEvidenceBytes / observeAtLimits(t, "x").VariableEvidenceBytes()
+	initEnv := observeAtLimits(t, "init")
+	h.Record("init", "sha256:a", []string{"/init"}, initEnv)
+	h.Bound(needed)
+	h.Exited("init")
+	for i := range fit {
+		h.Record(fmt.Sprint("main-", i), "sha256:b", []string{"/main"}, observeAtLimits(t, fmt.Sprint(i)))
+		h.Bound(needed)
+	}
+	if got := evidenceByEnv(t, h, needed)[initEnv.Digest]; got.VariableDigests == nil {
+		t.Fatal("evicted an exited needed record while running unneeded ones kept their evidence")
+	}
+}
+
 // Serving decides which records need evidence, so an image listed by a match
 // policy only after its container was recorded is still served its evidence.
 func TestHistoryServesEvidenceByCurrentPolicy(t *testing.T) {

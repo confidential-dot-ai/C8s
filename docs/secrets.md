@@ -482,16 +482,20 @@ of CDS's 1 MiB response limit:
   recorded before the node applied that policy is still served its digests once
   it does.
 - A sandbox keeps at most 512 KiB of serialized per-variable digests. Past
-  that, the node evicts them from records whose container has stopped first,
-  then from records of images no `match` policy lists, then from the oldest. An
-  evicted record keeps its aggregate digest and reports
+  that, the node evicts them from records of images no `match` policy lists
+  first, then from records whose container has stopped, then from the oldest.
+  A stopped init container of a `match`-listed image therefore keeps its
+  digests while unlisted images hold any. An evicted record keeps its aggregate digest and reports
   `variableDigestsEvicted: true`. Admitting the same environment again restores
   its digests.
 - `derive`, `lint` and `apply` reject a workload whose containers of
   `match`-listed images could together need more than 512 KiB, whatever each
-  container's own env policy. A container at both per-record limits needs about
-  13 KB, so 40 such containers fit. A workload that passes keeps every running
-  container's evidence in a fresh sandbox.
+  container's own env policy. Any declaration of the same image whose argv
+  could also satisfy a `match` declaration is charged at that declaration's
+  size, since the `match` declaration can admit the container in its place. A
+  container at both per-record limits needs about 13 KB, so 40 such containers
+  fit. A workload that passes keeps every declared container's evidence in a
+  fresh sandbox.
 
 The authoring check covers each declared container once. It does not cover:
 
@@ -514,7 +518,7 @@ A record without per-variable digests fails a `match` policy.
 | Case | Cause | Recovery |
 | --- | --- | --- |
 | `env evidence unavailable` | The node reported no environment: the container had no OCI process args, or its CDI edits were deferred. | Waiting does not help. Fix the launch, then recreate the pod. |
-| `env evidence missing` | The node has not applied an allowlist version with a `match` policy for the image, the node recorded the container with software older than per-variable digests, or the environment exceeds 128 variables or 4 KiB of names. | Wait until the node logs the version ([rollout](allowlist-and-capabilities.md#environment-policy-env)); no pod restart is needed. If the node already logs that version, the record predates per-variable digests: recreate the pod. Otherwise shrink the environment, for example with `enableServiceLinks: false`. |
+| `env evidence missing` | The node has not applied an allowlist version with a `match` policy for the image, the node recorded the container with software older than per-variable digests, or the environment exceeds 128 variables or 4 KiB of names. | The diagnosis cannot tell these causes apart; apply each remedy that fits. (1) Wait until the node logs the version ([rollout](allowlist-and-capabilities.md#environment-policy-env)); no pod restart is needed. (2) Recreate a pod whose container the node recorded with older software. (3) Shrink an oversized environment, for example with `enableServiceLinks: false`, then recreate the pod. |
 | `env evidence evicted` | Stopped containers, restarts with new environments, or images outside the workload pushed the sandbox past 512 KiB. | Recreate the pod, and stop the churn that changes the environment on each restart. |
 | `env evidence mismatch` | The digests are present and the environment does not satisfy the policy. | Fix the environment or the policy. |
 

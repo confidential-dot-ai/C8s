@@ -468,20 +468,29 @@ func TestWorkloadVariableEvidenceBudget(t *testing.T) {
 	}
 
 	// A node retains evidence for every container of a match-listed image at
-	// the same priority, whatever that container's own env policy.
+	// the same priority, whatever that container's own env policy. A match
+	// declaration can admit the container another declaration of its image
+	// and argv stands for, so that container is charged at the match size.
 	other := func(digest int, env map[string]any) map[string]any {
 		return map[string]any{
 			"digest": fmt.Sprintf("sha256:%064x", digest), "command": map[string]any{"policy": "exact", "argv": []string{"/sidecar"}},
 			"args": map[string]string{"policy": "deny"}, "env": env,
 		}
 	}
+	appArgv := func(c map[string]any) map[string]any {
+		c["command"] = map[string]any{"policy": "exact", "argv": []string{"/app"}}
+		return c
+	}
+	small := map[string]any{"policy": "exact", "values": map[string]string{"MODE": "production"}}
 	for _, tc := range []struct {
 		name  string
 		extra map[string]any
 		fits  bool
 	}{
 		{"any on a listed image", other(1, map[string]any{"policy": "any"}), false},
-		{"small exact on a listed image", other(1, map[string]any{"policy": "exact", "values": map[string]string{"MODE": "production"}}), true},
+		{"small exact on a listed image", other(1, small), true},
+		{"small exact sharing a match declaration's argv", appArgv(other(1, small)), false},
+		{"small exact sharing argv on an unlisted image", appArgv(other(fit+1, small)), true},
 		{"any on an unlisted image", other(fit+1, map[string]any{"policy": "any"}), true},
 	} {
 		_, err := ParseWorkloadJSON(entry(fit, tc.extra))
@@ -490,6 +499,37 @@ func TestWorkloadVariableEvidenceBudget(t *testing.T) {
 		}
 		if !tc.fits && (err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxSandboxVariableEvidenceBytes))) {
 			t.Errorf("%s: ParseWorkloadJSON() error = %v, want the evidence ceiling", tc.name, err)
+		}
+	}
+}
+
+func TestArgvOverlaps(t *testing.T) {
+	anything := ArgvPolicy{Policy: PolicyAny}
+	deny := ArgvPolicy{Policy: PolicyDeny}
+	exact := func(argv ...string) ArgvPolicy { return ArgvPolicy{Policy: PolicyExact, Argv: argv} }
+	for _, tc := range []struct {
+		name                    string
+		command, args           ArgvPolicy
+		otherCommand, otherArgs ArgvPolicy
+		want                    bool
+	}{
+		{"same exact argv", exact("/app"), deny, exact("/app"), deny, true},
+		{"different executables", exact("/app"), deny, exact("/sidecar"), deny, false},
+		{"pinned args under any command", anything, exact("/app", "-v"), exact("/app"), exact("-v"), true},
+		{"open prefix extended", exact("/app"), anything, exact("/app", "-v"), deny, true},
+		{"nested open prefixes", exact("/app"), anything, exact("/app", "-v"), anything, true},
+		{"diverging open prefixes", exact("/app", "-a"), anything, exact("/app", "-b"), anything, false},
+		{"empty argv against a pinned command", deny, deny, exact("/app"), anything, false},
+		{"empty argv under any", deny, deny, anything, anything, true},
+		{"denied command with pinned args admits nothing", deny, exact("-v"), anything, anything, false},
+	} {
+		c := Container{Command: tc.command, Args: tc.args}
+		o := Container{Command: tc.otherCommand, Args: tc.otherArgs}
+		if got := c.argvOverlaps(o); got != tc.want {
+			t.Errorf("%s: argvOverlaps() = %t, want %t", tc.name, got, tc.want)
+		}
+		if got := o.argvOverlaps(c); got != tc.want {
+			t.Errorf("%s: reversed argvOverlaps() = %t, want %t", tc.name, got, tc.want)
 		}
 	}
 }
