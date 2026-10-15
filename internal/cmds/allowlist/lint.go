@@ -211,7 +211,7 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 		}
 		if w.Secrets != nil {
 			for _, c := range allContainers(w) {
-				if c.Env.Policy == pkgallowlist.PolicyAny || c.Env.Policy == "" {
+				if pinsNoEnvValue(c.Env) {
 					warnings = append(warnings, warnf("workload %q grants secrets without pinning environment values for container %s", name, c.Digest))
 				}
 			}
@@ -319,6 +319,19 @@ func componentFindings(name string, c pkgallowlist.Container) []finding {
 	return out
 }
 
+// pinsNoEnvValue reports whether the host may choose every environment value:
+// any, or match with only presence matchers. A required empty environment pins
+// everything there is.
+func pinsNoEnvValue(env pkgallowlist.EnvPolicy) bool {
+	switch env.Policy {
+	case pkgallowlist.PolicyDeny, pkgallowlist.PolicyExact:
+		return false
+	case pkgallowlist.PolicyMatch:
+		return len(env.Variables) > 0 && len(env.ExactValues()) == 0
+	}
+	return true
+}
+
 // shadowedEntries reports entries that can never be the unique match because
 // another entry describes every running set they describe. Like an
 // indistinguishable pair this is an error: release and the matched-workload
@@ -331,9 +344,9 @@ func shadowedEntries(al *pkgallowlist.Allowlist) []finding {
 	return out
 }
 
-// shadowPairs returns every (wide, narrow) name pair where wide shadows narrow
-// and not the reverse — a mutual pair is the same shape, which
-// indistinguishableEntries already reports.
+// shadowPairs returns every (wide, narrow) name pair where wide shadows narrow.
+// A mutual pair is returned once, and not at all when the two share a shape,
+// which indistinguishableEntries already reports.
 func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 	var out [][2]string
 	names := slices.Sorted(maps.Keys(al.Workloads))
@@ -342,12 +355,22 @@ func shadowPairs(al *pkgallowlist.Allowlist) [][2]string {
 			if wide == narrow {
 				continue
 			}
-			if shadows(al.Workloads[wide], al.Workloads[narrow]) && !shadows(al.Workloads[narrow], al.Workloads[wide]) {
-				out = append(out, [2]string{wide, narrow})
+			if !shadows(al.Workloads[wide], al.Workloads[narrow]) {
+				continue
 			}
+			if shadows(al.Workloads[narrow], al.Workloads[wide]) && (narrow < wide || sameShape(al.Workloads[wide], al.Workloads[narrow])) {
+				continue
+			}
+			out = append(out, [2]string{wide, narrow})
 		}
 	}
 	return out
+}
+
+func sameShape(a, b pkgallowlist.Workload) bool {
+	shapeA, errA := entryShape(a)
+	shapeB, errB := entryShape(b)
+	return errA != nil || errB != nil || shapeA == shapeB
 }
 
 func shadowFinding(wide, narrow string) finding {
@@ -357,15 +380,12 @@ func shadowFinding(wide, narrow string) finding {
 }
 
 // shadows reports whether wide describes every running set narrow describes:
-// each of wide's mains is one of narrow's mains, and each container narrow
-// declares has a wide container of the same digest whose policy subsumes it.
+// each of wide's mains subsumes one of narrow's mains, so it is running whenever
+// narrow matches, and each container narrow declares is subsumed by one of
+// wide's.
 func shadows(wide, narrow pkgallowlist.Workload) bool {
-	narrowMains := map[string]bool{}
-	for _, c := range narrow.Containers {
-		narrowMains[c.Digest.String()] = true
-	}
-	for _, c := range wide.Containers {
-		if !narrowMains[c.Digest.String()] {
+	for _, w := range wide.Containers {
+		if !slices.ContainsFunc(narrow.Containers, func(n pkgallowlist.Container) bool { return subsumes(w, n) }) {
 			return false
 		}
 	}
@@ -378,8 +398,8 @@ func shadows(wide, narrow pkgallowlist.Workload) bool {
 }
 
 // subsumes reports whether every launch narrow admits, wide admits too: the
-// same digest, and for each of argv, mounts and env either wide leaves it to
-// the host or both pin it the same way. For argv, an exact command whose
+// same digest, argv and mounts either left to the host by wide or pinned the
+// same way by both, and an env policy wide covers. For argv, an exact command whose
 // arguments are open also subsumes any exact command it is a prefix of — the
 // seeded component shape, `/c8s` under any args, subsumes `/c8s cds-attest`
 // under any policy.
@@ -393,10 +413,39 @@ func subsumes(wide, narrow pkgallowlist.Container) bool {
 	if wide.Mounts.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Mounts, narrow.Mounts) {
 		return false
 	}
-	if wide.Env.Policy != pkgallowlist.PolicyAny && !reflect.DeepEqual(wide.Env, narrow.Env) {
+	if shadowRestricted(wide) && !shadowRestricted(narrow) && declaresMountOverExecutable(narrow) {
+		return false
+	}
+	if !wide.Env.Covers(narrow.Env) {
 		return false
 	}
 	return true
+}
+
+// shadowRestricted mirrors admission: an exact command under `mounts: any`
+// refuses any mount covering its executable.
+func shadowRestricted(c pkgallowlist.Container) bool {
+	return c.Command.Policy == pkgallowlist.PolicyExact && c.Mounts.Policy == pkgallowlist.PolicyAny
+}
+
+// declaresMountOverExecutable reports whether c's exact mounts may cover its
+// pinned executable; with no pinned executable it conservatively says yes.
+func declaresMountOverExecutable(c pkgallowlist.Container) bool {
+	if c.Mounts.Policy != pkgallowlist.PolicyExact {
+		return false
+	}
+	if len(c.Command.Argv) == 0 {
+		return true
+	}
+	exe := c.Command.Argv[0]
+	if !strings.HasPrefix(exe, "/") {
+		return false
+	}
+	exe = path.Clean(exe)
+	return slices.ContainsFunc(c.Mounts.Rules, func(rule pkgallowlist.MountRule) bool {
+		dest := path.Clean(rule.Destination)
+		return dest == exe || strings.HasPrefix(exe, strings.TrimSuffix(dest, "/")+"/")
+	})
 }
 
 func argvPrefixSubsumes(wide, narrow pkgallowlist.Container) bool {
@@ -410,17 +459,34 @@ func processOf(c pkgallowlist.Container) [2]pkgallowlist.ArgvPolicy {
 	return [2]pkgallowlist.ArgvPolicy{c.Command, c.Args}
 }
 
-// searchPathFindings rejects pinned loader and interpreter search paths that
-// overlap operator-supplied data, which could otherwise be loaded as code.
+// loaderVariables choose where the loader, a shell or an interpreter finds
+// code, so the host must not pick their values.
+var loaderVariables = []string{
+	"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "GLIBC_TUNABLES", "BASH_ENV", "ENV",
+	"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "NODE_PATH", "NODE_OPTIONS",
+	"JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "PERL5LIB", "PERL5OPT", "RUBYLIB", "RUBYOPT",
+}
+
+// searchPathFindings rejects loader variables the host chooses, and pinned
+// search paths overlapping operator-supplied data: either way, content outside
+// the measured image could be loaded as code.
 func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 	var out []finding
 	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
 		for _, c := range allContainers(al.Workloads[name]) {
-			if c.Env.Policy != pkgallowlist.PolicyExact || c.Mounts.Policy != pkgallowlist.PolicyExact {
+			pinnedValues := c.Env.ExactValues()
+			for _, variable := range loaderVariables {
+				if _, matched := c.Env.Variables[variable]; matched {
+					if _, pinned := pinnedValues[variable]; !pinned {
+						out = append(out, errorf("workload %q container %s leaves %s to the host; the host could choose what code is loaded (pin it with exact, or leave it unlisted)", name, c.Digest.String(), variable))
+					}
+				}
+			}
+			if c.Mounts.Policy != pkgallowlist.PolicyExact {
 				continue
 			}
 			for _, variable := range []string{"PATH", "LD_LIBRARY_PATH", "PYTHONPATH", "NODE_PATH"} {
-				value, set := c.Env.Values[variable]
+				value, set := pinnedValues[variable]
 				if !set {
 					continue
 				}

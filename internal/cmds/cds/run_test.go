@@ -6,7 +6,9 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -15,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -27,9 +30,11 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -415,10 +420,18 @@ func TestRun_ServesAndShutsDownOnSIGTERM(t *testing.T) {
 // registers a cleanup that SIGTERMs the process and requires a clean exit.
 func startRunServer(t *testing.T, cfg config) string {
 	t.Helper()
+	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
+	startRunServerOn(t, cfg, base, http.DefaultClient)
+	return base
+}
+
+// startRunServerOn is startRunServer for a listener that client knows how to
+// reach: base carries the scheme, and client the TLS configuration.
+func startRunServerOn(t *testing.T, cfg config, base string, client *http.Client) {
+	t.Helper()
 	errCh := make(chan error, 1)
 	go func() { errCh <- run(cfg) }()
 
-	base := fmt.Sprintf("http://127.0.0.1:%d", cfg.port)
 	deadline := time.Now().Add(15 * time.Second)
 	for {
 		if time.Now().After(deadline) {
@@ -429,7 +442,7 @@ func startRunServer(t *testing.T, cfg config) string {
 			t.Fatalf("run() exited early: %v", err)
 		default:
 		}
-		resp, err := http.Get(base + "/healthz")
+		resp, err := client.Get(base + "/healthz")
 		if err == nil {
 			_ = resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
@@ -452,7 +465,6 @@ func startRunServer(t *testing.T, cfg config) string {
 			t.Fatal("run() did not shut down after SIGTERM")
 		}
 	})
-	return base
 }
 
 // TestRun_LogsMeasurementPinning: with --measurements set, startup must log the
@@ -747,5 +759,169 @@ func TestMeasurementDigests(t *testing.T) {
 	empty, err := measurementDigests(nil)
 	if err != nil || len(empty) != 0 {
 		t.Fatalf("empty allowlist: got %v, %v", empty, err)
+	}
+}
+
+// armTLSRunConfig returns validRunConfig with the armTLS listener on. A stub
+// attestation API provisions both certificates run() warms up, the serving
+// certificate and the sandbox-digests client's, with a fake SNP report.
+func armTLSRunConfig(t *testing.T) config {
+	t.Helper()
+	seedPath := filepath.Join(t.TempDir(), "seed.json")
+	if err := os.WriteFile(seedPath, []byte(anySeed(map[string]string{"cds": digestA})), 0o600); err != nil {
+		t.Fatalf("write seed: %v", err)
+	}
+	cfg := validRunConfig(t, mockapi.New(t).URL())
+	cfg.port = freePort(t)
+	cfg.armtlsPlatform = "sev-snp"
+	cfg.measurements = []string{strings.Repeat("ab", 48)}
+	cfg.operatorKeys = writeOperatorKeysPEM(t)
+	cfg.allowlistSeed = seedPath
+	return cfg
+}
+
+// armTLSClient returns an HTTPS client that accepts the CDS serving
+// certificate only if it carries an armTLS attestation. The attestation
+// itself is not verified: the stub's report is unsigned. A cert, if given, is
+// presented whenever the server asks for one; crypto/tls would otherwise
+// withhold a certificate whose issuer the server does not list as acceptable,
+// and the policy under test would never see it.
+func armTLSClient(cert *tls.Certificate) *http.Client {
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		InsecureSkipVerify: true,
+		VerifyConnection: func(cs tls.ConnectionState) error {
+			_, err := armtls.ExtractAttestation(cs.PeerCertificates[0])
+			return err
+		},
+	}
+	if cert != nil {
+		tlsCfg.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			return cert, nil
+		}
+	}
+	return &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &http.Transport{TLSClientConfig: tlsCfg},
+	}
+}
+
+// The real armTLS listener, with the client-certificate policy run() sets:
+// VerifyClientCertIfGiven against the mesh CA. A client with no certificate
+// reads every document the CDS publishes.
+func TestRun_ARMTLSServesPublishedDocumentsToCertlessClients(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+
+	for _, tc := range []struct {
+		document string
+		path     string
+		check    func(t *testing.T, body []byte)
+	}{
+		{"mesh CA certificate", "/ca", func(t *testing.T, body []byte) {
+			block, _ := pem.Decode(body)
+			if block == nil || block.Type != "CERTIFICATE" {
+				t.Fatalf("GET /ca body is not a PEM certificate: %q", body)
+			}
+			if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+				t.Fatalf("GET /ca certificate: %v", err)
+			}
+		}},
+		{"reference values", "/measurements", func(t *testing.T, body []byte) {
+			var doc map[string]json.RawMessage
+			if err := json.Unmarshal(body, &doc); err != nil || len(doc) == 0 {
+				t.Fatalf("GET /measurements body = %q, want a JSON document: %v", body, err)
+			}
+		}},
+		{"operator key set", "/operator-keys", func(t *testing.T, body []byte) {
+			if block, _ := pem.Decode(body); block == nil || block.Type != "PUBLIC KEY" {
+				t.Fatalf("GET /operator-keys body is not a PEM public key: %q", body)
+			}
+		}},
+		{"allowlist", "/allowlist", func(t *testing.T, body []byte) {
+			var listing struct {
+				Workloads map[string]json.RawMessage `json:"workloads"`
+			}
+			if err := json.Unmarshal(body, &listing); err != nil {
+				t.Fatalf("decode /allowlist: %v", err)
+			}
+			if _, ok := listing.Workloads["cds"]; !ok {
+				t.Fatalf("seeded entry missing from /allowlist: %v", listing.Workloads)
+			}
+		}},
+	} {
+		t.Run(tc.document, func(t *testing.T) {
+			resp, err := client.Get(base + tc.path)
+			if err != nil {
+				t.Fatalf("GET %s over armTLS: %v", tc.path, err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s = %d (%s), want 200", tc.path, resp.StatusCode, body)
+			}
+			tc.check(t, body)
+		})
+	}
+}
+
+// A certificate that is presented is verified against the mesh CA: one the
+// CA did not issue fails the handshake, so a handler never sees it. Together
+// with the certless reads above this pins ClientAuth to
+// VerifyClientCertIfGiven; RequestClientCert would admit this peer and
+// RequireAndVerifyClientCert would refuse the certless one.
+func TestRun_ARMTLSRefusesClientCertOutsideMeshCA(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	startRunServerOn(t, cfg, base, armTLSClient(nil))
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen client key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "stranger"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("self-sign client cert: %v", err)
+	}
+	stranger := armTLSClient(&tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key})
+
+	resp, err := stranger.Get(base + "/ca")
+	if err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Fatalf("GET /ca with a client certificate outside the mesh CA = %d (%s), want a refused handshake", resp.StatusCode, body)
+	}
+}
+
+// The armTLS listener answers nothing to plain HTTP: a client asking for the
+// mesh CA without TLS gets no certificate.
+func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	startRunServerOn(t, cfg, fmt.Sprintf("https://127.0.0.1:%d", cfg.port), armTLSClient(nil))
+
+	// net/http answers a plain request at a TLS listener with a fixed 400,
+	// so the refusal is observed as a status, not as a closed connection.
+	plain := &http.Client{Timeout: 5 * time.Second}
+	resp, err := plain.Get(fmt.Sprintf("http://127.0.0.1:%d/ca", cfg.port))
+	if err != nil {
+		t.Fatalf("plain-HTTP GET /ca: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("plain-HTTP GET /ca = %d (%s), want 400", resp.StatusCode, body)
+	}
+	if block, _ := pem.Decode(body); block != nil {
+		t.Fatalf("plain-HTTP GET /ca refused but the body carries a PEM block: %s", body)
 	}
 }
