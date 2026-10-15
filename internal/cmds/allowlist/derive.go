@@ -254,6 +254,9 @@ derives the same entry as the manifest it was admitted from.`,
 				InitContainers: initContainers,
 				Containers:     containers,
 			}
+			if err := w.CheckVariableEvidenceBudget(); err != nil {
+				return err
+			}
 			if len(secrets) > 0 {
 				w.Secrets = &allowlist.SecretsPolicy{
 					Policy: allowlist.PolicyAllow,

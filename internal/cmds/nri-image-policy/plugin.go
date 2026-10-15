@@ -181,6 +181,7 @@ func newPlugin(
 			procRoot = "/proc"
 		}
 		p.inventory = newAdmissionInventory(procRoot)
+		p.inventory.needsVariableEvidence = store.needsVariableEvidence
 	}
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
@@ -310,17 +311,12 @@ func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Conta
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
-// effective OCI process.args, the same value the checks read. Per-variable env
-// digests are kept only for an image a match policy lists, which bounds the
-// inventory size (docs/secrets.md).
+// effective OCI process.args, the same value the checks read.
 func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowlist.ObservedMount) {
 	if p.inventory == nil {
 		return
 	}
 	env := containerEnv(ctr)
-	if env != nil && !p.policy.needsVariableEvidence(digest) {
-		env.VariableDigests = nil
-	}
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
 }
 

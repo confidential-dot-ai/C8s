@@ -209,6 +209,9 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if w.Secrets != nil && !w.ArgvPinned() {
 		return nil, fmt.Errorf("entry: %w", errGrantUnpinned)
 	}
+	if err := w.CheckVariableEvidenceBudget(); err != nil {
+		return nil, fmt.Errorf("entry: %w", err)
+	}
 	sortContainers(w.InitContainers)
 	sortContainers(w.Containers)
 	return &w, nil
@@ -411,6 +414,9 @@ func (a *Allowlist) normalize(strict bool) error {
 		}
 		if strict && w.Secrets != nil && !w.ArgvPinned() {
 			return fmt.Errorf("workload %q: %w", name, errGrantUnpinned)
+		}
+		if err := w.CheckVariableEvidenceBudget(); strict && err != nil {
+			return fmt.Errorf("workload %q: %w", name, err)
 		}
 		sortContainers(w.InitContainers)
 		sortContainers(w.Containers)

@@ -3,6 +3,7 @@ package allowlist
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"os"
 	"regexp"
@@ -438,5 +439,48 @@ func TestObserveEnvBoundsVariableEvidence(t *testing.T) {
 				t.Fatalf("match policy at the limit: error %v, admitted false", err)
 			}
 		})
+	}
+}
+
+func TestWorkloadVariableEvidenceBudget(t *testing.T) {
+	variables := map[string]map[string]string{}
+	for v := range maxVariableEvidence {
+		variables[fmt.Sprintf("%s%03d", strings.Repeat("V", 29), v)] = map[string]string{"present": "true"}
+	}
+	perContainer := variableEvidenceBytes(maps.Keys(variables))
+	fit := MaxSandboxVariableEvidenceBytes / perContainer
+	entry := func(n int) []byte {
+		var containers []map[string]any
+		for i := range n {
+			containers = append(containers, map[string]any{
+				"digest": fmt.Sprintf("sha256:%064x", i+1), "command": map[string]any{"policy": "exact", "argv": []string{"/app"}},
+				"args": map[string]string{"policy": "deny"}, "env": map[string]any{"policy": "match", "variables": variables},
+			})
+		}
+		b, _ := json.Marshal(map[string]any{"containers": containers})
+		return bytes.ReplaceAll(b, []byte(`"true"`), []byte(`true`))
+	}
+	if _, err := ParseWorkloadJSON(entry(fit)); err != nil {
+		t.Fatalf("ParseWorkloadJSON(%d containers) = %v", fit, err)
+	}
+	if _, err := ParseWorkloadJSON(entry(fit + 1)); err == nil || !strings.Contains(err.Error(), fmt.Sprint(MaxSandboxVariableEvidenceBytes)) {
+		t.Fatalf("ParseWorkloadJSON(%d containers) error = %v, want the evidence ceiling", fit+1, err)
+	}
+}
+
+func TestDiagnoseEnvEvidenceIgnoresAdmittedAndUnlisted(t *testing.T) {
+	w, err := ParseWorkloadJSON([]byte(`{"containers":[{"digest":"sha256:` + strings.Repeat("a", 64) + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+		`"env":{"policy":"match","variables":{"MODE":{"exact":"production"}}}}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env, _ := ObserveEnv([]string{"MODE=production"})
+	for _, r := range []RunningContainer{
+		{Digest: "sha256:" + strings.Repeat("a", 64), Env: env},
+		{Digest: "sha256:" + strings.Repeat("b", 64)},
+	} {
+		if got := w.DiagnoseEnvEvidence(r); got != "" {
+			t.Errorf("DiagnoseEnvEvidence(%s) = %q, want none", r.Digest, got)
+		}
 	}
 }

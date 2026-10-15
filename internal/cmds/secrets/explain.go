@@ -9,8 +9,24 @@ import (
 	"github.com/spf13/cobra"
 
 	intsecrets "github.com/confidential-dot-ai/c8s/internal/secrets"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
+
+// envEvidenceReason explains an allowlist.EnvEvidence diagnosis and how to
+// recover (docs/secrets.md, "What the inventory reports").
+func envEvidenceReason(diagnosis string) string {
+	switch diagnosis {
+	case pkgallowlist.EnvEvidenceMissing:
+		return "the node reported no per-variable digests: it has not applied an allowlist version with this match policy, or the environment exceeds 128 variables or 4 KiB of names"
+	case pkgallowlist.EnvEvidenceEvicted:
+		return "the node evicted the per-variable digests to bound the sandbox inventory; recreate the pod"
+	case pkgallowlist.EnvEvidenceMismatch:
+		return "the environment does not satisfy the entry's match policy"
+	default:
+		return ""
+	}
+}
 
 func newExplainCmd(o *options) *cobra.Command {
 	var (
@@ -105,6 +121,9 @@ func printExplain(w io.Writer, r intsecrets.ExplainResponse) {
 		for _, f := range e.Foreign {
 			fmt.Fprintf(w, "  foreign  %s  %s\n", f.Digest, shellArgv(f.Argv))
 			fmt.Fprintf(w, "           no container in this entry declares it\n")
+			if reason := envEvidenceReason(f.EnvEvidence); reason != "" {
+				fmt.Fprintf(w, "           env evidence %s: %s\n", f.EnvEvidence, reason)
+			}
 		}
 		for _, m := range e.MissingMains {
 			label := m.Digest

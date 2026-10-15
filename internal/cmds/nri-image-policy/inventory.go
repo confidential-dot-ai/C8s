@@ -25,6 +25,11 @@ type admissionInventory struct {
 	admitted   map[string]admissionhistory.History // sandboxID -> everything ever admitted there
 	sandboxes  map[string]struct{}                 // live pod sandbox IDs
 	procRoot   string
+
+	// needsVariableEvidence reports whether a current match env policy lists
+	// a digest; records of other images are served without per-variable
+	// digests. Nil serves every record's digests.
+	needsVariableEvidence func(digest string) bool
 }
 
 type ctrRec struct {
@@ -61,6 +66,7 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 
 	rec := b.admitted[sandboxID]
 	rec.Record(containerID, digest, argv, env, mounts...)
+	rec.Bound(b.needsVariableEvidence)
 	b.admitted[sandboxID] = rec
 
 	// A container implies its sandbox, so a record arriving before (or without)
@@ -72,10 +78,16 @@ func (b *admissionInventory) recordObserved(containerID, sandboxID, name, digest
 // admission record keeps it: a stopped container must not bind a caller, but it
 // still ran here. That includes an unresolved digest, so a container
 // that stops before one resolves closes its sandbox's answer for the sandbox's
-// life.
+// life. Its per-variable env evidence becomes the first to be evicted.
 func (b *admissionInventory) remove(containerID string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if c, ok := b.containers[containerID]; ok {
+		if rec, ok := b.admitted[c.sandboxID]; ok {
+			rec.Exited(containerID)
+			b.admitted[c.sandboxID] = rec
+		}
+	}
 	delete(b.containers, containerID)
 }
 
@@ -168,7 +180,7 @@ func (b *admissionInventory) DigestsForSandbox(sandboxID string) ([]string, []wo
 	if _, ok := b.sandboxes[sandboxID]; !ok {
 		return nil, nil, false, nil
 	}
-	digests, containers, err := b.admitted[sandboxID].Snapshot()
+	digests, containers, err := b.admitted[sandboxID].Snapshot(b.needsVariableEvidence)
 	if err != nil {
 		return nil, nil, true, fmt.Errorf("sandbox %s %w", sandboxID, err)
 	}

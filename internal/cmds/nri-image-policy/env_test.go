@@ -3,6 +3,7 @@ package nriimagepolicy
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/containerd/nri/pkg/api"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -44,6 +46,7 @@ func TestEnvAdmissionUsesFinalStartSpec(t *testing.T) {
 			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
 			p.SetReady()
 			p.inventory = newAdmissionInventory(t.TempDir())
+			p.inventory.needsVariableEvidence = p.policy.needsVariableEvidence
 			pod := makePod("default", "pod")
 			ctr := makeCtrWithImage(pod.Id, "ctr", "registry/repo@"+pushDigestB)
 			ctr.Args = []string{"/bin/app", "--serve"}
@@ -125,6 +128,7 @@ func TestEnvCreationValidatorChecksCumulativeEdits(t *testing.T) {
 			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
 			p.SetReady()
 			p.inventory = newAdmissionInventory(t.TempDir())
+			p.inventory.needsVariableEvidence = p.policy.needsVariableEvidence
 			pod := makePod("default", "pod")
 			ctr := makeCtrWithImageArgs(pod.Id, "ctr", "registry/repo@"+pushDigestB, []string{"/bin/app", "--serve"})
 			ctr.Env = tc.initial
@@ -247,7 +251,7 @@ func TestMountCreationValidatorContainerdBaseline(t *testing.T) {
 	}
 }
 
-func TestInventoryKeepsVariableEvidenceOnlyForMatchPolicies(t *testing.T) {
+func TestInventoryServesVariableEvidenceOnlyForMatchPolicies(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		policy string
@@ -264,6 +268,7 @@ func TestInventoryKeepsVariableEvidenceOnlyForMatchPolicies(t *testing.T) {
 			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}}, al)
 			p.SetReady()
 			p.inventory = newAdmissionInventory(t.TempDir())
+			p.inventory.needsVariableEvidence = p.policy.needsVariableEvidence
 			pod := makePod("default", "pod")
 			ctr := makeCtrWithImage(pod.Id, "ctr", "registry/repo@"+pushDigestB)
 			ctr.Args = []string{"/bin/app"}
@@ -279,5 +284,132 @@ func TestInventoryKeepsVariableEvidenceOnlyForMatchPolicies(t *testing.T) {
 				t.Errorf("per-variable evidence recorded = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+// A container recorded before the plugin holds a match policy, as before Ready
+// or after a failed initial pull, is served its evidence once one applies.
+func TestInventoryServesEvidenceRecordedBeforeMatchPolicy(t *testing.T) {
+	p, store := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, &allowlist.Allowlist{Schema: allowlist.Schema})
+	p.inventory = newAdmissionInventory(t.TempDir())
+	p.inventory.needsVariableEvidence = store.needsVariableEvidence
+	pod := makePod("default", "pod")
+	ctr := makeCtrWithImage(pod.Id, "ctr", "registry/repo@"+pushDigestB)
+	ctr.Args = []string{"/bin/app"}
+	ctr.Env = []string{"MODE=production"}
+	p.recordUncheckedForInventory(pod, ctr, "registry/repo@"+pushDigestB)
+
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"present":true}}}`), &al.Workloads["w"].Containers[0].Env); err != nil {
+		t.Fatal(err)
+	}
+	if !store.apply(al, 2) {
+		t.Fatal("match allowlist not applied")
+	}
+	_, cs, _, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil || len(cs) != 1 || cs[0].Env == nil || cs[0].Env.VariableDigests == nil {
+		t.Fatalf("DigestsForSandbox() = %+v, %v; want per-variable evidence", cs, err)
+	}
+}
+
+// matchWorkloadAtLimits declares n containers, each with a match env policy at
+// the per-record evidence limits, and the environment each of them runs.
+func matchWorkloadAtLimits(t *testing.T, n int) ([]byte, [][]string) {
+	t.Helper()
+	var containers []map[string]any
+	var envs [][]string
+	for i := range n {
+		variables := map[string]any{}
+		var env []string
+		for v := range 128 {
+			name := fmt.Sprintf("%s%03d", strings.Repeat("V", 29), v)
+			variables[name] = map[string]string{"exact": "x"}
+			env = append(env, name+"=x")
+		}
+		containers = append(containers, map[string]any{
+			"digest":  fmt.Sprintf("sha256:%064x", i+1),
+			"command": map[string]any{"policy": "exact", "argv": []string{"/app"}},
+			"args":    map[string]string{"policy": "deny"},
+			"env":     map[string]any{"policy": "match", "variables": variables},
+		})
+		envs = append(envs, env)
+	}
+	doc, err := json.Marshal(map[string]any{"schema": allowlist.Schema, "workloads": map[string]any{"wide": map[string]any{"containers": containers}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc, envs
+}
+
+// A workload the authoring check accepts keeps every container's evidence in a
+// fresh sandbox, so it matches; one container more is rejected.
+func TestMatchWorkloadAtEvidenceCeiling(t *testing.T) {
+	probe, err := allowlist.ObserveEnv(func() []string { _, envs := matchWorkloadAtLimits(t, 1); return envs[0] }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fit := allowlist.MaxSandboxVariableEvidenceBytes / probe.VariableEvidenceBytes()
+	if fit <= 16 {
+		t.Fatalf("ceiling admits %d containers at the limits, want more than 16", fit)
+	}
+	doc, envs := matchWorkloadAtLimits(t, fit)
+	al, err := allowlist.ParseJSON(doc)
+	if err != nil {
+		t.Fatalf("ParseJSON(%d containers) = %v", fit, err)
+	}
+	inv := newAdmissionInventory(t.TempDir())
+	inv.needsVariableEvidence = al.BuildIndex().NeedsVariableEvidence
+	for i, env := range envs {
+		observation, err := allowlist.ObserveEnv(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		inv.record(fmt.Sprint("ctr-", i), "pod", "ctr", fmt.Sprintf("sha256:%064x", i+1), []string{"/app"}, observation, []allowlist.ObservedMount{}...)
+	}
+	_, cs, _, err := inv.DigestsForSandbox("pod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if name, _, err := al.MatchWorkload(secrets.WorkloadContainers(al, cs)); err != nil || name != "wide" {
+		t.Fatalf("MatchWorkload() = %q, %v; want wide", name, err)
+	}
+
+	over, _ := matchWorkloadAtLimits(t, fit+1)
+	if _, err := allowlist.ParseJSON(over); err == nil || !strings.Contains(err.Error(), fmt.Sprint(allowlist.MaxSandboxVariableEvidenceBytes)) {
+		t.Fatalf("ParseJSON(%d containers) error = %v, want the evidence ceiling", fit+1, err)
+	}
+}
+
+// A removed container is no longer running, so churning sidecar variants lose
+// their evidence before the live main container does.
+func TestInventoryEvictsRemovedContainersEvidenceFirst(t *testing.T) {
+	_, envs := matchWorkloadAtLimits(t, 1)
+	observe := func(value string) *allowlist.EnvObservation {
+		env := slices.Clone(envs[0])
+		for i := range env {
+			env[i] = strings.TrimSuffix(env[i], "x") + value
+		}
+		o, err := allowlist.ObserveEnv(env)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return o
+	}
+	inv := newAdmissionInventory(t.TempDir())
+	main := observe("main")
+	inv.record("main", "pod", "main", pushDigestA, []string{"/app"}, main)
+	for i := range allowlist.MaxSandboxVariableEvidenceBytes/main.VariableEvidenceBytes() + 2 {
+		id := fmt.Sprint("sidecar-", i)
+		inv.record(id, "pod", "sidecar", pushDigestB, []string{"/sidecar"}, observe(fmt.Sprint(i)))
+		inv.remove(id)
+	}
+	_, cs, _, err := inv.DigestsForSandbox("pod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cs {
+		if c.Env.Digest == main.Digest && c.Env.VariableDigests == nil {
+			t.Fatal("the running main container lost its per-variable evidence to removed sidecars")
+		}
 	}
 }

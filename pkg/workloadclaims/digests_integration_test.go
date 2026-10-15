@@ -11,12 +11,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -477,7 +479,9 @@ func TestFetchSandboxReadsALargeBody(t *testing.T) {
 }
 
 // Service links inject seven variables per Service in the namespace, and each
-// value change adds a record to the high-water history.
+// value change adds a record to the high-water history. Those environments
+// exceed the per-variable evidence limits and carry the aggregate digest alone;
+// beside them, records at the limits fill the per-sandbox evidence budget.
 func TestFetchSandboxDecodesServiceLinkHistory(t *testing.T) {
 	var containers []SandboxContainer
 	for c := range 4 {
@@ -490,8 +494,8 @@ func TestFetchSandboxDecodesServiceLinkHistory(t *testing.T) {
 				}
 			}
 			observation, err := allowlist.ObserveEnv(env)
-			if err != nil {
-				t.Fatal(err)
+			if err != nil || observation.VariableDigests != nil {
+				t.Fatalf("ObserveEnv(service links) = %v, %v; want the aggregate digest alone", observation, err)
 			}
 			containers = append(containers, SandboxContainer{
 				Digest: "sha256:" + strings.Repeat(strconv.Itoa(c), 64),
@@ -500,6 +504,28 @@ func TestFetchSandboxDecodesServiceLinkHistory(t *testing.T) {
 				Mounts: []allowlist.ObservedMount{},
 			})
 		}
+	}
+	serviceLinks := len(containers)
+	evidenceBytes := 0
+	for variant := 0; ; variant++ {
+		env := make([]string, 128)
+		for i := range env {
+			env[i] = strings.Repeat("V", 29) + fmt.Sprintf("%03d=%d", i, variant)
+		}
+		observation, err := allowlist.ObserveEnv(env)
+		if err != nil || observation.VariableDigests == nil {
+			t.Fatalf("ObserveEnv(at limits) = %v, %v; want per-variable evidence", observation, err)
+		}
+		if evidenceBytes+observation.VariableEvidenceBytes() > allowlist.MaxSandboxVariableEvidenceBytes {
+			break
+		}
+		evidenceBytes += observation.VariableEvidenceBytes()
+		containers = append(containers, SandboxContainer{
+			Digest: "sha256:" + strings.Repeat("e", 64),
+			Argv:   []string{"/app"},
+			Env:    observation,
+			Mounts: []allowlist.ObservedMount{},
+		})
 	}
 	c, host := clientAgainst(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(SandboxDigestsResponse{Containers: containers})
@@ -511,5 +537,10 @@ func TestFetchSandboxDecodesServiceLinkHistory(t *testing.T) {
 	}
 	if len(out.Containers) != len(containers) {
 		t.Fatalf("containers = %d, want %d", len(out.Containers), len(containers))
+	}
+	for i, got := range out.Containers {
+		if want := containers[i].Env; !reflect.DeepEqual(got.Env, want) {
+			t.Fatalf("container %d (service links: %t) env = %+v, want %+v", i, i < serviceLinks, got.Env, want)
+		}
 	}
 }

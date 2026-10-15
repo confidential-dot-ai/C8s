@@ -19,6 +19,9 @@ type EnvObservation struct {
 	Digest string `json:"digest"`
 	// Nil means per-variable evidence is unavailable.
 	VariableDigests map[string]string `json:"variableDigests"`
+	// VariableDigestsEvicted reports that the node dropped VariableDigests to
+	// keep its sandbox under MaxSandboxVariableEvidenceBytes.
+	VariableDigestsEvicted bool `json:"variableDigestsEvicted,omitempty"`
 }
 
 const EnvFormat = "c8s.env/v1"
@@ -30,6 +33,32 @@ const (
 	maxVariableEvidence          = 128
 	maxVariableEvidenceNameBytes = 4 << 10
 )
+
+// MaxSandboxVariableEvidenceBytes bounds the serialized VariableDigests a node
+// keeps per sandbox, half of CDS's 1 MiB inventory response limit. A workload
+// whose match policies could need more is rejected when authored.
+const MaxSandboxVariableEvidenceBytes = 512 << 10
+
+// VariableEvidenceBytes is the serialized size of o's VariableDigests, zero
+// when it has none.
+func (o *EnvObservation) VariableEvidenceBytes() int {
+	if o == nil || o.VariableDigests == nil {
+		return 0
+	}
+	return variableEvidenceBytes(maps.Keys(o.VariableDigests))
+}
+
+// variableEvidenceBytes is exact: every variable digest is 64 hex characters.
+func variableEvidenceBytes(names iter.Seq[string]) int {
+	placeholder := strings.Repeat("0", 64)
+	digests := map[string]string{}
+	for name := range names {
+		digests[name] = placeholder
+	}
+	// Marshal cannot fail on a string map.
+	b, _ := json.Marshal(digests)
+	return len(b)
+}
 
 // ObserveEnv validates before canonicalizing: duplicate names and malformed
 // entries must not disappear into a map and later satisfy a constrained grant.

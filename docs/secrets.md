@@ -473,18 +473,36 @@ policies fail closed in that case. Inventory responses retain the `mounts` field
 even for an empty set so consumers can preserve this distinction.
 
 The env evidence always carries the aggregate digest of the whole environment.
-Per-variable digests (`variableDigests`) are kept within two bounds, so the
-inventory stays under CDS's 1 MiB response limit:
+Per-variable digests (`variableDigests`) are bounded so the inventory stays
+under CDS's 1 MiB response limit:
 
-- The node records them only for an image whose digest a `match` env policy
-  lists in its current allowlist. Every other record carries the aggregate
-  digest alone.
-- At most 16 records per sandbox keep them. Past that, the oldest records lose
-  their per-variable digests but keep the record and its aggregate digest.
+- The node keeps them for every environment of at most 128 variables and 4 KiB
+  of names, and serves them only for an image a `match` env policy lists in its
+  current base or applied allowlist. It decides when it answers, so a container
+  recorded before the node applied that policy is still served its digests once
+  it does.
+- A sandbox keeps at most 512 KiB of serialized per-variable digests. Past
+  that, the node evicts them from records whose container is no longer running
+  first, then from records of images no `match` policy lists, then from the
+  oldest. An evicted record keeps its aggregate digest and reports
+  `variableDigestsEvicted: true`. Admitting the same environment again restores
+  its digests.
+- `derive`, `lint` and `apply` reject a workload whose `match` containers could
+  together need more than 512 KiB, so a workload that fits is never evicted by
+  its own containers. A container at both per-record limits needs about
+  13 KB, so 40 such containers fit.
 
-A record without per-variable digests fails a `match` policy. If you add a
-`match` policy after its pods started, or a sandbox exceeds 16 variants,
-recreate the pod.
+Aggregate-only records, argv and mounts have no per-sandbox cap yet; bounding
+them is a tracked follow-up.
+
+A record without per-variable digests fails a `match` policy.
+`c8s secrets explain` names which case occurred for each rejected container:
+
+| Case | Cause | Recovery |
+| --- | --- | --- |
+| `env evidence missing` | The node has not applied an allowlist version with a `match` policy for the image, or the environment exceeds 128 variables or 4 KiB of names. | Wait until the node logs the version ([rollout](allowlist-and-capabilities.md#environment-policy-env)); no pod restart is needed. Otherwise shrink the environment, for example with `enableServiceLinks: false`. |
+| `env evidence evicted` | Exited containers or images outside the workload pushed the sandbox past 512 KiB. | Recreate the pod, and stop the churn that changes the environment on each restart. |
+| `env evidence mismatch` | The digests are present and the environment does not satisfy the policy. | Fix the environment or the policy. |
 
 `containers` is absent on an inventory older than the field. A consumer that
 needs it must treat that as "cannot answer" rather than "no containers"

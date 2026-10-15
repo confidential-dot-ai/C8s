@@ -10,32 +10,38 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
-// MaxVariableEvidenceRecords bounds how many records keep per-variable env
-// digests. Each can reach about 13 KB against CDS's 1 MiB inventory limit;
-// older records keep their aggregate digest only.
-const MaxVariableEvidenceRecords = 16
-
 // History retains distinct admissions for a sandbox's lifetime. The zero value
 // is ready to use; callers must synchronise access.
+//
+// Records keep their per-variable env digests while the sandbox's total stays
+// within allowlist.MaxSandboxVariableEvidenceBytes (see Bound). Whether a
+// record needs them is decided when serving (Snapshot), so the policy a node
+// holds when it records cannot strip evidence for good.
 type History struct {
-	byKey      map[string]record
+	byKey      map[string]*record
 	unresolved map[string]struct{}
+	running    map[string]string // container ID -> record key
 	seq        uint64
 }
 
 type record struct {
-	container workloadclaims.SandboxContainer
-	seq       uint64
+	container     workloadclaims.SandboxContainer
+	seq           uint64
+	running       map[string]struct{}
+	evidenceBytes int
 }
 
 // Record adds an admission; only a resolved record for the same ID clears an
-// unresolved container. History owns its copy of argv.
+// unresolved container. History owns its copy of argv. A container counts as
+// running from Record until Exited.
 // Nil mounts means unavailable evidence; a non-nil empty slice means no mounts.
 func (h *History) Record(id, digest string, argv []string, env *allowlist.EnvObservation, mounts ...allowlist.ObservedMount) {
 	if h.byKey == nil {
-		h.byKey = map[string]record{}
+		h.byKey = map[string]*record{}
 		h.unresolved = map[string]struct{}{}
+		h.running = map[string]string{}
 	}
+	h.Exited(id)
 	if digest == "" {
 		h.unresolved[id] = struct{}{}
 		return
@@ -43,31 +49,83 @@ func (h *History) Record(id, digest string, argv []string, env *allowlist.EnvObs
 	delete(h.unresolved, id)
 	c := workloadclaims.SandboxContainer{Digest: digest, Argv: slices.Clone(argv), Env: env.Clone(), Mounts: slices.Clone(mounts)}
 	slices.SortFunc(c.Mounts, compareObservedMounts)
+	evidence := c.Env.Clone()
+	if c.Env != nil {
+		c.Env.VariableDigests = nil
+		c.Env.VariableDigestsEvicted = false
+	}
+	// Keyed without per-variable digests: the aggregate digest fixes them, so
+	// a later admission of the same environment restores evicted evidence.
+	key := c.Key()
+	r, ok := h.byKey[key]
+	if !ok {
+		r = &record{running: map[string]struct{}{}}
+		h.byKey[key] = r
+	}
+	switch {
+	case evidence != nil && evidence.VariableDigests != nil:
+		c.Env.VariableDigests = evidence.VariableDigests
+		r.evidenceBytes = evidence.VariableEvidenceBytes()
+	case ok && c.Env != nil:
+		c.Env.VariableDigests = r.container.Env.VariableDigests
+		c.Env.VariableDigestsEvicted = r.container.Env.VariableDigestsEvicted
+	}
+	r.container = c
 	h.seq++
-	h.byKey[c.Key()] = record{container: c, seq: h.seq}
-	h.boundVariableEvidence()
+	r.seq = h.seq
+	r.running[id] = struct{}{}
+	h.running[id] = key
 }
 
-// boundVariableEvidence drops per-variable digests from the oldest records
-// beyond MaxVariableEvidenceRecords. The record and its aggregate digest stay.
-func (h *History) boundVariableEvidence() {
-	var withEvidence []string
-	for key, r := range h.byKey {
-		if r.container.Env != nil && r.container.Env.VariableDigests != nil {
-			withEvidence = append(withEvidence, key)
-		}
-	}
-	if len(withEvidence) <= MaxVariableEvidenceRecords {
+// Exited marks a container as no longer running, which makes its record's
+// per-variable evidence the first Bound evicts.
+func (h *History) Exited(id string) {
+	key, ok := h.running[id]
+	if !ok {
 		return
 	}
-	slices.SortFunc(withEvidence, func(a, b string) int { return cmp.Compare(h.byKey[a].seq, h.byKey[b].seq) })
-	for _, key := range withEvidence[:len(withEvidence)-MaxVariableEvidenceRecords] {
-		r := h.byKey[key]
-		delete(h.byKey, key)
-		r.container.Env.VariableDigests = nil
-		if _, merged := h.byKey[r.container.Key()]; !merged {
-			h.byKey[r.container.Key()] = r
+	delete(h.running, id)
+	delete(h.byKey[key].running, id)
+}
+
+// Bound evicts per-variable digests until the sandbox's total fits within
+// allowlist.MaxSandboxVariableEvidenceBytes: first from records with no running
+// container, then from records whose image needed reports not needing them,
+// then the oldest. Each record keeps its aggregate digest and is marked
+// evicted. A nil needed treats every image as needing them.
+func (h *History) Bound(needed func(digest string) bool) {
+	total := 0
+	var holding []*record
+	for _, r := range h.byKey {
+		if r.evidenceBytes > 0 {
+			total += r.evidenceBytes
+			holding = append(holding, r)
 		}
+	}
+	if total <= allowlist.MaxSandboxVariableEvidenceBytes {
+		return
+	}
+	rank := func(r *record) int {
+		switch {
+		case len(r.running) == 0:
+			return 0
+		case needed != nil && !needed(r.container.Digest):
+			return 1
+		default:
+			return 2
+		}
+	}
+	slices.SortFunc(holding, func(a, b *record) int {
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), cmp.Compare(a.seq, b.seq))
+	})
+	for _, r := range holding {
+		if total <= allowlist.MaxSandboxVariableEvidenceBytes {
+			return
+		}
+		total -= r.evidenceBytes
+		r.evidenceBytes = 0
+		r.container.Env.VariableDigests = nil
+		r.container.Env.VariableDigestsEvicted = true
 	}
 }
 
@@ -88,8 +146,10 @@ func compareObservedMounts(a, b allowlist.ObservedMount) int {
 }
 
 // Snapshot returns sorted, independent copies of the digest set and admissions.
-// An unresolved container makes the entire snapshot unavailable.
-func (h History) Snapshot() ([]string, []workloadclaims.SandboxContainer, error) {
+// An unresolved container makes the entire snapshot unavailable. Records whose
+// image needed reports not needing per-variable env digests carry the
+// aggregate digest alone; a nil needed keeps every record's digests.
+func (h History) Snapshot(needed func(digest string) bool) ([]string, []workloadclaims.SandboxContainer, error) {
 	if len(h.unresolved) > 0 {
 		return nil, nil, fmt.Errorf("admitted a container with no resolved image digest")
 	}
@@ -100,6 +160,10 @@ func (h History) Snapshot() ([]string, []workloadclaims.SandboxContainer, error)
 		digests = append(digests, c.Digest)
 		c.Argv = slices.Clone(c.Argv)
 		c.Env = c.Env.Clone()
+		if c.Env != nil && needed != nil && !needed(c.Digest) {
+			c.Env.VariableDigests = nil
+			c.Env.VariableDigestsEvicted = false
+		}
 		c.Mounts = slices.Clone(c.Mounts)
 		containers = append(containers, c)
 	}

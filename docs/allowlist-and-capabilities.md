@@ -225,8 +225,17 @@ and nodes that predate it report no per-variable evidence. To start using
 
 1. Upgrade CDS, the node images and every other allowlist consumer.
 2. Add the `match` policies.
-3. Recreate the affected pods. Restarting their containers is not enough: the
+3. Wait until every node that runs the affected pods has applied the published
+   version: its plugin logs `pull loop: allowlist refreshed` with a version at
+   or above the one `c8s allowlist list` reports
+   ([refresh](#refresh-and-anti-rollback)). A pod recreated earlier is admitted
+   against the old policy.
+4. Recreate the affected pods. Restarting their containers is not enough: the
    sandbox's admission history keeps the records from the old node software.
+
+A workload's `match` containers may together need at most 512 KiB of
+per-variable evidence, about 40 containers at both limits
+([bounds](secrets.md#what-the-inventory-reports)).
 
 ## Mount policy (`mounts`)
 
