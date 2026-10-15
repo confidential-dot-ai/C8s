@@ -475,6 +475,11 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 		{"discovery escaping", discovery, AnnotationDiscoveryOut, discoveryMountPath + "/../discovery.json", false},
 		{"watch inside", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt", true},
 		{"watch elsewhere", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt,/edge-tls/tls.key", false},
+		{"cert file relative", nil, AnnotationCertFile, "server.crt", true},
+		{"cert file inside", nil, AnnotationCertFile, certDir + "/server.crt", true},
+		{"cert file elsewhere", nil, AnnotationCertFile, "/certs/tls.crt", false},
+		{"key file escaping", nil, AnnotationKeyFile, "../tls.key", false},
+		{"ca file elsewhere", nil, AnnotationCAFile, "/etc/ssl/ca.crt", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			annotations := map[string]string{AnnotationWorkload: "api", tc.key: tc.value}

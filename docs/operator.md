@@ -991,7 +991,8 @@ longer matches the snapshot stamped in the leaf.
 CA alone, world-readable, for applications that take the trust anchor as a
 separate file (`mysqld --ssl-ca`, clients doing `VERIFY_CA` against peers on
 the mesh). File names are overridable per pod with `confidential.ai/c8s-cert-file`,
-`confidential.ai/c8s-key-file`, and `confidential.ai/c8s-ca-file`.
+`confidential.ai/c8s-key-file`, and `confidential.ai/c8s-ca-file`; each must
+name a file in `/etc/c8s/certs`, or the webhook refuses the pod.
 
 `tls.key` is written `0640` owned by the get-cert user (UID/GID 65532, the pod's
 `fsGroup`). An image whose entrypoint starts as root and then drops to a

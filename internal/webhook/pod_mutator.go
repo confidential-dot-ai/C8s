@@ -485,6 +485,16 @@ func (inj *injection) validate() error {
 	if inj.Cert.RenewInterval < 0 {
 		return fmt.Errorf("%w: %s must not be negative", errInvalidInjectionAnnotation, AnnotationRenewInterval)
 	}
+	for _, file := range []struct{ annotation, name string }{
+		{AnnotationCertFile, inj.Cert.CertFile},
+		{AnnotationKeyFile, inj.Cert.KeyFile},
+		{AnnotationCAFile, inj.Cert.CAFile},
+	} {
+		if file.name != "" && !below(certPath(certDir, file.name), certDir) {
+			return fmt.Errorf("%w: %s %q must name a file in %s, where the cert volume is mounted",
+				errInvalidInjectionAnnotation, file.annotation, file.name, certDir)
+		}
+	}
 	if err := inj.Reload.validate(); err != nil {
 		return err
 	}
