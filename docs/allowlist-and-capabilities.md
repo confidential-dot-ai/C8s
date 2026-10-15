@@ -517,7 +517,10 @@ operator public keys it pins. Each token authorizes one allowlist write: CDS
 remembers every spent token and answers a replay with 409. Without
 `cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
 token issued before its start plus `--jwt-clock-skew`; after a restart, wait
-that long and mint a fresh token.
+that long and mint a fresh token. CDS publishes the token of a whole-document
+upload (see [Operator-signed allowlists](#operator-signed-allowlists)), and
+another CDS pinning the same keys accepts it until it expires: give each
+cluster its own operator key.
 
 ### Refresh and anti-rollback
 
@@ -576,8 +579,9 @@ Without `cds.persistence.enabled`, the history restarts with each CDS start.
 A document's operator signature is the write token of a `PUT /allowlist`
 whose body is exactly its canonical bytes; the token's `pbh` claim hashes that
 body. `c8s allowlist upload` sends canonical bytes, so its writes are signed.
-A per-workload write (`add`, `apply`, `edit`, `delete`) leaves its entry unsigned:
-upload the whole document to sign it. `operatorauth.VerifyStored` checks a
+A per-workload write (`add`, `apply`, `edit`, `delete`) signs nothing:
+upload the whole document to sign it. A signature belongs to a document, not
+to an entry, so `signed` is true on every entry with that digest. `operatorauth.VerifyStored` checks a
 stored token: signature, method, path and body, but not its expiry.
 `pkg/operatorauth/testdata/operator_signature_vector.json` is a test vector
 for other verifiers.

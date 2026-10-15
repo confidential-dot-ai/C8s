@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS journal_event (
 	digest          TEXT NOT NULL,
 	published_at_ms INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS journal_event_digest ON journal_event (digest);
 CREATE TABLE IF NOT EXISTS journal_signature (
 	digest TEXT PRIMARY KEY,
 	token  TEXT NOT NULL
@@ -45,7 +46,9 @@ type HistoryEntry struct {
 	Version     string    `json:"version"`
 	Digest      string    `json:"digest"`
 	PublishedAt time.Time `json:"published_at"`
-	// Signed reports whether an operator signature is stored for Digest.
+	// Signed reports whether an operator signature is stored for Digest. It
+	// describes the document, not this entry's write: a per-workload write that
+	// returns to a signed document shows it signed.
 	Signed bool `json:"signed"`
 }
 

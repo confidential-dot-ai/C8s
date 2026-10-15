@@ -237,6 +237,9 @@ cds:
     maxUnavailable: 0
   logLevel: info
   allowlistDB: /data/allowlist.db
+  # -- Operator token clock skew tolerance in seconds. Without
+  # `persistence.enabled`, CDS also refuses allowlist writes for this long
+  # after it starts, since it forgets spent tokens at restart.
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
@@ -294,9 +297,11 @@ cds:
   ## identity, UNSAFE).
   rtmrs: []
   ## PEM bundle of operator EC public keys (public material, not a secret).
-  ## When set, CDS accepts POST/PUT/DELETE /allowlist from a client presenting a
+  ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
-  ## `c8s allowlist` and the README "Operator allowlist credentials").
+  ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
+  ## token authorizes one write, and CDS publishes the token of a
+  ## whole-document upload as that document's signature.
   ## Empty = allowlist writes are rejected (reads are still served). Prefer
   ## `c8s install --operator-keys <file>` over hand-editing this multi-line value.
   ## Measurements config: the JSON document listing the VM images this cluster
