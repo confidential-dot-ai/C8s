@@ -197,13 +197,19 @@ func TestDialReleaseRetriesRefusedConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	accepted := make(chan struct{}, 1)
+	listening := make(chan net.Listener, 1)
+	t.Cleanup(func() {
+		if late := <-listening; late != nil {
+			_ = late.Close()
+		}
+	})
 	go func() {
 		time.Sleep(200 * time.Millisecond)
 		late, err := net.Listen("tcp", addr)
+		listening <- late
 		if err != nil {
 			return
 		}
-		defer late.Close()
 		conn, err := late.Accept()
 		if err != nil {
 			return
