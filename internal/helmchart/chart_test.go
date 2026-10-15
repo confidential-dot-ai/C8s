@@ -2089,13 +2089,14 @@ func hasHostIPEnv(c corev1.Container) bool {
 // together.
 func TestChartBareMetalModeAttestationApiURLUsesHostIP(t *testing.T) {
 	const hostIPURL = "--attestation-api-url=http://$$(HOST_IP):8400"
-	// The exact shape `c8s install --cvm-mode=bare-metal` produces: the node image
-	// bakes attestation-api and nri-image-policy, so both chart components
-	// are off and consumers dial the baked host service via $(HOST_IP).
+	// The node image bakes attestation-api, so the chart component is off and
+	// consumers dial the baked host service via $(HOST_IP). Only under an
+	// audit policy: a policy that may refuse names it as $(NODE_IP) instead
+	// (TestChartBareMetalReadsNodeIPFile).
 	out, err := helmTemplate(t,
 		"--set-string", "attestationApi.cvmMode=bare-metal",
 		"--set", "attestationApi.enabled=false",
-		"--set", "nriImagePolicy.enabled=false",
+		"--set", "nriImagePolicy.policy.mode=audit",
 		"--set", "router.attest.enabled=true",
 	)
 	if err != nil {

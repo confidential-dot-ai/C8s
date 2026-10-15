@@ -353,6 +353,8 @@ func TestChartAcceptsCDSMemorySizeLimitQuantities(t *testing.T) {
 		{"--set-string", "+2Gi", "2Gi"},
 		{"--set-string", "0.5Gi", "512Mi"},
 		{"--set", "67108864", "64Mi"},
+		// Quoted, so YAML does not read a leading zero as octal.
+		{"--set-string", "0100000000", "100M"},
 	} {
 		out, err := helmTemplate(t, tc.flag, "cds.persistence.memorySizeLimit="+tc.value)
 		if err != nil {

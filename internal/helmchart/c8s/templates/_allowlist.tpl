@@ -556,9 +556,12 @@
 
 {{- /* Every container of router.podSpec whose image is nginx or the c8s
        image, pinned as c8s.podShapes pins a component's, with env any. A main
-       container whose hostPath source has two layouts is declared once per
-       layout as an init container: a node has one layout, so it is admitted
-       but not required. */ -}}
+       container whose hostPath source sits under /var/run has two layouts
+       (c8s.mountRules). It stays a required main in the layout containerd
+       produces where /var/run is /run, and its other layout is an init
+       container, admitted but not required. On a node where /var/run is its
+       own directory the main is missing, so the router pod matches nothing
+       rather than a partial pod matching. */ -}}
 {{- define "c8s.routerEntry" -}}
 {{- $components := include "c8s.imageAllowlist" . | fromJson -}}
 {{- $pins := dict -}}
@@ -580,10 +583,11 @@
 {{- range $shape := include "c8s.podShapes" (dict "name" "router" "spec" (dict "volumes" $volumes "containers" (list $c)) "pins" $pins "refs" $refs) | fromJsonArray -}}
 {{- $shapes = append $shapes (merge (deepCopy $env) $shape) -}}
 {{- end -}}
-{{- if or $init (gt (len $shapes) 1) -}}
+{{- if $init -}}
 {{- $inits = concat $inits $shapes -}}
-{{- else -}}
-{{- $mains = concat $mains $shapes -}}
+{{- else if $shapes -}}
+{{- $mains = append $mains (last $shapes) -}}
+{{- $inits = concat $inits (initial $shapes) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

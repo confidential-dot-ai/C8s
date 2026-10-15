@@ -176,6 +176,10 @@ func TestPublishNodeIPHonorsAuthenticatedAddress(t *testing.T) {
 	if err != nil || string(data) != "192.0.2.22\n" {
 		t.Fatalf("got %q, %v", data, err)
 	}
+	// Non-root components read the address (cmdsutil.NodeIPPath).
+	if info, err := os.Stat(filepath.Join(root, nodeIPPath)); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("node-ip mode = %v, %v, want 0644", info.Mode().Perm(), err)
+	}
 	for _, ip := range []string{"0.0.0.0", "127.0.0.1", "::1"} {
 		doc.Node.IP = ip
 		if err := PublishNodeIP(t.TempDir(), doc); err == nil {

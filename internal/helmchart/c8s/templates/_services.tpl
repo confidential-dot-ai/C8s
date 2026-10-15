@@ -52,17 +52,20 @@ http://$$(HOST_IP):{{ .Values.attestationApi.port }}
 {{- end -}}
 {{- end -}}
 
-{{- /* "true" when the image policy fails closed: the plugin runs and denies
-       what the allowlist does not admit. */ -}}
+{{- /* "true" when an image policy may deny what the allowlist does not
+       admit: the chart's plugin in fail-closed mode, or, with the installer
+       off (only renderable on bare-metal), the node image's baked plugin,
+       whose mode the chart cannot see. */ -}}
 {{- define "c8s.imagePolicyFailClosed" -}}
-{{- if and .Values.nriImagePolicy.enabled (eq .Values.nriImagePolicy.policy.mode "fail-closed") -}}true{{- end -}}
+{{- if or (not .Values.nriImagePolicy.enabled) (eq .Values.nriImagePolicy.policy.mode "fail-closed") -}}true{{- end -}}
 {{- end -}}
 
 {{- /* Non-empty when components reach the attestation-api by node address
-       and read it from the node-ip file the image policy installer writes:
-       bare-metal without a local socket, under a fail-closed image policy.
-       The allowlist pins the file's host path but not the environment, so
-       HOST_IP would let the pod choose the verifier. */ -}}
+       and read it from the node-ip file the image policy installer or the
+       node image's nri-node-ip.service writes: bare-metal without a local
+       socket, under a fail-closed image policy. The allowlist pins the file's
+       host path but not the environment, so HOST_IP would let the pod choose
+       the verifier. */ -}}
 {{- define "c8s.attestationApiNodeIPFile" -}}
 {{- if and (not (include "c8s.attestationApiSocketPresent" .)) (eq .Values.attestationApi.cvmMode "bare-metal") (include "c8s.imagePolicyFailClosed" .) -}}true{{- end -}}
 {{- end -}}

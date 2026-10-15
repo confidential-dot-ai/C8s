@@ -255,7 +255,8 @@
 {{- /*
   A component expands $(HOST_IP) from its HOST_IP variable, which the
   allowlist leaves open, so a pod could point it at an attestation verifier of
-  its choosing. Under a fail-closed policy the chart writes $(NODE_IP), read
+  its choosing. Under a fail-closed policy (c8s.imagePolicyFailClosed, which
+  counts the node image's baked plugin) the chart writes $(NODE_IP), read
   from the pinned node-ip file, instead. The operator is exempt: it hands its
   URL to the sidecars it injects, whose args are the pod's anyway.
 */ -}}
@@ -266,7 +267,7 @@
 {{- range $token := concat (default list $c.command) (default list $c.args) -}}
 {{- /* An unescaped reference fails in c8s.kubeletExpand. */ -}}
 {{- if contains "$$(HOST_IP)" (toString $token) -}}
-{{- fail (printf "VALIDATION_ERROR kind=host_ip_argv: %s container %s names $(HOST_IP) in %q under nriImagePolicy.policy.mode=fail-closed. The binary would read the node address from the HOST_IP variable, which the allowlist does not pin, so the pod would choose its attestation verifier. Write the node address as $$(NODE_IP): the binary reads it from the node-ip file the image policy installer writes." (get $pod "name") $c.name (toString $token)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=host_ip_argv: %s container %s names $(HOST_IP) in %q under a fail-closed image policy. The binary would read the node address from the HOST_IP variable, which the allowlist does not pin, so the pod would choose its attestation verifier. Write the node address as $$(NODE_IP): the binary reads it from the node-ip file the image policy installer writes." (get $pod "name") $c.name (toString $token)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

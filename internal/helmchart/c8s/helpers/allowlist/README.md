@@ -163,14 +163,17 @@ any`.
 | Container | Declared as |
 |---|---|
 | nginx | main |
-| cds-attest, when `router.attest.enabled` | main, or init when it has two host layouts |
-| allowlist-proxy, when `router.renderAllowlistRoute` | main, or init when it has two host layouts |
+| cds-attest, when `router.attest.enabled` | main |
+| allowlist-proxy, when `router.renderAllowlistRoute` | main |
 | acme, `c8s-cert`, `c8s-cert-wait` | init |
 
 A declared init container is admitted but not required. A main container with
 a hostPath source under `/var/run` has two mount tables (see
-`c8s.mountRules`), and a node produces only one, so it is declared once per
-table as an init container. The router's own `c8s-cert` and `c8s-cert-wait`
+`c8s.mountRules`), and a node produces only one. It stays a required main in
+the table containerd produces where `/var/run` is `/run`; its other table is
+declared as an init container. Where `/var/run` is its own directory the main
+is missing and the router pod matches nothing, rather than a partial pod
+matching. The router's own `c8s-cert` and `c8s-cert-wait`
 are pinned to their exact args, so they are not dropped as injected
 containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
 them.

@@ -44,8 +44,8 @@ var (
 // command replaces the entrypoint, which is /c8s for the c8s image, the
 // image's own for nginx, and the one the seed pins for the other component
 // images. The argv is the kubelet's expansion, and the mounts are what the
-// node observes where /var/run is /run.
-func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.SandboxContainer {
+// node observes, where /var/run is /run when resolveVarRun is set.
+func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec, resolveVarRun bool) []workloadclaims.SandboxContainer {
 	t.Helper()
 	var out []workloadclaims.SandboxContainer
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
@@ -67,7 +67,7 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []w
 		out = append(out, workloadclaims.SandboxContainer{
 			Digest: digest,
 			Argv:   runtimeArgv(c, nil),
-			Mounts: observedMounts(t, pod, c, true),
+			Mounts: observedMounts(t, pod, c, resolveVarRun),
 		})
 	}
 	return out
@@ -126,7 +126,7 @@ func assertRouterMatches(t *testing.T, out string) {
 	if routerEntry == "" {
 		t.Fatalf("seed has no router entry: %v", slices.Sorted(maps.Keys(seed.Workloads)))
 	}
-	reported := running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)
+	reported := running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec, true)
 	got, err := match(seed, reported)
 	if err != nil || got != routerEntry {
 		diff := seed.Workloads[routerEntry].Diff(secrets.WorkloadContainers(seed, reported))
@@ -145,10 +145,8 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 	seed := renderedSeed(t, out)
 	routerEntry := routerEntryName(t, seed)
 	entry := seed.Workloads[routerEntry]
-	// The cds-attest and allowlist-proxy sidecars mount the socket directory
-	// under /var/run, which has two layouts, so only nginx is a required main.
-	if len(entry.Containers) != 1 || entry.Containers[0].Digest.String() == c8sDigest {
-		t.Errorf("entry mains = %+v, want nginx alone", entry.Containers)
+	if len(entry.Containers) != 3 {
+		t.Errorf("entry mains = %+v, want nginx, cds-attest and allowlist-proxy", entry.Containers)
 	}
 	var inits []string
 	for _, c := range entry.InitContainers {
@@ -164,7 +162,13 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 		t.Errorf("entry init modes = %v, want %v", inits, want)
 	}
 
-	reported := running(t, seed, pod)
+	// Where /var/run is its own directory the sidecars' socket mount has the
+	// other layout, so the required mains are missing.
+	if got, err := match(seed, running(t, seed, pod, false)); !errors.Is(err, pkgallowlist.ErrNoMatch) {
+		t.Errorf("MatchWorkload(unresolved /var/run) = %q, %v, want ErrNoMatch", got, err)
+	}
+
+	reported := running(t, seed, pod, true)
 	for _, tc := range []struct {
 		name   string
 		want   string // "" wants ErrNoMatch
@@ -179,6 +183,22 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 					}
 				}
 				return cs
+			},
+		},
+		{
+			name: "no allowlist-proxy",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
+					return len(c.Argv) > 1 && c.Argv[1] == "allowlist-proxy"
+				})
+			},
+		},
+		{
+			name: "no cds-attest",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
+					return len(c.Argv) > 1 && c.Argv[1] == "cds-attest"
+				})
 			},
 		},
 		{
@@ -421,7 +441,7 @@ func TestChartRouterOperatorGate(t *testing.T) {
 	}
 	routerMatch := func(out string) (string, error) {
 		seed := renderedSeed(t, out)
-		return match(seed, running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec))
+		return match(seed, running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec, true))
 	}
 
 	// Ungated, the entry sits beside the seeded one and the router leaf goes unnamed.

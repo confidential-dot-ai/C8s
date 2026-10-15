@@ -13,7 +13,8 @@ attestation socket exists": non-empty when `attestationApi.enabled` or
 `cvmMode=bare-metal`, it names the node-baked attestation-api by node address,
 which the binary expands (`cmdsutil.ExpandHostIP`):
 
-- Under a fail-closed image policy (`c8s.imagePolicyFailClosed`,
+- Under a fail-closed image policy, or with the installer off so the node
+  image's baked plugin enforces (`c8s.imagePolicyFailClosed`,
   `c8s.attestationApiNodeIPFile`), it is `$(NODE_IP)`, read from
   `<runtimeDir>/node-ip`, which the socket helpers mount read-only at
   `/run/c8s/node-ip` from a `File` hostPath. validations.yaml refuses

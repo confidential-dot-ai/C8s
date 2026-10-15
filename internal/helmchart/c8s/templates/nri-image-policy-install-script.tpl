@@ -257,6 +257,12 @@ set -eu
 
 echo "==> nri-image-policy pins installer starting"
 
+# Components read this as $(NODE_IP) (cmdsutil.NodeIPPath) as a non-root
+# user; nri-node-ip.service on earlier node images publishes it 0600.
+if [ -f "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip" ]; then
+  chmod 0644 "/host{{ $root.Values.nriImagePolicy.hostPaths.runtimeDir }}/node-ip"
+fi
+
 result=$(/usr/local/bin/c8s nri-image-policy set-cds-pins \
   --config "/host{{ include "nri-image-policy.hostConfigPath" $root }}" \
   --cds-measurements {{ join "," $root.Values.cds.measurements | quote }} \

@@ -163,7 +163,7 @@ volumes:
     {{- else }}
     emptyDir:
       medium: Memory
-      sizeLimit: {{ required "cds.persistence.memorySizeLimit is required unless cds.persistence.enabled" .Values.cds.persistence.memorySizeLimit }}
+      sizeLimit: {{ required "cds.persistence.memorySizeLimit is required unless cds.persistence.enabled" .Values.cds.persistence.memorySizeLimit | toString | quote }}
     {{- end }}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}

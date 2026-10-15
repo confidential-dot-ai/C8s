@@ -57,9 +57,20 @@ func hasEnv(c corev1.Container, name string) bool {
 // from HOST_IP. The operator keeps $(HOST_IP): it hands the URL to injected
 // sidecars, whose args and env the webhook writes.
 func TestChartBareMetalReadsNodeIPFile(t *testing.T) {
-	out, err := helmTemplate(t, bareMetalHostAPI...)
+	for _, args := range [][]string{
+		bareMetalHostAPI,
+		// With the installer off, the node image's baked plugin enforces.
+		slices.Concat(bareMetalHostAPI, []string{"--set", "nriImagePolicy.enabled=false"}),
+	} {
+		assertNodeIPFile(t, args)
+	}
+}
+
+func assertNodeIPFile(t *testing.T, args []string) {
+	t.Helper()
+	out, err := helmTemplate(t, args...)
 	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
+		t.Fatalf("helm template %v: %v\n%s", args, err, out)
 	}
 	for name, rc := range attestationURLs(t, out) {
 		if strings.HasPrefix(name, "c8s-operator/") {

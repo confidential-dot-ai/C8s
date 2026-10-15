@@ -470,13 +470,18 @@ ENTRYPOINT and CMD, and refuses an unescaped `$(NAME)` in a component's argv:
 the kubelet would expand it from env, `envFrom` or a service variable. On a
 bare-metal install without the attestation-api socket, CDS, the mesh and the
 router sidecars find the node-baked attestation-api by node address. Under a
-fail-closed policy the chart writes it as `$(NODE_IP)`, which the binary reads
-from the `node-ip` file the image policy installer writes into its socket
+fail-closed policy, or with `nriImagePolicy.enabled=false` (the node image's
+baked plugin, whose mode the chart cannot see), the chart writes it as
+`$(NODE_IP)`. The binary reads that from the `node-ip` file the image policy
+installer or the node image's `nri-node-ip.service` writes into the socket
 directory, mounted read-only at `/run/c8s/node-ip` from a host path the entry
-pins, and the render refuses `$(HOST_IP)` in a component's argv: the binary
-would read that from the `HOST_IP` variable, and a restaged pod could set it
+pins. The render refuses `$(HOST_IP)` in a component's argv there: the binary
+would read it from the `HOST_IP` variable, and a restaged pod could set that
 to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,
-since nothing is refused anyway. Three residuals stay open. `env` is still
+since nothing is refused anyway. Node images before this release publish
+`node-ip` readable by root only; with `nriImagePolicy.baked=true` the pins
+installer makes it world-readable, and with the installer off the components
+need a node image that publishes it so. Three residuals stay open. `env` is still
 `any`, so `LD_PRELOAD` or a `PATH` lookup can still be pointed at a mounted
 file. `KUBECONFIG`, `HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
 and the mesh build their Kubernetes client from the in-cluster service
@@ -694,9 +699,11 @@ When the router runs with digest-pinned nginx and c8s images and
 `deriveComponents` is on, the seed also carries `c8s-router-<first 12 hex of the
 entry's SHA-256>`: every nginx and c8s-image container of the router pod,
 pinned to the exact command line and mount table the chart renders, like the
-component entries. nginx is a required main container; `acme`, `c8s-cert`,
-`c8s-cert-wait`, and a sidecar that mounts a host path under `/var/run` (which
-has two layouts) are init containers, admitted but not required. It is the
+component entries. nginx, `cds-attest` and `allowlist-proxy` are required
+main containers; `acme`, `c8s-cert` and `c8s-cert-wait` are init containers,
+admitted but not required. A sidecar's host path under `/var/run` is pinned as
+the `/run` path containerd resolves it to where `/var/run` is `/run`, so on a
+node where it is its own directory the router's leaf stays unnamed. It is the
 only entry the router pod matches, so the router's mesh leaf is stamped with
 that name. An upgrade that changes the router's image repositories, digests,
 arguments or mounts seeds a new entry beside the old one. CDS

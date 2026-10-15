@@ -1230,7 +1230,8 @@ router:
     # against. Empty defaults to this chart's attestation-api. The allowlist
     # pins the sidecar's argv, so write the node address escaped: the kubelet
     # passes $$(NAME) through as $(NAME) and the sidecar expands it. Under a
-    # fail-closed nriImagePolicy on cvmMode=bare-metal, write $$(NODE_IP),
+    # fail-closed nriImagePolicy (or the node image's baked one, with
+    # nriImagePolicy.enabled=false) on cvmMode=bare-metal, write $$(NODE_IP),
     # which the sidecar reads from the node-ip file the image policy installer
     # writes; $(HOST_IP) comes from a variable the allowlist does not pin and
     # fails the render there. An unescaped reference fails the render.
