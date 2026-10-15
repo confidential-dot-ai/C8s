@@ -170,13 +170,16 @@ func TestPinPolicy(t *testing.T) {
 			if tc.leaf || tc.stamp != nil {
 				ev.leaf = &x509.Certificate{}
 			}
+			cfg := config{pinPolicies: pins}
 			if tc.stamp != nil {
 				ev.workload = &armtls.MatchedWorkload{Name: "app", AllowlistDigest: tc.stamp}
-				ev.leafChainVerified = tc.leaf
+				if tc.leaf {
+					cfg.meshCA = "mesh-ca.pem"
+				}
 			}
 			for _, partial := range []bool{false, true} {
 				oc := Outcome{Verified: !partial, Partial: partial, MeasuredPolicies: tc.history}
-				applyPinPolicy(&oc, config{pinPolicies: pins}, ev)
+				applyPinPolicy(&oc, cfg, ev)
 				if passed := oc.Verified || oc.Partial; passed != (tc.wantErr == "") || !strings.Contains(oc.Error, tc.wantErr) {
 					t.Errorf("applyPinPolicy(partial %v) = passed %v, error %q; want error containing %q", partial, passed, oc.Error, tc.wantErr)
 				}
@@ -495,19 +498,21 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 		name        string
 		ev          *evidence
 		history     string
+		meshCA      string
 		wantErr     string
 		wantPartial bool
 	}{
-		{"signed stamp", &evidence{leaf: leaf, leafChainVerified: true, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", false},
-		{"signed stamp, unvouched", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", true},
-		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
-		{"no stamp", &evidence{leaf: leaf}, signed, "", true},
-		{"no stamp, unsigned history", &evidence{leaf: leaf}, unsigned, "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
-		{"unreadable stamp", &evidence{leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false},
+		{"signed stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "mesh-ca.pem", "", false},
+		{"signed stamp, unvouched", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", "", true},
+		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
+		{"no stamp", &evidence{leaf: leaf}, signed, "", "", true},
+		{"no stamp, unsigned history", &evidence{leaf: leaf}, unsigned, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
+		{"unreadable stamp", &evidence{leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "", "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
 			plan, _ := historyPlan(t, cfg)
+			cfg.meshCA = tc.meshCA
 			for _, partial := range []bool{false, true} {
 				oc := Outcome{Verified: !partial, Partial: partial, MeasuredPolicies: []string{tc.history}}
 				checkPolicyHistory(context.Background(), &oc, cfg, tc.ev, plan.trustKeys)

@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -99,7 +98,7 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 	case d != "" && !slices.Contains(cfg.pinPolicies, d):
 		fail("policy_history_not_pinned: the leaf was issued under policy %s, which is not pinned", d)
 	case d != "":
-		demoteUnvouchedStamp(oc, cfg, ev, "pinned")
+		demoteUnvouchedStamp(oc, cfg, "pinned")
 	}
 }
 
@@ -141,10 +140,11 @@ func demoteUnstamped(oc *Outcome, judged string) {
 }
 
 // demoteUnvouchedStamp leaves a verdict partial at best when the leaf's stamp
-// was judged but nothing the operator pinned authenticated it: a CA-vouched
-// body counts only once its chain verifies against --mesh-ca.
-func demoteUnvouchedStamp(oc *Outcome, cfg config, ev *evidence, judged string) {
-	if ev.leafBody == certutil.BodySelfSigned || ev.leafChainVerified || (ev.leafChainDerived && cfg.meshCA != "") {
+// was judged without --mesh-ca: the stamp says CDS issued the leaf under that
+// policy, which only a chain to the pinned CA proves (applySandboxPolicy has
+// already failed the verdict when that chain does not verify).
+func demoteUnvouchedStamp(oc *Outcome, cfg config, judged string) {
+	if cfg.meshCA != "" {
 		return
 	}
 	demoteNaming(oc, fmt.Sprintf("the policy the leaf was issued under: its matched-workload stamp is %s, but it is CA-vouched and no --mesh-ca chain authenticated it", judged))
@@ -262,6 +262,6 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	case unstamped:
 		demoteUnstamped(oc, "signed")
 	case stamped:
-		demoteUnvouchedStamp(oc, cfg, ev, "signed")
+		demoteUnvouchedStamp(oc, cfg, "signed")
 	}
 }
