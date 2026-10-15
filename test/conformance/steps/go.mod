@@ -3,14 +3,14 @@ module github.com/confidential-dot-ai/c8s/test/conformance/steps
 go 1.27.0
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.0
+	github.com/confidential-dot-ai/attestation-go v0.8.1
 	github.com/cucumber/godog v0.16.0
-	github.com/cucumber/messages/go/v34 v34.2.0
 	github.com/google/go-tdx-guest v0.3.2-0.20261003001058-b0a2dd8100a0
 )
 
 require (
 	github.com/cucumber/gherkin/go/v42 v42.0.0 // indirect
+	github.com/cucumber/messages/go/v34 v34.2.0 // indirect
 	github.com/google/go-sev-guest v0.15.0 // indirect
 	github.com/google/logger v1.1.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect

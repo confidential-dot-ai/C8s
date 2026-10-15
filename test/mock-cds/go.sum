@@ -1,7 +1,7 @@
 github.com/cenkalti/backoff/v5 v5.0.3 h1:ZN+IMa753KfX5hd8vVaMixjnqRZ3y8CuJKRKj1xcsSM=
 github.com/cenkalti/backoff/v5 v5.0.3/go.mod h1:rkhZdG3JZukswDf7f0cwqPNk4K0sa+F97BxZthm/crw=
-github.com/confidential-dot-ai/attestation-go v0.8.1-0.20261013123944-b74f8c0e3a0a h1:edJJN7NaOZaUCeaNeRmqFis4iGxKIGzdz0cwv0r/DcU=
-github.com/confidential-dot-ai/attestation-go v0.8.1-0.20261013123944-b74f8c0e3a0a/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
+github.com/confidential-dot-ai/attestation-go v0.8.1 h1:E1U3zcSqiyemqPzYNDYjb3RLGgAzds6nG/jI8GHYd8Y=
+github.com/confidential-dot-ai/attestation-go v0.8.1/go.mod h1:kOYIqCounvl1Ca9SM5AMiop5ePI1V6VEfLR14bWf9hk=
 github.com/fxamacker/cbor/v2 v2.9.4 h1:xwjVlxEMR3S605oUlgBjKLTTeGFciYPGYCtF/35LKGo=
 github.com/fxamacker/cbor/v2 v2.9.4/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/go-logr/logr v1.4.4 h1:tG4xh9yMsRCAiodLVTxyrkzSZ9+o0L1Kg/+cPVcbP/8=
