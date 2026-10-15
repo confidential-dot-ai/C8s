@@ -310,9 +310,9 @@ func (w Workload) containers() []Container {
 
 // AdmitsAnyArgs reports whether some entry admits the digest running argv's
 // command under an unconstrained args policy: the entry pins at most the
-// executable, and the arguments are the pod's to choose. The
-// injected-container drop set (internal/secrets) keys on it: C8s's own image
-// runs with per-pod arguments, so it is only ever admitted this way.
+// executable, and the arguments are the pod's to choose.
+// This query ignores mounts and environment; callers making a complete
+// injected-container decision must use AdmitsInjected instead.
 func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 	d, err := types.ParseDigest(digest)
 	if err != nil {
@@ -324,6 +324,24 @@ func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 				continue
 			}
 			if _, ok := c.Command.matchCommand(argv); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AdmitsInjected reports whether one open-args entry admits the complete
+// observed container. Requiring the same entry keeps its command, environment,
+// denyBelow and nested-mount restrictions paired. Unconfined exceptions never
+// authorize dropping a container from workload matching.
+func (a *Allowlist) AdmitsInjected(r RunningContainer) bool {
+	if r.Mounts == nil || slices.ContainsFunc(r.Mounts, func(m ObservedMount) bool { return !m.Confined() }) {
+		return false
+	}
+	for _, w := range a.Workloads {
+		for _, c := range w.containers() {
+			if c.Args.Policy == PolicyAny && c.admits(r) {
 				return true
 			}
 		}

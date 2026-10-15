@@ -491,12 +491,7 @@ func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) b
 	if !slices.Contains(InjectedModes, c.Argv[1]) {
 		return false
 	}
-	if !al.AdmitsAnyArgs(c.Digest, c.Argv) {
-		return false
-	}
-	// nil is unavailable evidence, which fails closed like an exact policy.
-	if c.Mounts == nil {
-		return false
-	}
-	return !slices.ContainsFunc(c.Mounts, func(m pkgallowlist.ObservedMount) bool { return !m.Confined() })
+	return al.AdmitsInjected(pkgallowlist.RunningContainer{
+		Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts,
+	})
 }

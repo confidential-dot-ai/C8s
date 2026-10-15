@@ -1152,3 +1152,70 @@ func TestSecretReleaseEnforcesConfinedMounts(t *testing.T) {
 		})
 	}
 }
+
+// Drop decisions must use the admitting entry's complete mount policy, not
+// combine its open arguments with a weaker per-mount storage predicate.
+func TestInjectedDropRequiresSameEntryMountPolicy(t *testing.T) {
+	memory := func(path string) pkgallowlist.ObservedMount {
+		return pkgallowlist.ObservedMount{Destination: path, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountMemory}
+	}
+	for _, tc := range []struct {
+		name   string
+		mounts []pkgallowlist.ObservedMount
+		want   bool
+	}{
+		{"ordinary secret volume", []pkgallowlist.ObservedMount{memory("/out")}, true},
+		{"binary replaced", []pkgallowlist.ObservedMount{memory("/c8s")}, false},
+		{"denied dependency replaced", []pkgallowlist.ObservedMount{memory("/etc/ssl")}, false},
+		{"nested volume", []pkgallowlist.ObservedMount{memory("/out"), memory("/out/child")}, false},
+		{"shared memory nesting", []pkgallowlist.ObservedMount{{Destination: "/dev/shm", Class: pkgallowlist.MountPlatform}, memory("/dev/shm/child")}, false},
+		{"missing evidence", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			entry := componentEntry(t, testInjected, "c8s")
+			al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"component": entry}}
+			c := workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Mounts: tc.mounts}
+			if got := isInjected(al, c); got != tc.want {
+				t.Fatalf("isInjected = %v, want %v", got, tc.want)
+			}
+			// A second entry with permissive mounts but pinned args cannot supply
+			// the mount half of a decision whose open args came from the first.
+			second := componentEntry(t, testInjected, "c8s")
+			second.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-secret"}}
+			second.Containers[0].Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}
+			al.Workloads["other"] = second
+			if got := isInjected(al, c); got != tc.want {
+				t.Fatalf("cross-entry policy mixing: %v", got)
+			}
+		})
+	}
+	// Even an explicit unconfined exception cannot exempt a secret-fetching
+	// container with a writable host mount from workload matching.
+	entry := componentEntry(t, testInjected, "c8s")
+	entry.Containers[0].Mounts.Unconfined = []string{"/out"}
+	al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"component": entry}}
+	if isInjected(al, workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Mounts: []pkgallowlist.ObservedMount{{Destination: "/out", Class: pkgallowlist.MountHost}}}) {
+		t.Fatal("unconfined exception hid a writable host mount")
+	}
+}
+
+func TestInjectedDropRequiresSameEntryEnvironment(t *testing.T) {
+	entry := componentEntry(t, testInjected, "c8s")
+	entry.Containers[0].Env = pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyExact, Values: map[string]string{"MODE": "trusted"}}
+	other := componentEntry(t, testInjected, "c8s")
+	other.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-secret"}}
+	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"open": entry, "pinned": other}}
+	if err := al.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"trusted", "operator"} {
+		env, err := pkgallowlist.ObserveEnv([]string{"MODE=" + value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Env: env, Mounts: []pkgallowlist.ObservedMount{}}
+		if got := isInjected(al, c); got != (value == "trusted") {
+			t.Fatalf("MODE=%s dropped=%v", value, got)
+		}
+	}
+}

@@ -338,7 +338,9 @@ injects — `/c8s get-cert`, `/c8s get-secret`, `/c8s get-volume`, or `/c8s
 probe-file` — *and* some entry admits its digest running that binary under an
 **unconstrained args policy**: `command` exact at `/c8s` with `args: any`, the
 shape the chart seeds the C8s image in, or `command` and `args` both `any`, the
-shape earlier releases seeded. Both conditions are required. Admission alone
+shape earlier releases seeded. The same entry must admit the complete observed
+launch, including environment, `denyBelow`, nesting and executable protection.
+Both conditions are required. Admission alone
 would let a pod add any component image with its entrypoint overridden — and
 have it ignored. The mode matters for the same reason. The C8s image in any
 other mode — `cds-attest`, `allowlist-proxy`, or a mode a pod author chose — is
