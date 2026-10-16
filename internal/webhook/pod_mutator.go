@@ -96,7 +96,8 @@ const (
 	// by serial and names the directory the plaintext appears in under
 	// AnnotationVolumeDir. Setting it injects the volume fetcher sidecar.
 	AnnotationVolumes = "confidential.ai/c8s-volumes"
-	// AnnotationVolumeDir overrides where the volumes are mounted.
+	// AnnotationVolumeDir overrides where the volumes are mounted. It must sit
+	// at or below pkgallowlist.DataMountPrefix.
 	AnnotationVolumeDir = "confidential.ai/c8s-volume-dir"
 )
 
@@ -159,9 +160,6 @@ var pinnedDestinations = []struct{ annotation, path string }{
 // reservedVolumeContainerName is the injected volume fetcher. Reserved like the
 // cert containers.
 const reservedVolumeContainerName = workloadclaims.VolumeContainerName
-
-// defaultVolumeDir is where opened volumes are mounted, one directory each.
-const defaultVolumeDir = "/run/c8s/volumes"
 
 // reservedCertContainerName is the injected mesh-cert sidecar's name. It is
 // operator-reserved: a pod may not declare its own container under it. The
@@ -566,8 +564,17 @@ func (v volumesSpec) validate() error {
 			return fmt.Errorf("%w: %s %q: %s", errInvalidInjectionAnnotation, AnnotationVolumes, name, err)
 		}
 	}
-	if v.Dir != "" && !strings.HasPrefix(v.Dir, "/") {
-		return fmt.Errorf("%w: %s must be an absolute path", errInvalidInjectionAnnotation, AnnotationVolumeDir)
+	if v.Dir == "" {
+		return nil
+	}
+	// A secrets grant needs every mount pinned by an exact rule, and a data
+	// rule can only name a destination below the data prefix.
+	if !below(filepath.Join(v.Dir, "x"), strings.TrimSuffix(pkgallowlist.DataMountPrefix, "/")) {
+		return fmt.Errorf("%w: %s must be an absolute path at or below %s, where an allowlist data rule can pin the mount",
+			errInvalidInjectionAnnotation, AnnotationVolumeDir, pkgallowlist.DataMountPrefix)
+	}
+	if filepath.Clean(v.Dir) == reloadWatchMountPath || below(v.Dir, reloadWatchMountPath) {
+		return fmt.Errorf("%w: %s must not be inside %s", errInvalidInjectionAnnotation, AnnotationVolumeDir, reloadWatchMountPath)
 	}
 	return nil
 }
@@ -1109,7 +1116,7 @@ func (inj *injection) withDefaults(cfg Config) injection {
 		effective.Cert.RenewInterval = cfg.CertRenewInterval
 	}
 	if effective.Volumes.Dir == "" {
-		effective.Volumes.Dir = defaultVolumeDir
+		effective.Volumes.Dir = volume.DefaultDir
 	}
 	if effective.Security.RunAsUser == nil {
 		effective.Security.RunAsUser = cfg.GetCertRunAsUser
