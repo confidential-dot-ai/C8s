@@ -89,6 +89,7 @@ type pod struct {
 type container struct {
 	ref     string // reference the manifest uses
 	command []string
+	env     []string // NAME=VALUE the pod spec sets, beside what the image and the node add
 }
 
 type worldKey struct{}
@@ -254,7 +255,7 @@ type entryContainer struct {
 	Command *argvPolicy  `json:"command,omitempty"`
 	Args    *argvPolicy  `json:"args,omitempty"`
 	Mounts  mountsPolicy `json:"mounts"`
-	Env     policy       `json:"env"`
+	Env     envPolicy    `json:"env"`
 }
 
 type argvPolicy struct {
@@ -268,8 +269,15 @@ func exactArgv(argv []string) *argvPolicy { return &argvPolicy{Policy: "exact", 
 
 func (p *argvPolicy) is(policy string) bool { return p != nil && p.Policy == policy }
 
-type policy struct {
-	Policy string `json:"policy"`
+type envPolicy struct {
+	Policy    string                `json:"policy"`
+	Variables map[string]envMatcher `json:"variables,omitempty"`
+}
+
+// envMatcher is one variable of a match policy: exactly one of the two is set.
+type envMatcher struct {
+	Exact   *string `json:"exact,omitempty"`
+	Present bool    `json:"present,omitempty"`
 }
 
 type mountsPolicy struct {

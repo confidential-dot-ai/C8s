@@ -31,6 +31,9 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to the entrypoint of that image$`, entryPinsEntrypoint)
 	sc.Step(`^"([^"]*)" pins the mounts of "([^"]*)" to one rule of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsMounts)
 	sc.Step(`^"([^"]*)" also pins a mount of "([^"]*)" of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsAnotherMount)
+	sc.Step(`^"([^"]*)" matches "([^"]*)" of "([^"]*)" exact "([^"]*)"$`, entryMatchesExact)
+	sc.Step(`^"([^"]*)" matches "([^"]*)" of "([^"]*)" present$`, entryMatchesPresent)
+	sc.Step(`^"([^"]*)" matches the variables the node and the image add to every container of "([^"]*)" present$`, entryMatchesRuntimeVariables)
 	sc.Step(`^no workload entry declares both "([^"]*)" and "([^"]*)"$`, noEntryDeclaresBoth)
 	sc.Step(`^a workload entry admits image "([^"]*)" under any argv$`, someEntryAdmitsAnyArgv)
 	sc.Step(`^the entries declaring image "([^"]*)" are removed from the served allowlist$`, entriesRemoved)
@@ -104,7 +107,7 @@ func (w *world) declare(name, image string, init bool) error {
 	c := entryContainer{
 		Digest: digest, Image: ref,
 		Command: denyArgv(), Args: denyArgv(),
-		Mounts: mountsPolicy{Policy: "any"}, Env: policy{Policy: "any"},
+		Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},
 	}
 	if init {
 		e.InitContainers = append(e.InitContainers, c)
@@ -200,6 +203,72 @@ func entryPinsMounts(ctx context.Context, name, image, kind, destination string)
 		return err
 	}
 	c.Mounts = mountsPolicy{Policy: "exact", Rules: []mountRule{{Destination: destination, Kind: kind}}}
+	return nil
+}
+
+// matchVariable adds one variable to the container's match policy, turning
+// the policy into match on first use.
+func matchVariable(ctx context.Context, name, image, variable string, matcher envMatcher) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	if c.Env.Policy != "match" {
+		c.Env = envPolicy{Policy: "match", Variables: map[string]envMatcher{}}
+	}
+	c.Env.Variables[variable] = matcher
+	return nil
+}
+
+func entryMatchesExact(ctx context.Context, name, variable, image, value string) error {
+	return matchVariable(ctx, name, image, variable, envMatcher{Exact: &value})
+}
+
+func entryMatchesPresent(ctx context.Context, name, variable, image string) error {
+	return matchVariable(ctx, name, image, variable, envMatcher{Present: true})
+}
+
+// runtimeVariables is what every container launches with beside the pod
+// spec's and the image's: the runtime's HOSTNAME and, with no Service in the
+// pod's namespace (each scenario's is fresh), the kubelet's variables for the
+// API server's Service. The chart's component entries list the same set
+// (c8s.runtimeEnv in the allowlist template).
+var runtimeVariables = []string{
+	"HOSTNAME",
+	"KUBERNETES_SERVICE_HOST", "KUBERNETES_SERVICE_PORT", "KUBERNETES_SERVICE_PORT_HTTPS",
+	"KUBERNETES_PORT", "KUBERNETES_PORT_443_TCP", "KUBERNETES_PORT_443_TCP_ADDR",
+	"KUBERNETES_PORT_443_TCP_PORT", "KUBERNETES_PORT_443_TCP_PROTO",
+}
+
+// entryMatchesRuntimeVariables marks present the variables the node adds and
+// the ones the image's configuration sets, so a scenario's own variables are
+// the only ones left for the match to decide on.
+func entryMatchesRuntimeVariables(ctx context.Context, name, image string) error {
+	w := getWorld(ctx)
+	ref, err := w.be.call("image_ref", image)
+	if err != nil {
+		return err
+	}
+	out, err := w.be.call("image_env", ref)
+	if err != nil {
+		return err
+	}
+	variables := append([]string(nil), runtimeVariables...)
+	for _, entry := range strings.Split(strings.TrimSpace(out), "\n") {
+		if entry == "" {
+			continue
+		}
+		variable, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			return fmt.Errorf("image %s (%s): environment entry %q is not NAME=VALUE", image, ref, entry)
+		}
+		variables = append(variables, variable)
+	}
+	for _, variable := range variables {
+		if err := matchVariable(ctx, name, image, variable, envMatcher{Present: true}); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

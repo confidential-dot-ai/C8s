@@ -103,7 +103,7 @@ func (w *world) putAnyArgv(name, image string) (write, error) {
 		Containers: []entryContainer{{
 			Digest: digest, Image: ref,
 			Command: anyArgv(), Args: anyArgv(),
-			Mounts: mountsPolicy{Policy: "any"}, Env: policy{Policy: "any"},
+			Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},
 		}},
 	})
 	if err != nil {
