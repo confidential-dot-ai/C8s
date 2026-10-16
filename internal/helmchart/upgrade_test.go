@@ -213,7 +213,8 @@ func TestChartEntryNamesIgnoreImageRepository(t *testing.T) {
 }
 
 // A release before per-shape names seeded each component as
-// DigestEntryName with open args and mounts; the current seed must retire it.
+// DigestEntryName with open args and mounts, and one before env matching
+// seeded each shape with env any; the current seed must retire both.
 func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
 	for valuePath, digest := range componentTestDigests {
@@ -233,12 +234,17 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		if c.Command.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyExact {
 			continue
 		}
+		openEnv := slices.Clone(w.Containers)
+		for i := range openEnv {
+			openEnv[i].Env = pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
+		}
 		c.Args, c.Mounts, c.Env = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny}, pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}, pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
-		if openArgs, _ := allowlist.OpenComponent(c); !openArgs || strings.HasPrefix(name, "c8s-router-") {
+		if openArgs, _, _ := allowlist.OpenComponent(c); !openArgs || strings.HasPrefix(name, "c8s-router-") {
 			continue
 		}
 		// The shape name less its 8-hex policy hash: c8s.digestWorkloadName.
 		old[name[:len(name)-9]] = pkgallowlist.Workload{Label: w.Label, InitContainers: []pkgallowlist.Container{}, Containers: []pkgallowlist.Container{c}}
+		old[name[:len(name)-8]+"00000000"] = pkgallowlist.Workload{Label: w.Label, InitContainers: []pkgallowlist.Container{}, Containers: openEnv}
 	}
 	if len(old) == 0 {
 		t.Fatal("no component shape in the rendered seed")

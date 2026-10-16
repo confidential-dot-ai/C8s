@@ -270,8 +270,9 @@ func TestSeedWorkloadsIsAdditiveAndIdempotent(t *testing.T) {
 }
 
 // An upgrade from a release that named a component entry <image>-<12hex> and
-// left its args and mounts open retires that entry when the seed generates a
-// pinned shape for the image; exact stale shapes and other entries stay.
+// left its args and mounts open, or one that pinned them but left env open,
+// retires that entry when the seed generates a pinned shape for the image;
+// exact stale shapes and other entries stay.
 func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
 	store, err := OpenInMemory()
 	if err != nil {
@@ -281,20 +282,24 @@ func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
 
 	digest := mustParseDigest(t, digestA)
 	hex := digest.Hex()[:12]
-	component := func(args, mounts string) pkgallowlist.Workload {
+	matched := pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: map[string]pkgallowlist.EnvMatcher{}}
+	component := func(args, mounts string, env pkgallowlist.EnvPolicy) pkgallowlist.Workload {
 		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
 			Digest:  digest,
 			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
 			Args:    pkgallowlist.ArgvPolicy{Policy: args},
 			Mounts:  pkgallowlist.MountPolicy{Policy: mounts},
+			Env:     env,
 		}}}
 	}
+	open := pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
 	stored := map[string]pkgallowlist.Workload{
-		"cds-" + hex:               component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny),
-		"cds-" + hex + "-0000000a": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyAny),
-		"cds-" + hex + "-0000000b": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact),
-		"cds-" + hex + "-dead":     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny),
-		"mine":                     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny),
+		"cds-" + hex:               component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
+		"cds-" + hex + "-0000000a": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyAny, matched),
+		"cds-" + hex + "-0000000b": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, matched),
+		"cds-" + hex + "-0000000d": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, open),
+		"cds-" + hex + "-dead":     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
+		"mine":                     component(pkgallowlist.PolicyAny, pkgallowlist.PolicyAny, open),
 		"other-" + hex:             pkgallowlist.DigestEntry(digest, "other"),
 	}
 	if _, _, err := store.SeedWorkloads(stored); err != nil {
@@ -302,13 +307,13 @@ func TestSeedWorkloadsRetiresReplacedOpenComponentEntries(t *testing.T) {
 	}
 	_, before, _ := store.LoadAll()
 
-	seed := map[string]pkgallowlist.Workload{"cds-" + hex + "-0000000c": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact)}
+	seed := map[string]pkgallowlist.Workload{"cds-" + hex + "-0000000c": component(pkgallowlist.PolicyExact, pkgallowlist.PolicyExact, matched)}
 	added, retired, err := store.SeedWorkloads(seed)
-	if err != nil || added != 1 || retired != 2 {
-		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 2, nil", added, retired, err)
+	if err != nil || added != 1 || retired != 3 {
+		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 3, nil", added, retired, err)
 	}
 	doc, after, _ := store.LoadAll()
-	for _, name := range []string{"cds-" + hex, "cds-" + hex + "-0000000a"} {
+	for _, name := range []string{"cds-" + hex, "cds-" + hex + "-0000000a", "cds-" + hex + "-0000000d"} {
 		if _, ok := doc.Workloads[name]; ok {
 			t.Errorf("open component entry %q survived the seed", name)
 		}
