@@ -612,8 +612,9 @@ them. get-cert runs with per-pod dynamic arguments, which is exactly why the
 sidecar shapes in the C8s image's component entry carry `command: exact` at
 the invocation (`/c8s get-cert`) and `args: any`. Their mounts are `exact`:
 the webhook mounts at fixed destinations, and each optional mount (discovery,
-reload-watch, the inventory socket the NRI plugin adds) is a separate
-container of the entry, so admission is the union across them. Before
+reload-watch) is a separate container of the entry, so admission is the union
+across them. The inventory socket the NRI plugin adds is a `platform` mount and
+needs no rule. Before
 matching, a container whose image is admitted with open args for its
 invocation and running one of the invocations the webhook injects is dropped
 from the candidate set

@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // kubeletExpand is the kubelet's $(VAR) expansion of one argv token: $$ is a
@@ -215,7 +216,7 @@ func injectedShape(c pkgallowlist.Container) bool {
 // fewer or one more, a loader variable or a redirected PATH is refused. On
 // default, bare-metal and baked renders alike, no component entry leaves env
 // open, nor args or mounts except the injected sidecar shapes, whose args are
-// per pod.
+// per pod and whose mount tables leave out the inventory socket.
 func TestChartComponentShapesAreExact(t *testing.T) {
 	t.Parallel()
 	digests := []string{}
@@ -268,6 +269,11 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 							t.Errorf("%s entry %s leaves env %q", source, name, c.Env.Policy)
 						}
 						if injectedShape(c) {
+							// The plugin's own socket mount observes as platform,
+							// which exact rules never match.
+							if slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return r.Destination == workloadclaims.SidecarSocketDir }) {
+								t.Errorf("%s entry %s names the inventory socket mount %s", source, name, workloadclaims.SidecarSocketDir)
+							}
 							continue
 						}
 						if c.Args.Policy == pkgallowlist.PolicyAny || c.Mounts.Policy == pkgallowlist.PolicyAny {

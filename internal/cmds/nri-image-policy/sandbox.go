@@ -212,9 +212,28 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 // inventory sockets.
 func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount) bool {
 	return m.GetDestination() == workloadclaims.SidecarSocketDir &&
-		slices.Contains(m.GetOptions(), "ro") &&
+		endsReadOnly(m) &&
 		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
 		workloadclaims.IsSocketConsumer(ctr.GetName())
+}
+
+// endsReadOnly reports whether m is read-only once runc has applied its
+// options: the last "ro" or "rw" wins, and "rrw" (a recursive setattr applied
+// after the mount) leaves it writable whatever came before. "rro" alone is
+// not taken as read-only, so a caller fails closed on it.
+func endsReadOnly(m *api.Mount) bool {
+	readOnly := false
+	for _, option := range m.GetOptions() {
+		switch option {
+		case "ro":
+			readOnly = true
+		case "rw":
+			readOnly = false
+		case "rrw":
+			return false
+		}
+	}
+	return readOnly
 }
 
 // writableKernelFS returns the destinations of sysfs and cgroup mounts that are
@@ -225,7 +244,7 @@ func writableKernelFS(ctr *api.Container) []string {
 		if !slices.Contains(kernelFSTypes, m.GetType()) {
 			continue
 		}
-		if !slices.Contains(m.GetOptions(), "ro") {
+		if !endsReadOnly(m) {
 			out = append(out, m.GetDestination())
 		}
 	}

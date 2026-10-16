@@ -134,11 +134,10 @@ entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`, each pinned to
 its invocation with `args: any`, its env matched as above over the variables
 the webhook's `getCertEnv` sets (`present`, since they differ per pod; none
 for `probe-file`), and one container per combination of the optional
-discovery, reload-watch and inventory-socket mounts. The webhook turns service
-links off in every pod it injects into. The
-destinations match the webhook's fixed ones (`internal/webhook`); the socket
-rule's source is `nriImagePolicy.hostPaths.runtimeDir` verbatim, since the NRI
-plugin adds that mount without symlink resolution.
+discovery and reload-watch mounts. No shape names the inventory socket mount:
+the NRI plugin adds it and observes it as a platform mount, which exact rules
+never match. The webhook turns service links off in every pod it injects into.
+The destinations match the webhook's fixed ones (`internal/webhook`).
 
 `c8s.componentShapes` collects both per digest. Every component digest must
 have a rendered container, or the render fails.
