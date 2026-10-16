@@ -57,14 +57,22 @@ c8s node-image render --hardware-platform tdx --kube-version "$rke2_version" "${
   go mod tidy && go build -o "$CIE_DIR/bin/c8s-allowlist-canonical" .)
 
 c8s_release=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["c8s"]["release"])' ci/release/staging/spec.yaml)
-python3 "$here/allowlist.py" --ci ci \
-  --values release/profile-values-release-values.yaml \
-  --values release/profile-values-release-staging-values.yaml \
-  --values release/release-values.yaml \
-  --values "$here/values.yaml" \
+# One render for both the allowlist and the deploy: run.sh applies these
+# objects, and replaces only the gateway's release-identity ConfigMap, whose
+# CDS policy and operator-key pins exist only after boot. The ConfigMap is
+# mounted as data, so the derived entries do not depend on its content.
+chart_args=(--namespace confidential-inference --kube-version 1.32.0
+  --values release/profile-values-release-values.yaml
+  --values release/profile-values-release-staging-values.yaml
+  --values release/release-values.yaml
+  --values "$here/values.yaml")
+printf '%s\n' "${chart_args[@]}" > chart-args
+helm template confidential-inference ci/helm/confidential-inference "${chart_args[@]}" \
+  | SIM_IMAGE=$SIM_IMAGE python3 "$here/worker_sim.py" > manifest.yaml
+python3 "$here/allowlist.py" --ci ci --manifest manifest.yaml \
   --policy "$here/policy.json" --seed node-image/allowlist-seed.json \
   --c8s "$(command -v c8s)" --c8s-release "$c8s_release" \
-  --sim-image "$SIM_IMAGE" --canonical-tool bin/c8s-allowlist-canonical --out-dir allowlist
+  --canonical-tool bin/c8s-allowlist-canonical --out-dir allowlist
 jq -r '.workloads | keys[]' allowlist/allowlist.json
 
 # The gateway writes its state as 65532 at the volume root (mode 2770).
