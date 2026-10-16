@@ -88,6 +88,8 @@ cds_document_path() {
     esac
 }
 cds_serving_cert() { return "$UNSUPPORTED"; }
+# No node shell, so the plugin's health socket is out of reach.
+applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
 cds_unblock() { return "$UNSUPPORTED"; }
 cds_relay_block() { return "$UNSUPPORTED"; }

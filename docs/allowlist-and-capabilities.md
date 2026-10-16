@@ -664,8 +664,11 @@ tracked follow-on.
 
 `nriImagePolicy.refresh.interval` sets the poll, so a node runs the previous
 document for up to one interval after CDS commits a write; a node has taken a
-write once its plugin logs `pull loop: allowlist refreshed` with a version at or
-above the one `c8s allowlist list` reports.
+write once the `allowlist_version` its plugin's `GET /healthz` reports (on the
+health socket, beside the readiness status) is at or above the one
+`c8s allowlist list` reports. The plugin also logs each refresh as
+`pull loop: allowlist refreshed` with that version. The reported version is the
+one applied, so a pull the anti-rollback check ignored does not move it.
 
 The host NRI plugin also carries a **base enforcement allowlist** in
 `allowlist.base`, baked into its boot config and never changed by a pull.

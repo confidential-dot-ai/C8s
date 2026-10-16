@@ -222,6 +222,13 @@ func (p *plugin) SetReady() {
 	p.ready.Store(true)
 }
 
+// AppliedAllowlistVersion is the CDS version of the allowlist admission decides
+// with: the last pull apply accepted, so a pull the anti-rollback check ignored
+// does not move it. It is 0 until a pull applied.
+func (p *plugin) AppliedAllowlistVersion() uint64 {
+	return p.policy.current().version
+}
+
 // Run starts the plugin and blocks until context is cancelled.
 func (p *plugin) Run(ctx context.Context) error {
 	go func() {
