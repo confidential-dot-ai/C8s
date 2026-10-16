@@ -34,9 +34,11 @@ done
 ssh -F "$dir/config" node true || { echo "::error::no ssh to root@$ip with the launch key"; exit 1; }
 
 admin="${RUNNER_TEMP:-/tmp}/guest-admin.kubeconfig"
-ssh -F "$dir/config" node cat /etc/rancher/rke2/rke2.yaml |
-    sed "s#server: https://127.0.0.1:6443#server: https://$ip:6443#" > "$admin"
+ssh -F "$dir/config" node cat /etc/rancher/rke2/rke2.yaml > "$admin"
 chmod 0600 "$admin"
+# The API server's certificate names the node's own addresses, not the
+# launcher's address for it; 127.0.0.1 is always among them.
+KUBECONFIG="$admin" kubectl config set-cluster default --server "https://$ip:6443" --tls-server-name 127.0.0.1 >/dev/null
 test "$(KUBECONFIG="$admin" kubectl auth can-i create pods/exec --all-namespaces)" = yes ||
     { echo "::error::the node's admin kubeconfig cannot exec"; exit 1; }
 {
