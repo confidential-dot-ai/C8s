@@ -212,6 +212,11 @@ image_entrypoint() {
     crane config "$1" | jq -r '.config | ((.Entrypoint // []) + (.Cmd // []))[]'
 }
 
+image_env() {
+    command -v crane >/dev/null || return $UNSUPPORTED
+    crane config "$1" | jq -r '.config | (.Env // [])[]'
+}
+
 # Signed writes through the route, as kind's are, not `apply`: that lints
 # against the live document and refuses an entry a broader one shadows,
 # which the CDS accepts and scenarios write on purpose.

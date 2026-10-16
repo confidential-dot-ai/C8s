@@ -46,6 +46,13 @@ def main():
         "named i1, i2, ...",
     )
     parser.add_argument("--label", action="append", default=[], metavar="KEY=VALUE", help="a pod label; repeatable")
+    parser.add_argument(
+        "--env",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="a variable the first container's spec sets; repeatable",
+    )
     parser.add_argument("--host-network", action="store_true", help="share the node's network namespace")
     parser.add_argument(
         "--run-as-user",
@@ -130,6 +137,9 @@ def main():
         pod["spec"]["volumes"] = [
             {"name": "data", "persistentVolumeClaim": {"claimName": args.name}}
         ]
+    if args.env:
+        # After the further containers are copied from the first, which take no env.
+        container["env"] = [{"name": name, "value": value} for name, value in (e.split("=", 1) for e in args.env)]
     # kubelet refuses every net.* sysctl for a pod in the node's network namespace.
     sysctls = [s for s in args.sysctl if not (pod["spec"].get("hostNetwork") and s.startswith("net."))]
     if sysctls:

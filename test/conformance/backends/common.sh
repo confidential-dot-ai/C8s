@@ -47,10 +47,13 @@
 #                                    options, before the --, are
 #                                    --host-network, --run-as-user <uid>,
 #                                    --add-capability <cap>, --label <k=v>,
-#                                    --annotation <k=v>,
+#                                    --annotation <k=v>, --env <NAME=VALUE>
+#                                    (the first container's),
 #                                    --init-container '<image> <command...>'
 #   image_entrypoint <ref>           the argv the image starts with when the pod
 #                                    spec overrides nothing, one word per line
+#   image_env <ref>                  the NAME=VALUE entries the image's
+#                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]

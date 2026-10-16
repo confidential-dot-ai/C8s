@@ -312,6 +312,12 @@ image_entrypoint() {
     node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | ((.Entrypoint // []) + (.Cmd // []))[]"' _ "$1"
 }
 
+image_env() {
+    image_digest "$1" >/dev/null
+    # shellcheck disable=SC2016  # $1 expands on the node
+    node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | (.Env // [])[]"' _ "$1"
+}
+
 # Signed with the harness's operator key, as its own allowlist checks are.
 allowlist_put() {
     local code
