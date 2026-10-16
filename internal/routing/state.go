@@ -125,6 +125,9 @@ func (s *State) stale(snap *snapshot) bool {
 // one is held, else the applied one (A3). Refetching the applied revision
 // while a manifest is staged therefore fails W4 and keeps the staged one.
 //
+// env must come from a GET /routes response over CDS-verified TLS (A1):
+// Accept is the only thing that renews freshness.
+//
 // On success Accept renews freshness (F1, F3), even when env is not yet due
 // (A4), and stages it unless it is the manifest already held. A staged
 // manifest is applied at the first Accept at or after its notBefore, never

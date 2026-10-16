@@ -29,6 +29,10 @@ import (
 
 const testHost = "app.example"
 
+// bigBytes outgrows the loopback socket buffers, so the client's reading
+// paces the writer.
+const bigBytes = 24 << 20
+
 var testReserved = []string{"/allowlist", "/.well-known/c8s/", "/healthz"}
 
 type fakeClock struct {
@@ -157,14 +161,17 @@ type testBackend struct {
 	// slow, when set, holds requests to /slow: each sends on entered and
 	// waits for release.
 	entered, release chan struct{}
-	mu               sync.Mutex
-	last             seen
+	// bigDone receives the outcome of each /big response, bigBytes long, and
+	// the error that ends each /endless one.
+	bigDone chan error
+	mu      sync.Mutex
+	last    seen
 }
 
 // startBackend starts a backend; each opt edits its TLS config first.
 func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(*tls.Config)) *testBackend {
 	t.Helper()
-	b := &testBackend{name: name, entered: make(chan struct{}), release: make(chan struct{})}
+	b := &testBackend{name: name, entered: make(chan struct{}), release: make(chan struct{}), bigDone: make(chan error, 4)}
 	b.ts = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.hits.Add(1)
 		s := seen{requestURI: r.RequestURI, host: r.Host, forwarded: r.Header.Get("X-Forwarded-For"), header: r.Header.Clone(), remoteAddr: r.RemoteAddr}
@@ -174,6 +181,20 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 		b.mu.Lock()
 		b.last = s
 		b.mu.Unlock()
+		switch r.URL.Path {
+		case "/big":
+			_, err := w.Write(make([]byte, bigBytes))
+			b.bigDone <- err
+			return
+		case "/endless":
+			chunk := make([]byte, 1<<20)
+			for {
+				if _, err := w.Write(chunk); err != nil {
+					b.bigDone <- err
+					return
+				}
+			}
+		}
 		if r.URL.Path == "/slow" && b.entered != nil {
 			b.entered <- struct{}{}
 			<-b.release
