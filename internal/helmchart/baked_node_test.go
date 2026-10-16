@@ -211,6 +211,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 		"--domains-file=/run/c8s-node/router/hostnames",
 		"--acme-email-file=/run/c8s-node/router/acme-email",
 		"--acme-directory-url-file=/run/c8s-node/router/acme-directory-url",
+		"--acme-ca-file=/run/c8s-node/router/acme-ca.pem",
 		"--standby-cert-dir=/tls",
 		"--cert-dir=/etc/c8s-acme-tls",
 	} {
