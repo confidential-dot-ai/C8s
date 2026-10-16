@@ -143,7 +143,7 @@ func TestUnstagedVerityMountMatchesEntryWithoutProvenance(t *testing.T) {
 	if err := f.validate(t, adjust); err != nil {
 		t.Fatalf("ValidateContainerAdjustment denied a mount the path-only entry admits: %v", err)
 	}
-	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr, Adjust: adjust}, f.ctr)
+	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr, Adjust: adjust}, f.ctr, "")
 	if len(mounts) != 1 || mounts[0].Provenance != "" || mounts[0].VerityDigest != "" {
 		t.Fatalf("observed %+v, want no provenance for an unstaged mount", mounts)
 	}

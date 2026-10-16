@@ -110,7 +110,7 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	if err := os.WriteFile(snapshot, []byte("smuggled executable"), 0600); err == nil {
 		t.Fatal("snapshot writable")
 	}
-	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}, ctr)
+	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr, Adjust: adjust}, ctr, "")
 	if len(mounts) != 1 || mounts[0].Provenance != allowlist.ProvenanceFSVerity || mounts[0].VerityDigest == "" {
 		t.Fatalf("lost kernel evidence: %+v", mounts)
 	}
@@ -135,7 +135,7 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	}
 	ctr.Mounts[0].Source = snapshot
 	ctr.Id = "another-container"
-	if got := newMountObserver(nil).Observe(pod, ctr); got[0].Provenance != "" {
+	if got := newMountObserver(nil, "").Observe(pod, ctr); got[0].Provenance != "" {
 		t.Fatal("another container borrowed provenance")
 	}
 
