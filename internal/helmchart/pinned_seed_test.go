@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -373,6 +374,48 @@ func componentPinValues(t *testing.T) map[string][]string {
 	return pins
 }
 
+// withMatcher returns p, a match policy, with name matched by matcher, a
+// JSON matcher.
+func withMatcher(t *testing.T, p pkgallowlist.EnvPolicy, name, matcher string) pkgallowlist.EnvPolicy {
+	t.Helper()
+	var m pkgallowlist.EnvMatcher
+	if err := json.Unmarshal([]byte(matcher), &m); err != nil {
+		t.Fatal(err)
+	}
+	variables := maps.Clone(p.Variables)
+	variables[name] = m
+	return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: variables}
+}
+
+// componentImageEnvValues reads the imageEnv values.yaml declares for every
+// derived component, keyed like componentPinValues.
+func componentImageEnvValues(t *testing.T) map[string]map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile("c8s/values.yaml")
+	if err != nil {
+		t.Fatalf("read values.yaml: %v", err)
+	}
+	var values struct {
+		Components []struct {
+			ValuePath string            `json:"valuePath"`
+			ImageEnv  map[string]string `json:"imageEnv"`
+		} `json:"c8sComponents"`
+		Router struct {
+			Nginx struct {
+				ImageEnv map[string]string `json:"imageEnv"`
+			} `json:"nginx"`
+		} `json:"router"`
+	}
+	if err := sigsyaml.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("parse values.yaml: %v", err)
+	}
+	envs := map[string]map[string]string{"router.nginx": values.Router.Nginx.ImageEnv}
+	for _, c := range values.Components {
+		envs[c.ValuePath] = c.ImageEnv
+	}
+	return envs
+}
+
 // dockerfileEntrypoint reads the exec-form ENTRYPOINT of an image Dockerfile
 // in this repository.
 func dockerfileEntrypoint(t *testing.T, path string) []string {
@@ -560,8 +603,8 @@ func TestChartOperatorEntrypointEntryReachesBase(t *testing.T) {
 // component entry like the chart's own: copied from the chart's derived entry,
 // it covers the component for the fail-closed guard and reaches the base
 // verbatim. Missing any container the chart runs the executable in, an
-// injected sidecar shape among them, or pinning env, it does not cover the
-// component.
+// injected sidecar shape among them, or with an env that would refuse the
+// launch environment or leave it open, it does not cover the component.
 func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 	t.Parallel()
 	const opD = "sha256:abcdef0000000000000000000000000000000000000000000000000000000011"
@@ -584,7 +627,7 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		drop      func(pkgallowlist.Container) bool
-		pinEnv    bool
+		env       func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy
 		uppercase bool
 		covered   bool
 	}{
@@ -595,13 +638,24 @@ func TestChartPinnedOperatorEntryCoversComponent(t *testing.T) {
 		}},
 		{name: "without the resolved layout of a host mount", drop: resolvedLayout},
 		{name: "without the injected sidecars", drop: injectedShape},
-		{name: "env pinned", pinEnv: true},
+		{name: "env denied", env: func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
+			return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyDeny}
+		}},
+		{name: "env open", env: func(pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
+			return pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny}
+		}},
+		{name: "env matching one more variable", env: func(p pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
+			return withMatcher(t, p, "EXTRA", `{"present":true}`)
+		}},
+		{name: "env pinning a value the pod chooses", env: func(p pkgallowlist.EnvPolicy) pkgallowlist.EnvPolicy {
+			return withMatcher(t, p, "HOSTNAME", `{"exact":"c8s-0"}`)
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			entry := slices.Clone(containers)
-			if tc.pinEnv {
+			if tc.env != nil {
 				for i := range entry {
-					entry[i].Env = pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyDeny}
+					entry[i].Env = tc.env(entry[i].Env)
 				}
 			}
 			if tc.drop != nil {

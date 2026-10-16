@@ -1,7 +1,10 @@
 package webhook
 
 import (
+	"maps"
+	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -56,6 +59,63 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 	return nil
 }
 
+// chartImageEnv reads the operator image's Env from the chart's c8sComponents.
+func chartImageEnv(t *testing.T) map[string]string {
+	t.Helper()
+	raw, err := os.ReadFile("../helmchart/c8s/values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values struct {
+		Components []struct {
+			ValuePath string            `json:"valuePath"`
+			ImageEnv  map[string]string `json:"imageEnv"`
+		} `json:"c8sComponents"`
+	}
+	if err := yaml.Unmarshal(raw, &values); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range values.Components {
+		if c.ValuePath == "image" {
+			return c.ImageEnv
+		}
+	}
+	t.Fatal("values.yaml declares no operator image")
+	return nil
+}
+
+// sidecarEnv is the environment a node reports for an injected sidecar, plus
+// extra: containerd's HOSTNAME, the image's Env, the kubelet's variables for
+// the API server's Service, and the sidecar's env, a valueFrom resolved to a
+// placeholder. A pod left with service links on fails the test: the kubelet
+// would add variables for every Service in the namespace.
+func sidecarEnv(t *testing.T, pod *corev1.Pod, c corev1.Container, imageEnv map[string]string, extra ...string) *allowlist.EnvObservation {
+	t.Helper()
+	if pod.Spec.EnableServiceLinks == nil || *pod.Spec.EnableServiceLinks {
+		t.Fatal("the injected pod has service links on")
+	}
+	entries := []string{"HOSTNAME=api-0"}
+	for _, name := range slices.Sorted(maps.Keys(imageEnv)) {
+		entries = append(entries, name+"="+imageEnv[name])
+	}
+	entries = append(entries,
+		"KUBERNETES_SERVICE_HOST=10.96.0.1", "KUBERNETES_SERVICE_PORT=443", "KUBERNETES_SERVICE_PORT_HTTPS=443",
+		"KUBERNETES_PORT=tcp://10.96.0.1:443", "KUBERNETES_PORT_443_TCP=tcp://10.96.0.1:443",
+		"KUBERNETES_PORT_443_TCP_PROTO=tcp", "KUBERNETES_PORT_443_TCP_PORT=443", "KUBERNETES_PORT_443_TCP_ADDR=10.96.0.1")
+	for _, e := range c.Env {
+		value := e.Value
+		if e.ValueFrom != nil {
+			value = "192.0.2.1"
+		}
+		entries = append(entries, e.Name+"="+value)
+	}
+	env, err := allowlist.ObserveLaunchEnv(append(entries, extra...))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
 // observedSidecarMounts classifies an injected sidecar's mounts the way the
 // node does: the webhook's volumes and the pod's discovery volume are memory
 // emptyDirs, the reload-watch volume is a Secret, and on a node with the
@@ -90,12 +150,15 @@ func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, in
 
 // Every sidecar this webhook injects, with every combination of the optional
 // discovery, reload-watch and inventory socket mounts, must be admitted by the
-// chart's operator entry, and must still be dropped from workload matching.
-// The chart pins the sidecars' mount tables exactly, so this is what keeps the
-// webhook's fixed destinations and the chart's in step.
+// chart's operator entry with the environment it launches with, refused with
+// a loader variable added, and still dropped from workload matching. The
+// chart pins the sidecars' mount tables exactly and matches their env by
+// name, so this is what keeps the webhook's fixed destinations and variables
+// and the chart's in step.
 func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 	seed := chartSeed(t)
 	index := seed.BuildIndex()
+	imageEnv := chartImageEnv(t)
 	for _, tc := range []struct {
 		name                         string
 		discovery, reload, inventory bool
@@ -146,10 +209,14 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 					argv = append([]string{secrets.InjectedBinary}, c.Args...)
 				}
 				mounts := observedSidecarMounts(t, pod, c, tc.inventory)
-				if !index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: &allowlist.EnvObservation{}}) {
+				env := sidecarEnv(t, pod, c, imageEnv)
+				if !index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}) {
 					t.Errorf("chart seed refuses injected %s with mounts %+v", c.Name, mounts)
 				}
-				injected = append(injected, workloadclaims.SandboxContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts})
+				if index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: sidecarEnv(t, pod, c, imageEnv, "LD_PRELOAD=/tmp/hook.so")}) {
+					t.Errorf("chart seed admits injected %s with LD_PRELOAD", c.Name)
+				}
+				injected = append(injected, workloadclaims.SandboxContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env})
 			}
 			if len(injected) != 4 {
 				t.Fatalf("injected %d containers, want the cert sidecar, cert-wait gate, secret fetcher, and volume fetcher", len(injected))

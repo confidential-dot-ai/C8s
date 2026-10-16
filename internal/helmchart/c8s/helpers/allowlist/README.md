@@ -44,20 +44,24 @@ component digest, verbatim. `c8s.baseWorkloads` renders the host plugin's boot
 base, excluding `c8s.argvPinnedDigests`: each `c8s.componentShapes` image with
 its containers, each `c8s.openArgsEntries` digest under the command it pins or
 under any (`c8s.openArgsContainer`), and each `c8s.pinnedComponentEntries`
-container, all beside one another for a shared digest. Workloads that pin
+container. The component shapes keep their own entry, named as in the seed;
+the operator's containers for a digest share one named
+`c8s.digestWorkloadName`, so each entry's per-variable evidence budget counts
+only its own containers. Workloads that pin
 args, env or mounts for any other digest remain in the served seed without
 reaching the base. With `deriveComponents` off, the coverage guard in
 [validations.yaml](../../templates/validations.yaml) requires every container
 the chart runs a component's executable in to be admitted by an operator
 entry: `c8s.admitsShape` checks the entry's command, args and mount rules
-against the container's derived shape, leaving env aside. An entry pinned to
-a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
-`/docker-entrypoint.sh nginx`) with mounts `any`, or with args `any` outside a sidecar
-invocation, covers nothing: `c8s allowlist lint` refuses that shape.
+against the container's derived shape, and its env: `any`, or a `match` over
+the shape's names whose `exact` matchers pin the values the shape pins. An
+entry pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
+`/docker-entrypoint.sh nginx`) with mounts or env `any`, or with args `any`
+outside a sidecar invocation, covers nothing: `c8s allowlist lint` refuses that shape.
 
 `c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived
 image digest outside `c8s.argvPinnedDigests`, with that digest's
-`c8s.componentShapes` containers and `env: any`, followed by
+`c8s.componentShapes` containers, followed by
 `c8s.argvPinnedEntries`, the [router entry](#router-entry) and
 `bootstrapAllowlist.workloads`. The volumed entry
 also carries the pre-delete teardown hook's script and pause. A
@@ -113,11 +117,25 @@ allowlist container:
   `emptyDir`s and project their ConfigMaps, which puts them on tmpfs. A `subPath`, an unclean path or another volume source
   fails the render. A hostPath under `/var/run` yields a second container with
   the source under `/run`, the path containerd resolves it to on most nodes.
+- `env` is `match` over every variable the container launches with
+  (`c8s.componentEnv`), so a pod cannot add a loader variable such as
+  `LD_PRELOAD` or `BASH_ENV`, nor move `PATH`: containerd's `HOSTNAME`
+  (`present`), the image config's `Env` from the component's `imageEnv`
+  (`exact`, with containerd's default `PATH` when it sets none), the kubelet's
+  `KUBERNETES_*` variables for the API server's Service (`c8s.runtimeEnv`),
+  then the container's `env`: a constant `exact`, a `valueFrom` `present`.
+  `envFrom`, an optional key reference or a `$(NAME)` reference in a value
+  fails the render, since the names or values would depend on objects the
+  chart does not render. Every component pod sets `enableServiceLinks: false`,
+  so no per-Service variables join the set.
 
 `c8s.injectedShapes` adds the sidecars the webhook injects to the C8s image's
 entry: `get-cert`, `probe-file`, `get-secret` and `get-volume`, each pinned to
-its invocation with `args: any`, and one container per combination of the
-optional discovery, reload-watch and inventory-socket mounts. The
+its invocation with `args: any`, its env matched as above over the variables
+the webhook's `getCertEnv` sets (`present`, since they differ per pod; none
+for `probe-file`), and one container per combination of the optional
+discovery, reload-watch and inventory-socket mounts. The webhook turns service
+links off in every pod it injects into. The
 destinations match the webhook's fixed ones (`internal/webhook`); the socket
 rule's source is `nriImagePolicy.hostPaths.runtimeDir` verbatim, since the NRI
 plugin adds that mount without symlink resolution.
@@ -126,7 +144,8 @@ plugin adds that mount without symlink resolution.
 have a rendered container, or the render fails.
 [component_mounts_test.go](../../../component_mounts_test.go) checks that the
 seed and the base admit every rendered component container exactly as
-rendered, and refuse it with one argument or mount more or one mount fewer, for
+rendered, with the environment it launches with, and refuse it with one
+argument or mount more, one mount fewer, `LD_PRELOAD` set or `PATH` moved, for
 default, gke, bare-metal and baked renders.
 
 ## Argv-pinned entries
@@ -172,8 +191,8 @@ The router pod's non-injected containers span two images, so no single-image
 entry matches it. `c8s.routerEntry` returns the entry that does, which the
 seed names `c8s.routerWorkloadName`. It renders `router.podSpec` and pins each
 nginx and c8s-image container through `c8s.podShapes`, exactly as the
-component entries pin them: command, args and mount table as rendered, `env:
-any`.
+component entries pin them: command, args and mount table as rendered, env
+matched.
 
 | Container | Declared as |
 |---|---|

@@ -58,8 +58,8 @@
   runs a digest-pinned C8s component's executable in must be admitted by a
   bootstrapAllowlist.workloads entry that reaches the base: one with open
   args, env and mounts under any command (c8s.openArgsEntries), or one for
-  the component's digest that pins them to what the chart renders
-  (c8s.pinnedComponentEntries); otherwise the NRI
+  the component's digest that pins them to what the chart renders and
+  matches the env it launches with (c8s.pinnedComponentEntries); otherwise the NRI
   plugin would deny that component's pod on its own node. cds.image is exempt:
   it is always in the base via the seed self-entry, independent of
   derivation. argvPinned components are exempt too: the chart seeds them
@@ -70,11 +70,16 @@
 */ -}}
 {{- if and .Values.nriImagePolicy.enabled (eq .Values.nriImagePolicy.policy.mode "fail-closed") (not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents) -}}
 {{- $pins := dict -}}
+{{- $envs := dict -}}
 {{- $names := dict -}}
 {{- range $c := (include "c8s.components" . | fromJsonArray) -}}
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "cdsExempt")) (not (get $c "argvPinned")) (get $img "digest") -}}
+{{- if not (hasKey $c "imageEnv") -}}
+{{- fail (printf "c8sComponents entry %s has no imageEnv: the coverage guard must know the environment the component launches with" (get $c "name")) -}}
+{{- end -}}
 {{- $_ := set $pins (get $img "digest") (get $c "entrypoint") -}}
+{{- $_ := set $envs (get $img "digest") (get $c "imageEnv") -}}
 {{- $_ := set $names (get $img "digest") (get $c "name") -}}
 {{- end -}}
 {{- end -}}
@@ -84,8 +89,8 @@
 {{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
 {{- $command := dig "command" "policy" "" $c -}}
 {{- $argv := dig "command" "argv" list $c -}}
-{{- /* An entry pinned to a component executable with open mounts, or open
-       args outside a webhook-injected sidecar, is one allowlist lint
+{{- /* An entry pinned to a component executable with open mounts or env,
+       or open args outside a webhook-injected sidecar, is one allowlist lint
        refuses (componentInvocations; nginx is not a guarded component): it
        lets the pod point the component at other code. */ -}}
 {{- $binary := false -}}
@@ -95,7 +100,7 @@
 {{- end -}}
 {{- end -}}
 {{- $sidecar := and (eq (len $argv) 2) (eq (first $argv) "/c8s") (has (index $argv 1) (list "get-cert" "get-secret" "get-volume" "probe-file")) -}}
-{{- $open := or (eq (dig "mounts" "policy" "deny" $c) "any") (and (eq (dig "args" "policy" "deny" $c) "any") (not $sidecar)) -}}
+{{- $open := or (eq (dig "mounts" "policy" "deny" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (and (eq (dig "args" "policy" "deny" $c) "any") (not $sidecar)) -}}
 {{- if and (has $command (list "any" "exact")) (not (and $binary $open)) -}}{{- $operator = append $operator $c -}}{{- end -}}
 {{- end -}}
 {{- end -}}
@@ -107,11 +112,11 @@
 {{- $argvs := dict -}}
 {{- $shapes := list -}}
 {{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
-{{- $shapes = concat $shapes (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "refs" dict) | fromJsonArray) -}}
+{{- $shapes = concat $shapes (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "envs" $envs "refs" dict) | fromJsonArray) -}}
 {{- end -}}
 {{- with .Values.image.digest -}}
 {{- if hasKey $pins . -}}
-{{- $shapes = concat $shapes (include "c8s.injectedShapes" (dict "root" $ "digest" . "image" "") | fromJsonArray) -}}
+{{- $shapes = concat $shapes (include "c8s.injectedShapes" (dict "root" $ "digest" . "image" "" "imageEnv" (get $envs .)) | fromJsonArray) -}}
 {{- end -}}
 {{- end -}}
 {{- range $shape := $shapes -}}
@@ -135,7 +140,7 @@
 {{- range $key, $ok := $covered -}}
 {{- if not $ok -}}
 {{- $digest := get (fromJson $key) "digest" -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts and open env. The plugin would deny it on its own node. Copy the chart's own entry for the digest (a deriveComponents=true render seeds it with command, args and mounts pinned as the chart renders them), set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson)) -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts and env. The plugin would deny it on its own node. Copy the chart's own entry for the digest (a deriveComponents=true render seeds it with command, args and mounts pinned and env matched as the chart renders them), set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -19,7 +19,9 @@
    gate a no-op, deriving even disabled components that carry a digest. */ -}}
 {{- $enabled := true -}}
 {{- if $c.enabledPath -}}{{- $enabled = eq (include "c8s.valueAtPath" (dict "root" $root.Values "path" $c.enabledPath)) "true" -}}{{- end -}}
-{{- $out = append $out (dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list)) -}}
+{{- $component := dict "name" $c.valuePath "image" $img "enabled" $enabled "cdsExempt" $c.cdsExempt "argvPinned" (get $c "argvPinned" | default false) "entrypoint" (get $c "entrypoint" | default list) -}}
+{{- if hasKey $c "imageEnv" -}}{{- $_ := set $component "imageEnv" (get $c "imageEnv" | default dict) -}}{{- end -}}
+{{- $out = append $out $component -}}
 {{- end -}}
 {{ $out | toJson }}
 {{- end -}}
@@ -35,10 +37,11 @@
 {{- end -}}
 
 {{/* The chart-deployed system images the seed and the plugin base admit, as
-     digest -> {image, entrypoint}. Each container that runs one is pinned to
-     its exact argv and mount table (c8s.componentShapes); the entrypoint is
-     the command prefix of a container that runs the image's own. A derived
-     component without an entrypoint fails the render. */ -}}
+     digest -> {image, entrypoint, imageEnv}. Each container that runs one is
+     pinned to its exact argv and mount table and matched on its env
+     (c8s.componentShapes); the entrypoint is the command prefix of a
+     container that runs the image's own, and imageEnv the image config's
+     Env. A derived component without either fails the render. */ -}}
 {{- define "c8s.imageAllowlist" -}}
 {{- $digests := dict -}}
 {{- $components := include "c8s.components" . | fromJsonArray -}}
@@ -49,20 +52,26 @@
 {{- if not (get $c "entrypoint") -}}
 {{- fail (printf "c8sComponents entry %s has no entrypoint: the derived allowlist entry must pin the image's executable" (get $c "name")) -}}
 {{- end -}}
-{{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint")) -}}
+{{- if not (hasKey $c "imageEnv") -}}
+{{- fail (printf "c8sComponents entry %s has no imageEnv: the derived allowlist entry must match the image's environment" (get $c "name")) -}}
+{{- end -}}
+{{- $_ := set $digests (get $img "digest") (dict "image" (printf "%s@%s" (get $img "repository") (get $img "digest")) "entrypoint" (get $c "entrypoint") "imageEnv" (get $c "imageEnv")) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $cdsImg := .Values.cds.image -}}
 {{- if $cdsImg.digest -}}
-{{- $cdsEntrypoint := list -}}
+{{- $cds := dict -}}
 {{- range $c := $components -}}
-{{- if eq (get $c "name") "cds.image" -}}{{- $cdsEntrypoint = get $c "entrypoint" -}}{{- end -}}
+{{- if eq (get $c "name") "cds.image" -}}{{- $cds = $c -}}{{- end -}}
 {{- end -}}
-{{- if not $cdsEntrypoint -}}
+{{- if not (get $cds "entrypoint") -}}
 {{- fail "c8sComponents entry cds.image has no entrypoint: the CDS self-entry must pin the image's executable" -}}
 {{- end -}}
-{{- $_ := set $digests $cdsImg.digest (dict "image" (printf "%s@%s" $cdsImg.repository $cdsImg.digest) "entrypoint" $cdsEntrypoint) -}}
+{{- if not (hasKey $cds "imageEnv") -}}
+{{- fail "c8sComponents entry cds.image has no imageEnv: the CDS self-entry must match the image's environment" -}}
+{{- end -}}
+{{- $_ := set $digests $cdsImg.digest (dict "image" (printf "%s@%s" $cdsImg.repository $cdsImg.digest) "entrypoint" (get $cds "entrypoint") "imageEnv" (get $cds "imageEnv")) -}}
 {{- end -}}
 {{- /* router nginx self-entry: a chart-deployed non-c8s system image. It is
        independently versioned and digest-pinned, so it is not in the
@@ -77,7 +86,10 @@
 {{- if not .Values.router.nginx.entrypoint -}}
 {{- fail "router.nginx.entrypoint is required: the nginx self-entry must pin the image's executable" -}}
 {{- end -}}
-{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint) -}}
+{{- if not (hasKey .Values.router.nginx "imageEnv") -}}
+{{- fail "router.nginx.imageEnv is required: the nginx self-entry must match the image's environment" -}}
+{{- end -}}
+{{- $_ := set $digests $lbImg.digest (dict "image" (printf "%s@%s" $lbImg.repository $lbImg.digest) "entrypoint" .Values.router.nginx.entrypoint "imageEnv" (.Values.router.nginx.imageEnv | default dict)) -}}
 {{- end -}}
 {{- end -}}
 {{ $digests | toJson }}
@@ -108,8 +120,10 @@
 
 {{/* The allowlist containers for one pod's containers whose image is a
      component digest: command, args and mounts exactly as the pod spec gives
-     them. Takes name, spec, pins (digest -> entrypoint) and refs (digest ->
-     image reference). See ../helpers/allowlist/README.md#component-shapes. */ -}}
+     them, and env matched over the names the container launches with
+     (c8s.componentEnv). Takes name, spec, pins (digest -> entrypoint), envs
+     (digest -> imageEnv) and refs (digest -> image reference). See
+     ../helpers/allowlist/README.md#component-shapes. */ -}}
 {{- define "c8s.podShapes" -}}
 {{- $pod := .name -}}
 {{- $volumes := dict -}}
@@ -139,10 +153,11 @@
 {{- $argsPolicy := dict "policy" "deny" -}}
 {{- if $rest -}}{{- $argsPolicy = dict "policy" "exact" "argv" $rest -}}{{- end -}}
 {{- $mounts := include "c8s.mountRules" (dict "mounts" (default list $c.volumeMounts) "volumes" $volumes "where" $where) | fromJsonArray -}}
+{{- $env := include "c8s.componentEnv" (dict "imageEnv" (get $.envs $digest) "container" $c "where" $where) | fromJson -}}
 {{- range $rules := $mounts -}}
 {{- $mountPolicy := dict "policy" "deny" -}}
 {{- if $rules -}}{{- $mountPolicy = dict "policy" "exact" "rules" $rules -}}{{- end -}}
-{{- $shape := dict "digest" $digest "image" (get $.refs $digest) "command" $commandPolicy "args" $argsPolicy "mounts" $mountPolicy -}}
+{{- $shape := dict "digest" $digest "image" (get $.refs $digest) "command" $commandPolicy "args" $argsPolicy "mounts" $mountPolicy "env" $env -}}
 {{- if not (has $shape $out) -}}{{- $out = append $out $shape -}}{{- end -}}
 {{- end -}}
 {{- end -}}
@@ -168,6 +183,63 @@
 {{- $out = append $out (regexReplaceAll `\$(\$)` $token "${1}") -}}
 {{- end -}}
 {{ $out | toJson }}
+{{- end -}}
+
+{{/* The variables the runtime adds to every component container beside the
+     image's and the pod spec's. containerd's CRI plugin adds HOSTNAME
+     (internal/cri/server/container_create.go, containerd v2.1). With service
+     links off, the kubelet adds only the variables of the default
+     namespace's kubernetes Service (getServiceEnvVarMap in
+     pkg/kubelet/kubelet_pods.go and FromServices in pkg/kubelet/envvars),
+     whose port kube-apiserver fixes at 443 (APIServerServicePort in
+     cmd/kube-apiserver/app). */ -}}
+{{- define "c8s.runtimeEnv" -}}
+{{- $present := dict "present" true -}}
+{{- $port := dict "exact" "443" -}}
+{{- $variables := dict "HOSTNAME" $present "KUBERNETES_SERVICE_HOST" $present "KUBERNETES_SERVICE_PORT" $port "KUBERNETES_SERVICE_PORT_HTTPS" $port -}}
+{{- $_ := set $variables "KUBERNETES_PORT" $present -}}
+{{- $_ := set $variables "KUBERNETES_PORT_443_TCP" $present -}}
+{{- $_ := set $variables "KUBERNETES_PORT_443_TCP_ADDR" $present -}}
+{{- $_ := set $variables "KUBERNETES_PORT_443_TCP_PORT" $port -}}
+{{- $_ := set $variables "KUBERNETES_PORT_443_TCP_PROTO" (dict "exact" "tcp") -}}
+{{ $variables | toJson }}
+{{- end -}}
+
+{{/* The env match for one component container: every variable it launches
+     with, each source overriding the one before as the runtime applies them:
+     containerd's HOSTNAME, the image's variables (imageEnv, pinned exact),
+     the kubelet's, then the container's env (container_create.go in
+     containerd's CRI plugin, makeEnvironmentVariables in
+     pkg/kubelet/kubelet_pods.go). containerd sets a default PATH when the
+     image sets none (oci.WithDefaultPathEnv). A constant value is pinned
+     exact and a valueFrom is matched present. envFrom, an optional reference
+     and a $(NAME) reference fail the render: the names or values would
+     depend on objects the chart does not render. Loader variables are never
+     listed, so match refuses them. Takes imageEnv, container and where. */ -}}
+{{- define "c8s.componentEnv" -}}
+{{- $runtime := include "c8s.runtimeEnv" . | fromJson -}}
+{{- $variables := dict "HOSTNAME" (get $runtime "HOSTNAME") -}}
+{{- if not (hasKey .imageEnv "PATH") -}}
+{{- $_ := set $variables "PATH" (dict "exact" "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin") -}}
+{{- end -}}
+{{- range $name, $value := .imageEnv -}}{{- $_ := set $variables $name (dict "exact" (toString $value)) -}}{{- end -}}
+{{- range $name, $matcher := omit $runtime "HOSTNAME" -}}{{- $_ := set $variables $name $matcher -}}{{- end -}}
+{{- if .container.envFrom -}}
+{{- fail (printf "%s sets envFrom: the allowlist matches env by name, so list each variable under env" .where) -}}
+{{- end -}}
+{{- range $e := (default list .container.env) -}}
+{{- $where := printf "%s env %s" $.where $e.name -}}
+{{- if $e.valueFrom -}}
+{{- if or (dig "secretKeyRef" "optional" false $e.valueFrom) (dig "configMapKeyRef" "optional" false $e.valueFrom) -}}
+{{- fail (printf "%s is optional: the allowlist matches env by name, so the variable must always be set" $where) -}}
+{{- end -}}
+{{- $_ := set $variables $e.name (dict "present" true) -}}
+{{- else -}}
+{{- $value := include "c8s.kubeletExpand" (dict "argv" (list (toString (default "" $e.value))) "where" $where) | fromJsonArray | first -}}
+{{- $_ := set $variables $e.name (dict "exact" $value) -}}
+{{- end -}}
+{{- end -}}
+{{ dict "policy" "match" "variables" $variables | toJson }}
 {{- end -}}
 
 {{/* The exact mount rules for one container, as a JSON list of rule lists:
@@ -223,10 +295,12 @@
 
 {{/* The shapes of the sidecars the webhook injects with the C8s image
      (internal/webhook): each pinned to its invocation with args open, since
-     the SAN and file paths are per pod, and to a fixed mount table. The
-     discovery, reload-watch and inventory socket mounts are optional, so each
-     combination is its own shape. The destinations match the webhook's
-     defaults, which pods can no longer move. */ -}}
+     the SAN and file paths are per pod, to a fixed mount table, and to the
+     env names getCertEnv gives it, matched present since they differ per
+     pod. The discovery, reload-watch and inventory socket mounts are
+     optional, so each combination is its own shape. The destinations match
+     the webhook's defaults, which pods can no longer move. Takes root, digest,
+     image and imageEnv. */ -}}
 {{- define "c8s.injectedShapes" -}}
 {{- $certs := dict "destination" "/etc/c8s/certs" "kind" "emptyDir" -}}
 {{- $discovery := dict "destination" "/run/c8s/discovery" "kind" "emptyDir" -}}
@@ -235,11 +309,15 @@
 {{- /* An NRI mount, so containerd does not resolve the source: it is the
        plugin's configured socket directory verbatim. */ -}}
 {{- $socket := dict "destination" "/run/c8s/workload-claims" "kind" "host" "source" (toString .root.Values.nriImagePolicy.hostPaths.runtimeDir) "readOnly" true -}}
+{{- $podEnv := list -}}
+{{- range $name := list "C8S_WORKLOAD_ID" "C8S_POD_NAME" "C8S_POD_UID" "HOST_IP" -}}
+{{- $podEnv = append $podEnv (dict "name" $name "valueFrom" (dict "fieldRef" dict)) -}}
+{{- end -}}
 {{- $sidecars := list
-      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload $socket))
-      (dict "mode" "probe-file" "fixed" (list $certs) "optional" (list $discovery))
-      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery $socket))
-      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery $socket)) -}}
+      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload $socket) "env" $podEnv)
+      (dict "mode" "probe-file" "fixed" (list $certs) "optional" (list $discovery) "env" list)
+      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery $socket) "env" $podEnv)
+      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery $socket) "env" $podEnv) -}}
 {{- $out := list -}}
 {{- range $s := $sidecars -}}
 {{- $tables := list (get $s "fixed") -}}
@@ -248,8 +326,9 @@
 {{- range $t := $tables -}}{{- $grown = append (append $grown $t) (append $t $m) -}}{{- end -}}
 {{- $tables = $grown -}}
 {{- end -}}
+{{- $env := include "c8s.componentEnv" (dict "imageEnv" $.imageEnv "container" (dict "env" (get $s "env")) "where" (printf "injected %s" (get $s "mode"))) | fromJson -}}
 {{- range $t := $tables -}}
-{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" (list "/c8s" (get $s "mode"))) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t)) -}}
+{{- $out = append $out (dict "digest" $.digest "image" $.image "command" (dict "policy" "exact" "argv" (list "/c8s" (get $s "mode"))) "args" (dict "policy" "any") "mounts" (dict "policy" "exact" "rules" $t) "env" $env) -}}
 {{- end -}}
 {{- end -}}
 {{ $out | toJson }}
@@ -262,21 +341,23 @@
 {{- define "c8s.componentShapes" -}}
 {{- $components := include "c8s.imageAllowlist" . | fromJson -}}
 {{- $pins := dict -}}
+{{- $envs := dict -}}
 {{- $refs := dict -}}
 {{- range $digest, $entry := $components -}}
 {{- $_ := set $pins $digest (get $entry "entrypoint") -}}
+{{- $_ := set $envs $digest (get $entry "imageEnv") -}}
 {{- $_ := set $refs $digest (get $entry "image") -}}
 {{- end -}}
 {{- $shapes := dict -}}
 {{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
-{{- range $c := (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "refs" $refs) | fromJsonArray) -}}
+{{- range $c := (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "envs" $envs "refs" $refs) | fromJsonArray) -}}
 {{- $list := get $shapes (get $c "digest") | default list -}}
 {{- if not (has $c $list) -}}{{- $_ := set $shapes (get $c "digest") (append $list $c) -}}{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- $operator := default "" .Values.image.digest -}}
 {{- if hasKey $components $operator -}}
-{{- $injected := include "c8s.injectedShapes" (dict "root" . "digest" $operator "image" (get $refs $operator)) | fromJsonArray -}}
+{{- $injected := include "c8s.injectedShapes" (dict "root" . "digest" $operator "image" (get $refs $operator) "imageEnv" (get $envs $operator)) | fromJsonArray -}}
 {{- $_ := set $shapes $operator (concat (get $shapes $operator | default list) $injected) -}}
 {{- end -}}
 {{- $out := dict -}}
@@ -292,8 +373,9 @@
 {{/* "true" when an operator-written container admits a component shape:
      its command any or a prefix of the shape's argv, its args admitting the
      rest (any for a shape whose args are open), its mounts any or the shape's
-     rule set, and its env any: the chart cannot know every variable the image
-     and the runtime add. Feeds the coverage guard (validations.yaml). */ -}}
+     rule set, and its env any or a match over the shape's names whose exact
+     matchers pin the values the shape pins. Feeds the coverage guard
+     (validations.yaml). */ -}}
 {{- define "c8s.admitsShape" -}}
 {{- $c := .container -}}
 {{- $shape := .shape -}}
@@ -329,7 +411,18 @@
 {{- range $r := (dig "mounts" "rules" list $c) -}}{{- $_ := set $have (toString $r.destination) (list (toString $r.kind) (default "" $r.source) (toString (default false $r.readOnly))) -}}{{- end -}}
 {{- if or (not (has $mounts (list "exact" "deny"))) (ne ($want | toJson) ($have | toJson)) -}}{{- $ok = false -}}{{- end -}}
 {{- end -}}
-{{- if ne (dig "env" "policy" "any" $c) "any" -}}{{- $ok = false -}}{{- end -}}
+{{- $env := dig "env" "policy" "any" $c -}}
+{{- if eq $env "match" -}}
+{{- $want := dig "env" "variables" dict $shape -}}
+{{- $have := dig "env" "variables" dict $c -}}
+{{- if ne (keys $want | sortAlpha | toJson) (keys $have | sortAlpha | toJson) -}}{{- $ok = false -}}{{- end -}}
+{{- range $name, $m := $have -}}
+{{- if and (hasKey $m "exact") (ne (toString (get $m "exact")) (toString (dig $name "exact" "" $want))) -}}{{- $ok = false -}}{{- end -}}
+{{- if and (hasKey $m "exact") (not (hasKey (get $want $name | default dict) "exact")) -}}{{- $ok = false -}}{{- end -}}
+{{- end -}}
+{{- else if ne $env "any" -}}
+{{- $ok = false -}}
+{{- end -}}
 {{- if $ok -}}true{{- end -}}
 {{- end -}}
 
@@ -403,48 +496,45 @@
 {{ $digests | toJson }}
 {{- end -}}
 
-{{/* The plugin boot base, as allowlist workloads keyed by entry name
-     (c8s.shapeWorkloadName for a component, else c8s.digestWorkloadName):
-     the chart's component shapes (c8s.componentShapes), every digest an
+{{/* The plugin boot base, as allowlist workloads keyed by entry name: the
+     chart's component shapes (c8s.componentShapes) under
+     c8s.shapeWorkloadName, and, under c8s.digestWorkloadName, every digest an
      operator entry admits with open args (c8s.openArgsEntries) under the
-     command that entry pins or under any, and the operator's own entries for
-     a component digest (c8s.pinnedComponentEntries). The boot config
-     excludes argv-pinned images, which are admitted by the served seed. */ -}}
+     command that entry pins or under any, with the operator's own entries for
+     a component digest (c8s.pinnedComponentEntries). Admission is the union
+     across entries, so keeping the operator's containers apart from the
+     chart's admits the same launches and leaves each entry's per-variable
+     evidence budget to its own containers. The boot config excludes
+     argv-pinned images, which are admitted by the served seed. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $workloads := dict -}}
 {{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
-{{- $openArgs := include "c8s.openArgsEntries" . | fromJson -}}
-{{- $operatorPins := include "c8s.pinnedComponentEntries" . | fromJson -}}
-{{- $components := include "c8s.componentShapes" . | fromJson -}}
+{{- $excluded := list -}}
+{{- range $d := $pinnedDigests -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
+{{- range $digest, $entry := (include "c8s.componentShapes" . | fromJson) -}}
+{{- if not (has (lower $digest) $excluded) -}}
+{{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" (get $entry "containers")) -}}
+{{- $_ := set $workloads $name (dict "label" (get $entry "image") "initContainers" list "containers" (get $entry "containers")) -}}
+{{- end -}}
+{{- end -}}
 {{- /* Keyed by the lowercased digest, as the entry name is: two spellings of
        one digest are one entry. */ -}}
 {{- $images := dict -}}
 {{- $containers := dict -}}
-{{- $shapeNames := dict -}}
-{{- range $digest, $entry := $components -}}
-{{- $_ := set $images (lower $digest) (get $entry "image") -}}
-{{- $_ := set $containers (lower $digest) (get $entry "containers") -}}
-{{- $seed := include "c8s.seedContainers" (get $entry "containers") | fromJsonArray -}}
-{{- $_ := set $shapeNames (lower $digest) (include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" $seed)) -}}
-{{- end -}}
-{{- range $digest, $entry := $openArgs -}}
+{{- range $digest, $entry := (include "c8s.openArgsEntries" . | fromJson) -}}
 {{- $key := lower $digest -}}
 {{- if not (hasKey $images $key) -}}{{- $_ := set $images $key (get $entry "image") -}}{{- end -}}
 {{- $container := include "c8s.openArgsContainer" (dict "digest" $digest "entry" $entry) | fromJson -}}
 {{- $_ := set $containers $key (append (get $containers $key | default list) $container) -}}
 {{- end -}}
-{{- range $digest, $list := $operatorPins -}}
+{{- range $digest, $list := (include "c8s.pinnedComponentEntries" . | fromJson) -}}
 {{- if not (hasKey $images $digest) -}}{{- $_ := set $images $digest (default "" (get (first $list) "image")) -}}{{- end -}}
 {{- $_ := set $containers $digest (concat (get $containers $digest | default list) $list) -}}
 {{- end -}}
-{{- $excluded := list -}}
-{{- range $d := $pinnedDigests -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
 {{- range $digest, $list := $containers -}}
 {{- if not (has $digest $excluded) -}}
 {{- $image := get $images $digest -}}
-{{- $name := include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image) -}}
-{{- with get $shapeNames $digest -}}{{- $name = . -}}{{- end -}}
-{{- $_ := set $workloads $name (dict "label" $image "initContainers" list "containers" $list) -}}
+{{- $_ := set $workloads (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image)) (dict "label" $image "initContainers" list "containers" $list) -}}
 {{- end -}}
 {{- end -}}
 {{ $workloads | toJson }}
@@ -485,17 +575,8 @@
 {{- define "c8s.cdsShapeName" -}}
 {{- $digest := .Values.cds.image.digest -}}
 {{- with get (include "c8s.componentShapes" . | fromJson) (default "" $digest) -}}
-{{- include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get . "image") "containers" (include "c8s.seedContainers" (get . "containers") | fromJsonArray)) -}}
+{{- include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get . "image") "containers" (get . "containers")) -}}
 {{- end -}}
-{{- end -}}
-
-{{/* The seed form of a component's containers: the shape with env any. */ -}}
-{{- define "c8s.seedContainers" -}}
-{{- $containers := list -}}
-{{- range $c := . -}}
-{{- $containers = append $containers (merge (dict "env" (dict "policy" "any")) $c) -}}
-{{- end -}}
-{{ $containers | toJson }}
 {{- end -}}
 
 {{/* See ../helpers/allowlist/README.md#argv-pinned-entries for the seed contract. */}}
@@ -592,7 +673,7 @@
 {{- end -}}
 
 {{- /* Every container of router.podSpec whose image is nginx or the c8s
-       image, pinned as c8s.podShapes pins a component's, with env any. A main
+       image, pinned and env-matched as c8s.podShapes pins a component's. A main
        container whose hostPath source sits under /var/run has two layouts
        (c8s.mountRules). It stays a required main in the layout containerd
        produces where /var/run is /run, and its other layout is an init
@@ -602,24 +683,22 @@
 {{- define "c8s.routerEntry" -}}
 {{- $components := include "c8s.imageAllowlist" . | fromJson -}}
 {{- $pins := dict -}}
+{{- $envs := dict -}}
 {{- $refs := dict -}}
 {{- range $digest := list .Values.router.nginx.image.digest .Values.image.digest -}}
 {{- with get $components $digest -}}
 {{- $_ := set $pins $digest (get . "entrypoint") -}}
+{{- $_ := set $envs $digest (get . "imageEnv") -}}
 {{- $_ := set $refs $digest (get . "image") -}}
 {{- end -}}
 {{- end -}}
 {{- $spec := include "router.podSpec" . | fromYaml -}}
 {{- $volumes := default list $spec.volumes -}}
-{{- $env := dict "env" (dict "policy" "any") -}}
 {{- $inits := list -}}
 {{- $mains := list -}}
 {{- range $init := list true false -}}
 {{- range $c := ternary (default list $spec.initContainers) (default list $spec.containers) $init -}}
-{{- $shapes := list -}}
-{{- range $shape := include "c8s.podShapes" (dict "name" "router" "spec" (dict "volumes" $volumes "containers" (list $c)) "pins" $pins "refs" $refs) | fromJsonArray -}}
-{{- $shapes = append $shapes (merge (deepCopy $env) $shape) -}}
-{{- end -}}
+{{- $shapes := include "c8s.podShapes" (dict "name" "router" "spec" (dict "volumes" $volumes "containers" (list $c)) "pins" $pins "envs" $envs "refs" $refs) | fromJsonArray -}}
 {{- if $init -}}
 {{- $inits = concat $inits $shapes -}}
 {{- else if $shapes -}}
@@ -661,7 +740,7 @@
 {{- range $digest, $entry := (include "c8s.componentShapes" . | fromJson) -}}
 {{- if not (has $digest $pinnedDigests) -}}
 {{- $image := get $entry "image" -}}
-{{- $containers := include "c8s.seedContainers" (get $entry "containers") | fromJsonArray -}}
+{{- $containers := get $entry "containers" -}}
 {{- if not (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image))) -}}
 {{- $_ := set $workloads (include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $image "containers" $containers)) (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}

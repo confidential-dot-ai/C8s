@@ -472,6 +472,7 @@
           "properties": {
             "entrypoint": {},
             "httpsPort": {},
+            "imageEnv": {},
             "image": {
               "type": [
                 "object",
