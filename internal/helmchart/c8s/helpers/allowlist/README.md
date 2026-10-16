@@ -115,8 +115,8 @@ allowlist container:
   under `/mnt/c8s-data/`. The node admits an `emptyDir` or `data` mount only on
   memory or encrypted storage, so the component templates use memory
   `emptyDir`s and project their ConfigMaps, which puts them on tmpfs. A `subPath`, an unclean path or another volume source
-  fails the render. A hostPath under `/var/run` yields a second container with
-  the source under `/run`, the path containerd resolves it to on most nodes.
+  fails the render, as does a hostPath under `/var/run`: containerd resolves
+  symlinks in the source, and `/var/run` is `/run` on some nodes only.
 - `env` is `match` over every variable the container launches with
   (`c8s.componentEnv`), so a pod cannot add a loader variable such as
   `LD_PRELOAD` or `BASH_ENV`, nor move `PATH`: containerd's `HOSTNAME`
@@ -200,13 +200,7 @@ matched.
 | allowlist-proxy, when `router.renderAllowlistRoute` | main |
 | acme, `c8s-cert`, `c8s-cert-wait` | init |
 
-A declared init container is admitted but not required. A main container with
-a hostPath source under `/var/run` has two mount tables (see
-`c8s.mountRules`), and a node produces only one. It stays a required main in
-the table containerd produces where `/var/run` is `/run`; its other table is
-declared as an init container. Where `/var/run` is its own directory the main
-is missing and the router pod matches nothing, rather than a partial pod
-matching. The router's own `c8s-cert` and `c8s-cert-wait`
+A declared init container is admitted but not required. The router's own `c8s-cert` and `c8s-cert-wait`
 are pinned to their exact args, so they are not dropped as injected
 containers (`allowlist.AdmitsInjected` takes open args) and the entry declares
 them.

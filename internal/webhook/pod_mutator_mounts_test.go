@@ -18,7 +18,7 @@ import (
 
 const (
 	chartOperatorDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	chartRuntimeDir     = "/var/run/nri-image-policy"
+	chartRuntimeDir     = "/run/nri-image-policy"
 )
 
 // chartSeed renders the chart with the operator image derived and returns the

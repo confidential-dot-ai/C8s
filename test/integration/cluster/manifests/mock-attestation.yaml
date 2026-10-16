@@ -57,5 +57,5 @@ spec:
       volumes:
         - name: runtime-dir
           hostPath:
-            path: /var/run/nri-image-policy
+            path: /run/nri-image-policy
             type: DirectoryOrCreate
