@@ -143,7 +143,7 @@ func (v peerVerifier) tlsConfig(cert tls.Certificate) *tls.Config {
 		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{cert},
 		ClientAuth:         tls.RequireAnyClientCert,
-		InsecureSkipVerify: true, // INVARIANT: VerifyConnection below is the check
+		InsecureSkipVerify: true, //nolint:gosec // attestation, not PKI, authenticates the peer: VerifyConnection below is the check
 		VerifyConnection:   v.verifyConn,
 	}
 }

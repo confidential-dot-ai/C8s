@@ -7,10 +7,11 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
-	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/google/go-tdx-guest/client"
 	"github.com/google/go-tdx-guest/verify/trust"
+
+	"github.com/confidential-dot-ai/attestation-go/attestation/tdx"
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 )
 
 // TDXAttestor produces evidence from the TD's own DCAP quote (configfs-tsm)

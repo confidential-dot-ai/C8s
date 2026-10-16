@@ -122,7 +122,7 @@ func verifyDecree(sd SignedDecree, tail Record) error {
 	case d.Kind == UpdateMeasurements && len(d.Measurements) == 0:
 		return errors.New("empty measurement set") // D8
 	case d.Kind == Genesis && (len(tail.RootCert) != 0 || len(d.Measurements) != 0):
-		return errors.New("Genesis applies only to a cluster without a key, and carries no measurements")
+		return errors.New("a Genesis decree applies only to a cluster without a key, and carries no measurements")
 	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis:
 		return fmt.Errorf("unknown kind %q", d.Kind)
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):

@@ -1,5 +1,3 @@
-//go:build c8s_dev
-
 package cdsha
 
 import (
@@ -45,7 +43,6 @@ type testCl struct {
 	nodes map[int]*node // index -> running replica on 127.0.0.<index+2>
 	all   []int
 	ever  []*Replica // every replica started, for mint counting
-	gen   int
 }
 
 // rvClient is a fake clientset that enforces resourceVersion preconditions
@@ -156,7 +153,7 @@ func (c *testCl) startPeers(i int, clusterID, measurement string, kube kubernete
 		Identity:       fmt.Sprintf("replica-%d", i),
 		ListenAddr:     self,
 		Peers:          peers,
-		Attestor:       MockAttestor{Measurement: measurement},
+		Attestor:       testAttestor{measurement: measurement},
 		BakedPins:      baked,
 		OperatorPubKey: c.op,
 		Kube:           kube,

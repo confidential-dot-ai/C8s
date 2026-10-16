@@ -40,7 +40,7 @@ var DefaultTiming = Timing{Heartbeat: 2 * time.Second, LeaseDuration: 15 * time.
 
 // Validate enforces P1.
 func (t Timing) Validate() error {
-	if !(0 < t.Heartbeat && t.Heartbeat < t.LeaseDuration) || t.AckTimeout <= 0 {
+	if t.Heartbeat <= 0 || t.Heartbeat >= t.LeaseDuration || t.AckTimeout <= 0 {
 		return errors.New("timing must satisfy 0 < heartbeat < lease_duration and ack_timeout > 0 (P1)")
 	}
 	// The Lease stores whole seconds; a fractional duration is truncated and
@@ -79,22 +79,21 @@ type Replica struct {
 	verifier    peerVerifier
 	client      peerClient
 
-	mu            sync.Mutex
-	state         State
-	ca            *issuer.CA
-	serving       bool
-	retired       bool              // own measurement left the pin set (Q3 interim)
-	behindOf      uint64            // a verified epoch we saw but hold no key for; 0 = none
-	peerErrs      map[string]string // last problem logged per peer (notePeer)
-	lastContact   time.Time
-	hiTerm        uint64 // L6, W5
-	lastPeerCount int
-	writerTerm    uint64
-	isWriter      bool
-	eligible      bool // W1: may contend for the Lease
-	elector       *leaderelection.LeaderElector
-	stepDown      context.CancelFunc // releases the Lease
-	minted        int                // genesis count, for tests
+	mu          sync.Mutex
+	state       State
+	ca          *issuer.CA
+	serving     bool
+	retired     bool              // own measurement left the pin set (Q3 interim)
+	behindOf    uint64            // a verified epoch we saw but hold no key for; 0 = none
+	peerErrs    map[string]string // last problem logged per peer (notePeer)
+	lastContact time.Time
+	hiTerm      uint64 // L6, W5
+	writerTerm  uint64
+	isWriter    bool
+	eligible    bool // W1: may contend for the Lease
+	elector     *leaderelection.LeaderElector
+	stepDown    context.CancelFunc // releases the Lease
+	minted      int                // genesis count, for tests
 }
 
 // New validates cfg and builds a replica. Run starts it.
