@@ -71,7 +71,9 @@ this produces rather than recomputing digests and device mappings. Unlike
 install, the host distro is not autodetected — pass --distro to pin it, or leave
 it unset to keep the chart default. No preflight checks run and no namespace is
 applied. --operator-keys embeds the key file's PEM content as cds.operatorKeys
-(the chart value is the content itself, never a file path).
+(the chart value is the content itself, never a file path). The chart refuses
+to render without --operator-keys, a CDS pin, or
+router.routing.allowUnpinnedCDS=true in the consuming values.
 
 "No cluster" does not mean no network: by default each component tag is resolved
 to its registry digest via crane, which needs the registry reachable and local
