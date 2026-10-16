@@ -530,9 +530,10 @@ to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,
 since nothing is refused anyway. Node images before this release publish
 `node-ip` readable by root only; with `nriImagePolicy.baked=true` the pins
 installer makes it world-readable, and with the installer off the components
-need a node image that publishes it so. Three residuals stay open. `env` is still
-`any`, so `LD_PRELOAD` or a `PATH` lookup can still be pointed at a mounted
-file. `KUBECONFIG`, `HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
+need a node image that publishes it so. Two residuals stay open. `env` is
+matched by name (see [Bootstrap](#bootstrap)), so a pod can no longer add
+`LD_PRELOAD`, `BASH_ENV` or `NGINX_ENVSUBST_*`, or move `PATH`. `KUBECONFIG`,
+`HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
 and the mesh build their Kubernetes client from the in-cluster service
 account only, and the attestation-api clients ignore proxy variables. Off a node image, the router's
 `nginx.conf` is the content of a listed ConfigMap: a `load_module` directive in
@@ -718,7 +719,18 @@ digest>-<first 8 hex of the SHA-256 of its containers>`, the basename cut to
 derived from the same pod templates the workloads render, so the two cannot
 drift: `command` exact at the entrypoint (`c8sComponents[].entrypoint`,
 `router.nginx.entrypoint`) or the container's own command, `args` exact,
-`mounts` exact, `env` `any`. A hostPath under `/var/run` gets a second
+`mounts` exact, and `env` `match` over exactly the variables the container
+launches with: containerd's `HOSTNAME` (`present`), the image config's `Env`
+(`c8sComponents[].imageEnv`, `router.nginx.imageEnv`, pinned `exact`), the
+kubelet's `KUBERNETES_*` variables for the API server's Service, and the
+container's own `env` (a constant `exact`, a `valueFrom` `present`). Loader
+variables are never listed, so `match` refuses a pod that adds one. Component
+pods and the pods the webhook injects into set `enableServiceLinks: false`, so
+the set does not depend on the Services in the namespace; a workload that read
+service-link variables must resolve the Service by DNS. The chart refuses to
+render a component container with `envFrom` or an optional key reference. The
+injected sidecar shapes match the variables the webhook sets on them. A
+hostPath under `/var/run` gets a second
 container with the source under `/run`, because containerd resolves that
 symlink on most nodes. The chart refuses to render a component container whose
 argv references one of its own variables (`$(NAME)`): the value would differ
@@ -729,8 +741,15 @@ environment and mounts unconstrained, whether its command is `any` or pinned,
 and every operator entry for a component's digest whatever it pins; other
 operator entries are seed-only. `c8s allowlist lint` reports a container
 pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`, or
-`/docker-entrypoint.sh nginx`) with `args` or `mounts` `any` as an error; an
-injected sidecar shape may leave only its `args` open. With `deriveComponents`
+`/docker-entrypoint.sh nginx`) with `args`, `mounts` or `env` `any` as an
+error, which also blocks `upload` and `apply`; an injected sidecar shape may
+leave only its `args` open. CDS seeding retires a stored chart-generated entry
+that left a component's args, mounts or env open once the seed generates a
+replacement for its image, so an upgrade from a release that seeded `env: any`
+drops those entries. Because the seed now holds `match` policies, every
+allowlist consumer must understand them first
+([Environment policy](#environment-policy-env)): upgrade the node images
+before or with the chart. With `deriveComponents`
 off, such a container does not cover a component for the render guard. The
 name is a function of the digest and the policy because CDS seeds
 **additively by name**: an image bump, or a configuration change that alters

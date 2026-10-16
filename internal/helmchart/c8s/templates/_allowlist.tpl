@@ -562,7 +562,7 @@
      characters at most. A configuration change that alters
      an argv, env or mount table names a new entry, which CDS's seeding adds
      beside the old one (it retires an old one only when it left a
-     component's args or mounts open). See
+     component's args, mounts or env open). See
      ../helpers/allowlist/README.md#entry-names. */ -}}
 {{- define "c8s.shapeWorkloadName" -}}
 {{- $matched := list -}}
