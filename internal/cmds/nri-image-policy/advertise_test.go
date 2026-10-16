@@ -177,6 +177,25 @@ func TestNodeIPPublisherKeepsKubeletAddressWhileItIsAbsent(t *testing.T) {
 	}
 }
 
+// A kubelet restarted without --node-ip picks its address as the default
+// route does, so the publisher stops holding on to the old flag's address.
+func TestNodeIPPublisherFollowsKubeletDroppingNodeIP(t *testing.T) {
+	fakeHostInterface(t, net.ParseIP("192.0.2.10"), nil)
+	cfg := &config{}
+	cfg.WorkloadClaims.SocketDir = t.TempDir()
+	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, []string{"--node-ip=192.0.2.30"}, nil)
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	p := &nodeIPPublisher{cfg: cfg, logger: slog.New(slog.DiscardHandler)}
+	p.publish()
+
+	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, []string{"--node-ip=0.0.0.0"}, nil)
+	p.publish()
+	p.publish()
+	if got, err := os.ReadFile(path); err != nil || string(got) != "192.0.2.10\n" {
+		t.Fatalf("node-ip after the kubelet dropped --node-ip = %q, %v; want the default route's 192.0.2.10", got, err)
+	}
+}
+
 // A failed write leaves the published address in place, and the next
 // recheck that writes publishes the address it resolved.
 func TestNodeIPPublisherSurvivesTransientWriteFailure(t *testing.T) {
@@ -190,8 +209,17 @@ func TestNodeIPPublisherSurvivesTransientWriteFailure(t *testing.T) {
 	p.publish()
 
 	fakeHostInterface(t, net.ParseIP("192.0.2.11"), nil)
+	// The failing write changes the file before it fails, as a short write does.
 	orig := writeNodeIPFile
-	writeNodeIPFile = func(string, []byte, os.FileMode) error { return errors.New("disk full") }
+	t.Cleanup(func() { writeNodeIPFile = orig })
+	failed := false
+	writeNodeIPFile = func(path string, data []byte, mode os.FileMode) error {
+		if failed {
+			return orig(path, data, mode)
+		}
+		failed = true
+		return errors.Join(orig(path, data[:4], mode), errors.New("disk full"))
+	}
 	p.publish()
 	if wait := p.publish(); wait != nodeRetryMinDelay {
 		t.Fatalf("failed publish() waits %v, want the retry delay %v", wait, nodeRetryMinDelay)
@@ -199,7 +227,6 @@ func TestNodeIPPublisherSurvivesTransientWriteFailure(t *testing.T) {
 	if got, err := os.ReadFile(path); err != nil || string(got) != "192.0.2.10\n" {
 		t.Fatalf("node-ip after a failed write = %q, %v; want the last address 192.0.2.10", got, err)
 	}
-	writeNodeIPFile = orig
 	if wait := p.publish(); wait != nodeIPRecheckInterval {
 		t.Fatalf("publish() after the write recovers waits %v, want the recheck interval", wait)
 	}

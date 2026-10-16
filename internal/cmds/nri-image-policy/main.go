@@ -545,11 +545,16 @@ func (p *nodeIPPublisher) resolve() (host, source string, err error) {
 	if host := p.cfg.WorkloadClaims.AdvertiseHost; net.ParseIP(host) != nil {
 		return host, "advertise_host", nil
 	}
-	if host := kubeletNodeIP(p.cfg.WorkloadClaims.ProcRoot); host != "" {
+	host, running := kubeletNodeIP(p.cfg.WorkloadClaims.ProcRoot)
+	switch {
+	case host != "":
 		p.kubelet = host
 		return host, "kubelet", nil
-	}
-	if p.kubelet != "" {
+	case running:
+		// A kubelet that runs without a usable --node-ip picks its address
+		// as the default route does.
+		p.kubelet = ""
+	case p.kubelet != "":
 		return p.kubelet, "kubelet_last_seen", nil
 	}
 	ip, err := chooseHostInterface()
@@ -568,20 +573,21 @@ func (p *nodeIPPublisher) run(ctx context.Context, wait time.Duration) {
 
 // kubeletNodeIP is the first address of a host kubelet's --node-ip flag, read
 // from procRoot (default /proc), or "" when no host kubelet passes a usable
-// one. A pod's processes show up in procRoot too and can name themselves
-// kubelet, but cannot join the host's mount namespace, which is init's.
-// --node-ip=:: or 0.0.0.0 selects an address family, not an address.
-func kubeletNodeIP(procRoot string) string {
+// one; running reports whether a host kubelet runs at all. A pod's processes
+// show up in procRoot too and can name themselves kubelet, but cannot join
+// the host's mount namespace, which is init's. --node-ip=:: or 0.0.0.0
+// selects an address family, not an address.
+func kubeletNodeIP(procRoot string) (host string, running bool) {
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
 	hostMounts, err := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, e := range entries {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
@@ -599,6 +605,7 @@ func kubeletNodeIP(procRoot string) string {
 		if err != nil {
 			continue
 		}
+		running = true
 		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 		for i, arg := range args {
 			value, ok := strings.CutPrefix(arg, "--node-ip=")
@@ -610,11 +617,11 @@ func kubeletNodeIP(procRoot string) string {
 			}
 			first, _, _ := strings.Cut(value, ",")
 			if ip := net.ParseIP(first); usableNodeIP(ip) {
-				return ip.String()
+				return ip.String(), true
 			}
 		}
 	}
-	return ""
+	return "", running
 }
 
 // usableNodeIP reports whether components can dial ip as the node: an
@@ -626,15 +633,26 @@ func usableNodeIP(ip net.IP) bool {
 
 // writeNodeIP writes host to path in place: components bind-mount the file
 // itself, so a renamed replacement would leave their mount on the old inode.
+// A write can fail after it changed the file, so a failed one puts the
+// previous content back, or empties a file that held none.
 func writeNodeIP(dir, path, host string) error {
 	if err := os.MkdirAll(dir, 0o711); err != nil {
 		return err
 	}
+	previous, readErr := os.ReadFile(path)
 	// World-readable: non-root components read it.
-	if err := writeNodeIPFile(path, []byte(host+"\n"), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	err := writeNodeIPFile(path, []byte(host+"\n"), 0o644)
+	if err == nil {
+		return nil
 	}
-	return nil
+	err = fmt.Errorf("write %s: %w", path, err)
+	if readErr != nil {
+		return errors.Join(err, emptyIfExists(path))
+	}
+	if restoreErr := writeNodeIPFile(path, previous, 0o644); restoreErr != nil {
+		return errors.Join(err, fmt.Errorf("restore %s: %w", path, restoreErr))
+	}
+	return err
 }
 
 // writeInPlace replaces path's content without replacing its inode, so a bind
