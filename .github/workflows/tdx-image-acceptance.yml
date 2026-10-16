@@ -84,7 +84,7 @@ jobs:
     needs: source
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
-    timeout-minutes: 65
+    timeout-minutes: 95
     steps:
       - name: Check out the trusted published build
         if: >-
