@@ -52,6 +52,11 @@ type Role string
 const (
 	Server Role = "server"
 	Agent  Role = "agent"
+	// CDS is an agent that runs only the CDS replicas of a highly available
+	// CDS. It joins with the agent token and is authorized by its own launch
+	// key, so a CDS node's launch-key binding (TDX RTMR3, SNP HOST_DATA)
+	// differs from every workload node's.
+	CDS Role = "cds"
 )
 
 // Document is the signed launch.yaml wire contract. All secrets are boot
@@ -67,6 +72,12 @@ type Document struct {
 	AgentOperatorPublicKeys []string     `yaml:"agentOperatorPublicKeys" json:"agent_operator_public_keys"`
 	TLSSAN                  string       `yaml:"tlsSAN,omitempty" json:"tls_san"`
 
+	// CDSHA, when set, runs CDS as replicas on cds-role nodes instead of a
+	// singleton on the server. CDSOperatorPublicKeys authorize cds-role
+	// launches; one key authorizes exactly one role.
+	CDSHA                 *CDSHA   `yaml:"cdsHA,omitempty" json:"cds_ha,omitempty"`
+	CDSOperatorPublicKeys []string `yaml:"cdsOperatorPublicKeys,omitempty" json:"cds_operator_public_keys,omitempty"`
+
 	// Workloads is an optional strict c8s.allowlist/v1 JSON document. Keeping
 	// its existing wire schema avoids an independent YAML policy language.
 	Workloads string `yaml:"workloads,omitempty" json:"workloads,omitempty"`
@@ -78,7 +89,17 @@ type Document struct {
 	serverTokenPresent bool
 }
 
-// Router selects the router's catch-all upstream and public hostnames. All
+// CDSHA configures the highly available CDS (internal/cdsha).
+type CDSHA struct {
+	// DecreeKey is the PEM P-256 public key that signs the operator's
+	// decrees (Genesis, UpdateMeasurements, RotateKey). It is the only
+	// authority over the shared mesh CA key and the replica image set.
+	DecreeKey string `yaml:"decreeKey" json:"decree_key"`
+	// Replicas is the number of CDS pods; one per cds-role node.
+	Replicas int `yaml:"replicas" json:"replicas"`
+}
+
+// Router selects the server's catch-all upstream and public hostnames. All
 // fields are optional; non-empty Hostnames switches the front door to ACME.
 type Router struct {
 	Upstream         string   `yaml:"upstream,omitempty" json:"upstream,omitempty"`
@@ -323,9 +344,11 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	if err != nil {
 		return nil, err
 	}
+	// CDS clients accept CDS on the server (singleton) and on cds-role nodes
+	// (HA): the server entry plus one per cds launch key.
 	return &Verified{
 		document: *doc, operatorPub: pub, pins: pins,
-		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1]},
+		cdsPins: refvalues.ReferenceValues{Family: pins.Family, Images: pins.Images[:1+len(doc.CDSOperatorPublicKeys)]},
 	}, nil
 }
 
@@ -341,8 +364,8 @@ func (d *Document) validate() error {
 	if !dnsLabel(d.Node.Name) {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
-	if d.Role != Server && d.Role != Agent {
-		return fmt.Errorf("role must be server or agent")
+	if d.Role != Server && d.Role != Agent && d.Role != CDS {
+		return fmt.Errorf("role must be server, agent or cds")
 	}
 	platform, ok := d.Image.platform()
 	if !ok {
@@ -354,7 +377,7 @@ func (d *Document) validate() error {
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
 	}
-	if d.Server.Address != "" || d.Role == Agent {
+	if d.Server.Address != "" || d.Role != Server {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
 			return fmt.Errorf("server.address: %w", err)
 		}
@@ -395,18 +418,42 @@ func (d *Document) validate() error {
 	if d.Role == Agent && len(d.AgentOperatorPublicKeys) == 0 {
 		return fmt.Errorf("agent requires agentOperatorPublicKeys")
 	}
+	// One launch key authorizes exactly one role: a key in two lists would
+	// let a host boot a workload node with the CDS role's binding.
 	seen := []*ecdsa.PublicKey{server}
-	for _, raw := range d.AgentOperatorPublicKeys {
-		key, err := parseLaunchKey(raw)
-		if err != nil {
-			return fmt.Errorf("agentOperatorPublicKeys: %w", err)
-		}
-		for _, previous := range seen {
-			if key.Equal(previous) {
-				return fmt.Errorf("server and agent public keys must be distinct and nonduplicated")
+	for _, list := range []struct {
+		name string
+		keys []string
+	}{{"agentOperatorPublicKeys", d.AgentOperatorPublicKeys}, {"cdsOperatorPublicKeys", d.CDSOperatorPublicKeys}} {
+		for _, raw := range list.keys {
+			key, err := parseLaunchKey(raw)
+			if err != nil {
+				return fmt.Errorf("%s: %w", list.name, err)
 			}
+			for _, previous := range seen {
+				if key.Equal(previous) {
+					return fmt.Errorf("server, agent and cds public keys must be distinct and nonduplicated")
+				}
+			}
+			seen = append(seen, key)
 		}
-		seen = append(seen, key)
+	}
+	if len(d.CDSOperatorPublicKeys) > maxAgentKeys {
+		return fmt.Errorf("too many cds operator keys")
+	}
+	if (d.CDSHA != nil) != (len(d.CDSOperatorPublicKeys) > 0) {
+		return fmt.Errorf("cdsHA and cdsOperatorPublicKeys go together")
+	}
+	if d.Role == CDS && d.CDSHA == nil {
+		return fmt.Errorf("cds role requires cdsHA")
+	}
+	if d.CDSHA != nil {
+		if _, err := parseLaunchKey(d.CDSHA.DecreeKey); err != nil {
+			return fmt.Errorf("cdsHA.decreeKey: %w", err)
+		}
+		if d.CDSHA.Replicas < 2 || d.CDSHA.Replicas > maxAgentKeys {
+			return fmt.Errorf("cdsHA.replicas must be between 2 and %d", maxAgentKeys)
+		}
 	}
 	if d.TLSSAN == "" {
 		d.TLSSAN = defaultTLSSAN
@@ -445,14 +492,20 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 		return nil
 	}
 	if key.Equal(server) {
-		return fmt.Errorf("agent must use a different launch key from its server")
+		return fmt.Errorf("%s must use a different launch key from its server", d.Role)
 	}
-	for _, agent := range d.AgentOperatorPublicKeys {
-		if bytes.Equal(pub, []byte(agent)) {
+	// The measured key must be in this role's list and no other (validate
+	// already rejects a key listed twice).
+	list, name := d.AgentOperatorPublicKeys, "agentOperatorPublicKeys"
+	if d.Role == CDS {
+		list, name = d.CDSOperatorPublicKeys, "cdsOperatorPublicKeys"
+	}
+	for _, allowed := range list {
+		if bytes.Equal(pub, []byte(allowed)) {
 			return nil
 		}
 	}
-	return fmt.Errorf("this agent's measured launch key is not in agentOperatorPublicKeys")
+	return fmt.Errorf("this %s node's measured launch key is not in %s", d.Role, name)
 }
 
 func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
@@ -516,13 +569,16 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 		return refvalues.ReferenceValues{}, fmt.Errorf("image.platform must be tdx or snp")
 	}
 	pins := refvalues.ReferenceValues{Family: platform.family}
-	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
-	for i, pub := range keys {
-		name := "server"
-		if i > 0 {
-			name = fmt.Sprintf("agent-%d", i)
-		}
-		entry := remote.ImagePin{Name: name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(pub)}
+	type named struct{ name, pub string }
+	keys := []named{{"server", d.Server.OperatorPublicKey}}
+	for i, pub := range d.CDSOperatorPublicKeys {
+		keys = append(keys, named{fmt.Sprintf("cds-%d", i+1), pub})
+	}
+	for i, pub := range d.AgentOperatorPublicKeys {
+		keys = append(keys, named{fmt.Sprintf("agent-%d", i+1), pub})
+	}
+	for _, k := range keys {
+		entry := remote.ImagePin{Name: k.name, Digest: mustDecodeHex(d.Image.Measurement), Anchor: []byte(k.pub)}
 		if len(d.Image.RTMRs) > 0 {
 			entry.Registers = make(map[int][]byte, len(d.Image.RTMRs))
 			for idx, digest := range d.Image.RTMRs {
