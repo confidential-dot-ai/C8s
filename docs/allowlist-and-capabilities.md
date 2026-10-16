@@ -313,6 +313,13 @@ explicit command/args. Choose the policies to match the workload's actual
 mounts; the pod spec alone cannot establish source class or storage protection.
 Omitting both flags leaves each container's mount policy at `deny`.
 
+For a pod annotated `confidential.ai/cw`, `derive` adds the mounts the webhook
+injects into every container to each `deny` or `exact` policy, which makes it
+`exact`: an `emptyDir` rule at `/etc/c8s/certs`, and one at `/run/c8s/secrets`
+when the pod sets `confidential.ai/c8s-secrets`, or wherever the container
+already mounts those volumes (as `data` for a `subPath` mount). List any other volume,
+including a C8s volume, in `--mounts-file`.
+
 Lint includes mount rules when checking whether workload entries are
 indistinguishable. It also rejects exact `PATH`, `LD_LIBRARY_PATH`, `PYTHONPATH`,
 or `NODE_PATH` values whose search directories overlap a declared `data` mount:

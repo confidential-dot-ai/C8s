@@ -175,8 +175,9 @@ func TestMutatePodDisablesServiceLinks(t *testing.T) {
 	}
 }
 
-// An injected pod that asked for service links is admitted with a warning, so
-// its author learns the variables are gone; the default stays quiet.
+// An injected pod with service links on is admitted with a warning, so its
+// author learns the variables are gone. The API server defaults the field to
+// true, so only an explicit false stays quiet in a cluster.
 func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
 	scheme := runtime.NewScheme()
 	if err := corev1.AddToScheme(scheme); err != nil {
@@ -191,10 +192,10 @@ func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
 		links       *bool
 		want        bool
 	}{
-		"links on":      {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(true), want: true},
-		"links default": {annotations: map[string]string{AnnotationWorkload: "api"}},
-		"links off":     {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(false)},
-		"not injected":  {links: ptr.To(true)},
+		"links on":          {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(true), want: true},
+		"links undefaulted": {annotations: map[string]string{AnnotationWorkload: "api"}},
+		"links off":         {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(false)},
+		"not injected":      {links: ptr.To(true)},
 	} {
 		t.Run(name, func(t *testing.T) {
 			pod := &corev1.Pod{

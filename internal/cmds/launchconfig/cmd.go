@@ -27,7 +27,7 @@ signed launch.yaml per node and the client policy that pins the server.
   <out>/server.key    server launch key; also the operator key for
                       'c8s get-kubeconfig --operator-key' and signed CDS writes
   <out>/agent.key     the agent launch key; 'add-agent' reuses it
-  <out>/server.json   C8S_MEASUREMENTS_CONFIG for clients of this cluster
+  <out>/server.json   --image-policy-file for clients of this cluster
   <out>/peers.json    every launch identity CDS admits and serves;
                       'c8s cds verify --served-policy-file'
   <out>/server/       pubkey, launch.yaml, launch.yaml.sig: the server's opkeydata

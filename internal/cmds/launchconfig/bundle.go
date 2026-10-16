@@ -31,7 +31,7 @@ import (
 //	<dir>/server.key      server launch key; also the operator key that
 //	                      get-kubeconfig and signed CDS writes use
 //	<dir>/agent.key    the one agent launch key this cluster trusts
-//	<dir>/server.json     client policy pinning the server (C8S_MEASUREMENTS_CONFIG)
+//	<dir>/server.json     client policy pinning the server (--image-policy-file)
 //	<dir>/peers.json      every launch identity CDS admits and serves
 //	                      (c8s cds verify --served-policy-file)
 //	<dir>/server/         pubkey, launch.yaml, launch.yaml.sig

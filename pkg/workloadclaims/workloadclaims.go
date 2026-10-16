@@ -72,6 +72,25 @@ const (
 // it.
 const AnnotationInjected = "confidential.ai/c8s-injected"
 
+// AnnotationWorkload opts a pod in to injection; AnnotationSecrets, when it
+// names at least one secret, adds the secret fetcher; AnnotationCertVolume
+// renames the cert volume.
+const (
+	AnnotationWorkload   = "confidential.ai/cw"
+	AnnotationSecrets    = "confidential.ai/c8s-secrets"
+	AnnotationCertVolume = "confidential.ai/c8s-cert-volume"
+)
+
+// The webhook mounts the cert and secrets volumes (memory-backed emptyDirs)
+// into every container of the pod: at CertDir and SecretDir, unless the
+// container already mounts the volume elsewhere.
+const (
+	CertVolumeName    = "c8s-certs"
+	SecretsVolumeName = "c8s-secrets"
+	CertDir           = "/etc/c8s/certs"
+	SecretDir         = "/run/c8s/secrets"
+)
+
 // CertContainerName, SecretContainerName and VolumeContainerName are the
 // webhook-injected sidecars that dial sockets in the inventory's directory
 // (workload-claims.sock, attestation-api.sock, volumed.sock); on node-CVM the

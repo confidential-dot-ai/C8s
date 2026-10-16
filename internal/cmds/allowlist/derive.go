@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 
@@ -21,36 +22,72 @@ import (
 type podTemplate struct {
 	InitContainers []templateContainer `json:"initContainers"`
 	Containers     []templateContainer `json:"containers"`
+	// annotations are the pod's, from the object or its pod template.
+	annotations map[string]string
 }
 
 type templateContainer struct {
-	Name    string   `json:"name"`
-	Image   string   `json:"image"`
-	Command []string `json:"command"`
-	Args    []string `json:"args"`
+	Name         string   `json:"name"`
+	Image        string   `json:"image"`
+	Command      []string `json:"command"`
+	Args         []string `json:"args"`
+	VolumeMounts []struct {
+		Name        string `json:"name"`
+		MountPath   string `json:"mountPath"`
+		SubPath     string `json:"subPath"`
+		SubPathExpr string `json:"subPathExpr"`
+	} `json:"volumeMounts"`
+}
+
+// emptyDirMounts are the rules for every mount c declares of an emptyDir
+// volume, or one at fallback when it declares none. A subpath mount is
+// observed as data, so its rule is a data rule.
+func (c templateContainer) emptyDirMounts(volume, fallback string) []allowlist.MountRule {
+	var rules []allowlist.MountRule
+	for _, m := range c.VolumeMounts {
+		if m.Name != volume {
+			continue
+		}
+		kind := allowlist.MountEmptyDir
+		if m.SubPath != "" || m.SubPathExpr != "" {
+			kind = allowlist.MountData
+		}
+		rules = append(rules, allowlist.MountRule{Destination: m.MountPath, Kind: kind})
+	}
+	if len(rules) == 0 {
+		rules = append(rules, allowlist.MountRule{Destination: fallback, Kind: allowlist.MountEmptyDir})
+	}
+	return rules
 }
 
 // podSpecOf finds the pod spec in a Pod or in any workload that carries a pod
 // template, so `kubectl get deploy/x -o json` and `kubectl get pod/x -o json`
 // both work without the caller reaching for jq first.
 func podSpecOf(data []byte) (podTemplate, error) {
+	type metadata struct {
+		Annotations map[string]string `json:"annotations"`
+	}
 	var probe struct {
-		Kind string `json:"kind"`
-		Spec struct {
+		Kind     string   `json:"kind"`
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
 			podTemplate
 			Template struct {
-				Spec podTemplate `json:"spec"`
+				Metadata metadata    `json:"metadata"`
+				Spec     podTemplate `json:"spec"`
 			} `json:"template"`
 		} `json:"spec"`
 	}
 	if err := json.Unmarshal(data, &probe); err != nil {
 		return podTemplate{}, fmt.Errorf("parse object: %w", err)
 	}
-	if len(probe.Spec.Template.Spec.Containers) > 0 {
-		return probe.Spec.Template.Spec, nil
+	if spec := probe.Spec.Template.Spec; len(spec.Containers) > 0 {
+		spec.annotations = probe.Spec.Template.Metadata.Annotations
+		return spec, nil
 	}
-	if len(probe.Spec.Containers) > 0 {
-		return probe.Spec.podTemplate, nil
+	if spec := probe.Spec.podTemplate; len(spec.Containers) > 0 {
+		spec.annotations = probe.Metadata.Annotations
+		return spec, nil
 	}
 	kind := probe.Kind
 	if kind == "" {
@@ -72,6 +109,47 @@ func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 		out = append(out, c)
 	}
 	return out, dropped
+}
+
+// injectedMounts are the mounts the webhook adds to c in an injected pod,
+// which a deny or exact policy must list to admit it. The webhook keeps a
+// mount c already declares for the volume, so those destinations win.
+func injectedMounts(annotations map[string]string, c templateContainer) []allowlist.MountRule {
+	if annotations[workloadclaims.AnnotationWorkload] == "" {
+		return nil
+	}
+	certVolume := annotations[workloadclaims.AnnotationCertVolume]
+	if certVolume == "" {
+		certVolume = workloadclaims.CertVolumeName
+	}
+	rules := c.emptyDirMounts(certVolume, workloadclaims.CertDir)
+	if requestsSecrets(annotations[workloadclaims.AnnotationSecrets]) {
+		rules = append(rules, c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)...)
+	}
+	return rules
+}
+
+// requestsSecrets matches the webhook, which injects the fetcher when the
+// comma-separated annotation names at least one non-blank item.
+func requestsSecrets(annotation string) bool {
+	return slices.ContainsFunc(strings.Split(annotation, ","), func(item string) bool {
+		return strings.TrimSpace(item) != ""
+	})
+}
+
+// withInjectedMounts adds rules to a deny or exact policy, keeping any rule
+// already given for the same destination; any is returned unchanged.
+func withInjectedMounts(p allowlist.MountPolicy, rules []allowlist.MountRule) allowlist.MountPolicy {
+	if len(rules) == 0 || p.Policy == allowlist.PolicyAny {
+		return p
+	}
+	out := allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: slices.Clone(p.Rules)}
+	for _, r := range rules {
+		if !slices.ContainsFunc(out.Rules, func(have allowlist.MountRule) bool { return have.Destination == r.Destination }) {
+			out.Rules = append(out.Rules, r)
+		}
+	}
+	return out
 }
 
 // argvPolicy renders one half of a container's argv policy.
@@ -171,6 +249,13 @@ container. Omitting both leaves every container at "deny", which admits platform
 mounts alone. The pod spec cannot prove which sources are node-provided or how
 persistent storage is protected, so exact rules go in --mounts-file.
 
+For a pod annotated confidential.ai/cw, derive adds the mounts the webhook
+injects into every container to each deny or exact policy: the cert emptyDir at
+/etc/c8s/certs, and the secrets emptyDir at /run/c8s/secrets when the pod sets
+confidential.ai/c8s-secrets, or wherever the container already mounts those
+volumes. Other volumes, including c8s volumes, go in
+--mounts-file.
+
 The entry pins argv, so it expires the moment a container command changes:
 re-derive and re-apply whenever the workload is edited.
 
@@ -219,8 +304,11 @@ derives the same entry as the manifest it was admitted from.`,
 				return fmt.Errorf("--mounts must be any or deny; use --mounts-file for exact rules")
 			}
 			if mountsMode == "" && mountsFile == "" {
-				fmt.Fprintln(cmd.ErrOrStderr(),
-					`mounts: no policy given; every container is "deny", which admits platform mounts alone`)
+				msg := `mounts: no policy given; every container is "deny", which admits platform mounts alone`
+				if spec.annotations[workloadclaims.AnnotationWorkload] != "" {
+					msg = `mounts: no policy given; every container admits platform mounts and the c8s-injected mounts alone`
+				}
+				fmt.Fprintln(cmd.ErrOrStderr(), msg)
 			}
 			var policies map[string]allowlist.EnvPolicy
 			var mountPolicies map[string]allowlist.MountPolicy
@@ -275,6 +363,7 @@ derives the same entry as the manifest it was admitted from.`,
 					case mountsMode != "":
 						part.containers[i].Mounts = allowlist.MountPolicy{Policy: mountsMode}
 					}
+					part.containers[i].Mounts = withInjectedMounts(part.containers[i].Mounts, injectedMounts(spec.annotations, c))
 				}
 			}
 			for name := range policies {

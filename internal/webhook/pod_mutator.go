@@ -42,7 +42,7 @@ import (
 // Pod annotations that drive sidecar injection.
 const (
 	// AnnotationWorkload opts a pod in to C8s injection. Required.
-	AnnotationWorkload = "confidential.ai/cw"
+	AnnotationWorkload = workloadclaims.AnnotationWorkload
 
 	// AnnotationInjected is stamped on pods after a successful mutation
 	// so re-invocations of the webhook are no-ops. Shared with the node's
@@ -62,7 +62,7 @@ const (
 	// AnnotationCertDir, AnnotationReloadWatchMountPath and
 	// AnnotationDiscoveryMountPath once moved a sidecar mount. They are
 	// refused unless they name the fixed destination; see pinnedDestinations.
-	AnnotationCertVolume             = "confidential.ai/c8s-cert-volume"
+	AnnotationCertVolume             = workloadclaims.AnnotationCertVolume
 	AnnotationCertDir                = "confidential.ai/c8s-cert-dir"
 	AnnotationCertFile               = "confidential.ai/c8s-cert-file"
 	AnnotationKeyFile                = "confidential.ai/c8s-key-file"
@@ -86,7 +86,7 @@ const (
 	// AnnotationSecrets requests secrets for the pod, as a comma-separated
 	// list of NAME=/store/path. NAME is the file each value is written to
 	// under the secrets directory. Setting it injects the fetcher sidecar.
-	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	AnnotationSecrets = workloadclaims.AnnotationSecrets
 	// AnnotationSecretDir once moved the secrets directory. It is refused
 	// unless it names the fixed one; see pinnedDestinations.
 	AnnotationSecretDir = "confidential.ai/c8s-secret-dir"
@@ -125,20 +125,20 @@ const reservedSecretContainerName = workloadclaims.SecretContainerName
 
 // defaultCertVolumeName is the injected cert volume when a pod does not name
 // its own with AnnotationCertVolume.
-const defaultCertVolumeName = "c8s-certs"
+const defaultCertVolumeName = workloadclaims.CertVolumeName
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
-const secretsVolumeName = "c8s-secrets"
+const secretsVolumeName = workloadclaims.SecretsVolumeName
 
 // The injected sidecars' mount destinations. The allowlist pins each
 // sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod
 // cannot move them.
 const (
 	// certDir is where the cert volume is mounted.
-	certDir = "/etc/c8s/certs"
+	certDir = workloadclaims.CertDir
 	// defaultSecretDir is where the fetcher writes, matching its own default.
-	defaultSecretDir = "/run/c8s/secrets"
+	defaultSecretDir = workloadclaims.SecretDir
 	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
 	discoveryMountPath = "/run/c8s/discovery"
 	// reloadWatchMountPath is where get-cert mounts the pod's reload-watch
@@ -754,9 +754,9 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 			return admission.Errored(http.StatusBadRequest, err)
 		}
 		l.Info("injecting c8s get-cert containers", "workload", inj.WorkloadID)
-		// Only an explicit true: an unset field is the default on nearly every
-		// pod, and a controller-created pod's warning reaches the controller's
-		// log, not its author.
+		// The API server defaults an unset field to true before mutating
+		// admission, so this warns every injected pod that does not set
+		// enableServiceLinks: false; the warning says how to silence it.
 		if pod.Spec.EnableServiceLinks != nil && *pod.Spec.EnableServiceLinks {
 			warnings = append(warnings, serviceLinksWarning)
 		}
@@ -772,8 +772,8 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	return resp
 }
 
-// serviceLinksWarning tells the pod's author that mutatePod overrode an
-// explicit enableServiceLinks: true.
+// serviceLinksWarning tells the pod's author that mutatePod turned service
+// links off.
 const serviceLinksWarning = "c8s: enableServiceLinks set to false; the pod no longer receives <SERVICE>_SERVICE_HOST and <SERVICE>_PORT_* variables, so resolve Services by DNS and re-derive allowlist entries that pin them; set enableServiceLinks: false in the pod template to silence this warning"
 
 // workloadServiceNamePrefix marks the operator-managed headless Service inside

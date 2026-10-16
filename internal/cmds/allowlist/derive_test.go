@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -402,5 +403,106 @@ func TestDeriveContainersAdmitsArgvOfImageWithoutEntrypoint(t *testing.T) {
 		if idx.AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: longer}) {
 			t.Errorf("%s: entry admits an extended argv %v", tc.name, longer)
 		}
+	}
+}
+
+// cwDeployJSON is deployJSON with its pod template opted in to injection.
+func cwDeployJSON(annotations string) string {
+	return strings.Replace(deployJSON(), `"spec": {"template": {"spec": {`,
+		`"spec": {"template": {"metadata": {"annotations": {`+annotations+`}}, "spec": {`, 1)
+}
+
+func TestDeriveAddsInjectedMounts(t *testing.T) {
+	const cw = `"confidential.ai/cw": "dynamo"`
+	cert := pkgallowlist.MountRule{Destination: "/etc/c8s/certs", Kind: pkgallowlist.MountEmptyDir}
+	secrets := pkgallowlist.MountRule{Destination: "/run/c8s/secrets", Kind: pkgallowlist.MountEmptyDir}
+	config := pkgallowlist.MountRule{Destination: "/config", Kind: pkgallowlist.MountEmptyDir}
+	exact := func(rules ...pkgallowlist.MountRule) pkgallowlist.MountPolicy {
+		return pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: rules}
+	}
+	tests := []struct {
+		name       string
+		object     string
+		mounts     string
+		mountsFile string
+		want       pkgallowlist.MountPolicy
+	}{
+		{name: "not a cw pod", object: deployJSON(), want: pkgallowlist.MountPolicy{}},
+		{name: "default", object: cwDeployJSON(cw), want: exact(cert)},
+		{name: "deny", object: cwDeployJSON(cw), mounts: "--mounts=deny", want: exact(cert)},
+		{name: "any", object: cwDeployJSON(cw), mounts: "--mounts=any", want: pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
+		{name: "secrets", object: cwDeployJSON(cw + `, "confidential.ai/c8s-secrets": "db=/db/password"`), want: exact(cert, secrets)},
+		{name: "empty secrets list", object: cwDeployJSON(cw + `, "confidential.ai/c8s-secrets": " ,\n "`), want: exact(cert)},
+		{
+			name: "container already mounts the cert volume",
+			object: strings.ReplaceAll(cwDeployJSON(cw), `"image": "`+testImage+`",`,
+				`"image": "`+testImage+`", "volumeMounts": [{"name": "c8s-certs", "mountPath": "/tls"}],`),
+			want: exact(pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir}),
+		},
+		{
+			name: "cert volume mounted twice, once by subpath",
+			object: strings.ReplaceAll(cwDeployJSON(cw), `"image": "`+testImage+`",`,
+				`"image": "`+testImage+`", "volumeMounts": [{"name": "c8s-certs", "mountPath": "/tls"}, {"name": "c8s-certs", "mountPath": "/mnt/c8s-data/cert.pem", "subPath": "cert.pem"}],`),
+			want: exact(
+				pkgallowlist.MountRule{Destination: "/mnt/c8s-data/cert.pem", Kind: pkgallowlist.MountData},
+				pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir},
+			),
+		},
+		{
+			name: "renamed cert volume",
+			object: strings.ReplaceAll(cwDeployJSON(cw+`, "confidential.ai/c8s-cert-volume": "tls"`), `"image": "`+testImage+`",`,
+				`"image": "`+testImage+`", "volumeMounts": [{"name": "tls", "mountPath": "/tls"}, {"name": "c8s-certs", "mountPath": "/other"}],`),
+			want: exact(pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir}),
+		},
+		{
+			name:       "exact file",
+			object:     cwDeployJSON(cw),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/config","kind":"emptyDir"}]}`,
+			want:       exact(config, cert),
+		},
+		{
+			name:       "file already lists the cert mount",
+			object:     cwDeployJSON(cw),
+			mountsFile: `{"policy":"exact","rules":[{"destination":"/etc/c8s/certs","kind":"emptyDir"}]}`,
+			want:       exact(cert),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{"dynamo", "-", "--env=any"}
+			if tt.mounts != "" {
+				args = append(args, tt.mounts)
+			}
+			if tt.mountsFile != "" {
+				file := t.TempDir() + "/mounts.json"
+				p := tt.mountsFile
+				data := `{"seed":` + p + `,"frontend":` + p + `,"worker":` + p + `}`
+				if err := os.WriteFile(file, []byte(data), 0600); err != nil {
+					t.Fatal(err)
+				}
+				args = append(args, "--mounts-file", file)
+			}
+			got, err := runDerive(t, tt.object, args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := json.Marshal(got["dynamo"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			applied, err := pkgallowlist.ParseWorkloadJSON(raw)
+			if err != nil {
+				t.Fatalf("derived entry does not parse: %v", err)
+			}
+			want := tt.want
+			if want.Policy == "" {
+				want.Policy = pkgallowlist.PolicyDeny
+			}
+			for _, c := range allContainers(*applied) {
+				if !reflect.DeepEqual(c.Mounts, want) {
+					t.Errorf("mounts = %+v, want %+v", c.Mounts, want)
+				}
+			}
+		})
 	}
 }

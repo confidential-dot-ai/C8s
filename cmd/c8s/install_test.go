@@ -929,7 +929,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 
 	// Two orthogonal axes:
 	//  --cvm-mode: bare-metal (node-as-CVM) / gke (managed) / aks (vTPM)
-	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (/dev/tdx-guest)
+	//  --hardware-platform: sev-snp (/dev/sev-guest) / tdx (ConfigFS TSM)
 	// node+gke all take either hardware-platform; aks always emits the vTPM
 	// device and rides the Azure vTPM HCL report for both SNP (az-snp) and TDX
 	// (az-tdx).
@@ -941,7 +941,7 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tdxGuest=" + tdxGuest,
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
-		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
+		// Any TDX shape — native (ConfigFS TSM) or Azure vTPM (az-tdx) —
 		// propagates the CPU TEE to the components that name their armTLS
 		// platform, or CDS parses the TDX quote as an SNP report.
 		if platform == "tdx" {
@@ -1923,13 +1923,13 @@ func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 func TestTDXRTMRPinWarning(t *testing.T) {
 	r1 := "1=" + strings.Repeat("11", 48)
 
-	if warn, err := tdxRTMRPinWarning("sev-snp", nil, nil); err != nil || warn != "" {
+	if warn, err := tdxRTMRPinWarning("sev-snp", false, nil); err != nil || warn != "" {
 		t.Fatalf("sev-snp: warn=%q err=%v, want quiet", warn, err)
 	}
-	if warn, err := tdxRTMRPinWarning("tdx", []string{r1}, nil); err != nil || warn != "" {
+	if warn, err := tdxRTMRPinWarning("tdx", true, nil); err != nil || warn != "" {
 		t.Fatalf("pinned tdx: warn=%q err=%v, want quiet", warn, err)
 	}
-	warn, err := tdxRTMRPinWarning("tdx", nil, nil)
+	warn, err := tdxRTMRPinWarning("tdx", false, nil)
 	if err != nil || warn == "" {
 		t.Fatalf("unpinned tdx: warn=%q err=%v, want a warning", warn, err)
 	}
@@ -1938,7 +1938,7 @@ func TestTDXRTMRPinWarning(t *testing.T) {
 	if err := os.WriteFile(pinned, []byte("cds:\n  rtmrs:\n    - \""+r1+"\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{pinned}); err != nil || warn != "" {
+	if warn, err := tdxRTMRPinWarning("tdx", false, []string{pinned}); err != nil || warn != "" {
 		t.Fatalf("values-file pinned tdx: warn=%q err=%v, want quiet", warn, err)
 	}
 
@@ -1946,11 +1946,11 @@ func TestTDXRTMRPinWarning(t *testing.T) {
 	if err := os.WriteFile(empty, []byte("cds:\n  rtmrs: []\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{empty}); err != nil || warn == "" {
+	if warn, err := tdxRTMRPinWarning("tdx", false, []string{empty}); err != nil || warn == "" {
 		t.Fatalf("empty-list values file: warn=%q err=%v, want a warning", warn, err)
 	}
 
-	if _, err := tdxRTMRPinWarning("tdx", nil, []string{filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
+	if _, err := tdxRTMRPinWarning("tdx", false, []string{filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
 		t.Fatal("an unreadable values file was silently treated as unpinned")
 	}
 }
