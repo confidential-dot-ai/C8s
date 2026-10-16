@@ -47,6 +47,11 @@ def main():
     )
     parser.add_argument("--label", action="append", default=[], metavar="KEY=VALUE", help="a pod label; repeatable")
     parser.add_argument(
+        "--disk-volume",
+        metavar="PATH",
+        help="an emptyDir on the node's disk, mounted at PATH in the last container",
+    )
+    parser.add_argument(
         "--env",
         action="append",
         default=[],
@@ -137,6 +142,9 @@ def main():
         pod["spec"]["volumes"] = [
             {"name": "data", "persistentVolumeClaim": {"claimName": args.name}}
         ]
+    if args.disk_volume:
+        pod["spec"].setdefault("volumes", []).append({"name": "scratch", "emptyDir": {}})
+        pod["spec"]["containers"][-1]["volumeMounts"] = [{"name": "scratch", "mountPath": args.disk_volume}]
     if args.env:
         # After the further containers are copied from the first, which take no env.
         container["env"] = [{"name": name, "value": value} for name, value in (e.split("=", 1) for e in args.env)]

@@ -64,6 +64,8 @@ func registerSecrets(sc *godog.ScenarioContext) {
 
 	sc.Step(`^the secret client of "([^"]*)" is configured with the secret path "([^"]*)"$`, secretClientConfigured)
 	sc.Step(`^"([^"]*)" has an init container running image "([^"]*)"$`, hasInitContainer)
+	sc.Step(`^the argv of that container begins with a helper mode c8s injects$`, argvHelperMode)
+	sc.Step(`^that container mounts a volume on disk-backed storage$`, mountsDiskVolume)
 	sc.Step(`^the init container of "([^"]*)" (is running|has stopped)$`, initContainerState)
 	sc.Step(`^"([^"]*)" has obtained a sandbox-bound leaf from the CDS$`, obtainedSandboxLeaf)
 	sc.Step(`^"([^"]*)" still holds the leaf it obtained before the restart$`, stillHoldsLeaf)
@@ -711,6 +713,43 @@ func secretClientConfigured(ctx context.Context, name, logical string) error {
 		return err
 	}
 	p.secrets = append(p.secrets, secretFile(logical)+"="+w.secretPath(logical))
+	return nil
+}
+
+// argvHelperMode gives the container the argv of a helper the webhook
+// injects, as far as the match looks: the helper binary, then a mode. The
+// probe-file mode waits for a file nothing writes, so the container runs as
+// long as the pod.
+func argvHelperMode(ctx context.Context) error {
+	w := getWorld(ctx)
+	if w.lastPod == nil {
+		return errors.New("no container has been described yet")
+	}
+	w.lastPod.last().command = []string{"/c8s", "probe-file", "--wait", "/run/c8s/never-written"}
+	return nil
+}
+
+// mountsDiskVolume gives the last main container an emptyDir on the node's
+// disk, a mount the node reports as neither memory-backed nor encrypted.
+// Where the node's scratch is encrypted the node confines it, so the sentence
+// cannot be said there.
+func mountsDiskVolume(ctx context.Context) error {
+	w := getWorld(ctx)
+	if w.lastPod == nil {
+		return errors.New("no container has been described yet")
+	}
+	p := w.lastPod
+	if p.initLast || p.last() != p.containers[len(p.containers)-1] {
+		return errors.New("harness limitation: only the last main container of a pod takes a disk volume")
+	}
+	answer, err := w.be.call("scratch_encrypted")
+	if err != nil {
+		return err
+	}
+	if answer == "yes" {
+		return godog.ErrSkip
+	}
+	p.opts = append(p.opts, "--disk-volume", "/scratch")
 	return nil
 }
 
