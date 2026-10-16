@@ -75,6 +75,27 @@ runs:
         chmod +x bin/jq
       fi
 
+  - name: node, rust and wasm-pack for c8s-verify-js
+    # The conf-inference e2e builds c8s-verify-js from source.
+    uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+    with:
+      node-version: 22
+
+  - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+    with:
+      toolchain: "1.98.0"
+      target: wasm32-unknown-unknown
+      cache: false
+
+  - name: wasm-pack
+    shell: bash
+    run: |
+      set -euo pipefail
+      . bin/retry.sh
+      retry curl -fsSL -o /tmp/wasm-pack.tgz https://github.com/rustwasm/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+      echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  /tmp/wasm-pack.tgz" | sha256sum -c -
+      tar -xzf /tmp/wasm-pack.tgz -C bin --strip-components 1 wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack
+
   # reap-before-provision: a killed run leaks a CVM (and its scratch PVC).
   # Fail SAFE: only reap on a positive "completed", or on age. An unknown
   # status (403/404/no token) KEEPS the CVM rather than killing a live run.

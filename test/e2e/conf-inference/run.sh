@@ -138,6 +138,7 @@ customer_round() {
   start_proxy
   api_key=$(python3 "$here/client.py" mint-key --admin-key admin.key)
   python3 "$here/client.py" complete --api-key "$api_key"
+  "$here/verify-js.sh" "$router" "$api_key" "$fetched"
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
   python3 "$here/client.py" attestation --allowlist "$fetched" "${workload_args[@]}"
