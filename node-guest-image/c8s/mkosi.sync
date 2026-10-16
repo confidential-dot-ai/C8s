@@ -164,6 +164,14 @@ if [ "$DEV" = 1 ]; then
     mkdir -p "$STAGE_DIR/etc/systemd/system/ssh.service.d"
     printf '# DEV build: generate SSH host keys at boot. Never ship.\n[Service]\nExecStartPre=\nExecStartPre=/usr/bin/ssh-keygen -A\nExecStartPre=/usr/sbin/sshd -t\n' \
         > "$STAGE_DIR/etc/systemd/system/ssh.service.d/10-host-keys.conf"
+    # Root logs in with the launch key: the measured opkeydata pubkey, in
+    # OpenSSH form. No key is baked, and the launch's own private key is the
+    # only one that opens the node, as it is the only one cred-release trusts.
+    mkdir -p "$STAGE_DIR/etc/ssh/sshd_config.d"
+    printf '# DEV build: root by the launch key. Never ship.\nPermitRootLogin prohibit-password\nAuthorizedKeysFile /etc/ssh/launch_authorized_keys\n' \
+        > "$STAGE_DIR/etc/ssh/sshd_config.d/10-launch-key.conf"
+    printf '# DEV build: authorize the launch key. Never ship.\n[Service]\nExecStartPre=/bin/sh -c "ssh-keygen -i -m PKCS8 -f /etc/confai/operator-pubkey > /etc/ssh/launch_authorized_keys"\n' \
+        > "$STAGE_DIR/etc/systemd/system/ssh.service.d/20-launch-key.conf"
 fi
 
 # Required: there is no default ref. A silent fallback once pinned a stale

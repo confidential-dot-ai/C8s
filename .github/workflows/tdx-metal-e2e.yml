@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: ''
+      dev:
+        description: 'boot the C8S_DEV=1 SSH image of the commit (rke2-tdx-dev-ssh-cdi-<sha>), with a node shell for the suite'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       c8s_ref:
@@ -34,6 +39,11 @@ on:
         default: ''
       keep_cvm:
         description: 'Skip teardown to debug a failure. The reaper still clears it after 3h.'
+        required: false
+        type: boolean
+        default: false
+      dev:
+        description: 'Boot the C8S_DEV=1 SSH image of the commit instead of the measured one.'
         required: false
         type: boolean
         default: false
@@ -55,7 +65,8 @@ jobs:
   e2e:
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
-    timeout-minutes: ${{ inputs.suite_run != '' && 85 || 65 }}
+    # A dev image runs nearly every scenario where the measured one skips most.
+    timeout-minutes: ${{ inputs.suite_run != '' && (inputs.dev && 130 || 85) || 65 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -69,3 +80,4 @@ jobs:
           keep_cvm: ${{ inputs.keep_cvm }}
           suite_artifact: ${{ inputs.suite_artifact }}
           suite_run: ${{ inputs.suite_run }}
+          dev: ${{ inputs.dev }}
