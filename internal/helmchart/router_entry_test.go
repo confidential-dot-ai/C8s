@@ -266,7 +266,8 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		{name: "components not derived", args: []string{"--set", "image.digest=" + c8sDigest, "--set", "nriImagePolicy.policy.mode=audit"}, want: false},
 		{name: "router disabled", args: append(slices.Clone(digestArgs), "--set", "router.enabled=false"), want: false},
 		{name: "nginx by tag", args: append(slices.Clone(digestArgs), nginxByTag...), want: false},
-		{name: "no c8s-image main", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: false},
+		// cds-attest runs for application routing even with its attestation endpoints off.
+		{name: "attest and allowlist disabled", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: true},
 		{
 			// The argv carries $(HOST_IP) literally; the binary expands it.
 			name: "attestation api by host IP",
@@ -303,7 +304,7 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
 		{name: "nginx by tag", args: slices.Concat(digestArgs, noHostPort, nginxByTag)},
-		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"})},
+		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}), want: defaultGate},
 		// No inventory could stamp the leaf; the chart refuses the shape.
 		{name: "no inventory", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "nriImagePolicy.enabled=false", "--set", "attestationApi.cvmMode=gke"}), wantErr: "kind=require_host_image_policy"},
 		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: defaultGate},
@@ -428,7 +429,6 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 		{name: "nginx by tag", args: nginxByTag, cause: "router.nginx.image.digest is unset"},
 		{name: "c8s image by tag", args: []string{"--set-string", "image.digest="}, cause: "image.digest is unset"},
 		{name: "components not derived", args: []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=false", "--set", "nriImagePolicy.policy.mode=audit"}, cause: "nriImagePolicy.bootstrapAllowlist.deriveComponents is false"},
-		{name: "no c8s-image router container", args: []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}, cause: "no router container runs the c8s image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, slices.Concat(gateArgs, tc.args, []string{"--set-string", "router.attest.expectedWorkload=" + derived})...)

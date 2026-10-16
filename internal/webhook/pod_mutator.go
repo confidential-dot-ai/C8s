@@ -123,9 +123,9 @@ const discoveryPublicTLSModeWebPKI = "webpki"
 // webhook's container silently replace or collide with it.
 const reservedSecretContainerName = workloadclaims.SecretContainerName
 
-// defaultCertVolumeName is the injected cert volume when a pod does not name
-// its own with AnnotationCertVolume.
-const defaultCertVolumeName = "c8s-certs"
+// DefaultCertVolumeName is the injected memory-backed cert volume when a pod
+// does not name its own with AnnotationCertVolume.
+const DefaultCertVolumeName = "c8s-certs"
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
@@ -135,8 +135,9 @@ const secretsVolumeName = "c8s-secrets"
 // sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod
 // cannot move them.
 const (
-	// certDir is where the cert volume is mounted.
-	certDir = "/etc/c8s/certs"
+	// CertDir is where every container of an injected pod mounts the cert
+	// volume.
+	CertDir = "/etc/c8s/certs"
 	// defaultSecretDir is where the fetcher writes, matching its own default.
 	defaultSecretDir = "/run/c8s/secrets"
 	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
@@ -150,7 +151,7 @@ const (
 // pinnedDestinations are the annotations that used to move a sidecar mount.
 // Each is refused unless it names the fixed destination.
 var pinnedDestinations = []struct{ annotation, path string }{
-	{AnnotationCertDir, certDir},
+	{AnnotationCertDir, CertDir},
 	{AnnotationSecretDir, defaultSecretDir},
 	{AnnotationDiscoveryMountPath, discoveryMountPath},
 	{AnnotationReloadWatchMountPath, reloadWatchMountPath},
@@ -490,9 +491,9 @@ func (inj *injection) validate() error {
 		{AnnotationKeyFile, inj.Cert.KeyFile},
 		{AnnotationCAFile, inj.Cert.CAFile},
 	} {
-		if file.name != "" && !below(certPath(certDir, file.name), certDir) {
+		if file.name != "" && !below(certPath(CertDir, file.name), CertDir) {
 			return fmt.Errorf("%w: %s %q must name a file in %s, where the cert volume is mounted",
-				errInvalidInjectionAnnotation, file.annotation, file.name, certDir)
+				errInvalidInjectionAnnotation, file.annotation, file.name, CertDir)
 		}
 	}
 	if err := inj.Reload.validate(); err != nil {
@@ -639,7 +640,7 @@ func (inj *injection) validateDiscoveryVolume() error {
 	}
 	certVolume := inj.Cert.Volume
 	if certVolume == "" {
-		certVolume = defaultCertVolumeName
+		certVolume = DefaultCertVolumeName
 	}
 	if name == certVolume || name == secretsVolumeName || strings.HasPrefix(name, volume.KubeVolumePrefix) {
 		return fmt.Errorf("%w: %s %q is reserved for c8s; name a volume of its own",
@@ -1086,9 +1087,9 @@ func (inj *injection) withDefaults(cfg Config) injection {
 		effective.SAN = effective.WorkloadID
 	}
 	if effective.Cert.Volume == "" {
-		effective.Cert.Volume = defaultCertVolumeName
+		effective.Cert.Volume = DefaultCertVolumeName
 	}
-	effective.Cert.Dir = certDir
+	effective.Cert.Dir = CertDir
 	effective.Secrets.Dir = defaultSecretDir
 	if effective.Discovery.Volume != "" {
 		effective.Discovery.MountPath = discoveryMountPath
@@ -1226,7 +1227,7 @@ func rejectEphemeralReservedMounts(pod *corev1.Pod) error {
 func reservedVolumeNames(pod *corev1.Pod) map[string]bool {
 	certVolume := strings.TrimSpace(pod.Annotations[AnnotationCertVolume])
 	if certVolume == "" {
-		certVolume = defaultCertVolumeName
+		certVolume = DefaultCertVolumeName
 	}
 	reserved := map[string]bool{secretsVolumeName: true, certVolume: true}
 	for _, c := range pod.Spec.InitContainers {

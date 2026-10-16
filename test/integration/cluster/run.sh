@@ -42,6 +42,7 @@ mkdir -p "$WORKDIR"
 
 cleanup() {
     cds_pf_stop
+    router_pf_stop
     if [ "${C8S_IT_KEEP:-}" = 1 ]; then
         echo "kept: kind cluster $CLUSTER, state in $WORKDIR"
         return
@@ -175,6 +176,8 @@ with open(sys.argv[2], "w") as f:
             "enabled": False,
             "bootstrapAllowlist": {"workloads": workloads},
         },
+        # A route manifest write applies within one poll.
+        "router": {"routing": {"pollInterval": "2s"}},
     }, f)
 print(f"floor: {len(workloads)} any-argv entries")
 PYEOF
@@ -328,6 +331,11 @@ fi
 pass "signed allowlist write + delete round-trip through CDS"
 
 log "Route API"
+# Until CDS stores a manifest the router routes nothing, and says so (A2).
+code="$(router_get "$ROUTER_HOST" / "$WORKDIR/route-body")"
+[ "$code" = "503" ] || fail "front door before any route manifest: want HTTP 503, got $code"
+pass "front door answers 503 before a route manifest is stored"
+
 # PUT /routes is authorized like an allowlist write (W1) and checked in the C3
 # order; GET serves the stored bytes and token, and the token's pbh is the
 # route digest of exactly those bytes.
@@ -623,14 +631,24 @@ log "Workload adoption"
 kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
 kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
     || fail "adoption fixture never became Available"
-./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
+# Without --operator-key, install writes the --upstream route as a new
+# manifest; the harness stores it with optoken below, since `c8s routes
+# put` verifies CDS in-process and cannot pass synthetic evidence. An ambient
+# C8S_OPERATOR_KEY would make install sign and store it instead.
+C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
     --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
     --operator-keys "$WORKDIR/operator-pub.pem" \
     --measurements "$MOCK_MEASUREMENT" \
-    --workload-ref web=adopted/deployment/web:8080 --upstream web \
+    --workload-ref web=adopted/deployment/web:8443 --upstream web \
+    --routes-out "$WORKDIR/routes-install.json" \
     -f "$WORKDIR/values.yaml" --wait || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
+# The first leaf predates the app container, so it names no workload;
+# get-cert renews until CDS names it, then SIGHUPs nginx. It runs as nginx's
+# uid (101) to signal it. Only a stamped template may carry these.
+kubectl -n adopted patch deploy web --type merge -p '{"spec":{"template":{"metadata":{"annotations":{"confidential.ai/c8s-reload-nginx":"true","confidential.ai/c8s-get-cert-run-as-user":"101","confidential.ai/c8s-get-cert-run-as-group":"101"}}}}}' \
+    || fail "could not annotate the adopted template"
 kubectl -n adopted rollout status deploy/web --timeout=300s || fail "adopted workload never rolled out"
 pass "install adopted a running workload (template stamped, rollout injected)"
 
@@ -657,7 +675,81 @@ done
 [ "$SUMMARY" = "1/1" ] || fail "status mirror never reported the adopted workload (got: $SUMMARY)"
 pass "status mirror reports the adopted workload (attestationSummary 1/1)"
 
-# router now routes its catch-all to the adopted workload over the mesh.
+log "Routing by the route manifest"
+# Either port-forward can point at a pod the second install rolled.
+cds_pf_stop
+router_pf_stop
+python3 - "$WORKDIR/routes-install.json" "$ROUTER_HOST" <<'PY' || fail "install --upstream wrote an unexpected route manifest"
+import json, sys
+m = json.load(open(sys.argv[1]))
+# A new manifest's revision is the Unix time, above any a router still holds.
+assert m["revision"] >= 1_000_000_000, m
+want = [{"path": "/", "match": "prefix",
+         "backend": {"address": "c8s-web.adopted.svc.cluster.local:8443", "workload": "web"}}]
+assert m["hosts"] == {sys.argv[2]: {"routes": want}}, m["hosts"]
+PY
+pass "install --upstream wrote a new manifest routing $ROUTER_HOST / to the adopted workload"
+INSTALL_REV="$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["revision"])' "$WORKDIR/routes-install.json")"
+
+# route_revision <revision> <workload> <match> [<ca-pem-file>]: the install
+# manifest at a later revision, naming <workload> with <match>, plus an
+# address backend anchored on the CA file when given.
+route_revision() {
+    python3 - "$WORKDIR/routes-install.json" "$@" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m["revision"] = int(sys.argv[2])
+for host in m["hosts"].values():
+    route = host["routes"][0]
+    route["backend"]["workload"], route["match"] = sys.argv[3], sys.argv[4]
+    if len(sys.argv) > 5:
+        host["routes"].append({"path": "/admin", "match": "prefix",
+                               "backend": {"address": "admin.default.svc.cluster.local:8443",
+                                           "serverName": "admin.default.svc", "ca": open(sys.argv[5]).read()}})
+print(json.dumps(m))
+PY
+}
+
+# --resolve-digests=false writes no `web` entry, so the pod's leaf carries the
+# floor's name for its nginx digest (the floor's entry_name).
+WEB_ENTRY="nginx-unprivileged-$(printf '%s' "${WORKLOAD_IMAGE#*@sha256:}" | cut -c1-12)"
+
+# served_leaf_named <name>: the adopted nginx serves a leaf whose
+# matched-workload extension (1.3.6.1.4.1.66378.1.5) carries <name>, within
+# two minutes. The unnamed first leaf would make every route to it 502.
+served_leaf_named() {
+    local pf rc=1
+    kubectl -n adopted port-forward deploy/web "$ADOPTED_LOCAL_PORT:8443" >/dev/null 2>&1 &
+    pf=$!
+    for _ in $(seq 1 60); do
+        if openssl s_client -connect "127.0.0.1:$ADOPTED_LOCAL_PORT" </dev/null 2>/dev/null \
+            | openssl x509 -noout -text 2>/dev/null | tr -d ' \n' | grep -q "1.3.6.1.4.1.66378.1.5:.*$1"; then
+            rc=0
+            break
+        fi
+        sleep 2
+    done
+    kill "$pf" 2>/dev/null || true
+    return "$rc"
+}
+served_leaf_named "$WEB_ENTRY" || fail "the adopted nginx never served a leaf named $WEB_ENTRY"
+pass "the adopted nginx reloaded onto a leaf named $WEB_ENTRY"
+
+# Revisions above the install's, which is above any the Route API checks
+# stored.
+route_revision "$((INSTALL_REV + 1))" "$WEB_ENTRY" prefix > "$WORKDIR/routes-2.json"
+code="$(cds_write PUT /routes "$WORKDIR/routes-2.json")"
+[ "$code" = "204" ] || fail "route manifest naming $WEB_ENTRY: want HTTP 204, got $code"
+await_route "$ROUTER_HOST" / 200 "Welcome to nginx"
+pass "front door routes / to the adopted workload over TLS, its leaf named $WEB_ENTRY"
+
+# Go's plain-text 404, not nginx's HTML one or the backend's: the routing
+# listener refused them, with the path as the client sent it.
+await_route other.example / 404 "404 page not found"
+await_route "$ROUTER_HOST" /a//b 404 "404 page not found"
+pass "the routing listener answers 404 for an unrouted host and a path with an empty segment"
+
+# router routes in-cluster clients the same way, by the Service name.
 kubectl delete pod it-curl-lb 2>/dev/null || true
 pod_fixture front-door it-curl-lb default curl -sS --cacert /ca/ca.pem \
     "https://c8s-router.$NS.svc/" > "$WORKDIR/curl-lb.yaml"
@@ -672,13 +764,25 @@ case "$BODY" in
     *"Welcome to nginx"*) ;;
     *) fail "front door did not proxy the adopted workload: $BODY" ;;
 esac
-pass "router routes the front door to the adopted workload over the mesh"
+pass "in-cluster front door routes the Service name to the adopted workload"
+
+# No allowlist entry is named web here, so the pod's leaf does not carry that
+# name and the router refuses it (B1), without trying another route (B5).
+route_revision "$((INSTALL_REV + 2))" web exact > "$WORKDIR/routes-3.json"
+code="$(cds_write PUT /routes "$WORKDIR/routes-3.json")"
+[ "$code" = "204" ] || fail "route manifest naming web: want HTTP 204, got $code"
+await_route "$ROUTER_HOST" / 502
+await_route "$ROUTER_HOST" /unrouted 404 "404 page not found"
+pass "a backend whose leaf lacks the route's workload name gets 502; an unrouted path 404"
+
+code="$(cds_get /ca "$WORKDIR/cds-mesh-ca-now.pem")"
+[ "$code" = "200" ] || fail "GET /ca: want HTTP 200, got $code"
+route_revision "$((INSTALL_REV + 3))" "$WEB_ENTRY" prefix "$WORKDIR/cds-mesh-ca-now.pem" > "$WORKDIR/routes-4.json"
+code="$(cds_write PUT /routes "$WORKDIR/routes-4.json")"
+[ "$code" = "422" ] || fail "address backend anchored on the mesh CA: want HTTP 422, got $code"
+pass "CDS refuses an address backend anchored on the mesh CA (422)"
 
 log "Checking the served allowlist pins the host sweep argv"
-# The port-forward can point at a CDS pod the second install rolled; recycle
-# it before reading the served document.
-cds_pf_stop
-cds_pf_start
 curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" > "$WORKDIR/served.json" \
     || fail "could not read the served allowlist"
 python3 - "$WORKDIR/served.json" "$NRI_STORE_DIGEST" <<'PYEOF'

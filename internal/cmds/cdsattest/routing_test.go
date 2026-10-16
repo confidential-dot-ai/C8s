@@ -126,11 +126,12 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
+		Routes:               rs.state,
 	}
 	for _, opt := range opts {
 		opt(&proxyCfg, &srvCfg)
 	}
-	srvCfg.Routing = routing.NewProxy(proxyCfg)
+	srvCfg.Backend = routing.NewProxy(proxyCfg)
 	rs.ts = httptest.NewServer(NewServer(srvCfg).Handler())
 	t.Cleanup(rs.ts.Close)
 	return rs
@@ -483,18 +484,11 @@ func TestCheckRoutingFlags(t *testing.T) {
 		cfg     config
 		wantSub string
 	}{
-		{"legacy", config{upstream: "http://x"}, ""},
 		{"routed", routed(nil), ""},
-		{"routing port without cds", config{routing: routingConfig{port: 8802}}, "--routing-port requires --cds-url"},
-		{"attest off without cds", config{attestOff: true}, "--attest-endpoints=false requires --cds-url"},
-		{"tunnel budget without cds", config{routing: routingConfig{changed: []string{"tunnel-budget"}}}, "--tunnel-budget requires --cds-url"},
-		{"backend timeout without cds", config{routing: routingConfig{changed: []string{"backend-timeout"}}}, "--backend-timeout requires --cds-url"},
+		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
 		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
-		{"cds with upstream", routed(func(c *config) { c.upstream = "http://x" }), "mutually exclusive"},
-		{"cds with upstream ca", routed(func(c *config) { c.upstreamCAFile = "ca" }), "mutually exclusive"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"cds without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
-		{"cds with empty upstream file", routed(func(c *config) { c.upstreamFile = "upstream" }), "mutually exclusive"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},
 		{"non-loopback routing host without port", routed(func(c *config) { c.routing.host = "0.0.0.0" }), "loopback"},
 		{"zero poll interval", routed(func(c *config) { c.routing.pollInterval = 0 }), "--routes-poll-interval"},
@@ -538,16 +532,20 @@ func TestW6OperatorKeySource(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     routingConfig
+		pinned  bool
 		want    routing.KeySource
 		wantErr bool
 	}{
-		{"W6 launch configuration present", routingConfig{operatorKeysFile: present}, routing.KeyFile(present), false},
-		{"W6 launch configuration absent", routingConfig{operatorKeysFile: missing}, cds, false},
-		{"W6 explicit file absent", routingConfig{operatorKeysFile: missing, operatorKeysFileSet: true}, nil, true},
+		{"W6 launch configuration present", routingConfig{operatorKeysFile: present}, true, routing.KeyFile(present), false},
+		{"W6 launch configuration absent", routingConfig{operatorKeysFile: missing}, true, cds, false},
+		{"W6 explicit file absent", routingConfig{operatorKeysFile: missing, operatorKeysFileSet: true}, true, nil, true},
+		{"unpinned CDS with keys file", routingConfig{operatorKeysFile: present}, false, routing.KeyFile(present), false},
+		{"unpinned CDS supplying keys", routingConfig{operatorKeysFile: missing}, false, nil, true},
+		{"unpinned CDS supplying keys, dev opt-in", routingConfig{operatorKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := operatorKeySource(tc.cfg, cds, logger)
+			got, err := operatorKeySource(tc.cfg, tc.pinned, cds, logger)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("operatorKeySource() error = %v, want error %v", err, tc.wantErr)
 			}
@@ -567,6 +565,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"backend-timeout", "1h0m0s"},
 		{"attest-endpoints", "true"},
 		{"operator-keys-file", nodeOperatorKeysFile},
+		{"allow-unpinned-cds", "false"},
 	} {
 		f := flags.Lookup(tc.flag)
 		if f == nil {
@@ -585,30 +584,9 @@ func TestRoutingFlagDefaults(t *testing.T) {
 // the attestation endpoints off, against a CDS that cannot be reached: the
 // routing listener answers 503 (A2) while readiness stays 200.
 func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
-	identity := writeTestMeshIdentity(t)
 	port, routingPort := freePort(t), freePort(t)
-	cfg := config{
-		host:                 "127.0.0.1",
-		port:                 port,
-		logLevel:             "error",
-		meshIdentityCertFile: identity.certFile,
-		meshIdentityKeyFile:  identity.keyFile,
-		meshIdentityCAFile:   identity.caFile,
-		attestationAPIURL:    "http://127.0.0.1:9",
-		readHeaderTimeout:    time.Second,
-		tunnelIOTimeout:      defaultTunnelIOTimeout,
-		attestOff:            true,
-		routing: routingConfig{
-			cdsURL:           "https://127.0.0.1:9",
-			operatorKeysFile: filepath.Join(t.TempDir(), "absent"),
-			pollInterval:     time.Hour,
-			backendTimeout:   time.Hour,
-			host:             "127.0.0.1",
-			port:             routingPort,
-			reservedPaths:    defaultReservedPaths,
-			tunnelBudget:     quantityFlag{bytes: oneRequestBudget, set: true},
-		},
-	}
+	cfg := routedRunConfig(t, port)
+	cfg.routing.port = routingPort
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)

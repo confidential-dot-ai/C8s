@@ -196,7 +196,7 @@ matched.
 | Container | Declared as |
 |---|---|
 | nginx | main |
-| cds-attest, when `router.attest.enabled` | main |
+| cds-attest | main |
 | allowlist-proxy, when `router.renderAllowlistRoute` | main |
 | acme, `c8s-cert`, `c8s-cert-wait` | init |
 
@@ -214,9 +214,8 @@ them.
 `c8s.routerEntryBlocker` returns why the entry cannot be derived, or `""`: the
 router is disabled, `router.nginx.image.digest` or `image.digest` is unset,
 `bootstrapAllowlist.deriveComponents` is false (it supplies the c8s image's
-pin), or no c8s-image main container renders. An argv reference the kubelet
-would expand fails the render in `c8s.kubeletExpand`, so the pinned argv is
-the one the runtime starts.
+pin). An argv reference the kubelet would expand fails the render in
+`c8s.kubeletExpand`, so the pinned argv is the one the runtime starts.
 `c8s.routerWorkloadSeeded` returns `true` when nothing blocks the entry and
 `c8s.routerOperatorGate` is empty.
 
@@ -245,8 +244,8 @@ default keeps the name.
 
 `router.expectedWorkload` defaults the cds-attest readiness gate to
 `c8s.routerWorkloadName` when `router.defaultGate` holds: the gate is unset, the
-entry is seeded, `router.attest.enabled` is true, `router.hostPort.enabled` is
-false, and the inventory is reachable. An explicit string, including `""`, wins;
+entry is seeded, `router.hostPort.enabled` is false, and the inventory is
+reachable. An explicit string, including `""`, wins;
 any other non-null value fails the render. An explicit `c8s-router-*` value
 fails the render unless it equals the derived name; when nothing is derivable
 the message names `c8s.routerEntryBlocker`'s cause.

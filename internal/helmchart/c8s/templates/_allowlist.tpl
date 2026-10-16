@@ -655,7 +655,6 @@
 {{- /* The entry pins the c8s image's containers like its component entry,
        which deriveComponents seeds. */ -}}
 {{- else if not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents -}}nriImagePolicy.bootstrapAllowlist.deriveComponents is false
-{{- else if not (or .Values.router.attest.enabled (eq (include "router.renderAllowlistRoute" .) "true")) -}}no router container runs the c8s image
 {{- end -}}
 {{- end -}}
 

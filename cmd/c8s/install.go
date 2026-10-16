@@ -4,6 +4,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -30,6 +32,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	"github.com/confidential-dot-ai/c8s/internal/deployment"
@@ -214,8 +217,8 @@ func seedPins(m map[string]any) (entrypoint []string, imageEnv map[string]string
 // operatorKeysPreflight enforces that installing without pinned operator keys is
 // a deliberate choice. On the default path — no --operator-keys and no -f values
 // file that could carry cds.operatorKeys — it requires --force, because the
-// resulting CDS has allowlist writes disabled and nobody could add/remove/upload
-// allowlist entries via `c8s allowlist`. When keys are supplied, or the operator
+// resulting CDS has allowlist writes disabled and stores no route manifest, so
+// nobody could change allowlist entries and the router routes nothing. When keys are supplied, or the operator
 // is managing values via -f, it is a no-op.
 func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool) (warn string, err error) {
 	if operatorKeys != "" || len(valuesFiles) > 0 {
@@ -224,7 +227,47 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 	if !force {
 		return "", fmt.Errorf("no operator keys provided: allowlist writes will be DISABLED — nobody can add/remove/upload allowlist entries via `c8s allowlist`. Re-run with --operator-keys <file> to enable writes, or --force to install with writes disabled anyway")
 	}
-	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work until you set cds.operatorKeys and reinstall", nil
+	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work, and CDS stores no route manifest, so the router answers 503 to every application request, until you set cds.operatorKeys and reinstall", nil
+}
+
+// routeSourcePreflight refuses an install whose router would take its route
+// manifest keys from an unpinned CDS: no CDS pin, no --operator-keys, and no
+// router.routing.allowUnpinnedCDS=true. The chart fails that render too; this
+// names the install flags before anything runs.
+func routeSourcePreflight(measurements []string, measurementsConfig, operatorKeys string, valuesFiles []string) error {
+	if len(measurements) > 0 || measurementsConfig != "" || operatorKeys != "" {
+		return nil
+	}
+	values := map[string]any{}
+	for _, f := range valuesFiles {
+		tree, err := decodeValuesFile(f)
+		if err != nil {
+			return err
+		}
+		for _, path := range []string{"router.enabled", "node.baked", "router.routing.allowUnpinnedCDS", "cds.measurements", "cds.measurementsConfig", "cds.operatorKeys"} {
+			if v, ok := valueAtPath(tree, path); ok {
+				values[path] = v
+			}
+		}
+	}
+	set := func(path string) bool {
+		switch v := values[path].(type) {
+		case string:
+			return v != ""
+		case []any:
+			return len(v) > 0
+		case bool:
+			return v
+		}
+		return false
+	}
+	if enabled, ok := values["router.enabled"].(bool); ok && !enabled {
+		return nil
+	}
+	if set("node.baked") || set("router.routing.allowUnpinnedCDS") || set("cds.measurements") || set("cds.measurementsConfig") || set("cds.operatorKeys") {
+		return nil
+	}
+	return errors.New("the router would take its route manifest keys from an unpinned CDS, so any attested TEE answering as CDS could choose both the routes and their keys: pin CDS with --measurements (or --image-policy-file), pin the operator keys with --operator-keys, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true in a -f values file")
 }
 
 // tdxRTMRPinWarning is the "MRTD does not confer code identity" warning for a
@@ -1003,13 +1046,32 @@ The release namespace is excluded from workload injection, so adopted workloads
 must live in a separate namespace. After the chart is ready, install patches each
 workload's pod template with confidential.ai/cw=<id>; the rollout then goes
 through the c8s webhook and the operator provisions the c8s-<id> headless Service.
-To front one of them behind router, give that ref a :<port> and pass --upstream <id>;
-router routes its catch-all to that adopted workload's headless Service
-(c8s-<id>.<ns>.svc.cluster.local:<port>). With --resolve-digests, install also
-resolves adopted workload images into nriImagePolicy.bootstrapAllowlist.workloads
-entries admitting them under any command and args, so image admission (the host
-NRI plugin) allows those
-rollouts.
+With --resolve-digests, install also writes one
+nriImagePolicy.bootstrapAllowlist.workloads entry per adopted workload, named
+after its cw id and listing every image of its pod template under any command
+and args, with mounts limited to the injected cert volume and the template's
+memory-backed emptyDirs, so image admission (the host NRI plugin) allows the
+rollout and CDS stamps the cw id on the workload's certificate. A template
+mounting anything else, or a subPath of those, gets an entry admitting any
+mounts and a warning: CDS still names the pod, so a route written to it later
+trusts those mounts. For the --upstream workload install refuses instead;
+write its entry with 'c8s allowlist'. Install refuses an adoption whose pod another entry of the
+seed also describes, since CDS would then name it nothing.
+
+The router routes only by the operator-signed route manifest on CDS, verified
+under --operator-keys. Without --operator-keys or a CDS pin (--measurements or
+--image-policy-file) install refuses, unless a -f file sets
+router.routing.allowUnpinnedCDS=true (development clusters only). To front an
+adopted workload, give its ref the :<port> it serves TLS on, with its get-cert
+certificate, and pass --upstream <id>: install builds a manifest whose every
+router.san DNS name routes / to c8s-<id>.<ns>.svc.cluster.local:<port>, verified
+as the allowlist entry <id>. With --operator-key (or C8S_OPERATOR_KEY) install
+signs it and stores it on CDS once the release is ready, keeping the routes of a
+manifest CDS already stores (verified against --operator-keys). Without one, or
+when storing fails, it writes the manifest to --routes-out and prints the
+'c8s routes add' commands that store the route. Its revision is the later of
+the stored one plus one and the current Unix time in seconds, or
+--routes-revision. The router answers 503 until a manifest is stored.
 
 Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 --resolve-digests=false.`,
@@ -1035,7 +1097,18 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err := validateWorkloadAdoptionFlags(installNamespace, adoptions, installWait); err != nil {
 			return err
 		}
-		if _, err := upstreamAddress(installUpstream, adoptions); err != nil {
+		upstream, err := upstreamAddress(installUpstream, adoptions)
+		if err != nil {
+			return err
+		}
+		installRoutesOutSet, installRoutesMaxAgeSet = cmd.Flags().Changed("routes-out"), cmd.Flags().Changed("routes-max-age")
+		if err := preflightUpstreamRoutes(); err != nil {
+			return err
+		}
+		if err := preflightRoutesOut(); err != nil {
+			return err
+		}
+		if err := routeSourcePreflight(installMeasurements, installMeasurementsConfig, installOperatorKeys, installValues); err != nil {
 			return err
 		}
 		if warn, err := operatorKeysPreflight(installOperatorKeys, installValues, installForce); err != nil {
@@ -1061,14 +1134,14 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		// discards workloadImages: this is the only pre-install existence check,
 		// so it fails fast before any helm install or post-install patch runs.
 		// Don't gate it on installResolveDigests.
-		workloadImages := []string{}
+		adopted := make([]adoptedWorkload, 0, len(adoptions))
 		for _, adoption := range adoptions {
-			images, err := adoptedWorkloadImages(cmd.Context(), adoption.ref)
+			template, err := adoptedWorkloadTemplate(cmd.Context(), adoption.ref)
 			if err != nil {
 				return err
 			}
-			reportAdoptedImages(adoption, images)
-			workloadImages = append(workloadImages, images...)
+			reportAdoptedImages(adoption, podTemplateImages(template).all())
+			adopted = append(adopted, adoptedWorkload{workloadAdoption: adoption, template: template})
 		}
 
 		dir, err := extractChart()
@@ -1124,8 +1197,9 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err != nil {
 			return err
 		}
+		var adoptedEntries map[string]adoptedEntry
 		if installResolveDigests {
-			setArgs, err = appendResolvedWorkloadImageArgs(cmd.Context(), setArgs, workloadImages)
+			setArgs, adoptedEntries, err = appendResolvedWorkloadImageArgs(cmd.Context(), setArgs, adopted, installUpstream)
 			if err != nil {
 				return err
 			}
@@ -1178,6 +1252,27 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err != nil {
 			return err
 		}
+		if err := checkAdoptedEntries(adoptedEntries, values); err != nil {
+			return err
+		}
+		var routes upstreamRoutes
+		var cds cdsTarget
+		if upstream != "" {
+			hosts, skipped := routeHosts(values, installRelease, installNamespace)
+			for _, san := range skipped {
+				fmt.Fprintf(os.Stderr, "warning: router.san entry %q cannot be a route manifest host, so --%s routes no requests for it\n", san, flagUpstream)
+			}
+			if len(hosts) == 0 {
+				return fmt.Errorf("--%s needs a DNS name in router.san to route requests for: a route manifest host cannot be a wildcard, an IP address or end in a numeric label", flagUpstream)
+			}
+			routes = upstreamRoutes{hosts: hosts, address: upstream, workload: installUpstream}
+			if !installResolveDigests {
+				fmt.Fprintf(os.Stderr, "warning: --resolve-digests=false writes no allowlist entry named %q, so the router refuses the %s backend until an entry of that name describes its pod (c8s allowlist)\n", installUpstream, installUpstream)
+			}
+			if cds, err = installCDSTarget(values); err != nil {
+				return err
+			}
+		}
 
 		// Fail fast when the policy this install renders would deny the
 		// cluster's own platform pods: registering the plugin restarts
@@ -1208,6 +1303,11 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		}
 		for _, adoption := range adoptions {
 			if err := patchAdoptedWorkload(cmd.Context(), adoption.ref, adoption.cwID); err != nil {
+				return err
+			}
+		}
+		if upstream != "" {
+			if err := deliverUpstreamRoutes(cmd.Context(), os.Stdout, routes, cds, adoptedEntries); err != nil {
 				return err
 			}
 		}
@@ -1502,8 +1602,8 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 			"--set-string", "armtlsMesh.platform=tdx",
 		)
 	}
-	// The router attestation sidecar is on by default (chart default); --attest=false
-	// omits it. When on, it passes this platform straight to the attestation-api
+	// The router attestation endpoints are on by default (chart default);
+	// --attest=false turns them off. When on, the sidecar passes this platform straight to the attestation-api
 	// as the evidence request, so the value must name the evidence SHAPE, not just
 	// the silicon: under aks the evidence is the Azure vTPM HCL report (az-snp /
 	// az-tdx), and the bare snp/tdx values would ask for /dev/sev-guest //dev/tdx_guest
@@ -1751,8 +1851,8 @@ type workloadRef struct {
 	kind      string
 	name      string
 	namespace string
-	// port is the router upstream port from the ref's optional :<port> suffix,
-	// or 0 when absent. Only consumed for the ref --upstream selects.
+	// port is the TLS port from the ref's optional :<port> suffix, or 0 when
+	// absent. Only consumed for the ref --upstream selects.
 	port int
 }
 
@@ -1776,11 +1876,10 @@ func validateWorkloadAdoptionFlags(releaseNamespace string, adoptions []workload
 	return nil
 }
 
-// upstreamAddress derives router's upstream from --upstream (a cw id that must
-// name an adopted workload): the selected workload's headless-Service FQDN with
-// the port from that ref's :<port> suffix appended, so router dials the Service
-// the operator provisions. Empty --upstream yields "" (router.upstream.address is
-// used as-is).
+// upstreamAddress derives the --upstream route's backend address from the
+// adopted workload it names: its headless-Service FQDN with the port from that
+// ref's :<port> suffix, so the router dials the Service the operator
+// provisions. Empty --upstream yields "".
 func upstreamAddress(upstream string, adoptions []workloadAdoption) (string, error) {
 	if upstream == "" {
 		return "", nil
@@ -1895,7 +1994,7 @@ func parseWorkloadRef(ref, flagName string) (workloadRef, error) {
 }
 
 func errWorkloadRefFormat(flagName string) error {
-	return fmt.Errorf("--%s must be <cw-id>=<namespace>/<kind>/<name>[:<port>] (kind is any resource exposing a pod template at spec.template, e.g. deployment, statefulset, daemonset, or an operator CRD; :<port> is the router upstream port, required on the --upstream ref)", flagName)
+	return fmt.Errorf("--%s must be <cw-id>=<namespace>/<kind>/<name>[:<port>] (kind is any resource exposing a pod template at spec.template, e.g. deployment, statefulset, daemonset, or an operator CRD; :<port> is the TLS port the router dials, required on the --upstream ref)", flagName)
 }
 
 // normalizeWorkloadKind canonicalizes the built-in aliases and passes any other
@@ -1944,16 +2043,16 @@ func confidentialWorkloadPatch(workloadID string) ([]byte, error) {
 	return json.Marshal(patch)
 }
 
-func adoptedWorkloadImages(ctx context.Context, ref workloadRef) ([]string, error) {
+func adoptedWorkloadTemplate(ctx context.Context, ref workloadRef) (corev1.PodTemplateSpec, error) {
 	out, err := exec.CommandContext(ctx, "kubectl", "get", ref.kind, ref.name, "-n", ref.namespace, "-o", "json").CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("preflight adopted workload %s/%s in namespace %s: kubectl get failed: %w: %s", ref.kind, ref.name, ref.namespace, err, strings.TrimSpace(string(out)))
+		return corev1.PodTemplateSpec{}, fmt.Errorf("preflight adopted workload %s/%s in namespace %s: kubectl get failed: %w: %s", ref.kind, ref.name, ref.namespace, err, strings.TrimSpace(string(out)))
 	}
 	template, err := workloadPodTemplate(out)
 	if err != nil {
-		return nil, fmt.Errorf("read adopted workload %s/%s in namespace %s: %w", ref.kind, ref.name, ref.namespace, err)
+		return corev1.PodTemplateSpec{}, fmt.Errorf("read adopted workload %s/%s in namespace %s: %w", ref.kind, ref.name, ref.namespace, err)
 	}
-	return podTemplateImages(template), nil
+	return template, nil
 }
 
 // reportAdoptedImages prints the images C8s pins into the NRI allowlist for one
@@ -1997,21 +2096,35 @@ func workloadPodTemplate(data []byte) (corev1.PodTemplateSpec, error) {
 	return workload.Spec.Template, nil
 }
 
-func podTemplateImages(template corev1.PodTemplateSpec) []string {
+// podImages are a pod template's images, init and main containers apart: a
+// declared init container may have exited, so an allowlist entry must list it
+// as one or a pod past its init phase would not match it.
+type podImages struct {
+	Init []string
+	Main []string
+}
+
+// all returns every image once, init containers first.
+func (p podImages) all() []string {
+	return append(slices.Clone(p.Init), p.Main...)
+}
+
+func podTemplateImages(template corev1.PodTemplateSpec) podImages {
+	var images podImages
 	seen := map[string]bool{}
-	var images []string
-	add := func(image string) {
-		if image == "" || seen[image] {
-			return
+	// Main first: an image that also runs as an init container is declared
+	// once, as a main, which admits it in both roles.
+	for _, c := range template.Spec.Containers {
+		if c.Image != "" && !seen[c.Image] {
+			seen[c.Image] = true
+			images.Main = append(images.Main, c.Image)
 		}
-		seen[image] = true
-		images = append(images, image)
 	}
 	for _, c := range template.Spec.InitContainers {
-		add(c.Image)
-	}
-	for _, c := range template.Spec.Containers {
-		add(c.Image)
+		if c.Image != "" && !seen[c.Image] {
+			seen[c.Image] = true
+			images.Init = append(images.Init, c.Image)
+		}
 	}
 	// EphemeralContainers are intentionally skipped: they cannot be set on a
 	// workload pod template (only added to a live Pod via the ephemeralcontainers
@@ -2019,50 +2132,260 @@ func podTemplateImages(template corev1.PodTemplateSpec) []string {
 	return images
 }
 
-func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, images []string) ([]string, error) {
-	return buildWorkloadImageArgs(helmArgs, images, func(ref string) (string, error) {
+// adoptedWorkload is one --workload-ref with its pod template.
+type adoptedWorkload struct {
+	workloadAdoption
+	template corev1.PodTemplateSpec
+}
+
+// injectedMountRules are the exact mount rules of one container of an adopted
+// pod once the webhook has injected it: the memory-backed cert volume every
+// container mounts, and the container's own memory-backed emptyDirs. Any other
+// volume refuses the entry. A hostPath is host-controlled content under the
+// app; a disk emptyDir, ConfigMap, Secret or PVC is content an exact rule
+// cannot admit outside volumed's data directory. A subPath mount is a data
+// mount to the node, and a webhook-injected secrets or encrypted volume adds
+// mounts install does not model either.
+func injectedMountRules(template corev1.PodTemplateSpec, c corev1.Container) ([]string, error) {
+	for _, a := range []string{webhook.AnnotationSecrets, webhook.AnnotationVolumes} {
+		if template.Annotations[a] != "" {
+			return nil, fmt.Errorf("it requests %s, whose injected mounts install does not model", a)
+		}
+	}
+	certVolume := cmp.Or(template.Annotations[webhook.AnnotationCertVolume], webhook.DefaultCertVolumeName)
+	certDir := cmp.Or(template.Annotations[webhook.AnnotationCertDir], webhook.CertDir)
+	if !path.IsAbs(certDir) {
+		return nil, fmt.Errorf("annotation %s is %q; set it to an absolute path", webhook.AnnotationCertDir, certDir)
+	}
+	certDir = path.Clean(certDir)
+	volumes := map[string]corev1.Volume{}
+	for _, v := range template.Spec.Volumes {
+		volumes[v.Name] = v
+	}
+	var dests []string
+	mountsCerts := false
+	for _, m := range c.VolumeMounts {
+		v, ok := volumes[m.Name]
+		switch {
+		case m.SubPath != "" || m.SubPathExpr != "":
+			return nil, fmt.Errorf("container %s mounts a subPath of volume %s at %s, which the node observes as a data mount", c.Name, m.Name, m.MountPath)
+		case !ok && m.Name == certVolume:
+		case !ok:
+			return nil, fmt.Errorf("container %s mounts undeclared volume %s", c.Name, m.Name)
+		case v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory:
+			return nil, fmt.Errorf("container %s mounts volume %s at %s, which is not a memory-backed emptyDir", c.Name, m.Name, m.MountPath)
+		}
+		mountsCerts = mountsCerts || m.Name == certVolume
+		dests = append(dests, path.Clean(m.MountPath))
+	}
+	if !mountsCerts {
+		dests = append(dests, certDir)
+	}
+	sort.Strings(dests)
+	return dests, nil
+}
+
+// adoptedEntry is the allowlist entry install writes for one adopted workload
+// and the pod CDS matches it against once the pod runs: its main containers
+// and native sidecars, with the mounts the node observes. A completed init
+// container is not in pod; the entry declares it, so it may be absent.
+type adoptedEntry struct {
+	workload pkgallowlist.Workload
+	pod      []pkgallowlist.RunningContainer
+}
+
+func appendResolvedWorkloadImageArgs(ctx context.Context, helmArgs []string, workloads []adoptedWorkload, upstream string) ([]string, map[string]adoptedEntry, error) {
+	return buildWorkloadImageArgs(helmArgs, workloads, upstream, os.Stderr, func(ref string) (string, error) {
 		digest, err := crane.Digest(ctx, ref)
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(os.Stderr, "+ resolved adopted workload image %s -> %s\n", ref, digest)
 		return digest, nil
 	})
 }
 
-// buildWorkloadImageArgs renders one any-argv bootstrapAllowlist.workloads
-// entry per adopted image digest, named and shaped as `c8s allowlist add`
-// writes one (pkgallowlist.DigestEntry).
-func buildWorkloadImageArgs(helmArgs []string, images []string, resolve func(ref string) (string, error)) ([]string, error) {
-	entries := map[string]string{}
-	digests := map[string]types.Digest{}
-	for _, image := range images {
-		digest, ref, err := workloadImageAllowlistEntry(image, resolve)
+// buildWorkloadImageArgs renders one bootstrapAllowlist.workloads entry per
+// adopted workload, named after its cw id and declaring every container of its
+// pod template, in its own role, under any command, args and env. Mounts are
+// exact: each container may mount only what the injected pod mounts
+// (injectedMountRules), so a host that adds a hostPath over the app's code or
+// config gets no admission and no name. Containers with the same image and
+// mounts are declared once; an init container also run as a main is admitted
+// by the main. One entry for the whole container set is what lets CDS match a
+// multi-container pod and stamp the cw id on its leaf, which a workload route
+// backend requires (route policy B1).
+//
+// A workload whose mounts cannot be modelled exactly is refused when it is the
+// upstream cw id; any other gets an entry admitting any mounts, a warning on
+// warn, and no entry in the returned map.
+func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upstream string, warn io.Writer, resolve func(ref string) (string, error)) ([]string, map[string]adoptedEntry, error) {
+	entries := map[string]adoptedEntry{}
+	for _, w := range workloads {
+		prefix := "nriImagePolicy.bootstrapAllowlist.workloads." + w.cwID + "."
+		label := w.ref.namespace + "/" + w.ref.kind + "/" + w.ref.name
+		helmArgs = append(helmArgs, "--set-string", prefix+"label="+label)
+		e := adoptedEntry{workload: pkgallowlist.Workload{Label: label}}
+		containers := slices.Concat(w.template.Spec.Containers, w.template.Spec.InitContainers)
+		mounts := make([][]string, len(containers))
+		exact := true
+		for i, c := range containers {
+			if c.Image == "" {
+				continue
+			}
+			var err error
+			if mounts[i], err = injectedMountRules(w.template, c); err != nil {
+				if w.cwID == upstream {
+					return nil, nil, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist), or pass --resolve-digests=false", w.cwID, err, w.cwID)
+				}
+				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry with any mounts, so a route to it trusts those mounts\n", w.cwID, err)
+				exact = false
+				break
+			}
+		}
+		mains := len(w.template.Spec.Containers)
+		for i, c := range containers {
+			if c.Image == "" {
+				continue
+			}
+			digest, ref, err := workloadImageAllowlistEntry(c.Image, resolve)
+			if err != nil {
+				return nil, nil, err
+			}
+			declared := adoptedContainer(digest, ref, mounts[i], exact)
+			init := i >= mains
+			if !init || c.RestartPolicy != nil && *c.RestartPolicy == corev1.ContainerRestartPolicyAlways {
+				e.pod = append(e.pod, observedContainer(digest, mounts[i]))
+			}
+			same := func(o pkgallowlist.Container) bool {
+				return o.Digest == declared.Digest && slices.Equal(o.Mounts.Rules, declared.Mounts.Rules)
+			}
+			if slices.ContainsFunc(e.workload.Containers, same) || init && slices.ContainsFunc(e.workload.InitContainers, same) {
+				continue
+			}
+			field, list := "containers", &e.workload.Containers
+			if init {
+				field, list = "initContainers", &e.workload.InitContainers
+			}
+			helmArgs = append(helmArgs, containerArgs(fmt.Sprintf("%s%s[%d].", prefix, field, len(*list)), declared)...)
+			*list = append(*list, declared)
+		}
+		if exact {
+			entries[w.cwID] = e
+		}
+	}
+	return helmArgs, entries, nil
+}
+
+// adoptedContainer declares digest under any command, args and env. With
+// exact, it mounts exactly the memory-backed emptyDirs at dests; without, any
+// mounts. No mount policy would deny the injected certificate volume, so the
+// node would never admit the pod.
+func adoptedContainer(digest types.Digest, ref string, dests []string, exact bool) pkgallowlist.Container {
+	c := pkgallowlist.Container{
+		Digest:  digest,
+		Image:   ref,
+		Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
+		Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
+		Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyAny},
+	}
+	if exact {
+		rules := make([]pkgallowlist.MountRule, 0, len(dests))
+		for _, dest := range dests {
+			rules = append(rules, pkgallowlist.MountRule{Destination: dest, Kind: pkgallowlist.MountEmptyDir})
+		}
+		c.Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: rules}
+	} else {
+		c.Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}
+	}
+	return c
+}
+
+// observedContainer is digest running with the memory-backed emptyDirs at
+// dests, as the node reports it. Its argv is unknown to install.
+func observedContainer(digest types.Digest, dests []string) pkgallowlist.RunningContainer {
+	mounts := []pkgallowlist.ObservedMount{}
+	for _, dest := range dests {
+		mounts = append(mounts, pkgallowlist.ObservedMount{Destination: dest, Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory})
+	}
+	return pkgallowlist.RunningContainer{Digest: digest.String(), Argv: []string{}, Mounts: mounts}
+}
+
+func containerArgs(key string, c pkgallowlist.Container) []string {
+	args := []string{
+		"--set-string", key + "digest=" + c.Digest.String(),
+		"--set-string", key + "image=" + c.Image,
+		"--set-string", key + "command.policy=any",
+		"--set-string", key + "args.policy=any",
+		"--set-string", key + "env.policy=any",
+	}
+	if c.Mounts.Policy != "" {
+		args = append(args, "--set-string", key+"mounts.policy="+c.Mounts.Policy)
+	}
+	for i, r := range c.Mounts.Rules {
+		rule := fmt.Sprintf("%smounts.rules[%d].", key, i)
+		args = append(args, "--set-string", rule+"destination="+r.Destination, "--set-string", rule+"kind="+string(r.Kind))
+	}
+	return args
+}
+
+// describers returns, sorted, the entries that describe pod once their
+// command, args and env admit any: install cannot see the pod's argv or env,
+// so an entry admitting its images and mounts under some argv counts.
+func describers(workloads map[string]pkgallowlist.Workload, pod []pkgallowlist.RunningContainer) []string {
+	var names []string
+	for name, w := range workloads {
+		if anyProcess(w).Diff(pod).Describes() {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// checkAdoptedEntries refuses an adopted workload whose pod another entry of
+// the seed this install renders also describes. CDS would then match neither,
+// the pod's leaf would carry no workload name, and the router would refuse it
+// as a workload backend. The seed is the chart's own (seedWorkloads).
+func checkAdoptedEntries(adopted map[string]adoptedEntry, values map[string]any) error {
+	if len(adopted) == 0 {
+		return nil
+	}
+	seed, err := seedWorkloads(values)
+	if err != nil {
+		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(adopted)) {
+		names := describers(seed, adopted[name].pod)
+		if !slices.Contains(names, name) {
+			return fmt.Errorf("the allowlist entry %s does not describe the pod of adopted workload %s; drop the -f entry of that name", name, name)
+		}
+		if others := slices.DeleteFunc(names, func(n string) bool { return n == name }); len(others) > 0 {
+			return fmt.Errorf("adopted workload %s runs only images and mounts that allowlist entries %s also admit, so CDS cannot tell which entry names its pod and stamps none; give it an image of its own", name, strings.Join(others, ", "))
+		}
+	}
+	return nil
+}
+
+// seedWorkloads mirrors the chart's c8s.allowlistSeedJSON from the values it
+// renders, less the entries that pin their command lines: the
+// bootstrapAllowlist.workloads entries. A component entry pins its command,
+// args and mount table (c8s.podShapes), so it describes only the component's
+// own pod.
+func seedWorkloads(values map[string]any) (map[string]pkgallowlist.Workload, error) {
+	seed := map[string]pkgallowlist.Workload{}
+	workloads, _ := nestedMap(values, "nriImagePolicy", "bootstrapAllowlist", "workloads")
+	for name, raw := range workloads {
+		data, err := json.Marshal(raw)
 		if err != nil {
 			return nil, err
 		}
-		if _, ok := entries[digest.String()]; !ok {
-			entries[digest.String()] = ref
-			digests[digest.String()] = digest
+		w, err := pkgallowlist.ParseWorkloadJSON(data)
+		if err != nil {
+			return nil, fmt.Errorf("nriImagePolicy.bootstrapAllowlist.workloads.%s: %w", name, err)
 		}
+		seed[name] = *w
 	}
-	keys := make([]string, 0, len(entries))
-	for digest := range entries {
-		keys = append(keys, digest)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		ref := entries[key]
-		prefix := "nriImagePolicy.bootstrapAllowlist.workloads." + pkgallowlist.DigestEntryName(digests[key], ref) + "."
-		helmArgs = append(helmArgs,
-			"--set-string", prefix+"label="+ref,
-			"--set-string", prefix+"containers[0].digest="+key,
-			"--set-string", prefix+"containers[0].image="+ref,
-			"--set-string", prefix+"containers[0].command.policy=any",
-			"--set-string", prefix+"containers[0].args.policy=any",
-		)
-	}
-	return helmArgs, nil
+	return seed, nil
 }
 
 func workloadImageAllowlistEntry(image string, resolve func(ref string) (string, error)) (digest types.Digest, ref string, err error) {
@@ -2219,35 +2542,13 @@ func effectiveValues(ctx context.Context, chartPath string, setArgs []string) (m
 		}
 		helmchart.MergeValues(tree, overlay)
 	}
-	if err := overlaySetArgs(tree, setArgs); err != nil {
+	// The computed values reach helm as the last -f file, which replaces
+	// lists rather than merging their elements.
+	computed, err := valueArgsToTree(setArgs)
+	if err != nil {
 		return nil, err
 	}
-	return tree, nil
-}
-
-// overlaySetArgs applies the scalar --set/--set-string overrides in setArgs onto
-// tree (--set values are type-coerced, --set-string stay strings). --set-file is
-// skipped: it names a file and never carries a component enable toggle.
-func overlaySetArgs(tree map[string]any, setArgs []string) error {
-	for i := 0; i+1 < len(setArgs); i += 2 {
-		flag, kv := setArgs[i], setArgs[i+1]
-		before, after, ok := strings.Cut(kv, "=")
-		if !ok {
-			continue
-		}
-		path, raw := before, after
-		var err error
-		switch flag {
-		case "--set":
-			err = setNested(tree, strings.Split(path, "."), coerce(raw, true))
-		case "--set-string":
-			err = setNested(tree, strings.Split(path, "."), raw)
-		}
-		if err != nil {
-			return fmt.Errorf("overlay %s %s: %w", flag, kv, err)
-		}
-	}
-	return nil
+	return helmchart.MergeValues(tree, computed), nil
 }
 
 // buildDigestArgs appends, for every component, the --set flags that pin both
@@ -2318,19 +2619,23 @@ func init() {
 	installCmd.Flags().BoolVar(&installGetCertRunAsNonRoot, "webhook-get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
 	installCmd.Flags().BoolVar(&installSingleNode, "single-node", false, "single-node / single-CVM cluster: clear the dedicated-CDS-node selector and taint toleration so every node is CDS-eligible (no role=cds label or dedicated node needed). Sets cds.node.selector={} and cds.node.tolerations=[]")
 	installCmd.Flags().BoolVar(&installVolumes, "volumes", false, "serve encrypted volumes (docs/volumes.md): deploy volumed, the node agent that opens a pod's volume devices, and pin its image into the NRI allowlist. Off by default — it runs privileged, with hostPID and a writable bind of the kubelet directory")
-	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the router upstream port, needed on the ref --upstream selects")
-	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload router routes its catch-all to; derives the mesh-wrapped upstream c8s-<id>.<ns>.svc.cluster.local:<port> from that ref's :<port>. Without this or a verified-https router.upstream, router renders no catch-all route until one is attached")
+	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the port the workload serves TLS on with its get-cert certificate, needed on the ref --upstream selects")
+	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload to route / to: writes a route manifest naming c8s-<id>.<ns>.svc.cluster.local:<port> (that ref's :<port>, serving TLS on its get-cert certificate) and the allowlist entry <id>, for every router.san DNS name")
+	installCmd.Flags().StringVar(&installOperatorKey, flagOperatorKey, "", "operator EC private key PEM (env "+cdsconn.EnvOperatorKey+") that signs the --upstream route manifest; install then stores it on CDS, pinned by --measurements and --rtmrs, or --image-policy-file. Without it the manifest goes to --routes-out. Requires --upstream")
+	installCmd.Flags().StringVar(&installRoutesOut, "routes-out", "routes.json", "file the --upstream route manifest is written to when no --operator-key signs it, or when install cannot store it on CDS")
+	installCmd.Flags().Uint64Var(&installRoutesRevision, "routes-revision", 0, "revision of the --upstream route manifest, above the one CDS stores; default the later of the stored revision plus one and the current Unix time. After a CDS reset, pass one above the highest revision any router applied")
+	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from CDS; application routing goes on regardless. A manifest CDS already stores keeps its own")
 	installCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM: our own TDX/SNP nodes are themselves confidential VMs, pods run as ordinary processes, attestation-api + nri baked into the node image), gke (GKE managed confidential VMs), or aks (vTPM /dev/tpm0). bare-metal/gke/aks are node-as-CVM shapes: the node is one trust domain, so they are single-tenant")
 	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
-	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "deploy the router attestation sidecar serving /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; pass --attest=false to omit it")
+	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "serve the router's attestation endpoints under /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; --attest=false turns them off, while the cds-attest sidecar keeps routing application requests")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
 	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Pins the internal mesh (cds.measurements + armtlsMesh.measurements); empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
 	cmdsutil.BindImagePolicyFlags(installCmd.Flags(), &installMeasurementsConfig, nil, "", "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
 	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs + armtlsMesh.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
-	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes; sets cds.operatorKeys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
+	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes and route manifests; sets cds.operatorKeys, which also pins the router's keys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
 	installCmd.Flags().BoolVar(&installForce, "force", false, "proceed past guarded prompts — currently: install without --operator-keys (allowlist writes disabled), and a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
 	rootCmd.AddCommand(installCmd)
 }
