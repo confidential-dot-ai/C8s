@@ -527,6 +527,9 @@ func validateConfig(cfg config) error {
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
 	}
+	if cfg.followSeed && cfg.allowlistSeed == "" {
+		return fmt.Errorf("--follow-seed needs --allowlist-seed")
+	}
 	if err := validateSecretsConfig(cfg); err != nil {
 		return err
 	}

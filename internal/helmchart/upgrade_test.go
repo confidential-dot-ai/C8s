@@ -300,3 +300,29 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		}
 	}
 }
+
+// Following the seed lets whoever edits its ConfigMap publish entries, so CDS
+// follows it only when cds.followSeed asks.
+func TestChartCDSFollowsSeedOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		follow bool
+	}{
+		{name: "default"},
+		{name: "off", args: []string{"--set", "cds.followSeed=false"}},
+		{name: "on", args: []string{"--set", "cds.followSeed=true"}, follow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+			if got := slices.Contains(args, "--follow-seed"); got != tc.follow {
+				t.Errorf("CDS args contain --follow-seed = %t, want %t: %q", got, tc.follow, args)
+			}
+		})
+	}
+}
