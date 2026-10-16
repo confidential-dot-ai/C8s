@@ -5,9 +5,9 @@
 # Needs kubectl pointed at a cluster with C8s installed. Under fail-closed image
 # admission the workload digest must be allowlisted first: set C8S_OPERATOR_KEY
 # with C8S_ALLOWLIST_URL and C8S_MEASUREMENTS_CONFIG (or C8S_MEASUREMENTS)
-# and this applies an entry pinning the sample's argv (derived with `crane`
-# on PATH). The router runs the same nginx digest, so an entry admitting any
-# launch of it would shadow the router's entry and lint refuses it.
+# and this applies an entry for it (`crane` and `jq` on PATH). The sample runs
+# nginx through its entrypoint, a component invocation, so lint requires the
+# entry to pin argv, mounts and env as the chart pins the router's.
 # Audit mode admits it without them.
 set -euo pipefail
 . "$(dirname "$0")/lib.sh"
@@ -35,8 +35,22 @@ image=$(grep -oE '[[:graph:]]+@sha256:[0-9a-f]{64}' "$manifest" | head -1)
 if [ -n "${C8S_OPERATOR_KEY:-}" ]; then
   : "${C8S_ALLOWLIST_URL:?needed alongside C8S_OPERATOR_KEY}"
   cds_measurement_args
+  pins="$(mktemp -d)"
+  # Mounts: the certificate volume the webhook adds. Env: the image's
+  # variables, then those containerd and the kubelet add with service links
+  # off, as the chart's c8s.runtimeEnv; the sample sets none of its own.
+  echo '{"nginx": {"policy": "exact", "rules": [{"destination": "/etc/c8s/certs", "kind": "emptyDir"}]}}' >"$pins/mounts.json"
+  crane config "$image" | jq '
+    {PATH: {exact: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}}
+    + ((.config.Env // []) | map(capture("^(?<k>[^=]*)=(?<v>.*)$") | {(.k): {exact: .v}}) | add // {})
+    | {nginx: {policy: "match", variables: ({HOSTNAME: {present: true},
+        KUBERNETES_SERVICE_HOST: {present: true}, KUBERNETES_SERVICE_PORT: {exact: "443"},
+        KUBERNETES_SERVICE_PORT_HTTPS: {exact: "443"}, KUBERNETES_PORT: {present: true},
+        KUBERNETES_PORT_443_TCP: {present: true}, KUBERNETES_PORT_443_TCP_ADDR: {present: true},
+        KUBERNETES_PORT_443_TCP_PORT: {exact: "443"}, KUBERNETES_PORT_443_TCP_PROTO: {exact: "tcp"}} + .)}}' \
+    >"$pins/env.json" || fail "no image config for $image"
   kubectl apply --dry-run=client -o json -f "$manifest" |
-    c8s allowlist derive "$deploy" - --env=any --mounts=any |
+    c8s allowlist derive "$deploy" - --env-file "$pins/env.json" --mounts-file "$pins/mounts.json" |
     c8s allowlist apply - --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}" >/dev/null \
     || fail "signed allowlist write rejected for the workload digest"
   echo "ok: workload digest admitted"
