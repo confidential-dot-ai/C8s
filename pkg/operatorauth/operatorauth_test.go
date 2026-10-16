@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -504,6 +505,42 @@ func TestVerifyStored(t *testing.T) {
 	r := reqWith("Bearer " + token)
 	if err := (Verifier{Keys: []*ecdsa.PublicKey{pub}}).Authorize(r, body); err == nil {
 		t.Error("Authorize accepted an expired token")
+	}
+}
+
+// TestVerifyRejectsAlgorithmOfOtherCurve: a P-256 key signing the SHA-384
+// of a token's signing input yields a signature jwt verifies under ES384.
+func TestVerifyRejectsAlgorithmOfOtherCurve(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"schema":"x"}`)
+	header, err := json.Marshal(map[string]string{"alg": "ES384", "typ": "JWT"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claims, err := json.Marshal(baseClaims(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(claims)
+	digest := sha512.Sum384([]byte(input))
+	r, sig, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := make([]byte, 96)
+	r.FillBytes(raw[:48])
+	sig.FillBytes(raw[48:])
+	token := input + "." + base64.RawURLEncoding.EncodeToString(raw)
+	keys := []*ecdsa.PublicKey{&key.PublicKey}
+
+	if err := VerifyStored(keys, token, http.MethodPost, "/allowlist", body); err == nil || !strings.Contains(err.Error(), "does not match the P-256 key") {
+		t.Errorf("VerifyStored(ES384 under P-256) = %v, want the curve mismatch refused", err)
+	}
+	if err := (Verifier{Keys: keys}).Authorize(reqWith("Bearer "+token), body); err == nil {
+		t.Error("Authorize(ES384 under P-256) = nil, want error")
 	}
 }
 

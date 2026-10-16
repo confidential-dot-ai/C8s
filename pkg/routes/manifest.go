@@ -46,23 +46,15 @@ const (
 	MatchPrefix MatchKind = "prefix"
 )
 
-// Manifest is a validated route manifest.
+// Manifest is a validated route manifest. Parse returns it read-only:
+// holders share it, so none may modify it or the Hosts, Routes and anchors
+// it holds.
 type Manifest struct {
 	Revision  uint64
 	NotBefore time.Time
 	MaxAge    time.Duration
 	// Hosts is keyed by lower-case DNS host name. It may be empty.
 	Hosts map[string]Host
-}
-
-// clone returns a deep copy of m.
-func (m *Manifest) clone() *Manifest {
-	c := *m
-	c.Hosts = make(map[string]Host, len(m.Hosts))
-	for name, h := range m.Hosts {
-		c.Hosts[name] = Host{Routes: slices.Clone(h.Routes)}
-	}
-	return &c
 }
 
 // Host holds the routes of one host, in manifest order. The order carries no
@@ -94,23 +86,10 @@ type Backend struct {
 	anchors []*x509.Certificate
 }
 
-// Anchors returns the certificates parsed from CA. It is nil for a workload
-// backend and for a Backend not produced by Parse. Each call returns new
-// copies, so changing them never changes the Backend.
-func (b Backend) Anchors() []*x509.Certificate {
-	if b.anchors == nil {
-		return nil
-	}
-	certs := make([]*x509.Certificate, len(b.anchors))
-	for i, a := range b.anchors {
-		c, err := x509.ParseCertificate(bytes.Clone(a.Raw))
-		if err != nil {
-			panic(fmt.Sprintf("routes: re-parse anchor: %v", err)) // parsed once already
-		}
-		certs[i] = c
-	}
-	return certs
-}
+// Anchors returns the certificates parsed from CA, read-only like the
+// Manifest. It is nil for a workload backend and for a Backend not produced
+// by Parse.
+func (b Backend) Anchors() []*x509.Certificate { return b.anchors }
 
 // Digest returns the route digest of manifest bytes: SHA-256 of exactly
 // those bytes.

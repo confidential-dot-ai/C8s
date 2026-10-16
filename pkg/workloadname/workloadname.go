@@ -8,7 +8,11 @@ package workloadname
 const MaxLen = 63
 
 // Valid reports whether name follows the grammar and is at most MaxLen
-// bytes.
+// bytes: the check the allowlist write path, the admission selector and the
+// matched-workload stamp share. A name may still end in '.', '_' or '-' and
+// fail Kubernetes label-value validation, which the injection webhook applies
+// to the confidential.ai/cw label; tightening the grammar would invalidate
+// stored entries.
 func Valid(name string) bool {
 	return ValidGrammar(name) && len(name) <= MaxLen
 }

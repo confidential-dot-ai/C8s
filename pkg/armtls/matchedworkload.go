@@ -27,7 +27,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // OIDMatchedWorkload identifies the matched-workload extension (see
@@ -52,7 +52,7 @@ var allowlistVersionPattern = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 // decided under.
 type MatchedWorkload struct {
 	// Name is the matched entry name (allowlist workload-name grammar,
-	// at most allowlist.MaxWorkloadNameLen bytes).
+	// at most workloadname.MaxLen bytes).
 	Name string
 	// AllowlistVersion is the store's monotonic version counter at the
 	// snapshot the match used — a canonical positive decimal integer.
@@ -79,8 +79,8 @@ type matchedWorkloadASN1 struct {
 
 // Validate rejects a value this package must neither emit nor accept.
 func (m *MatchedWorkload) Validate() error {
-	if !allowlist.ValidWorkloadName(m.Name) {
-		return fmt.Errorf("armtls: matched-workload name %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", m.Name, allowlist.MaxWorkloadNameLen)
+	if !workloadname.Valid(m.Name) {
+		return fmt.Errorf("armtls: matched-workload name %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", m.Name, workloadname.MaxLen)
 	}
 	if !allowlistVersionPattern.MatchString(m.AllowlistVersion) {
 		return fmt.Errorf("armtls: matched-workload allowlist version %q is not a canonical positive decimal integer", m.AllowlistVersion)

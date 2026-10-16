@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // Exit codes. These are a stable contract for CI: a wrong measurement (2) is
@@ -670,8 +671,8 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// The matched-workload stamp is CA-vouched exactly like the sandbox ID, so
 	// both workload-policy flags demand the chain check that authenticates it.
 	if cfg.workload != "" {
-		if !pkgallowlist.ValidWorkloadName(cfg.workload) {
-			return nil, fmt.Errorf("--workload: %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", cfg.workload, pkgallowlist.MaxWorkloadNameLen)
+		if !workloadname.Valid(cfg.workload) {
+			return nil, fmt.Errorf("--workload: %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", cfg.workload, workloadname.MaxLen)
 		}
 		if cfg.meshCA == "" {
 			return nil, fmt.Errorf("--workload requires --mesh-ca: the matched workload is vouched by CDS's signature on the leaf, not by the hardware evidence")
