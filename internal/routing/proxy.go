@@ -20,12 +20,29 @@ import (
 )
 
 const (
+	// MaxTunnelRecordBytes bounds a sealed tunnel request record.
+	MaxTunnelRecordBytes = 8 << 20
 	// MaxTunnelResponseBytes bounds a backend response the tunnel buffers to
 	// seal.
 	MaxTunnelResponseBytes = 32 << 20
 	// DefaultTunnelBudget is the tunnel budget when ProxyConfig sets none.
-	DefaultTunnelBudget = 16 << 30
+	DefaultTunnelBudget = 32 << 30
+	// A tunnelled request holds up to three copies of its record (sealed,
+	// opened, decoded) and four of its response (body, envelope, sealed,
+	// encoded).
+	recordCopies   = 3
+	responseCopies = 4
+	// clientShare is the fraction of the budget one client may hold, so one
+	// client holding slow requests cannot take all of it.
+	clientShare = 4
 )
+
+// TunnelReservation is what Acquire reserves for a tunnelled request with a
+// record of recordBytes: every copy of the record and of the largest response
+// it may buffer.
+func TunnelReservation(recordBytes int64) int64 {
+	return recordCopies*recordBytes + responseCopies*MaxTunnelResponseBytes
+}
 
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
 // Only the tunnel may set it: the routing listener drops a client's value.
@@ -40,7 +57,8 @@ type ProxyConfig struct {
 	// Forward buffers. Zero means none.
 	Timeout time.Duration
 	// TunnelBudget bounds the bytes tunnelled requests in flight may buffer
-	// (Acquire). Zero means DefaultTunnelBudget.
+	// (Acquire); one client may hold a quarter of it, or at least one
+	// full-size request. Zero means DefaultTunnelBudget.
 	TunnelBudget int64
 	Logger       *slog.Logger
 }
@@ -54,9 +72,11 @@ type Proxy struct {
 	timeout    time.Duration
 	log        *slog.Logger
 
-	budgetMu sync.Mutex
-	budget   int64 // bytes tunnelled requests may reserve
-	reserved int64 // bytes reserved by tunnelled requests in flight
+	budgetMu  sync.Mutex
+	budget    int64            // bytes tunnelled requests may reserve
+	perClient int64            // of those, what one client may hold
+	reserved  int64            // bytes reserved by tunnelled requests in flight
+	held      map[string]int64 // client -> bytes its requests reserve
 }
 
 // NewProxy returns a Proxy.
@@ -75,29 +95,34 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 		timeout:    cfg.Timeout,
 		log:        logger,
 		budget:     budget,
+		perClient:  min(max(budget/clientShare, TunnelReservation(MaxTunnelRecordBytes)), budget),
+		held:       make(map[string]int64),
 	}
 }
 
 // State returns the state the proxy routes by.
 func (p *Proxy) State() *State { return p.state }
 
-// Acquire reserves the bytes a tunnelled request with a record of recordBytes
-// may buffer: the record and the largest response Forward accepts. It reports
-// false when the budget cannot cover them. The caller holds the reservation
-// from reading the record until the sealed response is written, then calls
-// release once.
-func (p *Proxy) Acquire(recordBytes int64) (release func(), ok bool) {
-	n := recordBytes + MaxTunnelResponseBytes
+// Acquire reserves TunnelReservation(recordBytes) for a tunnelled request
+// from client. It reports false when the budget, or client's share of it,
+// cannot cover that. The caller holds the reservation from reading the record
+// until the sealed response is written, then calls release once.
+func (p *Proxy) Acquire(client string, recordBytes int64) (release func(), ok bool) {
+	n := TunnelReservation(recordBytes)
 	p.budgetMu.Lock()
 	defer p.budgetMu.Unlock()
-	if p.reserved+n > p.budget {
+	if p.reserved+n > p.budget || p.held[client]+n > p.perClient {
 		return nil, false
 	}
 	p.reserved += n
+	p.held[client] += n
 	return func() {
 		p.budgetMu.Lock()
 		defer p.budgetMu.Unlock()
 		p.reserved -= n
+		if p.held[client] -= n; p.held[client] == 0 {
+			delete(p.held, client)
+		}
 	}, true
 }
 

@@ -388,45 +388,74 @@ func TestA7TunnelSealedHeaders(t *testing.T) {
 }
 
 // TestAcquireAdmitsManyRequests: the default budget admits hundreds of
-// full-size tunnelled requests at once, refuses the one it cannot cover, and
-// takes it once another releases.
+// tunnelled requests from many clients at once, refuses the one it cannot
+// cover, and takes it once another releases.
 func TestAcquireAdmitsManyRequests(t *testing.T) {
-	const record = 8 << 20
+	const record = 1 << 10
 	p := NewProxy(ProxyConfig{})
-	want := DefaultTunnelBudget / (record + MaxTunnelResponseBytes)
-	if want < 400 {
-		t.Fatalf("default budget admits %d full-size requests, want at least 400", want)
+	want := DefaultTunnelBudget / TunnelReservation(record)
+	if want < 250 {
+		t.Fatalf("default budget admits %d requests, want at least 250", want)
 	}
 	var releases []func()
 	for i := range want {
-		release, ok := p.Acquire(record)
+		release, ok := p.Acquire(fmt.Sprint("client-", i%64), record)
 		if !ok {
 			t.Fatalf("Acquire(%d) number %d within the budget = false, want true", record, i+1)
 		}
 		releases = append(releases, release)
 	}
-	if _, ok := p.Acquire(record); ok {
+	if _, ok := p.Acquire("late", record); ok {
 		t.Fatalf("Acquire(%d) past the budget = true, want false", record)
 	}
 	releases[0]()
-	if _, ok := p.Acquire(record); !ok {
+	if _, ok := p.Acquire("late", record); !ok {
 		t.Fatalf("Acquire(%d) after a release = false, want true", record)
 	}
 }
 
-func TestAcquireChargesRecordAndResponse(t *testing.T) {
-	p := NewProxy(ProxyConfig{TunnelBudget: 2*MaxTunnelResponseBytes + 1024})
-	release, ok := p.Acquire(512)
+// TestAcquireChargesCopies ties the reservation to the copies a request
+// holds: three of its record and four of the largest response.
+func TestAcquireChargesCopies(t *testing.T) {
+	if got, want := TunnelReservation(MaxTunnelRecordBytes), int64(3*MaxTunnelRecordBytes+4*MaxTunnelResponseBytes); got != want {
+		t.Fatalf("TunnelReservation(%d) = %d, want %d", MaxTunnelRecordBytes, got, want)
+	}
+	p := NewProxy(ProxyConfig{TunnelBudget: TunnelReservation(512) + TunnelReservation(0)})
+	release, ok := p.Acquire("a", 512)
 	if !ok {
 		t.Fatal("Acquire(512) on a free proxy = false, want true")
 	}
-	if _, ok := p.Acquire(1024); ok {
+	if _, ok := p.Acquire("b", 1024); ok {
 		t.Fatal("Acquire(1024) over the remaining budget = true, want false")
 	}
-	if _, ok := p.Acquire(512); !ok {
-		t.Fatal("Acquire(512) within the remaining budget = false, want true")
+	if _, ok := p.Acquire("b", 0); !ok {
+		t.Fatal("Acquire(0) within the remaining budget = false, want true")
 	}
 	release()
+}
+
+// TestAcquireBoundsOneClientsShare: one client holds at most a quarter of
+// the budget, so the others still get in.
+func TestAcquireBoundsOneClientsShare(t *testing.T) {
+	p := NewProxy(ProxyConfig{TunnelBudget: 8 * TunnelReservation(MaxTunnelRecordBytes)})
+	var releases []func()
+	for range 2 {
+		release, ok := p.Acquire("greedy", MaxTunnelRecordBytes)
+		if !ok {
+			t.Fatal("Acquire(greedy) within its share = false, want true")
+		}
+		releases = append(releases, release)
+	}
+	if _, ok := p.Acquire("greedy", MaxTunnelRecordBytes); ok {
+		t.Fatal("Acquire(greedy) over its share = true, want false")
+	}
+	if _, ok := p.Acquire("other", MaxTunnelRecordBytes); !ok {
+		t.Fatal("Acquire(other) with budget left = false, want true")
+	}
+	releases[0]()
+	if _, ok := p.Acquire("greedy", MaxTunnelRecordBytes); !ok {
+		t.Fatal("Acquire(greedy) after a release = false, want true")
+	}
 }
 
 // TestListenerDropsClientExporter: only the tunnel sets X-C8s-Exporter, which

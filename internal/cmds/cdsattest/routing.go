@@ -72,7 +72,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
-	f.Var(&cfg.tunnelBudget, "tunnel-budget", "bytes tunnelled requests in flight in this replica may buffer, as a quantity such as 16Gi; each reserves its record and the largest response (32 MiB) for its whole backend call, and a request over the budget gets 503 tunnel_busy; unset means 75% of the container memory limit, or 16Gi without one")
+	f.Var(&cfg.tunnelBudget, "tunnel-budget", "bytes tunnelled requests in flight in this replica may buffer, as a quantity such as 32Gi; each reserves three copies of its record and four of the largest response (32 MiB), one client (by X-Real-IP) holds at most a quarter, and a request over either gets 503 tunnel_busy; unset means 75% of the container memory limit, or 32Gi without one")
 }
 
 func checkRoutingFlags(cfg config) error {
@@ -112,8 +112,8 @@ func checkRoutingFlags(cfg config) error {
 	if r.backendTimeout <= 0 {
 		return errors.New("--backend-timeout must be positive")
 	}
-	if r.tunnelBudget.set && r.tunnelBudget.bytes < routing.MaxTunnelResponseBytes+tunnelBodyLimit {
-		return fmt.Errorf("--tunnel-budget must cover one full request, %d bytes", routing.MaxTunnelResponseBytes+tunnelBodyLimit)
+	if full := routing.TunnelReservation(tunnelBodyLimit); r.tunnelBudget.set && r.tunnelBudget.bytes < full {
+		return fmt.Errorf("--tunnel-budget must cover one full-size request, %d bytes", full)
 	}
 	if r.port < 0 || r.port > 65535 {
 		return fmt.Errorf("--routing-port must be between 0 and 65535, got %d", r.port)

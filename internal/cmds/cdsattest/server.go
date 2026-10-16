@@ -109,7 +109,7 @@ const (
 	// sooner.
 	tunnelWriteChunk = 16 << 10
 	// tunnelBodyLimit bounds one sealed tunnel request record.
-	tunnelBodyLimit = 8 << 20
+	tunnelBodyLimit = routing.MaxTunnelRecordBytes
 	// attestBodyLimit bounds the attest-pq request body: a nonce and an X-Wing
 	// encapsulation key in JSON is well under 8 KiB.
 	attestBodyLimit = 8 << 10
@@ -749,13 +749,13 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.Routing != nil {
-		// Only a request naming a live session gets here, so an
-		// unauthenticated client never holds budget.
+		// Budget goes only to a request naming a live session. Anyone can
+		// open one, so the per-client share is what bounds a single client.
 		recordBytes := r.ContentLength
 		if recordBytes < 0 {
 			recordBytes = tunnelBodyLimit
 		}
-		release, ok := s.cfg.Routing.Acquire(recordBytes)
+		release, ok := s.cfg.Routing.Acquire(clientBucket(r), recordBytes)
 		if !ok {
 			refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 			return

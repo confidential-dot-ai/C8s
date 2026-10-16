@@ -526,6 +526,18 @@ instead of a ConfigMap the control plane can edit.
 {{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
 {{- end -}}
 
+{{/*
+Bytes in a Kubernetes quantity written as an integer with an optional k, M,
+G, T, Ki, Mi, Gi or Ti suffix; "" for any other form.
+*/}}
+{{- define "router.quantityBytes" -}}
+{{- $q := toString . -}}
+{{- $digits := regexFind `^[0-9]+` $q -}}
+{{- $units := dict "" 1 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+{{- $suffix := trimPrefix $digits $q -}}
+{{- if and $digits (hasKey $units $suffix) -}}{{ mul ($digits | int64) (get $units $suffix) }}{{- end -}}
+{{- end -}}
+
 {{/* Where nginx spools tunnel request bodies (router.nginx.tunnelBodySpace). */}}
 {{- define "router.tunnelBodyDir" -}}/var/lib/c8s-tunnel-body{{- end -}}
 
