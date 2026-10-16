@@ -377,19 +377,22 @@ A pod names its volumes in an annotation:
 annotations:
   confidential.ai/cw: llama-infer
   confidential.ai/c8s-volumes: "weights=/tenant-a/volumes/weights"
-  confidential.ai/c8s-volume-dir: "/mnt/c8s-data/models"    # optional; default /mnt/c8s-data/c8s-volumes
 ```
 
 Each entry is `NAME=/store/path`. `NAME` selects the node's device by its
 `c8s-vol-<NAME>` serial and names the directory the plaintext appears in under
-the volume dir — above, `/mnt/c8s-data/models/weights`. `NAME` must be a
-DNS-1123 label of at most 12 characters, because the serial holds no more. The
-volume dir must sit at or below `/mnt/c8s-data/`, the only place a `data` rule
-can pin; the webhook refuses any other. The annotation is the
+the volume dir, `/mnt/c8s-data/c8s-volumes` by default — above,
+`/mnt/c8s-data/c8s-volumes/weights`. `NAME` must be a DNS-1123 label of at most
+12 characters, because the serial holds no more. The annotation is the
 same for both modes; whether the plaintext is writable comes from the volume's
 key blob, not from the pod. Flipping the mode in a blob gets nothing: an
 immutable image is erofs and fails to mount as ext4, and a mutable image has
 no hash tree for verity to anchor.
+
+To mount elsewhere, set `confidential.ai/c8s-volume-dir` and change each
+volume's `data` rule destination to match. The webhook refuses a volume dir
+outside `/mnt/c8s-data/`, the only place a `data` rule can pin, and one inside
+`/mnt/c8s-data/c8s-reload-watch`.
 
 The webhook injects a `c8s-volume` sidecar and, per volume, an `emptyDir` with
 `mountPropagation: HostToContainer`. The sidecar fetches the key over the

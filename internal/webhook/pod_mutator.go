@@ -569,11 +569,12 @@ func (v volumesSpec) validate() error {
 	}
 	// A secrets grant needs every mount pinned by an exact rule, and a data
 	// rule can only name a destination below the data prefix.
-	if !below(filepath.Join(v.Dir, "x"), strings.TrimSuffix(pkgallowlist.DataMountPrefix, "/")) {
+	dir, root := filepath.Clean(v.Dir), strings.TrimSuffix(pkgallowlist.DataMountPrefix, "/")
+	if dir != root && !below(dir, root) {
 		return fmt.Errorf("%w: %s must be an absolute path at or below %s, where an allowlist data rule can pin the mount",
 			errInvalidInjectionAnnotation, AnnotationVolumeDir, pkgallowlist.DataMountPrefix)
 	}
-	if filepath.Clean(v.Dir) == reloadWatchMountPath || below(v.Dir, reloadWatchMountPath) {
+	if dir == reloadWatchMountPath || below(dir, reloadWatchMountPath) {
 		return fmt.Errorf("%w: %s must not be inside %s", errInvalidInjectionAnnotation, AnnotationVolumeDir, reloadWatchMountPath)
 	}
 	return nil
