@@ -58,7 +58,7 @@ func TestAllowlistUploadRenderedCvmTopology(t *testing.T) {
 
 func renderedTopologyAllowlist(t *testing.T, mode string) pkgallowlist.Allowlist {
 	t.Helper()
-	args := []string{"template", "c8s", filepath.Join("..", "..", "internal", "helmchart", "c8s"), "--skip-tests", "--kube-version", "v1.34.5", "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	args := []string{"template", "c8s", filepath.Join("..", "..", "internal", "helmchart", "c8s"), "--skip-tests", "--kube-version", "v1.34.5", "--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set-string", "cds.liveShape=none"}
 	for i, path := range []string{"image", "cds.image", "attestationApi.image", "armtlsMesh.image", "nriImagePolicy.image", "volumed.image"} {
 		args = append(args, "--set-string", fmt.Sprintf("%s.digest=sha256:%064x", path, i+1))
 	}
