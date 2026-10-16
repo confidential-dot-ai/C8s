@@ -78,9 +78,9 @@ helm template confidential-inference ci/helm/confidential-inference --namespace 
   --set-string "attestationReceipts.expectedOperatorKeySetSha256=sha256:$set_sha" \
   | SIM_IMAGE=$SIM_IMAGE python3 "$here/worker_sim.py" \
   | kubectl -n "$ns" apply -f -
-# Not `rollout status`: the deployments' 10-minute progress deadline is shorter
-# than a cold pull of the 14 GB sglang image. The minute-by-minute listing is
-# the timeline a failure needs; exec and logs are closed on the node image.
+# Not `rollout status`: a first pull can outlast the deployments' 10-minute
+# progress deadline. The minute-by-minute listing is the timeline a failure
+# needs; exec and logs are closed on the node image.
 dump() {
   kubectl get namespace "$ns" -o jsonpath='{.status.phase} {.metadata.deletionTimestamp}{"\n"}' || true
   kubectl get nodes -o json | jq -r '.items[].status.conditions[] | "node \(.type)=\(.status) \(.message)"'
