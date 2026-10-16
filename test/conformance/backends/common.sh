@@ -462,11 +462,14 @@ seed_add() {
         kubectl replace -f - >/dev/null
 }
 
+# Only the data goes back: the ConfigMap's resourceVersion moved with the
+# change, so a replace of the saved object conflicts.
 seed_restore() {
-    local original
+    local original cm
     original="$(scratch)/seed-original.json"
     [ -s "$original" ] || return 0
-    kubectl replace -f "$original" >/dev/null && rm -f "$original"
+    cm="$(jq -r .metadata.name "$original")"
+    kubectl -n "$NS" patch configmap "$cm" --type merge -p "$(jq -c '{data: .data}' "$original")" >/dev/null && rm -f "$original"
 }
 
 cds_instance() {
