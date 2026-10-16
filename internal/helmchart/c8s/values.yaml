@@ -5,8 +5,10 @@
 ## A baked router takes its public hostnames from the launch file at
 ## /run/c8s-node/router/ instead of the chart, so router.publicTLS.mode stays
 ## cds. Its routes come from the route manifest, as off a baked node. nginx
-## includes router/tls.conf, which names the ACME leaf when the
-## launch file lists hostnames and the mesh leaf otherwise.
+## includes router/tls.conf, which names the ACME leaf when the launch file
+## lists hostnames and the mesh leaf otherwise. nginx reads nginx.conf and the
+## TLS snippets from the image at /usr/lib/c8s/router-nginx, so changing them,
+## or the router values that render them, takes an image rebuild.
 node:
   baked: false
 
@@ -28,8 +30,15 @@ node:
 ##   - entrypoint:  the executable the derived allowlist entry pins the image
 ##                  to, as the argv prefix every container running the image
 ##                  starts with (the image's ENTRYPOINT, plus the subcommand
-##                  when the image bakes one). Arguments stay unconstrained:
-##                  they are per-pod. Required unless argvPinned.
+##                  when the image bakes one). The entry pins the arguments
+##                  and mounts of each container the chart renders too.
+##                  Required unless argvPinned.
+##   - imageEnv:    the image config's Env, as name: value. Each derived
+##                  entry's env match pins these exact beside the variables
+##                  the pod spec and the runtime set; `c8s install
+##                  --resolve-digests` refuses an image whose config differs.
+##                  Bump with the image. Required unless argvPinned; {} for
+##                  an image that sets none.
 ## Consumed by the c8s.components helper (NRI allowlist derivation + render
 ## guard) and by `c8s install` (digest resolution, via `helm show values`).
 c8sComponents:
@@ -37,14 +46,22 @@ c8sComponents:
     enabledPath: ""
     cdsExempt: false
     entrypoint: ["/c8s"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: cds.image
     enabledPath: ""
     cdsExempt: true
     entrypoint: ["/c8s", "cds"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
   - valuePath: attestationApi.image
     enabledPath: attestationApi.enabled
     cdsExempt: false
     entrypoint: ["/attestation-api"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     ## Released by attestation-rs: the image built from .github/build-pins.json's
     ## attestation_rs_ref. Bump together with that pin, to
     ##   crane digest ghcr.io/confidential-dot-ai/attestation-api:sha-<first 7 of the ref>
@@ -53,6 +70,8 @@ c8sComponents:
     enabledPath: armtlsMesh.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "armtls-mesh"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
   - valuePath: nriImagePolicy.image
     enabledPath: nriImagePolicy.enabled
     cdsExempt: false
@@ -64,6 +83,8 @@ c8sComponents:
     enabledPath: volumed.enabled
     cdsExempt: false
     entrypoint: ["/app/c8s", "volumed"]
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 ## Operator container image. The same image runs every C8s mode that
 ## doesn't need extra OS bins: controller manager and injected get-cert.
@@ -190,6 +211,11 @@ cds:
     digest: ""
     pullPolicy: IfNotPresent
   port: 8443
+  ## An upgrade that changes CDS's own command line or mounts fails until the
+  ## running enforcers admit the new CDS. The failure names the new seed entry:
+  ## publish it with `c8s allowlist apply`, wait for every node to pull it, and
+  ## set this to its name (docs/allowlist-and-capabilities.md).
+  publishedShape: ""
   ## CIDR(s) holding this cluster's node addresses. CDS dials a node's admission
   ## inventory inside them and nowhere else, which is what stops a workload
   ## pointing the sandbox-digests callback at its own pod IP and answering as
@@ -236,7 +262,7 @@ cds:
     enabled: true
     maxUnavailable: 0
   logLevel: info
-  allowlistDB: /data/allowlist.db
+  allowlistDB: /mnt/c8s-data/cds/allowlist.db
   # -- Operator token clock skew tolerance in seconds. Without
   # `persistence.enabled`, CDS also refuses allowlist writes for this long
   # after it starts, since it forgets spent tokens at restart.
@@ -326,8 +352,16 @@ cds:
     commonName: c8s Mesh CA
     certValidity: 8760h
     minValidity: 1h
+  ## The claim is mounted at /mnt/c8s-data/cds, and CDS's component entry
+  ## admits it only on storage the node proves memory or encrypted. No PVC is:
+  ## a CSI volume observes as unknown and a local-path volume as a host path.
+  ## The render therefore refuses enabled=true unless
+  ## nriImagePolicy.policy.mode=audit. See docs/allowlist-and-capabilities.md.
   persistence:
     enabled: false
+    ## With enabled=false the store (SQLite DB and WAL) is a memory emptyDir:
+    ## it counts toward cds.resources.limits.memory, so keep this below that.
+    memorySizeLimit: 64Mi
     size: 1Gi
     storageClassName: ""
   resources:
@@ -745,9 +779,14 @@ nriImagePolicy:
   ## distinguishes this inventory from a workload sharing the node measurement.
   ## CDS must be able to reach every node on it.
   ##
-  ## The advertised host defaults to the installer's own status.hostIP, handed
-  ## to the host process through a file. Override only when that is not the
-  ## address CDS reaches the node on.
+  ## The advertised host defaults to the --node-ip of a separate kubelet
+  ## process, as RKE2 runs it, else the default-route interface's address. k3s
+  ## runs its kubelet inside the k3s process, so set this on a k3s node with
+  ## more than one interface. The plugin follows a changed address in node-ip
+  ## and in the tokens it signs, and components dialing node-ip restart onto
+  ## it. Set it on nodes whose kubelet registers an address neither finds: CDS
+  ## checks tokens against the Node's InternalIP. An IP here is also the node-ip that components dial the
+  ## attestation-api on.
   sandboxDigests:
     advertiseHost: ""
 
@@ -792,9 +831,10 @@ nriImagePolicy:
   # worker pull. An entry admitting a digest with open args, env and mounts,
   # under any command or pinned to one, also lands in every plugin's base
   # allowlist (nri-image-policy.bootConfig), so the cluster can bring itself
-  # up before CDS is reachable; an entry that pins args, env or mounts is
-  # seed-only. The chart's own component entries pin each image's entrypoint
-  # (c8sComponents[].entrypoint) and land in both.
+  # up before CDS is reachable, and so does an entry for a C8s component's
+  # digest whatever it pins; any other entry that pins args, env or mounts is
+  # seed-only. The chart's own component entries pin each container it
+  # renders to its exact argv and mount table, and land in both.
   #
   # Everything needed to reach a Ready CDS on the CDS node and a working kubelet
   # on every node goes here as any-argv entries — the C8s component images plus
@@ -807,7 +847,7 @@ nriImagePolicy:
     # `c8s install --resolve-digests`, which turns it on). When true, the C8s
     # component images this chart installs (operator, cds, attestation-api,
     # armtls-mesh) are seeded and admitted whenever their image.digest is set,
-    # each pinned to its entrypoint with the arguments left open, so a
+    # each container pinned to the exact argv and mounts it renders, so a
     # digest-pinned install self-allows the C8s images without an entry
     # for each. It never covers the non-c8s system images, so production
     # installs pin the full set in `workloads` instead. nri-image-policy is
@@ -1098,7 +1138,7 @@ router:
     secretName: ""
     certKey: tls.crt
     keyKey: tls.key
-    mountPath: "/public-tls"
+    mountPath: "/mnt/c8s-data/public-tls"
 
   # -- ACME issuance (publicTLS.mode=acme). The sidecar answers HTTP-01 behind
   # nginx's :80 server and SIGHUPs nginx on install. Empty directoryURL is
@@ -1184,7 +1224,14 @@ router:
     platform: snp
     generation: genoa
     # -- Attestation-api URL the sidecar binds each session's key exchange
-    # against. Empty defaults to this chart's attestation-api.
+    # against. Empty defaults to this chart's attestation-api. The allowlist
+    # pins the sidecar's argv, so write the node address escaped: the kubelet
+    # passes $$(NAME) through as $(NAME) and the sidecar expands it. Under a
+    # fail-closed nriImagePolicy (or the node image's baked one, with
+    # nriImagePolicy.enabled=false) on cvmMode=bare-metal, write $$(NODE_IP),
+    # which the sidecar reads from the node-ip file the image policy plugin
+    # writes; $(HOST_IP) comes from a variable the allowlist does not pin and
+    # fails the render there. An unescaped reference fails the render.
     attestationApiURL: ""
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity
@@ -1229,6 +1276,13 @@ router:
     # before it execs anything. Bump with the image if either changes, along
     # with nginxEntrypoint and nginxCmd in internal/helmchart/router_entry_test.go.
     entrypoint: ["/docker-entrypoint.sh", "nginx"]
+    # The image config's Env, which the seeded entry's env match pins. Bump
+    # with the image.
+    imageEnv:
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      NGINX_VERSION: "1.30.5"
+      PKG_RELEASE: "1"
+      DYNPKG_RELEASE: "1"
     # -- Number of nginx replicas.
     replicas: 1
     # -- HTTPS port nginx listens on. Unprivileged (>=1024) because nginx runs

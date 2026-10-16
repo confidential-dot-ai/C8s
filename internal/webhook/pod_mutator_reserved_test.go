@@ -35,7 +35,7 @@ func TestPreDeclaredReservedMountIsForcedReadOnly(t *testing.T) {
 				EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory},
 			}}
 
-			mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+			mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 
 			m := containerMount(&pod.Spec.Containers[0], tc.volume)
 			if m == nil {
@@ -57,8 +57,8 @@ func TestPreDeclaredReservedMountIsForcedReadOnly(t *testing.T) {
 // reinvocation over an already-injected pod must not leave it read-only.
 func TestFetcherKeepsWriteAccessAcrossReinvocation(t *testing.T) {
 	pod := podWithApp()
-	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
-	mutateWithSecrets(t, pod, []string{"DB=/api/db"}, "")
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"})
+	mutateWithSecrets(t, pod, []string{"DB=/api/db"})
 
 	fetcher := containerNamed(pod, reservedSecretContainerName)
 	if fetcher == nil {

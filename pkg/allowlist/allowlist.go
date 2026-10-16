@@ -5,8 +5,7 @@
 // init/main container set; every container binds a digest to the process
 // (argv), bind-mount and environment policy permitted for those bytes, and the
 // entry as a whole carries a secret-store grant. An image that may run however
-// it is invoked — a standalone or injected C8s component, whose argv is
-// per-pod — is an entry whose container policy is any. Policy is always looked
+// it is invoked is an entry whose container policy is any. Policy is always looked
 // up by container digest — the entry name and image labels are informational,
 // never a trust-bearing key, because the image reference a pod presents is
 // chosen by the untrusted host while the digest is bound to the bytes that run.
@@ -208,8 +207,10 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	if err := normalizeSecrets(&w.Secrets); err != nil {
 		return nil, fmt.Errorf("entry secrets: %w", err)
 	}
-	if w.Secrets != nil && !w.ArgvPinned() {
-		return nil, fmt.Errorf("entry: %w", errGrantUnpinned)
+	if w.Secrets != nil {
+		if err := w.PinnedForGrant(); err != nil {
+			return nil, fmt.Errorf("entry: %w", err)
+		}
 	}
 	if err := w.CheckVariableEvidenceBudget(); err != nil {
 		return nil, fmt.Errorf("entry: %w", err)
@@ -219,9 +220,10 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 	return &w, nil
 }
 
-// errGrantUnpinned refuses a secrets grant on an entry that leaves any
-// container's argv to the host.
-var errGrantUnpinned = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+var (
+	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules")
+)
 
 // Digests returns every container digest in the workload (init and main), for
 // building a digest index.
@@ -254,20 +256,6 @@ func (c Container) IsUnconstrained() bool {
 	return true
 }
 
-// PinsAtMostCommand reports whether the container leaves everything but its
-// executable to the host: args, mounts and environment are any, and command is
-// any or exact. It is the shape of a seeded component entry, whose arguments
-// and mounts are per-pod but whose binary is the image's.
-func (c Container) PinsAtMostCommand() bool {
-	if c.Command.Policy != PolicyAny && c.Command.Policy != PolicyExact {
-		return false
-	}
-	if c.Args.Policy != PolicyAny {
-		return false
-	}
-	return (mountConstraint{policy: &c.Mounts}).isUnconstrained() && newEnvConstraint(&c.Env).isUnconstrained()
-}
-
 // ArgvPinned reports whether every container's command and args policy is
 // exact or deny, so nothing about the entry's argv is left to the host. A
 // secrets grant requires it (docs/secrets.md).
@@ -278,6 +266,34 @@ func (w Workload) ArgvPinned() bool {
 		}
 	}
 	return true
+}
+
+// MountsPinned reports whether every container's mounts policy is deny, or
+// exact with no host rule, so the host adds no mount and names no node path.
+// A data rule still mounts content the cluster chooses (a ConfigMap, a PVC)
+// at a destination the entry declares. A secrets grant requires it
+// (docs/secrets.md).
+func (w Workload) MountsPinned() bool {
+	for _, c := range w.containers() {
+		if !(mountConstraint{policy: &c.Mounts}).hostIndependent() {
+			return false
+		}
+	}
+	return true
+}
+
+// PinnedForGrant reports why a secrets grant on w would release a value to a
+// launch the host shaped, or nil when the entry pins its argv and mounts. Env
+// is not required until a policy can pin it on a real pod: exact fingerprints
+// the whole environment, including the pod-specific HOSTNAME.
+func (w Workload) PinnedForGrant() error {
+	if !w.ArgvPinned() {
+		return errGrantUnpinnedArgv
+	}
+	if !w.MountsPinned() {
+		return errGrantUnpinnedMounts
+	}
+	return nil
 }
 
 // HostIndependent reports whether every runtime field that can change what a
@@ -301,10 +317,9 @@ func (w Workload) containers() []Container {
 }
 
 // AdmitsAnyArgs reports whether some entry admits the digest running argv's
-// command under an unconstrained args policy: the entry pins at most the
-// executable, and the arguments are the pod's to choose. The
-// injected-container drop set (internal/secrets) keys on it: C8s's own image
-// runs with per-pod arguments, so it is only ever admitted this way.
+// command under an unconstrained args policy: the entry pins the executable,
+// and the arguments are the pod's to choose. It ignores mounts and
+// environment; a complete injected-container decision uses AdmitsInjected.
 func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 	d, err := types.ParseDigest(digest)
 	if err != nil {
@@ -316,6 +331,26 @@ func (a *Allowlist) AdmitsAnyArgs(digest string, argv []string) bool {
 				continue
 			}
 			if _, ok := c.Command.matchCommand(argv); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// AdmitsInjected reports whether one open-args container of some entry admits
+// the complete observed container, mounts and environment included, under that
+// container's own policies, and every mount it holds is confined to the node.
+// Requiring the same container keeps the open arguments paired with the mount
+// table they were seeded with. The injected-container drop set
+// (internal/secrets) keys on it. Unavailable mount evidence is never admitted.
+func (a *Allowlist) AdmitsInjected(r RunningContainer) bool {
+	if r.Mounts == nil || slices.ContainsFunc(r.Mounts, func(m ObservedMount) bool { return !m.confined() }) {
+		return false
+	}
+	for _, w := range a.Workloads {
+		for _, c := range w.containers() {
+			if c.Args.Policy == PolicyAny && c.admits(r) {
 				return true
 			}
 		}
@@ -414,8 +449,10 @@ func (a *Allowlist) normalize(strict bool) error {
 		if err := normalizeSecrets(&w.Secrets); err != nil {
 			return fmt.Errorf("workload %q secrets: %w", name, err)
 		}
-		if strict && w.Secrets != nil && !w.ArgvPinned() {
-			return fmt.Errorf("workload %q: %w", name, errGrantUnpinned)
+		if strict && w.Secrets != nil {
+			if err := w.PinnedForGrant(); err != nil {
+				return fmt.Errorf("workload %q: %w", name, err)
+			}
 		}
 		if err := w.CheckVariableEvidenceBudget(); strict && err != nil {
 			return fmt.Errorf("workload %q: %w", name, err)

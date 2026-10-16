@@ -14,6 +14,7 @@ import (
 const podExecPolicyPath = "../../node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/pod-exec-policy.yaml"
 
 func TestPodExecPolicyShape(t *testing.T) {
+	t.Parallel()
 	vap, binding := loadImagePolicy(t, podExecPolicyPath, "confos-pod-exec")
 	checkDenyPolicyShape(t, vap, binding)
 	// exec/attach/port-forward are CONNECT on their subresources; ephemeral

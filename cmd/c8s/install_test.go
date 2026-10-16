@@ -867,31 +867,22 @@ func TestCheckAdoptedEntries(t *testing.T) {
 		return map[string]any{"digest": digest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
 	}
 	perDigest := map[string]any{"a": map[string]any{"containers": []any{anyContainer(dA)}}}
-	volumed := []c8sComponent{{valuePrefix: "volumed.image", enabledPath: "volumed.enabled"}}
-	nri := []c8sComponent{{valuePrefix: "nriImagePolicy.image", enabledPath: "nriImagePolicy.enabled", argvPinned: true}}
 	tests := []struct {
-		name       string
-		adopt      map[string]corev1.PodTemplateSpec
-		values     map[string]any
-		components []c8sComponent
-		wantErr    string
+		name    string
+		adopt   map[string]corev1.PodTemplateSpec
+		values  map[string]any
+		wantErr string
 	}{
-		{"multi-container pod beside per-digest entries", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB)}, values(perDigest, nil), nil, ""},
-		{"single image shared with router nginx", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil, nil), nil, "nginx-unprivileged-dddddddddddd"},
-		{"router disabled seeds no nginx entry", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil, map[string]any{"router": map[string]any{"enabled": false}}), nil, ""},
-		{"single image with an unconstrained per-digest entry", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(perDigest, nil), nil, "entries a also admit"},
+		{"multi-container pod beside per-digest entries", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB)}, values(perDigest, nil), ""},
+		{"single image with an unconstrained per-digest entry", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(perDigest, nil), "entries a also admit"},
 		{"argv-pinned -f entry counts, as on CDS", map[string]corev1.PodTemplateSpec{"web": pod(dA)},
-			values(map[string]any{"a": map[string]any{"containers": []any{map[string]any{"digest": dA, "command": map[string]any{"policy": "exact", "argv": []any{"/serve"}}, "mounts": map[string]any{"policy": "any"}}}}}, nil), nil, "entries a also admit"},
-		{"own -f entry is replaced", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(map[string]any{"web": map[string]any{"containers": []any{anyContainer(dA)}}}, nil), nil, ""},
-		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil, nil), nil, "entries web also admit"},
-		{"init image does not make a pod ambiguous", map[string]corev1.PodTemplateSpec{"web": withInit(pod(dA), dB), "api": pod(dB)}, values(nil, nil), nil, ""},
-		{"same image, different mounts", map[string]corev1.PodTemplateSpec{"web": pod(dA), "api": withScratch(pod(dA))}, values(nil, nil), nil, ""},
-		{"CDS image", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"cds": map[string]any{"image": image(dA)}}), nil, "component-aaaaaaaaaaaa"},
-		{"derived component", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"volumed": map[string]any{"enabled": true, "image": image(dA)}}), volumed, "component-aaaaaaaaaaaa"},
-		{"disabled component", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"volumed": map[string]any{"enabled": false, "image": image(dA)}}), volumed, ""},
-		{"components not derived", map[string]corev1.PodTemplateSpec{"web": pod(dA)},
-			values(nil, map[string]any{"volumed": map[string]any{"enabled": true, "image": image(dA)}, "nriImagePolicy": map[string]any{"bootstrapAllowlist": map[string]any{"deriveComponents": false}}}), volumed, ""},
-		{"argv-pinned component", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"nriImagePolicy": map[string]any{"enabled": true, "image": image(dA)}}), nri, ""},
+			values(map[string]any{"a": map[string]any{"containers": []any{map[string]any{"digest": dA, "command": map[string]any{"policy": "exact", "argv": []any{"/serve"}}, "mounts": map[string]any{"policy": "any"}}}}}, nil), "entries a also admit"},
+		{"own -f entry is replaced", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(map[string]any{"web": map[string]any{"containers": []any{anyContainer(dA)}}}, nil), ""},
+		{"two adoptions, one image set", map[string]corev1.PodTemplateSpec{"web": pod(dA, dB), "api": pod(dA, dB)}, values(nil, nil), "entries web also admit"},
+		{"init image does not make a pod ambiguous", map[string]corev1.PodTemplateSpec{"web": withInit(pod(dA), dB), "api": pod(dB)}, values(nil, nil), ""},
+		{"same image, different mounts", map[string]corev1.PodTemplateSpec{"web": pod(dA), "api": withScratch(pod(dA))}, values(nil, nil), ""},
+		{"component image", map[string]corev1.PodTemplateSpec{"web": pod(dA)}, values(nil, map[string]any{"cds": map[string]any{"image": image(dA)}}), ""},
+		{"router nginx image", map[string]corev1.PodTemplateSpec{"web": pod(dN)}, values(nil, nil), ""},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -907,7 +898,7 @@ func TestCheckAdoptedEntries(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = checkAdoptedEntries(entries, helmchart.MergeValues(tc.values, computed), tc.components)
+			err = checkAdoptedEntries(entries, helmchart.MergeValues(tc.values, computed))
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("checkAdoptedEntries() = %v, want nil", err)
@@ -1707,11 +1698,11 @@ func TestChartComponentsFromValues(t *testing.T) {
 	}
 }
 
-// componentEnabledPredicate must honor a -f values file, not just chart
+// effectiveValues must honor a -f values file, not just chart
 // defaults and --set. volumed defaults to disabled; a -f file that enables it
 // has to make the resolver see it as enabled, or its digest is never pinned and
 // the render fails with no image ref.
-func TestComponentEnabledPredicateHonorsValuesFile(t *testing.T) {
+func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH")
 	}
@@ -1729,22 +1720,22 @@ func TestComponentEnabledPredicateHonorsValuesFile(t *testing.T) {
 
 	// Default (no -f): volumed reads as disabled.
 	installValues = nil
-	pred, err := componentEnabledPredicate(context.Background(), chartPath, nil)
+	tree, err := effectiveValues(context.Background(), chartPath, nil)
 	if err != nil {
-		t.Fatalf("predicate (defaults): %v", err)
+		t.Fatalf("effectiveValues (defaults): %v", err)
 	}
-	if on, _ := pred("volumed.enabled"); on {
+	if boolAtPath(tree, "volumed.enabled") {
 		t.Fatal("volumed.enabled true with no -f; expected the chart default false")
 	}
 
 	// With the -f file: volumed reads as enabled.
 	installValues = []string{vf}
 	defer func() { installValues = nil }()
-	pred, err = componentEnabledPredicate(context.Background(), chartPath, nil)
+	tree, err = effectiveValues(context.Background(), chartPath, nil)
 	if err != nil {
-		t.Fatalf("predicate (-f): %v", err)
+		t.Fatalf("effectiveValues (-f): %v", err)
 	}
-	if on, _ := pred("volumed.enabled"); !on {
+	if !boolAtPath(tree, "volumed.enabled") {
 		t.Fatal("volumed.enabled false despite a -f file enabling it; the resolver would skip pinning its digest")
 	}
 }

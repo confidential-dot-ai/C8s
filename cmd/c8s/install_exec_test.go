@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -309,18 +312,18 @@ func TestCraneDigestShellsOut(t *testing.T) {
 	})
 }
 
-func TestComponentEnabledPredicateExec(t *testing.T) {
+func TestEffectiveValuesExec(t *testing.T) {
 	values := "attestationApi:\n  enabled: true\n"
 
 	t.Run("set override beats the chart default", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		enabled, err := componentEnabledPredicate(context.Background(), writeChart(t, values),
+		tree, err := effectiveValues(context.Background(), writeChart(t, values),
 			[]string{"--set", "attestationApi.enabled=false"})
 		if err != nil {
-			t.Fatalf("componentEnabledPredicate: %v", err)
+			t.Fatalf("effectiveValues: %v", err)
 		}
-		if on, _ := enabled("attestationApi.enabled"); on {
+		if boolAtPath(tree, "attestationApi.enabled") {
 			t.Error("override to false must win over the chart default true")
 		}
 	})
@@ -328,11 +331,11 @@ func TestComponentEnabledPredicateExec(t *testing.T) {
 	t.Run("chart default stands without overrides", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		enabled, err := componentEnabledPredicate(context.Background(), writeChart(t, values), nil)
+		tree, err := effectiveValues(context.Background(), writeChart(t, values), nil)
 		if err != nil {
-			t.Fatalf("componentEnabledPredicate: %v", err)
+			t.Fatalf("effectiveValues: %v", err)
 		}
-		if on, _ := enabled("attestationApi.enabled"); !on {
+		if !boolAtPath(tree, "attestationApi.enabled") {
 			t.Error("chart default true must stand")
 		}
 	})
@@ -340,7 +343,7 @@ func TestComponentEnabledPredicateExec(t *testing.T) {
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
-		if _, err := componentEnabledPredicate(context.Background(), writeChart(t, values), nil); err == nil {
+		if _, err := effectiveValues(context.Background(), writeChart(t, values), nil); err == nil {
 			t.Fatal("want error when helm fails")
 		}
 	})
@@ -348,7 +351,7 @@ func TestComponentEnabledPredicateExec(t *testing.T) {
 	t.Run("overlay conflict surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
-		_, err := componentEnabledPredicate(context.Background(), writeChart(t, values),
+		_, err := effectiveValues(context.Background(), writeChart(t, values),
 			[]string{"--set", "attestationApi=x", "--set", "attestationApi.enabled=false"})
 		if err == nil {
 			t.Fatal("want error for a scalar/map overlay conflict")
@@ -598,6 +601,7 @@ func TestAppendResolvedWorkloadImageArgsExec(t *testing.T) {
 
 func TestAppendResolvedDigestArgsExec(t *testing.T) {
 	comps := []c8sComponent{{valuePrefix: "cds.image", repository: "ghcr.io/x/cds"}}
+	const values = "c8sComponents:\n  - valuePath: cds.image\ncds:\n  image:\n    repository: ghcr.io/x/cds\n"
 
 	t.Run("crane off PATH is an actionable error", func(t *testing.T) {
 		newFakeBin(t)
@@ -611,7 +615,7 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "crane", fakeCrane(testDigest))
-		got, err := appendResolvedDigestArgs(context.Background(), writeChart(t, "a: 1\n"), nil, "main", comps)
+		got, err := appendResolvedDigestArgs(context.Background(), writeChart(t, values), nil, "main", comps)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -623,11 +627,70 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		mustContainLine(t, f.calls(t), "crane digest ghcr.io/x/cds:main")
 	})
 
+	t.Run("checks the image against the effective imageEnv", func(t *testing.T) {
+		chart := writeChart(t, "c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv: {PATH: /bin}\ncds:\n  image:\n    repository: ghcr.io/x/cds\n")
+		override := filepath.Join(t.TempDir(), "env.yaml")
+		if err := os.WriteFile(override, []byte("c8sComponents:\n  - valuePath: cds.image\n    entrypoint: [/c8s, cds]\n    imageEnv:\n      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n      SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for name, tc := range map[string]struct {
+			values  []string
+			wantErr bool
+		}{
+			"chart default differs from the image": {wantErr: true},
+			"-f override matches the image":        {values: []string{override}},
+		} {
+			t.Run(name, func(t *testing.T) {
+				resetCLIState(t)
+				installValues = tc.values
+				f := newFakeBin(t)
+				f.tool(t, "helm", helmShowValuesBody)
+				f.tool(t, "crane", fakeCrane(testDigest))
+				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", comps)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("appendResolvedDigestArgs = %v, want error %v", err, tc.wantErr)
+				}
+			})
+		}
+	})
+
+	t.Run("checks the router's nginx image at its rendered digest", func(t *testing.T) {
+		const nginxDigest = "sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0"
+		for name, tc := range map[string]struct {
+			enabled  bool
+			nginxEnv string
+			wantErr  bool
+		}{
+			"image matches imageEnv": {enabled: true, nginxEnv: `"PATH=/bin","NGINX_VERSION=1.30.5"`},
+			"image env differs":      {enabled: true, nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`, wantErr: true},
+			"router disabled":        {nginxEnv: `"PATH=/bin","NGINX_VERSION=1.31.0"`},
+		} {
+			t.Run(name, func(t *testing.T) {
+				resetCLIState(t)
+				f := newFakeBin(t)
+				f.tool(t, "helm", helmShowValuesBody)
+				f.tool(t, "crane", `case "$1" in
+config) echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx"],"Env":[`+tc.nginxEnv+`]}}' ;;
+*) echo `+testDigest+` ;;
+esac`)
+				chart := writeChart(t, values+fmt.Sprintf("router:\n  enabled: %t\n  nginx:\n    image: {repository: docker.io/nginxinc/nginx-unprivileged, digest: %q}\n    entrypoint: [/docker-entrypoint.sh, nginx]\n    imageEnv: {PATH: /bin, NGINX_VERSION: \"1.30.5\"}\n", tc.enabled, nginxDigest))
+				_, err := appendResolvedDigestArgs(context.Background(), chart, nil, "main", comps)
+				if (err != nil) != tc.wantErr {
+					t.Fatalf("appendResolvedDigestArgs = %v, want error %v", err, tc.wantErr)
+				}
+				checked := slices.Contains(f.calls(t), "crane config docker.io/nginxinc/nginx-unprivileged@"+nginxDigest)
+				if checked != tc.enabled {
+					t.Fatalf("nginx image config read = %v, want %v", checked, tc.enabled)
+				}
+			})
+		}
+	})
+
 	t.Run("helm failure surfaces", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "exit 1")
 		f.tool(t, "crane", fakeCrane(testDigest))
-		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, "a: 1\n"), nil, "main", comps); err == nil {
+		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, values), nil, "main", comps); err == nil {
 			t.Fatal("want error when helm fails")
 		}
 	})
@@ -636,7 +699,7 @@ func TestAppendResolvedDigestArgsExec(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", helmShowValuesBody)
 		f.tool(t, "crane", "exit 1")
-		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, "a: 1\n"), nil, "main", comps); err == nil {
+		if _, err := appendResolvedDigestArgs(context.Background(), writeChart(t, values), nil, "main", comps); err == nil {
 			t.Fatal("want error when crane fails")
 		}
 	})
@@ -1383,38 +1446,88 @@ func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
 }
 
 // An install refuses a component whose image does not start with the
-// entrypoint the chart seeds it under: the seed would deny it on its own node.
-func TestInstallChecksComponentEntrypoints(t *testing.T) {
-	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}}
-	t.Run("matching entrypoint passes", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", fakeCrane(testDigest))
-		if err := checkComponentEntrypoint(context.Background(), comp, testDigest); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		mustContainLine(t, f.calls(t), "crane config ghcr.io/x/op@"+testDigest)
-	})
-	t.Run("entrypoint and cmd together satisfy a longer pin", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", `echo '{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"]}}'`)
-		nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}}
-		if err := checkComponentEntrypoint(context.Background(), nginx, testDigest); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-	t.Run("moved entrypoint aborts", func(t *testing.T) {
-		f := newFakeBin(t)
-		f.tool(t, "crane", `echo '{"config":{"Entrypoint":["/usr/bin/c8s"]}}'`)
-		err := checkComponentEntrypoint(context.Background(), comp, testDigest)
-		if err == nil || !strings.Contains(err.Error(), "pinned to") {
-			t.Fatalf("want an entrypoint mismatch, got %v", err)
-		}
-	})
+// entrypoint, or set the env, the chart seeds it under: the seed would deny it
+// on its own node.
+func TestInstallChecksComponentImages(t *testing.T) {
+	comp := c8sComponent{valuePrefix: "image", repository: "ghcr.io/x/op", entrypoint: []string{"/c8s"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin"}}
+	nginx := c8sComponent{valuePrefix: "router.nginx.image", repository: "docker.io/nginxinc/nginx-unprivileged", entrypoint: []string{"/docker-entrypoint.sh", "nginx"}, imageEnv: map[string]string{"PATH": "/usr/bin:/bin", "NGINX_VERSION": "1.30.5"}}
+	for name, tc := range map[string]struct {
+		component c8sComponent
+		config    string
+		wantErr   bool
+	}{
+		"matching image passes": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/bin:/bin"]}}`,
+		},
+		"entrypoint and cmd together satisfy a longer pin": {
+			component: nginx,
+			config:    `{"config":{"Entrypoint":["/docker-entrypoint.sh"],"Cmd":["nginx","-g","daemon off;"],"Env":["NGINX_VERSION=1.30.5","PATH=/usr/bin:/bin"]}}`,
+		},
+		"moved entrypoint aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/usr/bin/c8s"],"Env":["PATH=/usr/bin:/bin"]}}`,
+			wantErr:   true,
+		},
+		"extra variable aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/usr/bin:/bin","LD_LIBRARY_PATH=/opt/lib"]}}`,
+			wantErr:   true,
+		},
+		"changed value aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"],"Env":["PATH=/opt/bin:/usr/bin:/bin"]}}`,
+			wantErr:   true,
+		},
+		"missing variable aborts": {
+			component: comp,
+			config:    `{"config":{"Entrypoint":["/c8s"]}}`,
+			wantErr:   true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeBin(t)
+			f.tool(t, "crane", "echo '"+tc.config+"'")
+			err := checkComponentImage(context.Background(), tc.component, testDigest)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("checkComponentImage = %v, want error %v", err, tc.wantErr)
+			}
+			mustContainLine(t, f.calls(t), "crane config "+tc.component.repository+"@"+testDigest)
+		})
+	}
 	t.Run("no entrypoint, nothing to check", func(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "crane", "exit 1")
-		if err := checkComponentEntrypoint(context.Background(), c8sComponent{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
+		if err := checkComponentImage(context.Background(), c8sComponent{valuePrefix: "nriImagePolicy.image", repository: "ghcr.io/x/nri"}, testDigest); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
+}
+
+// A values file written for a chart without imageEnv fails up front rather
+// than on an env mismatch against an empty map.
+func TestComponentsFromValuesRequiresImageEnvWithEntrypoint(t *testing.T) {
+	values := func(c map[string]any) map[string]any {
+		return map[string]any{"image": map[string]any{"repository": "ghcr.io/x/op"}, "c8sComponents": []any{c}}
+	}
+	if _, err := componentsFromValues(values(map[string]any{"valuePath": "image", "entrypoint": []any{"/c8s"}})); err == nil {
+		t.Fatal("want an error for an entrypoint without imageEnv")
+	}
+	if _, err := componentsFromValues(values(map[string]any{"valuePath": "image"})); err != nil {
+		t.Fatalf("argv-pinned component without imageEnv: %v", err)
+	}
+}
+
+// A null imageEnv value removes a default variable, as Helm deletes null keys.
+func TestRouterNginxComponentDropsNullImageEnv(t *testing.T) {
+	nginx, err := routerNginxComponent(map[string]any{"router": map[string]any{"nginx": map[string]any{
+		"entrypoint": []any{"/docker-entrypoint.sh", "nginx"},
+		"imageEnv":   map[string]any{"PATH": "/bin", "NGINX_VERSION": nil},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]string{"PATH": "/bin"}; !maps.Equal(nginx.imageEnv, want) {
+		t.Fatalf("imageEnv = %v, want %v", nginx.imageEnv, want)
+	}
 }

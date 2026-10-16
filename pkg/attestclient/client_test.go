@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -194,5 +195,30 @@ func TestReadyzSuccess(t *testing.T) {
 	}
 	if !ok {
 		t.Fatal("expected readyz to return true")
+	}
+}
+
+// A proxy the caller's client would use, as http.DefaultTransport does from
+// HTTP_PROXY, must not see /attest.
+func TestGenerateEvidenceBypassesProxy(t *testing.T) {
+	proxied := false
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		proxied = true
+		w.WriteHeader(http.StatusBadGateway)
+	}))
+	defer proxy.Close()
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"platform":"snp","evidence":{"quote":"abc"}}`)
+	}))
+	defer api.Close()
+
+	proxyURL, _ := url.Parse(proxy.URL)
+	c := NewClientWithHTTP("", &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}})
+	if _, err := c.GenerateEvidenceContext(context.Background(), api.URL, make([]byte, 48)); err != nil {
+		t.Fatalf("GenerateEvidenceContext: %v", err)
+	}
+	if proxied {
+		t.Fatal("evidence request went through the proxy")
 	}
 }
