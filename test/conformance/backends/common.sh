@@ -56,6 +56,12 @@
 #                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
+#   seed_add <name> <file>           add the entry in file to the seed the CDS
+#                                    follows, under name; 77 where the seed is
+#                                    not the cluster's to change
+#   seed_restore                     put back the seed seed_add changed, if any
+#   cds_instance                     the CDS pod's uid and restart count, one
+#                                    line, so a later read tells a restart
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
@@ -425,6 +431,38 @@ seed_declares() {
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
 }
 
+# The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
+# in the image instead, and renders no ConfigMap, so there it is not the
+# cluster's to change. The first change keeps the original for seed_restore.
+seed_configmap() {
+    kubectl -n "$NS" get configmaps -o json |
+        jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
+}
+
+seed_add() {
+    local cm original
+    cm="$(seed_configmap)"
+    [ -n "$cm" ] || return $UNSUPPORTED
+    original="$(scratch)/seed-original.json"
+    [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
+    kubectl -n "$NS" get configmap "$cm" -o json |
+        jq --arg name "$1" --slurpfile entry "$2" \
+            '.data["allowlist-seed.json"] |= (fromjson | .workloads[$name] = $entry[0] | tojson)' |
+        kubectl replace -f - >/dev/null
+}
+
+seed_restore() {
+    local original
+    original="$(scratch)/seed-original.json"
+    [ -s "$original" ] || return 0
+    kubectl replace -f "$original" >/dev/null && rm -f "$original"
+}
+
+cds_instance() {
+    kubectl -n "$NS" get pods -l app.kubernetes.io/component=cds \
+        -o jsonpath='{range .items[*]}{.metadata.uid} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | head -1
+}
+
 # A key that is not an operator key, minted once per run.
 foreign_key() {
     local key
@@ -733,6 +771,7 @@ mesh_scraper() {
 teardown() {
     kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     allowlist_delete "$MESH_SCRAPER" || true
+    seed_restore || true
     rm -f "$(scratch)/mesh-scraper.ready" "$(scratch)"/cache-*
     teardown_backend
 }
