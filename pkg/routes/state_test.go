@@ -96,17 +96,6 @@ func TestStateStagedRefresh(t *testing.T) {
 	}
 }
 
-func TestStateIgnoresConsumerChanges(t *testing.T) {
-	var st State
-	fetch(t, &st, signedAt(1, t0, time.Hour), t0)
-	fetch(t, &st, signedAt(2, t0.Add(2*time.Hour), time.Hour), t0)
-	st.Applied().Manifest().MaxAge = 0
-	st.Pending().Manifest().NotBefore = t0
-	if st.advance(t0.Add(time.Minute)) || st.Status(t0.Add(time.Minute)) != Fresh {
-		t.Error("changing a returned Manifest changed the State")
-	}
-}
-
 func TestStateRefreshFailure(t *testing.T) {
 	var st State
 	r2 := signedAt(2, t0, time.Hour)

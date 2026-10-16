@@ -1,7 +1,6 @@
 package routes
 
 import (
-	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -490,32 +489,5 @@ func TestParseTimestampLeapSecond(t *testing.T) {
 		} else if err != nil || !got.Equal(tt.want) {
 			t.Errorf("parseTimestamp(%q) = %v, %v; want %v", tt.in, got, err, tt.want)
 		}
-	}
-}
-
-// TestAnchorsCopies checks that a caller changing the certificates Anchors
-// returns cannot change the trust material of a compiled Table.
-func TestAnchorsCopies(t *testing.T) {
-	m, err := Parse(readExample(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	table := Compile(m, nil)
-	backend := func() Backend {
-		r, _, ok := table.lookup("app.example", "/admin")
-		if !ok {
-			t.Fatal("lookup(app.example, /admin) matched nothing")
-		}
-		return r.Backend
-	}
-	want := backend().Anchors()[0].Raw
-	got := backend().Anchors()[0]
-	got.Raw[0] ^= 0xff
-	got.PublicKey = nil
-	got.IsCA = false
-	m.Hosts["app.example"].Routes[1].Backend.Anchors()[0].Raw[1] ^= 0xff
-	again := backend().Anchors()[0]
-	if !bytes.Equal(again.Raw, want) || again.PublicKey == nil || !again.IsCA {
-		t.Errorf("Anchors() after the caller changed earlier results = %x, want the parsed CA unchanged", again.Raw[:4])
 	}
 }

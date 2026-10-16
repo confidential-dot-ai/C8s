@@ -247,7 +247,7 @@ func preflightUpstreamRoutes() error {
 	if err != nil {
 		return err
 	}
-	if err := operatorauth.VerifyStoredToken(keys, strings.TrimPrefix(token, "Bearer "), http.MethodPut, pkgroutes.Path, nil); err != nil {
+	if err := operatorauth.VerifyStored(keys, strings.TrimPrefix(token, "Bearer "), http.MethodPut, pkgroutes.Path, nil); err != nil {
 		return fmt.Errorf("--%s is not among the operator keys in %s, so CDS would refuse the route manifest it signs", flagOperatorKey, source)
 	}
 	return nil

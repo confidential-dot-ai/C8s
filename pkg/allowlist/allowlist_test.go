@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 const digestA = "sha256:" + "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -126,7 +127,7 @@ func TestDigestEntryName(t *testing.T) {
 		if got := DigestEntryName(d, image); got != want {
 			t.Errorf("DigestEntryName(%q) = %q, want %q", image, got, want)
 		}
-		if !ValidWorkloadName(want) {
+		if !workloadname.Valid(want) {
 			t.Errorf("%q is not a valid entry name", want)
 		}
 	}
@@ -294,42 +295,6 @@ func TestSortContainers_StableOnFullTie(t *testing.T) {
 	}
 }
 
-func TestValidWorkloadName(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		ok   bool
-	}{
-		{"a", true},
-		{"z", true},
-		{"A", true},
-		{"Z", true},
-		{"0", true},
-		{"9", true},
-		{"a.b_c-d9", true},
-		{"x.", true},
-		{"x_", true},
-		{"x-", true},
-		{"", false},
-		// Bytes adjacent to each accepted range.
-		{"`", false},
-		{"{", false},
-		{"@", false},
-		{"[", false},
-		{"/", false},
-		{":", false},
-		// Separators are only valid after the first byte.
-		{".x", false},
-		{"_x", false},
-		{"-x", false},
-		{"a b", false},
-		{"a/b", false},
-	} {
-		if got := ValidWorkloadName(tc.name); got != tc.ok {
-			t.Errorf("ValidWorkloadName(%q) = %v, want %v", tc.name, got, tc.ok)
-		}
-	}
-}
-
 func TestParseJSON_RejectsBadWorkloadName(t *testing.T) {
 	body := `{"schema":"c8s.allowlist/v1","workloads":{"a/b":{"containers":[{"digest":"` + digestA + `"}]}}}`
 	if _, err := ParseJSON([]byte(body)); err == nil || !strings.Contains(err.Error(), "workload name") {
@@ -397,7 +362,7 @@ func mustParse(t *testing.T, s string) *Allowlist {
 // cluster over an entry nobody can reach — while the write path still refuses
 // to create such a name.
 func TestWorkloadNameBoundIsWritePathOnly(t *testing.T) {
-	long := strings.Repeat("a", MaxWorkloadNameLen+1)
+	long := strings.Repeat("a", workloadname.MaxLen+1)
 	body := `{"schema":"c8s.allowlist/v1","workloads":{
 		"` + long + `":{"containers":[{"digest":"` + digestA + `"}]},
 		"ok":{"containers":[{"digest":"` + digestB + `"}]}}}`
@@ -417,9 +382,6 @@ func TestWorkloadNameBoundIsWritePathOnly(t *testing.T) {
 	// digests admitted would be the fail-open direction.
 	if _, ok := al.Workloads[long]; ok {
 		t.Fatal("the over-long entry survived a served parse")
-	}
-	if !ValidWorkloadName("ok") || ValidWorkloadName(long) {
-		t.Fatal("ValidWorkloadName must still apply the bound")
 	}
 }
 

@@ -68,8 +68,8 @@ func (e *Envelope) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// Signed is a verified signed manifest. Its accessors return copies.
-// Holders of a *Signed must not assign through the pointer.
+// Signed is a verified signed manifest. It is read-only: holders share it,
+// so none may modify it or what its accessors return.
 type Signed struct {
 	bytes    []byte
 	token    string
@@ -78,13 +78,13 @@ type Signed struct {
 }
 
 // Bytes returns the manifest bytes.
-func (s *Signed) Bytes() []byte { return bytes.Clone(s.bytes) }
+func (s *Signed) Bytes() []byte { return s.bytes }
 
 // Token returns the write token that authorized the manifest bytes.
 func (s *Signed) Token() string { return s.token }
 
 // Manifest returns the parsed manifest bytes.
-func (s *Signed) Manifest() *Manifest { return s.manifest.clone() }
+func (s *Signed) Manifest() *Manifest { return s.manifest }
 
 // Digest returns the route digest of the manifest bytes.
 func (s *Signed) Digest() [sha256.Size]byte { return s.digest }
@@ -95,19 +95,21 @@ func (s *Signed) Envelope() Envelope {
 }
 
 // VerifySigned verifies env under the trusted operator keys as W2 requires,
-// in order: the token's signature (ES256, ES384 or ES512), htm PUT and htu
+// in order: the token's signature (ES256, ES384 or ES512, matching the key's
+// curve), exp−iat within operatorauth.MaxTokenValidity, htm PUT and htu
 // /routes, pbh against the manifest bytes, then the manifest itself (§5).
 // It then rejects a ca holding one of meshCAs or a certificate one of them
 // issued (B3). The router passes its full trusted mesh CA bundle, every
 // rotation generation included; a client verifying a publication (V2)
 // passes nil.
-// It checks no time claim (W3) and no revision; see Supersedes for W4.
+// It checks no expiry (W3) and no revision; see Supersedes for W4.
 // Only a fetch over A1 TLS may renew freshness; see State.
 func VerifySigned(env Envelope, keys []*ecdsa.PublicKey, meshCAs []*x509.Certificate) (*Signed, error) {
 	// Verify, parse and hash one private copy, so a caller that changes
-	// env.Manifest concurrently cannot make pbh cover other bytes than s.bytes.
+	// env.Manifest, then or later, cannot make s.bytes differ from what pbh
+	// covers.
 	b := bytes.Clone(env.Manifest)
-	if err := operatorauth.VerifyStoredToken(keys, env.Token, http.MethodPut, Path, b); err != nil {
+	if err := operatorauth.VerifyStored(keys, env.Token, http.MethodPut, Path, b); err != nil {
 		return nil, fmt.Errorf("verify route write token: %w", err)
 	}
 	m, err := Parse(b)

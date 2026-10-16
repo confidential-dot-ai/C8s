@@ -387,7 +387,7 @@ func DigestEntryName(digest types.Digest, image string) string {
 	if len(base) > 50 {
 		base = base[:50]
 	}
-	if !ValidWorkloadName(base) {
+	if !workloadname.Valid(base) {
 		base = "image"
 	}
 	return base + "-" + digest.Hex()[:12]
@@ -411,7 +411,7 @@ func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 }
 
 // normalize canonicalizes the document. strict is the write/ingest posture
-// (ParseJSON): it enforces MaxWorkloadNameLen, so no entry that the cw selector
+// (ParseJSON): it enforces workloadname.MaxLen, so no entry that the cw selector
 // or the leaf stamp cannot represent ever enters the store. A served document
 // (ParseServedJSON) is not ours to reject over that bound — it arrived after
 // entries could already have been written, and failing the whole document would
@@ -427,16 +427,16 @@ func (a *Allowlist) normalize(strict bool) error {
 		if !workloadname.ValidGrammar(name) {
 			return fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
 		}
-		if len(name) > MaxWorkloadNameLen {
+		if len(name) > workloadname.MaxLen {
 			if strict {
-				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), MaxWorkloadNameLen)
+				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), workloadname.MaxLen)
 			}
 			// Dropping is fail-closed: the entry's digests stop being admitted
 			// by this consumer. It could never have been named on a leaf either
 			// (armtls.MatchedWorkload.Validate applies the same bound), so
 			// nothing that depended on it is lost.
 			slog.Warn("allowlist: dropping a served workload entry whose name exceeds the label-value bound",
-				"name", name, "bytes", len(name), "max", MaxWorkloadNameLen)
+				"name", name, "bytes", len(name), "max", workloadname.MaxLen)
 			delete(a.Workloads, name)
 			continue
 		}
@@ -638,23 +638,4 @@ func sortContainers(cs []Container) {
 func policyKey(c Container) string {
 	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env})
 	return string(b)
-}
-
-// MaxWorkloadNameLen bounds an entry name; see workloadname.MaxLen. It is
-// enforced where entries are written, not where a served document is read —
-// see normalize.
-const MaxWorkloadNameLen = workloadname.MaxLen
-
-// ValidWorkloadName reports whether name is a legal workload entry name: the
-// URL-path-segment grammar, bounded to MaxWorkloadNameLen. It is the check the
-// write path, the admission selector, and the matched-workload certificate
-// stamp share.
-//
-// It is not identical to what every consumer accepts: a name may end in '.',
-// '_' or '-' here and still fail k8s validation.IsValidLabelValue, which the
-// injection webhook applies to the cw label. Tightening the grammar to close
-// that gap would retroactively invalidate stored entries, so the narrower rule
-// stays where it is enforced.
-func ValidWorkloadName(name string) bool {
-	return workloadname.Valid(name)
 }
