@@ -295,7 +295,6 @@ pod_cert_file() {
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
 }
-requester_request() { return "$UNSUPPORTED"; }
 mesh_member() { return "$UNSUPPORTED"; }
 
 # No exec into a kept scraper: each scrape is a pod of its own whose log is
