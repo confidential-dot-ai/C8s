@@ -32,7 +32,6 @@
 {{- if eq (mod $tunnelReadTimeoutMs 1000) 0 -}}
 {{- $tunnelReadTimeout = printf "%ds" (div $tunnelReadTimeoutMs 1000) -}}
 {{- end -}}
-{{- $tunnelSlots := include "c8s.positiveInt" (dict "value" .Values.router.routing.tunnelSlots "label" "router.routing.tunnelSlots") | int -}}
 {{- $renderAllowlistRoute := eq (include "router.renderAllowlistRoute" .) "true" -}}
 {{- $allowlistProxyPort := 0 -}}
 {{- $allowlistWriteRate := 0 -}}
@@ -73,11 +72,14 @@ metadata:
 data:
   nginx.conf: |
     worker_processes auto;
+    # Each connection may hold a client socket, an upstream socket and a
+    # request body temp file.
+    worker_rlimit_nofile 65536;
     error_log /var/log/nginx/error.log warn;
     pid /tmp/nginx.pid;
 
     events {
-        worker_connections 1024;
+        worker_connections 16384;
     }
 
     http {
@@ -127,16 +129,6 @@ data:
         limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate={{ $allowlistWriteRate }}r/s;
         limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ $allowlistWriteTotalRate }}r/s;
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
-{{- end }}
-{{- if .Values.router.attest.enabled }}
-
-        # The tunnel's limits mirror cds-attest's --tunnel-slots: all of them in
-        # total and a quarter per client address.
-        map $host $c8s_tunnel_total_key {
-            default "all";
-        }
-        limit_conn_zone $c8s_tunnel_total_key zone=c8s_tunnel_total:1m;
-        limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
 {{- end }}
 
         server {
@@ -232,24 +224,25 @@ data:
             # the attest-lb challenge, and the over-encrypted tunnel — are
             # proxied to the in-pod `cds-attest` sidecar.
             # X-Real-IP is the address the sidecar meters each client by.
-            # Request bodies are buffered in nginx memory, never in the 16Mi
-            # temp volume, so a slow upload holds no sidecar slot; replies past
-            # proxy_buffers stream instead of spilling.
+            # nginx reads each request body whole before proxying it, so a slow
+            # upload holds no sidecar budget; replies past proxy_buffers stream
+            # instead of spilling.
             location /.well-known/c8s/ {
                 {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $tunnelReadTimeout) | nindent 16 }}
                 client_max_body_size 16k;
                 client_body_buffer_size 16k;
             }
 
-            # Tunnel records go up to 8 MiB, so limit_conn bounds their memory.
+            # Tunnel records go up to 8 MiB. Past 16k they spill to a sized
+            # tmpfs that holds only the bytes received, where an 8m buffer
+            # would be allocated whole once a client declared the size. A full
+            # volume fails the upload, not the pod.
             location = /.well-known/c8s/tunnel {
                 {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $tunnelReadTimeout) | nindent 16 }}
                 client_max_body_size 8m;
-                client_body_buffer_size 8m;
+                client_body_buffer_size 16k;
+                client_body_temp_path {{ include "router.tunnelBodyDir" . }};
                 client_body_timeout 10s;
-                limit_conn c8s_tunnel_total {{ $tunnelSlots }};
-                limit_conn c8s_tunnel_per_client {{ max (div $tunnelSlots 4) 1 }};
-                limit_conn_status 503;
             }
 
             {{- end }}

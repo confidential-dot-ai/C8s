@@ -267,10 +267,10 @@ func TestA7M1TunnelRoutesByManifest(t *testing.T) {
 	}
 }
 
-// TestTunnelStalledClientFreesSlot: a client that stalls its upload, below or
-// past the body limit, or its download holds its tunnel slot only until it
-// has made no progress for the I/O timeout, though it stays connected.
-func TestTunnelStalledClientFreesSlot(t *testing.T) {
+// TestTunnelStalledClientFreesBudget: a client that stalls its upload or its
+// download holds its tunnel budget only until it has made no progress for the
+// I/O timeout, though it stays connected.
+func TestTunnelStalledClientFreesBudget(t *testing.T) {
 	host := types.HeaderField{Name: "Host", Value: "app.example"}
 	tests := []struct {
 		name string
@@ -280,14 +280,8 @@ func TestTunnelStalledClientFreesSlot(t *testing.T) {
 		{"upload", func(t *testing.T, conn net.Conn, sessionID string, recBody []byte) {
 			fmt.Fprintf(conn, "POST /.well-known/c8s/tunnel HTTP/1.1\r\nHost: router\r\nX-C8s-Session: %s\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\n\r\n%s",
 				sessionID, len(recBody)+1, recBody)
-		}},
-		{"oversized upload", func(t *testing.T, conn net.Conn, sessionID string, _ []byte) {
-			// Declares one byte over the limit and holds that byte back.
-			fmt.Fprintf(conn, "POST /.well-known/c8s/tunnel HTTP/1.1\r\nHost: router\r\nX-C8s-Session: %s\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\n\r\n",
-				sessionID, tunnelBodyLimit+1)
-			if _, err := conn.Write(make([]byte, tunnelBodyLimit)); err != nil {
-				t.Fatal(err)
-			}
+			// Let it take the budget before the probes race it there.
+			time.Sleep(200 * time.Millisecond)
 		}},
 		{"download", func(t *testing.T, conn net.Conn, sessionID string, recBody []byte) {
 			fmt.Fprintf(conn, "POST /.well-known/c8s/tunnel HTTP/1.1\r\nHost: router\r\nX-C8s-Session: %s\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\n\r\n%s",
@@ -303,7 +297,7 @@ func TestTunnelStalledClientFreesSlot(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			rs := newRoutedServer(t, func(p *routing.ProxyConfig, s *Config) {
-				p.TunnelSlots = 1
+				p.TunnelBudget = oneRequestBudget
 				s.TunnelIOTimeout = 2 * time.Second
 			})
 			rs.apply(t, 1, time.Hour)
@@ -329,14 +323,14 @@ func TestTunnelStalledClientFreesSlot(t *testing.T) {
 				_ = json.NewDecoder(resp.Body).Decode(&refusal)
 				return resp.StatusCode, refusal.Error
 			}
-			// The stalled upload takes its slot once its headers are parsed.
+			// The stalled upload takes the budget once its headers are parsed.
 			for {
 				code, errCode := get()
 				if code == http.StatusServiceUnavailable && errCode == types.ErrorCodeTunnelBusy {
 					break
 				}
 				if time.Since(start) > time.Second/2 {
-					t.Fatalf("tunnel while a stalled request holds the slot = %d %q, want %d %q", code, errCode, http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy)
+					t.Fatalf("tunnel while a stalled request holds the budget = %d %q, want %d %q", code, errCode, http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy)
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -345,7 +339,7 @@ func TestTunnelStalledClientFreesSlot(t *testing.T) {
 					break
 				}
 				if time.Since(start) > 10*time.Second {
-					t.Fatal("tunnel slot never freed while the stalled client stayed connected")
+					t.Fatal("tunnel budget never freed while the stalled client stayed connected")
 				}
 				time.Sleep(20 * time.Millisecond)
 			}
@@ -408,37 +402,45 @@ func TestTunnelSlowClientGetsWholeResponse(t *testing.T) {
 	}
 }
 
-// TestTunnelOversizedBodyFreesSlot: a body one byte over the limit, sent in
-// full, gets 413 and releases its slot.
-func TestTunnelOversizedBodyFreesSlot(t *testing.T) {
-	rs := newRoutedServer(t, func(p *routing.ProxyConfig, _ *Config) { p.TunnelSlots = 1 })
+// oneRequestBudget admits one tunnelled request at a time.
+const oneRequestBudget = routing.MaxTunnelResponseBytes + tunnelBodyLimit
+
+// TestTunnelBudgetNeedsSession: a request naming no live session, or
+// declaring an oversized record, is refused before it reads the body, so a
+// slow sender holds no budget while a session's request gets through.
+func TestTunnelBudgetNeedsSession(t *testing.T) {
+	rs := newRoutedServer(t, func(p *routing.ProxyConfig, _ *Config) { p.TunnelBudget = oneRequestBudget })
 	rs.apply(t, 1, time.Hour)
 	channel, sessionID := establishSession(t, rs.ts.URL, make([]byte, 32))
-	req, _ := http.NewRequest(http.MethodPost, rs.ts.URL+"/.well-known/c8s/tunnel", bytes.NewReader(make([]byte, tunnelBodyLimit+1)))
-	req.Header.Set("X-C8s-Session", sessionID)
-	req.Header.Set("Content-Type", "application/cbor")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name, session string
+		length        int
+		want          string
+	}{
+		{"no session", "", 1024, " 401 "},
+		{"unknown session", "forged", 1024, " 401 "},
+		{"oversized record", sessionID, tunnelBodyLimit + 1, " 413 "},
 	}
-	var refusal types.ErrorResponse
-	_ = json.NewDecoder(resp.Body).Decode(&refusal)
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusRequestEntityTooLarge || refusal.Error != types.ErrorCodeChannelError {
-		t.Fatalf("tunnel with a %d-byte body = %d %q, want %d %q", tunnelBodyLimit+1, resp.StatusCode, refusal.Error, http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError)
-	}
-	// The handler releases the slot after the 413 reaches the client, so the
-	// next request may briefly still see it held.
-	host := types.HeaderField{Name: "Host", Value: "app.example"}
-	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
-		resp = postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{host}})
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return
-		}
-		if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("tunnel after a 413 = %d, want %d", resp.StatusCode, http.StatusOK)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			conn, err := net.Dial("tcp", rs.ts.Listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			// Headers and one byte of the body, then nothing.
+			fmt.Fprintf(conn, "POST /.well-known/c8s/tunnel HTTP/1.1\r\nHost: router\r\nX-C8s-Session: %s\r\nContent-Type: application/cbor\r\nContent-Length: %d\r\n\r\nx",
+				tc.session, tc.length)
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			if status, err := bufio.NewReader(conn).ReadString('\n'); err != nil || !strings.Contains(status, tc.want) {
+				t.Fatalf("stalled tunnel upload = %q, %v, want%s", status, err, tc.want)
+			}
+			resp := postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}})
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("tunnel beside a stalled refused upload = %d, want %d", resp.StatusCode, http.StatusOK)
+			}
+		})
 	}
 }
 
@@ -470,7 +472,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 	mesh := config{meshIdentityCertFile: "c", meshIdentityKeyFile: "k", meshIdentityCAFile: "ca", attestationAPIURL: "http://127.0.0.1:9"}
 	routed := func(edit func(*config)) config {
 		c := mesh
-		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1", tunnelSlots: 32}
+		c.routing = routingConfig{cdsURL: "https://cds:8443", pollInterval: time.Second, backendTimeout: time.Hour, host: "127.0.0.1"}
 		if edit != nil {
 			edit(&c)
 		}
@@ -483,7 +485,7 @@ func TestCheckRoutingFlags(t *testing.T) {
 	}{
 		{"routed", routed(nil), ""},
 		{"no cds", routed(func(c *config) { c.routing.cdsURL = "" }), "--cds-url is required"},
-		{"zero tunnel slots", routed(func(c *config) { c.routing.tunnelSlots = 0 }), "--tunnel-slots"},
+		{"tunnel budget under one request", routed(func(c *config) { c.routing.tunnelBudget = quantityFlag{bytes: oneRequestBudget - 1, set: true} }), "--tunnel-budget"},
 		{"cds without attestation api", routed(func(c *config) { c.attestationAPIURL = "" }), "--attestation-api-url"},
 		{"cds without mesh identity", routed(func(c *config) { c.meshIdentityKeyFile = "" }), "--mesh-identity"},
 		{"non-loopback routing host", routed(func(c *config) { c.routing.port = 8802; c.routing.host = "0.0.0.0" }), "loopback"},

@@ -133,13 +133,14 @@ var (
 //
 // Session gates a new attested session (A2, F2) and returns the manifest whose
 // digest it binds (E1). Current is the applied manifest the publication serves.
-// Acquire takes a tunnel slot for a client. Forward routes a request decrypted
-// from the tunnel; outer is the tunnel request itself, whose Host routes a
-// sealed request that carries none (M1), and an error is sealed as 502.
+// Acquire reserves tunnel budget for a record of recordBytes. Forward routes a
+// request decrypted from the tunnel; outer is the tunnel request itself, whose
+// Host routes a sealed request that carries none (M1), and an error is sealed
+// as 502.
 type Router interface {
 	Session() (*routing.Applied, error)
 	Current() *routing.Applied
-	Acquire(client string) (release func(), ok bool)
+	Acquire(recordBytes int64) (release func(), ok bool)
 	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 }
 
@@ -189,7 +190,7 @@ type Config struct {
 	// TunnelIOTimeout is how long reading a tunnel request body, or writing
 	// its sealed response, may make no progress before the handler gives up.
 	// It restarts after every read and every written chunk, so a slow client
-	// is never cut off and a stalled one cannot hold a tunnel slot. Defaults
+	// is never cut off and a stalled one cannot hold tunnel budget. Defaults
 	// to defaultTunnelIOTimeout.
 	TunnelIOTimeout time.Duration
 }
@@ -748,14 +749,30 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 // envelope, forwards the reconstructed request by the applied route manifest,
 // and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	// A refusal before the body is read closes the connection, so net/http
+	// does not wait on the unread body.
+	refuse := func(status int, code, msg string) {
+		w.Header().Set("Connection", "close")
+		writeErr(w, status, code, msg)
+	}
 	channel := s.useSession(r.Header.Get(sessionHeader))
 	if channel == nil {
-		writeErr(w, http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
+		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
 		return
 	}
-	release, ok := s.routes.Acquire(clientBucket(r))
+	if r.ContentLength > tunnelBodyLimit {
+		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
+		return
+	}
+	// Only a request naming a live session gets here, so an unauthenticated
+	// client never holds budget.
+	recordBytes := r.ContentLength
+	if recordBytes < 0 {
+		recordBytes = tunnelBodyLimit
+	}
+	release, ok := s.routes.Acquire(recordBytes)
 	if !ok {
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
+		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 		return
 	}
 	defer release()
@@ -766,7 +783,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "tunnel deadlines unsupported")
 		return
 	}
-	// Runs before release: the slot stays held until the response is on the
+	// Runs before release: the budget stays held until the response is on the
 	// wire. The write deadline would otherwise outlive this request on a
 	// kept-alive connection; net/http resets the read deadline itself.
 	defer func() {
@@ -777,7 +794,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 
 	// MaxBytesReader, unlike a LimitReader, fails an oversized body and makes
 	// net/http close the connection rather than drain the rest with no
-	// deadline while the slot is held.
+	// deadline while the budget is held.
 	body := deadlineReader{ReadCloser: r.Body, extend: func() error { return rc.SetReadDeadline(ioDeadline()) }}
 	recBytes, err := io.ReadAll(http.MaxBytesReader(w, body, tunnelBodyLimit))
 	var tooLarge *http.MaxBytesError

@@ -397,6 +397,9 @@ instead of a ConfigMap the control plane can edit.
 {{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
 {{- end -}}
 
+{{/* Where nginx spools tunnel request bodies (router.nginx.tunnelBodySpace). */}}
+{{- define "router.tunnelBodyDir" -}}/var/lib/c8s-tunnel-body{{- end -}}
+
 {{/* nodeservices.RouterTLSSnippetDir must equal it. */}}
 {{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
 
@@ -533,7 +536,12 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args "--routing-host=127.0.0.1" -}}
 {{- $args = append $args (printf "--routing-port=%s" (include "router.routingPort" $root)) -}}
 {{- $args = append $args (printf "--backend-timeout=%v" $v.routing.backendTimeout) -}}
-{{- $args = append $args (printf "--tunnel-slots=%s" (include "c8s.positiveInt" (dict "value" $v.routing.tunnelSlots "label" "router.routing.tunnelSlots"))) -}}
+{{- with $v.routing.tunnelBudget -}}
+{{- if not (regexMatch `^[1-9][0-9]*(Ki|Mi|Gi|Ti|k|M|G|T)?$` (toString .)) -}}
+{{- fail (printf "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: %v" .) -}}
+{{- end -}}
+{{- $args = append $args (printf "--tunnel-budget=%s" .) -}}
+{{- end -}}
 {{- $args = append $args (printf "--reserved-paths=%s" (include "router.reservedPaths" $root)) -}}
 {{- /* Serve the applied signed manifest at /.well-known/c8s/routes for
        clients that check the route digest under pinned operator keys. */ -}}

@@ -20,16 +20,11 @@ import (
 )
 
 const (
-	// maxTunnelResponseBytes bounds a backend response the tunnel buffers to
+	// MaxTunnelResponseBytes bounds a backend response the tunnel buffers to
 	// seal.
-	maxTunnelResponseBytes = 32 << 20
-	// defaultTunnelSlots bounds tunnelled requests in flight. Each buffers up
-	// to four copies of its response (body, CBOR, sealed, written) and three
-	// of its 8 MiB request, about 150 MiB.
-	defaultTunnelSlots = 32
-	// clientSlotShare is the fraction of the tunnel slots one client may hold,
-	// so a client holding slow requests cannot take every slot.
-	clientSlotShare = 4
+	MaxTunnelResponseBytes = 32 << 20
+	// DefaultTunnelBudget is the tunnel budget when ProxyConfig sets none.
+	DefaultTunnelBudget = 16 << 30
 )
 
 // ExporterHeader carries the tunnel's channel-binding exporter to backends.
@@ -44,10 +39,10 @@ type ProxyConfig struct {
 	// either way, and a tunnelled request's whole backend exchange, which
 	// Forward buffers. Zero means none.
 	Timeout time.Duration
-	// TunnelSlots bounds tunnelled requests in flight (Acquire). Zero means
-	// 32.
-	TunnelSlots int
-	Logger      *slog.Logger
+	// TunnelBudget bounds the bytes tunnelled requests in flight may buffer
+	// (Acquire). Zero means DefaultTunnelBudget.
+	TunnelBudget int64
+	Logger       *slog.Logger
 }
 
 // Proxy routes application requests by the applied manifest. It serves the
@@ -59,11 +54,9 @@ type Proxy struct {
 	timeout    time.Duration
 	log        *slog.Logger
 
-	slotsMu        sync.Mutex
-	slots          int            // tunnelled requests allowed in flight
-	slotsPerClient int            // of those, what one client may hold
-	inFlight       int            // tunnelled requests in flight
-	held           map[string]int // client -> its requests in flight
+	budgetMu sync.Mutex
+	budget   int64 // bytes tunnelled requests may reserve
+	reserved int64 // bytes reserved by tunnelled requests in flight
 }
 
 // NewProxy returns a Proxy.
@@ -72,18 +65,16 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	slots := cfg.TunnelSlots
-	if slots <= 0 {
-		slots = defaultTunnelSlots
+	budget := cfg.TunnelBudget
+	if budget <= 0 {
+		budget = DefaultTunnelBudget
 	}
 	return &Proxy{
-		state:          cfg.State,
-		transports:     cfg.Transports,
-		timeout:        cfg.Timeout,
-		log:            logger,
-		slots:          slots,
-		slotsPerClient: max(slots/clientSlotShare, 1),
-		held:           make(map[string]int),
+		state:      cfg.State,
+		transports: cfg.Transports,
+		timeout:    cfg.Timeout,
+		log:        logger,
+		budget:     budget,
 	}
 }
 
@@ -94,25 +85,23 @@ func (p *Proxy) Session() (*Applied, error) { return p.state.Session() }
 // Current returns the applied manifest, or nil before the first apply.
 func (p *Proxy) Current() *Applied { return p.state.Current() }
 
-// Acquire takes a tunnel slot for client, or reports false when every slot
-// is taken or client holds its share of them. The caller holds it from
-// reading the sealed request until the sealed response is written, then calls
+// Acquire reserves the bytes a tunnelled request with a record of recordBytes
+// may buffer: the record and the largest response Forward accepts. It reports
+// false when the budget cannot cover them. The caller holds the reservation
+// from reading the record until the sealed response is written, then calls
 // release once.
-func (p *Proxy) Acquire(client string) (release func(), ok bool) {
-	p.slotsMu.Lock()
-	defer p.slotsMu.Unlock()
-	if p.inFlight >= p.slots || p.held[client] >= p.slotsPerClient {
+func (p *Proxy) Acquire(recordBytes int64) (release func(), ok bool) {
+	n := recordBytes + MaxTunnelResponseBytes
+	p.budgetMu.Lock()
+	defer p.budgetMu.Unlock()
+	if p.reserved+n > p.budget {
 		return nil, false
 	}
-	p.inFlight++
-	p.held[client]++
+	p.reserved += n
 	return func() {
-		p.slotsMu.Lock()
-		defer p.slotsMu.Unlock()
-		p.inFlight--
-		if p.held[client]--; p.held[client] == 0 {
-			delete(p.held, client)
-		}
+		p.budgetMu.Lock()
+		defer p.budgetMu.Unlock()
+		p.reserved -= n
 	}, true
 }
 
@@ -162,7 +151,7 @@ var sealedDropped = map[string]bool{
 // (A7), within outer's context. Its host is the sealed Host header, never
 // outer's host: a sealed request without exactly one gets 400 (M1). Routing
 // outcomes the client must see (A2, M5) are responses; an error means the
-// backend failed (B5). The caller holds a slot from Acquire.
+// backend failed (B5). The caller holds a reservation from Acquire.
 func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
 	ctx := outer.Context()
 	var host string
@@ -236,12 +225,12 @@ func (p *Proxy) Forward(outer *http.Request, req types.TunnelRequest) (types.Tun
 		if res.StatusCode == http.StatusSwitchingProtocols {
 			return errors.New("backend switched protocols on a tunnelled request")
 		}
-		b, err := io.ReadAll(io.LimitReader(res.Body, maxTunnelResponseBytes+1))
+		b, err := io.ReadAll(io.LimitReader(res.Body, MaxTunnelResponseBytes+1))
 		if err != nil {
 			return err
 		}
-		if len(b) > maxTunnelResponseBytes {
-			return fmt.Errorf("response exceeds %d bytes", maxTunnelResponseBytes)
+		if len(b) > MaxTunnelResponseBytes {
+			return fmt.Errorf("response exceeds %d bytes", MaxTunnelResponseBytes)
 		}
 		body = b
 		res.Body = http.NoBody

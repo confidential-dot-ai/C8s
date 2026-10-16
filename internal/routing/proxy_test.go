@@ -1,6 +1,7 @@
 package routing
 
 import (
+	"bufio"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -386,42 +387,46 @@ func TestA7TunnelSealedHeaders(t *testing.T) {
 	}
 }
 
-func TestAcquireBoundsTunnelSlots(t *testing.T) {
-	p := NewProxy(ProxyConfig{TunnelSlots: 1})
-	release, ok := p.Acquire("a")
-	if !ok {
-		t.Fatal("Acquire() on a free proxy = false, want true")
+// TestAcquireAdmitsManyRequests: the default budget admits hundreds of
+// full-size tunnelled requests at once, refuses the one it cannot cover, and
+// takes it once another releases.
+func TestAcquireAdmitsManyRequests(t *testing.T) {
+	const record = 8 << 20
+	p := NewProxy(ProxyConfig{})
+	want := DefaultTunnelBudget / (record + MaxTunnelResponseBytes)
+	if want < 400 {
+		t.Fatalf("default budget admits %d full-size requests, want at least 400", want)
 	}
-	if _, ok := p.Acquire("b"); ok {
-		t.Fatal("Acquire() with every slot taken = true, want false")
-	}
-	release()
-	if _, ok := p.Acquire("b"); !ok {
-		t.Fatal("Acquire() after release = false, want true")
-	}
-}
-
-// One client holds at most its share of the slots, so the others still get in.
-func TestAcquireBoundsOneClientsShare(t *testing.T) {
-	p := NewProxy(ProxyConfig{TunnelSlots: 8})
 	var releases []func()
-	for range 2 {
-		release, ok := p.Acquire("greedy")
+	for i := range want {
+		release, ok := p.Acquire(record)
 		if !ok {
-			t.Fatal("Acquire(greedy) within its share = false, want true")
+			t.Fatalf("Acquire(%d) number %d within the budget = false, want true", record, i+1)
 		}
 		releases = append(releases, release)
 	}
-	if _, ok := p.Acquire("greedy"); ok {
-		t.Fatal("Acquire(greedy) over its share = true, want false")
-	}
-	if _, ok := p.Acquire("other"); !ok {
-		t.Fatal("Acquire(other) with free slots = false, want true")
+	if _, ok := p.Acquire(record); ok {
+		t.Fatalf("Acquire(%d) past the budget = true, want false", record)
 	}
 	releases[0]()
-	if _, ok := p.Acquire("greedy"); !ok {
-		t.Fatal("Acquire(greedy) after a release = false, want true")
+	if _, ok := p.Acquire(record); !ok {
+		t.Fatalf("Acquire(%d) after a release = false, want true", record)
 	}
+}
+
+func TestAcquireChargesRecordAndResponse(t *testing.T) {
+	p := NewProxy(ProxyConfig{TunnelBudget: 2*MaxTunnelResponseBytes + 1024})
+	release, ok := p.Acquire(512)
+	if !ok {
+		t.Fatal("Acquire(512) on a free proxy = false, want true")
+	}
+	if _, ok := p.Acquire(1024); ok {
+		t.Fatal("Acquire(1024) over the remaining budget = true, want false")
+	}
+	if _, ok := p.Acquire(512); !ok {
+		t.Fatal("Acquire(512) within the remaining budget = false, want true")
+	}
+	release()
 }
 
 // TestListenerDropsClientExporter: only the tunnel sets X-C8s-Exporter, which
@@ -496,4 +501,47 @@ func TestListenerTimeoutIsIdle(t *testing.T) {
 			t.Fatal("a client reading nothing still holds the request")
 		}
 	})
+}
+
+// TestListenerUpgradeIsIdle: an upgraded connection carrying traffic outlives
+// the timeout, and one that goes quiet is closed after it.
+func TestListenerUpgradeIsIdle(t *testing.T) {
+	const timeout = 500 * time.Millisecond
+	f := newFixture(t)
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: timeout})
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	ts := httptest.NewServer(f.proxy)
+	t.Cleanup(ts.Close)
+
+	conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprintf(conn, "GET /echo HTTP/1.1\r\nHost: %s\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n", testHost)
+	br := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade GET /echo = %v, %v, want 101", resp, err)
+	}
+	start := time.Now()
+	var quiet time.Time
+	for i := 0; time.Since(start) < 4*timeout; i++ {
+		time.Sleep(timeout / 5)
+		fmt.Fprintf(conn, "ping %d\n", i)
+		if line, err := br.ReadString('\n'); err != nil || line != fmt.Sprintf("ping %d\n", i) {
+			t.Fatalf("echo %d after %v = %q, %v, want it echoed", i, time.Since(start), line, err)
+		}
+		quiet = time.Now()
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(10 * timeout)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := br.ReadByte(); err != io.EOF {
+		t.Fatalf("read on a quiet upgraded connection = %v, want EOF", err)
+	}
+	if elapsed := time.Since(quiet); elapsed < timeout {
+		t.Fatalf("quiet upgraded connection closed after %v, want at least %v", elapsed, timeout)
+	}
 }

@@ -51,7 +51,7 @@ type routingConfig struct {
 	port                int
 	backendTimeout      time.Duration
 	reservedPaths       []string
-	tunnelSlots         int
+	tunnelBudget        quantityFlag
 	publish             bool
 }
 
@@ -65,9 +65,9 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
-	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
+	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
-	f.IntVar(&cfg.tunnelSlots, "tunnel-slots", 32, "maximum tunnelled requests in flight in this replica, each held for its whole backend call, shared by all clients, one client (by X-Real-IP, so one NAT or SNAT address) holding at most a quarter; further requests get 503 tunnel_busy")
+	f.Var(&cfg.tunnelBudget, "tunnel-budget", "bytes tunnelled requests in flight in this replica may buffer, as a quantity such as 16Gi; each reserves its record and the largest response (32 MiB) for its whole backend call, and a request over the budget gets 503 tunnel_busy; unset means 75% of the container memory limit, or 16Gi without one")
 	f.BoolVar(&cfg.publish, "publish-routes", false, "serve the applied signed route manifest at /.well-known/c8s/routes, for clients that verify it under pinned operator keys; off, the path answers 404")
 }
 
@@ -103,8 +103,8 @@ func checkRoutingFlags(cfg config) error {
 	if r.backendTimeout <= 0 {
 		return errors.New("--backend-timeout must be positive")
 	}
-	if r.tunnelSlots <= 0 {
-		return errors.New("--tunnel-slots must be positive")
+	if r.tunnelBudget.set && r.tunnelBudget.bytes < routing.MaxTunnelResponseBytes+tunnelBodyLimit {
+		return fmt.Errorf("--tunnel-budget must cover one full request, %d bytes", routing.MaxTunnelResponseBytes+tunnelBodyLimit)
 	}
 	if r.port < 0 || r.port > 65535 {
 		return fmt.Errorf("--routing-port must be between 0 and 65535, got %d", r.port)
@@ -158,7 +158,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 		cfg: r,
 		log: logger,
 		proxy: routing.NewProxy(routing.ProxyConfig{
-			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelSlots: r.tunnelSlots, Logger: logger,
+			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
 			State: state, Fetcher: cds, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,

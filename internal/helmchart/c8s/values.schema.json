@@ -493,7 +493,8 @@
             "resources": {},
             "runAsGroup": {},
             "runAsNonRoot": {},
-            "runAsUser": {}
+            "runAsUser": {},
+            "tunnelBodySpace": {}
           }
         },
         "publicTLS": {
@@ -537,7 +538,7 @@
             "pollInterval": {},
             "port": {},
             "readTimeout": {},
-            "tunnelSlots": {}
+            "tunnelBudget": {}
           }
         },
         "san": {},

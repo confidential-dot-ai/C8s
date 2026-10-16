@@ -21,9 +21,8 @@ const (
 	// ErrorCodeTooManyRequests: the caller holds as many sessions as one
 	// client may. Retrying once the sessions it holds expire succeeds.
 	ErrorCodeTooManyRequests = "too_many_requests"
-	// ErrorCodeTunnelBusy: every tunnel slot on the router is in use, or this
-	// client address holds its share of them (503). Retry after one of the
-	// client's requests completes.
+	// ErrorCodeTunnelBusy: the router's tunnel budget cannot cover another
+	// request (503). Retry shortly.
 	ErrorCodeTunnelBusy = "tunnel_busy"
 	// ErrorCodeExternalTLS: attest-lb was requested on a front door whose
 	// serving credential was generated outside the TEE (an operator-supplied
