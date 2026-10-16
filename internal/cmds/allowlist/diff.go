@@ -7,7 +7,6 @@ import (
 	"maps"
 	"slices"
 	"sort"
-	"strings"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -148,14 +147,15 @@ func policySummary(key string) string {
 }
 
 // secretsGrant renders a grant in full for display and comparison; parsing has
-// already sorted and deduplicated its globs.
+// already sorted and deduplicated its globs. Paths are quoted, since a path may
+// itself contain a comma.
 func secretsGrant(p *pkgallowlist.SecretsPolicy) string {
 	if p == nil {
 		return pkgallowlist.PolicyDeny
 	}
-	s := p.Policy + " read=" + strings.Join(p.Read, ",")
+	s := fmt.Sprintf("%s read=%q", p.Policy, p.Read)
 	if len(p.Write) > 0 {
-		s += " write=" + strings.Join(p.Write, ",")
+		s += fmt.Sprintf(" write=%q", p.Write)
 	}
 	return s
 }

@@ -62,7 +62,7 @@ const (
 	// AnnotationCertDir, AnnotationReloadWatchMountPath and
 	// AnnotationDiscoveryMountPath once moved a sidecar mount. They are
 	// refused unless they name the fixed destination; see pinnedDestinations.
-	AnnotationCertVolume             = "confidential.ai/c8s-cert-volume"
+	AnnotationCertVolume             = workloadclaims.AnnotationCertVolume
 	AnnotationCertDir                = "confidential.ai/c8s-cert-dir"
 	AnnotationCertFile               = "confidential.ai/c8s-cert-file"
 	AnnotationKeyFile                = "confidential.ai/c8s-key-file"
@@ -125,11 +125,11 @@ const reservedSecretContainerName = workloadclaims.SecretContainerName
 
 // defaultCertVolumeName is the injected cert volume when a pod does not name
 // its own with AnnotationCertVolume.
-const defaultCertVolumeName = "c8s-certs"
+const defaultCertVolumeName = workloadclaims.CertVolumeName
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
-const secretsVolumeName = "c8s-secrets"
+const secretsVolumeName = workloadclaims.SecretsVolumeName
 
 // The injected sidecars' mount destinations. The allowlist pins each
 // sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod

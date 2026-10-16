@@ -432,7 +432,19 @@ func TestDeriveAddsInjectedMounts(t *testing.T) {
 		{name: "deny", object: cwDeployJSON(cw), mounts: "--mounts=deny", want: exact(cert)},
 		{name: "any", object: cwDeployJSON(cw), mounts: "--mounts=any", want: pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny}},
 		{name: "secrets", object: cwDeployJSON(cw + `, "confidential.ai/c8s-secrets": "db=/db/password"`), want: exact(cert, secrets)},
-		{name: "empty secrets list", object: cwDeployJSON(cw + `, "confidential.ai/c8s-secrets": " , "`), want: exact(cert)},
+		{name: "empty secrets list", object: cwDeployJSON(cw + `, "confidential.ai/c8s-secrets": " ,\n "`), want: exact(cert)},
+		{
+			name: "container already mounts the cert volume",
+			object: strings.ReplaceAll(cwDeployJSON(cw), `"image": "`+testImage+`",`,
+				`"image": "`+testImage+`", "volumeMounts": [{"name": "c8s-certs", "mountPath": "/tls"}],`),
+			want: exact(pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir}),
+		},
+		{
+			name: "renamed cert volume",
+			object: strings.ReplaceAll(cwDeployJSON(cw+`, "confidential.ai/c8s-cert-volume": "tls"`), `"image": "`+testImage+`",`,
+				`"image": "`+testImage+`", "volumeMounts": [{"name": "tls", "mountPath": "/tls"}, {"name": "c8s-certs", "mountPath": "/other"}],`),
+			want: exact(pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir}),
+		},
 		{
 			name:       "exact file",
 			object:     cwDeployJSON(cw),

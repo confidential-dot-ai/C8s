@@ -769,11 +769,27 @@ func TestPrintAttestVerifyHint(t *testing.T) {
 	}
 }
 
-// A TDX install whose --image-policy-file pins RTMRs is fully pinned: neither
-// the unpinned-mesh hint nor the missing-RTMR warning applies.
+// A TDX install with --image-policy-file pins the mesh, and warns about missing
+// RTMR pins only when the file has none.
 func TestInstallImagePolicyFileCountsAsPinned(t *testing.T) {
-	policy := writePinConfig(t, `{"schema_version":"1","tee":"tdx","measurements":[
-		{"name":"a","mrtd":"00`+pinDigestA+`","rtmr":[null,"`+pinReg1+`","`+pinReg2+`"]}]}`)
+	for _, tt := range []struct {
+		name     string
+		rtmr     string
+		wantWarn bool
+	}{
+		{name: "rtmrs pinned", rtmr: `,"rtmr":[null,"` + pinReg1 + `","` + pinReg2 + `"]`},
+		{name: "mrtd only", wantWarn: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			policy := writePinConfig(t, `{"schema_version":"1","tee":"tdx","measurements":[
+				{"name":"a","mrtd":"00`+pinDigestA+`"`+tt.rtmr+`}]}`)
+			installWithPolicyFile(t, policy, tt.wantWarn)
+		})
+	}
+}
+
+func installWithPolicyFile(t *testing.T, policy string, wantWarn bool) {
+	t.Helper()
 	var stdout, stderr string
 	var err error
 	stderr = captureStderr(t, func() {
@@ -788,8 +804,8 @@ func TestInstallImagePolicyFileCountsAsPinned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("install: %v\nstderr:\n%s", err, stderr)
 	}
-	if strings.Contains(stderr, "TDX with no --rtmrs") {
-		t.Errorf("stderr warns about missing RTMR pins although the policy file pins them:\n%s", stderr)
+	if got := strings.Contains(stderr, "TDX with no --rtmrs"); got != wantWarn {
+		t.Errorf("stderr warns about missing RTMR pins = %v, want %v:\n%s", got, wantWarn, stderr)
 	}
 	if strings.Contains(stdout, "UNPINNED") || !strings.Contains(stdout, "pinned to --image-policy-file") {
 		t.Errorf("stdout = %q, want the --image-policy-file pinned hint", stdout)

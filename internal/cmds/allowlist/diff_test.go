@@ -120,15 +120,16 @@ func TestDiffEntrySecrets(t *testing.T) {
 	}{
 		{name: "both deny", live: nil, desired: nil},
 		{name: "same grant", live: grant("db/*"), desired: grant("db/*")},
-		{name: "grant added", live: nil, desired: grant("db/*"), wantFrom: "deny", wantTo: "allow read=db/*"},
-		{name: "grant removed", live: grant("db/*"), desired: nil, wantFrom: "allow read=db/*", wantTo: "deny"},
-		{name: "read widened", live: grant("db/a"), desired: grant("db/a", "db/b"), wantFrom: "allow read=db/a", wantTo: "allow read=db/a,db/b"},
+		{name: "grant added", live: nil, desired: grant("db/*"), wantFrom: "deny", wantTo: `allow read=["db/*"]`},
+		{name: "grant removed", live: grant("db/*"), desired: nil, wantFrom: `allow read=["db/*"]`, wantTo: "deny"},
+		{name: "read widened", live: grant("db/a"), desired: grant("db/a", "db/b"), wantFrom: `allow read=["db/a"]`, wantTo: `allow read=["db/a" "db/b"]`},
+		{name: "comma inside a path", live: grant("db/a,db/b"), desired: grant("db/a", "db/b"), wantFrom: `allow read=["db/a,db/b"]`, wantTo: `allow read=["db/a" "db/b"]`},
 		{
 			name:     "write added",
 			live:     grant("db/a"),
 			desired:  &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"db/a"}, Write: []string{"db/a"}},
-			wantFrom: "allow read=db/a",
-			wantTo:   "allow read=db/a write=db/a",
+			wantFrom: `allow read=["db/a"]`,
+			wantTo:   `allow read=["db/a"] write=["db/a"]`,
 		},
 	}
 	for _, tt := range tests {

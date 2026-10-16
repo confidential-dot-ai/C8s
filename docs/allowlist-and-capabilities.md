@@ -316,7 +316,8 @@ Omitting both flags leaves each container's mount policy at `deny`.
 For a pod annotated `confidential.ai/cw`, `derive` adds the mounts the webhook
 injects into every container to each `deny` or `exact` policy, which makes it
 `exact`: an `emptyDir` rule at `/etc/c8s/certs`, and one at `/run/c8s/secrets`
-when the pod sets `confidential.ai/c8s-secrets`. List any other volume,
+when the pod sets `confidential.ai/c8s-secrets`, or wherever the container
+already mounts those volumes. List any other volume,
 including a C8s volume, in `--mounts-file`.
 
 Lint includes mount rules when checking whether workload entries are
