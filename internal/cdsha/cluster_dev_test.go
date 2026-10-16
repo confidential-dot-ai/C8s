@@ -3,6 +3,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"errors"
@@ -582,5 +583,43 @@ func TestNewImageReplicaJoinsAfterUpdateMeasurements(t *testing.T) {
 	waitFor(t, func() bool { hb := v2.Heartbeat(); return hb.Serving && hb.Epoch == 1 })
 	if v2.Heartbeat().KeyFingerprint != fp0 {
 		t.Fatal("the new-image replica serves a different key")
+	}
+}
+
+// TestForgedEpochRecordIsReplaced (found on TDX): a CDSEpoch record that
+// claims the next epoch but does not verify must not stay published; the
+// writer replaces it with its real tail (otherwise replicas that learn
+// rotations through CDSEpoch never see the real one).
+func TestForgedEpochRecordIsReplaced(t *testing.T) {
+	opKey, opPub := operatorKey(t)
+	c := newTestCluster(t, 3, opPub)
+	for i := range 3 {
+		c.start(i, testCluster, "cds-v1")
+	}
+	c.startCluster(opKey)
+	c.waitConverged(0, 10*time.Second)
+	st := Store{Client: c.kube, Namespace: "c8s-system", ClusterID: testCluster}
+	ctx := context.Background()
+	var real *SignedRecord
+	var v Version
+	waitFor(t, func() bool {
+		var err error
+		real, v, err = st.GetEpoch(ctx)
+		return err == nil && real != nil
+	})
+	forged := *real
+	forged.Record.Epoch++
+	forged.Record.Measurements = []string{"evil"}
+	if err := st.PutEpoch(ctx, forged, v); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		got, _, err := st.GetEpoch(ctx)
+		return err == nil && got != nil && got.Record.Epoch == 0 && bytes.Equal(got.Hash(), real.Hash())
+	})
+	for _, r := range c.running() {
+		if !r.Heartbeat().Serving {
+			t.Fatalf("forged CDSEpoch stopped replica %s", r.cfg.Identity)
+		}
 	}
 }

@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"slices"
@@ -86,23 +87,49 @@ func (r *Replica) genesis(ctx context.Context, term uint64, peers []string, p Pe
 }
 
 // publish writes our tail to CDSEpoch when the stored record is absent,
-// unparsable or older. It never writes a lower tuple over a higher one,
-// which would defeat E6, except for a fresh genesis (overwrite, O4).
+// unparsable, older, or not part of our history. It never writes a lower
+// tuple over a genuine higher one, which would defeat E6, except for a fresh
+// genesis (overwrite, O4).
 func (r *Replica) publish(ctx context.Context, st State, overwrite bool) {
 	stored, v, err := r.store.GetEpoch(ctx)
 	if err != nil && !v.Exists {
 		r.log.Warn("read CDSEpoch failed", "err", err)
 		return
 	}
-	if stored != nil && !overwrite {
-		storedT := Tuple{Epoch: stored.Record.Epoch, Term: stored.Record.Term, Hash: stored.Hash()}
-		if !storedT.Less(st.Chain.Tuple()) {
-			return
-		}
+	if stored != nil && !overwrite && !r.replaceStored(st.Chain, *stored) {
+		return
 	}
 	if err := r.store.PutEpoch(ctx, st.Chain[len(st.Chain)-1], v); err != nil {
 		r.log.Warn("write CDSEpoch failed", "err", err)
 	}
+}
+
+// replaceStored reports whether the writer should overwrite the stored
+// record: it is older than our tail, or it claims an epoch at or just past
+// our tail without being our record there or a verified extension of our
+// chain (a corrupted or forged record would otherwise stay published, and
+// hide real rotations from replicas that learn them through CDSEpoch). A
+// record further ahead cannot be checked here and is left alone.
+func (r *Replica) replaceStored(chain Chain, stored SignedRecord) bool {
+	tail := chain.Tail()
+	storedT := Tuple{Epoch: stored.Record.Epoch, Term: stored.Record.Term, Hash: stored.Hash()}
+	switch {
+	case storedT.Less(chain.Tuple()):
+		return true
+	case stored.Record.Epoch <= tail.Epoch:
+		if bytes.Equal(stored.Hash(), chain[stored.Record.Epoch].Hash()) {
+			return false
+		}
+	case stored.Record.Epoch == tail.Epoch+1:
+		cand := append(slices.Clone(chain), stored)
+		if cand.Verify(r.cfg.ClusterID) == nil {
+			return false
+		}
+	default:
+		return false
+	}
+	r.event("StoredEpochReplaced", "stored_epoch", stored.Record.Epoch, "local_epoch", tail.Epoch)
+	return true
 }
 
 // applyDecree validates and applies one decree (D3, D5).
