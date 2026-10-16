@@ -41,6 +41,7 @@ on:
 permissions:
   contents: read
   actions: read # Safe orphan-run status checks.
+  packages: read # The org-internal confidential-inference images.
 
 concurrency:
   # One at a time: the lane boots a CVM off a shared RWO rootdisk PVC.

@@ -15,6 +15,7 @@ on:
 permissions:
   contents: read
   actions: read
+  packages: read
 concurrency:
   group: tdx-metal-e2e
   cancel-in-progress: false

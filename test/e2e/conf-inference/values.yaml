@@ -1,10 +1,6 @@
 # Applied after the pinned release's staging values. It keeps the gateway
 # (pepper secret, gwstate volume, claims socket), one simulator worker and
 # the router, and drops what the single test node cannot or need not run.
-# The release images are public.
-imagePullSecret:
-  name: ""
-
 stagingValidation:
   enabled: false
 

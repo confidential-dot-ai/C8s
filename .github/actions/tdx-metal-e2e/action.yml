@@ -389,6 +389,7 @@ runs:
     # the gateway's state volume must be attached at VM creation.
     env:
       CIE_DIR: /tmp/conf-inference
+      GH_TOKEN: ${{ github.token }}
     shell: bash
     run: bash "$GITHUB_WORKSPACE/test/e2e/conf-inference/prepare.sh"
 
@@ -638,6 +639,7 @@ runs:
       CIE_DIR: /tmp/conf-inference
       LAUNCH_DIR: /tmp/launch-data
       IMAGE_MANIFEST: /tmp/image-manifest.json
+      GH_TOKEN: ${{ github.token }}
     shell: bash
     run: bash "$GITHUB_WORKSPACE/test/e2e/conf-inference/run.sh"
 

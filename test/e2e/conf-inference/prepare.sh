@@ -10,11 +10,12 @@
 #     on a PVC the VM attaches with serial c8s-vol-gwstate.
 #
 # Needs: c8s, crane, go, jq, kubectl (launcher cluster), python3, sudo.
-# Env: C8S_SOURCE_DIR, c8sRef, VM, NS. Writes everything to $CIE_DIR.
+# Env: C8S_SOURCE_DIR, c8sRef, VM, NS, GH_TOKEN (reads the org-internal
+# confidential-inference images). Writes everything to $CIE_DIR.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins.env"
-: "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${VM:?}" "${NS:?}" "${CIE_DIR:?}"
+: "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${VM:?}" "${NS:?}" "${CIE_DIR:?}" "${GH_TOKEN:?}"
 mkdir -p "$CIE_DIR"
 cd "$CIE_DIR"
 
@@ -28,6 +29,8 @@ for asset in profile-values-release-values.yaml profile-values-release-staging-v
 done
 [ "$(tr -d '[:space:]' < release/release-tag-commit.txt)" = "$CI_COMMIT" ] \
   || { echo "::error::$CI_RELEASE was not built from $CI_COMMIT"; exit 1; }
+
+crane auth login ghcr.io -u "${GITHUB_ACTOR:-c8s-e2e}" --password-stdin <<<"$GH_TOKEN"
 
 python3 -c "import yaml" 2>/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq python3-yaml; }
 

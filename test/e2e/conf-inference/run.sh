@@ -9,12 +9,13 @@
 # uploads the full allowlist with `c8s allowlist upload` and checks again.
 #
 # Env: GUEST_IP, KUBECONFIG, CIE_DIR (prepare.sh's output), LAUNCH_DIR
-# (launch-config new --out), IMAGE_MANIFEST.
+# (launch-config new --out), IMAGE_MANIFEST, GH_TOKEN (pulls the org-internal
+# images for the job's lifetime).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/../lib.sh"
 . "$here/pins.env"
-: "${GUEST_IP:?}" "${KUBECONFIG:?}" "${CIE_DIR:?}" "${LAUNCH_DIR:?}" "${IMAGE_MANIFEST:?}"
+: "${GUEST_IP:?}" "${KUBECONFIG:?}" "${CIE_DIR:?}" "${LAUNCH_DIR:?}" "${IMAGE_MANIFEST:?}" "${GH_TOKEN:?}"
 export PATH="$CIE_DIR/bin:$PATH"
 cd "$CIE_DIR"
 
@@ -62,6 +63,8 @@ set_sha=$({ printf 'c8s-operator-key-set-v1\0'; pub_der | openssl dgst -sha256 -
 openssl ecparam -name prime256v1 -genkey -noout -out admin.key
 openssl req -x509 -new -key admin.key -sha256 -days 1 -subj /CN=c8s-e2e-admin -out admin.crt
 kubectl create namespace "$ns"
+kubectl -n "$ns" create secret docker-registry registry-pull --docker-server ghcr.io \
+  --docker-username "${GITHUB_ACTOR:-c8s-e2e}" --docker-password "$GH_TOKEN"
 kubectl -n "$ns" create secret generic gateway-admin-mtls --from-file=client.crt=admin.crt
 
 helm template confidential-inference ci/helm/confidential-inference --namespace "$ns" --kube-version 1.32.0 \

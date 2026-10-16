@@ -56,6 +56,7 @@ jobs:
     permissions:
       contents: read
       actions: read
+      packages: read
     uses: ./.github/workflows/tdx-metal-e2e.yml
     with:
       # Both legs test the source selected by the caller. Automatic runs use
