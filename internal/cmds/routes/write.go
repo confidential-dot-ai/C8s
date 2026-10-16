@@ -223,6 +223,11 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 		if cmd.Flags().Changed("max-age") {
 			fmt.Fprintf(cmd.ErrOrStderr(), "warning: --max-age ignored; keeping the stored maxAgeSeconds %d\n", int64(m.MaxAge/time.Second))
 		}
+		// A parsed manifest is read-only; AddRoute and removeRoute already
+		// copy the route slices they change.
+		edited := *m
+		edited.Hosts = maps.Clone(m.Hosts)
+		m = &edited
 	}
 	done, err := change(m)
 	if err != nil {

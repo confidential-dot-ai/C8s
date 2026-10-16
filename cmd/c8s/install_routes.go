@@ -501,7 +501,7 @@ func writeRoutesOut(manifest []byte) error {
 // show that CDS stores a manifest, since putting drops the stored routes. A
 // cause that refuses the revision drops --revision from the add commands.
 func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries map[string]adoptedEntry, manifest []byte, cause error) error {
-	var status *routesclient.StatusError
+	var status *operatorauth.StatusError
 	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict
 	offerPut := manifest == nil && !errors.As(cause, new(storedManifestError))
 	if manifest == nil {
