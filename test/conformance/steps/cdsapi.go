@@ -534,13 +534,9 @@ func versionCompares(ctx context.Context, relation string) error {
 	if err != nil {
 		return fmt.Errorf("version read before %q: %w", w.api.versionBefore, err)
 	}
-	s, err := w.be.call("served_version")
+	now, err := w.servedVersion()
 	if err != nil {
 		return err
-	}
-	now, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("served version %q: %w", s, err)
 	}
 	var holds bool
 	switch relation {

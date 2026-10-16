@@ -209,18 +209,10 @@ func (p *plugin) SetReady() {
 }
 
 // AppliedAllowlistVersion is the CDS version of the allowlist admission decides
-// with: the ETag counter of the last pull that apply accepted, so a pull the
-// anti-rollback check ignored does not show. It is 0 until a pull applied, or
-// when the ETag carried no counter; pullInitial applies before SetReady, so a
-// ready plugin reports the version it pulled.
+// with: the last pull apply accepted, so a pull the anti-rollback check ignored
+// does not move it. It is 0 until a pull applied.
 func (p *plugin) AppliedAllowlistVersion() uint64 {
-	if p == nil || p.policy == nil {
-		return 0
-	}
-	if snap := p.policy.current(); snap != nil {
-		return snap.version
-	}
-	return 0
+	return p.policy.current().version
 }
 
 // Run starts the plugin and blocks until context is cancelled.
