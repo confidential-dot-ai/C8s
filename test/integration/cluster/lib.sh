@@ -184,15 +184,24 @@ any_workload() {
 }
 
 # cds_write <method> <path> <body-file> -> http code; signed with the operator key.
+# A CDS without persistence refuses tokens for --jwt-clock-skew after it
+# starts, so a 401 saying so is retried with a fresh token.
 cds_write() {
-    local method="$1" path="$2" bodyfile="$3" token
+    local method="$1" path="$2" bodyfile="$3" token code
     cds_pf_start
-    token="$("$WORKDIR/optoken" "$WORKDIR/operator.key" "$method" "$path" "$bodyfile")"
-    # Always exit 0: curl prints 000 on transport failure, and callers assert
-    # on the code itself.
-    curl -sSk -o /dev/null -w '%{http_code}' -X "$method" \
-        -H "Authorization: $token" -H 'Content-Type: application/json' \
-        --data-binary "@$bodyfile" "https://127.0.0.1:$CDS_LOCAL_PORT$path" || true
+    for _ in $(seq 1 30); do
+        token="$("$WORKDIR/optoken" "$WORKDIR/operator.key" "$method" "$path" "$bodyfile")"
+        # Always exit 0: curl prints 000 on transport failure, and callers
+        # assert on the code itself.
+        code="$(curl -sSk -o "$WORKDIR/cds-write.out" -w '%{http_code}' -X "$method" \
+            -H "Authorization: $token" -H 'Content-Type: application/json' \
+            --data-binary "@$bodyfile" "https://127.0.0.1:$CDS_LOCAL_PORT$path" || true)"
+        if [ "$code" != 401 ] || ! grep -q 'issued too early' "$WORKDIR/cds-write.out"; then
+            break
+        fi
+        sleep 2
+    done
+    echo "$code"
 }
 
 # cds_get <path> <out-file> -> http code; the response body lands in out-file.

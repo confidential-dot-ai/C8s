@@ -264,6 +264,91 @@
 {{ $digests | toJson }}
 {{- end -}}
 
+{{/* The router pod's workload entry. See ../helpers/allowlist/README.md#router-entry. */}}
+{{- define "c8s.routerArgv" -}}
+{{- $root := .root -}}
+{{- $argv := dict -}}
+{{- $_ := set $argv "cds-attest" (include "router.cdsAttestArgs" . | fromJsonArray) -}}
+{{- if eq (include "router.renderAllowlistRoute" $root) "true" -}}
+{{- $_ := set $argv "allowlist-proxy" (include "router.allowlistProxyArgs" $root | fromJsonArray) -}}
+{{- end -}}
+{{- if eq (include "router.acmeSidecar" $root) "true" -}}
+{{- $_ := set $argv "acme" (include "router.acmeArgs" $root | fromJsonArray) -}}
+{{- end -}}
+{{ $argv | toJson }}
+{{- end -}}
+
+{{- /* Why the router entry cannot be derived, or "" when it can. Values-only
+       apart from argv, so router.expectedWorkload can call it. */ -}}
+{{- define "c8s.routerEntryBlocker" -}}
+{{- if not .Values.router.enabled -}}router.enabled is false
+{{- else if not .Values.router.nginx.image.digest -}}router.nginx.image.digest is unset
+{{- else if not .Values.image.digest -}}image.digest is unset
+{{- /* deriveComponents seeds the c8s image's any-argv entry, without which
+       get-cert is not dropped as injected and the router cannot match. */ -}}
+{{- else if not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents -}}nriImagePolicy.bootstrapAllowlist.deriveComponents is false
+{{- /* kubelet expands $(VAR) and $$ in args, so such argv is not known here. */ -}}
+{{- else if contains "$" (include "c8s.routerArgv" (dict "root" . "expectedWorkload" "")) -}}the router's argv holds a $ reference kubelet expands
+{{- end -}}
+{{- end -}}
+
+{{- /* A non-empty router.attest.expectedWorkload outside c8s-router-*: the
+       operator's own router entry, which replaces the seeded one. */ -}}
+{{- define "c8s.routerOperatorGate" -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- if and (kindIs "string" $explicit) (not (hasPrefix "c8s-router-" $explicit)) -}}{{ $explicit }}{{- end -}}
+{{- end -}}
+
+{{- define "c8s.routerWorkloadSeeded" -}}
+{{- if not (or (include "c8s.routerEntryBlocker" .) (include "c8s.routerOperatorGate" .)) -}}true{{- end -}}
+{{- end -}}
+
+{{- /* Takes (dict "root" $ "expectedWorkload" <name>). */ -}}
+{{- define "c8s.routerEntry" -}}
+{{- $root := .root -}}
+{{- $any := dict "policy" "any" -}}
+{{- $nginx := $root.Values.router.nginx.image -}}
+{{- $nginxEntry := dict "image" (printf "%s@%s" $nginx.repository $nginx.digest) "entrypoint" $root.Values.router.nginx.entrypoint -}}
+{{- $containers := list (include "c8s.componentContainer" (dict "digest" $nginx.digest "entry" $nginxEntry "env" true) | fromJson) -}}
+{{- $inits := list -}}
+{{- $ref := printf "%s@%s" $root.Values.image.repository $root.Values.image.digest -}}
+{{- /* The c8s image's ENTRYPOINT, like secrets.InjectedBinary. */ -}}
+{{- $entrypoint := dict "policy" "exact" "argv" (list "/c8s") -}}
+{{- range $name, $args := (include "c8s.routerArgv" . | fromJson) -}}
+{{- $c := dict "digest" $root.Values.image.digest "image" $ref "command" $entrypoint "args" (dict "policy" "exact" "argv" $args) "mounts" $any "env" $any -}}
+{{- /* acme is a native sidecar: declared init, so present but not required. */ -}}
+{{- if eq $name "acme" -}}
+{{- $inits = append $inits $c -}}
+{{- else -}}
+{{- $containers = append $containers $c -}}
+{{- end -}}
+{{- end -}}
+{{ dict "initContainers" $inits "containers" $containers | toJson }}
+{{- end -}}
+
+{{- /* c8s-router-<12 hex of sha256 over the entry>, so a changed digest or
+       argv seeds a new entry. A gate naming this entry sits inside its own
+       cds-attest argv, so its --expected-workload is hashed as a fixed
+       placeholder. */ -}}
+{{- define "c8s.routerWorkloadName" -}}
+{{- $explicit := .Values.router.attest.expectedWorkload -}}
+{{- $gate := "" -}}
+{{- if or (and (kindIs "string" $explicit) (hasPrefix "c8s-router-" $explicit)) (eq (include "router.defaultGate" .) "true") -}}
+{{- $gate = "<default>" -}}
+{{- end -}}
+{{- printf "c8s-router-%s" (include "c8s.routerEntry" (dict "root" . "expectedWorkload" $gate) | sha256sum | trunc 12) -}}
+{{- end -}}
+
+{{- /* The entry the router pod should match: the seeded one, or the
+       operator's. "" when neither. */ -}}
+{{- define "c8s.routerEntryName" -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
+{{- include "c8s.routerWorkloadName" . -}}
+{{- else -}}
+{{- include "c8s.routerOperatorGate" . -}}
+{{- end -}}
+{{- end -}}
+
 {{- define "c8s.allowlistSeedJSON" -}}
 {{- $root := . -}}
 {{- $workloads := dict -}}
@@ -282,6 +367,9 @@
 {{- end -}}
 {{- range $name, $entry := (include "c8s.argvPinnedEntries" . | fromJson) -}}
 {{- $_ := set $workloads $name $entry -}}
+{{- end -}}
+{{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
+{{- $_ := set $workloads (include "c8s.routerWorkloadName" .) (include "c8s.routerEntry" (dict "root" . "expectedWorkload" (include "router.expectedWorkload" .)) | fromJson) -}}
 {{- end -}}
 {{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
 {{- $_ := set $workloads $name $entry -}}

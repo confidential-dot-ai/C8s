@@ -28,6 +28,7 @@ var constant = map[string]bool{
 	"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true, "cds_pod_url": true,
 	"cert_paths": true, "node_address": true, "mesh_ready": true, "mesh_port": true, "mesh_uids": true,
 	"mesh_platform": true, "excluded_namespace": true, "host_namespace_ns": true, "attestation_endpoint": true, "dialer_bin": true,
+	"pod_exec": true,
 }
 
 // newBackend finds the backend beside this package; `go test` runs with the
@@ -76,6 +77,19 @@ func (b backend) call(fn string, args ...string) (string, error) {
 	default:
 		return "", fmt.Errorf("backend %s %s: %w\n%s", fn, strings.Join(args, " "), err, stderr.String())
 	}
+}
+
+// podExec runs cmd in a container of the pod, kubectl's default one when
+// container is empty. Where the backend's cluster closes pod exec it skips.
+func (w *world) podExec(p *pod, container string, cmd ...string) (string, error) {
+	if _, err := w.be.call("pod_exec"); err != nil {
+		return "", err
+	}
+	args := []string{"-n", p.namespace, "exec", p.name}
+	if container != "" {
+		args = append(args, "-c", container)
+	}
+	return kubectl(nil, append(append(args, "--"), cmd...)...)
 }
 
 // kubectl runs kubectl against the backend's current context.

@@ -367,7 +367,12 @@
           "properties": {
             "attestationApiURL": {},
             "enabled": {},
-            "expectedWorkload": {},
+            "expectedWorkload": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "generation": {},
             "platform": {},
             "port": {},

@@ -472,6 +472,61 @@ host mounts carry a source commitment and read-only mode.
 policies fail closed in that case. Inventory responses retain the `mounts` field
 even for an empty set so consumers can preserve this distinction.
 
+The env evidence always carries the aggregate digest of the whole environment.
+Per-variable digests (`variableDigests`) are bounded so they take at most half
+of CDS's 1 MiB response limit:
+
+- The node keeps them for every environment of at most 128 variables and 4 KiB
+  of names, and serves them only for an image a `match` env policy lists in its
+  current base or applied allowlist. It decides when it answers, so a container
+  recorded before the node applied that policy is still served its digests once
+  it does.
+- A sandbox keeps at most 512 KiB of serialized per-variable digests. Past
+  that, the node evicts them in this order: unlisted images' stopped
+  containers, unlisted images' running containers, listed images' stopped
+  containers, then listed images' running containers, the oldest first within
+  each. An image is listed when a `match` policy in the node's current
+  allowlist names it. A stopped init container of a listed image therefore
+  keeps its digests while unlisted images hold any. An image whose `match`
+  policy the node has not applied yet, for example after a failed initial
+  pull, counts as unlisted, so its running containers still keep their digests
+  ahead of stopped ones. An evicted record keeps its aggregate digest and reports
+  `variableDigestsEvicted: true`. Admitting the same environment again restores
+  its digests.
+- `derive`, `lint` and `apply` reject a workload whose containers of
+  `match`-listed images could together need more than 512 KiB, whatever each
+  container's own env policy. Any declaration of the same image whose argv
+  could also satisfy a `match` declaration is charged at that declaration's
+  size, since the `match` declaration can admit the container in its place. A
+  container at both per-record limits needs about 13 KB, so 40 such containers
+  fit. A workload that passes keeps every declared container's evidence in a
+  fresh sandbox.
+
+The authoring check covers each declared container once. It does not cover:
+
+- Records of stopped containers. A container restarted with a new
+  environment, for example a `present` variable that changes on each start,
+  adds a record every time. Once those records pass 512 KiB, the oldest lose
+  their digests, fail `match`, and block secret release until the pod is
+  recreated.
+- Containers whose image only another workload's `match` policy lists. The
+  node retains their evidence at the same priority as this workload's.
+
+The 512 KiB bound covers per-variable digests only. Aggregate-only records,
+argv and mounts have no per-sandbox cap, so a sandbox with large argv or many
+mounts on top of the variable evidence can still exceed 1 MiB, and CDS then
+cannot read its inventory. Capping the whole response is a tracked follow-up.
+
+A record without per-variable digests fails a `match` policy.
+`c8s secrets explain` names which case occurred for each rejected container:
+
+| Case | Cause | Recovery |
+| --- | --- | --- |
+| `env evidence unavailable` | The node reported no environment: the container had no OCI process args, or its CDI edits were deferred. | Waiting does not help. Fix the launch, then recreate the pod. |
+| `env evidence missing` | The node has not applied an allowlist version with a `match` policy for the image, the node recorded the container with software older than per-variable digests, or the environment exceeds 128 variables or 4 KiB of names. | The diagnosis cannot tell these causes apart; apply each remedy that fits. (1) Wait until the node logs the version ([rollout](allowlist-and-capabilities.md#environment-policy-env)); no pod restart is needed. (2) Recreate a pod whose container the node recorded with older software. (3) Shrink an oversized environment, for example with `enableServiceLinks: false`, then recreate the pod. |
+| `env evidence evicted` | Stopped containers, restarts with new environments, or images outside the workload pushed the sandbox past 512 KiB. | Recreate the pod, and stop the churn that changes the environment on each restart. |
+| `env evidence mismatch` | The digests are present and the environment does not satisfy the policy. | Fix the environment or the policy. |
+
 `containers` is absent on an inventory older than the field. A consumer that
 needs it must treat that as "cannot answer" rather than "no containers"
 (`RequireContainers`).

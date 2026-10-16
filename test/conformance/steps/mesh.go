@@ -3,6 +3,7 @@ package steps
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"regexp"
@@ -422,8 +423,11 @@ func podRunning(ctx context.Context, name string) error {
 func (w *world) helloListening(p *pod) error {
 	for _, port := range p.hello {
 		var last string
-		ok, _ := poll(30*time.Second, func() (bool, error) {
+		ok, err := poll(30*time.Second, func() (bool, error) {
 			r, err := w.exec(p, fmt.Sprintf("wget -qO- -T 2 http://127.0.0.1:%d/ 2>&1", port))
+			if errors.Is(err, godog.ErrSkip) {
+				return false, err
+			}
 			if err != nil {
 				last = err.Error()
 				return false, nil
@@ -431,6 +435,9 @@ func (w *world) helloListening(p *pod) error {
 			last = r.out
 			return r.rc == 0, nil
 		})
+		if err != nil {
+			return err
+		}
 		if !ok {
 			return fmt.Errorf("the hello API of %q on port %d did not answer within 30s:\n%s", p.name, port, last)
 		}
@@ -798,7 +805,7 @@ func (w *world) unheldAddress(network *net.IPNet) (net.IP, error) {
 // printed and its exit status, which a failing command does not turn into
 // an error here.
 func (w *world) exec(p *pod, script string) (*execResult, error) {
-	out, err := kubectl(nil, "-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", "sh", "-c", script+"; echo \"rc=$?\"")
+	out, err := w.podExec(p, firstContainer, "sh", "-c", script+"; echo \"rc=$?\"")
 	if err != nil {
 		return nil, err
 	}
@@ -1164,7 +1171,7 @@ func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
 	if err := w.ensureDialer(p); err != nil {
 		return "", err
 	}
-	return kubectl(nil, append([]string{"-n", p.namespace, "exec", p.name, "-c", firstContainer, "--", dialerPath}, args...)...)
+	return w.podExec(p, firstContainer, append([]string{dialerPath}, args...)...)
 }
 
 // --- Outcomes ---

@@ -5,7 +5,8 @@ Recreate, silently defeating the operator's opt-out. */ -}}
 {{- fail (printf "router.hostPort.enabled must be a boolean; do not set it via --set-string, got: %v" .Values.router.hostPort.enabled) -}}
 {{- end -}}
 
-{{- if .Values.router.attest.expectedWorkload -}}
+{{- $expectedWorkload := include "router.expectedWorkload" . -}}
+{{- if $expectedWorkload -}}
 {{- if .Values.router.hostPort.enabled -}}
 {{- /* Readiness only withdraws Service endpoints. The hostPort is published by
 the CNI portmap plugin, wired at sandbox creation and independent of pod
@@ -82,28 +83,7 @@ spec:
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
           restartPolicy: Always
           args:
-            - acme
-            {{- if $launchDriven }}
-            # The signed launch file names the domains. With none, the
-            # sidecar stands by: nginx serves the mesh leaf and the sidecar
-            # only reports ready once that leaf exists.
-            - --domains-file={{ include "router.launchDir" . }}/hostnames
-            - --acme-email-file={{ include "router.launchDir" . }}/acme-email
-            - --acme-directory-url-file={{ include "router.launchDir" . }}/acme-directory-url
-            - --standby-cert-dir={{ .Values.router.tlsMountPath }}
-            {{- else }}
-            - --domains={{ include "router.sanList" . | fromJsonArray | join "," }}
-            {{- end }}
-            {{- with .Values.router.acme.email }}
-            - --acme-email={{ . }}
-            {{- end }}
-            {{- with .Values.router.acme.directoryURL }}
-            - --acme-directory-url={{ . }}
-            {{- end }}
-            - --challenge-port={{ include "router.acmeChallengePort" . }}
-            - --http-port={{ include "router.acmeHTTPPort" . }}
-            - --cert-dir={{ include "router.acmeCertDir" . }}
-            - --ready-port={{ include "router.acmeReadyPort" . }}
+            {{- include "router.acmeArgs" . | fromJsonArray | toYaml | nindent 12 }}
           # nginx's config names the acme cert files, so nginx must not start
           # before the bootstrap placeholder exists; regular containers wait
           # for a native sidecar's startup probe. HTTP, not exec: a locked
@@ -226,74 +206,16 @@ spec:
         - name: cds-attest
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
+          # Argv and its rationale: router.cdsAttestArgs.
           args:
-            - cds-attest
-            {{- /* Loopback only: every endpoint this sidecar registers
-            (/healthz, /readyz, both attest routes, /tunnel) sits on
-            one listener, so binding the pod IP would publish the whole surface
-            with no NetworkPolicy in front of it. The readiness probe reaches
-            /readyz through nginx instead (location = /readyz). The routing
-            listener is loopback too: nginx terminates public TLS first. */}}
-            - --host=127.0.0.1
-            - --port={{ .Values.router.attest.port }}
-            {{- if not .Values.router.attest.enabled }}
-            - --attest-endpoints=false
-            {{- end }}
-            - --platform={{ .Values.router.attest.platform }}
-            - --generation={{ .Values.router.attest.generation }}
-            - --attestation-api-url={{ default (include "c8s.attestationApiURL" .) .Values.router.attest.attestationApiURL }}
-            # attest-lb needs a TEE-held serving key (cds, acme); webpki's
-            # host-visible Secret key stays attest-pq-only.
-            {{- if $launchDriven }}
-            - --front-door-mode-file={{ include "router.launchDir" . }}/front-door-mode
-            {{- else }}
-            - --front-door-mode={{ $publicTLSMode }}
-            {{- end }}
-            # Bind the *exact* leaf nginx presents on the wire (ssl_certificate =
-            # publicCertPath), so the attest-lb binding (GET
-            # /.well-known/c8s/attest-lb) commits report_data to the leaf DER a
-            # direct-TLS client actually sees: the mesh leaf (cds), the Secret
-            # cert (webpki), or the ACME leaf (acme). Re-read per request, so
-            # renewals are picked up.
-            - --serving-cert-file={{ include "router.publicCertPath" . }}
-            {{- if $launchDriven }}
-            # Selected over --serving-cert-file when the launch file picks acme.
-            - --acme-serving-cert-file={{ include "router.acmeCertDir" . }}/cert.pem
-            {{- end }}
-            {{- if .Values.router.attest.expectedWorkload }}
-            - --expected-workload={{ .Values.router.attest.expectedWorkload }}
-            {{- end }}
-            # The identity-bound PQ flow must use the TEE-held mesh
-            # credential, never the optional publicTLS Secret: report_data
-            # commits the X-Wing key exchange to this leaf and the sidecar
-            # proves possession with its matching private key.
-            - --mesh-identity-cert-file={{ .Values.router.tlsMountPath }}/cert.pem
-            - --mesh-identity-key-file={{ .Values.router.tlsMountPath }}/key.pem
-            - --mesh-identity-ca-file={{ .Values.router.tlsMountPath }}/ca.pem
-            # Route by the operator-signed manifest polled from the verified
-            # CDS: application requests from nginx on --routing-port, and
-            # requests decrypted from the tunnel.
-            - --cds-url={{ include "c8s.cdsURL" . }}
-            {{- include "router.cdsPinArgs" . | nindent 12 }}
-            # Off a baked node the operator keys come from CDS's
-            # GET /operator-keys, which is control-plane configuration
-            # (route policy W6; docs/operator.md, Route manifest).
-            {{- if .Values.node.baked }}
-            - --operator-keys-file=/run/c8s-node/operator-pubkey
-            {{- end }}
-            - --routes-poll-interval={{ .Values.router.routing.pollInterval }}
-            - --routing-host=127.0.0.1
-            - --routing-port={{ include "router.routingPort" . }}
-            - --backend-timeout={{ .Values.router.routing.backendTimeout }}
-            - --tunnel-slots={{ include "c8s.positiveInt" (dict "value" .Values.router.routing.tunnelSlots "label" "router.routing.tunnelSlots") }}
-            - --reserved-paths={{ include "router.reservedPaths" . }}
+            {{- include "router.cdsAttestArgs" (dict "root" . "expectedWorkload" $expectedWorkload) | fromJsonArray | toYaml | nindent 12 }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
           # IP so this pod-netns pod reaches the node-baked host attestation-api.
           env:
             {{- . | nindent 12 }}
           {{- end }}
-          {{- if .Values.router.attest.expectedWorkload }}
+          {{- if $expectedWorkload }}
           # Workload-verified ingress gate (docs/getcert-workload-binding.md):
           # ready only while the installed mesh identity leaf is a usable
           # credential carrying a matched-workload stamp naming
@@ -356,12 +278,7 @@ spec:
           image: {{ include "c8s.image" . }}
           imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
           args:
-            - allowlist-proxy
-            - --host=127.0.0.1
-            - --port={{ include "c8s.int" .Values.router.allowlist.proxyPort }}
-            - --cds-url={{ include "c8s.cdsURL" . }}
-            - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-            {{- include "router.cdsPinArgs" . | nindent 12 }}
+            {{- include "router.allowlistProxyArgs" . | fromJsonArray | toYaml | nindent 12 }}
           {{- with (include "c8s.attestationApiHostIPEnv" .) }}
           # cvmMode=bare-metal: the proxy verifies CDS through the node-baked
           # attestation-api, reached from this pod via its node IP.
