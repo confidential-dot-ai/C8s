@@ -14,7 +14,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/types"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -29,7 +28,7 @@ var c8sDigest = "sha256:" + strings.Repeat("1", 64)
 var nginxByTag = []string{"--set-string", "router.nginx.image.digest=", "--set", "router.nginx.image.tag=1.30.5-alpine-slim"}
 
 // digestArgs pins the c8s image outside the baked shape. deriveComponents
-// gives it the any-argv entry that lets get-cert be dropped as injected.
+// derives its pin.
 var digestArgs = []string{
 	"--set", "image.digest=" + c8sDigest,
 	"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
@@ -44,11 +43,19 @@ var (
 // running is the set the node inventory reports for a rendered pod: a pod
 // command replaces the entrypoint, which is /c8s for the c8s image, the
 // image's own for nginx, and the one the seed pins for the other component
-// images. Mounts are reported as platform-only.
-func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.SandboxContainer {
+// images. The argv is the kubelet's expansion, the env the launch
+// environment (launchEnv), and the mounts are what the node observes, where
+// /var/run is /run when resolveVarRun is set.
+func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec, resolveVarRun bool) []workloadclaims.SandboxContainer {
+	t.Helper()
+	envs := componentImageEnvValues(t)
 	var out []workloadclaims.SandboxContainer
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
 		_, digest, _ := strings.Cut(c.Image, "@")
+		imageEnv := envs["image"]
+		if strings.Contains(c.Image, "nginx-unprivileged@") {
+			imageEnv = envs["router.nginx"]
+		}
 		command, args := c.Command, c.Args
 		switch {
 		case len(command) > 0:
@@ -62,10 +69,12 @@ func running(seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.
 		default:
 			command = seededEntrypoint(seed, digest)
 		}
+		c.Command, c.Args = command, args
 		out = append(out, workloadclaims.SandboxContainer{
 			Digest: digest,
-			Argv:   slices.Concat(command, args),
-			Mounts: []pkgallowlist.ObservedMount{},
+			Argv:   runtimeArgv(c, nil),
+			Mounts: observedMounts(t, pod, c, resolveVarRun),
+			Env:    launchEnv(t, pod, c, imageEnv),
 		})
 	}
 	return out
@@ -114,8 +123,9 @@ func match(seed *pkgallowlist.Allowlist, reported []workloadclaims.SandboxContai
 }
 
 // assertRouterMatches checks that the rendered router pod resolves to the
-// seeded router entry and that the CDS, operator and mesh pods still
-// resolve to their own single-image entries.
+// seeded router entry. The other component pods run their own c8s-cert
+// sidecars, pinned to exact args, so they are declared containers rather than
+// injected ones and no single-image entry describes those pods.
 func assertRouterMatches(t *testing.T, out string) {
 	t.Helper()
 	seed := renderedSeed(t, out)
@@ -123,38 +133,16 @@ func assertRouterMatches(t *testing.T, out string) {
 	if routerEntry == "" {
 		t.Fatalf("seed has no router entry: %v", slices.Sorted(maps.Keys(seed.Workloads)))
 	}
-	for _, w := range renderedPodSpecs(t, out) {
-		if !slices.Contains([]string{"c8s-router", "c8s-cds", "c8s-operator", "c8s-armtls-mesh"}, w.name) {
-			continue
-		}
-		reported := running(seed, w.spec)
-		want := routerEntry
-		if w.name != "c8s-router" {
-			candidates := secrets.WorkloadContainers(seed, reported)
-			if len(candidates) == 0 || candidates[0].Digest == "" {
-				continue // an image pinned by tag has no entry to match
-			}
-			image := ""
-			for _, c := range slices.Concat(w.spec.InitContainers, w.spec.Containers) {
-				if strings.HasSuffix(c.Image, "@"+candidates[0].Digest) {
-					image = c.Image
-				}
-			}
-			digest, err := types.ParseDigest(candidates[0].Digest)
-			if err != nil {
-				t.Fatalf("%s: %v", w.name, err)
-			}
-			want = pkgallowlist.DigestEntryName(digest, image)
-		}
-		got, err := match(seed, reported)
-		if err != nil || got != want {
-			diff := seed.Workloads[want].Diff(secrets.WorkloadContainers(seed, reported))
-			t.Errorf("MatchWorkload(%s %s) = %q, %v, want %q; foreign %+v, missing %+v", w.kind, w.name, got, err, want, diff.Foreign, diff.MissingMains)
-		}
+	reported := running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec, true)
+	got, err := match(seed, reported)
+	if err != nil || got != routerEntry {
+		diff := seed.Workloads[routerEntry].Diff(secrets.WorkloadContainers(seed, reported))
+		t.Errorf("MatchWorkload(router) = %q, %v, want %q; foreign %+v, missing %+v", got, err, routerEntry, diff.Foreign, diff.MissingMains)
 	}
 }
 
 func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -165,14 +153,30 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 	seed := renderedSeed(t, out)
 	routerEntry := routerEntryName(t, seed)
 	entry := seed.Workloads[routerEntry]
-	if len(entry.InitContainers) != 1 || entry.InitContainers[0].Args.Argv[0] != "acme" {
-		t.Errorf("acme must be declared as the entry's only init container, got %+v", entry.InitContainers)
-	}
 	if len(entry.Containers) != 3 {
-		t.Errorf("entry mains = %d, want nginx, cds-attest and allowlist-proxy", len(entry.Containers))
+		t.Errorf("entry mains = %+v, want nginx, cds-attest and allowlist-proxy", entry.Containers)
+	}
+	var inits []string
+	for _, c := range entry.InitContainers {
+		if c.Mounts.Policy != pkgallowlist.PolicyExact || c.Args.Policy != pkgallowlist.PolicyExact {
+			t.Errorf("init %v leaves args %q or mounts %q open", c.Args.Argv, c.Args.Policy, c.Mounts.Policy)
+		}
+		if mode := c.Args.Argv[0]; !slices.Contains(inits, mode) {
+			inits = append(inits, mode)
+		}
+	}
+	slices.Sort(inits)
+	if want := []string{"acme", "allowlist-proxy", "cds-attest", "get-cert", "probe-file"}; !slices.Equal(inits, want) {
+		t.Errorf("entry init modes = %v, want %v", inits, want)
 	}
 
-	reported := running(seed, pod)
+	// Where /var/run is its own directory the sidecars' socket mount has the
+	// other layout, so the required mains are missing.
+	if got, err := match(seed, running(t, seed, pod, false)); !errors.Is(err, pkgallowlist.ErrNoMatch) {
+		t.Errorf("MatchWorkload(unresolved /var/run) = %q, %v, want ErrNoMatch", got, err)
+	}
+
+	reported := running(t, seed, pod, true)
 	for _, tc := range []struct {
 		name   string
 		want   string // "" wants ErrNoMatch
@@ -195,6 +199,33 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
 					return len(c.Argv) > 1 && c.Argv[1] == "allowlist-proxy"
 				})
+			},
+		},
+		{
+			name: "no cds-attest",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
+					return len(c.Argv) > 1 && c.Argv[1] == "cds-attest"
+				})
+			},
+		},
+		{
+			name: "no nginx",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				return slices.DeleteFunc(cs, func(c workloadclaims.SandboxContainer) bool {
+					return c.Digest != c8sDigest
+				})
+			},
+		},
+		{
+			name: "cds-attest with an extra mount",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				for i, c := range cs {
+					if len(c.Argv) > 1 && c.Argv[1] == "cds-attest" {
+						cs[i].Mounts = append(slices.Clone(c.Mounts), pkgallowlist.ObservedMount{Destination: "/extra", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory})
+					}
+				}
+				return cs
 			},
 		},
 		{
@@ -224,6 +255,7 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 }
 
 func TestChartRouterEntryPresence(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -236,10 +268,10 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		{name: "nginx by tag", args: append(slices.Clone(digestArgs), nginxByTag...), want: false},
 		{name: "no c8s-image main", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: false},
 		{
-			// kubelet expands $(HOST_IP) in args, so the argv is node-specific.
+			// The argv carries $(HOST_IP) literally; the binary expands it.
 			name: "attestation api by host IP",
-			args: append(slices.Clone(digestArgs), "--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false"),
-			want: false,
+			args: append(slices.Clone(digestArgs), "--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false", "--set", "nriImagePolicy.policy.mode=audit"),
+			want: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -258,6 +290,7 @@ func TestChartRouterEntryPresence(t *testing.T) {
 }
 
 func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
+	t.Parallel()
 	noHostPort := []string{"--set", "router.hostPort.enabled=false"}
 	for _, tc := range []struct {
 		name    string
@@ -321,6 +354,7 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 
 // A changed digest or argv must seed a new entry: CDS skips a name it holds.
 func TestChartRouterEntryNameTracksContent(t *testing.T) {
+	t.Parallel()
 	name := func(args ...string) string {
 		t.Helper()
 		out, err := helmTemplate(t, slices.Concat(bakedArgs, args)...)
@@ -360,6 +394,7 @@ func expectedWorkloadArg(c corev1.Container) string {
 
 // Freezing the rendered default gate must keep the entry's name.
 func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, gateArgs...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -393,7 +428,6 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 		{name: "nginx by tag", args: nginxByTag, cause: "router.nginx.image.digest is unset"},
 		{name: "c8s image by tag", args: []string{"--set-string", "image.digest="}, cause: "image.digest is unset"},
 		{name: "components not derived", args: []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=false", "--set", "nriImagePolicy.policy.mode=audit"}, cause: "nriImagePolicy.bootstrapAllowlist.deriveComponents is false"},
-		{name: "attestation api by host IP", args: []string{"--set", "attestationApi.cvmMode=bare-metal", "--set", "attestationApi.enabled=false"}, cause: "the router's argv holds a $ reference kubelet expands"},
 		{name: "no c8s-image router container", args: []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}, cause: "no router container runs the c8s image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -408,6 +442,7 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 // A gate naming another entry is the operator's own router entry: the chart
 // seeds none and passes the name through unchecked.
 func TestChartRouterOperatorGate(t *testing.T) {
+	t.Parallel()
 	nginxDigest := "sha256:" + strings.Repeat("5", 64)
 	var containers []string
 	for _, digest := range []string{nginxDigest, c8sDigest} {
@@ -419,7 +454,7 @@ func TestChartRouterOperatorGate(t *testing.T) {
 	}
 	routerMatch := func(out string) (string, error) {
 		seed := renderedSeed(t, out)
-		return match(seed, running(seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec))
+		return match(seed, running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec, true))
 	}
 
 	// Ungated, the entry sits beside the seeded one and the router leaf goes unnamed.
@@ -461,6 +496,7 @@ func certExpectedWorkload(t *testing.T, out string) string {
 // The schema rejects the type before rendering; router.expectedWorkload
 // repeats the check for renders that skip schema validation.
 func TestChartRouterExpectedWorkloadType(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
 	// Helm's schema error wording changes across releases; the template's
 	// own message would mean the schema let the value through.

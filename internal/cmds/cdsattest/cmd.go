@@ -15,8 +15,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -77,7 +78,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.measuredPolicies, "measured-policies-file", "", "the node's journal of allowlist policies extended into TDX RTMR[3]; attest-pq and attest-lb bundles carry it as measured_policies. Empty omits the list")
 	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")
-	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)")
+	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)"+cmdsutil.NodeAddressHelp)
 	f.StringVar(&cfg.platform, "platform", "", "REQUIRED: TEE platform: snp|az-snp|az-tdx|tdx")
 	f.StringVar(&cfg.generation, "generation", "genoa", "AMD processor generation for the browser's bare-SNP verifier (platform snp only, ignored otherwise): milan|genoa|turin")
 	f.DurationVar(&cfg.sessionTTL, "session-ttl", 5*time.Minute, "established-session idle TTL")
@@ -130,6 +131,12 @@ func loadFiles(cfg *config) error {
 
 func run(cfg config) error {
 	logger := newLogger(cfg.logLevel)
+	rawAttestationURL := cfg.attestationAPIURL
+	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
+	if err != nil {
+		return err
+	}
+	cfg.attestationAPIURL = attestationURL
 	if err := loadFiles(&cfg); err != nil {
 		return err
 	}
@@ -159,7 +166,7 @@ func run(cfg config) error {
 			"file", cfg.evidenceFixture)
 	case cfg.attestationAPIURL != "":
 		provider = LiveEvidenceProvider{
-			Client:     remote.NewClient(cfg.attestationAPIURL),
+			Client:     armtls.NewAttestationClient(cfg.attestationAPIURL),
 			Platform:   teetypes.NormalizePlatform(cfg.platform),
 			Generation: cfg.generation,
 		}
@@ -209,9 +216,10 @@ func run(cfg config) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx = cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
 
 	logger.Info("LB browser-facing endpoints listening", "addr", addr)
-	return srv.Serve(ctx, httpSrv)
+	return cmdsutil.NodeIPChanged(ctx, srv.Serve(ctx, httpSrv))
 }
 
 func newLogger(level string) *slog.Logger {

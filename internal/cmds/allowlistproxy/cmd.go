@@ -61,7 +61,7 @@ func NewCmd() *cobra.Command {
 	f.StringSliceVar(&cfg.cdsMeasurements, "cds-measurements", nil, "allowed CDS SHA-384 launch measurement(s), repeatable/comma-separated; empty accepts any attested CDS (unsafe)")
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated; ignored when CDS presents SNP evidence (empty pins no registers)")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
-	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence")
+	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL used to verify CDS evidence"+cmdsutil.NodeAddressHelp)
 	f.DurationVar(&cfg.requestTimeout, "request-timeout", defaultRequestTimeout, "timeout for one request to CDS")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", defaultReadHeaderTimeout, "HTTP request-header timeout")
 	return cmd
@@ -76,6 +76,12 @@ func run(cfg config) error {
 type listenFunc func(network, address string) (net.Listener, error)
 
 func runContext(ctx context.Context, cfg config, listen listenFunc) error {
+	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationAPIURL)
+	if err != nil {
+		return err
+	}
+	ctx = cmdsutil.WatchNodeIP(ctx, cfg.attestationAPIURL, attestationURL)
+	cfg.attestationAPIURL = attestationURL
 	addr, err := listenAddress(cfg.host, cfg.port)
 	if err != nil {
 		return err
@@ -102,9 +108,9 @@ func runContext(ctx context.Context, cfg config, listen listenFunc) error {
 
 	slog.Info("router allowlist proxy listening", "addr", addr, "cds_url", cfg.cdsURL)
 	if err := srv.Serve(listener); err != nil && err != http.ErrServerClosed {
-		return err
+		return cmdsutil.NodeIPChanged(ctx, err)
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 func listenAddress(host string, port int) (string, error) {

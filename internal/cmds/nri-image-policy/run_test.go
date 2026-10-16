@@ -107,6 +107,7 @@ func TestConfigure_InventoryAddsRemoveContainerMask(t *testing.T) {
 	want.Set(api.Event_CREATE_CONTAINER)
 	want.Set(api.Event_START_CONTAINER)
 	want.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
+	want.Set(api.Event_STOP_CONTAINER)
 	want.Set(api.Event_REMOVE_CONTAINER)
 	// The inventory also needs the pod-sandbox lifecycle for its sandbox set.
 	want.Set(api.Event_RUN_POD_SANDBOX)

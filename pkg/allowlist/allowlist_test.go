@@ -68,6 +68,39 @@ func TestParseJSON_SecretsRequirePinnedArgv(t *testing.T) {
 	if _, err := ParseWorkloadJSON([]byte(pinned)); err != nil {
 		t.Fatalf("a pinned entry with a grant was refused: %v", err)
 	}
+}
+
+// A grant is refused wherever a container's mounts are left to the host: any,
+// or exact with a host rule, whose content the host chooses.
+func TestParseJSON_SecretsRequirePinnedMounts(t *testing.T) {
+	argv := `"command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"}`
+	grant := `"secrets":{"policy":"allow","read":["/s"]}`
+	for name, mounts := range map[string]string{
+		"any":       `{"policy":"any"}`,
+		"host rule": `{"policy":"exact","rules":[{"destination":"/etc/app","kind":"host","source":"/srv/app","readOnly":true}]}`,
+	} {
+		entry := `{"containers":[{"digest":"` + digestA + `",` + argv + `,"mounts":` + mounts + `}],` + grant + `}`
+		if _, err := ParseWorkloadJSON([]byte(entry)); err == nil || !strings.Contains(err.Error(), "mounts policy") {
+			t.Errorf("%s: ParseWorkloadJSON = %v, want the grant refused", name, err)
+		}
+		doc := `{"schema":"c8s.allowlist/v1","workloads":{"w":` + entry + `}}`
+		if _, err := ParseJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), "mounts policy") {
+			t.Errorf("%s: ParseJSON = %v, want the grant refused", name, err)
+		}
+		if _, err := ParseServedJSON([]byte(doc)); err != nil {
+			t.Errorf("%s: ParseServedJSON refused a served document: %v", name, err)
+		}
+	}
+	for name, mounts := range map[string]string{
+		"absent":         ``,
+		"deny":           `,"mounts":{"policy":"deny"}`,
+		"exact emptyDir": `,"mounts":{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"emptyDir"}]}`,
+	} {
+		entry := `{"containers":[{"digest":"` + digestA + `",` + argv + mounts + `}],` + grant + `}`
+		if _, err := ParseWorkloadJSON([]byte(entry)); err != nil {
+			t.Errorf("%s: ParseWorkloadJSON = %v, want the grant accepted", name, err)
+		}
+	}
 	if w, _ := ParseWorkloadJSON([]byte(`{"containers":[{"digest":"` + digestA + `","command":{"policy":"any"},"args":{"policy":"any"}}],"secrets":{"policy":"deny"}}`)); w == nil {
 		t.Fatal("a deny grant releases nothing and is accepted on an unconstrained entry")
 	}
@@ -132,27 +165,6 @@ func TestAdmitsAnyArgs(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			if got := al.AdmitsAnyArgs(tc.digest, tc.argv); got != tc.want {
 				t.Fatalf("AdmitsAnyArgs(%s, %q) = %v, want %v", tc.digest, tc.argv, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestPinsAtMostCommand(t *testing.T) {
-	any := ArgvPolicy{Policy: PolicyAny}
-	for name, tc := range map[string]struct {
-		c    Container
-		want bool
-	}{
-		"any argv, any mounts":       {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, true},
-		"pinned command, any mounts": {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyAny}}, true},
-		"pinned args":                {Container{Command: any, Args: ArgvPolicy{Policy: PolicyExact, Argv: []string{"x"}}, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-		"denied command":             {Container{Command: ArgvPolicy{Policy: PolicyDeny}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-		"mounts left absent (deny)":  {Container{Command: any, Args: any}, false},
-		"exact env":                  {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := tc.c.PinsAtMostCommand(); got != tc.want {
-				t.Fatalf("PinsAtMostCommand() = %v, want %v", got, tc.want)
 			}
 		})
 	}

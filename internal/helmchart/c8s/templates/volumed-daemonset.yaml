@@ -1,3 +1,91 @@
+{{- define "c8s.volumedPodSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
+{{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
+# SO_PEERCRED reports a peer's PID in the reader's PID namespace, so a
+# caller in another pod resolves to 0 without this.
+hostPID: true
+# It reaches no API server: everything it acts on is node-local.
+automountServiceAccountToken: false
+{{- with .Values.volumed.priorityClassName }}
+priorityClassName: {{ . }}
+{{- end }}
+{{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.volumed.imagePullSecrets) | nindent 0 }}
+nodeSelector:
+  kubernetes.io/os: linux
+  {{- with .Values.volumed.nodeSelector }}
+{{ toYaml . | indent 2 }}
+  {{- end }}
+tolerations:
+  {{- toYaml .Values.volumed.tolerations | nindent 2 }}
+containers:
+  - name: volumed
+    image: {{ include "volumed.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    securityContext:
+      privileged: true
+      # The image is nonroot (USER 65532) and privileged grants no
+      # effective caps to a non-root process; the daemon must be root.
+      runAsUser: 0
+      runAsGroup: 0
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "volumed.image") }}
+    args:
+      - --socket-dir
+      - {{ .Values.nriImagePolicy.hostPaths.runtimeDir | quote }}
+      - --kubelet-root
+      - {{ $kubeletRoot | quote }}
+      - --cgroup-root
+      - {{ .Values.volumed.hostPaths.cgroupRoot | quote }}
+      - --reap-interval
+      - {{ .Values.volumed.reapInterval | quote }}
+      - --max-mounts
+      - {{ include "c8s.positiveInt" (dict "value" .Values.volumed.maxMounts "label" "volumed.maxMounts") | quote }}
+    volumeMounts:
+      # Bidirectional: the mount is made here and has to reach the
+      # workload's pod directory on the node.
+      - name: kubelet-root
+        mountPath: {{ $kubeletRoot }}
+        mountPropagation: Bidirectional
+      - name: dev
+        mountPath: /dev
+      # /sys whole, not /sys/block: the block entries are symlinks into
+      # /sys/devices, and the serial is read through them.
+      - name: sys
+        mountPath: /sys
+        readOnly: true
+      - name: cgroup
+        mountPath: {{ .Values.volumed.hostPaths.cgroupRoot }}
+        readOnly: true
+      # The daemon's socket must live in the inventory's socket directory:
+      # that is the one directory nri-image-policy NRI-mounts into cw-pod
+      # sidecars.
+      - name: inventory-socket-dir
+        mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+    resources:
+      {{- toYaml .Values.volumed.resources | nindent 6 }}
+volumes:
+  - name: kubelet-root
+    hostPath:
+      path: {{ $kubeletRoot }}
+      type: Directory
+  - name: dev
+    hostPath:
+      path: /dev
+      type: Directory
+  - name: sys
+    hostPath:
+      path: /sys
+      type: Directory
+  - name: cgroup
+    hostPath:
+      path: {{ .Values.volumed.hostPaths.cgroupRoot }}
+      type: Directory
+  - name: inventory-socket-dir
+    hostPath:
+      path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+      type: DirectoryOrCreate
+{{- end -}}
+
 {{- if .Values.volumed.enabled }}
 {{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 {{- /*
@@ -37,87 +125,5 @@ spec:
       annotations:
         sidecar.istio.io/inject: "false"
     spec:
-      # SO_PEERCRED reports a peer's PID in the reader's PID namespace, so a
-      # caller in another pod resolves to 0 without this.
-      hostPID: true
-      # It reaches no API server: everything it acts on is node-local.
-      automountServiceAccountToken: false
-      {{- with .Values.volumed.priorityClassName }}
-      priorityClassName: {{ . }}
-      {{- end }}
-      {{- include "c8s.imagePullSecrets" (dict "root" $ "local" .Values.volumed.imagePullSecrets) | nindent 6 }}
-      nodeSelector:
-        kubernetes.io/os: linux
-        {{- with .Values.volumed.nodeSelector }}
-{{ toYaml . | indent 8 }}
-        {{- end }}
-      tolerations:
-        {{- toYaml .Values.volumed.tolerations | nindent 8 }}
-      containers:
-        - name: volumed
-          image: {{ include "volumed.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            privileged: true
-            # The image is nonroot (USER 65532) and privileged grants no
-            # effective caps to a non-root process; the daemon must be root.
-            runAsUser: 0
-            runAsGroup: 0
-          # The image entrypoint is ["/app/c8s", "volumed"], so args start at
-          # the first flag — same as cds.yaml.
-          args:
-            - --socket-dir
-            - {{ .Values.nriImagePolicy.hostPaths.runtimeDir | quote }}
-            - --kubelet-root
-            - {{ $kubeletRoot | quote }}
-            - --cgroup-root
-            - {{ .Values.volumed.hostPaths.cgroupRoot | quote }}
-            - --reap-interval
-            - {{ .Values.volumed.reapInterval | quote }}
-            - --max-mounts
-            - {{ include "c8s.positiveInt" (dict "value" .Values.volumed.maxMounts "label" "volumed.maxMounts") | quote }}
-          volumeMounts:
-            # Bidirectional: the mount is made here and has to reach the
-            # workload's pod directory on the node.
-            - name: kubelet-root
-              mountPath: {{ $kubeletRoot }}
-              mountPropagation: Bidirectional
-            - name: dev
-              mountPath: /dev
-            # /sys whole, not /sys/block: the block entries are symlinks into
-            # /sys/devices, and the serial is read through them.
-            - name: sys
-              mountPath: /sys
-              readOnly: true
-            - name: cgroup
-              mountPath: {{ .Values.volumed.hostPaths.cgroupRoot }}
-              readOnly: true
-            # The daemon's socket must live in the inventory's socket directory:
-            # that is the one directory nri-image-policy NRI-mounts into cw-pod
-            # sidecars.
-            - name: inventory-socket-dir
-              mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-          resources:
-            {{- toYaml .Values.volumed.resources | nindent 12 }}
-      volumes:
-        - name: kubelet-root
-          hostPath:
-            path: {{ $kubeletRoot }}
-            type: Directory
-        - name: dev
-          hostPath:
-            path: /dev
-            type: Directory
-        - name: sys
-          hostPath:
-            path: /sys
-            type: Directory
-        - name: cgroup
-          hostPath:
-            path: {{ .Values.volumed.hostPaths.cgroupRoot }}
-            type: Directory
-        - name: inventory-socket-dir
-          hostPath:
-            path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-            type: DirectoryOrCreate
+{{- include "c8s.volumedPodSpec" . | nindent 6 }}
 {{- end }}

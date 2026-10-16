@@ -85,6 +85,19 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// needsVariableEvidence reports whether the base or applied allowlist has a
+// match env policy for digest.
+func (s *policyStore) needsVariableEvidence(digest string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.NeedsVariableEvidence(digest) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.NeedsVariableEvidence(digest)
+}
+
 // apply installs the pulled document at version, unless version is below the
 // applied one — an epoch rollback a withheld/rolled-back CDS must not use to
 // loosen a tightened policy. Reports whether it applied. Single-writer: only the
@@ -168,6 +181,7 @@ func newPlugin(
 			procRoot = "/proc"
 		}
 		p.inventory = newAdmissionInventory(procRoot)
+		p.inventory.needsVariableEvidence = store.needsVariableEvidence
 	}
 
 	// Check if running as pre-installed plugin (containerd sets these env vars)
@@ -230,9 +244,10 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
 	if p.inventory != nil {
-		// The inventory needs eviction on stop to stay correct across pod churn,
-		// and the pod-sandbox lifecycle to keep its sandbox set (the /sandbox
-		// and /digests routes) live.
+		// The inventory needs stop and removal to stay correct across pod
+		// churn, and the pod-sandbox lifecycle to keep its sandbox set (the
+		// /sandbox and /digests routes) live.
+		mask.Set(api.Event_STOP_CONTAINER)
 		mask.Set(api.Event_REMOVE_CONTAINER)
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
@@ -240,7 +255,17 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	return mask, nil
 }
 
-// RemoveContainer evicts a stopped container from caller resolution; the
+// StopContainer marks a stopped container exited in its sandbox's record
+// (inventory.stop). Only subscribed when the inventory is enabled (see
+// Configure).
+func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) ([]*api.ContainerUpdate, error) {
+	if p.inventory != nil {
+		p.inventory.stop(ctr.GetId())
+	}
+	return nil, nil
+}
+
+// RemoveContainer evicts a removed container from caller resolution; the
 // sandbox's record keeps it (inventory.remove). Only subscribed when the
 // inventory is enabled (see Configure).
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
@@ -752,6 +777,7 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		for _, pod := range pods {
 			p.inventory.recordSandbox(pod.GetId())
 		}
+		p.inventory.awaitRecovery()
 	}
 
 	// Ahead of every other decision: on a node image a container that already
@@ -770,16 +796,19 @@ func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs [
 		return nil, nil
 	}
 
-	// If not ready yet, defer the check until after CDS init completes.
+	// If not ready yet, defer the check until after CDS init completes. Ready
+	// is read under deferredMu so RunDeferredCheck cannot run between it and
+	// the store and leave the batch unchecked.
+	p.deferredMu.Lock()
 	if !p.Ready() {
-		p.logger.Info("plugin not ready, deferring startup check",
-			"pods", len(pods), "containers", len(ctrs))
-		p.deferredMu.Lock()
 		p.deferredPods = pods
 		p.deferredCtrs = ctrs
 		p.deferredMu.Unlock()
+		p.logger.Info("plugin not ready, deferring startup check",
+			"pods", len(pods), "containers", len(ctrs))
 		return nil, nil
 	}
+	p.deferredMu.Unlock()
 
 	p.checkExisting(ctx, cfg, pods, ctrs)
 	return nil, nil
@@ -797,11 +826,17 @@ func (p *plugin) checkExisting(ctx context.Context, cfg *config, pods []*api.Pod
 		podByID[pod.GetId()] = pod
 	}
 
+	if p.inventory != nil {
+		defer p.inventory.recovered()
+	}
 	var killed, failed int
 	for _, ctr := range ctrs {
 		// Recorded ahead of the lookup that can skip it; the record needs no pod.
 		imageRef := ctr.GetAnnotations()[annotationImageName]
 		pod := podByID[ctr.GetPodSandboxId()]
+		if p.inventory != nil && ctr.GetState() == api.ContainerState_CONTAINER_STOPPED {
+			p.inventory.stop(ctr.GetId())
+		}
 		p.recordForInventory(ctx, pod, ctr, imageRef)
 		if pod == nil {
 			continue
@@ -859,6 +894,9 @@ func (p *plugin) RunDeferredCheck(ctx context.Context) {
 
 	if len(ctrs) == 0 {
 		p.logger.Info("no deferred containers to check")
+		if p.inventory != nil {
+			p.inventory.recovered()
+		}
 		return
 	}
 

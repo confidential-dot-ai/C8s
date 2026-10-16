@@ -234,6 +234,7 @@ func exists(path string) bool {
 // sweep unwinds it in Detach's order — LIO will not release a backstore a LUN
 // still references — and keeps the shared HBA.
 func TestHostSweepDetachesAnIdleAttachedVolume(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16")
 	f.partition(t, "3:0:1", "sdb", "sdb1", "8:17")
@@ -270,6 +271,7 @@ func TestHostSweepDetachesAnIdleAttachedVolume(t *testing.T) {
 // Removing a disk something holds unbinds it under its user, so the sweep
 // leaves it and says how to finish the job.
 func TestHostSweepLeavesAHeldVolume(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16", "dm-0")
 	out, code := f.run(t)
@@ -292,6 +294,7 @@ func TestHostSweepLeavesAHeldVolume(t *testing.T) {
 // table either. Matching by device number across every process's mountinfo
 // sees both, whatever path the mount was made through.
 func TestHostSweepLeavesAVolumeMountedInAnotherNamespace(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16")
 	f.partition(t, "3:0:1", "sdb", "sdb1", "8:17")
@@ -311,6 +314,7 @@ func TestHostSweepLeavesAVolumeMountedInAnotherNamespace(t *testing.T) {
 // btrfs (and ZFS, bcachefs) report an anonymous device number in mountinfo,
 // so only the mount source ties the mount to the partition.
 func TestHostSweepLeavesAVolumeMountedByAnonymousDevice(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16")
 	f.partition(t, "3:0:1", "sdb", "sdb1", "8:17")
@@ -332,6 +336,7 @@ func TestHostSweepLeavesAVolumeMountedByAnonymousDevice(t *testing.T) {
 // every disk on a node with a zombie "unknown". A second PID in a namespace
 // already read is not read again, so its state does not matter either.
 func TestHostSweepIgnoresZombiesAndReadNamespaces(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16")
 	unreadable(t, filepath.Join(f.process(t, 99, 0), "mountinfo"))
@@ -346,6 +351,7 @@ func TestHostSweepIgnoresZombiesAndReadNamespaces(t *testing.T) {
 }
 
 func TestHostSweepLeavesAVolumeInUseAsSwap(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16")
 	f.partition(t, "3:0:1", "sdb", "sdb2", "8:18")
@@ -368,6 +374,7 @@ func TestHostSweepLeavesAVolumeInUseAsSwap(t *testing.T) {
 // State the in-use check cannot read is an unknown, not "idle": like Detach,
 // the sweep refuses, and says so by failing.
 func TestHostSweepFailsWhenUseCannotBeRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		break_ func(t *testing.T, f *lioFixture, target string)
@@ -411,6 +418,7 @@ func TestHostSweepFailsWhenUseCannotBeRead(t *testing.T) {
 // Only a backstore whose serial is exactly c8s-vol-<its own name>, under the
 // HBA attach uses, is c8s's. Everything else on the node is the operator's.
 func TestHostSweepLeavesWhatAttachDidNotBuild(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	foreign := func(hba, name, serial string) string {
 		dir := filepath.Join(f.target(), "core", hba, name)
@@ -454,6 +462,7 @@ func TestHostSweepLeavesWhatAttachDidNotBuild(t *testing.T) {
 // The shell's name bound must match attach's: the longest name attach accepts
 // is swept, and one longer is left (TestHostSweepLeavesWhatAttachDidNotBuild).
 func TestHostSweepDetachesALongestNameVolume(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	name := strings.Repeat("a", volume.MaxNameLen)
 	target := f.attach(t, name, "3:0:1", "sdb", "8:16")
@@ -469,6 +478,7 @@ func TestHostSweepDetachesALongestNameVolume(t *testing.T) {
 // One stuck volume must not shield the rest, and must fail the sweep: a
 // target left serving an idle volume's image is what the step exists to stop.
 func TestHostSweepFailsOnAVolumeThatWillNotDetach(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "fileio_0/stuck")
 	f.attach(t, "stuck", "3:0:1", "sdb", "8:16")
 	ok := f.attach(t, "fine", "3:0:2", "sdc", "8:32")
@@ -486,6 +496,7 @@ func TestHostSweepFailsOnAVolumeThatWillNotDetach(t *testing.T) {
 
 // A busybox-only host has no sha256sum binary, but busybox carries the applet.
 func TestHostSweepFallsBackToBusyboxSha256sum(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	target := f.attach(t, "demo", "3:0:1", "sdb", "8:16")
 	only := filepath.Join(t.TempDir(), "bin")
@@ -523,6 +534,7 @@ func TestHostSweepFallsBackToBusyboxSha256sum(t *testing.T) {
 
 // A node that never served a volume (or has no configfs at all) is a no-op.
 func TestHostSweepIsANoOpWithoutLIO(t *testing.T) {
+	t.Parallel()
 	f := newLIOFixture(t, "")
 	f.attacher.Root = filepath.Join(t.TempDir(), "absent")
 	out, code := f.run(t)
@@ -534,6 +546,7 @@ func TestHostSweepIsANoOpWithoutLIO(t *testing.T) {
 // The snippet only does anything if the sweep hands it the host's configfs,
 // sysfs and procfs, from inside the host's mount and PID namespaces.
 func TestHostSweepRunsTheLIOStepAgainstTheHost(t *testing.T) {
+	t.Parallel()
 	want := `nsenter -t 1 -m -u -i -n -p -- sh -c "$lio_sweep_script" lio-sweep /sys/kernel/config /sys /proc`
 	if !strings.Contains(HostSweepScript(), want) {
 		t.Errorf("host-sweep.sh does not run the LIO step in the host mount namespace as:\n  %s", want)

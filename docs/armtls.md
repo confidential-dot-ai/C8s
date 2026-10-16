@@ -564,10 +564,26 @@ The node inventory is wired through NRI.
   bind-mounts read-only into the `c8s-cert` sidecar at container creation (an
   NRI mount, so the pod spec carries no hostPath and stays admissible under
   PodSecurity `restricted`), and `/identity` + `/digests` on `:1019`. The node IP it signs into tokens comes from the
-  installer DaemonSet's downward API `status.hostIP`, written to a `node-ip`
-  file beside the socket; `nriImagePolicy.sandboxDigests.advertiseHost`
-  overrides it. Route inference is the last resort and is wrong under the
-  chart's own default, since the plugin dials the CDS NodePort over loopback.
+  `node-ip` file beside the socket. The plugin writes the `--node-ip` of a
+  kubelet process in the host's mount namespace there, which is the Node's
+  InternalIP and its pods' `status.hostIP`; RKE2 passes it. A pod's process
+  that names itself `kubelet` is ignored, and so is an unspecified or loopback
+  `--node-ip`. Without the flag it writes the default-route interface's
+  address, which a kubelet without `--node-ip` usually registers. k3s runs its
+  kubelet inside the `k3s` process, so on a k3s node with more than one
+  interface set `nriImagePolicy.sandboxDigests.advertiseHost`. It
+  retries until an address exists and rewrites the file in place when it
+  changes, so a running pod's read-only mount of the file sees the new address;
+  when it has none, it empties the file. Until the file holds an address, the
+  token socket answers 503 and enforcement runs regardless. Once issuing, the
+  plugin rechecks the file every minute and signs later tokens with the new
+  address, under the key `/identity` already serves. Components that dial the
+  attestation-api through `node-ip` reread it every 15 seconds and restart when
+  the address changes or goes away. On a node whose kubelet registers an address
+  neither source finds, such as one a hostname resolves to, set
+  `nriImagePolicy.sandboxDigests.advertiseHost`, which overrides both. Route
+  inference is the last resort and is wrong under the chart's own default,
+  since the plugin dials the CDS NodePort over loopback.
 CDS must be able to reach every node on `:1019`, and the
 bound must cover those addresses: `cds.sandboxInventoryCIDRs` (`c8s install
 --node-cidr`) when set, else one host route per node derived live from the node
