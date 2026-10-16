@@ -55,10 +55,12 @@ type workloadClaimsConfig struct {
 	// container cgroup. Defaults to "/proc".
 	ProcRoot string `yaml:"proc_root"`
 	// AdvertiseHost is the node address CDS dials to reach this inventory's
-	// digests endpoint. Empty reads it from NodeIPFile, which the installer
-	// writes from its own status.hostIP — the plugin is a host process and has
-	// no downward API of its own.
+	// digests endpoint. Empty reads it from NodeIPFile.
 	AdvertiseHost string `yaml:"advertise_host"`
+	// PublishNodeIP makes the plugin write NodeIPFile at startup from the
+	// node's own view (see publishNodeIP). The chart sets it; the node image
+	// leaves it unset because nri-node-ip.service writes the file there.
+	PublishNodeIP bool `yaml:"publish_node_ip"`
 }
 
 // allowlistConfig groups the digest-source mechanisms.
@@ -67,9 +69,9 @@ type workloadClaimsConfig struct {
 // of every pulled snapshot (CDS and operator digests). Installer and busybox
 // invocations are admitted by argv-pinned entries in the served document.
 // Base entries enforce env and mounts at final admission just like served
-// entries. The chart's component entries pin the executable and explicitly
-// leave the other fields open; the node image's generated RKE2 system entries
-// leave command and args open too.
+// entries. The chart's component entries pin each container's argv and mount
+// table and leave env open; the node image's generated RKE2 system entries
+// leave command and args open.
 // Pull is the runtime-update source: every plugin polls CDS.
 type allowlistConfig struct {
 	Base *allowlist.Allowlist `yaml:"base"`
@@ -183,8 +185,9 @@ type loggingConfig struct {
 const defaultPullInterval = 5 * time.Second
 const defaultPullTimeout = 30 * time.Second
 
-// NodeIPFile is the filename, inside SocketDir, the installer writes this
-// node's address to. Read only when advertise_host is unset.
+// NodeIPFile is the filename, inside SocketDir, holding this node's address:
+// components read it as their attestation-api host (cmdsutil.NodeIPPath), so
+// only a host process may write it, never a pod.
 const NodeIPFile = "node-ip"
 
 // defaultConfigPath is the plugin config containerd's plugin_config_path
@@ -383,6 +386,9 @@ func (c *config) Validate() error {
 	journalDir := filepath.Dir(policymeasure.NodeJournal)
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
+	}
+	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
+		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")
 	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")

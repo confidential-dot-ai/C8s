@@ -150,7 +150,7 @@ func runIptablesSync(ctx context.Context, cfg *iptablesSyncConfig) error {
 	if err != nil {
 		return err
 	}
-	clientset, err := newKubeClientset(cfg.kubeconfig)
+	clientset, err := newKubeClientset()
 	if err != nil {
 		return err
 	}

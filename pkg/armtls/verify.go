@@ -234,7 +234,7 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	svc := remote.NewClient(policy.AttestationApiURL)
+	svc := NewAttestationClient(policy.AttestationApiURL)
 	pins := policy.Policy
 	pins.Images = acceptReplayed(pins.Images)
 	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, pins)

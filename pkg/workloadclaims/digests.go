@@ -115,8 +115,8 @@ func (h CIDRHosts) Contains(host string) bool { return cidrSet(h).contains(host)
 func (h CIDRHosts) Empty() bool               { return len(h) == 0 }
 
 // ResolveAdvertiseHost returns the node IP an inventory signs into its sandbox
-// tokens. An explicit host always wins; the chart supplies one from the
-// installer DaemonSet's downward API (status.hostIP). cdsEndpoint is the
+// tokens. An explicit host always wins; the plugin passes the node-ip file's
+// address (see the nri-image-policy publish_node_ip setting). cdsEndpoint is the
 // enforcer's pull config verbatim — a URL or a bare host[:port]; a URL's host
 // is used when it parses as one, so every enforcer derives the callback host
 // the same way.

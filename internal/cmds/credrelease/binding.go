@@ -89,7 +89,7 @@ var (
 // image identity. LoadMeasuredIdentity answers both
 // from one report so the guest attests once.
 func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetypes.VerificationResult, error) {
-	client := remote.NewClient(attestationAPIURL)
+	client := armtls.NewAttestationClient(attestationAPIURL)
 	readyCtx, cancelReady := context.WithTimeout(ctx, attestationReadyTimeout)
 	err := client.WaitHealthy(readyCtx, attestationReadyInterval)
 	cancelReady()

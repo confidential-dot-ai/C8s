@@ -123,6 +123,9 @@ func TestHostMountSourceAndAccess(t *testing.T) {
 		{"last read-only", "/etc/service", []string{"rw", "ro"}, true, true},
 		{"last writable", "/etc/service", []string{"ro", "rw"}, false, true},
 		{"recursive writable", "/etc/service", []string{"ro", "rrw"}, true, false},
+		// runc applies the recursive attribute after the ro remount, so the
+		// mount stays writable below the top whatever comes later.
+		{"recursive writable before read-only", "/etc/service", []string{"rbind", "rrw", "ro"}, false, false},
 		{"recursive read-only", "/etc/service", []string{"rro"}, false, false},
 		{"relative bind", "service", []string{"bind"}, false, false},
 		{"unclean", "/etc/../service", []string{"bind"}, false, false},

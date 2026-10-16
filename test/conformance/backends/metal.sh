@@ -18,7 +18,20 @@ cds_measurement_args
 written="${SUITE_RESULTS:-${TMPDIR:-/tmp}}/metal-backend-entries"
 
 # shellcheck disable=SC2154  # measurement_args: set by cds_measurement_args above
-al() { c8s allowlist "$@" --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}"; }
+# The router admits one write a second per client (curl_paced): a 429 is
+# waited out. Input comes from a file, never stdin, so a retry can resend it.
+al() {
+    local err rc _
+    err="$(mktemp)"
+    for _ in $(seq 10); do
+        c8s allowlist "$@" --url "$C8S_ALLOWLIST_URL" "${measurement_args[@]}" 2>"$err" && rc=0 || rc=$?
+        if [ "$rc" -eq 0 ] || ! grep -q 'server returned 429' "$err"; then break; fi
+        sleep 1
+    done
+    cat "$err" >&2
+    rm -f "$err"
+    return "$rc"
+}
 
 # The served allowlist the scenarios assume. The base allowlist names neither
 # fixture image; "nginx" gets an any-argv entry by a signed write (`add`
@@ -50,8 +63,6 @@ image_digest() { c8s allowlist inspect-image "$1" | awk '$1 == "digest:" {print 
 
 image_alias() { return $UNSUPPORTED; }
 
-served_allowlist() { al export; }
-
 # The lane's allowlist URL is the router on the guest's public address: the
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
@@ -61,6 +72,14 @@ served_allowlist() { al export; }
 # bundle's key is the run's operator key; the token minter is built from the
 # checkout on first use, with the Go toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
+# The route relays the /allowlist routes alone; the CDS's others are out of
+# reach.
+cds_request() {
+    case "$2" in
+        /allowlist | /allowlist/*) http_request "$(cds_url)" "$@" ;;
+        *) return "$UNSUPPORTED" ;;
+    esac
+}
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
 cds_document_path() {
     case "$1" in
@@ -162,18 +181,13 @@ print(json.dumps(env))
 PYEOF
 }
 
-# No node shell: the certificate volume is read through a running container
-# of the pod, the named one when given, else the first of the scenario's own
-# (the webhook mounts the volume into every container, its own included, but
-# those are distroless). Nothing while no such container runs yet.
-pod_cert_file() {
-    local container="${4:-}"
-    [ -n "$container" ] || container="$(kubectl -n "$1" get pod "$2" -o json | jq -r '
-        [((.status.initContainerStatuses // []) + (.status.containerStatuses // []))[] | select(.state.running) | .name] as $running
-        | [((.spec.initContainers // []) + .spec.containers)[] | .name | select((startswith("c8s-") | not) and IN($running[]))][0] // empty')" || return
-    [ -n "$container" ] || return 0
-    pod_cert_file_in "$1" "$2" "$container" "$3"
-}
+# The node image's confos-pod-exec policy closes pod exec for every
+# principal, so nothing here reads a pod's files or runs in it.
+pod_exec() { return "$UNSUPPORTED"; }
+pod_cert_file() { return "$UNSUPPORTED"; }
+requester_request() { return "$UNSUPPORTED"; }
+mesh_member() { return "$UNSUPPORTED"; }
+mesh_metrics() { return "$UNSUPPORTED"; }
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 
@@ -196,11 +210,21 @@ image_entrypoint() {
     crane config "$1" | jq -r '.config | ((.Entrypoint // []) + (.Cmd // []))[]'
 }
 
-# `apply` takes a name-keyed map of entries and lints it against the live
-# document first.
-allowlist_put() { jq -c --arg name "$1" '{($name): .}' "$2" | al apply - >/dev/null; }
-
-allowlist_delete() { al delete "$1" >/dev/null 2>&1 || true; }
+# Signed writes through the route, as kind's are, not `apply`: that lints
+# against the live document and refuses an entry a broader one shadows,
+# which the CDS accepts and scenarios write on purpose.
+allowlist_write() {
+    local method="$1" path="/allowlist/workloads/$2" body="$3" token code
+    token="$(write_token operator "$method" "$path" "$body")" || return
+    code="$(router_request "$method" "$path" "$body" "$token" | head -1)"
+    case "$code" in
+        204) ;;
+        404) [ "$method" = DELETE ] || return 1 ;;
+        *) echo "backend: $method $path: HTTP $code" >&2; return 1 ;;
+    esac
+}
+allowlist_put() { allowlist_write PUT "$1" "$2"; }
+allowlist_delete() { allowlist_write DELETE "$1" /dev/null; }
 
 # The base allowlist is measured into the node image and not readable without
 # a shell, so answer from what it was built from: the system images pinned in
@@ -227,6 +251,5 @@ plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
 
-served_version() { al list | awk '$1 == "version" {sub(/:$/, "", $2); print $2; exit}'; }
 
 dispatch "$@"

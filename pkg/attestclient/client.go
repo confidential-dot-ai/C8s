@@ -39,6 +39,9 @@ const defaultRequestTimeout = 60 * time.Second
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+	// attestHTTP reaches the attestation-api. It never shares httpClient's
+	// TLS settings, which verify CDS, and never uses a proxy.
+	attestHTTP *http.Client
 }
 
 // CertificateResult is the complete CDS challenge/attest/certify result.
@@ -68,15 +71,45 @@ func NewClient(baseURL string) Client {
 	return Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: &http.Client{Timeout: defaultRequestTimeout},
+		attestHTTP: armtls.NewDirectHTTPClient(defaultRequestTimeout),
 	}
 }
 
-// NewClientWithHTTP creates a new client with a custom HTTP client.
+// NewClientWithHTTP creates a new client that reaches CDS through httpClient.
+// Evidence requests to the attestation-api keep only its timeout: they verify
+// the system roots, never httpClient's CDS verification, and never use a
+// proxy. [Client.WithAttestationHTTP] sets other attestation-api TLS settings.
 func NewClientWithHTTP(baseURL string, httpClient *http.Client) Client {
 	return Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		httpClient: httpClient,
+		attestHTTP: armtls.NewDirectHTTPClient(httpClient.Timeout),
 	}
+}
+
+// WithAttestationHTTP returns c with evidence requests sent through
+// httpClient, for an attestation-api behind a private CA. A proxy httpClient
+// would use is still bypassed.
+func (c Client) WithAttestationHTTP(httpClient *http.Client) Client {
+	c.attestHTTP = withoutProxy(httpClient)
+	return c
+}
+
+// withoutProxy is c with proxy lookup disabled. A RoundTripper other than
+// *http.Transport cannot be inspected for one, so it is replaced by
+// [armtls.NewDirectHTTPClient].
+func withoutProxy(c *http.Client) *http.Client {
+	t, ok := c.Transport.(*http.Transport)
+	if !ok {
+		return armtls.NewDirectHTTPClient(c.Timeout)
+	}
+	if t.Proxy != nil {
+		t = t.Clone()
+		t.Proxy = nil
+	}
+	direct := *c
+	direct.Transport = t
+	return &direct
 }
 
 // GenerateEvidence calls the local attestation-api to generate TEE evidence
@@ -88,9 +121,9 @@ func (c Client) GenerateEvidence(attestationApiURL string, reportData []byte) (r
 }
 
 // GenerateEvidenceContext is GenerateEvidence with caller-controlled
-// cancellation.
+// cancellation. The request never goes through a proxy.
 func (c Client) GenerateEvidenceContext(ctx context.Context, attestationApiURL string, reportData []byte) (remote.AttestResponse, error) {
-	asClient := remote.NewClientWithHTTP(attestationApiURL, c.httpClient)
+	asClient := remote.NewClientWithHTTP(attestationApiURL, c.attestHTTP)
 	return asClient.Attest(contextOrBackground(ctx), remote.AttestRequest{
 		ReportData: reportData,
 		Platform:   remote.PlatformAuto,

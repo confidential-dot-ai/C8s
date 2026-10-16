@@ -19,8 +19,11 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
+
+	utilnet "k8s.io/apimachinery/pkg/util/net"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -145,6 +148,14 @@ func Run(args []string) error {
 
 	logger.Info("policy store seeded", "base_entries", store.base.Size())
 
+	if cfg.WorkloadClaims.PublishNodeIP {
+		// Fail-soft: exiting would block container creation node-wide, while
+		// a missing file only fails closed the components that read it. The
+		// first attempt runs here so the signer below never reads a stale file.
+		publisher := &nodeIPPublisher{cfg: cfg, logger: logger}
+		go publisher.run(ctx, publisher.publish())
+	}
+
 	addr := *healthAddr
 	if cfg.Plugin.HealthAddr != "" {
 		addr = cfg.Plugin.HealthAddr
@@ -165,22 +176,9 @@ func Run(args []string) error {
 	}()
 
 	if plugin.inventory != nil {
-		signer, err := sandboxTokenSigner(cfg, logger)
-		if err != nil {
-			return err
-		}
 		socketPath := filepath.Join(cfg.WorkloadClaims.SocketDir, workloadclaims.SocketName)
-		if err := startAdmissionInventory(ctx, logger, plugin.inventory, socketPath, signer); err != nil {
+		if err := startAdmissionInventory(ctx, logger, cfg, plugin.inventory, socketPath); err != nil {
 			return fmt.Errorf("start admission inventory: %w", err)
-		}
-		// Fail-soft, like the allowlist pull below: containerd requires this
-		// plugin (required_plugins), so exiting takes container creation down
-		// node-wide. A missing digests endpoint only degrades issuance — CDS
-		// refuses tokens it cannot check — which is the cheaper failure.
-		if signer != nil {
-			if err := startSandboxDigests(ctx, logger, cfg, plugin.inventory, signer); err != nil {
-				logger.Error("sandbox-digests endpoint disabled; CDS will refuse requests carrying a sandbox token", "error", err)
-			}
 		}
 	}
 
@@ -493,16 +491,212 @@ func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	return nil
 }
 
+// Node-side retry timing; vars so tests can shrink them.
+var (
+	nodeRetryMinDelay     = time.Second
+	nodeRetryMaxDelay     = time.Minute
+	nodeIPRecheckInterval = time.Minute
+)
+
+// chooseHostInterface and writeNodeIPFile are package vars so tests can fake
+// the host's routes and a failed write.
+var (
+	chooseHostInterface = utilnet.ChooseHostInterface
+	writeNodeIPFile     = writeInPlace
+)
+
+// nodeIPPublisher keeps NodeIPFile current: a DHCP node may have no default
+// route when containerd starts, and its address may change later.
+type nodeIPPublisher struct {
+	cfg    *config
+	logger *slog.Logger
+	delay  time.Duration // current failure backoff, 0 after a success
+}
+
+// publish makes one attempt and returns the wait before the next: the recheck
+// interval after a success, a doubling backoff after a failure.
+func (p *nodeIPPublisher) publish() time.Duration {
+	host, changed, err := publishNodeIP(p.cfg)
+	if err != nil {
+		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
+		p.logger.Error("node-ip not published; components that read it will not start until it is", "error", err, "retry_in", p.delay)
+		return p.delay
+	}
+	p.delay = 0
+	if changed {
+		p.logger.Info("node-ip published", "address", host)
+	}
+	return nodeIPRecheckInterval
+}
+
+// run repeats publish until ctx is done, waiting wait before the first attempt.
+func (p *nodeIPPublisher) run(ctx context.Context, wait time.Duration) {
+	for sleepCtx(ctx, wait) {
+		wait = p.publish()
+	}
+}
+
+// publishNodeIP writes NodeIPFile from the node's own view, unless it already
+// holds that address. The address is advertise_host when it is an IP, else
+// the --node-ip of a kubelet in the host's mount namespace, which is the
+// Node's registered InternalIP and its pods' status.hostIP, else the
+// default-route interface's address, which a kubelet without --node-ip
+// usually registers. k3s runs its kubelet inside the k3s process, so a k3s
+// node with several interfaces needs advertise_host. A pod could otherwise
+// pick the attestation verifier components dial.
+//
+// Components bind-mount the file itself, so it is rewritten in place: a
+// renamed replacement would leave their mount on the old inode. On any
+// failure it is emptied, not removed, for the same reason, so those components
+// fail closed rather than trust a stale address.
+func publishNodeIP(cfg *config) (host string, changed bool, err error) {
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	host = cfg.WorkloadClaims.AdvertiseHost
+	if net.ParseIP(host) == nil {
+		host = kubeletNodeIP(cfg.WorkloadClaims.ProcRoot)
+	}
+	if host == "" {
+		var ip net.IP
+		ip, err = chooseHostInterface()
+		if err != nil {
+			err = fmt.Errorf("resolve node address: %w", err)
+		}
+		host = ip.String()
+	}
+	if err == nil {
+		changed, err = writeNodeIP(cfg.WorkloadClaims.SocketDir, path, host)
+	}
+	if err != nil {
+		return "", false, errors.Join(err, emptyIfExists(path))
+	}
+	return host, changed, nil
+}
+
+// kubeletNodeIP is the first address of a host kubelet's --node-ip flag, read
+// from procRoot (default /proc), or "" when no host kubelet passes a usable
+// one. A pod's processes show up in procRoot too and can name themselves
+// kubelet, but cannot join the host's mount namespace, which is init's.
+// --node-ip=:: or 0.0.0.0 selects an address family, not an address.
+func kubeletNodeIP(procRoot string) string {
+	if procRoot == "" {
+		procRoot = "/proc"
+	}
+	hostMounts, err := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
+	if err != nil {
+		return ""
+	}
+	entries, err := os.ReadDir(procRoot)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if _, err := strconv.Atoi(e.Name()); err != nil {
+			continue
+		}
+		dir := filepath.Join(procRoot, e.Name())
+		comm, err := os.ReadFile(filepath.Join(dir, "comm"))
+		if err != nil || strings.TrimSpace(string(comm)) != "kubelet" {
+			continue
+		}
+		if mounts, err := os.Readlink(filepath.Join(dir, "ns", "mnt")); err != nil || mounts != hostMounts {
+			continue
+		}
+		cmdline, err := os.ReadFile(filepath.Join(dir, "cmdline"))
+		if err != nil {
+			continue
+		}
+		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+		for i, arg := range args {
+			value, ok := strings.CutPrefix(arg, "--node-ip=")
+			if !ok && arg == "--node-ip" && i+1 < len(args) {
+				value, ok = args[i+1], true
+			}
+			if !ok {
+				continue
+			}
+			first, _, _ := strings.Cut(value, ",")
+			if ip := net.ParseIP(first); usableNodeIP(ip) {
+				return ip.String()
+			}
+		}
+	}
+	return ""
+}
+
+// usableNodeIP reports whether components can dial ip as the node: an
+// unspecified or loopback address reaches the dialing pod's own network
+// namespace instead.
+func usableNodeIP(ip net.IP) bool {
+	return ip != nil && ip.IsGlobalUnicast()
+}
+
+func writeNodeIP(dir, path, host string) (bool, error) {
+	if !usableNodeIP(net.ParseIP(host)) {
+		return false, fmt.Errorf("node address %q is not a unicast address other pods can dial", host)
+	}
+	content := host + "\n"
+	if b, err := os.ReadFile(path); err == nil && string(b) == content {
+		return false, nil
+	}
+	if err := os.MkdirAll(dir, 0o711); err != nil {
+		return false, err
+	}
+	// World-readable: non-root components read it.
+	if err := writeNodeIPFile(path, []byte(content), 0o644); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// writeInPlace replaces path's content without replacing its inode, so a bind
+// mount of the file sees the change. A reader may see a partial write;
+// cmdsutil.WatchNodeIP acts only on a value it reads twice.
+func writeInPlace(path string, data []byte, mode os.FileMode) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|syscall.O_NOFOLLOW, mode)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteAt(data, 0)
+	if err == nil {
+		err = f.Truncate(int64(len(data)))
+	}
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+	return errors.Join(err, f.Close())
+}
+
+func emptyIfExists(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return errors.Join(f.Truncate(0), f.Close())
+}
+
+// sleepCtx waits d and reports whether ctx is still live.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
+// newSandboxTokenSigner is a package var so tests can count attempts.
+var newSandboxTokenSigner = sandboxTokenSigner
+
 // sandboxTokenSigner builds the inventory's sandbox-token signer. The key needs
 // no credential of its own: CDS reads it from this inventory's digests endpoint
-// on a privileged port, which is what establishes whose key it is. Without pull
-// config there is no CDS in the picture at all, so tokens are disabled and
-// get-cert issues without a sandbox ID.
+// on a privileged port, which is what establishes whose key it is.
+// followSandboxHost keeps the signed host current.
 func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.SandboxTokenSigner, error) {
-	if !cfg.PullEnabled() {
-		logger.Warn("admission inventory has no CDS pull config; sandbox tokens disabled")
-		return nil, nil
-	}
 	host, err := digestsAdvertiseHost(cfg)
 	if err != nil {
 		return nil, err
@@ -516,14 +710,13 @@ func sandboxTokenSigner(cfg *config, logger *slog.Logger) (*workloadclaims.Sandb
 }
 
 // digestsAdvertiseHost is the node IP every sandbox token names for CDS's
-// digests callback: the configured override, else the address the installer
-// wrote from its own status.hostIP. Route inference is the last resort and
+// digests callback: the configured override, else the node-ip file. Route inference is the last resort and
 // usually wrong here — the chart points the plugin at the CDS NodePort on
 // loopback, whose route source is loopback.
 func digestsAdvertiseHost(cfg *config) (string, error) {
-	// Config first, then the file the chart's installer writes, then the
-	// environment — the node image bakes the plugin without an installer, so
-	// nri-node-ip.service writes it there. None of these needs to be trustworthy: a
+	// Config first, then the node-ip file (publishNodeIP, or
+	// nri-node-ip.service on the node image), then the environment. None of
+	// these needs to be trustworthy: a
 	// wrong host makes CDS fetch a key the token signature fails under, so it
 	// can only fail closed, never redirect.
 	host := cfg.WorkloadClaims.AdvertiseHost
@@ -535,7 +728,8 @@ func digestsAdvertiseHost(cfg *config) (string, error) {
 	if host == "" {
 		host = strings.TrimSpace(os.Getenv("C8S_SANDBOX_DIGESTS_ADVERTISE_HOST"))
 	}
-	// Bounds the resolver; runs once at startup with no caller ctx to inherit.
+	// Bounds the resolver: it runs at startup and on every node address
+	// recheck, with no caller ctx to inherit.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return workloadclaims.ResolveAdvertiseHost(ctx, host, cfg.Allowlist.Pull.URL)
@@ -561,20 +755,83 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
-func startAdmissionInventory(ctx context.Context, logger *slog.Logger, inventory *admissionInventory, socketPath string, signer *workloadclaims.SandboxTokenSigner) error {
+// Without pull config there is no CDS in the picture at all, so tokens are
+// disabled and get-cert issues without a sandbox ID. Otherwise the signer
+// initializes in the background and the socket answers 503 until it does.
+func startAdmissionInventory(ctx context.Context, logger *slog.Logger, cfg *config, inventory *admissionInventory, socketPath string) error {
 	l, err := workloadclaims.ListenUnix(socketPath, workloadclaims.InventorySocketGID)
 	if err != nil {
 		return err
 	}
-	// The node's signer is resolved before this point: a nil one means
-	// this deployment issues no tokens at all, not that one is still coming.
-	go func() {
-		logger.Info("starting admission inventory", "socket", socketPath, "sandbox_tokens", signer != nil)
-		if err := workloadclaims.ServeTokens(ctx, l, inventory, signer); err != nil {
+	logger.Info("starting admission inventory", "socket", socketPath, "sandbox_tokens", cfg.PullEnabled())
+	serve := func(err error) {
+		if err != nil {
 			logger.Error("admission inventory error", "error", err)
 		}
-	}()
+	}
+	if !cfg.PullEnabled() {
+		logger.Warn("admission inventory has no CDS pull config; sandbox tokens disabled")
+		go func() { serve(workloadclaims.ServeTokens(ctx, l, inventory, nil)) }()
+		return nil
+	}
+	var signer atomic.Pointer[workloadclaims.SandboxTokenSigner]
+	go func() { serve(workloadclaims.ServePendingTokens(ctx, l, inventory, &signer)) }()
+	go initSandboxTokens(ctx, logger, cfg, &signer, func(s *workloadclaims.SandboxTokenSigner) error {
+		return startSandboxDigests(ctx, logger, cfg, inventory, s)
+	})
 	return nil
+}
+
+// initSandboxTokens retries the signer with backoff until it initializes or
+// ctx is done, then starts the digests endpoint, enables issuance and follows
+// the node address until ctx is done. Enforcement never waits on it:
+// containerd requires this plugin (required_plugins), so exiting takes
+// container creation down node-wide.
+func initSandboxTokens(ctx context.Context, logger *slog.Logger, cfg *config, signer *atomic.Pointer[workloadclaims.SandboxTokenSigner], serveDigests func(*workloadclaims.SandboxTokenSigner) error) {
+	delay := nodeRetryMinDelay
+	for {
+		s, err := newSandboxTokenSigner(cfg, logger)
+		if err == nil {
+			// A missing digests endpoint only degrades issuance — CDS refuses
+			// tokens it cannot check — so issuance is enabled regardless.
+			if err := serveDigests(s); err != nil {
+				logger.Error("sandbox-digests endpoint disabled; CDS will refuse requests carrying a sandbox token", "error", err)
+			}
+			signer.Store(s)
+			ok := true
+			for sleepCtx(ctx, nodeIPRecheckInterval) {
+				ok = followSandboxHost(cfg, logger, signer, ok)
+			}
+			return
+		}
+		logger.Error("sandbox tokens disabled until the signer initializes", "error", err, "retry_in", delay)
+		if !sleepCtx(ctx, delay) {
+			return
+		}
+		delay = min(2*delay, nodeRetryMaxDelay)
+	}
+}
+
+// followSandboxHost re-signs with the current node address when it changed,
+// keeping the key the digests endpoint serves. Tokens naming a stale address
+// would send CDS to a dead or foreign digests endpoint. When the address
+// cannot be resolved it keeps the last one: CDS then fails closed on it. It
+// reports whether the address resolved, and warns only when wasOK was true,
+// so an address that stays unresolved logs once rather than every recheck.
+func followSandboxHost(cfg *config, logger *slog.Logger, signer *atomic.Pointer[workloadclaims.SandboxTokenSigner], wasOK bool) bool {
+	current := signer.Load()
+	host, err := digestsAdvertiseHost(cfg)
+	if err == nil && host != current.Host() {
+		var next *workloadclaims.SandboxTokenSigner
+		if next, err = current.WithHost(host); err == nil {
+			signer.Store(next)
+			logger.Info("sandbox tokens follow the node address", "digests_host", host, "previous", current.Host())
+		}
+	}
+	if err != nil && wasOK {
+		logger.Warn("node address unresolved; sandbox tokens keep naming the last one", "error", err, "digests_host", current.Host())
+	}
+	return err == nil
 }
 
 // healthListener returns a TCP listener for `host:port` or a Unix socket
