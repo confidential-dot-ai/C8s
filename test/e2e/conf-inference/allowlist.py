@@ -20,17 +20,17 @@ from __future__ import annotations
 import argparse
 import json
 import runpy
-import subprocess
 import tempfile
 from pathlib import Path
 
 import yaml
 
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ci", type=Path, required=True, help="confidential-inference checkout at the pinned commit")
-    parser.add_argument("--values", type=Path, action="append", required=True, help="helm values files, in order")
+    parser.add_argument("--manifest", type=Path, required=True, help="the rendered chart run.sh deploys (render.sh)")
     parser.add_argument("--policy", type=Path, required=True)
     parser.add_argument("--seed", type=Path, required=True, help="allowlist-seed.json of this c8s build")
     parser.add_argument("--c8s", type=Path, required=True, help="the c8s binary under test")
@@ -43,14 +43,8 @@ def main() -> None:
 
     gen = runpy.run_path(str(args.ci / "scripts/generate-release-allowlist.py"))
     policy = json.loads(args.policy.read_text())
-    chart = policy["chart"]
-    rendered = subprocess.run(
-        ["helm", "template", chart["release"], str(args.ci / "helm/confidential-inference"),
-         "--namespace", chart["namespace"], "--kube-version", chart["kubeVersion"],
-         *[arg for path in args.values for arg in ("--values", str(path))]],
-        check=True, capture_output=True, text=True,
-    ).stdout
-    controllers = gen["controllers"]([d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)])
+    docs = [d for d in yaml.safe_load_all(args.manifest.read_text()) if isinstance(d, dict)]
+    controllers = gen["controllers"](docs)
     expected = {item["controller"] for item in policy["workloads"]}
     if set(controllers) != expected:
         raise SystemExit(f"chart workloads {sorted(controllers)} differ from the policy {sorted(expected)}")

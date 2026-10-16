@@ -70,20 +70,27 @@ kubectl -n "$ns" create secret docker-registry ghcr-pull --docker-server ghcr.io
   --docker-username "${GITHUB_ACTOR:-c8s-e2e}" --docker-password "$GH_TOKEN"
 kubectl -n "$ns" create secret generic gateway-admin-mtls --from-file=client.crt=admin.crt
 
-helm template confidential-inference ci/helm/confidential-inference --namespace "$ns" --kube-version 1.32.0 \
-  --values release/profile-values-release-values.yaml \
-  --values release/profile-values-release-staging-values.yaml \
-  --values release/release-values.yaml \
-  --values "$here/values.yaml" \
-  --values front-door-values.yaml \
+mapfile -t chart_args < chart-args
+helm template confidential-inference ci/helm/confidential-inference "${chart_args[@]}" \
+  --show-only templates/gateway.yaml \
   --set-file attestationReceipts.cds.imagePolicy=cds-image-policy.json \
   --set-file attestationReceipts.cds.servedImagePolicy=served-image-policy.json \
   --set-string "attestationReceipts.expectedOperatorPublicKeySha256=sha256:$op_sha" \
-  --set-string "attestationReceipts.expectedOperatorKeySetSha256=sha256:$set_sha" \
-  | kubectl -n "$ns" apply -f -
-# Not `rollout status`: the deployments' 10-minute progress deadline is shorter
-# than a cold pull of the 14 GB sglang image. The minute-by-minute listing is
-# the timeline a failure needs; exec and logs are closed on the node image.
+  --set-string "attestationReceipts.expectedOperatorKeySetSha256=sha256:$set_sha" > identity.yaml
+# The prepared render, with only its release-identity ConfigMap replaced.
+python3 - manifest.yaml identity.yaml > deploy.yaml <<'EOF'
+import sys
+import yaml
+docs = [d for d in yaml.safe_load_all(open(sys.argv[1])) if isinstance(d, dict)]
+identity = next(d for d in yaml.safe_load_all(open(sys.argv[2]))
+                if isinstance(d, dict) and d["kind"] == "ConfigMap" and d["metadata"]["name"] == "gateway-release-identity")
+docs = [identity if d["kind"] == "ConfigMap" and d["metadata"]["name"] == "gateway-release-identity" else d for d in docs]
+yaml.safe_dump_all(docs, sys.stdout, sort_keys=False)
+EOF
+kubectl -n "$ns" apply -f deploy.yaml
+# Not `rollout status`: a first pull can outlast the deployments' 10-minute
+# progress deadline. The minute-by-minute listing is the timeline a failure
+# needs; exec and logs are closed on the node image.
 dump() {
   kubectl get namespace "$ns" -o jsonpath='{.status.phase} {.metadata.deletionTimestamp}{"\n"}' || true
   kubectl get nodes -o json | jq -r '.items[].status.conditions[] | "node \(.type)=\(.status) \(.message)"'
