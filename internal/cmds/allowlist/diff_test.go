@@ -106,3 +106,50 @@ func TestPrintDiffOrdersMapEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestDiffEntrySecrets(t *testing.T) {
+	grant := func(read ...string) *pkgallowlist.SecretsPolicy {
+		return &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: read}
+	}
+	tests := []struct {
+		name     string
+		live     *pkgallowlist.SecretsPolicy
+		desired  *pkgallowlist.SecretsPolicy
+		wantFrom string
+		wantTo   string
+	}{
+		{name: "both deny", live: nil, desired: nil},
+		{name: "same grant", live: grant("db/*"), desired: grant("db/*")},
+		{name: "grant added", live: nil, desired: grant("db/*"), wantFrom: "deny", wantTo: "allow read=db/*"},
+		{name: "grant removed", live: grant("db/*"), desired: nil, wantFrom: "allow read=db/*", wantTo: "deny"},
+		{name: "read widened", live: grant("db/a"), desired: grant("db/a", "db/b"), wantFrom: "allow read=db/a", wantTo: "allow read=db/a,db/b"},
+		{
+			name:     "write added",
+			live:     grant("db/a"),
+			desired:  &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"db/a"}, Write: []string{"db/a"}},
+			wantFrom: "allow read=db/a",
+			wantTo:   "allow read=db/a write=db/a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := pkgallowlist.Container{Digest: mustDigest(t, digB)}
+			ed := diffEntry(
+				pkgallowlist.Workload{Containers: []pkgallowlist.Container{c}, Secrets: tt.live},
+				pkgallowlist.Workload{Containers: []pkgallowlist.Container{c}, Secrets: tt.desired},
+			)
+			if tt.wantTo == "" {
+				if !ed.empty() {
+					t.Fatalf("diffEntry = %+v, want empty", ed)
+				}
+				return
+			}
+			if ed.empty() || ed.Secrets == nil {
+				t.Fatalf("diffEntry = %+v, want a secrets change", ed)
+			}
+			if ed.Secrets.From != tt.wantFrom || ed.Secrets.To != tt.wantTo {
+				t.Errorf("secrets = %q -> %q, want %q -> %q", ed.Secrets.From, ed.Secrets.To, tt.wantFrom, tt.wantTo)
+			}
+		})
+	}
+}
