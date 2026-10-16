@@ -229,9 +229,14 @@ Authorization is the operator key that CDS already pins for allowlist writes
 (`cds --operator-keys`) — the same key the `secrets` grants are rooted in. Its
 token binds the method, path, and body, so a captured one cannot be replayed
 against a different path or a different value. `overwrite` travels in the body
-for that reason: a query parameter is outside what the token covers. CDS spends
-each token once, as for allowlist writes: a reused one answers `409` with a
-plain-text error. The same holds for `GET /secrets-explain`.
+for that reason: a query parameter is outside what the token covers.
+
+CDS spends each token once, as for allowlist writes, including on
+`GET /secrets-explain`. A reused token answers `409` with a plain-text error,
+whether or not its first request succeeded, so a retry mints a fresh token.
+Without `cds.persistence.enabled`, CDS also refuses every token issued before
+its start plus `--jwt-clock-skew` (`cds.jwtClockSkew`, 30 seconds by default)
+with `401`; wait that long after a restart.
 
 ### Replacing a value
 
