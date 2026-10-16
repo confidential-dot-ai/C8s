@@ -209,8 +209,8 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 			resp.Refusal = "the matching entry carries no secret grant"
 			return resp
 		}
-		if !al.Workloads[matched[0]].ArgvPinned() {
-			resp.Refusal = "the matching entry leaves a container's argv unconstrained; a grant requires every command and args policy to be exact or deny"
+		if err := al.Workloads[matched[0]].PinnedForGrant(); err != nil {
+			resp.Refusal = "the matching entry leaves a container's launch to the host: " + err.Error()
 			return resp
 		}
 		resp.Grant = grant

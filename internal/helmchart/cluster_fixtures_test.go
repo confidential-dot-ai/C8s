@@ -56,6 +56,7 @@ func clusterFixtureObject(t *testing.T, pod *corev1.Pod) map[string]any {
 }
 
 func TestClusterDeploymentFixturesMeetRestrictedPolicy(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	image := clusterFixtureImage(t, clusterFixtureHarness(t), "WORKLOAD_IMAGE")
 	if !strings.HasPrefix(image, "nginxinc/nginx-unprivileged@sha256:") {
@@ -143,6 +144,7 @@ func clusterFixtureLabelDenials(t *testing.T, policy admissionregv1.ValidatingAd
 }
 
 func TestClusterGeneratedPodFixturesMeetIntendedPolicies(t *testing.T) {
+	t.Parallel()
 	validations := renderedHostSecurityPolicies(t)["c8s-deny-host-namespaces"]
 	out, err := helmTemplate(t)
 	if err != nil {
@@ -232,6 +234,7 @@ func TestClusterGeneratedPodFixturesMeetIntendedPolicies(t *testing.T) {
 }
 
 func TestClusterHarnessKeepsImageAndBackendRoutingAligned(t *testing.T) {
+	t.Parallel()
 	harness := clusterFixtureHarness(t)
 	for _, required := range []string{
 		`images pull "docker.io/$WORKLOAD_IMAGE"`,

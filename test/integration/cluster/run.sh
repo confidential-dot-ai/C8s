@@ -233,6 +233,16 @@ kubectl -n "$MOCK_ATTESTATION_NS" rollout status "deploy/$MOCK_ATTESTATION_NAME"
 openssl ecparam -genkey -name prime256v1 -noout -out "$WORKDIR/operator.key" 2>/dev/null
 openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 2>/dev/null
 
+# The node image's nri-node-ip.service publishes the node address before any
+# component starts; kind has no such unit. Bare-metal components under a
+# fail-closed policy with no attestation-api socket mount this file (type
+# File) and read $(NODE_IP) from it, so without it they never leave
+# ContainerCreating. Same path, content and mode the plugin writes.
+node_exec sh -c "install -d -m 0711 /var/run/nri-image-policy \
+    && printf '%s\n' '$NODE_IP' > /var/run/nri-image-policy/node-ip \
+    && chmod 0644 /var/run/nri-image-policy/node-ip" \
+    || fail "could not publish the node-ip file"
+
 log "c8s install"
 ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
     --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \

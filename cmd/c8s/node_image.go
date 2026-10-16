@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,7 @@ import (
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -75,8 +77,8 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
 	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
-	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json and images.txt (required)")
-	cmd.AddCommand(render)
+	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json, images.txt and router-nginx/ (required)")
+	cmd.AddCommand(render, newNodeImageCheckImagesCmd())
 	return cmd
 }
 
@@ -178,17 +180,22 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.outputDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.outputDir, "router-nginx"), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	for _, artifact := range []struct {
+	type artifact struct {
 		name string
 		body []byte
-	}{
+	}
+	files := []artifact{
 		{"c8s-integration.yaml", artifacts.integration},
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
-	} {
+	}
+	for _, name := range routerNginxFiles {
+		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
+	}
+	for _, artifact := range files {
 		if err := os.WriteFile(filepath.Join(cfg.outputDir, artifact.name), artifact.body, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", artifact.name, err)
 		}
@@ -200,7 +207,13 @@ type nodeImageArtifacts struct {
 	integration []byte
 	seed        []byte
 	images      []string
+	routerNginx map[string]string
 }
+
+// routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
+// in /usr/lib/c8s/router-nginx (the chart's router.bakedNginxDir), where the
+// baked router mounts them instead of the ConfigMap.
+var routerNginxFiles = []string{"nginx.conf", "tls-cds.conf", "tls-acme.conf"}
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
@@ -274,6 +287,12 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
 				return nil, err
 			}
+			if key == "ConfigMap/c8s-router-nginx" {
+				// Shipped as image files; a ConfigMap would only be an
+				// editable copy nothing mounts.
+				required[key] = true
+				continue
+			}
 		case "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 		default:
 			return nil, fmt.Errorf("unexpected node-image resource %s", key)
@@ -298,25 +317,19 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		return nil, fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
 	// A baked component must start before CDS serves policy, with the
-	// arguments, environment and mounts its manifest gives it: the seed must
-	// leave those to the pod and pin at most the executable, and a pin must
-	// admit every invocation the manifests spell out.
-	seedDigests := make(map[string]bool)
-	for _, workload := range seed.Workloads {
-		for _, c := range append(workload.InitContainers, workload.Containers...) {
-			if c.PinsAtMostCommand() {
-				seedDigests[c.Digest.String()] = true
-			}
-		}
-	}
-	index := seed.BuildIndex()
+	// arguments and mounts its manifest gives it: the seed must carry an
+	// entry for its image with a container admitting each.
+	seeded := seedContainers(seed)
 	for image, baked := range images {
-		if !seedDigests[baked.digest] {
-			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args, env and mounts unconstrained", image)
+		if len(seeded[baked.digest]) == 0 {
+			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry", image)
 		}
-		for _, argv := range baked.argvs {
-			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: argv}) {
-				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, argv)
+		for _, k := range baked.containers {
+			if !slices.ContainsFunc(seeded[baked.digest], func(c pkgallowlist.Container) bool { return admitsBaked(c, baked.digest, k, nil) }) {
+				if len(k.command) == 0 {
+					return nil, fmt.Errorf("node-image image %s: container %s runs the image's entrypoint, which the bootstrap seed cannot check: give it an explicit command", image, k.name)
+				}
+				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit container %s with argv %q, mounts %+v and the env its manifest, image and runtime set", image, k.name, k.argv(), k.mounts)
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -324,6 +337,17 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	slices.Sort(artifacts.images)
 	artifacts.integration = manifests.Bytes()
 	return &artifacts, nil
+}
+
+// seedContainers indexes the seed's containers by image digest.
+func seedContainers(seed *pkgallowlist.Allowlist) map[string][]pkgallowlist.Container {
+	seeded := make(map[string][]pkgallowlist.Container)
+	for _, workload := range seed.Workloads {
+		for _, c := range append(workload.InitContainers, workload.Containers...) {
+			seeded[c.Digest.String()] = append(seeded[c.Digest.String()], c)
+		}
+	}
+	return seeded
 }
 
 // setNodeImageNamespace pins a namespaced resource to the node-image namespace
@@ -345,13 +369,228 @@ func setNodeImageNamespace(object *unstructured.Unstructured) error {
 	return nil
 }
 
-// bakedImage is one container image a baked workload runs: its digest, and
-// every argv a manifest spells out for it with an explicit command. A container
-// that runs the image's entrypoint records no argv; its executable is the
-// image's own.
+// bakedImage is one container image a baked workload runs: its digest and
+// every container that runs it.
 type bakedImage struct {
-	digest string
-	argvs  [][]string
+	digest     string
+	containers []bakedContainer
+}
+
+// bakedContainer is what a manifest says one container runs: an explicit
+// command, or the image's entrypoint, with its args and the mount rule each of
+// its volume mounts needs; the variables it sets; and whether it also imports
+// some (envFrom) or receives the namespace's Service variables (service links
+// not disabled), whose names this cannot resolve.
+type bakedContainer struct {
+	name         string
+	command      []string
+	args         []string
+	mounts       []pkgallowlist.MountRule
+	env          []bakedVariable
+	envFrom      bool
+	serviceLinks bool
+}
+
+// bakedVariable is one variable a manifest sets. literal is false for a value
+// taken from a reference (fieldRef, secretKeyRef, ...), unknown here;
+// optional marks a key reference the kubelet skips when the key is missing.
+type bakedVariable struct {
+	name, value       string
+	literal, optional bool
+}
+
+func (k bakedContainer) argv() []string {
+	return slices.Concat(k.command, k.args)
+}
+
+// admitsBaked reports whether a seed container admits a baked one. A
+// container without a command runs the image's ENTRYPOINT and, without args,
+// its CMD, neither of which the manifest shows: only a seed leaving command
+// and args any admits it. The mount check compares the rules the manifest implies; whether
+// the storage behind a volume is memory or encrypted is the node's to see.
+// image is the image config's environment, nil when unknown (seedEnvAdmits).
+func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer, image map[string]string) bool {
+	switch c.Env.Policy {
+	case "", pkgallowlist.PolicyAny:
+	case pkgallowlist.PolicyMatch:
+		if !seedEnvAdmits(c.Env, k, image) {
+			return false
+		}
+	default:
+		return false
+	}
+	argv := k.argv()
+	if len(k.command) == 0 && (c.Command.Policy != pkgallowlist.PolicyAny || c.Args.Policy != pkgallowlist.PolicyAny) {
+		return false
+	}
+	one := pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"c": {Containers: []pkgallowlist.Container{c}}}}
+	if !one.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: argv}) {
+		return false
+	}
+	switch c.Mounts.Policy {
+	case pkgallowlist.PolicyAny:
+		return true
+	case pkgallowlist.PolicyExact:
+		byDestination := func(a, b pkgallowlist.MountRule) int { return strings.Compare(a.Destination, b.Destination) }
+		return slices.Equal(slices.SortedFunc(slices.Values(c.Mounts.Rules), byDestination), slices.SortedFunc(slices.Values(k.mounts), byDestination))
+	default:
+		return len(k.mounts) == 0
+	}
+}
+
+// seedEnvAdmits reports whether a match env policy admits k's launch
+// environment (launchEnvironment): every variable is listed, every exact pin
+// agrees with a value known here, and every listed variable is set. With the
+// image's environment unknown, a variable the seed pins exact and the launch
+// environment leaves to the image is taken to be the image's; check-images
+// confirms it against the preloaded image.
+func seedEnvAdmits(seed pkgallowlist.EnvPolicy, k bakedContainer, image map[string]string) bool {
+	env, ok := launchEnvironment(k, image)
+	if !ok {
+		return false
+	}
+	exact := seed.ExactValues()
+	for name, v := range env {
+		if _, listed := seed.Variables[name]; !listed {
+			return false
+		}
+		want, pinned := exact[name]
+		if pinned && (v.source == sourceDynamic || v.source == sourceKnown && v.value != want) {
+			return false
+		}
+	}
+	for name := range seed.Variables {
+		if _, set := env[name]; set {
+			continue
+		}
+		if _, pinned := exact[name]; !pinned || image != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// launchValue is one variable of a launch environment and where its value
+// comes from.
+type launchValue struct {
+	value  string
+	source valueSource
+}
+
+type valueSource int
+
+const (
+	// sourceKnown is a value fixed before the container starts.
+	sourceKnown valueSource = iota
+	// sourceDynamic is a value set per pod or node, which no exact pin can
+	// be checked against.
+	sourceDynamic
+	// sourceImage is the image's value, or the runtime's when the image sets
+	// none, unknown until check-images reads the image.
+	sourceImage
+)
+
+// launchEnvironment is the environment k starts with, applied in the
+// runtime's order, each source overriding the one before: containerd's
+// HOSTNAME, the image's variables (containerd's default PATH when it sets
+// none), the kubelet's API-server variables, then the manifest's. It is not
+// ok when the manifest imports variables (envFrom), sets one through an
+// optional key reference, or leaves service links on: which variables are
+// set is then unknown.
+func launchEnvironment(k bakedContainer, image map[string]string) (map[string]launchValue, bool) {
+	if k.envFrom || k.serviceLinks {
+		return nil, false
+	}
+	env := map[string]launchValue{"HOSTNAME": {source: sourceDynamic}}
+	if image == nil {
+		env["HOSTNAME"] = launchValue{source: sourceImage}
+		env["PATH"] = launchValue{source: sourceImage}
+	} else {
+		env["PATH"] = launchValue{value: containerdDefaultPath}
+		for name, value := range image {
+			env[name] = launchValue{value: value}
+		}
+	}
+	for name, value := range kubeletVariables {
+		if value == "" {
+			env[name] = launchValue{source: sourceDynamic}
+		} else {
+			env[name] = launchValue{value: value}
+		}
+	}
+	for _, v := range k.env {
+		if v.optional {
+			return nil, false
+		}
+		if v.literal && !kubeletExpands(v.value) {
+			env[v.name] = launchValue{value: v.value}
+		} else {
+			env[v.name] = launchValue{source: sourceDynamic}
+		}
+	}
+	return env, true
+}
+
+func optionalReference(source *corev1.EnvVarSource) bool {
+	if source == nil {
+		return false
+	}
+	if ref := source.SecretKeyRef; ref != nil && ref.Optional != nil && *ref.Optional {
+		return true
+	}
+	ref := source.ConfigMapKeyRef
+	return ref != nil && ref.Optional != nil && *ref.Optional
+}
+
+// kubeletExpands reports whether the kubelet rewrites value before the
+// container sees it: $(VAR) references and $$ escapes.
+func kubeletExpands(value string) bool {
+	return strings.Contains(value, "$(") || strings.Contains(value, "$$")
+}
+
+// kubeletVariables are the variables the kubelet sets in every container
+// with service links off: those of the default namespace's kubernetes
+// Service, whose port kube-apiserver fixes at 443. An empty value differs
+// per cluster. Keep in step with c8s.runtimeEnv in the chart.
+var kubeletVariables = map[string]string{
+	"KUBERNETES_SERVICE_HOST":       "",
+	"KUBERNETES_SERVICE_PORT":       "443",
+	"KUBERNETES_SERVICE_PORT_HTTPS": "443",
+	"KUBERNETES_PORT":               "",
+	"KUBERNETES_PORT_443_TCP":       "",
+	"KUBERNETES_PORT_443_TCP_ADDR":  "",
+	"KUBERNETES_PORT_443_TCP_PORT":  "443",
+	"KUBERNETES_PORT_443_TCP_PROTO": "tcp",
+}
+
+// containerdDefaultPath is the PATH containerd sets when the image sets none
+// (oci.WithDefaultPathEnv).
+const containerdDefaultPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// mountRule is the rule a pod-spec volume mount needs: a host rule naming the
+// hostPath and the access mode, an emptyDir rule, or a data rule for
+// operator-supplied content. A subpath of any volume, and a reserved volumed
+// placeholder emptyDir, is data, as the node classifies them. It fails on a
+// source no rule describes.
+func mountRule(m corev1.VolumeMount, volumes map[string]corev1.Volume) (pkgallowlist.MountRule, error) {
+	v, ok := volumes[m.Name]
+	if !ok {
+		return pkgallowlist.MountRule{}, fmt.Errorf("mount %q names no volume", m.Name)
+	}
+	rule := pkgallowlist.MountRule{Destination: m.MountPath}
+	switch {
+	case m.SubPath != "" || m.SubPathExpr != "", v.EmptyDir != nil && strings.HasPrefix(v.Name, volume.KubeVolumePrefix):
+		rule.Kind = pkgallowlist.MountData
+	case v.HostPath != nil:
+		rule.Kind, rule.Source, rule.ReadOnly = pkgallowlist.MountHost, v.HostPath.Path, m.ReadOnly
+	case v.EmptyDir != nil:
+		rule.Kind = pkgallowlist.MountEmptyDir
+	case v.ConfigMap != nil, v.Secret != nil, v.Projected != nil, v.DownwardAPI != nil, v.PersistentVolumeClaim != nil:
+		rule.Kind = pkgallowlist.MountData
+	default:
+		return pkgallowlist.MountRule{}, fmt.Errorf("mount %q has a volume source no mount rule describes", m.Name)
+	}
+	return rule, nil
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
@@ -369,6 +608,10 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 	if len(spec.Containers) == 0 || len(spec.EphemeralContainers) != 0 {
 		return fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
 	}
+	volumes := make(map[string]corev1.Volume, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		volumes[v.Name] = v
+	}
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
 		ref, err := reference.ParseDockerRef(c.Image)
 		if err != nil {
@@ -383,16 +626,65 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
-		if len(c.Command) > 0 {
-			baked.argvs = append(baked.argvs, slices.Concat(c.Command, c.Args))
+		command, err := kubeletArgv(c.Command)
+		if err != nil {
+			return fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
 		}
+		args, err := kubeletArgv(c.Args)
+		if err != nil {
+			return fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
+		}
+		k := bakedContainer{name: c.Name, command: command, args: args, envFrom: len(c.EnvFrom) > 0, serviceLinks: spec.EnableServiceLinks == nil || *spec.EnableServiceLinks}
+		for _, e := range c.Env {
+			k.env = append(k.env, bakedVariable{name: e.Name, value: e.Value, literal: e.ValueFrom == nil, optional: optionalReference(e.ValueFrom)})
+		}
+		for _, m := range c.VolumeMounts {
+			rule, err := mountRule(m, volumes)
+			if err != nil {
+				return fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
+			}
+			k.mounts = append(k.mounts, rule)
+		}
+		baked.containers = append(baked.containers, k)
 	}
 	return nil
 }
 
+// kubeletArgv is the argv the kubelet hands the runtime for a manifest's
+// command or args, following its expansion (k8s.io/kubernetes
+// third_party/forked/golang/expansion): $$ becomes $ and an unclosed $( is
+// literal. A closed $(NAME) is an error: the kubelet expands it from env,
+// envFrom or a service variable, values a pinned argv cannot know, so the
+// manifest must escape it as $$(NAME), as the chart's c8s.kubeletExpand
+// requires.
+func kubeletArgv(argv []string) ([]string, error) {
+	out := make([]string, 0, len(argv))
+	for _, token := range argv {
+		var b strings.Builder
+		for i := 0; i < len(token); i++ {
+			if token[i] != '$' || i+1 == len(token) {
+				b.WriteByte(token[i])
+				continue
+			}
+			switch next := token[i+1:]; {
+			case next[0] == '$':
+				b.WriteByte('$')
+				i++
+			case next[0] == '(' && strings.IndexByte(next, ')') > 0:
+				name := next[1:strings.IndexByte(next, ')')]
+				return nil, fmt.Errorf("%q references $(%s), which the kubelet may expand; escape it as $$(%s)", token, name, name)
+			default:
+				b.WriteByte('$')
+			}
+		}
+		out = append(out, b.String())
+	}
+	return out, nil
+}
+
 // collectConfigMapArtifact lifts the two ConfigMaps the build consumes as
 // files: the CDS bootstrap seed, which is written beside the manifests, and
-// the router's nginx.conf, which is only checked for being non-empty.
+// the router's nginx configuration (routerNginxFiles).
 func collectConfigMapArtifact(object unstructured.Unstructured, key, name string, artifacts *nodeImageArtifacts) error {
 	if key != "ConfigMap/c8s-cds-allowlist-seed" && key != "ConfigMap/c8s-router-nginx" {
 		return nil
@@ -403,8 +695,16 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	}
 	if name == "c8s-cds-allowlist-seed" {
 		artifacts.seed = []byte(cm.Data["allowlist-seed.json"])
-	} else if cm.Data["nginx.conf"] == "" {
-		return fmt.Errorf("rendered nginx ConfigMap has no nginx.conf")
+		return nil
 	}
+	if len(cm.Data) != len(routerNginxFiles) {
+		return fmt.Errorf("rendered nginx ConfigMap has keys %v, want %v", slices.Sorted(maps.Keys(cm.Data)), routerNginxFiles)
+	}
+	for _, file := range routerNginxFiles {
+		if cm.Data[file] == "" {
+			return fmt.Errorf("rendered nginx ConfigMap has no %s", file)
+		}
+	}
+	artifacts.routerNginx = cm.Data
 	return nil
 }
