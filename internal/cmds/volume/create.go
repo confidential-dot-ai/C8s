@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 
@@ -88,11 +89,12 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 	if err != nil {
 		return err
 	}
-	// Every refusal that needs no network runs before the build, so it leaves no
-	// image or escrow behind. Connecting and the mesh CA check wait until the
-	// write: a router front door is one attested connection, and a long build
-	// would leave it idle long enough to drop.
+	// Every refusal that needs no CDS response, a router front door included,
+	// runs before the build, so it leaves no image or escrow behind. The mesh CA
+	// check waits until the write, so the CA compared is the one CDS serves when
+	// the key is sent.
 	var signer authorizer
+	var hc *http.Client
 	if !cfg.dryRun {
 		if err := o.Validate(); err != nil {
 			return err
@@ -106,6 +108,9 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		}
 		signer = s
 		if err := cfg.gate.Precheck(o.URL); err != nil {
+			return err
+		}
+		if hc, err = o.HTTPClient(cmd.Context()); err != nil {
 			return err
 		}
 	}
@@ -152,10 +157,6 @@ func runCreate(cmd *cobra.Command, o *options, cfg createConfig) error {
 		return nil
 	}
 
-	hc, err := o.HTTPClient(cmd.Context())
-	if err != nil {
-		return notStored(err, cfg, path, "retry with")
-	}
 	if err := cfg.gate.Check(cmd.Context(), cmd.ErrOrStderr(), hc, o.URL); err != nil {
 		if errors.Is(err, cdsconn.ErrMeshCAMismatch) {
 			return notStored(err, cfg, path, "once you reach the CDS your bundle names, store it with")
