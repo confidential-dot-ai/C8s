@@ -33,6 +33,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--namespace", "c8s-system",
 		"--show-only", "templates/cds.yaml",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",

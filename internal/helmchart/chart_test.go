@@ -2951,6 +2951,13 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		}
 	}
 	tunnel.assertDirective(t, "client_max_body_size", "8m")
+	// Nothing spills to the 16Mi memory-backed temp volume, and the
+	// in-memory buffers are bounded in total.
+	tunnel.assertDirective(t, "client_body_buffer_size", "8m")
+	tunnel.assertDirective(t, "proxy_max_temp_file_size", "0")
+	tunnel.assertDirective(t, "limit_conn", "c8s_protocol_total", "32")
+	tunnel.assertDirective(t, "limit_conn_status", "503")
+	cfg.http.assertDirective(t, "limit_conn_zone", "$c8s_protocol_total_key", "zone=c8s_protocol_total:1m")
 	tunnel.assertDirective(t, "proxy_read_timeout", "3630s")
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 
@@ -3036,20 +3043,23 @@ func TestChartRouterCDSPins(t *testing.T) {
 	}
 }
 
-// TestChartRouterUnpinnedCDS pins that the chart passes --allow-unpinned-cds
-// only off a baked node with no CDS pin, and fails the render there when
-// router.routing.allowUnpinnedCDS is false.
+// TestChartRouterUnpinnedCDS pins the router's operator-key source off a baked
+// node: cds.operatorKeys when set, else CDS, which needs a CDS pin or
+// router.routing.allowUnpinnedCDS. The test helpers set the opt-in.
 func TestChartRouterUnpinnedCDS(t *testing.T) {
 	t.Parallel()
-	pinned := []string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}
+	optOut := []string{"--set", "router.routing.allowUnpinnedCDS=false"}
+	pinned := append([]string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}, optOut...)
+	keys := append([]string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}, optOut...)
+	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
 	for _, tc := range []struct {
-		name     string
-		args     []string
-		wantFlag bool
+		name               string
+		args               []string
+		wantFlag, wantKeys bool
 	}{
-		{name: "default", wantFlag: true},
-		{name: "pinned", args: pinned},
-		{name: "pinned without opt-in", args: append([]string{"--set", "router.routing.allowUnpinnedCDS=false"}, pinned...)},
+		{name: "opt-in", wantFlag: true},
+		{name: "pinned CDS", args: pinned},
+		{name: "pinned keys", args: keys, wantKeys: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -3060,9 +3070,15 @@ func TestChartRouterUnpinnedCDS(t *testing.T) {
 			if got := slices.Contains(c.Args, "--allow-unpinned-cds"); got != tc.wantFlag {
 				t.Errorf("cds-attest has --allow-unpinned-cds = %v, want %v", got, tc.wantFlag)
 			}
+			if got := slices.Contains(c.Args, keysArg); got != tc.wantKeys {
+				t.Errorf("cds-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
+			}
+			if tc.wantKeys {
+				assertContainerMount(t, c, "operator-keys", "/mnt/c8s-data/operator-keys")
+			}
 		})
 	}
-	out, err := helmTemplate(t, "--set", "router.routing.allowUnpinnedCDS=false")
+	out, err := helmTemplate(t, optOut...)
 	if err == nil {
 		t.Fatalf("helm template accepted an unpinned CDS without the opt-in\n%s", out)
 	}
@@ -4285,6 +4301,8 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
+		// The default install pins no CDS; see TestChartRouterUnpinnedCDS.
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "nriImagePolicy.image.tag=dev",
 		// volumed is off by default, so its image is unused unless a test
 		// enables it; set the tag here so those tests need not repeat it (its
@@ -5118,6 +5136,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "armtlsMesh.enabled=false",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest so the render is valid
@@ -6320,6 +6339,7 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "armtlsMesh.enabled=false",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest (the seed admits it

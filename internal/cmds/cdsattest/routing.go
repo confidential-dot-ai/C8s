@@ -67,7 +67,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "maximum duration of one request forwarded to a backend, body included")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
-	f.IntVar(&cfg.tunnelSlots, "tunnel-slots", 32, "maximum tunnelled requests in flight in this replica, shared by all clients, one client holding at most a quarter; further requests get 503 tunnel_busy")
+	f.IntVar(&cfg.tunnelSlots, "tunnel-slots", 32, "maximum tunnelled requests in flight in this replica, each held for its whole backend call, shared by all clients, one client (by X-Real-IP, so one NAT or SNAT address) holding at most a quarter; further requests get 503 tunnel_busy")
 	f.BoolVar(&cfg.publish, "publish-routes", false, "serve the applied signed route manifest at /.well-known/c8s/routes, for clients that verify it under pinned operator keys; off, the path answers 404")
 }
 

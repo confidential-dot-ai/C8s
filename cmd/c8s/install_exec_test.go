@@ -784,13 +784,20 @@ func clusterKubectl(applied, extra string) string {
 esac`
 }
 
+// runInstall runs c8s install with a CDS pin, which routeSourcePreflight
+// otherwise demands.
+func runInstall(t *testing.T, args ...string) error {
+	t.Helper()
+	return runC8s(t, append([]string{"install", "--measurements", strings.Repeat("ab", 48)}, args...)...)
+}
+
 func TestInstallBareMetalModeHappyPath(t *testing.T) {
 	var s *installStubs
 	var err error
 	stderr := captureStderr(t, func() {
 		s = newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-		err = runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force")
+		err = runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force")
 	})
 	if err != nil {
 		t.Fatalf("install: %v\nstderr:\n%s", err, stderr)
@@ -879,7 +886,7 @@ func TestInstallBareMetalModeHappyPath(t *testing.T) {
 func TestInstallImageTagOverridesResolveRef(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	if err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--image-tag=v9.9.9"); err != nil {
+	if err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--image-tag=v9.9.9"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	calls := s.f.calls(t)
@@ -894,7 +901,7 @@ func TestInstallImageTagOverridesResolveRef(t *testing.T) {
 func TestInstallVolumesEnablesTheNodeAgent(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	if err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--volumes"); err != nil {
+	if err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--volumes"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	mustContainLine(t, s.f.calls(t), "crane digest ghcr.io/confidential-dot-ai/volumed:main")
@@ -912,7 +919,7 @@ func TestInstallFailsFastWhenCDSNodeUnlabelled(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l role=cds -o name") : ;;
 `))
-	err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
 	if err == nil || !strings.Contains(err.Error(), "role=cds") {
 		t.Fatalf("want the CDS label preflight failure, got %v", err)
 	}
@@ -925,7 +932,7 @@ func TestInstallSingleNodeSkipsCDSNodePreflight(t *testing.T) {
 	// preflight must not even ask.
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get nodes -l role=cds -o name") : ;;
 `))
-	if err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false", "--single-node"); err != nil {
+	if err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false", "--single-node"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	calls := s.f.calls(t)
@@ -948,7 +955,7 @@ func TestInstallAbortsOnRouterHostPortConflict(t *testing.T) {
 *metadata.name*) echo node-a ;;
 "get pods --all-namespaces -o json") /bin/cat '`+pods+`' ;;
 `))
-	err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
 	if err == nil || !strings.Contains(err.Error(), "443") || !strings.Contains(err.Error(), "kube-system/ingress-a") {
 		t.Fatalf("want the router host-port conflict, got %v", err)
 	}
@@ -961,7 +968,7 @@ func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, `"get deployment vllm -n ws -o json") /bin/cat '`+deploy+`' ;;
 `))
 	routesOut := filepath.Join(t.TempDir(), "routes.json")
-	err := runC8s(t, "install", "--cvm-mode=bare-metal", "--force", "--resolve-digests=false",
+	err := runInstall(t, "--cvm-mode=bare-metal", "--force", "--resolve-digests=false",
 		"--workload-ref", "infer=ws/deployment/vllm:8000", "--upstream", "infer", "--routes-out", routesOut)
 	if err != nil {
 		t.Fatalf("install: %v", err)
@@ -1027,7 +1034,7 @@ func TestInstallRefusesRouteFlagsWithoutUpstream(t *testing.T) {
 func TestInstallHelmUpgradeFailureSurfaces(t *testing.T) {
 	s := newInstallStubs(t, "", true)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
 	if err == nil || !strings.Contains(err.Error(), "helm install failed") {
 		t.Fatalf("want the helm failure surfaced, got %v", err)
 	}
@@ -1037,7 +1044,7 @@ func TestInstallNamespaceApplyFailureSurfaces(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl("", `"apply -f -") exit 1 ;;
 `))
-	err := runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
+	err := runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
 	if err == nil || !strings.Contains(err.Error(), "kubectl apply namespace") {
 		t.Fatalf("want the namespace apply failure, got %v", err)
 	}
@@ -1050,7 +1057,7 @@ func TestInstallRequiresCLIsOnPath(t *testing.T) {
 	t.Run("helm missing", func(t *testing.T) {
 		f := newFakeBin(t)
 		t.Setenv("PATH", f.dir)
-		err := runC8s(t, "install", "--cvm-mode=bare-metal", "--force")
+		err := runInstall(t, "--cvm-mode=bare-metal", "--force")
 		if err == nil || !strings.Contains(err.Error(), "helm CLI not found") {
 			t.Fatalf("want a helm-not-found error, got %v", err)
 		}
@@ -1059,7 +1066,7 @@ func TestInstallRequiresCLIsOnPath(t *testing.T) {
 		f := newFakeBin(t)
 		f.tool(t, "helm", "")
 		t.Setenv("PATH", f.dir)
-		err := runC8s(t, "install", "--cvm-mode=bare-metal", "--force")
+		err := runInstall(t, "--cvm-mode=bare-metal", "--force")
 		if err == nil || !strings.Contains(err.Error(), "kubectl CLI not found") {
 			t.Fatalf("want a kubectl-not-found error, got %v", err)
 		}
@@ -1092,7 +1099,7 @@ esac`)
 // effectiveValues must read it, and helm must receive the piped bytes as a
 // -f file ahead of the computed values.
 func TestInstallValuesFromStdin(t *testing.T) {
-	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\n"
+	payload := "volumed:\n  enabled: true\nnriImagePolicy:\n  distro: rke2\nrouter:\n  routing:\n    allowUnpinnedCDS: true\n"
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
@@ -1254,7 +1261,7 @@ func TestInstallValidatesHardwarePlatformBeforeTheCluster(t *testing.T) {
 func TestInstallHostedLaneDefaultsExemptNamespaces(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
-	if err := runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false"); err != nil {
+	if err := runInstall(t, "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	got := treeAt(t, readYAMLTree(t, s.computed), "nriImagePolicy", "policy", "exemptNamespaces")
@@ -1270,7 +1277,7 @@ func TestInstallHostedLaneKeepsOperatorExemptNamespaces(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n")
-	if err := runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--resolve-digests=false", "-f", values); err != nil {
+	if err := runInstall(t, "--cvm-mode=aks", "--wait=false", "--resolve-digests=false", "-f", values); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	policy, _ := treeAt(t, readYAMLTree(t, s.computed), "nriImagePolicy").(map[string]any)["policy"].(map[string]any)
@@ -1311,7 +1318,7 @@ func TestInstallRefusesPolicyDenyingPlatformPods(t *testing.T) {
 	// exemptNamespaces cleared: the shape a pre-#396 values file installs.
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
 
-	err := runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--resolve-digests=false", "-f", values)
+	err := runInstall(t, "--cvm-mode=aks", "--wait=false", "--resolve-digests=false", "-f", values)
 	if err == nil {
 		t.Fatal("want a refusal when the rendered policy denies the control plane")
 	}
@@ -1335,7 +1342,7 @@ func TestInstallRefusesPolicyDenyingPlatformPods(t *testing.T) {
 func TestInstallHostedLaneDefaultAdmitsPlatformPods(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
-	if err := runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false"); err != nil {
+	if err := runInstall(t, "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false"); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
@@ -1349,7 +1356,7 @@ func TestInstallForcePastPlatformPodDenial(t *testing.T) {
 		s = newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
 		values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    exemptNamespaces: []\n")
-		err = runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false", "-f", values)
+		err = runInstall(t, "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false", "-f", values)
 	})
 	if err != nil {
 		t.Fatalf("--force must install anyway: %v", err)
@@ -1366,7 +1373,7 @@ func TestInstallAuditPolicySkipsPlatformPodCheck(t *testing.T) {
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
 	values := writeValuesFile(t, "nriImagePolicy:\n  policy:\n    mode: audit\n    exemptNamespaces: []\n")
-	if err := runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--resolve-digests=false", "-f", values); err != nil {
+	if err := runInstall(t, "--cvm-mode=aks", "--wait=false", "--resolve-digests=false", "-f", values); err != nil {
 		t.Fatalf("install: %v", err)
 	}
 	mustContainLine(t, s.f.calls(t), "kubectl apply -f -")
@@ -1380,7 +1387,7 @@ func TestInstallReportsWhatTheExemptionAdmits(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		s = newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
-		err = runC8s(t, "install", "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false")
+		err = runInstall(t, "--cvm-mode=aks", "--wait=false", "--force", "--resolve-digests=false")
 	})
 	if err != nil {
 		t.Fatalf("install: %v", err)
@@ -1408,7 +1415,7 @@ func TestInstallNodeLaneReportsNoExemption(t *testing.T) {
 	stdout := captureStdout(t, func() {
 		s = newInstallStubs(t, "", false)
 		s.f.tool(t, "kubectl", platformPodListKubectl(s.applied, podListFile(t, staticEtcdPod())))
-		err = runC8s(t, "install", "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
+		err = runInstall(t, "--cvm-mode=bare-metal", "--wait=false", "--force", "--resolve-digests=false")
 	})
 	if err != nil {
 		t.Fatalf("install: %v", err)
@@ -1422,7 +1429,7 @@ func TestInstallNodeLaneReportsNoExemption(t *testing.T) {
 // `-f -` is such a file: the exempt scan runs after stdin is materialized, so
 // it reads the piped bytes rather than a literal "-".
 func TestInstallHostedLaneKeepsExemptNamespacesFromStdin(t *testing.T) {
-	payload := "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\n"
+	payload := "nriImagePolicy:\n  policy:\n    exemptNamespaces: [gatekeeper-system]\nrouter:\n  routing:\n    allowUnpinnedCDS: true\n"
 
 	s := newInstallStubs(t, "", false)
 	s.f.tool(t, "kubectl", clusterKubectl(s.applied, ""))

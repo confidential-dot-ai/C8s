@@ -20,6 +20,8 @@ set -euo pipefail
 # arbitrary sha256 placeholders (lint/template only need them to parse).
 common_set=(
   --set image.tag=ci
+  # The default install pins no CDS, which the router refuses without this.
+  --set router.routing.allowUnpinnedCDS=true
   --set attestationApi.image.tag=ci
   --set cds.image.tag=ci
   --set armtlsMesh.image.tag=ci

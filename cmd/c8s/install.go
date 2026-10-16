@@ -230,6 +230,46 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work until you set cds.operatorKeys and reinstall", nil
 }
 
+// routeSourcePreflight refuses an install whose router would take its route
+// manifest keys from an unpinned CDS: no CDS pin, no --operator-keys, and no
+// router.routing.allowUnpinnedCDS=true. The chart fails that render too; this
+// names the install flags before anything runs.
+func routeSourcePreflight(measurements []string, measurementsConfig, operatorKeys string, valuesFiles []string) error {
+	if len(measurements) > 0 || measurementsConfig != "" || operatorKeys != "" {
+		return nil
+	}
+	values := map[string]any{}
+	for _, f := range valuesFiles {
+		tree, err := decodeValuesFile(f)
+		if err != nil {
+			return err
+		}
+		for _, path := range []string{"router.enabled", "node.baked", "router.routing.allowUnpinnedCDS", "cds.measurements", "cds.measurementsConfig", "cds.operatorKeys"} {
+			if v, ok := valueAtPath(tree, path); ok {
+				values[path] = v
+			}
+		}
+	}
+	set := func(path string) bool {
+		switch v := values[path].(type) {
+		case string:
+			return v != ""
+		case []any:
+			return len(v) > 0
+		case bool:
+			return v
+		}
+		return false
+	}
+	if enabled, ok := values["router.enabled"].(bool); ok && !enabled {
+		return nil
+	}
+	if set("node.baked") || set("router.routing.allowUnpinnedCDS") || set("cds.measurements") || set("cds.measurementsConfig") || set("cds.operatorKeys") {
+		return nil
+	}
+	return errors.New("the router would take its route manifest keys from an unpinned CDS, so any attested TEE answering as CDS could choose both the routes and their keys: pin CDS with --measurements (or --image-policy-file), pin the operator keys with --operator-keys, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true in a -f values file")
+}
+
 // tdxRTMRPinWarning is the "MRTD does not confer code identity" warning for a
 // TDX install that pins no RTMRs: measurement pinning then covers the TDVF
 // firmware only, and a host can boot it with a substituted kernel and rootfs.
@@ -1012,13 +1052,16 @@ after its cw id and listing every image of its pod template under any command
 and args, with mounts limited to the injected cert volume and the template's
 memory-backed emptyDirs, so image admission (the host NRI plugin) allows the
 rollout and CDS stamps the cw id on the workload's certificate. A template
-mounting anything else, or a subPath of those, gets an entry without a mount
-policy and a warning: it cannot be a route backend until it mounts only
-memory-backed emptyDirs. For the --upstream workload install refuses instead;
+mounting anything else, or a subPath of those, gets an entry admitting any
+mounts and a warning: CDS still names the pod, so a route written to it later
+trusts those mounts. For the --upstream workload install refuses instead;
 write its entry with 'c8s allowlist'. Install refuses an adoption whose pod another entry of the
 seed also describes, since CDS would then name it nothing.
 
-The router routes only by the operator-signed route manifest on CDS. To front an
+The router routes only by the operator-signed route manifest on CDS, verified
+under --operator-keys. Without --operator-keys or a CDS pin (--measurements or
+--image-policy-file) install refuses, unless a -f file sets
+router.routing.allowUnpinnedCDS=true (development clusters only). To front an
 adopted workload, give its ref the :<port> it serves TLS on, with its get-cert
 certificate, and pass --upstream <id>: install builds a manifest whose every
 router.san DNS name routes / to c8s-<id>.<ns>.svc.cluster.local:<port>, verified
@@ -1063,6 +1106,9 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 			return err
 		}
 		if err := preflightRoutesOut(); err != nil {
+			return err
+		}
+		if err := routeSourcePreflight(installMeasurements, installMeasurementsConfig, installOperatorKeys, installValues); err != nil {
 			return err
 		}
 		if warn, err := operatorKeysPreflight(installOperatorKeys, installValues, installForce); err != nil {
@@ -2191,7 +2237,7 @@ func buildWorkloadImageArgs(helmArgs []string, workloads []adoptedWorkload, upst
 				if w.cwID == upstream {
 					return nil, nil, fmt.Errorf("adopted workload %s: %w; install cannot write its allowlist entry, so write one named %q yourself (c8s allowlist), or pass --resolve-digests=false", w.cwID, err, w.cwID)
 				}
-				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry with any mounts, so it cannot be a route backend until it mounts only memory-backed emptyDirs\n", w.cwID, err)
+				fmt.Fprintf(warn, "warning: adopted workload %s: %v; install writes its allowlist entry with any mounts, so a route to it trusts those mounts\n", w.cwID, err)
 				exact = false
 				break
 			}
@@ -2589,7 +2635,7 @@ func init() {
 	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs + armtlsMesh.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
-	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes; sets cds.operatorKeys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
+	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes and route manifests; sets cds.operatorKeys, which also pins the router's keys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
 	installCmd.Flags().BoolVar(&installForce, "force", false, "proceed past guarded prompts — currently: install without --operator-keys (allowlist writes disabled), and a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
 	rootCmd.AddCommand(installCmd)
 }
