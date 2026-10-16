@@ -525,7 +525,8 @@ baked plugin, whose mode the chart cannot see), the chart writes it as
 plugin (a host process, from the host's own view) or the node image's
 `nri-node-ip.service` writes into the socket directory, never a pod, mounted read-only at `/run/c8s/node-ip` from a host path the entry
 pins. The plugin rewrites the file in place, and the binary rereads it and
-restarts when the address changes. The render refuses `$(HOST_IP)` in a component's argv there: the binary
+restarts when it names another address
+(see [`armtls.md`](armtls.md) for when the plugin publishes a change). The render refuses `$(HOST_IP)` in a component's argv there: the binary
 would read it from the `HOST_IP` variable, and a restaged pod could set that
 to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,
 since nothing is refused anyway. Node images before this release publish
