@@ -340,6 +340,7 @@ local ownership only and are not serialized into the stable allowlist.
 | Observed source | Class | Storage | `exact` behavior |
 |---|---|---|---|
 | Node-created platform mount at its fixed destination | `platform` | not relevant | admitted without a rule |
+| The node inventory's socket directory, bind-mounted read-only by the node policy itself into an injected pod's socket consumers | `platform` | not relevant | admitted without a rule |
 | Current pod's `emptyDir` on tmpfs | `emptyDir` | `memory` | requires a matching `emptyDir` rule |
 | Current pod's `emptyDir` whose backing chain reaches encrypted boot scratch | `emptyDir` | `encrypted` | requires a matching `emptyDir` rule |
 | Another pod's `emptyDir` | `host` | `unknown` | requires an explicit host rule |
