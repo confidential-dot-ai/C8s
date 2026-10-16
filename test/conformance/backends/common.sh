@@ -163,7 +163,8 @@
 #                                    then the response headers, one per line
 #   router_serving_cert              the leaf the router presents on its public
 #                                    address, PEM
-#   router_nginx_conf                the router's rendered nginx configuration
+#   router_nginx_conf                the router's rendered nginx configuration;
+#                                    77 where the node image holds it
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
 #   cds_relay_block / cds_relay_unblock
@@ -553,11 +554,21 @@ router_headers() {
     printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
 }
 
+# Off a node image the configuration is a ConfigMap, mounted directly or
+# through a projected volume; a baked node mounts it from the image
+# (hostPath), which nothing here can read without a node shell.
 router_nginx_conf() {
-    local cm
-    cm="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}' |
-        tr ' ' '\n' | grep -- '-nginx$' | head -1)"
-    [ -n "$cm" ] || { echo "backend: the router mounts no nginx ConfigMap" >&2; return 1; }
+    local volumes cm
+    volumes="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
+    cm="$(jq -r '.[] | (.configMap.name // empty), (.projected.sources[]?.configMap.name // empty)' <<<"$volumes" |
+        grep -- '-nginx$' | head -1)"
+    if [ -z "$cm" ]; then
+        if jq -e '.[] | select(.name == "nginx-config") | .hostPath' <<<"$volumes" >/dev/null; then
+            return "$UNSUPPORTED"
+        fi
+        echo "backend: the router mounts no nginx ConfigMap" >&2
+        return 1
+    fi
     kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
 }
 
@@ -566,7 +577,7 @@ router_nginx_conf() {
 # init container, reads the same file into the discovery document it writes, so that mode is
 # read from the document the router serves, which needs no exec.
 router_tls_mode() {
-    local args mode out path
+    local args mode out path conf
     args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
         jq -r '.spec.template.spec | ((.initContainers // []) + .containers)[] | (.args // [])[]')" || return
     mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
@@ -574,7 +585,8 @@ router_tls_mode() {
         grep -q '^--front-door-mode-file=' <<<"$args" || { echo "backend: the router names no front-door mode" >&2; return 1; }
         out="$(sed -n 's/^--discovery-out=//p' <<<"$args" | head -1)"
         [ -n "$out" ] || { echo "backend: the router publishes no discovery document" >&2; return 1; }
-        path="$(router_nginx_conf | awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}')"
+        conf="$(router_nginx_conf)" || return
+        path="$(awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}' <<<"$conf")"
         [ -n "$path" ] || { echo "backend: no router location serves $out" >&2; return 1; }
         mode="$(curl -sk --max-time 30 "$(router_url)$path" | jq -r '.public_tls.mode // empty')" || return
     fi
