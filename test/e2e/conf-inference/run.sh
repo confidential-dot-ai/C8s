@@ -76,6 +76,7 @@ helm template confidential-inference ci/helm/confidential-inference --namespace 
   --set-file attestationReceipts.cds.servedImagePolicy=served-image-policy.json \
   --set-string "attestationReceipts.expectedOperatorPublicKeySha256=sha256:$op_sha" \
   --set-string "attestationReceipts.expectedOperatorKeySetSha256=sha256:$set_sha" \
+  | SIM_IMAGE=$SIM_IMAGE python3 "$here/worker_sim.py" \
   | kubectl -n "$ns" apply -f -
 # Not `rollout status`: the deployments' 10-minute progress deadline is shorter
 # than a cold pull of the 14 GB sglang image. The minute-by-minute listing is

@@ -64,7 +64,7 @@ python3 "$here/allowlist.py" --ci ci \
   --values "$here/values.yaml" \
   --policy "$here/policy.json" --seed node-image/allowlist-seed.json \
   --c8s "$(command -v c8s)" --c8s-release "$c8s_release" \
-  --canonical-tool bin/c8s-allowlist-canonical --out-dir allowlist
+  --sim-image "$SIM_IMAGE" --canonical-tool bin/c8s-allowlist-canonical --out-dir allowlist
 jq -r '.workloads | keys[]' allowlist/allowlist.json
 
 # The gateway writes its state as 65532 at the volume root (mode 2770).

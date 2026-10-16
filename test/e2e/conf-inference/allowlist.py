@@ -26,6 +26,8 @@ from pathlib import Path
 
 import yaml
 
+import worker_sim
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -35,6 +37,7 @@ def main() -> None:
     parser.add_argument("--seed", type=Path, required=True, help="allowlist-seed.json of this c8s build")
     parser.add_argument("--c8s", type=Path, required=True, help="the c8s binary under test")
     parser.add_argument("--c8s-release", required=True, help="newest c8s tag this build contains; selects generator behavior")
+    parser.add_argument("--sim-image", required=True, help="the inference worker image worker_sim.py sets")
     parser.add_argument("--canonical-tool", type=Path, required=True)
     parser.add_argument("--out-dir", type=Path, required=True)
     args = parser.parse_args()
@@ -50,7 +53,8 @@ def main() -> None:
          *[arg for path in args.values for arg in ("--values", str(path))]],
         check=True, capture_output=True, text=True,
     ).stdout
-    controllers = gen["controllers"]([d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)])
+    docs = worker_sim.patch([d for d in yaml.safe_load_all(rendered) if isinstance(d, dict)], args.sim_image)
+    controllers = gen["controllers"](docs)
     expected = {item["controller"] for item in policy["workloads"]}
     if set(controllers) != expected:
         raise SystemExit(f"chart workloads {sorted(controllers)} differ from the policy {sorted(expected)}")
