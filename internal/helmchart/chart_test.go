@@ -4707,6 +4707,8 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		// (helm 3.14 simulates 1.29, below the base).
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+		// helm template cannot look up the running CDS; these are first installs.
+		"--set-string", "cds.liveShape=none",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
@@ -5504,6 +5506,8 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"template", "c8s", "c8s",
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+		// helm template cannot look up the running CDS; these are first installs.
+		"--set-string", "cds.liveShape=none",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
@@ -6650,6 +6654,8 @@ func renderExampleRouterNginxConf() string {
 		"template", "c8s", "c8s",
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+		// helm template cannot look up the running CDS; these are first installs.
+		"--set-string", "cds.liveShape=none",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",

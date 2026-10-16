@@ -773,7 +773,8 @@ operator key, before you upgrade:
 
 1. Run the upgrade's values through `helm template` and save the
    `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap as
-   `seed.json`.
+   `seed.json`. `helm template` cannot read the running CDS, so add the
+   `--set cds.publishedShape=NAME` its error names.
 2. Publish it: `c8s allowlist apply seed.json`. Each entry replaces the live
    entry of that name whole.
 3. Wait until every node has taken the write: its image policy plugin reports
@@ -798,16 +799,28 @@ manifests without the upgrade guard below. Before you roll back, save the
 
 CDS itself is recreated, not rolled, so it cannot publish its own new shape:
 the old CDS stops before the new one starts. The chart records CDS's entry
-name on its Deployment, and an upgrade that changes CDS's command line or
-mounts fails until you publish the new entry:
+name on its Deployment, and an upgrade that changes CDS's image, command line
+or mounts fails until you publish the new entry. A plain `cds.image.digest`
+bump changes the entry too. To publish it:
 
-1. Run the failed upgrade's values through `helm template` and save the
-   `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap.
+1. Run the failed upgrade's values through `helm template` with
+   `--set cds.publishedShape=NAME`, where `NAME` is the entry name from the
+   error, and save the `allowlist-seed.json` of the
+   `<release>-cds-allowlist-seed` ConfigMap.
 2. Copy the entry the error names into a file and publish it:
    `c8s allowlist apply ENTRY_FILE`.
-3. Wait until every node's image policy plugin has pulled the new version.
-4. Rerun the upgrade with `--set cds.publishedShape=<NAME>`, where `NAME` is
-   the entry name from the error.
+3. Wait until every node has taken the write, as in the configuration-only
+   procedure above.
+4. Rerun the upgrade with `--set cds.publishedShape=NAME`.
+
+The guard reads the running CDS's entry name from the live Deployment. When
+it cannot, it fails the render too: under `helm template` or a GitOps
+controller, where `lookup` answers nothing, and against a Deployment from a
+release before the annotation. Then either publish the entry and set
+`cds.publishedShape` as above, or, when no CDS runs yet, set
+`cds.liveShape=none`. A GitOps controller that renders every sync can set
+`cds.liveShape` to the running entry's name instead, which the guard then
+compares as it would the annotation.
 
 When it seeds, CDS deletes a stored entry the seed replaces if it pins a
 component executable with `args` or `mounts` `any`: an entry under a generated
