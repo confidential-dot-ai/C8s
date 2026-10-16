@@ -373,11 +373,18 @@ func TestTunnelOversizedBodyFreesSlot(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge || refusal.Error != types.ErrorCodeChannelError {
 		t.Fatalf("tunnel with a %d-byte body = %d %q, want %d %q", tunnelBodyLimit+1, resp.StatusCode, refusal.Error, http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError)
 	}
+	// The handler releases the slot after the 413 reaches the client, so the
+	// next request may briefly still see it held.
 	host := types.HeaderField{Name: "Host", Value: "app.example"}
-	resp = postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{host}})
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("tunnel after a 413 = %d, want %d", resp.StatusCode, http.StatusOK)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		resp = postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{host}})
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return
+		}
+		if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
+			t.Fatalf("tunnel after a 413 = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
 	}
 }
 
