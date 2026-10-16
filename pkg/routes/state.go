@@ -6,9 +6,6 @@ import "time"
 // staged manifest waiting for its NotBefore (A4), and the time of the last
 // refresh (F1). The zero State has applied nothing. A State is not safe for
 // concurrent use.
-//
-// Applied and Pending return the stored pointers. Holders must not assign
-// through them; the Signed accessors already return copies.
 type State struct {
 	applied   *Signed
 	staged    *Signed
