@@ -42,7 +42,7 @@ import (
 // Pod annotations that drive sidecar injection.
 const (
 	// AnnotationWorkload opts a pod in to C8s injection. Required.
-	AnnotationWorkload = "confidential.ai/cw"
+	AnnotationWorkload = workloadclaims.AnnotationWorkload
 
 	// AnnotationInjected is stamped on pods after a successful mutation
 	// so re-invocations of the webhook are no-ops. Shared with the node's
@@ -86,7 +86,7 @@ const (
 	// AnnotationSecrets requests secrets for the pod, as a comma-separated
 	// list of NAME=/store/path. NAME is the file each value is written to
 	// under the secrets directory. Setting it injects the fetcher sidecar.
-	AnnotationSecrets = "confidential.ai/c8s-secrets"
+	AnnotationSecrets = workloadclaims.AnnotationSecrets
 	// AnnotationSecretDir once moved the secrets directory. It is refused
 	// unless it names the fixed one; see pinnedDestinations.
 	AnnotationSecretDir = "confidential.ai/c8s-secret-dir"
@@ -136,9 +136,9 @@ const secretsVolumeName = "c8s-secrets"
 // cannot move them.
 const (
 	// certDir is where the cert volume is mounted.
-	certDir = "/etc/c8s/certs"
+	certDir = workloadclaims.CertDir
 	// defaultSecretDir is where the fetcher writes, matching its own default.
-	defaultSecretDir = "/run/c8s/secrets"
+	defaultSecretDir = workloadclaims.SecretDir
 	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
 	discoveryMountPath = "/run/c8s/discovery"
 	// reloadWatchMountPath is where get-cert mounts the pod's reload-watch
