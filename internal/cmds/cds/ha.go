@@ -12,7 +12,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,8 +21,8 @@ import (
 	"time"
 
 	"github.com/spf13/pflag"
-	"k8s.io/client-go/kubernetes"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/nodeservices"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
@@ -138,7 +137,9 @@ func newReplica(cfg config) (*cdsha.Replica, error) {
 	if err != nil {
 		return nil, err
 	}
-	kube, err := haKubeClient(cfg.kubeconfig)
+	// In-cluster credentials only, as for the node inventory: a pod-chosen
+	// kubeconfig could load an exec credential plugin.
+	kube, err := newInClusterKubeClientset()
 	if err != nil {
 		return nil, err
 	}
@@ -219,13 +220,6 @@ func loadHAConfigFile(h *haConfig) error {
 	h.clusterID, h.pins = c.ClusterID, []string{pin}
 	h.operatorKeyPEM = []byte(c.DecreeKey)
 	return nil
-}
-
-func haKubeClient(kubeconfig string) (kubernetes.Interface, error) {
-	if kubeconfig != "" {
-		return newKubeClientsetFromFile(kubeconfig)
-	}
-	return newInClusterKubeClientset()
 }
 
 // dnsPeers resolves the headless Service on every call (L2), dropping self.
@@ -315,7 +309,10 @@ func haChallengeKey(rep *cdsha.Replica, purpose string) func() []byte {
 		if err != nil {
 			return nil
 		}
-		secret := ca.Key.D.FillBytes(make([]byte, (ca.Key.Curve.Params().BitSize+7)/8))
+		secret, err := ca.Key.Bytes()
+		if err != nil {
+			return nil
+		}
 		key, err := hkdf.Key(sha256.New, secret, nil, "c8s-cds-ha-challenge-v1/"+purpose, 32)
 		if err != nil {
 			return nil
