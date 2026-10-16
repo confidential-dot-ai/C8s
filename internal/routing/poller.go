@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
-	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
 // firstApplyBackoff is the first retry delay before any manifest is applied.
@@ -54,7 +53,7 @@ func (p *Poller) Run(ctx context.Context) {
 		err := p.Poll(ctx)
 		if err != nil && ctx.Err() == nil {
 			p.log.Warn("route manifest poll failed; keeping the applied manifest",
-				"error", err, "applied", p.cfg.State.Current() != nil, "stale", p.cfg.State.Status() == routes.Stale)
+				"error", err, "applied", p.cfg.State.Current() != nil, "stale", p.cfg.State.Stale())
 		}
 		wait := p.cfg.Interval
 		if p.cfg.State.Current() == nil && backoff < wait {

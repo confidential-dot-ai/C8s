@@ -98,7 +98,7 @@ func TestA4W4StagedRevisionBounds(t *testing.T) {
 			}
 		})
 	}
-	if f.state.Status() != routes.Stale {
+	if !f.state.Stale() {
 		t.Fatal("Stale() = false after maxAgeSeconds of refused manifests, want true (F1)")
 	}
 	// Refetching the applied revision left the staged one in place (A3).
@@ -140,7 +140,7 @@ func TestA4NotBeforeKeepsTableAndRefreshes(t *testing.T) {
 	// 50s after the staged fetch is 100s after the apply: fresh only because
 	// the staged fetch counted as a refresh.
 	f.clock.Advance(50 * time.Second)
-	if f.state.Status() == routes.Stale {
+	if f.state.Stale() {
 		t.Fatal("Stale() = true 50s after verifying a staged newer revision, want false (A4, F1)")
 	}
 
@@ -202,11 +202,11 @@ func TestF1F2F3Freshness(t *testing.T) {
 	f.apply(t, m)
 
 	f.clock.Advance(59 * time.Second)
-	if f.state.Status() == routes.Stale {
+	if f.state.Stale() {
 		t.Fatal("Stale() = true before maxAgeSeconds, want false")
 	}
 	f.clock.Advance(time.Second)
-	if f.state.Status() != routes.Stale {
+	if !f.state.Stale() {
 		t.Fatal("Stale() = false at maxAgeSeconds since the last refresh, want true (F1)")
 	}
 	if _, err := f.state.Session(); !errors.Is(err, ErrStale) {
@@ -220,7 +220,7 @@ func TestF1F2F3Freshness(t *testing.T) {
 	if _, err := f.state.Accept(f.op.sign(t, []byte("{}")), f.op.keys); err == nil {
 		t.Fatal("Accept(invalid) = nil, want an error")
 	}
-	if f.state.Status() != routes.Stale {
+	if !f.state.Stale() {
 		t.Fatal("Stale() = false after a failed fetch, want true")
 	}
 
@@ -228,7 +228,7 @@ func TestF1F2F3Freshness(t *testing.T) {
 	if err != nil || outcome != OutcomeUnchanged {
 		t.Fatalf("Accept(same revision and digest) = %v, %v, want %v, nil", outcome, err, OutcomeUnchanged)
 	}
-	if f.state.Status() == routes.Stale {
+	if f.state.Stale() {
 		t.Fatal("Stale() = true after a successful fetch of the same revision, want false (F3)")
 	}
 	if _, err := f.state.Session(); err != nil {
@@ -383,7 +383,41 @@ func TestB3A4StagedFetchRechecksApplied(t *testing.T) {
 			t.Fatal("Accept(staged, applied anchor now a mesh CA) = nil, want an error (B3)")
 		}
 	}
-	if f.state.Status() != routes.Stale {
+	if !f.state.Stale() {
 		t.Fatal("Stale() = false after maxAgeSeconds of refused refreshes, want true (F1)")
+	}
+}
+
+// TestA4Staging: a staged manifest is replaced by a higher staged revision,
+// refetching it only refreshes (F3), and a staged manifest alone leaves the
+// State unapplied (A2).
+func TestA4Staging(t *testing.T) {
+	f := newFixture(t)
+	future := func(revision uint64, address string) manifestSpec {
+		m := simpleManifest(revision, address)
+		m.notBefore = f.clock.Now().Add(time.Hour)
+		m.maxAge = time.Minute
+		return m
+	}
+	accept := func(m manifestSpec, want Outcome) {
+		t.Helper()
+		if outcome, err := f.state.Accept(f.op.sign(t, m.bytes(t)), f.op.keys); err != nil || outcome != want {
+			t.Fatalf("Accept(revision %d) = %v, %v, want %v, nil", m.revision, outcome, err, want)
+		}
+	}
+	r2, r3 := future(2, "127.0.0.1:2"), future(3, "127.0.0.1:3")
+	accept(r2, OutcomeStaged)
+	if _, err := f.state.Session(); !errors.Is(err, ErrNotApplied) || f.state.Current() != nil || f.state.Stale() {
+		t.Fatalf("Session() with only a staged manifest = %v, want %v (A2)", err, ErrNotApplied)
+	}
+	accept(r3, OutcomeStaged)
+	accept(r3, OutcomeStaged)
+	if _, err := f.state.Accept(f.op.sign(t, r2.bytes(t)), f.op.keys); !errors.Is(err, routes.ErrRollback) {
+		t.Fatalf("Accept(revision 2 after staging 3) = %v, want %v", err, routes.ErrRollback)
+	}
+	f.clock.Advance(time.Hour)
+	accept(r3, OutcomeApplied)
+	if got := f.state.Current().Manifest.Revision; got != 3 {
+		t.Fatalf("Current() revision = %d, want 3", got)
 	}
 }
