@@ -516,11 +516,18 @@ true
 {{- define "router.launchDir" -}}/run/c8s-node/router{{- end -}}
 
 {{/*
-Where the nginx ConfigMap is mounted: nginx.conf, and the tls-cds.conf and
-tls-acme.conf snippets the launch file's tls.conf includes on a baked node
-(nodeservices.RouterTLSSnippetDir).
+Where nginx reads nginx.conf, and on a baked node the tls-cds.conf and
+tls-acme.conf snippets the launch file's tls.conf includes: the nginx
+ConfigMap, or on a baked node the image directory mkosi.sync installs them in
+(node-guest-image/c8s/mkosi.sync), mounted read-only from the measured /usr
+instead of a ConfigMap the control plane can edit.
 */}}
-{{- define "router.configDir" -}}/mnt/c8s-data/nginx{{- end -}}
+{{- define "router.configDir" -}}
+{{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
+{{- end -}}
+
+{{/* nodeservices.RouterTLSSnippetDir must equal it. */}}
+{{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
 
 {{/*
 ACME constants shared by the acme sidecar args, the deployment mounts, the

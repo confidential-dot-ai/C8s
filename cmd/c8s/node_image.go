@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -76,7 +77,7 @@ func newNodeImageCmd() *cobra.Command {
 	f.StringVar(&cfg.routerImageDigest, "router-image-digest", "", "digest of the nginx container image; empty uses the pinned chart default")
 	f.StringVar(&cfg.routerImageRepository, "router-image-repository", "", "nginx container repository; empty uses the chart default")
 	f.StringVar(&cfg.chartDir, "chart-dir", "", "chart source directory; empty uses the chart bundled in this binary")
-	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json and images.txt (required)")
+	f.StringVar(&cfg.outputDir, "output-dir", "", "directory for c8s-integration.yaml, allowlist-seed.json, images.txt and router-nginx/ (required)")
 	cmd.AddCommand(render)
 	return cmd
 }
@@ -179,17 +180,22 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.outputDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.outputDir, "router-nginx"), 0o755); err != nil {
 		return fmt.Errorf("create output directory: %w", err)
 	}
-	for _, artifact := range []struct {
+	type artifact struct {
 		name string
 		body []byte
-	}{
+	}
+	files := []artifact{
 		{"c8s-integration.yaml", artifacts.integration},
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
-	} {
+	}
+	for _, name := range routerNginxFiles {
+		files = append(files, artifact{filepath.Join("router-nginx", name), []byte(artifacts.routerNginx[name])})
+	}
+	for _, artifact := range files {
 		if err := os.WriteFile(filepath.Join(cfg.outputDir, artifact.name), artifact.body, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", artifact.name, err)
 		}
@@ -201,7 +207,13 @@ type nodeImageArtifacts struct {
 	integration []byte
 	seed        []byte
 	images      []string
+	routerNginx map[string]string
 }
+
+// routerNginxFiles are the c8s-router-nginx ConfigMap keys the image installs
+// in /usr/lib/c8s/router-nginx (the chart's router.bakedNginxDir), where the
+// baked router mounts them instead of the ConfigMap.
+var routerNginxFiles = []string{"nginx.conf", "tls-cds.conf", "tls-acme.conf"}
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
 // for host NRI bootstrap. Every workload image must be pinned and present in the
@@ -274,6 +286,12 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		case "ConfigMap":
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
 				return nil, err
+			}
+			if key == "ConfigMap/c8s-router-nginx" {
+				// Shipped as image files; a ConfigMap would only be an
+				// editable copy nothing mounts.
+				required[key] = true
+				continue
 			}
 		case "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 		default:
@@ -510,7 +528,7 @@ func kubeletArgv(argv []string) ([]string, error) {
 
 // collectConfigMapArtifact lifts the two ConfigMaps the build consumes as
 // files: the CDS bootstrap seed, which is written beside the manifests, and
-// the router's nginx.conf, which is only checked for being non-empty.
+// the router's nginx configuration (routerNginxFiles).
 func collectConfigMapArtifact(object unstructured.Unstructured, key, name string, artifacts *nodeImageArtifacts) error {
 	if key != "ConfigMap/c8s-cds-allowlist-seed" && key != "ConfigMap/c8s-router-nginx" {
 		return nil
@@ -521,8 +539,16 @@ func collectConfigMapArtifact(object unstructured.Unstructured, key, name string
 	}
 	if name == "c8s-cds-allowlist-seed" {
 		artifacts.seed = []byte(cm.Data["allowlist-seed.json"])
-	} else if cm.Data["nginx.conf"] == "" {
-		return fmt.Errorf("rendered nginx ConfigMap has no nginx.conf")
+		return nil
 	}
+	if len(cm.Data) != len(routerNginxFiles) {
+		return fmt.Errorf("rendered nginx ConfigMap has keys %v, want %v", slices.Sorted(maps.Keys(cm.Data)), routerNginxFiles)
+	}
+	for _, file := range routerNginxFiles {
+		if cm.Data[file] == "" {
+			return fmt.Errorf("rendered nginx ConfigMap has no %s", file)
+		}
+	}
+	artifacts.routerNginx = cm.Data
 	return nil
 }
