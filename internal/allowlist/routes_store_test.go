@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -11,8 +12,11 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
-func routesEnvelope(rev string) routes.Envelope {
-	return routes.Envelope{Manifest: []byte(`{"revision":` + rev + `}`), Token: "token-" + rev}
+// routesEnvelope returns a valid manifest at revision under a placeholder
+// token: the store checks no token.
+func routesEnvelope(revision uint64, token string) routes.Envelope {
+	m := fmt.Sprintf(`{"schema":"c8s.routes/v1","revision":%d,"notBefore":"2026-01-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`, revision)
+	return routes.Envelope{Manifest: []byte(m), Token: token}
 }
 
 func assertStoredRoutes(t *testing.T, s *Store, want routes.Envelope) {
@@ -37,6 +41,21 @@ func TestLoadRoutesEmpty(t *testing.T) {
 	}
 }
 
+// A manifest that does not parse carries no revision to store.
+func TestReplaceRoutesRefusesInvalidManifest(t *testing.T) {
+	s, err := OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.ReplaceRoutes(routes.Envelope{Manifest: []byte(`{"revision":2}`), Token: "t"}, ""); err == nil {
+		t.Fatal("ReplaceRoutes(invalid manifest) = nil, want error")
+	}
+	if _, err := s.LoadRoutes(); !errors.Is(err, ErrNoRoutes) {
+		t.Fatalf("LoadRoutes() error = %v, want ErrNoRoutes", err)
+	}
+}
+
 // C3, C4: the revision only rises, and a refused write leaves the stored
 // manifest whole.
 func TestReplaceRoutesRevisionMustRise(t *testing.T) {
@@ -46,19 +65,19 @@ func TestReplaceRoutesRevisionMustRise(t *testing.T) {
 	}
 	defer s.Close()
 
-	r2 := routesEnvelope("2")
-	if err := s.ReplaceRoutes(r2, 2, ""); err != nil {
+	r2 := routesEnvelope(2, "token-2")
+	if err := s.ReplaceRoutes(r2, ""); err != nil {
 		t.Fatalf("ReplaceRoutes(2) error = %v", err)
 	}
 	for _, rev := range []uint64{1, 2} {
-		if err := s.ReplaceRoutes(routesEnvelope("x"), rev, ""); !errors.Is(err, ErrRevisionNotGreater) {
+		if err := s.ReplaceRoutes(routesEnvelope(rev, "x"), ""); !errors.Is(err, ErrRevisionNotGreater) {
 			t.Fatalf("ReplaceRoutes(%d) error = %v, want ErrRevisionNotGreater", rev, err)
 		}
 	}
 	assertStoredRoutes(t, &s, r2)
 
-	r3 := routesEnvelope("3")
-	if err := s.ReplaceRoutes(r3, 3, ""); err != nil {
+	r3 := routesEnvelope(3, "token-3")
+	if err := s.ReplaceRoutes(r3, ""); err != nil {
 		t.Fatalf("ReplaceRoutes(3) error = %v", err)
 	}
 	assertStoredRoutes(t, &s, r3)
@@ -75,8 +94,8 @@ func TestReplaceRoutesPersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := routesEnvelope("7")
-	if err := s.ReplaceRoutes(want, 7, ""); err != nil {
+	want := routesEnvelope(7, "token-7")
+	if err := s.ReplaceRoutes(want, ""); err != nil {
 		t.Fatalf("ReplaceRoutes() error = %v", err)
 	}
 	if err := s.Close(); err != nil {
@@ -89,7 +108,7 @@ func TestReplaceRoutesPersistsAcrossReopen(t *testing.T) {
 	}
 	defer reopened.Close()
 	assertStoredRoutes(t, &reopened, want)
-	if err := reopened.ReplaceRoutes(routesEnvelope("x"), 7, ""); !errors.Is(err, ErrRevisionNotGreater) {
+	if err := reopened.ReplaceRoutes(routesEnvelope(7, "x"), ""); !errors.Is(err, ErrRevisionNotGreater) {
 		t.Fatalf("ReplaceRoutes(7) after reopen error = %v, want ErrRevisionNotGreater", err)
 	}
 }
@@ -97,7 +116,7 @@ func TestReplaceRoutesPersistsAcrossReopen(t *testing.T) {
 // C3: If-Match must name the stored manifest's route digest, and the revision
 // check comes first.
 func TestReplaceRoutesIfMatch(t *testing.T) {
-	r2 := routesEnvelope("2")
+	r2 := routesEnvelope(2, "token-2")
 	d := routes.Digest(r2.Manifest)
 	stored := hex.EncodeToString(d[:])
 	cases := []struct {
@@ -122,12 +141,12 @@ func TestReplaceRoutesIfMatch(t *testing.T) {
 			}
 			defer s.Close()
 			if tc.seed {
-				if err := s.ReplaceRoutes(r2, 2, ""); err != nil {
+				if err := s.ReplaceRoutes(r2, ""); err != nil {
 					t.Fatal(err)
 				}
 			}
-			r3 := routesEnvelope("3")
-			if err := s.ReplaceRoutes(r3, tc.revision, tc.ifMatch); !errors.Is(err, tc.want) {
+			r3 := routesEnvelope(tc.revision, "token-3")
+			if err := s.ReplaceRoutes(r3, tc.ifMatch); !errors.Is(err, tc.want) {
 				t.Fatalf("ReplaceRoutes(%d, %q) error = %v, want %v", tc.revision, tc.ifMatch, err, tc.want)
 			}
 			switch {

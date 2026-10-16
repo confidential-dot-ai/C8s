@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // hangingServer accepts the connection and never answers.
@@ -82,7 +84,7 @@ func TestListNonOKYieldsStatusError(t *testing.T) {
 	defer srv.Close()
 
 	_, _, err := NewClient(srv.URL).List(context.Background())
-	var se *StatusError
+	var se *operatorauth.StatusError
 	if !errors.As(err, &se) {
 		t.Fatalf("List error = %v (%T), want *StatusError", err, err)
 	}

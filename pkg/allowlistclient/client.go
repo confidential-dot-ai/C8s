@@ -119,8 +119,7 @@ func (c Client) fetch(ctx context.Context, ifNoneMatch string, raw *[]byte) (Ser
 		return Served{}, true, nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		body, _ := readCapped(resp.Body, maxAllowlistResponseBytes)
-		return Served{}, false, &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(body))}
+		return Served{}, false, operatorauth.ResponseError(resp)
 	}
 	if ct := resp.Header.Get("Content-Type"); !isJSONContentType(ct) {
 		return Served{}, false, fmt.Errorf("fetch allowlist: unexpected content type: %s", ct)
@@ -160,7 +159,8 @@ func (c Client) PutWorkload(ctx context.Context, name string, w allowlist.Worklo
 	return c.mutate(ctx, http.MethodPut, "/allowlist/workloads/"+url.PathEscape(name), data, auth)
 }
 
-// DeleteWorkload removes one named workload entry. Returns a 404 StatusError if
+// DeleteWorkload removes one named workload entry. Returns a 404
+// *operatorauth.StatusError if
 // it is absent.
 func (c Client) DeleteWorkload(ctx context.Context, name string, auth Authorizer) error {
 	return c.mutate(ctx, http.MethodDelete, "/allowlist/workloads/"+url.PathEscape(name), nil, auth)
@@ -187,8 +187,7 @@ func (c Client) mutate(ctx context.Context, method, path string, body []byte, au
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
+		return operatorauth.ResponseError(resp)
 	}
 	io.Copy(io.Discard, resp.Body)
 	return nil
@@ -236,17 +235,4 @@ func readCapped(r io.Reader, maxBytes int64) ([]byte, error) {
 		return nil, fmt.Errorf("read response body: %w", err)
 	}
 	return body, nil
-}
-
-// StatusError represents a non-success HTTP response.
-type StatusError struct {
-	Status int
-	Body   string
-}
-
-func (e *StatusError) Error() string {
-	if e.Body != "" {
-		return fmt.Sprintf("server returned %d: %s", e.Status, e.Body)
-	}
-	return fmt.Sprintf("server returned %d", e.Status)
 }

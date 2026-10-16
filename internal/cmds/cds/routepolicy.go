@@ -69,7 +69,7 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 	}
 	// Authorize accepted exactly this header, so the token is well formed.
 	token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	err = h.Store.ReplaceRoutes(routes.Envelope{Manifest: body, Token: token}, m.Revision, r.Header.Get("If-Match"))
+	err = h.Store.ReplaceRoutes(routes.Envelope{Manifest: body, Token: token}, r.Header.Get("If-Match"))
 	if errors.Is(err, allowlist.ErrRevisionNotGreater) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
