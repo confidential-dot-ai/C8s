@@ -46,10 +46,12 @@ const (
 // public HTTP challenge paths reach this router. Account key and issued key/cert live under --cert-dir only.
 type manager struct {
 	directoryURL string
-	email        string
-	dir          string // --cert-dir
-	domains      []string
-	log          *slog.Logger
+	// directoryClient dials the ACME CA; nil uses the system roots.
+	directoryClient *http.Client
+	email           string
+	dir             string // --cert-dir
+	domains         []string
+	log             *slog.Logger
 	// onInstall fires after a certificate lands on disk (nginx reload).
 	onInstall func()
 	// httpPort is nginx's :80 server on pod loopback, probed before any CA
@@ -250,7 +252,7 @@ func (m *manager) acmeClient(ctx context.Context) (*acme.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	client := &acme.Client{Key: key, DirectoryURL: m.directoryURL}
+	client := &acme.Client{Key: key, DirectoryURL: m.directoryURL, HTTPClient: m.directoryClient}
 	account := &acme.Account{}
 	if m.email != "" {
 		account.Contact = []string{"mailto:" + m.email}

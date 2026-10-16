@@ -81,6 +81,9 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"router acme directory", Server, func(d *Document) {
 			d.Router = &Router{Hostnames: []string{"a.example.com"}, ACMEDirectoryURL: "http://acme.example/dir"}
 		}, "router.acmeDirectoryURL"},
+		{"router acme ca", Server, func(d *Document) {
+			d.Router = &Router{Hostnames: []string{"a.example.com"}, ACMECA: "not a certificate"}
+		}, "router.acmeCA"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

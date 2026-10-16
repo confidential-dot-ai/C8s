@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"crypto/sha512"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -85,6 +86,9 @@ type Router struct {
 	Hostnames        []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
 	ACMEEmail        string   `yaml:"acmeEmail,omitempty" json:"acme_email,omitempty"`
 	ACMEDirectoryURL string   `yaml:"acmeDirectoryURL,omitempty" json:"acme_directory_url,omitempty"`
+	// ACMECA holds PEM roots the router trusts for the ACME directory's TLS,
+	// beside the system roots: a test CA such as pebble. Production omits it.
+	ACMECA string `yaml:"acmeCA,omitempty" json:"acme_ca,omitempty"`
 }
 
 // meshWrappedUpstreamRE is the chart's router.meshWrappedUpstream rule: the
@@ -145,8 +149,13 @@ func (r *Router) validate() error {
 		}
 		seen[name] = true
 	}
-	if len(r.Hostnames) == 0 && (r.ACMEEmail != "" || r.ACMEDirectoryURL != "") {
-		return fmt.Errorf("router.acmeEmail and router.acmeDirectoryURL require router.hostnames")
+	if len(r.Hostnames) == 0 && (r.ACMEEmail != "" || r.ACMEDirectoryURL != "" || r.ACMECA != "") {
+		return fmt.Errorf("router.acmeEmail, router.acmeDirectoryURL and router.acmeCA require router.hostnames")
+	}
+	if r.ACMECA != "" {
+		if pool := x509.NewCertPool(); !pool.AppendCertsFromPEM([]byte(r.ACMECA)) {
+			return fmt.Errorf("router.acmeCA must hold PEM certificates")
+		}
 	}
 	if r.ACMEEmail != "" {
 		addr, err := mail.ParseAddress(r.ACMEEmail)

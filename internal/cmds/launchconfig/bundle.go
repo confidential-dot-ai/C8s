@@ -58,6 +58,7 @@ type BundleOptions struct {
 	Agents        []string
 	TLSSAN        string
 	WorkloadsPath string
+	ACMECAPath    string
 	Router        Router
 }
 
@@ -89,6 +90,13 @@ func NewBundle(opts BundleOptions) (err error) {
 			return err
 		}
 		workloads = string(data)
+	}
+	if opts.ACMECAPath != "" {
+		data, err := readBounded(opts.ACMECAPath, MaxDocumentSize)
+		if err != nil {
+			return err
+		}
+		opts.Router.ACMECA = string(data)
 	}
 	if err := os.Mkdir(opts.Dir, 0o700); err != nil {
 		return fmt.Errorf("create bundle directory: %w", err)
@@ -126,7 +134,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
 	}
-	if opts.Router.Upstream != "" || len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" {
+	if opts.Router.Upstream != "" || len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.ACMECA != "" {
 		router := opts.Router
 		server.Router = &router
 	}

@@ -678,6 +678,7 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args (printf "--domains-file=%s/hostnames" $dir) -}}
 {{- $args = append $args (printf "--acme-email-file=%s/acme-email" $dir) -}}
 {{- $args = append $args (printf "--acme-directory-url-file=%s/acme-directory-url" $dir) -}}
+{{- $args = append $args (printf "--acme-ca-file=%s/acme-ca.pem" $dir) -}}
 {{- $args = append $args (printf "--standby-cert-dir=%s" .Values.router.tlsMountPath) -}}
 {{- else -}}
 {{- $args = append $args (printf "--domains=%s" (include "router.sanList" . | fromJsonArray | join ",")) -}}
