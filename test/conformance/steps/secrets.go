@@ -289,11 +289,19 @@ func operatorWritesEntry(ctx context.Context, name string) error {
 	return getWorld(ctx).rewriteEntry(name)
 }
 
+// operatorAddsGrant writes the entry with the grant through the operator's
+// write path, which records the status: a grant the CDS refuses is a result
+// the sentences after it read, not a broken harness.
 func operatorAddsGrant(ctx context.Context, name, action, p string) error {
 	if err := grantAllows(ctx, name, action, p); err != nil {
 		return err
 	}
-	return getWorld(ctx).rewriteEntry(name)
+	w := getWorld(ctx)
+	e, err := w.entry(name)
+	if err != nil {
+		return err
+	}
+	return w.writeEntryWithGrant(name, e.Secrets)
 }
 
 func operatorRemovesGrant(ctx context.Context, name string) error {
