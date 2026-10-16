@@ -47,6 +47,24 @@ func (i *Index) AdmitsDigest(digest string) bool {
 	return ok
 }
 
+// NeedsVariableEvidence reports whether some entry listing digest has a match
+// env policy, the only reader of EnvObservation.VariableDigests.
+func (i *Index) NeedsVariableEvidence(digest string) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(digest)
+	if err != nil {
+		return false
+	}
+	for _, c := range i.byDigest[d.String()] {
+		if c.Env.Policy == PolicyMatch {
+			return true
+		}
+	}
+	return false
+}
+
 // AdmitsContainer reports whether an observed container may run. Admission is
 // the union across every entry that lists the digest: the observation must
 // satisfy some declared container's argv, mount and env policy together.

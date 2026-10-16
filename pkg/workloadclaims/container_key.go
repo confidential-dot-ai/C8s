@@ -17,7 +17,8 @@ func (c SandboxContainer) Key() string {
 	if c.Env == nil {
 		key.WriteString("nil")
 	} else {
-		fmt.Fprintf(&key, "{%q %q}", c.Env.Format, c.Env.Digest)
+		// The aggregate digest fixes the per-variable digests.
+		fmt.Fprintf(&key, "{%q %q %t}", c.Env.Format, c.Env.Digest, c.Env.VariableDigestsEvicted)
 	}
 	key.WriteString(" mounts=")
 	if c.Mounts == nil {

@@ -710,41 +710,62 @@ func TestEntryWithoutGrantRefused(t *testing.T) {
 	}
 }
 
-// A grant on an entry that leaves a container's argv unconstrained is refused
-// at release, whatever the write path let through: the value would go to
-// whatever command line the host chose.
+// A grant on an entry that leaves a container's argv or mounts to the host is
+// refused at release, whatever the write path let through: the value would go
+// to whatever command line the host chose, or beside a volume it added.
 func TestGrantOnUnpinnedEntryRefused(t *testing.T) {
-	hn := newHarness(t)
-	var log bytes.Buffer
-	hn.h.Logger = slog.New(slog.NewTextHandler(&log, nil))
-	hn.h.Policy = fakePolicy{al: &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s": anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
-		"api": {
-			Containers: []pkgallowlist.Container{
-				{
-					Digest:  mustDigest(t, testAppImg),
-					Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/serve"}},
-					Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
-				},
-				{
-					Digest:  mustDigest(t, testAppImg2),
-					Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
-					Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
-				},
+	for name, tc := range map[string]struct {
+		metrics pkgallowlist.Container
+		want    string
+	}{
+		"args any": {
+			metrics: pkgallowlist.Container{
+				Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
+				Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
 			},
-			Secrets: &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"/api/**"}},
+			want: "command and args policy",
 		},
-	}}}
-	stored := []byte("stored-secret")
-	hn.seed(t, "/api/db", stored)
+		"mounts any": {
+			metrics: pkgallowlist.Container{
+				Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
+				Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
+				Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+			},
+			want: "mounts policy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			var log bytes.Buffer
+			hn.h.Logger = slog.New(slog.NewTextHandler(&log, nil))
+			metrics := tc.metrics
+			metrics.Digest = mustDigest(t, testAppImg2)
+			hn.h.Policy = fakePolicy{al: &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
+				"c8s": anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+				"api": {
+					Containers: []pkgallowlist.Container{
+						{
+							Digest:  mustDigest(t, testAppImg),
+							Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/serve"}},
+							Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
+						},
+						metrics,
+					},
+					Secrets: &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"/api/**"}},
+				},
+			}}}
+			stored := []byte("stored-secret")
+			hn.seed(t, "/api/db", stored)
 
-	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("unpinned entry with a grant = %d, want 403", w.Code)
-	}
-	assertNoRelease(t, w, stored)
-	if !strings.Contains(log.String(), "unconstrained") {
-		t.Fatalf("refusal did not name the unpinned argv:\n%s", log.String())
+			w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("unpinned entry with a grant = %d, want 403", w.Code)
+			}
+			assertNoRelease(t, w, stored)
+			if !strings.Contains(log.String(), tc.want) {
+				t.Fatalf("refusal did not name the unpinned field %q:\n%s", tc.want, log.String())
+			}
+		})
 	}
 }
 
@@ -1101,6 +1122,45 @@ func TestSecretReleaseEnforcesEnvEvidence(t *testing.T) {
 	}
 }
 
+func TestSecretReleaseEnforcesMixedEnvironmentMatchers(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		env    []string
+		legacy bool
+		want   int
+	}{
+		{"matches", []string{"MODE=production", "GPU_SERIAL=one"}, false, http.StatusCreated},
+		{"changed present", []string{"MODE=production", "GPU_SERIAL=two"}, false, http.StatusCreated},
+		{"empty present", []string{"MODE=production", "GPU_SERIAL="}, false, http.StatusCreated},
+		{"changed exact", []string{"MODE=unsafe", "GPU_SERIAL=one"}, false, http.StatusForbidden},
+		{"missing", []string{"MODE=production"}, false, http.StatusForbidden},
+		{"extra", []string{"MODE=production", "GPU_SERIAL=one", "LD_PRELOAD=unsafe"}, false, http.StatusForbidden},
+		{"old evidence", []string{"MODE=production", "GPU_SERIAL=one"}, true, http.StatusForbidden},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hn := newHarness(t)
+			al := hn.h.Policy.(fakePolicy).al
+			var policy pkgallowlist.EnvPolicy
+			if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"exact":"production"},"GPU_SERIAL":{"present":true}}}`), &policy); err != nil {
+				t.Fatal(err)
+			}
+			al.Workloads["api"].Containers[0].Env = policy
+			observation, err := pkgallowlist.ObserveEnv(tc.env)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.legacy {
+				observation.VariableDigests = nil
+			}
+			hn.inv.containers[0].Env = observation
+			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
+			if w.Code != tc.want {
+				t.Fatalf("status=%d body=%s, want %d", w.Code, w.Body, tc.want)
+			}
+		})
+	}
+}
+
 func TestSecretReleaseEnforcesMountEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1122,5 +1182,81 @@ func TestSecretReleaseEnforcesMountEvidence(t *testing.T) {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body)
 			}
 		})
+	}
+}
+
+// A drop decision uses the admitting container's complete mount policy, not its
+// open arguments combined with a per-mount storage predicate or with another
+// entry's mount policy.
+func TestInjectedDropRequiresSameEntryMountPolicy(t *testing.T) {
+	memory := func(path string) pkgallowlist.ObservedMount {
+		return pkgallowlist.ObservedMount{Destination: path, Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}
+	}
+	sidecar := func() pkgallowlist.Workload {
+		entry := componentEntry(t, testInjected, "c8s")
+		entry.Containers[0].Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: []pkgallowlist.MountRule{{Destination: "/out", Kind: pkgallowlist.MountEmptyDir}}}
+		return entry
+	}
+	for _, tc := range []struct {
+		name   string
+		mounts []pkgallowlist.ObservedMount
+		want   bool
+	}{
+		{"listed secret volume", []pkgallowlist.ObservedMount{memory("/out")}, true},
+		{"binary replaced", []pkgallowlist.ObservedMount{memory("/out"), memory("/c8s")}, false},
+		{"unlisted dependency replaced", []pkgallowlist.ObservedMount{memory("/out"), memory("/etc/ssl")}, false},
+		{"nested volume", []pkgallowlist.ObservedMount{memory("/out"), memory("/out/child")}, false},
+		{"listed volume missing", []pkgallowlist.ObservedMount{}, false},
+		{"missing evidence", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"component": sidecar()}}
+			c := workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Mounts: tc.mounts}
+			if got := isInjected(al, c); got != tc.want {
+				t.Fatalf("isInjected(%v) = %v, want %v", tc.mounts, got, tc.want)
+			}
+			// An entry with pinned args and open mounts cannot supply the mount
+			// half of a decision whose open args came from the first.
+			second := componentEntry(t, testInjected, "c8s")
+			second.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-secret"}}
+			al.Workloads["other"] = second
+			if got := isInjected(al, c); got != tc.want {
+				t.Fatalf("isInjected(%v) with a second entry = %v, want %v", tc.mounts, got, tc.want)
+			}
+		})
+	}
+	// Even a rule listing it cannot exempt a secret-fetching container with a
+	// writable host mount from workload matching.
+	entry := sidecar()
+	entry.Containers[0].Mounts.Rules = []pkgallowlist.MountRule{{Destination: "/out", Kind: pkgallowlist.MountHost, Source: "/var/out"}}
+	al := &pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"component": entry}}
+	digest, err := pkgallowlist.HostSourceDigest("/var/out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Mounts: []pkgallowlist.ObservedMount{{Destination: "/out", Class: pkgallowlist.MountHost, HostSourceDigest: digest}}}
+	if isInjected(al, c) {
+		t.Fatal("a listed writable host mount exempted the container from matching")
+	}
+}
+
+func TestInjectedDropRequiresSameEntryEnvironment(t *testing.T) {
+	entry := componentEntry(t, testInjected, "c8s")
+	entry.Containers[0].Env = pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyExact, Values: map[string]string{"MODE": "trusted"}}
+	other := componentEntry(t, testInjected, "c8s")
+	other.Containers[0].Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"get-secret"}}
+	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"open": entry, "pinned": other}}
+	if err := al.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"trusted", "operator"} {
+		env, err := pkgallowlist.ObserveEnv([]string{"MODE=" + value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		c := workloadclaims.SandboxContainer{Digest: testInjected, Argv: []string{"/c8s", "get-secret"}, Env: env, Mounts: []pkgallowlist.ObservedMount{}}
+		if got := isInjected(al, c); got != (value == "trusted") {
+			t.Fatalf("isInjected(MODE=%s) = %v, want %v", value, got, value == "trusted")
+		}
 	}
 }

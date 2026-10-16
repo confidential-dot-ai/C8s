@@ -1,3 +1,170 @@
+{{- define "c8s.attestationApiPodSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
+serviceAccountName: {{ include "c8s.attestationApiName" . }}
+tolerations:
+  - operator: Exists
+containers:
+  - name: attestation-api
+    image: {{ include "c8s.attestationApiImage" . }}
+    imagePullPolicy: {{ .Values.attestationApi.image.pullPolicy }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "attestationApi.image") }}
+    args: [--config, /mnt/c8s-data/attestation-api/config.toml]
+    ports:
+      - name: http
+        containerPort: {{ .Values.attestationApi.port }}
+    securityContext:
+      {{- if has .Values.attestationApi.cvmMode (list "bare-metal" "gke" "aks") }}
+      # All modes need privileged. A hostPath device mount does NOT add a
+      # device-cgroup rule, so open(/dev/sev-guest|/dev/tdx-guest|/dev/tpm0)
+      # is EPERM from an unprivileged container regardless of SYS_RAWIO
+      # (cgroup v2 eBPF device controller; K8s has no securityContext field
+      # for a single device rule). TODO: drop privileged by routing SNP/TDX
+      # attest through the TSM configfs report interface
+      # (/sys/kernel/config/tsm/report), which is a filesystem and not
+      # device-cgroup gated.
+      privileged: true
+      readOnlyRootFilesystem: true
+      # Seccomp is independent of privileged: even a privileged container
+      # keeps a syscall filter, and the attestation-api makes only normal
+      # syscalls. RuntimeDefault narrows the kernel surface (this container
+      # is the widest on the node) and matches every other component.
+      # runAsNonRoot/cap-drop are moot while privileged, so this is the one
+      # substantive hardening available until the configfs path lands.
+      seccompProfile:
+        type: RuntimeDefault
+      {{- else }}
+{{ fail (printf "attestationApi.cvmMode must be one of bare-metal, gke, aks (got %q)" .Values.attestationApi.cvmMode) }}
+      {{- end }}
+    # The API's health signal is the attest-proxy's HTTP probe: the API
+    # binds pod loopback, which kubelet cannot dial.
+    volumeMounts:
+      - name: config
+        mountPath: /mnt/c8s-data/attestation-api
+        readOnly: true
+      {{- if .Values.attestationApi.teeDevices.sevGuest }}
+      - name: sev-guest
+        mountPath: /dev/sev-guest
+      {{- end }}
+      {{- if .Values.attestationApi.teeDevices.tdxGuest }}
+      # Intel TDX quote generation. On a bare-metal TDX host,
+      # /dev/tdx-guest DOES NOT EXIST — that's a guest-side device
+      # only present inside a TDX VM. The host path is the kernel
+      # ConfigFS TSM interface at /sys/kernel/config/tsm/report,
+      # populated by CONFIG_TSM_REPORTS. Mount /sys/kernel/config so
+      # attestation-api (built with `tdx_quote_method = "auto"`, or
+      # explicit "configfs") can read report attributes to request
+      # TDX quotes through QGS.
+      - name: tdx-tsm-configfs
+        mountPath: /sys/kernel/config
+      {{- end }}
+      {{- if .Values.attestationApi.teeDevices.tpm }}
+      - name: tpm
+        mountPath: /dev/tpm0
+      - name: tpmrm
+        mountPath: /dev/tpmrm0
+      {{- end }}
+    resources:
+{{ toYaml .Values.attestationApi.resources | indent 6 }}
+  # The on-node front door: publishes the pod-loopback API on a
+  # hostPath Unix socket next to the admission inventory's socket, so
+  # exactly host processes and pods the socket dir is mounted into can
+  # request evidence.
+  - name: attest-proxy
+    image: {{ include "c8s.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
+    args:
+      - attest-proxy
+      - --socket={{ include "c8s.attestationApiSocket" . }}
+      - --upstream=http://127.0.0.1:{{ .Values.attestationApi.port }}
+      - --health-addr=:{{ .Values.attestationApi.proxy.healthPort }}
+    ports:
+      - name: health
+        containerPort: {{ .Values.attestationApi.proxy.healthPort }}
+    # uid 0 so the socket is root-owned (callers reject a socket owned
+    # by anyone but root or themselves); runAsGroup is the socket's
+    # group so the chgrp needs no CAP_CHOWN.
+    securityContext:
+      runAsUser: 0
+      runAsGroup: 65532
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      capabilities:
+        drop: [ALL]
+      seccompProfile:
+        type: RuntimeDefault
+    # HTTP, not exec: a locked node image denies every runc exec, so an
+    # exec probe can never pass there (c8s internal/cmds/c8srunc). The
+    # handler runs the same check the `attest-proxy healthcheck`
+    # subcommand does — a /health round-trip over the proxy's own socket —
+    # so one probe still covers socket, proxy and upstream.
+    readinessProbe:
+      httpGet:
+        path: /healthz
+        port: health
+      initialDelaySeconds: 2
+      # Above the healthcheck's internal 3s budget (kubelet default is 1s).
+      timeoutSeconds: 5
+    livenessProbe:
+      httpGet:
+        path: /healthz
+        port: health
+      periodSeconds: 30
+      timeoutSeconds: 5
+    volumeMounts:
+      - name: config
+        mountPath: /mnt/c8s-data/attestation-api
+        readOnly: true
+      - name: socket-dir
+        mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+    resources:
+{{ toYaml .Values.attestationApi.proxy.resources | indent 6 }}
+volumes:
+  - name: config
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.attestationApiName" . }}
+  # hostPath.type=CharDevice forces a hard failure on nodes that
+  # lack the device, instead of silently mounting an empty file —
+  # attestation evidence would then be silently bogus. Toggle each
+  # device individually based on the host hardware shape.
+  {{- if .Values.attestationApi.teeDevices.sevGuest }}
+  - name: sev-guest
+    hostPath:
+      path: /dev/sev-guest
+      type: CharDevice
+  {{- end }}
+  {{- if .Values.attestationApi.teeDevices.tdxGuest }}
+  # See volumeMount comment above: on host mode we mount
+  # /sys/kernel/config for the TSM ConfigFS report interface, NOT
+  # /dev/tdx-guest (which is guest-side only). Directory type keeps
+  # the same "hard fail on missing" semantics as CharDevice — a host
+  # without CONFIG_TSM_REPORTS won't have this path and the pod will
+  # fail cleanly instead of silently generating bogus evidence.
+  - name: tdx-tsm-configfs
+    hostPath:
+      path: /sys/kernel/config
+      type: Directory
+  {{- end }}
+  {{- if .Values.attestationApi.teeDevices.tpm }}
+  - name: tpm
+    hostPath:
+      path: /dev/tpm0
+      type: CharDevice
+  - name: tpmrm
+    hostPath:
+      path: /dev/tpmrm0
+      type: CharDevice
+  {{- end }}
+  # Shared with the admission inventory — see c8s.attestationApiSocket.
+  - name: socket-dir
+    hostPath:
+      path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+      type: DirectoryOrCreate
+{{- end -}}
+
 {{- if .Values.attestationApi.enabled }}
 apiVersion: v1
 kind: ServiceAccount
@@ -44,164 +211,7 @@ spec:
       annotations:
         checksum/config: {{ include "c8s.attestationApiConfig" (dict "root" .) | sha256sum }}
     spec:
-      serviceAccountName: {{ include "c8s.attestationApiName" . }}
-      tolerations:
-        - operator: Exists
-      containers:
-        - name: attestation-api
-          image: {{ include "c8s.attestationApiImage" . }}
-          imagePullPolicy: {{ .Values.attestationApi.image.pullPolicy }}
-          args: [--config, /etc/attestation-api/config.toml]
-          ports:
-            - name: http
-              containerPort: {{ .Values.attestationApi.port }}
-          securityContext:
-            {{- if has .Values.attestationApi.cvmMode (list "bare-metal" "gke" "aks") }}
-            # All modes need privileged. A hostPath device mount does NOT add a
-            # device-cgroup rule, so open(/dev/sev-guest|/dev/tdx-guest|/dev/tpm0)
-            # is EPERM from an unprivileged container regardless of SYS_RAWIO
-            # (cgroup v2 eBPF device controller; K8s has no securityContext field
-            # for a single device rule). TODO: drop privileged by routing SNP/TDX
-            # attest through the TSM configfs report interface
-            # (/sys/kernel/config/tsm/report), which is a filesystem and not
-            # device-cgroup gated.
-            privileged: true
-            readOnlyRootFilesystem: true
-            # Seccomp is independent of privileged: even a privileged container
-            # keeps a syscall filter, and the attestation-api makes only normal
-            # syscalls. RuntimeDefault narrows the kernel surface (this container
-            # is the widest on the node) and matches every other component.
-            # runAsNonRoot/cap-drop are moot while privileged, so this is the one
-            # substantive hardening available until the configfs path lands.
-            seccompProfile:
-              type: RuntimeDefault
-            {{- else }}
-{{ fail (printf "attestationApi.cvmMode must be one of bare-metal, gke, aks (got %q)" .Values.attestationApi.cvmMode) }}
-            {{- end }}
-          # The API's health signal is the attest-proxy's HTTP probe: the API
-          # binds pod loopback, which kubelet cannot dial.
-          volumeMounts:
-            - name: config
-              mountPath: /etc/attestation-api
-              readOnly: true
-            {{- if .Values.attestationApi.teeDevices.sevGuest }}
-            - name: sev-guest
-              mountPath: /dev/sev-guest
-            {{- end }}
-            {{- if .Values.attestationApi.teeDevices.tdxGuest }}
-            # Intel TDX quote generation. On a bare-metal TDX host,
-            # /dev/tdx-guest DOES NOT EXIST — that's a guest-side device
-            # only present inside a TDX VM. The host path is the kernel
-            # ConfigFS TSM interface at /sys/kernel/config/tsm/report,
-            # populated by CONFIG_TSM_REPORTS. Mount /sys/kernel/config so
-            # attestation-api (built with `tdx_quote_method = "auto"`, or
-            # explicit "configfs") can read report attributes to request
-            # TDX quotes through QGS.
-            - name: tdx-tsm-configfs
-              mountPath: /sys/kernel/config
-            {{- end }}
-            {{- if .Values.attestationApi.teeDevices.tpm }}
-            - name: tpm
-              mountPath: /dev/tpm0
-            - name: tpmrm
-              mountPath: /dev/tpmrm0
-            {{- end }}
-          resources:
-{{ toYaml .Values.attestationApi.resources | indent 12 }}
-        # The on-node front door: publishes the pod-loopback API on a
-        # hostPath Unix socket next to the admission inventory's socket, so
-        # exactly host processes and pods the socket dir is mounted into can
-        # request evidence.
-        - name: attest-proxy
-          image: {{ include "c8s.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args:
-            - attest-proxy
-            - --socket={{ include "c8s.attestationApiSocket" . }}
-            - --upstream=http://127.0.0.1:{{ .Values.attestationApi.port }}
-            - --health-addr=:{{ .Values.attestationApi.proxy.healthPort }}
-          ports:
-            - name: health
-              containerPort: {{ .Values.attestationApi.proxy.healthPort }}
-          # uid 0 so the socket is root-owned (callers reject a socket owned
-          # by anyone but root or themselves); runAsGroup is the socket's
-          # group so the chgrp needs no CAP_CHOWN.
-          securityContext:
-            runAsUser: 0
-            runAsGroup: 65532
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            capabilities:
-              drop: [ALL]
-            seccompProfile:
-              type: RuntimeDefault
-          # HTTP, not exec: a locked node image denies every runc exec, so an
-          # exec probe can never pass there (c8s internal/cmds/c8srunc). The
-          # handler runs the same check the `attest-proxy healthcheck`
-          # subcommand does — a /health round-trip over the proxy's own socket —
-          # so one probe still covers socket, proxy and upstream.
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: health
-            initialDelaySeconds: 2
-            # Above the healthcheck's internal 3s budget (kubelet default is 1s).
-            timeoutSeconds: 5
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: health
-            periodSeconds: 30
-            timeoutSeconds: 5
-          volumeMounts:
-            - name: config
-              mountPath: /etc/attestation-api
-              readOnly: true
-            - name: socket-dir
-              mountPath: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-          resources:
-{{ toYaml .Values.attestationApi.proxy.resources | indent 12 }}
-      volumes:
-        - name: config
-          configMap:
-            name: {{ include "c8s.attestationApiName" . }}
-        # hostPath.type=CharDevice forces a hard failure on nodes that
-        # lack the device, instead of silently mounting an empty file —
-        # attestation evidence would then be silently bogus. Toggle each
-        # device individually based on the host hardware shape.
-        {{- if .Values.attestationApi.teeDevices.sevGuest }}
-        - name: sev-guest
-          hostPath:
-            path: /dev/sev-guest
-            type: CharDevice
-        {{- end }}
-        {{- if .Values.attestationApi.teeDevices.tdxGuest }}
-        # See volumeMount comment above: on host mode we mount
-        # /sys/kernel/config for the TSM ConfigFS report interface, NOT
-        # /dev/tdx-guest (which is guest-side only). Directory type keeps
-        # the same "hard fail on missing" semantics as CharDevice — a host
-        # without CONFIG_TSM_REPORTS won't have this path and the pod will
-        # fail cleanly instead of silently generating bogus evidence.
-        - name: tdx-tsm-configfs
-          hostPath:
-            path: /sys/kernel/config
-            type: Directory
-        {{- end }}
-        {{- if .Values.attestationApi.teeDevices.tpm }}
-        - name: tpm
-          hostPath:
-            path: /dev/tpm0
-            type: CharDevice
-        - name: tpmrm
-          hostPath:
-            path: /dev/tpmrm0
-            type: CharDevice
-        {{- end }}
-        # Shared with the admission inventory — see c8s.attestationApiSocket.
-        - name: socket-dir
-          hostPath:
-            path: {{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-            type: DirectoryOrCreate
+{{- include "c8s.attestationApiPodSpec" . | nindent 6 }}
 ---
 # The API binds pod loopback, so nothing on the pod network can reach it; this
 # policy is the second line, keeping even an accidental rebind pod-unreachable.

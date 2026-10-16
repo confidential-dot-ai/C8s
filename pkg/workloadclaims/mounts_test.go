@@ -152,3 +152,50 @@ func TestContentPinSurvivesInventoryAndChangesIdentity(t *testing.T) {
 		}
 	}
 }
+
+func TestVariableEvidenceRoundTrip(t *testing.T) {
+	observation, err := allowlist.ObserveEnv([]string{"MODE=production", "GPU_SERIAL=device-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := SandboxContainer{Env: observation}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip SandboxContainer
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.Env, roundTrip.Env) || c.Key() != roundTrip.Key() {
+		t.Fatal("variable evidence changed on round trip")
+	}
+}
+
+// The aggregate digest fixes the per-variable digests, so they stay out of the
+// key that every inventory sort compares.
+func TestContainerKeyOmitsVariableDigests(t *testing.T) {
+	env, err := allowlist.ObserveEnv([]string{"MODE=production"})
+	if err != nil || env.VariableDigests == nil {
+		t.Fatalf("ObserveEnv() = %v, %v; want per-variable evidence", env, err)
+	}
+	full := SandboxContainer{Digest: "sha256:" + strings.Repeat("a", 64), Env: env}
+	aggregate := full
+	aggregate.Env = env.Clone()
+	aggregate.Env.VariableDigests = nil
+	if full.Key() != aggregate.Key() {
+		t.Fatalf("Key() = %q with per-variable digests, %q without; want equal", full.Key(), aggregate.Key())
+	}
+	evicted := aggregate
+	evicted.Env = aggregate.Env.Clone()
+	evicted.Env.VariableDigestsEvicted = true
+	if evicted.Key() == aggregate.Key() {
+		t.Fatal("the evicted flag was erased from the inventory key")
+	}
+	other, _ := allowlist.ObserveEnv([]string{"MODE=debug"})
+	changed := full
+	changed.Env = other
+	if changed.Key() == full.Key() {
+		t.Fatal("the aggregate env digest was erased from the inventory key")
+	}
+}

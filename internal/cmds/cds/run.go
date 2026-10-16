@@ -22,7 +22,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -47,6 +46,12 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationApiURL)
+	if err != nil {
+		return err
+	}
+	ctx = cmdsutil.WatchNodeIP(ctx, cfg.attestationApiURL, attestationURL)
+	cfg.attestationApiURL = attestationURL
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.attestationApiURL); err != nil {
 		return err
 	}
@@ -91,6 +96,7 @@ func run(cfg config) error {
 	var writeAuthorizer allowlist.WriteAuthorizer = func(*http.Request, []byte) error {
 		return fmt.Errorf("operator writes are disabled: set --operator-keys")
 	}
+	var authorizeIssuedAt func(*http.Request, []byte) (time.Time, error)
 	var operatorKeysPEM []byte
 	var operatorKeysHash string
 	if cfg.operatorKeys != "" {
@@ -103,10 +109,12 @@ func run(cfg config) error {
 			return fmt.Errorf("hash --operator-keys %q: %w", cfg.operatorKeys, err)
 		}
 		operatorKeysPEM = pemBytes
-		writeAuthorizer = operatorauth.Verifier{
+		verifier := operatorauth.Verifier{
 			Keys:      keys,
 			ClockSkew: time.Duration(cfg.jwtClockSkew) * time.Second,
-		}.Authorize
+		}
+		writeAuthorizer = verifier.Authorize
+		authorizeIssuedAt = verifier.AuthorizeIssuedAt
 		slog.Info("operator write authorization enabled (pinned operator keys)", "operator_keys", cfg.operatorKeys, "count", len(keys), "key_set_hash", operatorKeysHash)
 	} else {
 		slog.Warn("--operator-keys empty: allowlist and secret writes are disabled (reads still served)")
@@ -163,7 +171,7 @@ func run(cfg config) error {
 		return err
 	}
 
-	asClient := remote.NewClient(cfg.attestationApiURL)
+	asClient := armtls.NewAttestationClient(cfg.attestationApiURL)
 	challengeStore := attestation.NewChallengeStore(cfg.challengeTTL)
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.
@@ -175,13 +183,27 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		if err := seedStore(&allowlistStore, cfg.allowlistSeed); err != nil {
+		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
+		if err != nil {
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
+		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
+	}
+
+	if err := allowlistStore.StartJournal(); err != nil {
+		return fmt.Errorf("start allowlist history: %w", err)
+	}
+	allowlistWriteAuthorizer := writeAuthorizer
+	if cfg.operatorKeys != "" {
+		var started time.Time
+		if !cfg.allowlistPersistent {
+			started = time.Now()
+		}
+		allowlistWriteAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}
 
 	if !cfg.allowlistPersistent {
-		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests do not survive")
+		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests, the allowlist history and spent operator tokens do not survive")
 	}
 
 	policy := issuer.CSRPolicy{
@@ -201,7 +223,7 @@ func run(cfg config) error {
 	// posture /attest already takes above, so a dev cluster still issues
 	// sandbox-bound leaves (and can still receive secrets) instead of failing
 	// every workload.
-	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs, cfg.kubeconfig)
+	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs)
 	if err != nil {
 		return err
 	}
@@ -298,7 +320,7 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   writeAuthorizer,
+			WriteAuthorizer:   allowlistWriteAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
@@ -355,9 +377,9 @@ func run(cfg config) error {
 
 		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
 		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			return err
+			return cmdsutil.NodeIPChanged(ctx, err)
 		}
-		return nil
+		return cmdsutil.NodeIPChanged(ctx, nil)
 	}
 
 	slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
@@ -365,9 +387,9 @@ func run(cfg config) error {
 
 	slog.Info("cds listening", "addr", addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		return err
+		return cmdsutil.NodeIPChanged(ctx, err)
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {

@@ -233,7 +233,7 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	svc := remote.NewClient(policy.AttestationApiURL)
+	svc := NewAttestationClient(policy.AttestationApiURL)
 	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, policy.Policy)
 	if err != nil {
 		return nil, mapVerifyError(att.Family, err)

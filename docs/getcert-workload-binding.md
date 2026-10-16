@@ -652,9 +652,10 @@ CDS must be able to reach the nodes on
 `workloadclaims.DigestsPort` (1019, fixed), and the node bound —
 `cds.sandboxInventoryCIDRs` (`c8s install --node-cidr`), or the live node list
 when unset — must cover those addresses or CDS refuses every request carrying a
-token. The advertised host defaults to the installer DaemonSet's own
-`status.hostIP`, written to a `node-ip` file beside the socket;
-set `nriImagePolicy.sandboxDigests.advertiseHost` or
+token. The advertised host defaults to the `node-ip` file beside the socket, which
+the plugin writes from the kubelet's `--node-ip`, else the default-route
+interface's address, and follows when it changes. Where the kubelet registers
+an address neither finds, set `nriImagePolicy.sandboxDigests.advertiseHost` or
 `$C8S_SANDBOX_DIGESTS_ADVERTISE_HOST` to override. Route inference is the last
 resort and is wrong under the chart's default, where the plugin dials the CDS
 NodePort over loopback.

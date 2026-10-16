@@ -55,6 +55,9 @@
           "type": "string"
         },
         "namedCertTTL": {},
+        "publishedShape": {
+          "type": "string"
+        },
         "node": {
           "type": [
             "object",
@@ -75,6 +78,19 @@
           "additionalProperties": false,
           "properties": {
             "enabled": {},
+            "memorySizeLimit": {
+              "$comment": "A positive Kubernetes resource quantity: a number with a binary or decimal SI suffix or a decimal exponent, not zero.",
+              "type": [
+                "string",
+                "number"
+              ],
+              "pattern": "^\\+?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([KMGTPE]i|[mkMGTPE]|[eE][+-]?[0-9]+)?$",
+              "not": {
+                "type": "string",
+                "pattern": "^\\+?0*(\\.0*)?([KMGTPE]i|[mkMGTPE]|[eE][+-]?[0-9]+)?$"
+              },
+              "exclusiveMinimum": 0
+            },
             "size": {},
             "storageClassName": {}
           }
@@ -367,7 +383,12 @@
           "properties": {
             "attestationApiURL": {},
             "enabled": {},
-            "expectedWorkload": {},
+            "expectedWorkload": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "generation": {},
             "platform": {},
             "port": {},
@@ -451,6 +472,7 @@
           "properties": {
             "entrypoint": {},
             "httpsPort": {},
+            "imageEnv": {},
             "image": {
               "type": [
                 "object",

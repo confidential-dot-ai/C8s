@@ -6,7 +6,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,7 +67,7 @@ func TestNodeImageRender(t *testing.T) {
 			for _, key := range []string{
 				"Namespace/c8s-system", "CustomResourceDefinition/confidentialworkloads.confidential.ai",
 				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router", "DaemonSet/c8s-armtls-mesh",
-				"ConfigMap/c8s-router-nginx", "ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
+				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingAdmissionPolicy/c8s-cw-label-integrity", "ValidatingAdmissionPolicyBinding/c8s-cw-label-integrity",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces-ephemeral", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces-ephemeral",
@@ -160,12 +162,32 @@ func TestNodeImageRender(t *testing.T) {
 					}
 				}
 			}
-			var nginx corev1.ConfigMap
-			if err := yaml.Unmarshal(docs["ConfigMap/c8s-router-nginx"], &nginx); err != nil {
+			if docs["ConfigMap/c8s-router-nginx"] != nil {
+				t.Error("integration manifests kept the router nginx ConfigMap")
+			}
+			// mkosi.sync installs every file in router-nginx/.
+			entries, err := os.ReadDir(filepath.Join(out, "router-nginx"))
+			if err != nil {
 				t.Fatal(err)
 			}
+			var names []string
+			for _, e := range entries {
+				names = append(names, e.Name())
+			}
+			if want := slices.Sorted(slices.Values(routerNginxFiles)); !slices.Equal(names, want) {
+				t.Errorf("router-nginx/ holds %q, want %q", names, want)
+			}
+			nginxConf, err := os.ReadFile(filepath.Join(out, "router-nginx", "nginx.conf"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, file := range []string{"tls-cds.conf", "tls-acme.conf"} {
+				if body, err := os.ReadFile(filepath.Join(out, "router-nginx", file)); err != nil || !strings.Contains(string(body), "ssl_certificate ") {
+					t.Errorf("router-nginx/%s = %q, %v; want a certificate snippet", file, body, err)
+				}
+			}
 			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "location /healthz", "include /run/c8s-node/router/upstream.conf;", "include /run/c8s-node/router/tls.conf;", "proxy_pass http://$c8s_upstream;", "listen 8080;"} {
-				if !strings.Contains(nginx.Data["nginx.conf"], directive) {
+				if !strings.Contains(string(nginxConf), directive) {
 					t.Errorf("nginx missing %q", directive)
 				}
 			}
@@ -183,8 +205,15 @@ func TestNodeImageRender(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(allowlist.Workloads) != 5 {
-				t.Errorf("seed has %d workloads, want four core images and the local-path helper", len(allowlist.Workloads))
+			if len(allowlist.Workloads) != 6 {
+				t.Errorf("seed has %d workloads, want four core images, the local-path helper and the router pod", len(allowlist.Workloads))
+			}
+			routerEntry := false
+			for name := range allowlist.Workloads {
+				routerEntry = routerEntry || strings.HasPrefix(name, "c8s-router-")
+			}
+			if !routerEntry {
+				t.Error("router pod entry missing from the baked CDS seed")
 			}
 			var helperDigest string
 			for _, workload := range allowlist.Workloads {
@@ -301,6 +330,7 @@ spec:
       containers:
         - name: operator
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
       initContainers:
         - name: native-sidecar
           restartPolicy: Always
@@ -316,6 +346,7 @@ spec:
       containers:
         - name: cds
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -327,6 +358,7 @@ spec:
       containers:
         - name: router
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -381,6 +413,8 @@ data:
     # a document-looking line remains nginx content
     ---
     events {}
+  tls-cds.conf: ssl_certificate /tls/cert.pem;
+  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -403,6 +437,13 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, after := nodeImageDocuments(t, []byte(fixture)), nodeImageDocuments(t, artifacts.integration)
+	if after["ConfigMap/c8s-router-nginx"] != nil {
+		t.Error("integration manifests kept the router nginx ConfigMap the image ships as files")
+	}
+	if got := artifacts.routerNginx["nginx.conf"]; got != "# a document-looking line remains nginx content\n---\nevents {}\n" {
+		t.Errorf("router nginx.conf = %q, want the ConfigMap's content", got)
+	}
+	delete(before, "ConfigMap/c8s-router-nginx")
 	for key, doc := range before {
 		var want, got map[string]any
 		if err := k8syaml.Unmarshal(doc, &want); err != nil {
@@ -453,6 +494,21 @@ func TestNodeImageCollectRejectsExtraInvalidResources(t *testing.T) {
 	}
 }
 
+func TestNodeImageCollectRejectsIncompleteRouterNginx(t *testing.T) {
+	for name, replacement := range map[string]string{
+		"missing snippet": "",
+		"empty snippet":   "  tls-acme.conf: \"\"\n",
+		"extra key":       "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n  extra.conf: x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			input := strings.Replace(nodeImageCollectFixture(), "  tls-acme.conf: ssl_certificate /etc/c8s-acme-tls/cert.pem;\n", replacement, 1)
+			if _, err := collectNodeImageArtifacts([]byte(input)); err == nil {
+				t.Fatal("accepted a router nginx ConfigMap that does not hold exactly routerNginxFiles")
+			}
+		})
+	}
+}
+
 func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 	for _, tc := range []struct{ name, old, replacement string }{
 		{"mutable container tag", "registry.example.com/operator@" + testDigest, "registry.example.com/operator:latest"},
@@ -462,7 +518,6 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 		{"missing core workload", "name: c8s-cds", "name: other-cds"},
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
 		{"pinned args", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"deny"},"mounts":{"policy":"any"}}]},"init"`},
-		{"restricted mounts", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"any"},"mounts":{"policy":"deny"}}]},"init"`},
 		{"pinned executable other than the baked command", `"` + testDigest + `","command":{"policy":"any"}`, `"` + testDigest + `","command":{"policy":"exact","argv":["/other"]}`},
 		{"unexpected namespace", "name: c8s-cds", "name: c8s-cds\n  namespace: outside"},
 		{"cluster resource namespace", "name: confidentialworkloads.confidential.ai", "name: confidentialworkloads.confidential.ai\n  namespace: c8s-system"},
@@ -582,6 +637,63 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 
 // A seed that pins a component's executable is accepted when the pin admits
 // every command the baked manifests spell out for the image.
+// The chart pins a component's args and mounts too; the seed must still admit
+// every baked container, whether the manifest names the command or runs the
+// image's entrypoint, with the mounts the manifest gives it.
+func TestNodeImageCollectPinnedArgs(t *testing.T) {
+	core := `{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
+	mesh := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]}}`
+	entrypoint := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
+	const entrypointRouter = "        - name: router\n          image: registry.example.com/operator@" + testDigest
+	const router = entrypointRouter + "\n          command: [\"/app/c8s\"]"
+	urlArgs := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"exact","argv":["--url=http://$(HOST_IP):8080"]}}`
+	tmpRule := func(rule string) string {
+		return `,{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"},"mounts":{"policy":"exact","rules":[` + rule + `]}}`
+	}
+	hostTmp := router + "\n          volumeMounts: [{name: tmp, mountPath: /tmp, readOnly: true}]\n      volumes:\n        - name: tmp\n          hostPath: {path: /var/tmp}"
+	placeholder := router + "\n          volumeMounts: [{name: c8s-volume-db, mountPath: /mnt/c8s-data/db}]\n      volumes:\n        - name: c8s-volume-db\n          emptyDir: {}"
+	subPath := router + "\n          volumeMounts: [{name: cache, mountPath: /mnt/c8s-data/cache, subPath: cache}]\n      volumes:\n        - name: cache\n          emptyDir: {}"
+	for _, tc := range []struct {
+		name, seed, manifest string
+		ok                   bool
+	}{
+		{"every invocation pinned", mesh + "," + entrypoint, "", true},
+		{"image entrypoint under a pinned command", mesh + "," + entrypoint, entrypointRouter, false},
+		{"image entrypoint and CMD under denied args", mesh + "," + entrypoint + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, entrypointRouter, false},
+		{"image entrypoint under any command and args", mesh + "," + entrypoint + "," + core, entrypointRouter, true},
+		{"entrypoint arguments not pinned", mesh + "," + entrypoint, router + "\n          args: [\"--other\"]", false},
+		{"mount the manifest lacks", strings.Replace(mesh, `"args"`, `"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]},"args"`, 1) + "," + entrypoint, "", false},
+		{"entrypoint under any command with pinned args", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, "", false},
+		{"host mount pinned", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp","readOnly":true}`), hostTmp, true},
+		{"host mount pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"emptyDir"}`), hostTmp, false},
+		{"host mount pinned writable", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
+		{"subpath pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
+		{"subpath pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
+		{"volumed placeholder pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"data"}`), placeholder, true},
+		{"volumed placeholder pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"emptyDir"}`), placeholder, false},
+		{"entrypoint under a denied command", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"deny"},"args":{"policy":"any"}}`, "", false},
+		{"env pinned", strings.Replace(mesh, `"args"`, `"env":{"policy":"deny"},"args"`, 1) + "," + entrypoint, "", false},
+		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
+		{"escape not expanded", mesh + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
+		{"defined variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]\n          env: [{name: HOST_IP, value: 10.0.0.1}]", false},
+		{"service variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(nodeImageCollectFixture(), core, tc.seed, 1)
+			if input == nodeImageCollectFixture() {
+				t.Fatal("fixture seed did not change")
+			}
+			if tc.manifest != "" {
+				input = strings.Replace(input, router, tc.manifest, 1)
+			}
+			_, err := collectNodeImageArtifacts([]byte(input))
+			if (err == nil) != tc.ok {
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+}
+
 func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	input := strings.Replace(nodeImageCollectFixture(),
 		`"`+testDigest+`","command":{"policy":"any"}`,
@@ -591,5 +703,128 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	}
 	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
+	}
+}
+
+func TestKubeletArgv(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		err            bool
+	}{
+		{name: "plain", in: "--port=1", want: "--port=1"},
+		{name: "escape", in: "$$(HOST_IP)", want: "$(HOST_IP)"},
+		{name: "escaped dollar", in: "a$$b", want: "a$b"},
+		{name: "undefined reference", in: "echo $(echo $$)", err: true},
+		{name: "service variable", in: "--cds-url=https://$(C8S_CDS_SERVICE_HOST):8443", err: true},
+		{name: "unclosed reference", in: "$(a $$", want: "$(a $"},
+		{name: "trailing dollar", in: "a$", want: "a$"},
+		{name: "lone dollar", in: "$x", want: "$x"},
+		{name: "defined reference", in: "http://$(HOST_IP):1", err: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := kubeletArgv([]string{tc.in})
+			if tc.err {
+				if err == nil {
+					t.Fatalf("kubeletArgv(%q) = %q, want an error", tc.in, got)
+				}
+				return
+			}
+			if err != nil || len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("kubeletArgv(%q) = %q, %v, want %q", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// nodeImageEnvSeed is a seed whose core entries match the launch env: the
+// runtime's variables plus extra, under any operator, CDS and router command
+// and the mesh's pinned argv.
+func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
+	t.Helper()
+	variables := map[string]any{
+		"HOSTNAME":                      map[string]any{"present": true},
+		"PATH":                          map[string]any{"exact": containerdDefaultPath},
+		"KUBERNETES_SERVICE_HOST":       map[string]any{"present": true},
+		"KUBERNETES_SERVICE_PORT":       map[string]any{"exact": "443"},
+		"KUBERNETES_SERVICE_PORT_HTTPS": map[string]any{"exact": "443"},
+		"KUBERNETES_PORT":               map[string]any{"present": true},
+		"KUBERNETES_PORT_443_TCP":       map[string]any{"present": true},
+		"KUBERNETES_PORT_443_TCP_ADDR":  map[string]any{"present": true},
+		"KUBERNETES_PORT_443_TCP_PORT":  map[string]any{"exact": "443"},
+		"KUBERNETES_PORT_443_TCP_PROTO": map[string]any{"exact": "tcp"},
+	}
+	component := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s"}}, "args": map[string]any{"policy": "deny"}, "env": map[string]any{"policy": "match", "variables": variables}}
+	mesh := maps.Clone(variables)
+	for name, matcher := range extra {
+		mesh[name] = matcher
+	}
+	meshEntry := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s", "armtls-mesh"}}, "args": map[string]any{"policy": "exact", "argv": []string{"--platform", "snp"}}, "env": map[string]any{"policy": "match", "variables": mesh}}
+	initEntry := map[string]any{"digest": nodeImageTestCDSDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
+	seed, err := json.Marshal(map[string]any{"schema": "c8s.allowlist/v1", "workloads": map[string]any{
+		"core": map[string]any{"containers": []any{component, meshEntry}},
+		"init": map[string]any{"containers": []any{initEntry}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(seed)
+}
+
+const nodeImageFixtureMeshArgs = `          args: ["--platform", "snp"]`
+
+// nodeImageEnvFixture is the collect fixture with service links off, the seed
+// replaced, and env lines added to the mesh container.
+func nodeImageEnvFixture(t *testing.T, seed, meshEnv string) string {
+	t.Helper()
+	fixture := strings.ReplaceAll(nodeImageCollectFixture(), "    spec:\n      containers:", "    spec:\n      enableServiceLinks: false\n      containers:")
+	start := strings.Index(fixture, "allowlist-seed.json: '") + len("allowlist-seed.json: '")
+	end := start + strings.Index(fixture[start:], "'")
+	fixture = fixture[:start] + seed + fixture[end:]
+	return strings.Replace(fixture, nodeImageFixtureMeshArgs, nodeImageFixtureMeshArgs+meshEnv, 1)
+}
+
+func TestNodeImageCollectMatchedEnv(t *testing.T) {
+	const meshEnv = "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {fieldRef: {fieldPath: metadata.name}}}]"
+	present, exact := map[string]any{"present": true}, func(v string) map[string]any { return map[string]any{"exact": v} }
+	listed := map[string]any{"MODE": exact("strict"), "POD": present}
+	with := func(name string, matcher any) map[string]any {
+		out := maps.Clone(listed)
+		if matcher == nil {
+			delete(out, name)
+		} else {
+			out[name] = matcher
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		extra   map[string]any
+		meshEnv string
+		links   bool
+		ok      bool
+	}{
+		{"every variable listed", listed, meshEnv, false, true},
+		{"image variable pinned exact", with("LANG", exact("C.UTF-8")), meshEnv, false, true},
+		{"literal pinned to another value", with("MODE", exact("lax")), meshEnv, false, false},
+		{"reference pinned exact", with("POD", exact("mesh-0")), meshEnv, false, false},
+		{"manifest variable not listed", with("POD", nil), meshEnv, false, false},
+		{"listed variable nothing sets", with("EXTRA", present), meshEnv, false, false},
+		{"kubelet-expanded literal pinned exact", with("MODE", exact("$(POD)")), "\n          env: [{name: MODE, value: $(POD)}, {name: POD, value: x}]", false, false},
+		{"kubelet-expanded literal matched present", with("MODE", present), "\n          env: [{name: MODE, value: $(POD)}, {name: POD, value: x}]", false, true},
+		{"runtime port pinned to another value", with("KUBERNETES_SERVICE_PORT", exact("6443")), meshEnv, false, false},
+		{"envFrom", listed, meshEnv + "\n          envFrom: [{configMapRef: {name: extra}}]", false, false},
+		{"optional key reference", with("POD", present), "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {secretKeyRef: {name: s, key: k, optional: true}}}]", false, false},
+		{"service links on", listed, meshEnv, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := nodeImageEnvFixture(t, nodeImageEnvSeed(t, tc.extra), tc.meshEnv)
+			if tc.links {
+				input = strings.Replace(input, "enableServiceLinks: false\n      containers:\n        - name: mesh", "containers:\n        - name: mesh", 1)
+			}
+			_, err := collectNodeImageArtifacts([]byte(input))
+			if (err == nil) != tc.ok {
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
+			}
+		})
 	}
 }

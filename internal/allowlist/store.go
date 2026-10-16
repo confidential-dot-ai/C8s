@@ -20,7 +20,7 @@ import (
 // `workload_entry` holds one canonical allowlist.Workload JSON per named entry,
 // `workload_entry_digest` indexes each container digest for membership, and
 // `allowlist_version` is the counter every mutation bumps (the worker pull
-// ETag).
+// ETag). The journal tables (journal.go) keep the history of served documents.
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
@@ -72,7 +72,7 @@ func OpenStore(path string) (Store, error) {
 		slog.Warn("allowlist db did not exist, creating", "path", path)
 	}
 
-	if _, err := db.Exec(initSQL); err != nil {
+	if _, err := db.Exec(initSQL + journalSQL); err != nil {
 		db.Close()
 		return Store{}, fmt.Errorf("init allowlist schema: %w", err)
 	}
@@ -86,7 +86,7 @@ func OpenInMemory() (Store, error) {
 	if err != nil {
 		return Store{}, err
 	}
-	if _, err := db.Exec(initSQL); err != nil {
+	if _, err := db.Exec(initSQL + journalSQL); err != nil {
 		db.Close()
 		return Store{}, err
 	}
@@ -115,7 +115,7 @@ func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 		version = "1"
 	}
 
-	workloads, err := s.loadWorkloadsTx()
+	workloads, err := loadWorkloads(s.db)
 	if err != nil {
 		return nil, "", err
 	}
@@ -126,8 +126,14 @@ func (s *Store) LoadAll() (*pkgallowlist.Allowlist, string, error) {
 	}, version, nil
 }
 
-func (s *Store) loadWorkloadsTx() (map[string]pkgallowlist.Workload, error) {
-	rows, err := s.db.Query("SELECT name, entry_json FROM workload_entry")
+// querier is *sql.DB or *sql.Tx. Inside a transaction reads must go through
+// the tx: an in-memory database is per connection.
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func loadWorkloads(q querier) (map[string]pkgallowlist.Workload, error) {
+	rows, err := q.Query("SELECT name, entry_json FROM workload_entry")
 	if err != nil {
 		return nil, err
 	}
@@ -182,10 +188,13 @@ func (s *Store) Version() (string, error) {
 	return version, nil
 }
 
-// commitTx commits a mutating transaction and records the mutation for
-// snapshot-cache invalidation. Every write path goes through it.
-// Callers must hold s.mu.
+// commitTx journals the document tx leaves (see publishTx), commits, and
+// records the mutation for snapshot-cache invalidation. Every write path goes
+// through it. Callers must hold s.mu.
 func (s *Store) commitTx(tx *sql.Tx) error {
+	if err := publishTx(tx); err != nil {
+		return fmt.Errorf("journal allowlist: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
@@ -211,14 +220,15 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present, in
-// a single transaction, and returns the number added. Additive and idempotent:
-// an existing entry is left untouched and the version is bumped at most once,
-// only when at least one entry was new, so a re-seed that adds nothing does not
-// force every worker to re-pull.
-func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (int, error) {
+// SeedWorkloads adds every workload entry whose name is not already present
+// and retires each stored entry the seed replaces (retiredBySeed), in a single
+// transaction, and returns the numbers added and retired. Additive for
+// everything else and idempotent: an existing entry is left untouched and the
+// version is bumped at most once, only when the set changed, so a re-seed that
+// changes nothing does not force every worker to re-pull.
+func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
 	if len(workloads) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	s.mu.Lock()
@@ -226,20 +236,52 @@ func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (int, 
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer tx.Rollback()
 
-	added, err := seedWorkloadsTx(tx, workloads)
+	if retired, err = retireReplacedTx(tx, workloads); err != nil {
+		return 0, 0, err
+	}
+	if added, err = seedWorkloadsTx(tx, workloads); err != nil {
+		return 0, 0, err
+	}
+	if added+retired > 0 {
+		if err := bumpVersionTx(tx); err != nil {
+			return 0, 0, err
+		}
+	}
+	return added, retired, s.commitTx(tx)
+}
+
+// retireReplacedTx deletes every stored entry seed replaces and returns how
+// many it deleted.
+func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, error) {
+	seedKeys := map[string]bool{}
+	for name := range seed {
+		if key := GeneratedKey(name); key != "" {
+			seedKeys[key] = true
+		}
+	}
+	stored, err := loadWorkloads(tx)
 	if err != nil {
 		return 0, err
 	}
-	if added > 0 {
-		if err := bumpVersionTx(tx); err != nil {
+	var retired int
+	for name, w := range stored {
+		if _, ok := seed[name]; ok || !retiredBySeed(name, w, seedKeys) {
+			continue
+		}
+		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {
 			return 0, err
 		}
+		if _, err := tx.Exec("DELETE FROM workload_entry_digest WHERE entry_name = ?", name); err != nil {
+			return 0, err
+		}
+		slog.Info("allowlist seed retired a replaced entry", "workload", name)
+		retired++
 	}
-	return added, s.commitTx(tx)
+	return retired, nil
 }
 
 // seedWorkloadsTx inserts every entry whose name is free and returns how many

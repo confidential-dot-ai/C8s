@@ -1155,6 +1155,48 @@ func TestSynchronize_EnforceExistingDisabled_NotReady_DefersThenRecords(t *testi
 	}
 }
 
+// onLog runs hook when a record with message is logged.
+type onLog struct {
+	message string
+	hook    func()
+}
+
+func (h onLog) Enabled(context.Context, slog.Level) bool { return true }
+func (h onLog) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h onLog) WithGroup(string) slog.Handler            { return h }
+func (h onLog) Handle(_ context.Context, r slog.Record) error {
+	if r.Message == h.message {
+		h.hook()
+	}
+	return nil
+}
+
+// The plugin can become ready and run its deferred check while Synchronize is
+// deferring; the batch is still checked and recovery still ends.
+func TestSynchronize_ReadyWhileDeferring_ChecksBatch(t *testing.T) {
+	p, _ := newCachedPlugin(&config{
+		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
+		Policy:    policyConfig{Mode: ModeFailClosed},
+	}, anyAllowlist(map[string]string{pushDigestA: "image-a"}))
+	p.inventory = newAdmissionInventory("/proc")
+	p.logger = slog.New(onLog{message: "plugin not ready, deferring startup check", hook: func() {
+		p.SetReady()
+		p.RunDeferredCheck(context.Background())
+	}})
+
+	pod := makePod("default", "pod1")
+	ctr := makeCtrWithImage(pod.Id, "ctr1", "registry/repo@"+pushDigestA)
+	if _, err := p.Synchronize(context.Background(), []*api.PodSandbox{pod}, []*api.Container{ctr}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, ok := p.inventory.containers[ctr.Id]; !ok {
+		t.Fatal("the deferred batch was never checked")
+	}
+	if p.inventory.pendingExits != nil {
+		t.Fatal("startup recovery never ended")
+	}
+}
+
 func TestSynchronize_Ready_AuditMode_ChecksWithoutEnforcing(t *testing.T) {
 	p, _ := newCachedPlugin(&config{
 		Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "image-a"})},
