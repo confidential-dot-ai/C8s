@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -35,8 +36,8 @@ type emptyDirRule struct {
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly {
-		return fmt.Errorf("mount kind %q does not support source or readOnly", r.Kind)
+	if r.Source != "" || r.ReadOnly || r.Provenance != "" || r.VerityDigest != "" {
+		return fmt.Errorf("mount kind %q does not support source, readOnly or provenance", r.Kind)
 	}
 	return nil
 }
@@ -68,15 +69,47 @@ type hostRule struct {
 }
 
 func (r hostRule) validate() error {
+	switch r.Provenance {
+	case "", ProvenanceNodeRoot:
+		if r.VerityDigest != "" {
+			return fmt.Errorf("verityDigest requires fs-verity provenance")
+		}
+	case ProvenanceFSVerity:
+		decoded, err := hex.DecodeString(r.VerityDigest)
+		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != r.VerityDigest {
+			return fmt.Errorf("verityDigest must be 64 lowercase hexadecimal digits")
+		}
+	default:
+		return fmt.Errorf("unsupported mount provenance %q", r.Provenance)
+	}
+	if r.Provenance != "" && !r.ReadOnly {
+		return fmt.Errorf("mount provenance requires readOnly: true")
+	}
 	_, err := HostSourceDigest(r.Source)
 	return err
 }
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly
+	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && r.provenanceAdmits(m)
 }
 
+// provenanceAdmits checks each proof independently: a node-root file can carry
+// an fs-verity digest too, and either rule form must accept it.
+func (r hostRule) provenanceAdmits(m ObservedMount) bool {
+	switch r.Provenance {
+	case "":
+		return true
+	case ProvenanceNodeRoot:
+		return m.Provenance == ProvenanceNodeRoot
+	case ProvenanceFSVerity:
+		return m.Provenance != "" && m.VerityDigest == r.VerityDigest
+	}
+	return false
+}
+
+// hostIndependent is false even with provenance: the rule still names a host
+// path, so secrets grants (PinnedForGrant) reject it.
 func (hostRule) hostIndependent() bool {
 	return false
 }

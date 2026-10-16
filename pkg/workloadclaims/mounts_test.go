@@ -130,6 +130,29 @@ func TestContainerKeyDistinguishesMissingEnvironment(t *testing.T) {
 	}
 }
 
+func TestContentPinSurvivesInventoryAndChangesIdentity(t *testing.T) {
+	mount := allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: strings.Repeat("b", 64)}
+	c := SandboxContainer{Mounts: []allowlist.ObservedMount{mount}}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded SandboxContainer
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Mounts[0].VerityDigest != mount.VerityDigest || decoded.Key() != c.Key() {
+		t.Fatal("lost content authority on inventory round trip")
+	}
+	for _, hash := range []string{"", strings.Repeat("a", 64)} {
+		changed := mount
+		changed.VerityDigest = hash
+		if (SandboxContainer{Mounts: []allowlist.ObservedMount{changed}}).Key() == c.Key() {
+			t.Fatal("content authority collapsed in history key")
+		}
+	}
+}
+
 func TestVariableEvidenceRoundTrip(t *testing.T) {
 	observation, err := allowlist.ObserveEnv([]string{"MODE=production", "GPU_SERIAL=device-1"})
 	if err != nil {

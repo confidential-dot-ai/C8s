@@ -27,6 +27,11 @@ type ObservedMount struct {
 	Storage          MountStorage `json:"storage"`
 	HostSourceDigest string       `json:"hostSourceDigest,omitempty"`
 	ReadOnly         bool         `json:"readOnly,omitempty"`
+	// Provenance is evidence supplied by the trusted node, never a declaration.
+	Provenance string `json:"provenance,omitempty"`
+	// VerityDigest is the fs-verity digest of a pinned inode, or of a
+	// node-root file that has fs-verity enabled.
+	VerityDigest string `json:"verityDigest,omitempty"`
 }
 
 // confined reports whether a mount keeps what a container writes inside the

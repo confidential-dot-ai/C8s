@@ -461,7 +461,9 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 }
 
 func searchPathLoadsMountedContent(value string, rule pkgallowlist.MountRule) bool {
-	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost
+	// Normalized provenance requires authenticated, immutable source evidence
+	// from the node before executable bytes can be mounted.
+	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost && rule.Provenance == ""
 	return operatorSupplied && searchPathReachesMount(value, rule.Destination)
 }
 

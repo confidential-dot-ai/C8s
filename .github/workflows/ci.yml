@@ -212,6 +212,17 @@ jobs:
       - name: Measure coverage
         run: ./scripts/coverage-gate.sh run head.out
 
+      # Verity admission depends on real kernel ioctls and inode bind mounts.
+      # Include these tests in the measured profile rather than skipping the
+      # successful paths on the runner's ordinary writable root filesystem.
+      - name: Install kernel verity test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends cryptsetup-bin e2fsprogs
+
+      - name: Measure kernel verity coverage
+        run: ./scripts/coverage-gate.sh kernel head.out
+
       # On pushes to main, cache the total so PRs against this commit can
       # compare without re-running the whole suite on the base branch.
       - name: Record baseline total
@@ -223,9 +234,9 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: base-total.txt
-          # v3 measures Go execution separately from the shell/YAML workflow
-          # harness, matching the same head-script selection used for the base.
-          key: coverage-total-v3-${{ github.sha }}
+          # v4 includes real kernel verity execution as well as ordinary Go
+          # execution, with the same head-script procedure used for the base.
+          key: coverage-total-v4-${{ github.sha }}
 
       - name: Restore baseline total
         if: github.event_name == 'pull_request'
@@ -233,7 +244,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: base-total.txt
-          key: coverage-total-v3-${{ github.event.pull_request.base.sha }}
+          key: coverage-total-v4-${{ github.event.pull_request.base.sha }}
 
       # Fallback when the base commit's total is not cached (e.g. cache
       # evicted, or main's coverage run predates this workflow).
@@ -249,6 +260,7 @@ jobs:
         working-directory: base
         run: |
           ../scripts/coverage-gate.sh run base.out
+          ../scripts/coverage-gate.sh kernel base.out
           ../scripts/coverage-gate.sh total base.out > ../base-total.txt
 
       - name: Enforce non-decreasing total coverage

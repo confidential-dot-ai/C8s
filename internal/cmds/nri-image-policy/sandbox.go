@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -82,13 +83,16 @@ type sandboxObservation struct {
 // violation rather than as consent.
 //
 // ownSocketDir is the inventory socket directory this plugin bind-mounts into
-// injected sidecars itself (socketDirAdjustment); it is the one host bind the
-// policy does not hold against a container, because the policy put it there.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) sandboxObservation {
+// injected sidecars itself (socketDirAdjustment); the policy put it there, so
+// it does not hold that bind against a container. mounts is the container's
+// mount evidence, as mountObserver.Observe returns it: a read-only file bind
+// with verified provenance carries known, immutable bytes rather than host
+// state, so it is not a host bind either.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, ownSocketDir),
+		HostBinds:        hostBinds(pod, ctr, ownSocketDir, mounts),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks()),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -178,7 +182,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -188,8 +192,15 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 			owned = append(owned, root+"/io.containerd.grpc.v1.cri/sandboxes/"+id+"/")
 		}
 	}
+	// mounts holds one observation per mount that carries host bytes, in
+	// order. Any other shape exempts no mount.
+	paired := len(slices.DeleteFunc(slices.Clone(ctr.GetMounts()), func(m *api.Mount) bool { return !carriesHostBytes(m) })) == len(mounts)
 	var out []string
+	index := -1
 	for _, m := range ctr.GetMounts() {
+		if carriesHostBytes(m) {
+			index++
+		}
 		src := m.GetSource()
 		if !strings.HasPrefix(src, "/") {
 			continue
@@ -198,6 +209,9 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 			continue
 		}
 		if ownSocketDir != "" && src == ownSocketDir && isInjectedSocketMount(pod, ctr, m) {
+			continue
+		}
+		if paired && mounts[index].Provenance != "" && mounts[index].ReadOnly && mounts[index].Source == src && mounts[index].Destination == m.GetDestination() {
 			continue
 		}
 		out = append(out, src)

@@ -7,17 +7,16 @@ import "github.com/confidential-dot-ai/c8s/pkg/types"
 // enforcer with no policy yet can query it without a guard.
 type Index struct {
 	byDigest map[string][]Container
+	fsVerity bool
 }
 
 // BuildIndex projects an Allowlist into an admission index.
 func (a *Allowlist) BuildIndex() *Index {
 	idx := &Index{byDigest: map[string][]Container{}}
 	for _, w := range a.Workloads {
-		for _, c := range w.InitContainers {
+		for _, c := range w.containers() {
 			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
-		}
-		for _, c := range w.Containers {
-			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
+			idx.fsVerity = idx.fsVerity || len(fsVerityMountRules(c)) > 0
 		}
 	}
 	return idx
@@ -154,4 +153,36 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 		}
 	}
 	return false
+}
+
+// HasFSVerityMountRules reports whether any entry has an fs-verity mount
+// rule, so enforcers can skip resolving an image digest for staging.
+func (i *Index) HasFSVerityMountRules() bool {
+	return i != nil && i.fsVerity
+}
+
+// FSVerityMountRules returns staging candidates, not an admission decision.
+// The enforcer must still match the complete finalized container against policy.
+func (i *Index) FSVerityMountRules(digest string) []MountRule {
+	if i == nil {
+		return nil
+	}
+	var rules []MountRule
+	for _, container := range i.byDigest[digest] {
+		rules = append(rules, fsVerityMountRules(container)...)
+	}
+	return rules
+}
+
+func fsVerityMountRules(c Container) []MountRule {
+	if c.Mounts.Policy != PolicyExact {
+		return nil
+	}
+	var rules []MountRule
+	for _, rule := range c.Mounts.Rules {
+		if rule.Kind == MountHost && rule.ReadOnly && rule.Provenance == ProvenanceFSVerity {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
 }
