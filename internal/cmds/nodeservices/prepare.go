@@ -137,10 +137,11 @@ var serverOutputNames = []string{
 	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
 }
 
-// RouterTLSSnippetDir is where the router chart mounts tls-cds.conf and
-// tls-acme.conf for nginx; router/tls.conf includes the one the front-door
-// mode selects. The chart's router.configDir must equal it.
-const RouterTLSSnippetDir = "/mnt/c8s-data/nginx"
+// RouterTLSSnippetDir is where the node image installs tls-cds.conf and
+// tls-acme.conf and the baked router mounts them; router/tls.conf includes the
+// one the front-door mode selects. The chart's router.bakedNginxDir must equal
+// it.
+const RouterTLSSnippetDir = "/usr/lib/c8s/router-nginx"
 
 // line renders an optional single-line value: empty stays empty.
 func line(s string) []byte {

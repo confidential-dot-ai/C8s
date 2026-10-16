@@ -239,6 +239,43 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	}
 }
 
+// A baked router reads its nginx configuration from the image, so the seed
+// refuses a ConfigMap swapped in over that directory.
+func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, bakedArgs...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
+	i := slices.IndexFunc(spec.Containers, func(c corev1.Container) bool { return c.Name == "nginx" })
+	if i < 0 {
+		t.Fatal("baked router has no nginx container")
+	}
+	nginx := spec.Containers[i]
+	argv := runtimeArgv(nginx, componentPinValues(t)["router.nginx"])
+	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/nginx.conf") {
+		t.Errorf("baked nginx argv = %q, want -c /usr/lib/c8s/router-nginx/nginx.conf", argv)
+	}
+	index := renderedSeed(t, out).BuildIndex()
+	admits := func() bool {
+		return index.AdmitsContainer(pkgallowlist.RunningContainer{
+			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx, false), Env: &pkgallowlist.EnvObservation{},
+		})
+	}
+	if !admits() {
+		t.Fatal("baked seed refuses nginx as rendered")
+	}
+	v := slices.IndexFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == "nginx-config" })
+	if v < 0 || spec.Volumes[v].HostPath == nil || spec.Volumes[v].HostPath.Path != "/usr/lib/c8s/router-nginx" {
+		t.Fatalf("baked router lacks the nginx-config hostPath /usr/lib/c8s/router-nginx: %+v", spec.Volumes)
+	}
+	spec.Volumes[v].VolumeSource = corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{}}
+	if admits() {
+		t.Error("baked seed admits nginx with its configuration from a ConfigMap")
+	}
+}
+
 // checkExactShape fails unless index admits the container as rendered and
 // refuses it with an extra argument, without any one of its own mounts, or
 // with one mount more.

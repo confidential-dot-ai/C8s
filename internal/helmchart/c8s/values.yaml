@@ -6,7 +6,10 @@
 ## launch file at /run/c8s-node/router/ instead of the chart, so
 ## router.upstream.address stays empty and router.publicTLS.mode stays cds.
 ## nginx then includes router/tls.conf, which names the ACME leaf when the
-## launch file lists hostnames and the mesh leaf otherwise.
+## launch file lists hostnames and the mesh leaf otherwise. nginx reads
+## nginx.conf and the TLS snippets from the image at /usr/lib/c8s/router-nginx,
+## so changing them, or the router values that render them, takes an image
+## rebuild.
 node:
   baked: false
 

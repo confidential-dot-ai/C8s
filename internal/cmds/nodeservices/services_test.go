@@ -311,7 +311,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	}{
 		{"unset", nil, map[string]string{
 			"upstream.conf":      "set $c8s_upstream \"\";\n",
-			"tls.conf":           "include /mnt/c8s-data/nginx/tls-cds.conf;\n",
+			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-cds.conf;\n",
 			"upstream":           "",
 			"hostnames":          "",
 			"acme-email":         "",
@@ -320,7 +320,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 		}},
 		{"upstream only", &launchconfig.Router{Upstream: upstream}, map[string]string{
 			"upstream.conf":   "set $c8s_upstream \"" + upstream + "\";\n",
-			"tls.conf":        "include /mnt/c8s-data/nginx/tls-cds.conf;\n",
+			"tls.conf":        "include /usr/lib/c8s/router-nginx/tls-cds.conf;\n",
 			"upstream":        upstream + "\n",
 			"hostnames":       "",
 			"front-door-mode": "cds\n",
@@ -335,7 +335,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"acme-email":         "ops@confidential.ai\n",
 			"acme-directory-url": "https://acme-staging-v02.api.letsencrypt.org/directory\n",
 			"front-door-mode":    "acme\n",
-			"tls.conf":           "include /mnt/c8s-data/nginx/tls-acme.conf;\n",
+			"tls.conf":           "include /usr/lib/c8s/router-nginx/tls-acme.conf;\n",
 		}},
 	}
 	for _, tc := range tests {

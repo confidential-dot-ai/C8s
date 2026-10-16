@@ -138,9 +138,9 @@ containers:
       {{- end }}
       {{- /* The whole ConfigMap, beside the operator data rather than over
              /etc/nginx: a component's ConfigMap mounts sit under
-             /mnt/c8s-data, and the args name the file. On a baked node the
-             launch file's tls.conf includes a snippet from the same
-             directory. */}}
+             /mnt/c8s-data, and the args name the file. A baked node mounts
+             the image's copy instead; the launch file's tls.conf includes a
+             snippet from it. */}}
       - name: nginx-config
         mountPath: {{ include "router.configDir" . }}
         readOnly: true
@@ -309,10 +309,16 @@ volumes:
       medium: Memory
       sizeLimit: 16Mi
   - name: nginx-config
+    {{- if .Values.node.baked }}
+    hostPath:
+      path: {{ include "router.bakedNginxDir" . }}
+      type: Directory
+    {{- else }}
     projected:
       sources:
         - configMap:
             name: {{ include "router.fullname" . }}-nginx
+    {{- end }}
   {{- if eq (include "router.mountInventorySocket" .) "true" }}
   # The baked router and the readiness gate need a stamped mesh leaf.
   # get-cert redeems a
@@ -400,6 +406,7 @@ spec:
       labels:
         {{- include "router.selectorLabels" . | nindent 8 }}
       annotations:
+        {{- /* On a baked node this tracks the image's copy of the config. */}}
         checksum/nginx-config: {{ include (print $.Template.BasePath "/router-configmap.yaml") . | sha256sum }}
         {{- if .Values.cds.measurementsConfig }}
         # A ConfigMap edit alone does not change the pod template, so without

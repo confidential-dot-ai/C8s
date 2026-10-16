@@ -534,10 +534,13 @@ need a node image that publishes it so. Three residuals stay open. `env` is stil
 `any`, so `LD_PRELOAD` or a `PATH` lookup can still be pointed at a mounted
 file. `KUBECONFIG`, `HOME` and `HTTP_PROXY` are not a vector: the operator, CDS
 and the mesh build their Kubernetes client from the in-cluster service
-account only, and the attestation-api clients ignore proxy variables. The router's `nginx.conf` is the
-content of a listed ConfigMap: a `load_module` directive in it loads code that
-no argument names
-([#871](https://github.com/confidential-dot-ai/C8s/issues/871)). The
+account only, and the attestation-api clients ignore proxy variables. Off a node image, the router's
+`nginx.conf` is the content of a listed ConfigMap: a `load_module` directive in
+it loads code that no argument names
+([#871](https://github.com/confidential-dot-ai/C8s/issues/871)). A node image
+ships `nginx.conf` and the TLS snippets read-only in
+`/usr/lib/c8s/router-nginx`, and its seed pins nginx to that host mount, so a
+ConfigMap mounted in their place is refused. The
 local-path helper runs `/bin/sh /script/setup` from a `/script` ConfigMap with
 args and mounts `any`, so any pod running the helper digest can supply its own
 script ([#872](https://github.com/confidential-dot-ai/C8s/issues/872)). Both
@@ -781,7 +784,8 @@ To retire them once no pod runs them and no rollback needs them:
 2. Save the release's seed: `kubectl get configmap <release>-cds-allowlist-seed -n <namespace> -o jsonpath='{.data.allowlist-seed\.json}' > seed.json`.
 3. List the stale shapes: `c8s allowlist lint --seed seed.json live.json`. Each `is a stale shape` warning names a generated entry, `c8s-router-*` included, whose image the seed now generates under another name.
 4. Delete each one: `c8s allowlist delete <name>`. The chart moved its ConfigMap, Secret and PVC mounts under
-`/mnt/c8s-data/` (nginx reads `/mnt/c8s-data/nginx/nginx.conf`, CDS keeps its
+`/mnt/c8s-data/` (nginx reads `/mnt/c8s-data/nginx/nginx.conf`, or
+`/usr/lib/c8s/router-nginx/nginx.conf` on a node image, CDS keeps its
 database under `/mnt/c8s-data/cds`), so an upgrade rolls every component pod.
 The webhook now pins the injected sidecars' mounts too. It refuses a pod
 whose `confidential.ai/c8s-discovery-mount-path` is anything but
