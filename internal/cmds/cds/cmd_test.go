@@ -78,6 +78,9 @@ func TestValidateARMTLSPlatformFlag(t *testing.T) {
 		{"", "must not be empty"},
 		{"foo", "--armtls-platform:"},
 	} {
+		if tc.in == "" && allowPlainHTTP {
+			continue // c8s_dev builds accept an empty platform (plainhttp_dev.go)
+		}
 		err := validateARMTLSPlatformFlag(tc.in)
 		if tc.wantErr == "" && err != nil {
 			t.Errorf("validateARMTLSPlatformFlag(%q) = %v, want nil", tc.in, err)
