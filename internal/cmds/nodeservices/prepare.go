@@ -36,6 +36,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 		outputs[name] = data
 	}
+	if d.Role == launchconfig.Pod {
+		return preparePod(rootDir, d, outputs)
+	}
 	bakedData, err := os.ReadFile(path("/usr/lib/c8s/allowlist-seed.json"))
 	if err != nil {
 		return err
@@ -104,32 +107,39 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 
 	// Validate every input before publishing anything. RKE2 only starts after
 	// this preparation succeeds, so pods never observe partially staged input.
-	publicPath := path(PublicDir)
+	if err := publishPublic(path(PublicDir), outputs, d.Role == launchconfig.Agent); err != nil {
+		return err
+	}
+	return writeFile(path(nriPolicyPath), data, 0600)
+}
+
+const nriPolicyPath = "/etc/nri/conf.d/image-policy.yaml"
+
+func publishPublic(publicPath string, outputs map[string][]byte, clearServer bool) error {
 	if err := os.MkdirAll(publicPath, 0755); err != nil {
 		return err
 	}
 	if err := os.Chmod(publicPath, 0755); err != nil {
 		return err
 	}
-	if d.Role == launchconfig.Agent {
+	if clearServer {
 		if err := removeServerOutputs(publicPath); err != nil {
 			return err
 		}
 	}
 	for name, data := range outputs {
-		dst := filepath.Join(publicPath, name)
-		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-			return err
-		}
-		if err := fileutil.WriteAtomic(dst, data, 0644); err != nil {
+		if err := writeFile(filepath.Join(publicPath, name), data, 0644); err != nil {
 			return err
 		}
 	}
-	policyPath := path("/etc/nri/conf.d/image-policy.yaml")
-	if err := os.MkdirAll(filepath.Dir(policyPath), 0755); err != nil {
+	return nil
+}
+
+func writeFile(path string, data []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(policyPath, data, 0600)
+	return fileutil.WriteAtomic(path, data, mode)
 }
 
 // bakedBase decodes the measured base out of the boot config it is written in.

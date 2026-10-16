@@ -19,6 +19,7 @@ import (
 const (
 	serverMarker     = "/run/confos/role-server"
 	agentMarker      = "/run/confos/role-agent"
+	podMarker        = "/run/confos/role-pod"
 	serverTokenPath  = "/run/confos/rke2-server-token"
 	agentTokenPath   = "/run/confos/rke2-agent-token"
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
@@ -27,10 +28,12 @@ const (
 	// would lock a rebooted node out of its own name: the document's
 	// rke2.nodePassword is staged here instead.
 	nodePasswordPath = "/etc/rancher/node/password"
+	// PodManifestPath is the staged static pod of a pod-role boot.
+	PodManifestPath = Dir + "/pod.yaml"
 )
 
 // Stage authenticates the launch document and writes only fixed boot paths.
-// Both role markers are cleared before verification, and the selected marker
+// Every role marker is cleared before verification, and the selected marker
 // is written last: an invalid document or failed write cannot start a role.
 // Services require the oneshot stage unit and must never consume these files
 // independently of its successful completion. Role changes require relaunch.
@@ -57,8 +60,8 @@ func clearOutputs(cfg Config) error {
 	// output fails. Collect errors so a blocked first marker never prevents
 	// attempting to remove the other.
 	var errs []error
-	paths := []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
+	paths := []string{serverMarker, agentMarker, podMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath}
+	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json", "pod.yaml"} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
@@ -103,17 +106,11 @@ func stageVerified(cfg Config, v *Verified) error {
 	if err != nil {
 		return fmt.Errorf("encode staged config: %w", err)
 	}
-	fragment, err := yaml.Marshal(rke2Fragment(doc))
-	if err != nil {
-		return fmt.Errorf("encode RKE2 role fragment: %w", err)
-	}
 	outputs := []outputFile{
 		{Dir + "/peers.json", peers},
 		{Dir + "/cds.json", cds},
 		{Dir + "/operator-pubkey", v.operatorPub},
 		{Dir + "/config.json", append(encoded, '\n')},
-		{agentTokenPath, []byte(doc.RKE2.AgentToken)},
-		{rke2FragmentPath, fragment},
 	}
 	if doc.RKE2.NodePassword != "" {
 		// Without one (an older bundle), RKE2 generates its own per boot.
@@ -122,6 +119,19 @@ func stageVerified(cfg Config, v *Verified) error {
 	if doc.Workloads != "" {
 		outputs = append(outputs, outputFile{Dir + "/workloads.json", []byte(doc.Workloads)})
 	}
+	if doc.Role == Pod {
+		// No RKE2 token or fragment: nothing in a pod boot joins a cluster.
+		outputs = append(outputs, outputFile{PodManifestPath, []byte(doc.Pod.Manifest)})
+		return publish(cfg, outputs, podMarker)
+	}
+	fragment, err := yaml.Marshal(rke2Fragment(doc))
+	if err != nil {
+		return fmt.Errorf("encode RKE2 role fragment: %w", err)
+	}
+	outputs = append(outputs,
+		outputFile{agentTokenPath, []byte(doc.RKE2.AgentToken)},
+		outputFile{rke2FragmentPath, fragment},
+	)
 	marker := agentMarker
 	if doc.Role == Server {
 		outputs = append(outputs,
@@ -129,6 +139,11 @@ func stageVerified(cfg Config, v *Verified) error {
 		)
 		marker = serverMarker
 	}
+	return publish(cfg, outputs, marker)
+}
+
+// publish writes every output, then the role marker last.
+func publish(cfg Config, outputs []outputFile, marker string) error {
 	for _, out := range outputs {
 		path := cfg.path(out.path)
 		// /run/confos/launch contains a copy of the signed join credentials.

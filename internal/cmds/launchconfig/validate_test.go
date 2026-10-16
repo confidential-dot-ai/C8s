@@ -418,7 +418,7 @@ func TestStageMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
 }
 
 func TestRoleValidFollowsRoleTable(t *testing.T) {
-	for _, role := range []Role{Server, Agent} {
+	for _, role := range []Role{Server, Agent, Pod} {
 		if !role.Valid() {
 			t.Errorf("%s has no role table entry", role)
 		}
@@ -428,7 +428,7 @@ func TestRoleValidFollowsRoleTable(t *testing.T) {
 			t.Errorf("%q is accepted as a role", role)
 		}
 	}
-	if len(roles) != 2 {
+	if len(roles) != 3 {
 		t.Errorf("role table has %d entries; give each new role a constant and a case above", len(roles))
 	}
 }

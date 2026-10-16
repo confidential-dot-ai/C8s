@@ -37,7 +37,10 @@ fi
 # containerd-data-disk.sh. Poll briefly (~10s) so a slow udev probe doesn't make
 # us miss it. virtio-blk is scanned as a fallback via its sysfs serial.
 DEV=""
-for _ in $(seq 1 20); do
+# Disks attached at launch are enumerated by udev coldplug: wait for udev to
+# settle, then scan briefly. An absent disk costs ~1 s, not the old 10 s poll.
+udevadm settle --timeout=10 || true
+for _ in $(seq 1 3); do
     for l in /dev/disk/by-id/*confai-models*; do
         [ -e "$l" ] || continue
         DEV="$(readlink -f "$l")"; break
