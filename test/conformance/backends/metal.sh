@@ -63,6 +63,12 @@ image_digest() { c8s allowlist inspect-image "$1" | awk '$1 == "digest:" {print 
 
 image_alias() { return $UNSUPPORTED; }
 
+# The node image's own c8s image is not pullable from the harness host.
+injected_image() { return $UNSUPPORTED; }
+
+# The node image keeps its state on encrypted scratch (docs/node-image.md).
+scratch_encrypted() { echo yes; }
+
 # The lane's allowlist URL is the router on the guest's public address: the
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
@@ -88,6 +94,8 @@ cds_document_path() {
     esac
 }
 cds_serving_cert() { return "$UNSUPPORTED"; }
+# No node shell, so the plugin's health socket is out of reach.
+applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
 cds_unblock() { return "$UNSUPPORTED"; }
 cds_relay_block() { return "$UNSUPPORTED"; }
@@ -208,6 +216,11 @@ relying_party() {
 image_entrypoint() {
     command -v crane >/dev/null || return $UNSUPPORTED
     crane config "$1" | jq -r '.config | ((.Entrypoint // []) + (.Cmd // []))[]'
+}
+
+image_env() {
+    command -v crane >/dev/null || return $UNSUPPORTED
+    crane config "$1" | jq -r '.config | (.Env // [])[]'
 }
 
 # Signed writes through the route, as kind's are, not `apply`: that lints

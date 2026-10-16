@@ -36,6 +36,10 @@
 #                                    ready, so each bootstraps from the CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
+#   applied_version                  the allowlist version the admission plugin
+#                                    on the node decides with, from its health
+#                                    endpoint, or 77 where the node cannot be
+#                                    reached
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
 #   pod_manifest [options] -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
@@ -43,12 +47,25 @@
 #                                    options, before the --, are
 #                                    --host-network, --run-as-user <uid>,
 #                                    --add-capability <cap>, --label <k=v>,
-#                                    --annotation <k=v>,
+#                                    --annotation <k=v>, --env <NAME=VALUE>
+#                                    (the first container's),
+#                                    --disk-volume <path> (an emptyDir on the
+#                                    node's disk in the last container),
 #                                    --init-container '<image> <command...>'
+#   scratch_encrypted                yes/no: the node's disk-backed emptyDirs
+#                                    sit on encrypted scratch
 #   image_entrypoint <ref>           the argv the image starts with when the pod
 #                                    spec overrides nothing, one word per line
+#   image_env <ref>                  the NAME=VALUE entries the image's
+#                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
+#   seed_add <name> <file>           add the entry in file to the seed the CDS
+#                                    follows, under name; 77 where the seed is
+#                                    not the cluster's to change
+#   seed_restore                     put back the seed seed_add changed, if any
+#   cds_instance                     the CDS pod's uid and restart count, one
+#                                    line, so a later read tells a restart
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
@@ -159,7 +176,8 @@
 #                                    then the response headers, one per line
 #   router_serving_cert              the leaf the router presents on its public
 #                                    address, PEM
-#   router_nginx_conf                the router's rendered nginx configuration
+#   router_nginx_conf                the router's rendered nginx configuration;
+#                                    77 where the node image holds it
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
 #   cds_relay_block / cds_relay_unblock
@@ -203,6 +221,9 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
 # undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# "secret-client" is the image the webhook injects its helpers from, for a
+# pod that runs a helper of its own; a backend whose node holds that image
+# out of the harness's reach answers 77 from injected_image. The
 # steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
 # tar for the copy, which no other logical image shares.
 image_ref() {
@@ -215,6 +236,7 @@ image_ref() {
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
         mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
+        secret-client) injected_image ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -234,9 +256,9 @@ dialer_bin() {
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
 # which the node image bakes as the equal value (node-guest-image/c8s/
-# image-policy.yaml.in, allowlist.pull.interval). The plugin exposes nothing
-# about the version it holds, and containerd discards its log, so the steps
-# wait this out rather than observe it.
+# image-policy.yaml.in, allowlist.pull.interval). The steps poll
+# applied_version for the served version, with a deadline in these; where the
+# backend cannot reach the plugin they wait this out instead.
 pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
@@ -327,6 +349,9 @@ operator_arg() {
 
 cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].args}' c8s-cds; }
 
+# The image the webhook injects get-cert and its siblings from.
+injected_image() { operator_arg get-cert-image; }
+
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }
 
@@ -415,6 +440,41 @@ seed_declares() {
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .data["allowlist-seed.json"] // empty')"
     [ -n "$seed" ] || return $UNSUPPORTED
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
+}
+
+# The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
+# in the image instead, and renders no ConfigMap, so there it is not the
+# cluster's to change. The first change keeps the original for seed_restore.
+seed_configmap() {
+    kubectl -n "$NS" get configmaps -o json |
+        jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
+}
+
+seed_add() {
+    local cm original
+    cm="$(seed_configmap)"
+    [ -n "$cm" ] || return $UNSUPPORTED
+    original="$(scratch)/seed-original.json"
+    [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
+    kubectl -n "$NS" get configmap "$cm" -o json |
+        jq --arg name "$1" --slurpfile entry "$2" \
+            '.data["allowlist-seed.json"] |= (fromjson | .workloads[$name] = $entry[0] | tojson)' |
+        kubectl replace -f - >/dev/null
+}
+
+# Only the data goes back: the ConfigMap's resourceVersion moved with the
+# change, so a replace of the saved object conflicts.
+seed_restore() {
+    local original cm
+    original="$(scratch)/seed-original.json"
+    [ -s "$original" ] || return 0
+    cm="$(jq -r .metadata.name "$original")"
+    kubectl -n "$NS" patch configmap "$cm" --type merge -p "$(jq -c '{data: .data}' "$original")" >/dev/null && rm -f "$original"
+}
+
+cds_instance() {
+    kubectl -n "$NS" get pods -l app.kubernetes.io/component=cds \
+        -o jsonpath='{range .items[*]}{.metadata.uid} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | head -1
 }
 
 # A key that is not an operator key, minted once per run.
@@ -549,11 +609,21 @@ router_headers() {
     printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
 }
 
+# Off a node image the configuration is a ConfigMap, mounted directly or
+# through a projected volume; a baked node mounts it from the image
+# (hostPath), which nothing here can read without a node shell.
 router_nginx_conf() {
-    local cm
-    cm="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}' |
-        tr ' ' '\n' | grep -- '-nginx$' | head -1)"
-    [ -n "$cm" ] || { echo "backend: the router mounts no nginx ConfigMap" >&2; return 1; }
+    local volumes cm
+    volumes="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
+    cm="$(jq -r '.[] | (.configMap.name // empty), (.projected.sources[]?.configMap.name // empty)' <<<"$volumes" |
+        grep -- '-nginx$' | head -1)"
+    if [ -z "$cm" ]; then
+        if jq -e '.[] | select(.name == "nginx-config") | .hostPath' <<<"$volumes" >/dev/null; then
+            return "$UNSUPPORTED"
+        fi
+        echo "backend: the router mounts no nginx ConfigMap" >&2
+        return 1
+    fi
     kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
 }
 
@@ -562,7 +632,7 @@ router_nginx_conf() {
 # init container, reads the same file into the discovery document it writes, so that mode is
 # read from the document the router serves, which needs no exec.
 router_tls_mode() {
-    local args mode out path
+    local args mode out path conf
     args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
         jq -r '.spec.template.spec | ((.initContainers // []) + .containers)[] | (.args // [])[]')" || return
     mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
@@ -570,7 +640,8 @@ router_tls_mode() {
         grep -q '^--front-door-mode-file=' <<<"$args" || { echo "backend: the router names no front-door mode" >&2; return 1; }
         out="$(sed -n 's/^--discovery-out=//p' <<<"$args" | head -1)"
         [ -n "$out" ] || { echo "backend: the router publishes no discovery document" >&2; return 1; }
-        path="$(router_nginx_conf | awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}')"
+        conf="$(router_nginx_conf)" || return
+        path="$(awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}' <<<"$conf")"
         [ -n "$path" ] || { echo "backend: no router location serves $out" >&2; return 1; }
         mode="$(curl -sk --max-time 30 "$(router_url)$path" | jq -r '.public_tls.mode // empty')" || return
     fi
@@ -714,6 +785,7 @@ mesh_scraper() {
 teardown() {
     kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     allowlist_delete "$MESH_SCRAPER" || true
+    seed_restore || true
     rm -f "$(scratch)/mesh-scraper.ready" "$(scratch)"/cache-*
     teardown_backend
 }
