@@ -12,6 +12,8 @@ runtimeConfig:
 scheduling:
   gatewayNodeName: c8s-node
   inferenceNodeName: c8s-node
+  inferenceNodeNames: [c8s-node]
+  routerNodeName: c8s-node
 
 attestationReceipts:
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
