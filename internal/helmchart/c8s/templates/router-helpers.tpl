@@ -526,6 +526,9 @@ instead of a ConfigMap the control plane can edit.
 {{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
 {{- end -}}
 
+{{/* Where nginx spools tunnel request bodies (router.nginx.tunnelBodySpace). */}}
+{{- define "router.tunnelBodyDir" -}}/var/lib/c8s-tunnel-body{{- end -}}
+
 {{/* nodeservices.RouterTLSSnippetDir must equal it. */}}
 {{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
 

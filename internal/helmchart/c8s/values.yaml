@@ -1344,6 +1344,10 @@ router:
     runAsGroup: 101
     runAsNonRoot: true
     resources: {}
+    # -- Memory for the tunnel request bodies nginx holds until cds-attest
+    # reads them, up to 8 MiB per upload in progress, charged to nginx. An
+    # upload that does not fit fails with 500.
+    tunnelBodySpace: 8Gi
 
   service:
     # -- Service type. Set to LoadBalancer to expose the listener publicly
@@ -1356,10 +1360,9 @@ router:
     # would SNAT away) and Cluster otherwise. Local delivers traffic only
     # through nodes running the router pod; set Cluster explicitly if your LB
     # cannot health-check nodes, and every client behind a node then shares one
-    # budget and one per-client bound: 512 concurrent attestation sessions for
-    # that whole node, past which any one client's traffic refuses new sessions
-    # for every other client behind it, and 8 tunnel requests in flight for
-    # that whole node, past which nginx answers 503.
+    # per-client bound: 512 concurrent attestation sessions, 10 new ones and
+    # 400 tunnel requests per second for that whole node, past which any one
+    # client's traffic refuses the others behind it.
     externalTrafficPolicy: ""
     # -- Optional annotations on the Service. Use the provider's LB annotation to
     # pin a static IP (e.g. networking.gke.io/load-balancer-ip-addresses on GKE,

@@ -1,9 +1,11 @@
 package routing
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"time"
 )
@@ -12,8 +14,9 @@ var errIdle = errors.New("no data moved within the backend timeout")
 
 // idleExchange wraps a routing listener request so it fails only once no
 // data has moved either way for timeout: reading the client's body, or
-// writing to the client, restarts the clock. A client that keeps sending or
-// reading is never cut off, however slow. stop releases the timer and clears
+// writing to the client, restarts the clock, as does either direction of an
+// upgraded connection. A client that keeps sending or reading is never cut
+// off, however slow. stop releases the timer and clears
 // the write deadline, which would otherwise outlive the request on a
 // kept-alive connection.
 func idleExchange(w http.ResponseWriter, r *http.Request, timeout time.Duration) (_ http.ResponseWriter, _ *http.Request, stop func()) {
@@ -66,5 +69,48 @@ func (w *idleWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// Unwrap lets ReverseProxy flush and hijack through the wrapper.
+// Hijack hands ReverseProxy the client connection for a protocol upgrade.
+// Its traffic either way restarts the clock; once it stops, the idle context
+// makes ReverseProxy close both ends.
+func (w *idleWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	conn, brw, err := w.rc.Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Clear the deadline the last Write left behind.
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		conn.Close()
+		return nil, nil, err
+	}
+	return &idleConn{Conn: conn, timeout: w.timeout, touch: w.touch}, brw, nil
+}
+
+// idleConn is an upgraded connection that restarts the idle clock on traffic
+// and fails a write the client does not drain within timeout.
+type idleConn struct {
+	net.Conn
+	timeout time.Duration
+	touch   func()
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
+}
+
+func (c *idleConn) Write(p []byte) (int, error) {
+	if err := c.SetWriteDeadline(time.Now().Add(c.timeout)); err != nil {
+		return 0, err
+	}
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
+}
+
+// Unwrap lets ReverseProxy flush through the wrapper.
 func (w *idleWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }

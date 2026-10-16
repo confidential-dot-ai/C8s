@@ -672,9 +672,9 @@ with or without it.
 | `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
 | `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
-| `--backend-timeout` | `1h` | On the routing listener, how long a request may go with no data moving either way. A tunnelled request, whose response is buffered whole, gets this long in total for its backend call. Must be positive. |
+| `--backend-timeout` | `1h` | On the routing listener, how long a request, or an upgraded connection such as a WebSocket, may go with no data moving either way. A tunnelled request, whose response is buffered whole, gets this long in total for its backend call. Must be positive. |
 | `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
-| `--tunnel-slots` | `32` | Tunnelled requests in flight in one replica, each held for its whole backend call, shared by all clients; one client (by `X-Real-IP`) holds at most a quarter of them. Must be positive. |
+| `--tunnel-budget` | 75% of the container memory limit, else `16Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves its record and the largest response (32 MiB). Must cover one request, 40 MiB. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
 | `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--cds-url` and `--routing-port`. |
 
@@ -732,47 +732,44 @@ lower revision, including the applied one, and keeps the staged revision. To
 withdraw a staged revision, publish a higher one; restoring the previous
 manifest is refused.
 
-With `--cds-url`, each `cds-attest` replica holds at most `--tunnel-slots`
-tunnelled requests at once, shared by all clients (one client holds at most a
-quarter of them), from reading the sealed request to writing the sealed
-response, and answers further ones with 503 `tunnel_busy`. A slot is held
-for the whole backend call, up to `--backend-timeout`, so `--tunnel-slots`
-caps concurrent tunnelled requests, not only memory. The per-client quarter
-keys on `X-Real-IP`: clients behind one NAT share it, and so do all clients
-when the Service SNATs them (`externalTrafficPolicy: Cluster`). Each request
-buffers up to about 150 MiB (three copies of an 8 MiB request and four of a
-32 MiB response), so budget about 150 MiB per slot, 5 GiB at the default,
-for `cds-attest`.
+With `--cds-url`, `cds-attest` admits a tunnelled request only while
+`--tunnel-budget` covers its record plus the largest response, 32 MiB, and
+answers others with 503 `tunnel_busy`. The request holds that reservation
+from reading the sealed request to writing the sealed response, up to
+`--backend-timeout`. At 16 GiB that is about 400 requests carrying 8 MiB
+records, or 500 small ones, per replica. A request that names no live
+session gets 401 before its body is read, so it holds no budget. The budget
+counts each buffered byte once, but a request holds up to about four copies
+of its data at once: under a memory limit, leave headroom or set the budget
+lower.
 
 With or without `--cds-url`, a tunnel request body over 8 MiB gets 413, and
 a response over 32 MiB gets a sealed 502; the routing listener streams
 responses without a cap. No timeout assumes a client speed: an upload or
-download loses its slot only once it makes no progress for
+download loses its budget only once it makes no progress for
 `--tunnel-io-timeout`. `cds-attest` writes a sealed response in 16 KiB
 pieces and restarts that timeout after each, so a client that keeps reading
 gets the whole response however slowly it reads. On the routing listener,
-`--backend-timeout` restarts in the same way whenever data moves either way.
+`--backend-timeout` restarts in the same way whenever data moves either way,
+also on an upgraded connection, which has no fixed lifetime.
 
-The chart's nginx limits apply to every install with the attest sidecar
+The chart's nginx settings apply to every install with the attest sidecar
 (`router.attest.enabled`), whether or not `cds-attest` routes by the
-manifest. nginx buffers request bodies in memory, so a slow upload holds
-nginx memory rather than a slot; keep `proxy_request_buffering` on for
-`/.well-known/c8s/`. Replies stream once they outgrow `proxy_buffers`, so a
-slow download of a large reply holds its slot for as long as the client
-keeps reading. nginx spills nothing under `/.well-known/c8s/` to the
-memory-backed temp volume. Its timeouts restart on progress too:
+manifest. nginx reads each request body whole before proxying it, so a slow
+upload holds nginx memory rather than budget; keep `proxy_request_buffering`
+on for `/.well-known/c8s/`. Replies stream once they outgrow
+`proxy_buffers`, so a slow download of a large reply holds its budget for as
+long as the client keeps reading. Its timeouts restart on progress too:
 `client_body_timeout` and `send_timeout` (nginx's 60s default) count from
 the last read from or write to the client, and `proxy_read_timeout`
-(`router.upstream.readTimeout`) from the last read from the sidecar. The handshake endpoints admit bodies
-up to 16 KiB. `/.well-known/c8s/tunnel` admits bodies up to 8 MiB, drops an
-upload that sends nothing for 10s, and serves at most 32 requests at once
-and 8 per client address. Beyond either cap nginx answers with its own HTML
-503 page, and a body over 8 MiB gets its own HTML 413 page, before the
-sidecar's JSON errors can apply. A tunnel request waiting on a slow backend
-keeps its place under these caps for up to `router.upstream.readTimeout`.
-Under `externalTrafficPolicy: Cluster`, every client behind one node shares
-that node's 8. Budget up to 256 MiB of
-nginx memory for tunnel bodies.
+(`router.upstream.readTimeout`) from the last read from the sidecar. The
+handshake endpoints admit bodies up to 16 KiB. `/.well-known/c8s/tunnel`
+admits bodies up to 8 MiB and drops an upload that sends nothing for 10s.
+Bodies past 16 KiB spill to a tmpfs of `router.nginx.tunnelBodySpace`
+(default 8Gi), charged to nginx's memory; an upload that does not fit gets
+500, and a body over 8 MiB gets nginx's HTML 413 page, before the sidecar's
+JSON errors can apply. nginx caps no connections per client or in total:
+each worker accepts 16384.
 
 ## Attestation-api
 
