@@ -133,6 +133,15 @@ data:
         limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ $allowlistWriteTotalRate }}r/s;
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
 {{- end }}
+{{- if .Values.router.attest.enabled }}
+
+        # One constant key: /.well-known/c8s/ is limited in total, not per
+        # client, since a SNATed Service gives every client the node's address.
+        map $host $c8s_protocol_total_key {
+            default "all";
+        }
+        limit_conn_zone $c8s_protocol_total_key zone=c8s_protocol_total:1m;
+{{- end }}
 
         {{- if or $upstreamMeshWrapped $launchDriven }}
         # A mesh-wrapped catch-all is dialed via a variable (see location /), so
@@ -310,9 +319,11 @@ data:
             # the attest-lb challenge, and the over-encrypted tunnel — are
             # proxied to the in-pod `cds-attest` sidecar.
             # X-Real-IP is the address the sidecar meters each client by.
-            # Buffering keeps a slow client from holding a sidecar tunnel slot
-            # for longer than nginx takes to relay a loopback request. Tunnel
-            # records go up to 8 MiB, and a reply waits on the backend.
+            # Request bodies (tunnel records up to 8 MiB) are buffered in nginx
+            # memory, never in the 16Mi temp volume, so a slow upload holds no
+            # sidecar slot; replies past proxy_buffers stream instead of
+            # spilling. limit_conn bounds that memory to 32 x 8 MiB; 32 matches
+            # cds-attest's default --tunnel-slots.
             location /.well-known/c8s/ {
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
@@ -323,6 +334,10 @@ data:
                 proxy_buffering on;
                 proxy_request_buffering on;
                 client_max_body_size 8m;
+                client_body_buffer_size 8m;
+                proxy_max_temp_file_size 0;
+                limit_conn c8s_protocol_total 32;
+                limit_conn_status 503;
                 proxy_read_timeout {{ $readTimeout }};
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
