@@ -47,24 +47,6 @@ node_name() {
     esac
 }
 
-store_digest() { store_digests | awk -F'\t' -v ref="$1" '$2 == ref {print $1; exit}'; }
-
-# The digest the node's store holds for ref, pulling only when it has none.
-image_digest() {
-    local digest
-    digest="$(store_digest "$1")"
-    if [ -z "$digest" ]; then
-        node_exec ctr -n k8s.io images pull "$1" >/dev/null
-        digest="$(store_digest "$1")"
-    fi
-    echo "$digest"
-}
-
-image_alias() {
-    node_exec ctr -n k8s.io images pull "$1" >/dev/null
-    node_exec ctr -n k8s.io images tag --force "$1" "$2" >/dev/null
-}
-
 # A hello API outside the cluster: a container on the kind docker network,
 # which pods reach through the node's address translation, so the address is
 # neither a pod's nor a Service's.
@@ -285,27 +267,6 @@ PYEOF
 evidence_unsigned() { return "$UNSUPPORTED"; }
 relying_party() { return "$UNSUPPORTED"; }
 
-pod_uid() { kubectl -n "$1" get pod "$2" -o jsonpath='{.metadata.uid}'; }
-
-# The pod's certificate volume is the memory-backed emptyDir the webhook
-# adds, which the kubelet keeps under the pod's directory on the node; read
-# there, so the first leaf is seen before any workload container runs.
-pod_cert_file() {
-    if [ -n "${4:-}" ]; then
-        pod_cert_file_in "$1" "$2" "$4" "$3"
-        return
-    fi
-    local uid
-    uid="$(pod_uid "$1" "$2")" || return
-    node_exec cat "/var/lib/kubelet/pods/$uid/volumes/kubernetes.io~empty-dir/c8s-certs/$3" 2>/dev/null || true
-}
-
-pod_sandbox_id() {
-    local uid
-    uid="$(pod_uid "$1" "$2")" || return
-    node_exec crictl pods --label "io.kubernetes.pod.uid=$uid" -q | awk 'NR == 1'
-}
-
 # From the node's store, pulled when absent: the image's entrypoint, then its
 # cmd. The kind node image ships jq.
 image_entrypoint() {
@@ -336,65 +297,6 @@ allowlist_delete() {
     esac
 }
 
-# The installer renders the base allowlist into the plugin's config directory
-# on the node; a digest is a string that appears nowhere else in it.
-base_declares() {
-    if node_exec grep -rqF "$2" /etc/nri/conf.d; then echo yes; else echo no; fi
-}
-
-# The chart's nriImagePolicy.hostPaths.pluginDir/pluginFilename, which
-# containerd launches at its own start (plugin_path), and its runtimeDir/
-# healthSocketName, both on the node.
-PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
-PLUGIN_HEALTH=/run/nri-image-policy/health.sock
-
-# Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
-# kind node image ships curl.
-node_refuses() {
-    local rc=0
-    node_exec curl -sk --max-time 2 -o /dev/null "https://127.0.0.1:$1/healthz" 2>/dev/null || rc=$?
-    if [ "$rc" -eq 7 ]; then echo yes; else echo no; fi
-}
-
-# The pids running the plugin binary; the kind node image ships procps.
-plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
-
-# The plugin's own /healthz answers 200 once its first pull has settled; the
-# kind node image ships curl.
-plugin_healthy() {
-    node_exec curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
-}
-
-# The version in that answer, whatever its status: the one the plugin applied.
-applied_version() {
-    node_exec curl -s --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz | jq -r .allowlist_version
-}
-
-# Ready within the installer's budget: a containerd restart, then the first
-# pull's bounded retries (2+4+8+16s between attempts) when the CDS is away.
-plugin_ready() {
-    local deadline=$(($(date +%s) + 300))
-    until plugin_healthy; do
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the plugin on $1 is not ready after 300s" >&2; return 1; }
-        sleep 2
-    done
-}
-
-# containerd does not relaunch a plugin that exited, so a killed plugin stays
-# down, and required_plugins makes every workload container create fail.
-plugin_stop() {
-    local pids
-    for _ in $(seq 1 30); do
-        pids="$(plugin_pids)"
-        [ -n "$pids" ] || return 0
-        # shellcheck disable=SC2086  # one argument per pid
-        node_exec kill $pids 2>/dev/null || true
-        sleep 1
-    done
-    echo "backend: the plugin on $1 is still running" >&2
-    return 1
-}
-
 # A containerd restart launches the plugins in plugin_path again; shims
 # survive it, so running containers do too. The new plugin registers, runs
 # its startup check once ready, and pulls afresh (its applied version starts
@@ -416,8 +318,5 @@ cds_restart() {
     kubectl -n "$NS" rollout status deploy/c8s-cds --timeout=180s >/dev/null
     cds_pf_stop
 }
-
-# The number in the weak entity tag W/"<n>" of GET /allowlist.
-node_containers() { node_exec crictl ps -a -q --image "$2"; }
 
 dispatch "$@"

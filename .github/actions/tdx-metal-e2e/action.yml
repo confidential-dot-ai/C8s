@@ -20,6 +20,9 @@ inputs:
   suite_run:
     description: 'Command that runs the extra suite; empty skips it.'
     default: ''
+  dev:
+    description: 'Boot the C8S_DEV=1 SSH variant (rke2-tdx-dev-ssh) of the commit instead of the measured image, and give the suite a node shell and the admin kubeconfig.'
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -250,6 +253,7 @@ runs:
     if: inputs.exact_image != 'true'
     env:
       IMAGE_REPO: ghcr.io/confidential-dot-ai/node-guest-base
+      VARIANT: ${{ inputs.dev == 'true' && 'rke2-tdx-dev-ssh' || 'rke2-tdx' }}
     shell: bash
     run: |
       set -euo pipefail
@@ -263,22 +267,22 @@ runs:
       IMG_DIGEST=""; code=""
       for attempt in 1 2 3 4; do
         hdr=$(curl -sI --max-time 20 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
-          "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/manifests/rke2-tdx-cdi-${c8sRef}" | tr -d '\r')
+          "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/manifests/${VARIANT}-cdi-${c8sRef}" | tr -d '\r')
         code=$(awk 'NR==1{print $2}' <<<"$hdr")
         case "$code" in
           200) IMG_DIGEST=$(awk 'tolower($1)=="docker-content-digest:"{print $2}' <<<"$hdr"); break ;;
-          404) echo "::error::no node image for the commit under test: ${IMAGE_REPO}:rke2-tdx-cdi-${c8sRef} is not published. The lane needs the exact pair; wait for this commit's c8s-image run, or dispatch with a c8s_ref whose image exists"; exit 1 ;;
+          404) echo "::error::no node image for the commit under test: ${IMAGE_REPO}:${VARIANT}-cdi-${c8sRef} is not published. The lane needs the exact pair; wait for this commit's c8s-image run, or dispatch with a c8s_ref whose image exists"; exit 1 ;;
           *)   sleep $((attempt * 3)) ;;
         esac
       done
-      [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for rke2-tdx-cdi-${c8sRef} on 4 attempts"; exit 1; }
-      oras=$(retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/manifests/rke2-tdx-${c8sRef}")
+      [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for ${VARIANT}-cdi-${c8sRef} on 4 attempts"; exit 1; }
+      oras=$(retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/manifests/${VARIANT}-${c8sRef}")
       mlayer=$(jq -er '[.layers[] | select(.annotations["org.opencontainers.image.title"]=="manifest.json")] | if length == 1 then .[0].digest else error("expected one manifest.json layer") end' <<<"$oras")
       [[ "$mlayer" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::invalid manifest layer digest"; exit 1; }
       retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${IMAGE_REPO#ghcr.io/}/blobs/$mlayer" -o /tmp/image-manifest.json
       jq -e '.version == 3 and .build.platform == "tdx" and
         ([.tdx.mrtd, .tdx.rtmr1, .tdx.rtmr2] | all(.[]; type == "string" and test("^[0-9a-f]{96}$")))' /tmp/image-manifest.json >/dev/null \
-        || { echo "::error::rke2-tdx-${c8sRef} manifest.json is not a TDX node image manifest"; exit 1; }
+        || { echo "::error::${VARIANT}-${c8sRef} manifest.json is not a TDX node image manifest"; exit 1; }
       short12=${IMG_DIGEST#sha256:}; short12=${short12:0:12}
       {
         echo "image=${IMAGE_REPO}@${IMG_DIGEST}"
@@ -287,7 +291,7 @@ runs:
         echo "rtmr1=$(jq -er .tdx.rtmr1 /tmp/image-manifest.json)"
         echo "rtmr2=$(jq -er .tdx.rtmr2 /tmp/image-manifest.json)"
       } >> "$GITHUB_ENV"
-      echo "c8s under test ${c8sRef} on its own node image rke2-tdx-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), mrtd $(jq -r '.tdx.mrtd[0:16]' /tmp/image-manifest.json)..."
+      echo "c8s under test ${c8sRef} on its own node image ${VARIANT}-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), mrtd $(jq -r '.tdx.mrtd[0:16]' /tmp/image-manifest.json)..."
 
   - name: stage the node image on the host (no-op when already staged)
     if: inputs.exact_image != 'true'
@@ -523,6 +527,11 @@ runs:
       echo "OK: attested kubeconfig, identity=$WHO"
       KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes
 
+  - name: node shell and admin kubeconfig (dev image)
+    if: inputs.dev == 'true'
+    shell: bash
+    run: bash .github/scripts/dev-node-shell.sh "$GUEST_IP" /tmp/launch-data/server.key
+
   - name: assert the host cidata disk is inert
     shell: bash
     run: .github/scripts/cidata-tripwire.sh
@@ -594,10 +603,13 @@ runs:
   - name: extra suite
     if: inputs.suite_run != ''
     uses: ./.github/actions/extra-suite
+    env:
+      # The conformance backend for this image (test/conformance/backends).
+      CONFORMANCE_BACKEND: ${{ inputs.dev == 'true' && 'metal-dev' || 'metal' }}
     with:
       artifact: ${{ inputs.suite_artifact }}
       run: ${{ inputs.suite_run }}
-      platform: tdx-metal
+      platform: ${{ inputs.dev == 'true' && 'tdx-metal-dev' || 'tdx-metal' }}
 
   - name: summary
     if: always()

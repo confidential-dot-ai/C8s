@@ -103,6 +103,21 @@ jobs:
     secrets:
       MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
 
+  # The debug variant of the same commit (C8S_DEV=1 with SSH), for the metal
+  # lanes' dev conformance runs. A parallel job of its own: the measured build,
+  # its acceptance and its release aliases never wait on it.
+  build-and-push-dev:
+    needs: release-context
+    permissions:
+      contents: read
+      packages: write # Publish the commit-scoped -dev-ssh artifacts.
+    uses: ./.github/workflows/c8s-image.yml
+    with:
+      dev: true
+      ssh: true
+    secrets:
+      MODULE_SIG_KEY_PEM: ${{ secrets.MODULE_SIG_KEY_PEM }}
+
   # Exact-image acceptance consumes this run's immutable publication evidence,
   # never the independently maintained staged-image ConfigMap or root PVC.
   verify-tdx-image:
