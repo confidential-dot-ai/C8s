@@ -24,7 +24,7 @@ func validateRole(d *launchconfig.Document) error {
 	if d == nil {
 		return fmt.Errorf("missing staged launch configuration")
 	}
-	if d.Role != launchconfig.Server && d.Role != launchconfig.Agent {
+	if d.Role != launchconfig.Server && d.Role != launchconfig.Agent && d.Role != launchconfig.CDS {
 		return fmt.Errorf("invalid staged role")
 	}
 	return nil
