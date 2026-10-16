@@ -49,7 +49,11 @@
 #                                    --add-capability <cap>, --label <k=v>,
 #                                    --annotation <k=v>, --env <NAME=VALUE>
 #                                    (the first container's),
+#                                    --disk-volume <path> (an emptyDir on the
+#                                    node's disk in the last container),
 #                                    --init-container '<image> <command...>'
+#   scratch_encrypted                yes/no: the node's disk-backed emptyDirs
+#                                    sit on encrypted scratch
 #   image_entrypoint <ref>           the argv the image starts with when the pod
 #                                    spec overrides nothing, one word per line
 #   image_env <ref>                  the NAME=VALUE entries the image's
@@ -217,6 +221,9 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
 # undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# "secret-client" is the image the webhook injects its helpers from, for a
+# pod that runs a helper of its own; a backend whose node holds that image
+# out of the harness's reach answers 77 from injected_image. The
 # steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
 # tar for the copy, which no other logical image shares.
 image_ref() {
@@ -229,6 +236,7 @@ image_ref() {
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
         mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
+        secret-client) injected_image ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -340,6 +348,9 @@ operator_arg() {
 }
 
 cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].args}' c8s-cds; }
+
+# The image the webhook injects get-cert and its siblings from.
+injected_image() { operator_arg get-cert-image; }
 
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }

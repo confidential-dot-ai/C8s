@@ -38,6 +38,8 @@ teardown_backend() {
     docker rm -f "$EXTERNAL_HELLO" >/dev/null 2>&1 || true
 }
 
+scratch_encrypted() { echo no; }
+
 node_name() {
     case "$1" in
         one) echo "$NODE" ;;

@@ -63,6 +63,12 @@ image_digest() { c8s allowlist inspect-image "$1" | awk '$1 == "digest:" {print 
 
 image_alias() { return $UNSUPPORTED; }
 
+# The node image's own c8s image is not pullable from the harness host.
+injected_image() { return $UNSUPPORTED; }
+
+# The node image keeps its state on encrypted scratch (docs/node-image.md).
+scratch_encrypted() { echo yes; }
+
 # The lane's allowlist URL is the router on the guest's public address: the
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
