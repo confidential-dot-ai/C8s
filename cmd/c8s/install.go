@@ -105,12 +105,13 @@ const platformExemptNamespace = "kube-system"
 // against, so an operator's -f override of a repository cannot leave the chart
 // deploying repoA@<digest-of-repoB>.
 type c8sComponent struct {
-	valuePrefix  string   // values path, e.g. "cds.image" (renders {repository}@{digest})
-	repository   string   // values.yaml default repository resolved against
-	enabledPath  string   // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
-	pinnedDigest string   // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
-	entrypoint   []string // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
-	argvPinned   bool     // the chart admits it argv-pinned only, never by digest alone
+	valuePrefix  string            // values path, e.g. "cds.image" (renders {repository}@{digest})
+	repository   string            // values.yaml default repository resolved against
+	enabledPath  string            // values path guarding the render, e.g. "attestationApi.enabled" ("" = always rendered)
+	pinnedDigest string            // chart-declared digest to pin instead of resolving at the install tag ("" = resolve)
+	entrypoint   []string          // argv prefix the chart's seeded entry pins the image to ("" = argvPinned component, seeded elsewhere)
+	imageEnv     map[string]string // the image config's Env the seeded entry's env match pins
+	pinsPath     string            // values path declaring entrypoint and imageEnv, e.g. "router.nginx"
 }
 
 // chartComponents reads the component set from the chart at chartPath via
@@ -120,16 +121,28 @@ type c8sComponent struct {
 // the single source shared with the chart's c8s.components helper; the Go side
 // does not duplicate the list.
 func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, error) {
+	tree, err := chartValues(ctx, chartPath)
+	if err != nil {
+		return nil, err
+	}
+	return componentsFromValues(tree)
+}
+
+func chartValues(ctx context.Context, chartPath string) (map[string]any, error) {
 	out, err := exec.CommandContext(ctx, "helm", "show", "values", chartPath).Output()
 	if err != nil {
 		return nil, fmt.Errorf("helm show values %q: %w", chartPath, err)
 	}
-
 	var tree map[string]any
 	if err := yaml.Unmarshal(out, &tree); err != nil {
 		return nil, fmt.Errorf("parse chart values: %w", err)
 	}
+	return tree, nil
+}
 
+// componentsFromValues reads c8sComponents from a values tree, each
+// repository from its valuePath in the same tree.
+func componentsFromValues(tree map[string]any) ([]c8sComponent, error) {
 	list, ok := tree["c8sComponents"].([]any)
 	if !ok || len(list) == 0 {
 		return nil, fmt.Errorf("chart declares no c8sComponents")
@@ -153,20 +166,52 @@ func chartComponents(ctx context.Context, chartPath string) ([]c8sComponent, err
 		enabledPath, _ := m["enabledPath"].(string)
 		// pinnedDigest is optional; absent/empty means resolve at the install tag.
 		pinnedDigest, _ := m["pinnedDigest"].(string)
-		var entrypoint []string
-		if raw, ok := m["entrypoint"].([]any); ok {
-			for _, tok := range raw {
-				tok, ok := tok.(string)
-				if !ok {
-					return nil, fmt.Errorf("component %q: entrypoint must be a list of strings: %v", valuePath, raw)
-				}
-				entrypoint = append(entrypoint, tok)
-			}
+		entrypoint, imageEnv, err := seedPins(m)
+		if err != nil {
+			return nil, fmt.Errorf("component %q: %w", valuePath, err)
 		}
-		argvPinned, _ := m["argvPinned"].(bool)
-		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest, entrypoint: entrypoint, argvPinned: argvPinned})
+		comps = append(comps, c8sComponent{valuePrefix: valuePath, repository: repo, enabledPath: enabledPath, pinnedDigest: pinnedDigest, entrypoint: entrypoint, imageEnv: imageEnv, pinsPath: "c8sComponents[]"})
 	}
 	return comps, nil
+}
+
+// routerNginxComponent reads the router's nginx image as a component: the
+// chart seeds it like one, outside c8sComponents because it is versioned apart
+// from C8s. pinnedDigest is the digest the release renders.
+func routerNginxComponent(tree map[string]any) (c8sComponent, error) {
+	nginx, _ := nestedMap(tree, "router", "nginx")
+	entrypoint, imageEnv, err := seedPins(nginx)
+	if err != nil {
+		return c8sComponent{}, fmt.Errorf("router.nginx: %w", err)
+	}
+	repository, _ := stringAtPath(tree, "router.nginx.image.repository")
+	digest, _ := stringAtPath(tree, "router.nginx.image.digest")
+	return c8sComponent{valuePrefix: "router.nginx.image", repository: repository, enabledPath: "router.enabled", pinnedDigest: digest, entrypoint: entrypoint, imageEnv: imageEnv, pinsPath: "router.nginx"}, nil
+}
+
+// seedPins reads the entrypoint and imageEnv a component's values declare. A
+// null imageEnv value removes a default variable, as Helm deletes null keys.
+func seedPins(m map[string]any) (entrypoint []string, imageEnv map[string]string, err error) {
+	if raw, ok := m["entrypoint"].([]any); ok {
+		for _, tok := range raw {
+			tok, ok := tok.(string)
+			if !ok {
+				return nil, nil, fmt.Errorf("entrypoint must be a list of strings: %v", raw)
+			}
+			entrypoint = append(entrypoint, tok)
+		}
+	}
+	raw, ok := m["imageEnv"].(map[string]any)
+	if !ok && len(entrypoint) > 0 {
+		return nil, nil, errors.New("entrypoint is set but imageEnv is missing: list the image config's Env under imageEnv")
+	}
+	imageEnv = map[string]string{}
+	for name, value := range raw {
+		if value != nil {
+			imageEnv[name] = fmt.Sprint(value)
+		}
+	}
+	return entrypoint, imageEnv, nil
 }
 
 // operatorKeysPreflight enforces that installing without pinned operator keys is
@@ -1164,7 +1209,7 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err != nil {
 			return err
 		}
-		if err := checkAdoptedEntries(adoptedEntries, values, components); err != nil {
+		if err := checkAdoptedEntries(adoptedEntries, values); err != nil {
 			return err
 		}
 		var routes upstreamRoutes
@@ -2065,7 +2110,7 @@ func injectedMountRules(template corev1.PodTemplateSpec, c corev1.Container) ([]
 		}
 	}
 	certVolume := cmp.Or(template.Annotations[webhook.AnnotationCertVolume], webhook.DefaultCertVolumeName)
-	certDir := cmp.Or(template.Annotations[webhook.AnnotationCertDir], webhook.DefaultWorkloadCertDir)
+	certDir := cmp.Or(template.Annotations[webhook.AnnotationCertDir], webhook.CertDir)
 	if !path.IsAbs(certDir) {
 		return nil, fmt.Errorf("annotation %s is %q; set it to an absolute path", webhook.AnnotationCertDir, certDir)
 	}
@@ -2258,11 +2303,11 @@ func describers(workloads map[string]pkgallowlist.Workload, pod []pkgallowlist.R
 // the seed this install renders also describes. CDS would then match neither,
 // the pod's leaf would carry no workload name, and the router would refuse it
 // as a workload backend. The seed is the chart's own (seedWorkloads).
-func checkAdoptedEntries(adopted map[string]adoptedEntry, values map[string]any, components []c8sComponent) error {
+func checkAdoptedEntries(adopted map[string]adoptedEntry, values map[string]any) error {
 	if len(adopted) == 0 {
 		return nil
 	}
-	seed, err := seedWorkloads(values, components)
+	seed, err := seedWorkloads(values)
 	if err != nil {
 		return err
 	}
@@ -2279,66 +2324,12 @@ func checkAdoptedEntries(adopted map[string]adoptedEntry, values map[string]any,
 }
 
 // seedWorkloads mirrors the chart's c8s.allowlistSeedJSON from the values it
-// renders: an entry per digest of the derived components, CDS and, with the
-// router enabled, router nginx, pinned to its entrypoint with args, env and
-// mounts any and named after the last reference to the digest
-// (c8s.imageAllowlist, c8s.componentContainer), then the
-// bootstrapAllowlist.workloads entries. The chart's argv-pinned entries are
-// left out: they pin the chart's own platform command lines.
-func seedWorkloads(values map[string]any, components []c8sComponent) (map[string]pkgallowlist.Workload, error) {
-	type pinned struct {
-		path       string
-		entrypoint []string
-	}
-	var images []pinned
-	var cdsEntrypoint []string
-	for _, c := range components {
-		if c.valuePrefix == "cds.image" {
-			cdsEntrypoint = c.entrypoint
-		}
-	}
-	if boolAtPath(values, "nriImagePolicy.bootstrapAllowlist.deriveComponents") {
-		for _, c := range components {
-			if !c.argvPinned && (c.enabledPath == "" || boolAtPath(values, c.enabledPath)) {
-				images = append(images, pinned{c.valuePrefix, c.entrypoint})
-			}
-		}
-	}
-	images = append(images, pinned{"cds.image", cdsEntrypoint})
-	if boolAtPath(values, "router.enabled") {
-		var nginx []string
-		raw, _ := valueAtPath(values, "router.nginx.entrypoint")
-		toks, _ := raw.([]any)
-		for _, tok := range toks {
-			s, _ := tok.(string)
-			nginx = append(nginx, s)
-		}
-		images = append(images, pinned{"router.nginx.image", nginx})
-	}
-	type ref struct {
-		image      string
-		entrypoint []string
-	}
-	refs := map[string]ref{}
-	for _, p := range images {
-		if raw, _ := stringAtPath(values, p.path+".digest"); raw != "" {
-			repo, _ := stringAtPath(values, p.path+".repository")
-			refs[raw] = ref{repo + "@" + raw, p.entrypoint}
-		}
-	}
-	for _, raw := range argvPinnedDigests(values) {
-		delete(refs, raw)
-	}
+// renders, less the entries that pin their command lines: the
+// bootstrapAllowlist.workloads entries. A component entry pins its command,
+// args and mount table (c8s.podShapes), so it describes only the component's
+// own pod.
+func seedWorkloads(values map[string]any) (map[string]pkgallowlist.Workload, error) {
 	seed := map[string]pkgallowlist.Workload{}
-	for raw, r := range refs {
-		digest, err := types.ParseDigest(raw)
-		if err != nil {
-			return nil, fmt.Errorf("image digest %q: %w", raw, err)
-		}
-		w := pkgallowlist.DigestEntry(digest, r.image)
-		w.Containers[0].Command = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: r.entrypoint}
-		seed[pkgallowlist.DigestEntryName(digest, r.image)] = w
-	}
 	workloads, _ := nestedMap(values, "nriImagePolicy", "bootstrapAllowlist", "workloads")
 	for name, raw := range workloads {
 		data, err := json.Marshal(raw)
@@ -2352,24 +2343,6 @@ func seedWorkloads(values map[string]any, components []c8sComponent) (map[string
 		seed[name] = *w
 	}
 	return seed, nil
-}
-
-// argvPinnedDigests mirrors the chart's c8s.argvPinnedDigests: images the
-// seed admits only under their pinned command lines.
-func argvPinnedDigests(values map[string]any) []string {
-	var digests []string
-	if nri, _ := stringAtPath(values, "nriImagePolicy.image.digest"); boolAtPath(values, "nriImagePolicy.enabled") && nri != "" {
-		digests = append(digests, nri)
-		distro, _ := stringAtPath(values, "nriImagePolicy.distro")
-		if prep, _ := stringAtPath(values, "nriImagePolicy.containerdPrep.image.digest"); distro == "rke2" && !boolAtPath(values, "nriImagePolicy.baked") && prep != "" {
-			digests = append(digests, prep)
-		}
-	}
-	mode, _ := stringAtPath(values, "attestationApi.cvmMode")
-	if helper, _ := stringAtPath(values, "rke2.localPathHelper.image.digest"); mode == "bare-metal" && helper != "" {
-		digests = append(digests, helper)
-	}
-	return digests
 }
 
 func workloadImageAllowlistEntry(image string, resolve func(ref string) (string, error)) (digest types.Digest, ref string, err error) {
@@ -2405,24 +2378,37 @@ func tagCouplingHint(repo string) string {
 
 // appendResolvedDigestArgs resolves each chart component's repo:tag to its
 // registry digest (via crane) and appends the helm --set flags that pin it.
-// Every pinned image, resolved or chart-pinned, is checked against the
-// entrypoint the chart seeds it under: a pin the image does not start with
-// would render a seed that denies the component on its own node.
+// Every pinned image, resolved or chart-pinned, and the router's nginx image
+// are checked against the entrypoint and env the effective values seed them
+// under: an image that starts with another executable or sets other variables
+// would render a seed that denies it on its own node.
 func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []string, tag string, components []c8sComponent) ([]string, error) {
 	if !crane.Available() {
 		return nil, fmt.Errorf("digest resolution needs the 'crane' CLI on PATH; install it or pass --resolve-digests=false and supply digests via -f")
 	}
-	enabled, err := componentEnabledPredicate(ctx, chartPath, helmArgs)
+	tree, err := effectiveValues(ctx, chartPath, helmArgs)
+	if err != nil {
+		return nil, err
+	}
+	enabled := func(valuePath string) (bool, error) { return boolAtPath(tree, valuePath), nil }
+	if components, err = withEffectivePins(tree, components); err != nil {
+		return nil, err
+	}
+	// nginx is versioned apart from C8s: check the digest the release
+	// renders, never one resolved at the C8s tag.
+	nginx, err := routerNginxComponent(tree)
 	if err != nil {
 		return nil, err
 	}
 	byRef := map[string]c8sComponent{}
 	for _, c := range components {
 		byRef[c.repository+":"+tag] = c
-		if c.pinnedDigest == "" || c.enabledPath != "" && !boolAtPathOrFalse(enabled, c.enabledPath) {
+	}
+	for _, c := range append(slices.Clone(components), nginx) {
+		if c.pinnedDigest == "" || c.enabledPath != "" && !boolAtPath(tree, c.enabledPath) {
 			continue
 		}
-		if err := checkComponentEntrypoint(ctx, c, c.pinnedDigest); err != nil {
+		if err := checkComponentImage(ctx, c, c.pinnedDigest); err != nil {
 			return nil, err
 		}
 	}
@@ -2435,7 +2421,7 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 		// so stdout must stay clean. Install's stdout is diagnostic too.
 		fmt.Fprintf(os.Stderr, "+ resolved %s -> %s\n", ref, digest)
 		if c, ok := byRef[ref]; ok {
-			if err := checkComponentEntrypoint(ctx, c, digest); err != nil {
+			if err := checkComponentImage(ctx, c, digest); err != nil {
 				return "", err
 			}
 		}
@@ -2443,61 +2429,64 @@ func appendResolvedDigestArgs(ctx context.Context, chartPath string, helmArgs []
 	}, enabled)
 }
 
-func boolAtPathOrFalse(enabled func(string) (bool, error), path string) bool {
-	on, err := enabled(path)
-	return err == nil && on
+// withEffectivePins returns components with the entrypoint and imageEnv the
+// release renders, which a -f file or --set may override; the repository
+// stays the one the tag resolves against.
+func withEffectivePins(tree map[string]any, components []c8sComponent) ([]c8sComponent, error) {
+	effective, err := componentsFromValues(tree)
+	if err != nil {
+		return nil, err
+	}
+	out := slices.Clone(components)
+	for i, c := range out {
+		for _, e := range effective {
+			if e.valuePrefix == c.valuePrefix {
+				out[i].entrypoint, out[i].imageEnv = e.entrypoint, e.imageEnv
+			}
+		}
+	}
+	return out, nil
 }
 
-// checkComponentEntrypoint reads the image config at repo@digest and requires
-// the component's seeded entrypoint to be a prefix of the argv the image bakes
-// (ENTRYPOINT then CMD). A component without an entrypoint is seeded
-// argv-pinned elsewhere and has nothing to check.
-func checkComponentEntrypoint(ctx context.Context, c c8sComponent, digest string) error {
+// checkComponentImage reads the image config at repo@digest and requires the
+// component's seeded entrypoint to be a prefix of the argv the image bakes
+// (ENTRYPOINT then CMD) and its imageEnv to equal the image's Env. A component
+// without an entrypoint is seeded argv-pinned elsewhere and has nothing to
+// check.
+func checkComponentImage(ctx context.Context, c c8sComponent, digest string) error {
 	if len(c.entrypoint) == 0 {
 		return nil
 	}
 	ref := c.repository + "@" + digest
 	cfg, err := crane.Config(ctx, ref)
 	if err != nil {
-		return fmt.Errorf("component %s: read the image config to check its entrypoint: %w", c.valuePrefix, err)
+		return fmt.Errorf("component %s: read the image config to check its entrypoint and env (set %s.repository to a reachable mirror if the registry is blocked): %w", c.valuePrefix, c.valuePrefix, err)
 	}
 	baked := slices.Concat(cfg.Config.Entrypoint, cfg.Config.Cmd)
 	if len(baked) < len(c.entrypoint) || !slices.Equal(baked[:len(c.entrypoint)], c.entrypoint) {
-		return fmt.Errorf("component %s: image %s starts with %q, but the chart seeds it pinned to %q (c8sComponents[].entrypoint); the node plugin would deny it. Align the entrypoint with the image", c.valuePrefix, ref, baked, c.entrypoint)
+		return fmt.Errorf("component %s: image %s starts with %q, but the chart seeds it pinned to %q (%s.entrypoint); the node plugin would deny it. Align the entrypoint with the image", c.valuePrefix, ref, baked, c.entrypoint, c.pinsPath)
+	}
+	env := map[string]string{}
+	for _, entry := range cfg.Config.Env {
+		name, value, _ := strings.Cut(entry, "=")
+		env[name] = value
+	}
+	if !maps.Equal(env, c.imageEnv) {
+		return fmt.Errorf("component %s: image %s sets env %q, but the chart seeds it matching %q (%s.imageEnv); the node plugin would deny it. Align imageEnv with the image", c.valuePrefix, ref, cfg.Config.Env, c.imageEnv, c.pinsPath)
 	}
 	return nil
-}
-
-// componentEnabledPredicate reports the effective enabled value at a component's
-// enabledPath, given the chart defaults, the operator's -f values files, and the
-// --set overrides assembled so far — in helm's precedence order (defaults < -f
-// files in order < --set). Getting the -f files right matters for a component
-// that defaults to disabled and is turned on through -f (e.g.
-// volumed.enabled): without them the resolver would treat it as off and skip
-// pinning its digest, and the render then fails with no image ref. The merged
-// tree is built once and shared across the per-component calls.
-func componentEnabledPredicate(ctx context.Context, chartPath string, setArgs []string) (func(valuePath string) (bool, error), error) {
-	tree, err := effectiveValues(ctx, chartPath, setArgs)
-	if err != nil {
-		return nil, err
-	}
-	return func(valuePath string) (bool, error) {
-		return boolAtPath(tree, valuePath), nil
-	}, nil
 }
 
 // effectiveValues resolves the values tree the release will actually render
 // with, in helm's precedence order: chart defaults < -f files in order <
 // --set. Callers that decide on a value the operator may have overridden (the
-// digest resolver, the TEE-node preflight) must read this, not the defaults.
+// digest resolver, the TEE-node preflight) must read this, not the defaults:
+// a component that defaults to disabled and is turned on through -f (e.g.
+// volumed.enabled) must still have its digest pinned.
 func effectiveValues(ctx context.Context, chartPath string, setArgs []string) (map[string]any, error) {
-	out, err := exec.CommandContext(ctx, "helm", "show", "values", chartPath).Output()
+	tree, err := chartValues(ctx, chartPath)
 	if err != nil {
-		return nil, fmt.Errorf("helm show values %q: %w", chartPath, err)
-	}
-	var tree map[string]any
-	if err := yaml.Unmarshal(out, &tree); err != nil {
-		return nil, fmt.Errorf("parse chart values: %w", err)
+		return nil, err
 	}
 	for _, vf := range installValues {
 		raw, err := os.ReadFile(vf)
@@ -2595,7 +2584,7 @@ func init() {
 	installCmd.Flags().DurationVar(&installRoutesMaxAge, "routes-max-age", 24*time.Hour, "maxAgeSeconds of a new --upstream route manifest: how long the router admits new attested sessions by it without a successful fetch from CDS; application routing goes on regardless. A manifest CDS already stores keeps its own")
 	installCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM: our own TDX/SNP nodes are themselves confidential VMs, pods run as ordinary processes, attestation-api + nri baked into the node image), gke (GKE managed confidential VMs), or aks (vTPM /dev/tpm0). bare-metal/gke/aks are node-as-CVM shapes: the node is one trust domain, so they are single-tenant")
 	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
-	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). On by default; pass --resolve-digests=false when supplying digests via -f")
+	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "serve the router's attestation endpoints under /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; --attest=false turns them off, while the cds-attest sidecar keeps routing application requests")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
 	installCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Pins the internal mesh (cds.measurements + armtlsMesh.measurements); empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")

@@ -6,6 +6,7 @@
   image: {{ include "c8s.image" $root }}
   imagePullPolicy: {{ $root.Values.image.pullPolicy }}
   restartPolicy: Always
+  command: {{ include "c8s.entrypoint" (dict "root" $root "valuePath" "image") }}
   args:
     - get-cert
     - --cds-url={{ include "c8s.cdsURL" $root }}

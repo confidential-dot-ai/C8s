@@ -70,39 +70,111 @@
 {{- fail "VALIDATION_ERROR kind=cds_image_digest: nriImagePolicy.enabled requires cds.image.digest to be set. The CDS digest is pinned in every plugin's base allowlist so image policy admits CDS on its own node. A floating tag cannot be admitted by digest. Pass --resolve-digests to c8s install, or set cds.image.digest via -f." -}}
 {{- end -}}
 {{- /*
-  In fail-closed mode with deriveComponents off, every enabled C8s component
-  that is digest-pinned must be admitted with open args, env and mounts — under
-  any command, or pinned to its entrypoint — by a bootstrapAllowlist.workloads
-  entry (c8s.openArgsEntries), the shapes that reach the base; otherwise the
-  NRI plugin would deny that component's pod on its own node. cds.image is exempt: it is always in
-  the base via the seed self-entry, independent of derivation. argvPinned
-  components are exempt too: the chart seeds them argv-pinned
-  (c8s.argvPinnedEntries). This guard only applies in fail-closed mode (the
-  default); audit mode creates every container, but with workloadClaims on a
-  would-be denial still reaches /digests and costs its sandbox a certificate.
+  In fail-closed mode with deriveComponents off, every container the chart
+  runs a digest-pinned C8s component's executable in must be admitted by a
+  bootstrapAllowlist.workloads entry that reaches the base: one with open
+  args, env and mounts under any command (c8s.openArgsEntries), or one for
+  the component's digest that pins them to what the chart renders and
+  matches the env it launches with (c8s.pinnedComponentEntries); otherwise the NRI
+  plugin would deny that component's pod on its own node. cds.image is exempt:
+  it is always in the base via the seed self-entry, independent of
+  derivation. argvPinned components are exempt too: the chart seeds them
+  argv-pinned (c8s.argvPinnedEntries). This guard only applies in fail-closed
+  mode (the default); audit mode creates every container, but with
+  workloadClaims on a would-be denial still reaches /digests and costs its
+  sandbox a certificate.
 */ -}}
 {{- if and .Values.nriImagePolicy.enabled (eq .Values.nriImagePolicy.policy.mode "fail-closed") (not .Values.nriImagePolicy.bootstrapAllowlist.deriveComponents) -}}
-{{- $covered := include "c8s.openArgsEntries" . | fromJson -}}
+{{- $pins := dict -}}
+{{- $envs := dict -}}
+{{- $names := dict -}}
 {{- range $c := (include "c8s.components" . | fromJsonArray) -}}
 {{- $img := get $c "image" -}}
 {{- if and (get $c "enabled") (not (get $c "cdsExempt")) (not (get $c "argvPinned")) (get $img "digest") -}}
-{{- /* Covered by an open-args entry whose pin, if any, is a prefix of the
-       component's entrypoint: a pin on another executable would reach the
-       base and still deny the component on its own node. */ -}}
+{{- if not (hasKey $c "imageEnv") -}}
+{{- fail (printf "c8sComponents entry %s has no imageEnv: the coverage guard must know the environment the component launches with" (get $c "name")) -}}
+{{- end -}}
+{{- $_ := set $pins (get $img "digest") (get $c "entrypoint") -}}
+{{- $_ := set $envs (get $img "digest") (get $c "imageEnv") -}}
+{{- $_ := set $names (get $img "digest") (get $c "name") -}}
+{{- end -}}
+{{- end -}}
+{{- if $pins -}}
+{{- $operator := list -}}
+{{- range $name, $entry := (.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) -}}
+{{- range $c := concat (default list $entry.initContainers) (default list $entry.containers) -}}
+{{- $command := dig "command" "policy" "" $c -}}
+{{- $argv := dig "command" "argv" list $c -}}
+{{- /* An entry pinned to a component executable with open mounts or env,
+       or open args outside a webhook-injected sidecar, is one allowlist lint
+       refuses (componentInvocations; nginx is not a guarded component): it
+       lets the pod point the component at other code. */ -}}
+{{- $binary := false -}}
+{{- if eq $command "exact" -}}
+{{- range $prefix := list (list "/c8s") (list "/app/c8s") (list "/attestation-api") -}}
+{{- if and (ge (len $argv) (len $prefix)) (eq (slice $argv 0 (len $prefix) | toJson) ($prefix | toJson)) -}}{{- $binary = true -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- $sidecar := and (eq (len $argv) 2) (eq (first $argv) "/c8s") (has (index $argv 1) (list "get-cert" "get-secret" "get-volume" "probe-file")) -}}
+{{- $open := or (eq (dig "mounts" "policy" "deny" $c) "any") (eq (dig "env" "policy" "any" $c) "any") (and (eq (dig "args" "policy" "deny" $c) "any") (not $sidecar)) -}}
+{{- if and (has $command (list "any" "exact")) (not (and $binary $open)) -}}{{- $operator = append $operator $c -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /* Covered per shape: a container with a hostPath under /var/run has a
+       shape per host layout, and each must be admitted, since the node's
+       layout is not known here. The sidecars the webhook injects with the
+       C8s image need the same entry, so their shapes count too. */ -}}
+{{- $covered := dict -}}
+{{- $argvs := dict -}}
+{{- $shapes := list -}}
+{{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
+{{- $shapes = concat $shapes (include "c8s.podShapes" (dict "name" (get $pod "name") "spec" (get $pod "spec") "pins" $pins "envs" $envs "refs" dict) | fromJsonArray) -}}
+{{- end -}}
+{{- with .Values.image.digest -}}
+{{- if hasKey $pins . -}}
+{{- $shapes = concat $shapes (include "c8s.injectedShapes" (dict "root" $ "digest" . "image" "" "imageEnv" (get $envs .)) | fromJsonArray) -}}
+{{- end -}}
+{{- end -}}
+{{- range $shape := $shapes -}}
+{{- $entrypoint := get $pins (get $shape "digest") -}}
+{{- $command := get (get $shape "command") "argv" -}}
+{{- /* Only the component's own executable runs before CDS serves policy;
+       another invocation (the volumed teardown hook) is seed-only. */ -}}
+{{- if and (ge (len $command) (len $entrypoint)) (eq (slice $command 0 (len $entrypoint) | toJson) ($entrypoint | toJson)) -}}
+{{- $argv := concat $command (dig "args" "argv" list $shape) -}}
+{{- $key := $shape | toJson -}}
+{{- $_ := set $argvs $key $argv -}}
+{{- if not (get $covered $key) -}}
 {{- $ok := false -}}
-{{- if hasKey $covered (get $img "digest") -}}
-{{- $pin := get (get $covered (get $img "digest")) "entrypoint" -}}
-{{- $entrypoint := get $c "entrypoint" -}}
-{{- if le (len $pin) (len $entrypoint) -}}
-{{- $ok = true -}}
-{{- range $i, $tok := $pin -}}{{- if ne $tok (index $entrypoint $i) -}}{{- $ok = false -}}{{- end -}}{{- end -}}
+{{- range $c := $operator -}}
+{{- if and (eq (lower (toString $c.digest)) (lower (get $shape "digest"))) (include "c8s.admitsShape" (dict "container" $c "shape" $shape)) -}}{{- $ok = true -}}{{- end -}}
+{{- end -}}
+{{- $_ := set $covered $key $ok -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- range $key, $ok := $covered -}}
 {{- if not $ok -}}
-{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry leaves args, env and mounts unconstrained for that digest with its command any or pinned to the image's entrypoint %s. The plugin would deny it on its own node. Add such an entry (c8s allowlist add writes the any-command shape), set deriveComponents=true, or use c8s install --resolve-digests." (get $c "name") (get $img "digest") (get $c "entrypoint" | toJson)) -}}
+{{- $digest := get (fromJson $key) "digest" -}}
+{{- fail (printf "VALIDATION_ERROR kind=uncovered_component_digest: nriImagePolicy.policy.mode=fail-closed with deriveComponents=false, but %s is digest-pinned (%s) and no nriImagePolicy.bootstrapAllowlist.workloads entry admits the chart's %s container with its mounts and env. The plugin would deny it on its own node. Copy the chart's own entry for the digest (a deriveComponents=true render seeds it with command, args and mounts pinned and env matched as the chart renders them), set deriveComponents=true, or use c8s install --resolve-digests." (get $names $digest) $digest (get $argvs $key | toJson)) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
+{{- end -}}
+{{- /* The store volume mounts at /mnt/c8s-data/cds and the root is read-only,
+       so a DB path elsewhere crash-loops CDS. */ -}}
+{{- $db := toString .Values.cds.allowlistDB -}}
+{{- if or (not (hasPrefix "/mnt/c8s-data/cds/" $db)) (ne (clean $db) $db) -}}
+{{- fail (printf "VALIDATION_ERROR kind=cds_allowlist_db_path: cds.allowlistDB must name a file in /mnt/c8s-data/cds/, where the store volume is mounted (got %q); the CDS root filesystem is read-only." $db) -}}
+{{- end -}}
+{{- /*
+  CDS's component entry pins its store at /mnt/c8s-data/cds with a data rule,
+  which the node admits only on memory or encrypted storage. No PVC observes
+  as either: a CSI volume is its own device (unknown), and a local-path volume
+  is a host path. Only audit mode would start CDS with one.
+*/ -}}
+{{- if and .Values.cds.persistence.enabled (not (and $nri.enabled (eq $nri.policy.mode "audit"))) -}}
+{{- fail "VALIDATION_ERROR kind=cds_persistence_unadmitted: cds.persistence.enabled=true mounts a PVC as CDS's store, but CDS's component entry admits the store only on memory or encrypted storage, and the node observes a CSI volume as unknown and a local-path volume as a host path, so the image policy would refuse CDS on every node. Set cds.persistence.enabled=false and re-apply operator-added allowlist entries after CDS is recreated." -}}
 {{- end -}}
 {{- if and $nri.enabled (not (hasPrefix "https://" $nriCDSURL)) -}}
 {{- fail (printf "nriImagePolicy.cds.url must start with https:// when nriImagePolicy.enabled=true (got %q): the host plugin must fetch the allowlist over armTLS" $nriCDSURL) -}}
@@ -172,6 +244,28 @@
 {{- range $ctr := (index $entry $field) -}}
 {{- if hasKey $ctr "paths" -}}
 {{- fail (printf "VALIDATION_ERROR kind=allowlist_container_paths: nriImagePolicy.bootstrapAllowlist.workloads.%s.%s has a container with a `paths` policy, which was replaced by an entry-level `secrets` grant. CDS rejects unknown fields in its seed and would fail to start. Move the grant up to the entry as `secrets: {policy: allow, read: [...], write: [...]}` (a deny grant is just omitted). See docs/secrets.md." $name $field) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- /*
+  A component expands $(HOST_IP) from its HOST_IP variable, which the
+  allowlist leaves open, so a pod could point it at an attestation verifier of
+  its choosing. Under a fail-closed policy (c8s.imagePolicyFailClosed, which
+  counts the node image's baked plugin) the chart writes $(NODE_IP), read
+  from the pinned node-ip file, instead. The operator is exempt: it hands its
+  URL to the sidecars it injects, whose args are the pod's anyway.
+*/ -}}
+{{- if include "c8s.imagePolicyFailClosed" . -}}
+{{- range $pod := (include "c8s.componentPods" . | fromJsonArray) -}}
+{{- if ne (get $pod "name") "operator" -}}
+{{- range $c := concat (default list $pod.spec.initContainers) (default list $pod.spec.containers) -}}
+{{- range $token := concat (default list $c.command) (default list $c.args) -}}
+{{- /* An unescaped reference fails in c8s.kubeletExpand. */ -}}
+{{- if contains "$$(HOST_IP)" (toString $token) -}}
+{{- fail (printf "VALIDATION_ERROR kind=host_ip_argv: %s container %s names $(HOST_IP) in %q under a fail-closed image policy. The binary would read the node address from the HOST_IP variable, which the allowlist does not pin, so the pod would choose its attestation verifier. Write the node address as $$(NODE_IP): the binary reads it from the node-ip file the image policy plugin writes." (get $pod "name") $c.name (toString $token)) -}}
+{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -229,14 +229,15 @@ func bumpVersionTx(tx *sql.Tx) error {
 	return err
 }
 
-// SeedWorkloads adds every workload entry whose name is not already present, in
-// a single transaction, and returns the number added. Additive and idempotent:
-// an existing entry is left untouched and the version is bumped at most once,
-// only when at least one entry was new, so a re-seed that adds nothing does not
-// force every worker to re-pull.
-func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (int, error) {
+// SeedWorkloads adds every workload entry whose name is not already present
+// and retires each stored entry the seed replaces (retiredBySeed), in a single
+// transaction, and returns the numbers added and retired. Additive for
+// everything else and idempotent: an existing entry is left untouched and the
+// version is bumped at most once, only when the set changed, so a re-seed that
+// changes nothing does not force every worker to re-pull.
+func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
 	if len(workloads) == 0 {
-		return 0, nil
+		return 0, 0, nil
 	}
 
 	s.mu.Lock()
@@ -244,20 +245,52 @@ func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (int, 
 
 	tx, err := s.db.Begin()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	defer tx.Rollback()
 
-	added, err := seedWorkloadsTx(tx, workloads)
+	if retired, err = retireReplacedTx(tx, workloads); err != nil {
+		return 0, 0, err
+	}
+	if added, err = seedWorkloadsTx(tx, workloads); err != nil {
+		return 0, 0, err
+	}
+	if added+retired > 0 {
+		if err := bumpVersionTx(tx); err != nil {
+			return 0, 0, err
+		}
+	}
+	return added, retired, s.commitTx(tx)
+}
+
+// retireReplacedTx deletes every stored entry seed replaces and returns how
+// many it deleted.
+func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, error) {
+	seedKeys := map[string]bool{}
+	for name := range seed {
+		if key := GeneratedKey(name); key != "" {
+			seedKeys[key] = true
+		}
+	}
+	stored, err := loadWorkloads(tx)
 	if err != nil {
 		return 0, err
 	}
-	if added > 0 {
-		if err := bumpVersionTx(tx); err != nil {
+	var retired int
+	for name, w := range stored {
+		if _, ok := seed[name]; ok || !retiredBySeed(name, w, seedKeys) {
+			continue
+		}
+		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {
 			return 0, err
 		}
+		if _, err := tx.Exec("DELETE FROM workload_entry_digest WHERE entry_name = ?", name); err != nil {
+			return 0, err
+		}
+		slog.Info("allowlist seed retired a replaced entry", "workload", name)
+		retired++
 	}
-	return added, s.commitTx(tx)
+	return retired, nil
 }
 
 // seedWorkloadsTx inserts every entry whose name is free and returns how many

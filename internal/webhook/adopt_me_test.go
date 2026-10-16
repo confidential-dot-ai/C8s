@@ -11,7 +11,7 @@ import (
 )
 
 // TestAdoptMeInjection: once adopted, the kind harness's workload mounts only
-// the memory-backed cert volume at DefaultWorkloadCertDir. c8s install writes
+// the memory-backed cert volume at CertDir. c8s install writes
 // its allowlist entry from that model (test/integration/cluster/testdata).
 func TestAdoptMeInjection(t *testing.T) {
 	data, err := os.ReadFile("../../test/integration/cluster/manifests/adopt-me.yaml")
@@ -41,8 +41,8 @@ func TestAdoptMeInjection(t *testing.T) {
 	mutatePod(pod, inj, Config{})
 
 	app := pod.Spec.Containers[0]
-	if len(app.VolumeMounts) != 1 || app.VolumeMounts[0].Name != DefaultCertVolumeName || app.VolumeMounts[0].MountPath != DefaultWorkloadCertDir || app.VolumeMounts[0].SubPath != "" {
-		t.Fatalf("injected app mounts = %+v, want only %s at %s", app.VolumeMounts, DefaultCertVolumeName, DefaultWorkloadCertDir)
+	if len(app.VolumeMounts) != 1 || app.VolumeMounts[0].Name != DefaultCertVolumeName || app.VolumeMounts[0].MountPath != CertDir || app.VolumeMounts[0].SubPath != "" {
+		t.Fatalf("injected app mounts = %+v, want only %s at %s", app.VolumeMounts, DefaultCertVolumeName, CertDir)
 	}
 	for _, v := range pod.Spec.Volumes {
 		if v.Name == DefaultCertVolumeName && (v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory) {

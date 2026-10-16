@@ -53,6 +53,66 @@ func ValidateAttestationAPIURL(flagName, u string) error {
 	return ValidateHTTPURL(flagName, u)
 }
 
+// Node address references in an attestation-api URL. The chart writes them as
+// $$(HOST_IP) and $$(NODE_IP) so the kubelet passes them through unexpanded.
+const (
+	hostIPReference = "$(HOST_IP)"
+	nodeIPReference = "$(NODE_IP)"
+)
+
+// NodeIPPath is where the chart mounts, read-only, the node-ip file the image
+// policy plugin writes into its socket directory.
+const NodeIPPath = "/run/c8s/node-ip"
+
+// NodeAddressHelp ends the usage of an --attestation-api-url flag the command
+// passes through ExpandHostIP.
+const NodeAddressHelp = "; a literal $(NODE_IP) is replaced by the address in " + NodeIPPath +
+	" and $(HOST_IP) by the HOST_IP environment variable, and startup fails when that source is missing, unreadable or not an IP address"
+
+// ExpandHostIP replaces a node address reference in an attestation-api URL.
+// A component's arguments are pinned exactly in the allowlist, so the chart
+// cannot let the kubelet substitute the node's address into them; the binary
+// does it instead. $(NODE_IP) is read from NodeIPPath, a host path the
+// allowlist pins, so the pod cannot choose the verifier; the chart writes it
+// wherever the image policy fails closed. $(HOST_IP) is read from the HOST_IP
+// environment variable, which the allowlist leaves open. An IPv6 address is
+// bracketed. It fails when the source does not hold an IP address: an empty
+// host would dial the container's own loopback instead of the node.
+func ExpandHostIP(u string) (string, error) {
+	return expandNodeAddress(u, NodeIPPath, os.Getenv)
+}
+
+func expandNodeAddress(u, nodeIPPath string, getenv func(string) string) (string, error) {
+	if strings.Contains(u, nodeIPReference) {
+		data, err := os.ReadFile(nodeIPPath)
+		if err != nil {
+			return "", fmt.Errorf("attestation-api URL %q names %s: %w", u, nodeIPReference, err)
+		}
+		host, err := urlHost(strings.TrimSpace(string(data)))
+		if err != nil {
+			return "", fmt.Errorf("attestation-api URL %q names %s, but %s: %w", u, nodeIPReference, nodeIPPath, err)
+		}
+		u = strings.ReplaceAll(u, nodeIPReference, host)
+	}
+	if strings.Contains(u, hostIPReference) {
+		host, err := urlHost(getenv("HOST_IP"))
+		if err != nil {
+			return "", fmt.Errorf("attestation-api URL %q names %s, but HOST_IP: %w", u, hostIPReference, err)
+		}
+		u = strings.ReplaceAll(u, hostIPReference, host)
+	}
+	return u, nil
+}
+
+// urlHost returns ip as the host of a URL: an IPv6 address in brackets.
+func urlHost(ip string) (string, error) {
+	addr := net.ParseIP(ip)
+	if addr == nil {
+		return "", fmt.Errorf("%q is not an IP address", ip)
+	}
+	return strings.TrimSuffix(net.JoinHostPort(addr.String(), "0"), ":0"), nil
+}
+
 // RequireRAMBackedDir returns an error unless dir sits on tmpfs/ramfs
 // (fileutil.RequireRAMBacked). The flagName is interpolated into the error so
 // callers needn't wrap. Shared by get-secret (--out-dir) and get-cert

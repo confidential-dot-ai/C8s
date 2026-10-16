@@ -16,6 +16,7 @@ import (
 // enforcing from its in-memory snapshot, a pin the sweep's argv does not
 // satisfy deadlocks the uninstall fail-closed.
 func TestChartPinnedSeedAdmitsHostSweepArgv(t *testing.T) {
+	t.Parallel()
 	for _, args := range [][]string{
 		nil,
 		{"--set", "nriImagePolicy.baked=true"},
@@ -39,6 +40,7 @@ func TestChartPinnedSeedAdmitsHostSweepArgv(t *testing.T) {
 // shape not running /bin/sh -c. Each rule must match exactly one pinned
 // container — a second match makes the replay ambiguous and fails it closed.
 func TestChartPinnedSeedHostSweepShapesUnique(t *testing.T) {
+	t.Parallel()
 	if !strings.Contains(HostSweepScript(), "c8s host sweep") {
 		t.Fatal("HostSweepScript lost its \"c8s host sweep\" banner — resolveSweepArgvs selects the script shape by it")
 	}
@@ -51,10 +53,11 @@ func TestChartPinnedSeedHostSweepShapesUnique(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	name := pkgallowlist.DigestEntryName(digest, "ghcr.io/confidential-dot-ai/nri-image-policy@"+baseNRIDigest)
+	prefix := pkgallowlist.DigestEntryName(digest, "ghcr.io/confidential-dot-ai/nri-image-policy@"+baseNRIDigest)
+	name := generatedEntryName(seed, prefix)
 	entry, ok := seed.Workloads[name]
 	if !ok {
-		t.Fatalf("seed has no entry %q", name)
+		t.Fatalf("seed has no entry %q-<policy>", prefix)
 	}
 	var scriptHits, pauseHits int
 	for _, c := range entry.Containers {

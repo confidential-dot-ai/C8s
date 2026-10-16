@@ -387,10 +387,18 @@ true
 {{- define "router.launchDir" -}}/run/c8s-node/router{{- end -}}
 
 {{/*
-Where nginx finds tls-cds.conf and tls-acme.conf on a baked node. The launch
-file's tls.conf includes one of them (nodeservices.RouterTLSSnippetDir).
+Where nginx reads nginx.conf, and on a baked node the tls-cds.conf and
+tls-acme.conf snippets the launch file's tls.conf includes: the nginx
+ConfigMap, or on a baked node the image directory mkosi.sync installs them in
+(node-guest-image/c8s/mkosi.sync), mounted read-only from the measured /usr
+instead of a ConfigMap the control plane can edit.
 */}}
-{{- define "router.tlsSnippetDir" -}}/etc/nginx/c8s{{- end -}}
+{{- define "router.configDir" -}}
+{{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
+{{- end -}}
+
+{{/* nodeservices.RouterTLSSnippetDir must equal it. */}}
+{{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
 
 {{/*
 ACME constants shared by the acme sidecar args, the deployment mounts, the
@@ -574,7 +582,9 @@ router.defaultGate holds.
 {{- fail (printf "router.attest.expectedWorkload=%s names the seeded router entry, but these values seed none because %s: leave it unset, or set it to the name of your own router entry" $explicit .) -}}
 {{- end -}}
 {{- $name := include "c8s.routerWorkloadName" . -}}
-{{- if ne $explicit $name -}}
+{{- if hasKey . "routerNamePlaceholder" -}}
+{{- $explicit = $name -}}
+{{- else if ne $explicit $name -}}
 {{- fail (printf "router.attest.expectedWorkload=%s does not name the seeded router entry, which these values name %s: set it to %s, or leave it unset to follow the entry" $explicit $name $name) -}}
 {{- end -}}
 {{- end -}}
@@ -622,8 +632,8 @@ list.
 {{- if .Values.router.discovery.enabled -}}
 {{- $mounts = append $mounts (printf "- name: discovery\n  mountPath: %s" .Values.router.discovery.mountPath) -}}
 {{- end -}}
-{{- if include "c8s.attestationApiSocketPresent" . -}}
-{{- $mounts = append $mounts (printf "- name: attestation-api-socket\n  mountPath: %s\n  readOnly: true" .Values.nriImagePolicy.hostPaths.runtimeDir) -}}
+{{- with include "c8s.attestationApiSocketMount" . | trim -}}
+{{- $mounts = append $mounts . -}}
 {{- end -}}
 {{- $extraArgs := include "router.getCertCommonArgs" . | fromYamlArray -}}
 {{- $sanFile := "" -}}
@@ -731,7 +741,7 @@ trust the same CDS.
 {{- if .Values.node.baked -}}
 {{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
 {{- else if .Values.cds.measurementsConfig -}}
-{{- $args = append $args "--image-policy-file=/etc/c8s-measurements/cds.json" -}}
+{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
 {{- else -}}
 {{- with .Values.cds.measurements -}}
 {{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}

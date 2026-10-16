@@ -16,7 +16,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -81,7 +82,7 @@ func NewCmd() *cobra.Command {
 	f.StringVar(&cfg.meshIdentityCAFile, "mesh-identity-ca-file", "", "mesh CA bundle that issued the identity leaf (re-read per request)")
 	f.StringVar(&cfg.expectedWorkload, "expected-workload", "", "gate /readyz on the mesh identity leaf carrying a matched-workload stamp with this exact name; empty keeps /readyz unconditionally 200")
 	f.StringVar(&cfg.evidenceFixture, "evidence-fixture", "", "DEV ONLY: serve recorded TEE evidence from this file instead of the attestation-api")
-	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)")
+	f.StringVar(&cfg.attestationAPIURL, "attestation-api-url", "", "attestation-api URL (production evidence source)"+cmdsutil.NodeAddressHelp)
 	f.StringVar(&cfg.platform, "platform", "", "REQUIRED: TEE platform: snp|az-snp|az-tdx|tdx")
 	f.StringVar(&cfg.generation, "generation", "genoa", "AMD processor generation for the browser's bare-SNP verifier (platform snp only, ignored otherwise): milan|genoa|turin")
 	f.DurationVar(&cfg.sessionTTL, "session-ttl", 5*time.Minute, "established-session idle TTL")
@@ -116,6 +117,12 @@ func loadFiles(cfg *config) error {
 // run serves until ctx is cancelled.
 func run(ctx context.Context, cfg config) error {
 	logger := newLogger(cfg.logLevel)
+	rawAttestationURL := cfg.attestationAPIURL
+	attestationURL, err := cmdsutil.ExpandHostIP(rawAttestationURL)
+	if err != nil {
+		return err
+	}
+	cfg.attestationAPIURL = attestationURL
 	if err := loadFiles(&cfg); err != nil {
 		return err
 	}
@@ -135,7 +142,8 @@ func run(ctx context.Context, cfg config) error {
 		provider = p
 	}
 
-	ctx, stop := context.WithCancel(ctx)
+	watchCtx := cmdsutil.WatchNodeIP(ctx, rawAttestationURL, attestationURL)
+	ctx, stop := context.WithCancel(watchCtx)
 	defer stop()
 
 	engine, err := newRoutingEngine(cfg, logger)
@@ -177,7 +185,7 @@ func run(ctx context.Context, cfg config) error {
 	go func() { errc <- srv.Serve(ctx, httpSrv) }()
 	err = <-errc
 	stop()
-	return err
+	return cmdsutil.NodeIPChanged(watchCtx, err)
 }
 
 // attestProvider checks the flags the attestation endpoints need and returns
@@ -206,7 +214,7 @@ func attestProvider(cfg config, logger *slog.Logger) (EvidenceProvider, error) {
 		return fp, nil
 	case cfg.attestationAPIURL != "":
 		return LiveEvidenceProvider{
-			Client:     remote.NewClient(cfg.attestationAPIURL),
+			Client:     armtls.NewAttestationClient(cfg.attestationAPIURL),
 			Platform:   teetypes.NormalizePlatform(cfg.platform),
 			Generation: cfg.generation,
 		}, nil
