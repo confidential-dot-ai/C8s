@@ -81,8 +81,16 @@ helm template confidential-inference ci/helm/confidential-inference --namespace 
   --set-string "attestationReceipts.expectedOperatorPublicKeySha256=sha256:$op_sha" \
   --set-string "attestationReceipts.expectedOperatorKeySetSha256=sha256:$set_sha" \
   | kubectl -n "$ns" apply -f -
-for workload in deployment/gateway deployment/sglang-router statefulset/inference-worker-0; do
-  if ! kubectl -n "$ns" rollout status "$workload" --timeout=20m; then
+# Not `rollout status`: the deployments' 10-minute progress deadline is shorter
+# than a cold pull of the 14 GB sglang image.
+for app in gateway sglang-router inference-worker-0; do
+  case $app in
+    gateway | sglang-router) selector=$(kubectl -n "$ns" get deployment "$app" -o jsonpath='{.spec.selector.matchLabels}') ;;
+    *) selector=$(kubectl -n "$ns" get statefulset "$app" -o jsonpath='{.spec.selector.matchLabels}') ;;
+  esac
+  selector=$(jq -r 'to_entries | map("\(.key)=\(.value)") | join(",")' <<<"$selector")
+  if ! kubectl -n "$ns" wait pod -l "$selector" --for=condition=Ready --timeout=30m; then
+    kubectl get nodes -o json | jq -r '.items[].status.conditions[] | "node \(.type)=\(.status) \(.message)"'
     kubectl -n "$ns" get pods -o wide
     for p in $(kubectl -n "$ns" get pods -o name); do
       kubectl -n "$ns" get "$p" -o json | jq -r '
@@ -90,7 +98,7 @@ for workload in deployment/gateway deployment/sglang-router statefulset/inferenc
         | "\(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state) last=\(.lastState.terminated // {} | tostring | .[0:600])"'
       kubectl -n "$ns" describe "$p" | sed -n '/^Events:/,$p' | tail -10
     done
-    fail "$workload did not become ready"
+    fail "$app did not become ready"
   fi
 done
 echo "ok: gateway (pepper, gwstate, claims socket), worker and router are ready"
