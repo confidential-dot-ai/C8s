@@ -221,7 +221,7 @@ jobs:
 
       - name: Download gate-only module-signing key
         if: inputs.gate_signing_artifact != ''
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.gate_signing_artifact }}
           path: gate-signing
@@ -235,7 +235,7 @@ jobs:
 
       - name: Download gate core images
         if: inputs.gate == true
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: ${{ inputs.gate_images_artifact }}
           path: gate-core-images
@@ -314,7 +314,7 @@ jobs:
             confidential-os-builder
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
       - name: Setup mkosi
         # Local action (repo is checked out under c8s/): pinned mkosi without
@@ -605,7 +605,7 @@ jobs:
       - name: Upload measurement evidence (gate)
         # Gate mode ends here: evidence out, nothing published.
         if: inputs.gate == true
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gate-${{ env.VARIANT }}-${{ github.run_id }}${{ inputs.leg && format('-{0}', inputs.leg) || '' }}
           path: |
@@ -621,7 +621,7 @@ jobs:
         # fragments, so the cached snapshot was resolved from these same
         # inputs (by a sibling leg or an earlier run of them).
         if: inputs.gate == true && matrix.platform == 'tdx' && inputs.leg != 'b'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kernel-snapshot-${{ github.run_id }}
           path: c8s/node-guest-image/kernel/config-x86_64-${{ inputs.dev && 'c8s-dev' || 'c8s' }}.snapshot
@@ -764,7 +764,7 @@ jobs:
           github.event.workflow_run.head_repository.full_name == github.repository &&
           (github.event.workflow_run.head_branch == 'main' ||
            github.event.workflow_run.head_branch == 'beta')
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: node-image-acceptance-rke2-tdx-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tdx-image-acceptance/
