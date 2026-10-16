@@ -111,7 +111,7 @@ const (
 	// sooner.
 	tunnelWriteChunk = 16 << 10
 	// tunnelBodyLimit bounds one sealed tunnel request record.
-	tunnelBodyLimit = 8 << 20
+	tunnelBodyLimit = routing.MaxTunnelRecordBytes
 	// attestBodyLimit bounds the attest-pq request body: a nonce and an X-Wing
 	// encapsulation key in JSON is well under 8 KiB.
 	attestBodyLimit = 8 << 10
@@ -133,14 +133,14 @@ var (
 //
 // Session gates a new attested session (A2, F2) and returns the manifest whose
 // digest it binds (E1). Current is the applied manifest the publication serves.
-// Acquire reserves tunnel budget for a record of recordBytes. Forward routes a
-// request decrypted from the tunnel; outer is the tunnel request itself, whose
-// Host routes a sealed request that carries none (M1), and an error is sealed
-// as 502.
+// Acquire reserves tunnel budget for a record of recordBytes from client.
+// Forward routes a request decrypted from the tunnel; outer is the tunnel
+// request itself, whose Host routes a sealed request that carries none (M1),
+// and an error is sealed as 502.
 type Router interface {
 	Session() (*routing.Applied, error)
 	Current() *routing.Applied
-	Acquire(recordBytes int64) (release func(), ok bool)
+	Acquire(client string, recordBytes int64) (release func(), ok bool)
 	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 }
 
@@ -764,13 +764,13 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
 		return
 	}
-	// Only a request naming a live session gets here, so an unauthenticated
-	// client never holds budget.
+	// Budget goes only to a request naming a live session. Anyone can open
+	// one, so the per-client share is what bounds a single client.
 	recordBytes := r.ContentLength
 	if recordBytes < 0 {
 		recordBytes = tunnelBodyLimit
 	}
-	release, ok := s.routes.Acquire(recordBytes)
+	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
 	if !ok {
 		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 		return

@@ -633,7 +633,7 @@ follows these rules:
   `router.routing.backendTimeout` (default 1h) how long a routed request, or
   a WebSocket, may go with no data moving; a tunnelled request gets that long
   in total for its backend call. `router.routing.tunnelBudget` (default 75%
-  of the cds-attest memory limit, or 16Gi) bounds the bytes the tunnelled
+  of the cds-attest memory limit, or 32Gi) bounds the bytes the tunnelled
   requests in flight in each router replica may buffer.
 
 `c8s install --upstream <cw-id>` writes the first manifest for an adopted
@@ -848,7 +848,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
 | `--backend-timeout` | `1h` | On the routing listener, how long a request, or an upgraded connection such as a WebSocket, may go with no data moving either way. A tunnelled request, whose response is buffered whole, gets this long in total for its backend call. Must be positive. |
 | `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
-| `--tunnel-budget` | 75% of the container memory limit, else `16Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves its record and the largest response (32 MiB). Must cover one request, 40 MiB. Set by `router.routing.tunnelBudget`. |
+| `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
 | `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. |
 | `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
@@ -916,15 +916,17 @@ withdraw a staged revision, publish a higher one; restoring the previous
 manifest is refused.
 
 Each `cds-attest` replica admits a tunnelled request only while
-`--tunnel-budget` covers its record plus the largest response, 32 MiB, and
-answers others with 503 `tunnel_busy`. The request holds that reservation
-from reading the sealed request to writing the sealed response, up to
-`--backend-timeout`. At 16 GiB that is about 400 requests carrying 8 MiB
-records, or 500 small ones, per replica. A request that names no live
-session gets 401 before its body is read, so it holds no budget. The budget
-counts each buffered byte once, but a request holds up to about four copies
-of its data at once: under a memory limit, leave headroom or set the budget
-lower.
+`--tunnel-budget` covers every copy it may buffer: three of its record and
+four of the largest response, 32 MiB, so 128 MiB to 152 MiB. One client, by
+`X-Real-IP`, holds at most a quarter of the budget. Others get 503
+`tunnel_busy`. At 32 GiB that is about 250 requests per replica and 64 per
+client. Clients behind one NAT share a quarter, and so do all clients behind
+a node when the Service SNATs them (`externalTrafficPolicy: Cluster`). A
+request holds its reservation from reading the sealed request until the
+client has read the sealed response: through the backend call, up to
+`--backend-timeout`, and then for as long as the client keeps reading. One
+that names no live session gets 401 before its body is read. Anyone can open
+a session, so the per-client quarter is what bounds one client.
 
 A tunnel request body over 8 MiB gets 413, and a response over 32 MiB gets
 a sealed 502; the routing listener streams
@@ -948,10 +950,14 @@ write to the client, and `proxy_read_timeout`
 sidecar. The handshake endpoints admit bodies up to 16 KiB.
 `/.well-known/c8s/tunnel` admits bodies up to 8 MiB and drops an upload that
 sends nothing for 10s. Bodies past 16 KiB spill to a tmpfs of
-`router.nginx.tunnelBodySpace` (default 8Gi), charged to nginx's memory; an
-upload that does not fit gets 500, and a body over 8 MiB gets nginx's HTML
-413 page, before the sidecar's JSON errors can apply. nginx caps no
-connections per client or in total: each worker accepts 16384.
+`router.nginx.tunnelBodySpace` (default 8Gi), charged to nginx's memory, so
+a memory limit on nginx must exceed it. An upload that does not fit gets
+500. One client address has at most
+`router.nginx.tunnelConnectionsPerClient` (default 64) tunnel requests open,
+so filling the tmpfs takes 16 addresses at the defaults; past that cap, and
+for a body over 8 MiB, nginx answers with its own HTML 503 or 413 page
+before the sidecar's JSON errors can apply. Each nginx worker accepts 16384
+connections.
 
 ## Attestation-api
 
