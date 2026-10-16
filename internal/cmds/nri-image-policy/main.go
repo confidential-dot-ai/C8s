@@ -6,6 +6,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -408,19 +409,29 @@ type healthServerConfig struct {
 	writeTimeout time.Duration
 }
 
+// healthResponse is the body of GET /healthz. Probes and the installer read
+// only the status code; the body says which allowlist version admission
+// decides with, so a writer can watch an entry take effect.
+type healthResponse struct {
+	Status           string `json:"status"`
+	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
+}
+
 // startHealthServer starts an HTTP server for readiness/liveness probes.
 // addr accepts plain `host:port` for TCP or `unix:///path/to.sock` for a
 // Unix socket. Shuts down gracefully when ctx is cancelled.
 func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.plugin.Ready() {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "ok")
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintln(w, "not ready")
+		body := healthResponse{Status: "ok", AllowlistVersion: cfg.plugin.AppliedAllowlistVersion()}
+		code := http.StatusOK
+		if !cfg.plugin.Ready() {
+			body.Status = "not ready"
+			code = http.StatusServiceUnavailable
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(body)
 	})
 
 	listener, err := healthListener(cfg.addr)
