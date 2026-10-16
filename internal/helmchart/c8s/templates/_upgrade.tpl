@@ -15,21 +15,23 @@
 {{- end -}}
 
 {{/* The CDS shape running now: the live Deployment's
-     confidential.ai/cds-shape annotation, "none" when no CDS Deployment
-     exists, else cds.liveShape ("" when unset, which the guard treats as
-     unknown). lookup answers nothing outside a cluster, so a render that
-     cannot read kube-system cannot tell a first install from an upgrade. A
-     baked node renders the chart before any CDS exists. */ -}}
+     confidential.ai/cds-shape annotation, else cds.liveShape, else "none"
+     when the cluster answers lookups and holds no CDS Deployment, else ""
+     (unknown). lookup answers nothing outside a cluster, so only a
+     kube-system lookup tells a first install from a render that cannot see
+     the cluster. A baked node renders the chart before any CDS exists. */ -}}
 {{- define "c8s.cdsLiveShape" -}}
-{{- $live := "" -}}
 {{- if .Values.node.baked -}}
-{{- $live = "none" -}}
-{{- else if lookup "v1" "Namespace" "" "kube-system" -}}
-{{- with lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) -}}
-{{- $live = dig "metadata" "annotations" "confidential.ai/cds-shape" "" . -}}
+none
 {{- else -}}
+{{- $deployment := lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) -}}
+{{- $live := default "" .Values.cds.liveShape -}}
+{{- if $deployment -}}
+{{- /* A CDS runs, so "none" is no answer. */ -}}
+{{- $live = dig "metadata" "annotations" "confidential.ai/cds-shape" (ternary "" $live (eq $live "none")) $deployment -}}
+{{- else if and (not $live) (lookup "v1" "Namespace" "" "kube-system") -}}
 {{- $live = "none" -}}
 {{- end -}}
+{{- $live -}}
 {{- end -}}
-{{- default (default "" .Values.cds.liveShape) $live -}}
 {{- end -}}
