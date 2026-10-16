@@ -30,6 +30,7 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^"([^"]*)" states no args policy for "([^"]*)"$`, entryStatesNoArgsPolicy)
 	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to the entrypoint of that image$`, entryPinsEntrypoint)
 	sc.Step(`^"([^"]*)" pins the mounts of "([^"]*)" to one rule of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsMounts)
+	sc.Step(`^"([^"]*)" also pins a mount of "([^"]*)" of kind "([^"]*)" with destination "([^"]*)"$`, entryPinsAnotherMount)
 	sc.Step(`^no workload entry declares both "([^"]*)" and "([^"]*)"$`, noEntryDeclaresBoth)
 	sc.Step(`^a workload entry admits image "([^"]*)" under any argv$`, someEntryAdmitsAnyArgv)
 	sc.Step(`^the entries declaring image "([^"]*)" are removed from the served allowlist$`, entriesRemoved)
@@ -199,6 +200,19 @@ func entryPinsMounts(ctx context.Context, name, image, kind, destination string)
 		return err
 	}
 	c.Mounts = mountsPolicy{Policy: "exact", Rules: []mountRule{{Destination: destination, Kind: kind}}}
+	return nil
+}
+
+// entryPinsAnotherMount adds a rule to mounts already pinned.
+func entryPinsAnotherMount(ctx context.Context, name, image, kind, destination string) error {
+	c, err := getWorld(ctx).find(name, image)
+	if err != nil {
+		return err
+	}
+	if c.Mounts.Policy != "exact" {
+		return fmt.Errorf("harness precondition: %q does not pin the mounts of %s yet", name, image)
+	}
+	c.Mounts.Rules = append(c.Mounts.Rules, mountRule{Destination: destination, Kind: kind})
 	return nil
 }
 
