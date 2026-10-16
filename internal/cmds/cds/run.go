@@ -23,7 +23,6 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
-	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/attestation"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
@@ -48,6 +47,12 @@ func run(cfg config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	attestationURL, err := cmdsutil.ExpandHostIP(cfg.attestationApiURL)
+	if err != nil {
+		return err
+	}
+	ctx = cmdsutil.WatchNodeIP(ctx, cfg.attestationApiURL, attestationURL)
+	cfg.attestationApiURL = attestationURL
 	if err := cmdsutil.ValidateAttestationAPIURL("--attestation-api-url", cfg.attestationApiURL); err != nil {
 		return err
 	}
@@ -167,7 +172,7 @@ func run(cfg config) error {
 		return err
 	}
 
-	asClient := remote.NewClient(cfg.attestationApiURL)
+	asClient := armtls.NewAttestationClient(cfg.attestationApiURL)
 	challengeStore := attestation.NewChallengeStore(cfg.challengeTTL)
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.
@@ -179,9 +184,11 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		if err := seedStore(&allowlistStore, cfg.allowlistSeed); err != nil {
+		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
+		if err != nil {
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
+		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
 	}
 
 	// C6: there is no route seed; an empty store waits for an operator write.
@@ -224,7 +231,7 @@ func run(cfg config) error {
 	// posture /attest already takes above, so a dev cluster still issues
 	// sandbox-bound leaves (and can still receive secrets) instead of failing
 	// every workload.
-	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs, cfg.kubeconfig)
+	inventoryHosts, err := buildInventoryHosts(ctx, cfg.inventoryCIDRs)
 	if err != nil {
 		return err
 	}
@@ -383,9 +390,9 @@ func run(cfg config) error {
 
 		slog.Info("cds listening (armTLS)", "addr", addr, "platform", cfg.armtlsPlatform)
 		if err := srv.ListenAndServeTLS("", ""); err != http.ErrServerClosed {
-			return err
+			return cmdsutil.NodeIPChanged(ctx, err)
 		}
-		return nil
+		return cmdsutil.NodeIPChanged(ctx, nil)
 	}
 
 	slog.Warn("armTLS disabled (--armtls-platform empty); serving plain HTTP. UNSAFE outside tests.")
@@ -393,9 +400,9 @@ func run(cfg config) error {
 
 	slog.Info("cds listening", "addr", addr)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		return err
+		return cmdsutil.NodeIPChanged(ctx, err)
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {

@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -878,5 +879,28 @@ func TestIsInjectedContainerName(t *testing.T) {
 		if IsInjectedContainerName(name) {
 			t.Errorf("%q is a workload container but was treated as injected", name)
 		}
+	}
+}
+
+// Until the signer initializes the route must not answer 404: get-cert would
+// read that as "no tokens here" and issue without a sandbox ID.
+func TestServePendingTokens(t *testing.T) {
+	sock := filepath.Join(t.TempDir(), "wc.sock")
+	l, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var signer atomic.Pointer[SandboxTokenSigner]
+	go func() { _ = ServePendingTokens(t.Context(), l, &fakeResolver{sandboxID: "sandbox-1"}, &signer) }()
+	requester := testRequesterKey(t)
+
+	_, err = FetchSandboxToken(t.Context(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce)
+	if err == nil || errors.Is(err, ErrSandboxUnsupported) || !strings.Contains(err.Error(), "503") {
+		t.Fatalf("FetchSandboxToken before signer = %v, want a 503 error", err)
+	}
+
+	signer.Store(testSigner(t))
+	if _, err := FetchSandboxToken(t.Context(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce); err != nil {
+		t.Fatalf("FetchSandboxToken after signer = %v, want a token", err)
 	}
 }

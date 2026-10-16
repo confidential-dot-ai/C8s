@@ -83,11 +83,11 @@ func TestHistoryRecordsEachServedDocument(t *testing.T) {
 			return store.ReplaceAll(al)
 		}, false},
 		{"seed", func() error {
-			_, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))})
+			_, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestB))})
 			return err
 		}, true},
 		{"seed adding nothing", func() error {
-			_, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestC))})
+			_, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"b": oneContainerWorkload(mustParseDigest(t, digestC))})
 			return err
 		}, false},
 		{"delete", func() error { _, err := store.DeleteWorkload("a"); return err }, true},
@@ -143,7 +143,7 @@ func TestStartJournalAfterSeedAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))}); err != nil {
+	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"a": oneContainerWorkload(mustParseDigest(t, digestA))}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.StartJournal(); err != nil {
