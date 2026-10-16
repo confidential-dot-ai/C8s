@@ -152,9 +152,13 @@ func (o *Options) httpsClient(ctx context.Context, pins refvalues.ReferenceValue
 	verify := o.pinVerifier(pins)
 	hc, err := routerdiscovery.NewVerifiedHTTPClient(probeCtx, o.URL, pins.Digests(), verify.Verify)
 	switch {
-	case err == nil && o.DirectCDS:
-		hc.CloseIdleConnections()
-		return nil, fmt.Errorf("--url %s is a router front door, which does not relay CDS's /ca or /secrets. "+
+	case o.DirectCDS && !errors.Is(err, routerdiscovery.ErrNoDiscovery):
+		// A discovery document marks a router even when it does not verify:
+		// pins for CDS reject the router's evidence.
+		if hc != nil {
+			hc.CloseIdleConnections()
+		}
+		return nil, fmt.Errorf("--url %s serves a router discovery document; a router front door does not relay CDS's /ca or /secrets. "+
 			"Use the CDS URL directly, e.g. https://<node>:30808 (cds.service.nodePort) or "+
 			"'kubectl port-forward -n c8s-system svc/c8s-cds 8443:8443', and pin the CDS launch digest instead of the router's", o.URL)
 	case err == nil:

@@ -173,7 +173,7 @@ you pinned.
 `cds.service.nodePort`) or a port-forward to `svc/c8s-cds`, pinned with the CDS
 launch digest. A router front door relays `/allowlist` but not `/ca` or
 `/secrets`, so `c8s secrets put`, `c8s volume create` and `c8s cds ca` refuse
-it before reading or writing anything.
+it before requesting `/ca` or sending a value.
 
 The write goes to the peer whose CA was read. A connection the CLI has to
 reopen must present the same serving certificate as the first one, or the write

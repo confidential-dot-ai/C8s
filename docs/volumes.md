@@ -148,7 +148,8 @@ relay `/secrets` or `/ca`.
 
 Everything that can be refused without a CDS response is refused before anything
 is built: a missing or unreadable `--mesh-ca`, a missing operator key, an
-unpinned endpoint, `http://` without `--insecure`, or a router front door. The
+unpinned endpoint, `http://` without `--insecure`, or a router front door that
+serves its discovery document. The
 CA comparison waits until the build is done, right before the key is sent. A CA
 that does not match is therefore found after the image
 and escrow exist; the key is withheld, and the escrow file can be stored later
