@@ -3,7 +3,6 @@ package cds
 import (
 	"context"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
@@ -127,13 +126,20 @@ func run(cfg config) error {
 	}
 	defer allowlistStore.Close()
 
-	// CDS generates its mesh CA in process at startup; the private key never
-	// touches a Kubernetes Secret.
-	mesh, err := issuer.NewCAWithCurve(cfg.caCommonName, cfg.caCertValidity, elliptic.P384())
+	// CDS generates its mesh CA in process at startup, or in HA mode obtains
+	// the cluster's from genesis or a peer; the private key never touches a
+	// Kubernetes Secret.
+	mesh, haReplica, err := meshCA(ctx, cfg)
 	if err != nil {
-		return fmt.Errorf("generate mesh CA: %w", err)
+		return fmt.Errorf("mesh CA: %w", err)
 	}
-	slog.Info("generated in-memory mesh CA",
+	explainAuthorizer := writeAuthorizer // a read: stays operator-authorized in HA mode
+	// Allowlist and secret writes would land on one replica only. Until they
+	// are replicated, an HA cluster takes its policy from the signed launch
+	// document (seed and workloads), and writes are refused. Applied where
+	// the authorizers are wired (below), so no later reassignment escapes it.
+	haWrites := refuseHAWrites(haReplica != nil)
+	slog.Info("loaded in-memory mesh CA",
 		"fingerprint", certutil.CertFingerprint(mesh.Cert.Raw),
 		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
 	)
@@ -177,6 +183,13 @@ func run(cfg config) error {
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.
 	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
+	if haReplica != nil {
+		// Any replica may answer the second request of a challenge exchange:
+		// challenges are MACed under a key every replica derives from the
+		// shared mesh CA key (a rotation invalidates outstanding ones).
+		challengeStore.SetSharedKey(haChallengeKey(haReplica, "issuance"))
+		secretsChallenges.SetSharedKey(haChallengeKey(haReplica, "secrets"))
+	}
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
 	// Seed before serving so the first GET /allowlist returns the bootstrap
@@ -287,7 +300,7 @@ func run(cfg config) error {
 		}
 		secretsOperator = &secrets.OperatorHandler{
 			Store:        store,
-			Authorize:    writeAuthorizer,
+			Authorize:    haWrites(writeAuthorizer),
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Logger:       slog.Default(),
 		}
@@ -298,7 +311,7 @@ func run(cfg config) error {
 			Bindings:       sandboxBindings,
 			Policy:         policy,
 			InventoryHosts: inventoryHosts,
-			Authorize:      writeAuthorizer,
+			Authorize:      explainAuthorizer,
 			Logger:         slog.Default(),
 		}
 		slog.Info("serving /secrets; release is gated on an allowlist entry carrying a secrets grant")
@@ -328,7 +341,7 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   allowlistWriteAuthorizer,
+			WriteAuthorizer:   haWrites(allowlistWriteAuthorizer),
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		Routes: routeHandler{
@@ -351,6 +364,17 @@ func run(cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
+	if haReplica != nil {
+		// Issuance follows the replica: it stops while the replica is a
+		// candidate and switches key on rotation (L3, L4, D16).
+		deps.AttestHandler.CASource = haReplica.CA
+		deps.CACertSource = haCACertPEM(haReplica)
+		deps.HAStatus = haStatus(haReplica)
+		deps.ReadyFn = func() bool {
+			ca, err := haReplica.CA()
+			return err == nil && readinessFn(checker.Ready, ca.Cert, cfg.minCAValidity)()
+		}
+	}
 	router := newRouter(deps)
 
 	go checker.Run(ctx)
@@ -376,6 +400,9 @@ func run(cfg config) error {
 		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
+		}
+		if haReplica != nil {
+			tlsCfg = followMeshCA(tlsCfg, haReplica.CA)
 		}
 		srv.TLSConfig = tlsCfg
 
