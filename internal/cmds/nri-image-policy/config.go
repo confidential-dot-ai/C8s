@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
+	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -92,6 +94,11 @@ type pullConfig struct {
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
 	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
+	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
+	// applying it. Off by default: verifiers on attestation-go predating
+	// runtime extensions, and flat RTMR[3] pins, still require the bare
+	// operator-key seed.
+	MeasurePolicies bool `yaml:"measure_policies"`
 }
 
 // validatePolicyInputs rejects competing CDS identity policy sources before I/O.
@@ -374,6 +381,11 @@ func (c *config) Validate() error {
 	}
 	if c.WorkloadClaims.SocketDir != "" && !c.AllowlistEnabled() {
 		return fmt.Errorf("workload_claims.socket_dir requires allowlist.base or allowlist.pull: the inventory reports digests for CDS to match against the allowlist")
+	}
+	// Certificate producers read the journal only from the default runtime directory.
+	journalDir := filepath.Dir(policymeasure.NodeJournal)
+	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
 	}
 	if c.WorkloadClaims.PublishNodeIP && c.WorkloadClaims.SocketDir == "" {
 		return fmt.Errorf("workload_claims.publish_node_ip requires workload_claims.socket_dir: the node-ip file lives there")

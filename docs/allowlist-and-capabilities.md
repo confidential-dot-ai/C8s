@@ -709,6 +709,86 @@ stored token: signature, method, path and body, but not its expiry.
 `pkg/operatorauth/testdata/operator_signature_vector.json` is a test vector
 for other verifiers.
 
+#### Change policy
+
+To move from policy P to policy Q without stopping running workloads:
+
+1. Upload P∪Q, a document holding every entry of both.
+2. Roll the workloads onto Q's images.
+3. Upload Q.
+
+Each step is one signed entry in the [allowlist history](#allowlist-history),
+so every policy a node enforces along the way carries the operator's
+signature.
+
+### Measured policy history
+
+On a TDX node, the NRI plugin can extend RTMR[3] with each allowlist it pulls
+before applying it. RTMR[3] then holds the operator-key seed followed by the
+digest of every policy the node enforced since boot. A policy digest is
+`sha256:<hex>` of the exact bytes `GET /allowlist` served. A rolled-back
+document is neither measured nor applied, a document the node fails to
+measure is not applied, and a return to an earlier document does not extend
+again.
+
+Set `nriImagePolicy.measurePolicies: true` to turn it on. The chart renders
+it as `allowlist.pull.measure_policies` in the plugin's boot config, and with
+`nriImagePolicy.baked` patches it into the node image's config through
+`set-cds-pins`; a plugin from a node image that predates the key ignores it.
+Under `node.baked` the image owns the plugin config, so the
+chart refuses the value. The key requires `workload_claims.socket_dir` to be
+the default runtime directory, and is a no-op on SEV-SNP, which has no runtime
+register. On TDX without the launch operator key, or with a journal that no
+longer matches the register, the plugin applies no pulled allowlist and keeps
+enforcing the one it holds: at startup, the base allowlist alone.
+
+> [!WARNING]
+> Measuring is off by default. Three kinds of check still require the bare
+> operator-key seed and reject a node that measures: armTLS verifiers built on
+> attestation-go releases that predate runtime extensions, flat RTMR[3] pins
+> (`--rtmrs 3=…`, `allowlist.pull.cds_rtmrs`), and
+> `c8s verify --image-policy-file` with an `approver_key`. Producers find the
+> journal only under the default `nriImagePolicy.hostPaths.runtimeDir`,
+> mounted beside the attestation-api socket, so the chart refuses
+> `measurePolicies` with any other directory or without
+> `attestationApi.enabled`. A node stops measuring, and so stops applying new
+> policies, after 256 of them (the most a certificate carries) until it
+> reboots.
+
+The plugin journals the digests, one per line in extend order, at
+`<nriImagePolicy.hostPaths.runtimeDir>/measured-policies`, a tmpfs that dies
+with the register. These readers carry the list outside any transcript; a
+verifier trusts it only as far as it replays against a quote's RTMR[3]:
+
+- **armTLS evidence.** A TDX process that attests itself reads the journal
+  after obtaining its quote, at `/var/run/nri-image-policy/measured-policies`
+  or, in an injected sidecar, `/run/c8s/workload-claims/measured-policies`.
+  It sends the list with the evidence: in the armTLS certificate extension,
+  in the CDS `/attest` request as `runtime_extensions`, and in the router's
+  discovery document. The anchored image pins CDS, armTLS peers,
+  `c8s allowlist` and `c8s secrets` enforce accept the seed followed by any
+  prefix of the list that replays. The replay proves which policies the node
+  enforced, not that they are acceptable.
+- **Router.** Wherever the router mounts the runtime directory, the chart
+  passes `cds-attest --measured-policies-file`, which adds the list to
+  attest-pq and attest-lb bundles as `measured_policies`. An absent or
+  unreadable journal omits it.
+- **cred-release.** It accepts its own binding as the seed followed by a
+  prefix of the list, and carries the list in its armTLS certificate and in
+  its `/attest` response.
+- **`c8s get-kubeconfig`.** On TDX it takes the list from the verified
+  cred-release certificate, whose self-signature under the attested key
+  covers it, and for the fresh report from the `/attest` response on that
+  verified channel. It accepts RTMR[3] as the seed extended by the
+  `--workload-image` chain, optionally followed by a prefix of the list that
+  replays. An extend after the workload chain passes whenever the node lists
+  it. With `--attest-url`, the fresh report is checked against the
+  certificate's list, which fails after a policy the certificate predates
+  until cred-release renews its certificate.
+
+The list is read after the quote is produced, so it may hold extends the
+quote does not. Verifiers use the longest prefix that replays.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component

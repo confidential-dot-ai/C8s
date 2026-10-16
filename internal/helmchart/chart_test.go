@@ -5407,6 +5407,7 @@ type nriRuntimeConfig struct {
 			AttestationApiURL string   `yaml:"attestation_api_url"`
 			CDSMeasurements   []string `yaml:"cds_measurements"`
 			CDSRTMRs          []string `yaml:"cds_rtmrs"`
+			MeasurePolicies   bool     `yaml:"measure_policies"`
 		} `yaml:"pull"`
 		Push struct {
 			PersistPath string `yaml:"persist_path"`
@@ -8059,6 +8060,108 @@ func TestChartSweepMountAdmission(t *testing.T) {
 				if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: mounts}); got != tc.want {
 					t.Errorf("%s admitted=%v, want %v", tc.name, got, tc.want)
 				}
+			}
+		})
+	}
+}
+
+// nriImagePolicy.measurePolicies reaches both plugin configs: the rendered
+// boot config and, on a baked node, the set-cds-pins patch. The router's
+// cds-attest reads the journal wherever it mounts the runtime directory, so a
+// node that stopped measuring still reports the extends RTMR[3] keeps.
+func TestChartMeasurePolicies(t *testing.T) {
+	for _, measure := range []bool{false, true} {
+		set := fmt.Sprintf("nriImagePolicy.measurePolicies=%t", measure)
+		out, err := helmTemplate(t, "--set", set)
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		if got := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker").Allowlist.Pull.MeasurePolicies; got != measure {
+			t.Errorf("%s: boot config measure_policies = %v, want %v", set, got, measure)
+		}
+
+		out, err = helmTemplate(t,
+			"--set-string", "attestationApi.cvmMode=bare-metal",
+			// Measuring needs the journal mount beside the attestation-api socket.
+			"--set", fmt.Sprintf("attestationApi.enabled=%t", measure),
+			"--set", "nriImagePolicy.baked=true",
+			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+			"--set-string", "nriImagePolicy.image.digest=sha256:"+strings.Repeat("d", 64),
+			"--set", set,
+		)
+		if err != nil {
+			t.Fatalf("helm template: %v\n%s", err, out)
+		}
+		ds := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+		script := strings.Join(containerArgs(t, &ds, "install"), "\n")
+		if want := fmt.Sprintf("--measure-policies=%t", measure); !strings.Contains(script, want) {
+			t.Errorf("%s: baked pins script missing %q\n%s", set, want, script)
+		}
+	}
+
+	const custom, defaultDir = "/run/custom-nri", "/var/run/nri-image-policy"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		dir      string
+		wantFlag bool
+	}{
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}, dir: defaultDir},
+		{name: "not measuring", args: []string{"--set", "attestationApi.enabled=true"}, dir: custom, wantFlag: true},
+		{name: "measuring", args: []string{"--set", "attestationApi.enabled=true", "--set", "nriImagePolicy.measurePolicies=true"}, dir: defaultDir, wantFlag: true},
+		{name: "baked", args: bakedArgs, dir: custom, wantFlag: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := tc.dir
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(attest.Args, flag); got != tc.wantFlag {
+				t.Fatalf("cds-attest carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, attest.Args)
+			}
+			mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
+			}
+		})
+	}
+}
+
+// Producers read the journal at the default runtime directory only, so the
+// chart refuses measuring with another one.
+func TestChartMeasurePoliciesNeedsDefaultRuntimeDir(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set", "nriImagePolicy.measurePolicies=true",
+		"--set-string", "nriImagePolicy.hostPaths.runtimeDir=/run/custom-nri",
+	)
+	if err == nil {
+		t.Fatalf("helm template succeeded, want a measure_policies_runtime_dir failure\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "measure_policies_runtime_dir" {
+		t.Fatalf("validation kind = %q, want measure_policies_runtime_dir\n%s", got, out)
+	}
+}
+
+// Producers mount the journal only beside the chart's attestation-api socket,
+// and a node.baked image owns the plugin config, so the chart refuses
+// measuring without attestationApi.enabled.
+func TestChartMeasurePoliciesNeedsJournalMount(t *testing.T) {
+	for name, args := range map[string][]string{
+		"no attestation-api": {"--set", "attestationApi.enabled=false"},
+		"node baked":         bakedArgs,
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(args), "--set", "nriImagePolicy.measurePolicies=true")...)
+			if err == nil {
+				t.Fatalf("helm template succeeded, want a measure_policies_no_journal_mount failure\n%s", out)
+			}
+			if got := parseValidationErrorKind(out); got != "measure_policies_no_journal_mount" {
+				t.Fatalf("validation kind = %q, want measure_policies_no_journal_mount\n%s", got, out)
 			}
 		})
 	}

@@ -258,6 +258,22 @@
 {{- end -}}
 {{- end -}}
 {{- /*
+  Certificate producers read the measured-policy journal at the default
+  runtime directory (internal/policymeasure.NodeJournal). Elsewhere they send no
+  list and CDS refuses the node's identity.
+*/ -}}
+{{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/var/run/nri-image-policy") -}}
+{{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /var/run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
+{{- end -}}
+{{- /*
+  Producers mount the runtime directory only beside the attestation-api
+  socket. Under node.baked the image owns the plugin config, which the value
+  cannot reach.
+*/ -}}
+{{- if and $nri.measurePolicies (not .Values.attestationApi.enabled) -}}
+{{- fail "VALIDATION_ERROR kind=measure_policies_no_journal_mount: nriImagePolicy.measurePolicies=true requires attestationApi.enabled=true, and so excludes node.baked: otherwise certificate producers do not mount the measured-policy journal, or the plugin never sees the setting" -}}
+{{- end -}}
+{{- /*
   A component expands $(HOST_IP) from its HOST_IP variable, which the
   allowlist leaves open, so a pod could point it at an attestation verifier of
   its choosing. Under a fail-closed policy (c8s.imagePolicyFailClosed, which
