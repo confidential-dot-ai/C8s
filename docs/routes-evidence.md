@@ -75,7 +75,7 @@ The evidence is an admission-time snapshot: the digest identifies the manifest a
 
 ## Publication
 
-Helm `router.routePublication.enabled: true` (default `false`) renders `cds-attest --publish-routes`. `GET /.well-known/c8s/routes` then returns the applied signed manifest, byte for byte the CDS `GET /routes` envelope:
+Helm `router.routePublication.enabled: true` (default `false`; `c8s node-image render` sets it for baked nodes) renders `cds-attest --publish-routes`. `GET /.well-known/c8s/routes` then returns the applied signed manifest, byte for byte the CDS `GET /routes` envelope:
 
 ```json
 {"manifest": "<standard padded base64 of the manifest bytes>", "token": "<write token>"}
@@ -90,7 +90,7 @@ The response carries `Cache-Control: no-store`. The path returns 404 when public
 | Flag | Check |
 |---|---|
 | `--route-digest HEX` | V1. Recomputes the transcript with this digest, so evidence that binds any other digest fails. Repeat the flag to accept any of several digests. |
-| `--operator-keys FILE` | V2. Fetches `/.well-known/c8s/routes` before the handshake, verifies the write token under these PEM public keys (see [Verify a published manifest](#verify-a-published-manifest)), and recomputes the transcript with the manifest's digest. If the bundle's `route_digest` names another digest, fetches the publication once more and accepts its manifest only if its revision is higher than the first one's, it passes the same checks and it matches; anything else fails. |
+| `--operator-keys FILE` | V2. Fetches `/.well-known/c8s/routes` before the handshake, verifies the write token under these PEM public keys (see [Verify a published manifest](#verify-a-published-manifest)), and recomputes the transcript with the manifest's digest. If the bundle's `route_digest` names another digest, fetches the publication once more and accepts its manifest, whatever its revision, if it passes the same checks and matches; anything else fails. |
 | `--routes-floor REV:HEX` | With `--operator-keys`. Refuses a published manifest whose revision is lower than `REV`, or equal with another digest (rollback). Without it, any revision an operator signed is accepted. |
 
 ```sh

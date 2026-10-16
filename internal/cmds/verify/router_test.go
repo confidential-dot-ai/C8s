@@ -106,7 +106,7 @@ func productionRouter(t *testing.T, operator operatorSigner, afterResponse func(
 		MeshIdentityCertFile: writePEM(t, "mesh.pem", "CERTIFICATE", id.leaf.Raw),
 		MeshIdentityKeyFile:  writePEM(t, "mesh-key.pem", "EC PRIVATE KEY", keyDER),
 		MeshIdentityCAFile:   writePEM(t, "mesh-ca.pem", "CERTIFICATE", id.ca.Raw),
-		Routes:               state,
+		Routes:               routing.NewProxy(routing.ProxyConfig{State: state}),
 		PublishRoutes:        true,
 	}).Handler()
 	ts := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

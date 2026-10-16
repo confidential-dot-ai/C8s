@@ -744,7 +744,9 @@ digest. CDS stores the bytes and the write token verbatim. CDS answers:
 The `c8s routes` CLI takes the `c8s allowlist` connection and credential
 flags. Point `--url` at CDS itself, with no path, because the router does not
 relay `/routes`. A port-forward works; pin the CDS launch digest with
-`--measurements`.
+`--measurements`. On a baked node, CDS listens on NodePort 30808 of the
+server: use `--url https://SERVER_ADDRESS:30808`, pinned with
+`--image-policy-file` set to the bundle's `server.json`.
 
 To show the stored route manifest and add a route:
 
@@ -808,8 +810,8 @@ old public key. To recover, do one of the following:
 The route digest `show` and `digest` print is the value
 `c8s verify --route-digest` takes. The router binds the digest of the
 manifest it applied into its attest-pq and attest-lb evidence. With
-`router.routePublication.enabled: true` (default `false`; requires
-`router.attest.enabled`), the router also serves that signed manifest at
+`router.routePublication.enabled: true` (default `false`, but on in a baked
+node image; requires `router.attest.enabled`), the router also serves that signed manifest at
 `/.well-known/c8s/routes` for `c8s verify --operator-keys`. Leave route
 publication off when the hosts, backend addresses and workload names in the
 manifest are not public. See [Route evidence](routes-evidence.md).

@@ -85,8 +85,12 @@ func NewProxy(cfg ProxyConfig) *Proxy {
 	}
 }
 
-// State returns the state the proxy routes by.
-func (p *Proxy) State() *State { return p.state }
+// Session and Current read the State the proxy routes by, so a handshake
+// binds the digest of the manifest its tunnel then routes by (A5, E2).
+func (p *Proxy) Session() (*Applied, error) { return p.state.Session() }
+
+// Current returns the applied manifest, or nil before the first apply.
+func (p *Proxy) Current() *Applied { return p.state.Current() }
 
 // Acquire takes a tunnel slot for client, or reports false when every slot
 // is taken or client holds its share of them. The caller holds it from

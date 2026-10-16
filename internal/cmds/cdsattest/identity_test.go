@@ -135,7 +135,6 @@ func TestIdentityBoundAttestationAndChannel(t *testing.T) {
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		Backend:              echoBackend,
 	})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

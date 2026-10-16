@@ -121,15 +121,20 @@ var (
 	errStoreFull    = errors.New("the server is at capacity; retry shortly")
 )
 
-// Backend forwards a request decrypted from the tunnel and returns the response
-// the sidecar seals back to the client. outer is the tunnel request itself,
-// whose Host routes a sealed request that carries none (route policy M1). An
-// error means the backend failed and is sealed as 502. Acquire takes a tunnel
-// slot for a client, as routing.Proxy.Acquire does. *routing.Proxy implements
-// it.
-type Backend interface {
-	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
+// Router is the one route state the attested endpoints share, so the digest
+// a handshake binds is that of the manifest its tunnel routes by (A5, E2).
+// *routing.Proxy implements it.
+//
+// Session gates a new attested session (A2, F2) and returns the manifest whose
+// digest it binds (E1). Current is the applied manifest the publication serves.
+// Acquire takes a tunnel slot for a client. Forward routes a request decrypted
+// from the tunnel; outer is the tunnel request itself, whose Host routes a
+// sealed request that carries none (M1), and an error is sealed as 502.
+type Router interface {
+	Session() (*routing.Applied, error)
+	Current() *routing.Applied
 	Acquire(client string) (release func(), ok bool)
+	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 }
 
 // Config configures the sidecar server.
@@ -160,13 +165,9 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
-	// Backend routes tunnel requests by the applied route manifest (A7). Nil
-	// answers each with a sealed 503.
-	Backend Backend
-	// Routes gates new attested sessions on an applied, fresh route manifest
-	// (A2, F2) and supplies the route digest their transcripts bind (E1).
-	// run always sets it; nil refuses every attested handshake.
-	Routes *routing.State
+	// Routes gates attested sessions, routes the tunnel and serves the route
+	// publication. Required.
+	Routes Router
 	// PublishRoutes serves the applied signed manifest at
 	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
 	// names hosts and backends a private deployment may not want public.
@@ -192,20 +193,11 @@ type establishedSession struct {
 	client    string
 }
 
-// routeSource is the applied-manifest view the attested handshakes and the
-// route publication read: *routing.State in production.
-type routeSource interface {
-	Session() (*routing.Applied, error)
-	Current() *routing.Applied
-}
-
 // Server serves the c8s-verify endpoints.
 type Server struct {
-	cfg Config
-	log *slog.Logger
-	// routes is nil when no route manifest source is configured, and then
-	// every attested handshake is refused: its transcript binds a digest.
-	routes routeSource
+	cfg    Config
+	log    *slog.Logger
+	routes Router
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -242,15 +234,10 @@ func NewServer(cfg Config) *Server {
 	if cfg.TunnelIOTimeout <= 0 {
 		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
-	// A nil *routing.State must stay a nil interface for routesAdmit.
-	var source routeSource
-	if cfg.Routes != nil {
-		source = cfg.Routes
-	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
-		routes:           source,
+		routes:           cfg.Routes,
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -628,10 +615,6 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 // the handshake loads no other (E2). Later requests in the session route by
 // whatever manifest is then applied (E3).
 func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
-	if s.routes == nil {
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "this router has no route manifest source")
-		return nil, false
-	}
 	applied, err := s.routes.Session()
 	switch {
 	case errors.Is(err, routing.ErrStale):
@@ -762,14 +745,12 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
 		return
 	}
-	if s.cfg.Backend != nil {
-		release, ok := s.cfg.Backend.Acquire(clientBucket(r))
-		if !ok {
-			writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
-			return
-		}
-		defer release()
+	release, ok := s.routes.Acquire(clientBucket(r))
+	if !ok {
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
+		return
 	}
+	defer release()
 	rc := http.NewResponseController(w)
 	ioDeadline := func() time.Time { return time.Now().Add(s.cfg.TunnelIOTimeout) }
 	if err := errors.Join(rc.SetReadDeadline(ioDeadline()), rc.SetWriteDeadline(ioDeadline())); err != nil {
@@ -823,10 +804,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	resp := types.TunnelResponse{Status: http.StatusServiceUnavailable, Body: []byte("routes not applied")}
-	if s.cfg.Backend != nil {
-		resp, err = s.cfg.Backend.Forward(r, env)
-	}
+	resp, err := s.routes.Forward(r, env)
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}

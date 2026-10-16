@@ -31,7 +31,7 @@ func getPublication(t *testing.T, srv *Server) (*http.Response, []byte) {
 func TestE4RoutePublication(t *testing.T) {
 	state := routing.NewState(routing.StateConfig{MeshCAs: noMeshCAs})
 	newServer := func(publish, attestOff bool) *Server {
-		return NewServer(Config{Routes: state, PublishRoutes: publish, DisableAttestEndpoints: attestOff})
+		return NewServer(Config{Routes: testRouter{State: state, backendFunc: echoBackend}, PublishRoutes: publish, DisableAttestEndpoints: attestOff})
 	}
 
 	resp, _ := getPublication(t, newServer(true, false))
@@ -81,12 +81,6 @@ func TestE4RoutePublication(t *testing.T) {
 				t.Fatalf("GET %s = %d, want 404", routes.PublicationPath, resp.StatusCode)
 			}
 		})
-	}
-}
-
-func TestE4RoutePublicationWithoutRouteSource(t *testing.T) {
-	if resp, _ := getPublication(t, NewServer(Config{PublishRoutes: true})); resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("GET %s without a route source = %d, want 404", routes.PublicationPath, resp.StatusCode)
 	}
 }
 

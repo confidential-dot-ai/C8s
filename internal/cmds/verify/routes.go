@@ -192,18 +192,9 @@ func (rc *routeCheck) bind(ctx context.Context, base, serverName string, timeout
 	if err != nil {
 		return nil, err
 	}
-	route.refetch = func() (*boundRoute, error) {
-		fresh, err := rc.published(ctx, base, serverName, timeout)
-		if err != nil {
-			return nil, err
-		}
-		// Only a newer manifest explains the mismatch. An older one is a
-		// replica behind, or rolled back, from the one first published.
-		if fresh.revision <= route.revision {
-			return nil, &securityError{err: fmt.Errorf("route digest mismatch: the re-fetched manifest has revision %d, not newer than the revision %d first published", fresh.revision, route.revision)}
-		}
-		return fresh, nil
-	}
+	// Any revision passing the floor may answer: behind a load balancer the
+	// re-fetch can reach a replica on an older manifest than the first did.
+	route.refetch = func() (*boundRoute, error) { return rc.published(ctx, base, serverName, timeout) }
 	return route, nil
 }
 
@@ -305,7 +296,7 @@ func resolveRoute(served string, route *boundRoute) (*boundRoute, error) {
 		if route.revision == 0 {
 			return nil, &securityError{err: fmt.Errorf("route digest mismatch: the responder reports %s, which no --route-digest value names", served)}
 		}
-		return nil, &securityError{err: fmt.Errorf("route digest mismatch: the responder reports %s, the manifest published at %s has %x; the router may have applied a newer manifest after the publication fetch, and one re-fetch already ran", served, routes.PublicationPath, route.digest)}
+		return nil, &securityError{err: fmt.Errorf("route digest mismatch: the responder reports %s, the manifest published at %s has %x; the router may have applied another manifest after the publication fetch, and one re-fetch already ran", served, routes.PublicationPath, route.digest)}
 	}
 	// The router may have applied a newer manifest between the publication
 	// fetch and the handshake (spec V2).

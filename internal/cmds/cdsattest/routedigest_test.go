@@ -70,13 +70,15 @@ func noMeshCAs() ([]*x509.Certificate, error) { return nil, nil }
 
 // testRoutes is a route state with the test manifest applied, so the attested
 // handshakes a server serves from it bind testRouteDigest.
-func testRoutes(t *testing.T) *routing.State {
+// testRoutes is a router with testManifest applied that echoes tunnel
+// requests.
+func testRoutes(t *testing.T) testRouter {
 	t.Helper()
 	state := routing.NewState(routing.StateConfig{MeshCAs: noMeshCAs})
 	if _, err := state.Accept(signManifest(t, testManifest)); err != nil {
 		t.Fatal(err)
 	}
-	return state
+	return testRouter{State: state, backendFunc: echoBackend}
 }
 
 // manifestAt is testManifest at another revision, so its digest differs.
@@ -87,6 +89,7 @@ func manifestAt(revision int) string {
 // swappingRoutes answers the first Session with first and every later load
 // with second, standing in for a manifest applied mid-handshake.
 type swappingRoutes struct {
+	backendFunc
 	mu            sync.Mutex
 	first, second *routing.Applied
 	loads         int
@@ -117,9 +120,8 @@ type digestServer struct {
 	servingDER []byte
 }
 
-// newDigestServer serves from state, or from source when state is nil: the
-// one place a test injects a route source *routing.State cannot model.
-func newDigestServer(t *testing.T, state *routing.State, source routeSource) *digestServer {
+// newDigestServer serves both handshakes from router.
+func newDigestServer(t *testing.T, router Router) *digestServer {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	certPath, servingDER := writeTestServingLeaf(t)
@@ -131,11 +133,8 @@ func newDigestServer(t *testing.T, state *routing.State, source routeSource) *di
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		Routes:               state,
+		Routes:               router,
 	})
-	if state == nil && source != nil {
-		srv.routes = source
-	}
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &digestServer{url: ts.URL, prov: prov, identity: identity, servingDER: servingDER}
@@ -200,7 +199,7 @@ func (d *digestServer) lbDigestBound(t *testing.T, digest [sha256.Size]byte) {
 
 func TestE1HandshakesBindAppliedDigest(t *testing.T) {
 	state := routing.NewState(routing.StateConfig{MeshCAs: noMeshCAs})
-	d := newDigestServer(t, state, nil)
+	d := newDigestServer(t, testRouter{State: state, backendFunc: echoBackend})
 	for _, revision := range []int{1, 2} {
 		manifest := manifestAt(revision)
 		if _, err := state.Accept(signManifest(t, manifest)); err != nil {
@@ -215,8 +214,8 @@ func TestE1HandshakesBindAppliedDigest(t *testing.T) {
 func TestE2DigestComesFromTheAdmittedManifest(t *testing.T) {
 	for _, handshake := range []string{"attest-pq", "attest-lb"} {
 		t.Run(handshake, func(t *testing.T) {
-			source := &swappingRoutes{first: signedManifest(t, manifestAt(1)), second: signedManifest(t, manifestAt(2))}
-			d := newDigestServer(t, nil, source)
+			source := &swappingRoutes{backendFunc: echoBackend, first: signedManifest(t, manifestAt(1)), second: signedManifest(t, manifestAt(2))}
+			d := newDigestServer(t, source)
 			digest := sha256.Sum256([]byte(manifestAt(1)))
 			if handshake == "attest-pq" {
 				d.pqDigestBound(t, digest)
@@ -230,8 +229,8 @@ func TestE2DigestComesFromTheAdmittedManifest(t *testing.T) {
 	}
 }
 
-func TestE1HandshakesRefusedWithoutRouteSource(t *testing.T) {
-	d := newDigestServer(t, nil, nil)
+func TestE1HandshakesRefusedBeforeFirstApply(t *testing.T) {
+	d := newDigestServer(t, testRouter{State: routing.NewState(routing.StateConfig{MeshCAs: noMeshCAs}), backendFunc: echoBackend})
 	ck, err := overenc.GenerateClientKey()
 	if err != nil {
 		t.Fatal(err)
@@ -243,10 +242,10 @@ func TestE1HandshakesRefusedWithoutRouteSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := errorCode(t, pq); got != types.ErrorCodeRoutesUnavailable {
-		t.Fatalf("attest-pq without a route source = %q, want %q", got, types.ErrorCodeRoutesUnavailable)
+		t.Fatalf("attest-pq before the first apply = %q, want %q", got, types.ErrorCodeRoutesUnavailable)
 	}
 	if got := errorCode(t, lb); got != types.ErrorCodeRoutesUnavailable {
-		t.Fatalf("attest-lb without a route source = %q, want %q", got, types.ErrorCodeRoutesUnavailable)
+		t.Fatalf("attest-lb before the first apply = %q, want %q", got, types.ErrorCodeRoutesUnavailable)
 	}
 	if d.prov.lastReportData != nil {
 		t.Fatal("a refused handshake requested evidence")

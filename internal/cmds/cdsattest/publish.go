@@ -3,8 +3,6 @@ package cdsattest
 import (
 	"encoding/json"
 	"net/http"
-
-	"github.com/confidential-dot-ai/c8s/internal/routing"
 )
 
 // handleRoutePublication serves the applied signed manifest in the CDS's
@@ -14,10 +12,7 @@ import (
 // one, so it is still served.
 func (s *Server) handleRoutePublication(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	var applied *routing.Applied
-	if s.routes != nil {
-		applied = s.routes.Current()
-	}
+	applied := s.routes.Current()
 	if applied == nil {
 		w.WriteHeader(http.StatusNotFound)
 		return

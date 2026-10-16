@@ -126,12 +126,11 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		Routes:               rs.state,
 	}
 	for _, opt := range opts {
 		opt(&proxyCfg, &srvCfg)
 	}
-	srvCfg.Backend = routing.NewProxy(proxyCfg)
+	srvCfg.Routes = routing.NewProxy(proxyCfg)
 	rs.ts = httptest.NewServer(NewServer(srvCfg).Handler())
 	t.Cleanup(rs.ts.Close)
 	return rs
@@ -382,7 +381,7 @@ func TestTunnelOversizedBodyFreesSlot(t *testing.T) {
 }
 
 func TestAttestEndpointsDisabled(t *testing.T) {
-	srv := NewServer(Config{DisableAttestEndpoints: true})
+	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	for _, path := range []string{"/.well-known/c8s/attest-lb", "/.well-known/c8s/tunnel"} {

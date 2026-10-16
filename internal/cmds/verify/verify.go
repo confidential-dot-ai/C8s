@@ -1252,9 +1252,14 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 
 	// In the attested modes --operator-keys checks the published route
 	// manifest instead (routeCheck).
-	if attestedMode(cfg) {
-		return
+	if !attestedMode(cfg) {
+		checkServedOperatorKeys(oc, cfg, opKeys, fail)
 	}
+}
+
+// checkServedOperatorKeys compares the key set a kind=cds target serves at
+// /operator-keys with --operator-keys.
+func checkServedOperatorKeys(oc *Outcome, cfg config, opKeys operatorKeysReport, fail func(string, ...any)) {
 	// The served key list is authenticated by being fetched over the attested
 	// serving cert. A failed fetch fails closed when the operator asked for the
 	// check (a 404 is not an error — it maps to the empty-set digest in

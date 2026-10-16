@@ -274,9 +274,9 @@ func TestParseRouteCheckV2(t *testing.T) {
 	}
 }
 
-// The re-fetch after a digest mismatch accepts only a newer manifest than the
-// one first published: an older one is a replica behind or rolled back.
-func TestV2RefetchRefusesAnOlderManifest(t *testing.T) {
+// The re-fetch after a digest mismatch accepts any manifest that passes the
+// checks, whatever its revision relative to the first fetch, as the clients do.
+func TestV2RefetchAcceptsAnyRevision(t *testing.T) {
 	op := newOperatorSigner(t)
 	newer, _ := op.publish(t, 5)
 	older, _ := op.publish(t, 3)
@@ -293,8 +293,8 @@ func TestV2RefetchRefusesAnOlderManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := route.refetch(); !isSecurityError(err) {
-		t.Fatalf("refetch of revision 3 after 5 = %v, want a security error", err)
+	if fresh, err := route.refetch(); err != nil || fresh.revision != 3 {
+		t.Fatalf("refetch of revision 3 after 5 = %+v, %v, want revision 3", fresh, err)
 	}
 	route, err = (&routeCheck{keys: op.keys}).bind(context.Background(), ts.URL, "", 5*time.Second)
 	if err != nil {

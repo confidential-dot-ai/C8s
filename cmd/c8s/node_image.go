@@ -158,6 +158,9 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// the chart DaemonSet, which the chart refuses on a baked node.
 		"--set", "volumed.enabled=false",
 		"--set", "router.attest.enabled=true",
+		// Clients verify a baked node's routes with --operator-keys, which
+		// reads the publication.
+		"--set", "router.routePublication.enabled=true",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")

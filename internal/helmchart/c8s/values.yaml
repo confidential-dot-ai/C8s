@@ -1052,7 +1052,8 @@ router:
   # operator keys and checks that the attest-pq or attest-lb evidence binds its
   # route digest (`c8s verify --operator-keys`). Off by default, and the path
   # answers 404: the manifest names hosts, backend addresses and workload
-  # names. Requires attest.enabled. See docs/routes-evidence.md.
+  # names. `c8s node-image render` turns it on for baked nodes. Requires
+  # attest.enabled. See docs/routes-evidence.md.
   routePublication:
     enabled: false
 
