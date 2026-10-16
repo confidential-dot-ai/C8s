@@ -79,6 +79,9 @@ func TestNodeImageRender(t *testing.T) {
 					t.Errorf("missing %s", key)
 				}
 			}
+			if !bytes.Contains(docs["Deployment/c8s-router"], []byte("--publish-routes")) {
+				t.Error("baked router does not publish its route manifest")
+			}
 			for _, name := range []string{"c8s-deny-host-namespaces", "c8s-deny-host-namespaces-ephemeral"} {
 				if !bytes.Contains(docs["ValidatingAdmissionPolicy/"+name], []byte("AppArmor must not")) {
 					t.Errorf("baked node image lost AppArmor admission in %s", name)

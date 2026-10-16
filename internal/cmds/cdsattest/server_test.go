@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -26,7 +27,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
-// backendFunc adapts a function to Backend.
+// backendFunc adapts a function to Router's Forward and Acquire.
 type backendFunc func(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 
 func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
@@ -44,11 +45,18 @@ var echoBackend = backendFunc(func(_ *http.Request, req types.TunnelRequest) (ty
 	}, nil
 })
 
+// testRouter gates sessions by a real State and forwards tunnel requests to
+// backendFunc, for tests of the channel rather than of routing.
+type testRouter struct {
+	*routing.State
+	backendFunc
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
-		Backend: echoBackend,
+		Routes: testRoutes(t),
 		Evidence: FixtureEvidenceProvider{
 			Raw:        json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`),
 			Platform:   "snp",
@@ -118,7 +126,13 @@ func clientChannelFromBundle(t *testing.T, bundle types.AttestationBundle, ck *o
 	if len(certs) != 2 {
 		t.Fatalf("bundle chain has %d certs, want leaf + issuing CA", len(certs))
 	}
-	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw)
+	// The served field stands in for a client's pin here; the handshake tests
+	// assert report_data against the digest they applied.
+	routeDigest, err := hex.DecodeString(bundle.RouteDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw, routeDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -249,16 +263,16 @@ func postSealedTunnel(t *testing.T, base string, ch *overenc.Channel, sessionID 
 }
 
 // newBackendTestServer serves the channel in front of backend.
-func newBackendTestServer(t *testing.T, backend Backend) *httptest.Server {
+func newBackendTestServer(t *testing.T, backend backendFunc) *httptest.Server {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRouter{State: testRoutes(t).State, backendFunc: backend},
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		Backend:              backend,
 	})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
@@ -321,18 +335,6 @@ func TestTunnelForwardsTheOpenedRequest(t *testing.T) {
 	}
 }
 
-// TestTunnelWithoutBackendSeals503: a server with no backend has nothing to
-// route by, which the client sees as the A2 status.
-func TestTunnelWithoutBackendSeals503(t *testing.T) {
-	ts := newBackendTestServer(t, nil)
-	nonce := make([]byte, 32)
-	rand.Read(nonce)
-	channel, sessionID := establishSession(t, ts.URL, nonce)
-	if resp := tunnel(t, ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/"}); resp.Status != http.StatusServiceUnavailable {
-		t.Fatalf("sealed status = %d, want 503", resp.Status)
-	}
-}
-
 // The pre-client-first GET shape returns the explicit 400.
 func TestAttestPQGetReturns400(t *testing.T) {
 	ts := newTestServer(t)
@@ -353,6 +355,7 @@ func TestAttestPQGetReturns400(t *testing.T) {
 func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -380,6 +383,7 @@ func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 func TestTunnelRejectsOverAgeSession(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -482,7 +486,7 @@ func TestAttestPQRejectsBadRequests(t *testing.T) {
 // TestCDSCertRouteAbsentWithoutCert: the optional cds-cert endpoint must not be
 // mounted when no cert was supplied.
 func TestCDSCertRouteAbsentWithoutCert(t *testing.T) {
-	srv := NewServer(Config{Evidence: failingProvider{}})
+	srv := NewServer(Config{Routes: testRoutes(t), Evidence: failingProvider{}})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/cds-cert.pem")
@@ -501,6 +505,7 @@ func TestAttestationEvidenceUnavailable(t *testing.T) {
 	certPath, _ := writeTestServingLeaf(t)
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             failingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      certPath,
@@ -668,7 +673,7 @@ func TestServingLeafErrors(t *testing.T) {
 	rand.Read(nonce)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(Config{Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
+			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))

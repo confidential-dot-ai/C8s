@@ -102,7 +102,7 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 	forged := mintForgedIssuerLeaf(t, &holder.PublicKey, time.Now().Add(500000*time.Hour))
 
 	t.Run("saved certificate file", func(t *testing.T) {
-		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, "file", leafTrust{})
+		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, nil, "file", leafTrust{})
 		if err == nil {
 			t.Fatal("a CA-issued certificate whose chain is unchecked must not become evidence")
 		}
@@ -129,7 +129,7 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 	t.Run("--mesh-ca that does not cover the leaf", func(t *testing.T) {
 		// A pinned CA that did not issue this leaf is a chain failure, not a
 		// pass: the pin is the authentication, so it has to actually hold.
-		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, "file",
+		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, nil, "file",
 			leafTrust{meshCA: x509.NewCertPool()})
 		if err == nil || !strings.Contains(err.Error(), "does not chain") {
 			t.Fatalf("want a chain failure against the pinned CA, got %v", err)

@@ -119,7 +119,8 @@ It accepts an optional `workloads` string containing a complete
 `c8s.allowlist/v1` JSON document. It does not accept Helm values, arbitrary
 service arguments or component toggles. The measured image runs volumed as a
 host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
-every node without an install.
+every node without an install. Its router always publishes the applied route
+manifest ([Route manifest](#route-manifest)).
 
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
@@ -728,9 +729,8 @@ changes:
   Whoever controls the Kubernetes
   configuration can substitute a key and sign routes to a backend of their
   choice. A client detects that only by pinning the route digest or the
-  operator keys. The handshake does not commit to the route digest yet; that
-  evidence binding lands with the verifier changes. Route on baked nodes when
-  the control plane is not trusted.
+  operator keys; see [Route evidence](routes-evidence.md). Route on baked
+  nodes when the control plane is not trusted.
 
 `GET /routes` is unauthenticated and returns
 `{"manifest": "<base64 of the manifest bytes>", "token": "<write token>"}`.
@@ -755,7 +755,9 @@ digest. CDS stores the bytes and the write token verbatim. CDS answers:
 The `c8s routes` CLI takes the `c8s allowlist` connection and credential
 flags. Point `--url` at CDS itself, with no path, because the router does not
 relay `/routes`. A port-forward works; pin the CDS launch digest with
-`--measurements`.
+`--measurements`. On a baked node, CDS listens on NodePort 30808 of the
+server: use `--url https://SERVER_ADDRESS:30808`, pinned with
+`--image-policy-file` set to the bundle's `server.json`.
 
 To show the stored route manifest and add a route:
 
@@ -773,7 +775,7 @@ c8s routes add --url https://127.0.0.1:8443 --measurements CDS_DIGEST \
 
 | Subcommand | Effect |
 |---|---|
-| `show [--raw] [-o json] [--operator-keys FILE]` | Prints revision, `notBefore`, `maxAgeSeconds`, route digest and routes. `--operator-keys` verifies the stored token's signature and bindings. |
+| `show [--raw] [-o json] [--operator-keys FILE]` | Prints revision, `notBefore`, `maxAgeSeconds`, route digest and routes; `--raw` prints the manifest bytes and `-o json` the stored envelope. `--operator-keys` verifies the stored token's signature and bindings. |
 | `digest FILE` | Validates a manifest file and prints its route digest, the hex SHA-256 of its bytes. |
 | `put FILE [--dry-run]` | Validates the file locally, then signs and stores its bytes verbatim. |
 | `add --operator-keys FILE --host H --path P [--match prefix\|exact] --address A (--workload W \| --server-name N --ca FILE) [--new] [--revision N] [--dry-run]` | Adds the route, or replaces the one with the same path and match, and stores the next revision. With no stored manifest it refuses, since a CDS reset looks the same; with `--new` it writes a new one with `--max-age` (default 24h, at least 1s). Over a stored manifest it warns that `--max-age` is ignored. |
@@ -816,6 +818,18 @@ old public key. To recover, do one of the following:
 - Review the bytes from `c8s routes show --raw`, raise `revision`, and store
   the file with `put`.
 
+The route digest `show` and `digest` print is the value
+`c8s verify --route-digest` takes. The router binds the digest of the
+manifest it applied into its attest-pq and attest-lb evidence. With
+`router.routePublication.enabled: true` (default `false`; requires
+`router.attest.enabled`), the router also serves that signed manifest at
+`/.well-known/c8s/routes` for `c8s verify --operator-keys`. Leave route
+publication off when the hosts, backend addresses and workload names in the
+manifest are not public, and have clients pin `--route-digest` instead. A baked
+node image always publishes: `c8s node-image render` sets the value in the
+measured image, so keep names that must stay private out of a baked node's
+manifest. See [Route evidence](routes-evidence.md).
+
 ### Route by the manifest
 
 `cds-attest --cds-url` polls `GET /routes` from CDS over armTLS, verifies the
@@ -837,6 +851,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. Set by `router.routing.tunnelBudget`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
 | `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. |
+| `--publish-routes` | `false` | Serves the applied signed manifest at `/.well-known/c8s/routes`. Requires `--cds-url` and `--attest-endpoints=true`. Set by `router.routePublication.enabled`. |
 
 `cds-attest` takes the operator keys from `--operator-keys-file` when that
 file exists at startup. When the default path is absent, it takes them from
@@ -867,10 +882,8 @@ replica that starts before its `notBefore` (a restart, rollout or scale-up)
 has nothing to apply: until `notBefore` it refuses handshakes with
 `routes_unavailable` and answers routed requests with 503, while `/readyz`
 stays 200. Keep the `notBefore` window short, and avoid restarts and
-scale-ups inside it. The handshake gates on a fresh applied
-manifest; binding the route digest into the evidence and publishing the
-manifest land in a later change, with the verifier. Until evidence carries
-the digest, manifest routing is not ready for production.
+scale-ups inside it. The handshake gates on a fresh applied manifest and
+binds its route digest into the evidence.
 
 `/readyz` ignores route state: it answers 200 before the first apply and
 while the manifest is stale. To spot a router that routes nothing, watch for
@@ -1103,6 +1116,15 @@ responder committed into its own transcript, so which deployment the endpoint
 belongs to is not proven). JSON renders these as
 `verified: false, partial: true` with a `not_proven` list, so a gate checking
 `verified` fails closed while scripts can still tell partial from failure.
+
+`--mode attest-pq` and `--mode attest-lb` evidence also binds the router's
+route digest, so these modes require exactly one route check:
+`--route-digest HEX` pins the digest `c8s routes show` prints (repeat it
+while a route change rolls out), and
+`--operator-keys FILE` verifies the manifest the router publishes, optionally
+against a `--routes-floor REV:HEX` rollback floor. Without either they are a
+usage error (exit 1). [Route evidence](routes-evidence.md) has the transcript
+layouts and the checks.
 
 Caveats the output surfaces:
 
@@ -1452,11 +1474,12 @@ connection proves nothing about that receipt.
 ```bash
 c8s verify --mode attest-lb --from-file receipt.json \
   --attestation-nonce "$NONCE" --observed-serving-cert serving-leaf.pem \
-  --measurements "$MEASUREMENT" -o json
+  --route-digest "$ROUTE_DIGEST" --measurements "$MEASUREMENT" -o json
 ```
 
 `NONCE` is the challenge as unpadded base64url; `MEASUREMENT` is the pinned
-launch digest. The verdict checks the challenge, the serving certificate, the
+launch digest; `ROUTE_DIGEST` is the route digest the receipt must bind (a
+saved receipt takes `--route-digest` only). The verdict checks the challenge, the serving certificate, the
 mesh identity proof and the hardware report, and reports `serving_leaf_sha256`
 in the same form as the receipt so the client can match the two. It is never
 `fresh`: the caller chose the nonce, so the verdict says what that connection

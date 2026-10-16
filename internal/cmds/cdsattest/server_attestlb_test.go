@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"math/big"
@@ -63,6 +64,7 @@ func newAttestLBServer(t *testing.T, identity testMeshIdentity, servingCertFile 
 	t.Helper()
 	prov := &capturingProvider{}
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             prov,
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      servingCertFile,
@@ -111,6 +113,9 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if b.ServingLeafSHA256 != b64url(servingHash[:]) {
 		t.Errorf("serving_leaf_sha256 = %q, want hash of the served leaf", b.ServingLeafSHA256)
 	}
+	if want := hex.EncodeToString(testRouteDigest[:]); b.RouteDigest != want {
+		t.Errorf("route_digest = %q, want %q", b.RouteDigest, want)
+	}
 
 	// Recompute the transcript the way a client does — from the leaf observed
 	// on the connection plus the served mesh chain — and require the hardware
@@ -118,7 +123,7 @@ func TestAttestLBBindsServingLeafAndMeshIdentity(t *testing.T) {
 	if b.FrontDoorMode != types.FrontDoorModeCDS {
 		t.Errorf("front_door_mode = %q, want %q", b.FrontDoorMode, types.FrontDoorModeCDS)
 	}
-	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw)
+	want, err := overenc.LBTranscriptHash(b.FrontDoorMode, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,11 +159,11 @@ func TestAttestLBTranscriptDiffersFromPQ(t *testing.T) {
 	nonce := make([]byte, 32)
 	pq, err := overenc.IdentityTranscriptHash(types.FrontDoorModeCDS,
 		make([]byte, overenc.XWingEKBytes), make([]byte, overenc.XWingCTBytes),
-		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw)
+		make([]byte, overenc.SessionIDBytes), nonce, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
-	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw)
+	lb, err := overenc.LBTranscriptHash(types.FrontDoorModeCDS, nonce, servingDER, identity.leaf.Raw, identity.ca.Raw, testRouteDigest[:])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,6 +176,7 @@ func TestAttestLBRefusedOnWebPKIFrontDoor(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	certPath, _ := writeTestServingLeaf(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             &capturingProvider{},
 		FrontDoorMode:        types.FrontDoorModeWebPKI,
 		ServingCertFile:      certPath,
@@ -314,6 +320,7 @@ func TestReadyzGatesOnMatchedWorkloadStamp(t *testing.T) {
 	newReadyzServer := func(t *testing.T, identity testMeshIdentity, expected string) *httptest.Server {
 		t.Helper()
 		srv := NewServer(Config{
+			Routes:               testRoutes(t),
 			Evidence:             &capturingProvider{},
 			MeshIdentityCertFile: identity.certFile,
 			MeshIdentityKeyFile:  identity.keyFile,

@@ -627,6 +627,26 @@ kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-lb --timeout
 [ "$(kubectl logs it-curl-lb)" = "ok" ] || fail "front-door /healthz did not return ok"
 pass "router front door serves HTTPS verified against the CDS mesh CA"
 
+log "Route publication"
+# E4: route publication is off by default, so /.well-known/c8s/routes is 404;
+# "Routing by the route manifest" checks it with router.routePublication on.
+# publication prints the status of one front-door GET of the path and leaves
+# the status, Cache-Control and base64 body in routes-pub.txt.
+publication() {
+    kubectl delete pod it-routes-pub --ignore-not-found >/dev/null 2>&1 || true
+    pod_fixture front-door it-routes-pub default sh -c \
+        "curl -sS --cacert /ca/ca.pem -D /tmp/h -o /tmp/b -w '%{http_code}\n' https://c8s-router.$NS.svc/.well-known/c8s/routes; grep -i '^cache-control:' /tmp/h | tr -d '\r'; echo; base64 -w0 /tmp/b" \
+        | kubectl apply -f - >/dev/null
+    kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-routes-pub --timeout=120s >/dev/null \
+        || fail "route publication request failed"
+    kubectl logs it-routes-pub > "$WORKDIR/routes-pub.txt" || fail "could not read the it-routes-pub logs"
+    kubectl delete pod it-routes-pub --ignore-not-found >/dev/null 2>&1 || true
+    head -n1 "$WORKDIR/routes-pub.txt"
+}
+code="$(publication)"
+[ "$code" = "404" ] || fail "route publication off: want HTTP 404, got $code"
+pass "route publication off by default: /.well-known/c8s/routes is 404"
+
 log "Workload adoption"
 kubectl apply -f test/integration/cluster/manifests/adopt-me.yaml
 kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
@@ -635,13 +655,16 @@ kubectl -n adopted wait --for=condition=Available deploy/web --timeout=120s \
 # manifest; the harness stores it with optoken below, since `c8s routes
 # put` verifies CDS in-process and cannot pass synthetic evidence. An ambient
 # C8S_OPERATOR_KEY would make install sign and store it instead.
+# This install also turns route publication on, for the check after the
+# router applies revision 2.
+printf 'router:\n  routePublication:\n    enabled: true\n' > "$WORKDIR/values-publish.yaml"
 C8S_OPERATOR_KEY='' ./build/c8s install --namespace "$NS" --cvm-mode=bare-metal --hardware-platform=sev-snp \
     --single-node --resolve-digests=false --image-tag="$IMAGE_TAG" \
     --operator-keys "$WORKDIR/operator-pub.pem" \
     --measurements "$MOCK_MEASUREMENT" \
     --workload-ref web=adopted/deployment/web:8443 --upstream web \
     --routes-out "$WORKDIR/routes-install.json" \
-    -f "$WORKDIR/values.yaml" --wait || fail "c8s install --workload-ref failed"
+    -f "$WORKDIR/values.yaml" -f "$WORKDIR/values-publish.yaml" --wait || fail "c8s install --workload-ref failed"
 TMPL_ANNOTATION="$(kubectl -n adopted get deploy web -o jsonpath='{.spec.template.metadata.annotations.confidential\.ai/cw}')"
 [ "$TMPL_ANNOTATION" = "web" ] || fail "adopted workload template not stamped (got: $TMPL_ANNOTATION)"
 # The first leaf predates the app container, so it names no workload;
@@ -742,6 +765,21 @@ code="$(cds_write PUT /routes "$WORKDIR/routes-2.json")"
 [ "$code" = "204" ] || fail "route manifest naming $WEB_ENTRY: want HTTP 204, got $code"
 await_route "$ROUTER_HOST" / 200 "Welcome to nginx"
 pass "front door routes / to the adopted workload over TLS, its leaf named $WEB_ENTRY"
+
+# The router applied revision 2 (the route above answers 200), so the
+# publication is the CDS envelope byte for byte.
+code="$(cds_get /routes "$WORKDIR/routes-cds.json")"
+[ "$code" = "200" ] || fail "GET /routes: want HTTP 200, got $code"
+code="$(publication)"
+[ "$code" = "200" ] || fail "route publication on: want HTTP 200, got $code"
+python3 - "$WORKDIR/routes-pub.txt" "$WORKDIR/routes-cds.json" <<'PY' || fail "published route envelope does not match GET /routes"
+import base64, sys
+lines = open(sys.argv[1]).read().split("\n")
+assert lines[1].lower().replace(" ", "") == "cache-control:no-store", lines[1]
+body = [l for l in lines[2:] if l][-1]
+assert base64.b64decode(body) == open(sys.argv[2], "rb").read(), "body differs"
+PY
+pass "router.routePublication publishes the applied manifest, byte for byte the CDS envelope (no-store)"
 
 # Go's plain-text 404, not nginx's HTML one or the backend's: the routing
 # listener refused them, with the path as the client sent it.

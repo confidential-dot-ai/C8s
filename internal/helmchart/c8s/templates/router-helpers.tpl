@@ -555,6 +555,11 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args (printf "--tunnel-budget=%s" .) -}}
 {{- end -}}
 {{- $args = append $args (printf "--reserved-paths=%s" (include "router.reservedPaths" $root)) -}}
+{{- /* Serve the applied signed manifest at /.well-known/c8s/routes for
+       clients that check the route digest under pinned operator keys. */ -}}
+{{- if dig "routePublication" "enabled" false $v -}}
+{{- $args = append $args "--publish-routes" -}}
+{{- end -}}
 {{- $args | toJson -}}
 {{- end -}}
 

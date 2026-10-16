@@ -52,6 +52,7 @@ type routingConfig struct {
 	backendTimeout      time.Duration
 	reservedPaths       []string
 	tunnelBudget        quantityFlag
+	publish             bool
 }
 
 func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
@@ -67,10 +68,17 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request or upgraded connection on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
 	f.Var(&cfg.tunnelBudget, "tunnel-budget", "bytes tunnelled requests in flight in this replica may buffer, as a quantity such as 32Gi; each reserves three copies of its record and four of the largest response (32 MiB), one client (by X-Real-IP) holds at most a quarter, and a request over either gets 503 tunnel_busy; unset means 75% of the container memory limit, or 32Gi without one")
+	f.BoolVar(&cfg.publish, "publish-routes", false, "serve the applied signed route manifest at /.well-known/c8s/routes, for clients that verify it under pinned operator keys; off, the path answers 404")
 }
 
 func checkRoutingFlags(cfg config) error {
 	r := cfg.routing
+	switch {
+	case r.publish && r.cdsURL == "":
+		return errors.New("--publish-routes requires --cds-url: it publishes the manifest polled from CDS")
+	case r.publish && cfg.attestOff:
+		return errors.New("--publish-routes requires --attest-endpoints=true: the route publication is served beside the attestation endpoints")
+	}
 	if r.cdsURL == "" {
 		return errors.New("--cds-url is required: the router routes only by the route manifest it polls from CDS")
 	}

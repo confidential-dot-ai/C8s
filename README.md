@@ -49,6 +49,7 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
 - [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a C8s cluster from a browser
 - [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service C8s uses
 - [armTLS](docs/armtls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
+- [Route evidence](docs/routes-evidence.md), how the router binds its route manifest into attestation evidence and how `c8s verify` checks it
 
 ## Features
 

@@ -253,7 +253,7 @@ func genoaFileEvidence(t *testing.T) *evidence {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := gatherFromFile(fixture, []byte("genoa-test-fixture"), "fixture", leafTrust{})
+	ev, err := gatherFromFile(fixture, []byte("genoa-test-fixture"), nil, "fixture", leafTrust{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,8 +425,8 @@ func TestEndpointEvidenceMarksChainDerived(t *testing.T) {
 		name string
 		get  func() (*evidence, error)
 	}{
-		{"live fetch", func() (*evidence, error) { return evidenceFromEndpointJSON(data, nonce, sess.ek, "test") }},
-		{"saved bundle", func() (*evidence, error) { return gatherFromFile(data, nil, "file", leafTrust{}) }},
+		{"live fetch", func() (*evidence, error) { return evidenceFromEndpointJSON(data, nonce, sess.ek, testRoute, "test") }},
+		{"saved bundle", func() (*evidence, error) { return gatherFromFile(data, nil, testRoute, "file", leafTrust{}) }},
 	} {
 		ev, err := tc.get()
 		if err != nil {
