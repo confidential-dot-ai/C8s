@@ -37,3 +37,28 @@ func TestContentPinRejectsWritableSourceBeforeCreation(t *testing.T) {
 		t.Fatal("admitted content pin without immutable evidence before creation")
 	}
 }
+
+func TestNodeRootProvenanceRequiresFileBind(t *testing.T) {
+	original := nodeRootEvidence
+	nodeRootEvidence = func(string) bool { return true }
+	t.Cleanup(func() { nodeRootEvidence = original })
+	file := filepath.Join(t.TempDir(), "nvidia-smi")
+	if err := os.WriteFile(file, []byte("reviewed bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		mount *api.Mount
+		want  string
+	}{
+		{"read-only bind", &api.Mount{Type: "bind", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"rbind", "rprivate", "ro"}}, allowlist.ProvenanceNodeRoot},
+		{"overlay naming the file", &api.Mount{Type: "overlay", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"bind", "ro", "lowerdir=/untrusted"}}, ""},
+		{"bind with data option", &api.Mount{Type: "bind", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"bind", "ro", "upperdir=/untrusted"}}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := observeHostMount(tc.mount).Provenance; got != tc.want {
+				t.Fatalf("observeHostMount(%v).Provenance = %q, want %q", tc.mount, got, tc.want)
+			}
+		})
+	}
+}

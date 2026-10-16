@@ -4,7 +4,10 @@ package nriimagepolicy
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -112,10 +115,28 @@ func pinnedFSVerityFile(source, digest string) bool {
 
 func unpinFSVerityFile(path string) error {
 	if err := unix.Unmount(path, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
-		return err
+		return fmt.Errorf("%w: %w", errStillMounted, err)
 	}
 	if err := os.Remove(path); err != nil {
 		return err
 	}
 	return os.Remove(filepath.Dir(path))
+}
+
+// sweepVerifiedMounts detaches staging left by an earlier process, whose
+// registry died with it. Running containers keep their own bind of each inode.
+// Call it before registering with the runtime, while the registry is empty.
+func sweepVerifiedMounts(logger *slog.Logger) {
+	stale, err := filepath.Glob(filepath.Join(verifiedMountRoot, "file-*"))
+	if err != nil {
+		logger.Warn("cannot list stale fs-verity staging", "error", err)
+		return
+	}
+	for _, dir := range stale {
+		if err := unpinFSVerity(filepath.Join(dir, "inode")); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn("cannot remove stale fs-verity staging", "path", dir, "error", err)
+		}
+		// Also clears a directory a crash left before its inode file existed.
+		os.Remove(dir) //nolint:errcheck // Already gone after a successful unpin.
+	}
 }

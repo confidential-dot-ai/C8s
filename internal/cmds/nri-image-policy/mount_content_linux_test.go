@@ -166,8 +166,8 @@ func TestDMVerityMountedRootIntegration(t *testing.T) {
 	if err := unix.Fstatfs(fd, &fs); err != nil || fs.Flags&unix.ST_RDONLY == 0 {
 		t.Fatal("test root is not read-only")
 	}
-	if got := deviceVerityRootHash(uint64(st.Dev)); got != expected {
-		t.Fatalf("kernel root hash=%q, expected %q", got, expected)
+	if got, err := deviceVerityRootHash(uint64(st.Dev)); err != nil || got != expected {
+		t.Fatalf("kernel root hash=%q, %v, expected %q", got, err, expected)
 	}
 	file, err := openRootFile(fd, "/binary")
 	if err != nil {
@@ -179,7 +179,7 @@ func TestDMVerityMountedRootIntegration(t *testing.T) {
 	if err != nil || string(buffer[:count]) != "approved executable" {
 		t.Fatalf("verity file=%q, %v", buffer[:count], err)
 	}
-	if rootDeviceVerity(uint64(st.Dev)) {
+	if rootDeviceVerityMismatch(uint64(st.Dev)) == "" {
 		t.Fatal("operator-created verity device matched host measured boot root")
 	}
 }

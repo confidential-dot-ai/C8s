@@ -55,12 +55,15 @@ kernel)
     echo "no kernel verity harness on this revision"
     exit 0
   fi
+  # A base revision's own harness may predate the coverage argument; this
+  # script's harness drives the base revision's test binary instead.
+  harness="$(cd "$(dirname "$0")/.." && pwd)/node-guest-image/tests/mount-verity-test.sh"
   [ -s "$profile" ] || { echo "run ordinary coverage first" >&2; exit 1; }
   kernel_scratch=$(mktemp -d)
   trap 'rm -rf "$kernel_scratch"' EXIT
   mkdir "$kernel_scratch/profiles"
   go test -c -coverpkg=./... -o "$kernel_scratch/nri-verity.test" ./internal/cmds/nri-image-policy
-  sudo -n bash node-guest-image/tests/mount-verity-test.sh "$kernel_scratch/nri-verity.test" "$kernel_scratch/profiles"
+  sudo -n bash "$harness" "$kernel_scratch/nri-verity.test" "$kernel_scratch/profiles"
   # percent() unions covered blocks from duplicate records; retain one header.
   for kernel_profile in "$kernel_scratch"/profiles/*.out; do
     tail -n +2 "$kernel_profile" >> "$profile"

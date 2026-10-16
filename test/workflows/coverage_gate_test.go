@@ -165,13 +165,18 @@ if [ "$C8S_TEST_KERNEL_FAIL" = yes ]; then
  echo "kernel failure sentinel" >&2
  exit 17
 fi
-for directory do :; done
-cp fs.out "$directory/fs-verity.out"
-cp dm.out "$directory/dm-verity.out"
+[ "$1" = -n ] && shift
+exec "$@"
+`,
+				// The script's own harness takes the coverage directory.
+				"head/scripts/coverage-gate.sh": string(body),
+				"head/node-guest-image/tests/mount-verity-test.sh": `cp fs.out "$2/fs-verity.out"
+cp dm.out "$2/dm-verity.out"
 `,
 			}
 			if name != "older base without harness" {
-				files["node-guest-image/tests/mount-verity-test.sh"] = "# harness location sentinel\n"
+				// The checked-out base revision's harness takes one argument.
+				files["node-guest-image/tests/mount-verity-test.sh"] = "[ $# = 1 ] || { echo 'usage: one-argument harness' >&2; exit 1; }\n"
 			}
 			for path, contents := range files {
 				full := filepath.Join(fixture, path)
@@ -187,7 +192,7 @@ cp dm.out "$directory/dm-verity.out"
 			if name == "kernel failure" {
 				t.Setenv("C8S_TEST_KERNEL_FAIL", "yes")
 			}
-			cmd := exec.CommandContext(t.Context(), "bash", "-c", string(body), script, "kernel", "head.out")
+			cmd := exec.CommandContext(t.Context(), "bash", "-c", string(body), filepath.Join(fixture, "head/scripts/coverage-gate.sh"), "kernel", "head.out")
 			cmd.Dir = fixture
 			log, err := cmd.CombinedOutput()
 			raw, readErr := os.ReadFile(filepath.Join(fixture, "head.out"))

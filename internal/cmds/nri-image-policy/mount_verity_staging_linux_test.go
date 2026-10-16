@@ -3,7 +3,10 @@
 package nriimagepolicy
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,7 +64,7 @@ func newVerityFixture(t *testing.T, mode string, withPathOnly bool, pin func(str
 	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestB)
 	ctr.Args = []string{"/bin/app"}
 	ctr.Mounts = []*api.Mount{{Type: "bind", Source: file, Destination: "/srv/tool", Options: []string{"bind", "ro"}}}
-	t.Cleanup(func() { releaseVerifiedMounts(ctr.Id) })
+	t.Cleanup(func() { releaseVerifiedMounts(discardLogger(), ctr.Id) })
 	return verityFixture{p: p, pod: pod, ctr: ctr}
 }
 
@@ -102,7 +105,7 @@ func registerStaging(t *testing.T, containerID string) string {
 	verifiedMountRegistry.Lock()
 	verifiedMountRegistry.mounts[path] = verifiedMount{containerID: containerID}
 	verifiedMountRegistry.Unlock()
-	t.Cleanup(func() { releaseVerifiedMounts(containerID) })
+	t.Cleanup(func() { releaseVerifiedMounts(discardLogger(), containerID) })
 	return path
 }
 
@@ -149,31 +152,125 @@ func TestUnstagedVerityMountMatchesEntryWithoutProvenance(t *testing.T) {
 	}
 }
 
-func TestStagingFailureAfterDigestMatch(t *testing.T) {
+func TestStagingFailureLeavesFinalMatchingToDecide(t *testing.T) {
 	failure := errors.New("bind mount failed")
 	for _, tc := range []struct {
-		name    string
-		mode    string
-		wantErr bool
+		name     string
+		pathOnly bool
+		admitted bool
 	}{
-		{"enforce", ModeFailClosed, true},
-		{"audit", ModeAudit, false},
+		{"no other entry", false, false},
+		{"path-only entry", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newVerityFixture(t, tc.mode, false, func(string, bool, []string) (string, string, error) { return "", "", failure })
-			// A pin staged for another of the container's mounts must be released.
-			staged := registerStaging(t, f.ctr.Id)
-			_, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
-			if gotErr := err != nil; gotErr != tc.wantErr {
-				t.Fatalf("CreateContainer error = %v, want error %t", err, tc.wantErr)
+			f := newVerityFixture(t, ModeFailClosed, tc.pathOnly, func(string, bool, []string) (string, string, error) { return "", "", failure })
+			adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
+			if err != nil || adjust != nil {
+				t.Fatalf("CreateContainer = %v, %v, want no adjustment and no error", adjust, err)
 			}
 			if got := registeredMounts(f.ctr.Id); len(got) != 0 {
 				t.Fatalf("pins left after a staging failure: %v", got)
 			}
-			if _, err := os.Stat(staged); !os.IsNotExist(err) {
-				t.Fatalf("staged file %s not released: %v", staged, err)
+			if err := f.validate(t, adjust); (err == nil) != tc.admitted {
+				t.Fatalf("ValidateContainerAdjustment = %v, want admitted %t", err, tc.admitted)
 			}
 		})
+	}
+}
+
+func TestNonBindMountIsNeverStaged(t *testing.T) {
+	pinned := 0
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+		pinned++
+		return fakeStaging(t), testVerityDigest, nil
+	})
+	file := f.ctr.Mounts[0].Source
+	for _, mount := range []*api.Mount{
+		{Type: "overlay", Source: file, Destination: "/srv/tool", Options: []string{"bind", "ro", "lowerdir=/untrusted"}},
+		{Type: "bind", Source: file, Destination: "/srv/tool", Options: []string{"bind", "ro", "lowerdir=/untrusted"}},
+	} {
+		f.ctr.Mounts = []*api.Mount{mount}
+		if adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil || adjust != nil {
+			t.Fatalf("CreateContainer(%s %v) = %v, %v, want no staging", mount.Type, mount.Options, adjust, err)
+		}
+	}
+	if pinned != 0 {
+		t.Fatalf("pinned %d non-bind mounts", pinned)
+	}
+	staged := registerStaging(t, f.ctr.Id)
+	ctx := MountContext{PodUID: f.pod.Uid, SandboxID: f.pod.Id, Container: f.ctr}
+	if _, ok := verifiedHostMount(ctx, &api.Mount{Type: "overlay", Source: staged, Destination: "/srv/tool", Options: []string{"ro"}}); ok {
+		t.Fatal("verifiedHostMount granted provenance to an overlay")
+	}
+}
+
+func TestStagingDoesNotHoldRegistryLock(t *testing.T) {
+	entered, release := make(chan struct{}), make(chan struct{})
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+		close(entered)
+		<-release
+		return "", "", errVerityNotPinned
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		f.p.CreateContainer(t.Context(), f.pod, f.ctr) //nolint:errcheck // Only the lock matters here.
+	}()
+	<-entered
+	locked := verifiedMountRegistry.TryLock()
+	if locked {
+		verifiedMountRegistry.Unlock()
+	}
+	close(release)
+	<-done
+	if !locked {
+		t.Fatal("registry lock held across pinFSVerity")
+	}
+}
+
+func TestReleaseRetriesFailedUnmount(t *testing.T) {
+	newVerityFixture(t, ModeFailClosed, false, pinFSVerityFile)
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	stuck := registerStaging(t, "stuck")
+	unpinFSVerity = func(string) error { return fmt.Errorf("%w: device busy", errStillMounted) }
+	releaseVerifiedMounts(logger, "stuck")
+	if got := registeredMounts("stuck"); len(got) != 1 || got[0] != stuck {
+		t.Fatalf("pins after failed unmount = %v, want [%s]", got, stuck)
+	}
+	if !strings.Contains(logs.String(), stuck) {
+		t.Fatalf("failed unmount not logged with its path: %s", logs.String())
+	}
+	var unpinned []string
+	unpinFSVerity = func(path string) error {
+		unpinned = append(unpinned, path)
+		return errors.New("remove staging directory: busy")
+	}
+	releaseVerifiedMounts(logger, "another-container")
+	if got := registeredMounts("stuck"); len(got) != 0 || len(unpinned) != 1 || unpinned[0] != stuck {
+		t.Fatalf("stale pin not retried and dropped after unmount: registered %v, unpinned %v", got, unpinned)
+	}
+}
+
+func TestSweepRemovesStaleStaging(t *testing.T) {
+	newVerityFixture(t, ModeFailClosed, false, pinFSVerityFile)
+	originalRoot := verifiedMountRoot
+	verifiedMountRoot = t.TempDir()
+	t.Cleanup(func() { verifiedMountRoot = originalRoot })
+	stale := filepath.Join(verifiedMountRoot, "file-stale")
+	empty := filepath.Join(verifiedMountRoot, "file-empty")
+	for _, dir := range []string{stale, empty} {
+		if err := os.Mkdir(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(stale, "inode"), nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	sweepVerifiedMounts(discardLogger())
+	entries, err := os.ReadDir(verifiedMountRoot)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("staging left after sweep: %v %v", entries, err)
 	}
 }
 

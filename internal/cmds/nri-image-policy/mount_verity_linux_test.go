@@ -3,7 +3,6 @@
 package nriimagepolicy
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/proto"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -73,26 +73,29 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	if errno != 0 {
 		t.Fatalf("enable fs-verity: %v", errno)
 	}
-	pod := makePod("default", "pod")
-	pod.Uid = "pod-uid"
-	ctr := makeCtrWithImage(pod.Id, "app", "registry/repo@"+pushDigestB)
+	// The production sandbox and namespaces: the launch must pass StartContainer.
+	pod := sandboxedPod()
+	ctr := sandboxedContainer()
+	ctr.PodSandboxId = pod.Id
+	ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
 	ctr.Args = []string{"/bin/app"}
-	ctr.Mounts = []*api.Mount{{Type: "bind", Source: source, Destination: "/usr/bin/tool", Options: []string{"bind", "ro"}}}
+	ctr.Mounts = []*api.Mount{{Type: "bind", Source: source, Destination: "/usr/bin/tool", Options: []string{"rbind", "rprivate", "ro"}}}
 	// Create-time staging returns the immutable inode's node-owned mount path.
 	rule := allowlist.MountRule{Destination: "/usr/bin/tool", Kind: allowlist.MountHost, Source: source, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: digest}
-	if adjust, err := stageVerityMounts(slog.New(slog.DiscardHandler), pod, ctr, nil, nil); err != nil || adjust != nil {
+	if adjust := stageVerityMounts(discardLogger(), pod, ctr, nil, nil); adjust != nil {
 		t.Fatal("staged fs-verity without a policy pin")
 	}
 	wrong := rule
 	wrong.VerityDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if adjust, err := stageVerityMounts(slog.New(slog.DiscardHandler), pod, ctr, nil, []allowlist.MountRule{wrong}); err != nil || adjust != nil {
-		t.Fatalf("stageVerityMounts(unpinned digest) = %v, %v, want no staging and no error", adjust, err)
+	if adjust := stageVerityMounts(discardLogger(), pod, ctr, nil, []allowlist.MountRule{wrong}); adjust != nil {
+		t.Fatalf("stageVerityMounts(unpinned digest) = %v, want no staging", adjust)
 	}
-	adjust, err := stageVerityMounts(slog.New(slog.DiscardHandler), pod, ctr, nil, []allowlist.MountRule{rule})
-	if err != nil {
-		t.Fatal(err)
+	overlay := &api.Mount{Type: "overlay", Source: source, Destination: "/usr/bin/tool", Options: []string{"ro", "lowerdir=" + root}}
+	if adjust := stageVerityMounts(discardLogger(), pod, &api.Container{Id: ctr.Id, PodSandboxId: pod.Id, Mounts: []*api.Mount{overlay}}, nil, []allowlist.MountRule{rule}); adjust != nil {
+		t.Fatalf("stageVerityMounts(overlay) = %v, want no staging", adjust)
 	}
-	defer releaseVerifiedMounts(ctr.Id)
+	adjust := stageVerityMounts(discardLogger(), pod, ctr, nil, []allowlist.MountRule{rule})
+	defer releaseVerifiedMounts(discardLogger(), ctr.Id)
 	if adjust == nil || len(adjust.Mounts) != 1 {
 		t.Fatal("missing inode pin")
 	}
@@ -122,21 +125,39 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	if err := al.Normalize(); err != nil {
 		t.Fatal(err)
 	}
-	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+	p.inventory = newAdmissionInventory(t.TempDir())
 	p.SetReady()
+	staged := proto.Clone(adjust.Mounts[0]).(*api.Mount)
 	ctr.Mounts = adjust.Mounts
 	req := &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr}
 	if err := p.ValidateContainerAdjustment(t.Context(), req); err != nil {
 		t.Fatalf("verified inode rejected: %v", err)
 	}
-	ctr.Mounts[0].Source = source
+	if err := p.StartContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatalf("StartContainer rejected the verified inode: %v", err)
+	}
+	_, containers, ok, err := p.inventory.DigestsForSandbox(pod.Id)
+	if err != nil || !ok || len(containers) != 1 {
+		t.Fatalf("inventory = %v, %t, %v, want one container", containers, ok, err)
+	}
+	running := allowlist.RunningContainer{Digest: containers[0].Digest, Argv: containers[0].Argv, Env: containers[0].Env, Mounts: containers[0].Mounts}
+	if name, _, err := al.MatchWorkload([]allowlist.RunningContainer{running}); err != nil || name != "w" {
+		t.Fatalf("MatchWorkload(recorded launch) = %q, %v, want w", name, err)
+	}
+	last := len(ctr.Mounts) - 1
+	ctr.Mounts[last].Source = source
 	if err := p.ValidateContainerAdjustment(t.Context(), req); err == nil {
 		t.Fatal("substituted unverified source admitted")
 	}
-	ctr.Mounts[0].Source = snapshot
+	ctr.Mounts[last].Source = snapshot
+	ctr.Mounts[last].Type, ctr.Mounts[last].Options = "overlay", []string{"ro", "lowerdir=" + root}
+	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != "" {
+		t.Fatal("overlay naming the snapshot kept provenance")
+	}
+	ctr.Mounts[last] = staged
 	ctr.Id = "another-container"
-	if got := newMountObserver(nil, "").Observe(pod, ctr); got[0].Provenance != "" {
+	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != "" {
 		t.Fatal("another container borrowed provenance")
 	}
-
 }

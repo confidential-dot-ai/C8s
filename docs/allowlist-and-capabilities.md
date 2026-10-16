@@ -368,7 +368,8 @@ staging. The staging mount is private and read-only; the container receives
 that source rather than reopening an operator-controlled pathname. Renaming or
 replacing the original file cannot substitute new executable bytes. Staging
 requires a native node enforcer with mount privileges and visibility to the
-runtime; unsupported kernels/filesystems or failed staging deny the rule.
+runtime; unsupported kernels/filesystems or failed staging deny the rule, and
+final matching then decides whether another entry admits the unstaged mount.
 Only explicitly declared fs-verity rules cause staging. Files introduced later
 by other plugins are rejected unless they already have valid node-root evidence.
 
@@ -387,6 +388,12 @@ Source, destination and access-mode constraints still apply. Use
 `allowlist derive --mounts-file` to supply the rules. This covers the measured
 NVIDIA files in #868 without a blanket NVIDIA exemption or lint bypass.
 
+Both forms require a plain bind mount (`bind` type or a `bind`/`rbind` option,
+with only access and propagation flags). Any other mount type or option, such
+as an overlay naming the verified file with another `lowerdir`, gets no
+provenance. A read-only file bind with provenance is not a host bind for the
+sandbox policy (`policy.sandbox`), so a CDS-served entry can admit it.
+
 This exception is scoped to read-only regular files. It does not implement
 whole-volume provenance, arbitrary dm-verity volume trust, directory mounts,
 IMA/IPE policy, dependency approval, or a general prohibition on interpreters
@@ -400,7 +407,8 @@ be enabled when preparing an fs-verity artifact. Baked enforcers require a
 node-image rebuild. The fs-verity staging registry is boot-process-local and
 bounded to 1024 mounts; container removal releases its pins. An enforcer restart
 loses those bindings and fails closed for affected existing containers, which
-must be recreated. Stale staging is discarded at node reboot. No fs-verity
+must be recreated. The enforcer detaches stale staging at startup, before it
+registers with the runtime; running containers keep their own binds. No fs-verity
 registry entry is inferred from an operator-supplied file or mount name.
 
 The pod UID embedded in a kubelet source must equal the pod being admitted, and

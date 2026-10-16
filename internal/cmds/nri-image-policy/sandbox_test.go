@@ -291,7 +291,7 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			got := observeSandbox(pod, ctr, tt.ownSocket).violations()
+			got := observeSandbox(pod, ctr, tt.ownSocket, nil).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -493,5 +493,33 @@ func TestSandboxDenialIsNotNamespaceExempt(t *testing.T) {
 	verdict, reason := p.checkContainer(context.Background(), p.cfg, pod, privilegedContainer(), testFloorImage)
 	if verdict != verdictDeny || !strings.Contains(reason, "host path bind mount") {
 		t.Fatalf("checkContainer(exempt namespace, privileged) = %d %q, want deny naming the violation", verdict, reason)
+	}
+}
+
+func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
+	const source, destination = "/opt/tools/tool", "/usr/bin/tool"
+	verified := allowlist.ObservedMount{Source: source, Destination: destination, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity}
+	for _, tc := range []struct {
+		name     string
+		evidence func(*allowlist.ObservedMount)
+		hostBind bool
+	}{
+		{"verified read-only file", nil, false},
+		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, true},
+		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, true},
+		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "ro"}})
+			evidence := verified
+			if tc.evidence != nil {
+				tc.evidence(&evidence)
+			}
+			got := observeSandbox(pod, ctr, "", []allowlist.ObservedMount{evidence}).HostBinds
+			if (len(got) > 0) != tc.hostBind {
+				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
+			}
+		})
 	}
 }

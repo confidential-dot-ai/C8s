@@ -175,6 +175,7 @@ func newPlugin(
 		containerd: ctrd,
 	}
 	p.boot = newBootGate(cfg, logger)
+	sweepVerifiedMounts(logger)
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -247,16 +248,16 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	)
 
 	var mask api.EventMask
+	// Removal releases fs-verity staging, and the inventory needs it too.
 	mask.Set(api.Event_REMOVE_CONTAINER)
 	mask.Set(api.Event_CREATE_CONTAINER)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
 	if p.inventory != nil {
-		// The inventory needs stop and removal to stay correct across pod
-		// churn, and the pod-sandbox lifecycle to keep its sandbox set (the
-		// /sandbox and /digests routes) live.
+		// The inventory needs stop to stay correct across pod churn, and the
+		// pod-sandbox lifecycle to keep its sandbox set (the /sandbox and
+		// /digests routes) live.
 		mask.Set(api.Event_STOP_CONTAINER)
-		mask.Set(api.Event_REMOVE_CONTAINER)
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
 	}
@@ -277,7 +278,7 @@ func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *ap
 // sandbox's record keeps it (inventory.remove). It also releases inode pins,
 // so removal is subscribed even when inventory is disabled.
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
-	releaseVerifiedMounts(ctr.GetId())
+	releaseVerifiedMounts(p.logger, ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -641,7 +642,7 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when there is something to excuse, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir)
+	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
@@ -956,16 +957,7 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 			rules = append(rules, snap.index.FSVerityMountRules(digest)...)
 		}
 	}
-	adjust, err := stageVerityMounts(p.logger, pod, ctr, p.socketDirAdjustment(pod, ctr), rules)
-	if err != nil {
-		releaseVerifiedMounts(ctr.GetId())
-		if p.cfg.Policy.Mode != ModeAudit {
-			return nil, nil, err
-		}
-		p.logger.Warn("would deny container creation (audit mode)", "container", ctr.GetId(), "error", err)
-		return p.socketDirAdjustment(pod, ctr), nil, nil
-	}
-	return adjust, nil, nil
+	return stageVerityMounts(p.logger, pod, ctr, p.socketDirAdjustment(pod, ctr), rules), nil, nil
 }
 
 // StartContainer runs before task.Start/execve. Its environment is the final
@@ -977,7 +969,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	imageRef := ctr.GetAnnotations()[annotationImageName]
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
-			releaseVerifiedMounts(ctr.GetId())
+			releaseVerifiedMounts(p.logger, ctr.GetId())
 			return err
 		}
 		p.recordUncheckedForInventory(pod, ctr, imageRef)
@@ -985,7 +977,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
-		releaseVerifiedMounts(ctr.GetId())
+		releaseVerifiedMounts(p.logger, ctr.GetId())
 		return fmt.Errorf("%s", reason)
 	}
 	p.recordForInventory(ctx, pod, ctr, imageRef)

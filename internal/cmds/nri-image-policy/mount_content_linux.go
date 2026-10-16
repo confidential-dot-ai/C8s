@@ -4,9 +4,11 @@ package nriimagepolicy
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -24,9 +26,9 @@ func nodeRootFile(source string) bool {
 		return false
 	}
 	defer unix.Close(root) //nolint:errcheck // No writes to flush.
-	var fs unix.Statfs_t
 	var st unix.Stat_t
-	if unix.Fstatfs(root, &fs) != nil || fs.Flags&unix.ST_RDONLY == 0 || unix.Fstat(root, &st) != nil || !rootDeviceVerity(uint64(st.Dev)) {
+	device, ok := measuredRootDevice()
+	if !ok || unix.Fstat(root, &st) != nil || uint64(st.Dev) != device {
 		return false
 	}
 	file, err := openRootFile(root, source)
@@ -37,6 +39,28 @@ func nodeRootFile(source string) bool {
 	info, err := file.Stat()
 	return err == nil && info.Mode().IsRegular()
 }
+
+// measuredRootDevice is the root filesystem's device when it is the measured
+// dm-verity root. Both facts are fixed for the boot, so they are read once and
+// a node that cannot supply node-root evidence says why, once.
+var measuredRootDevice = sync.OnceValues(func() (uint64, bool) {
+	var fs unix.Statfs_t
+	var st unix.Stat_t
+	reason := ""
+	switch {
+	case unix.Statfs("/", &fs) != nil || fs.Flags&unix.ST_RDONLY == 0:
+		reason = "root filesystem is not read-only"
+	case unix.Stat("/", &st) != nil:
+		reason = "cannot stat root filesystem"
+	default:
+		reason = rootDeviceVerityMismatch(uint64(st.Dev))
+	}
+	if reason != "" {
+		slog.Warn("node-root provenance unavailable", "reason", reason)
+		return 0, false
+	}
+	return uint64(st.Dev), true
+})
 
 func openRootFile(root int, source string) (*os.File, error) {
 	if !cleanAbsolute(source) {
@@ -52,18 +76,33 @@ func openRootFile(root int, source string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), source), nil
 }
 
-// The active root device must match roothash in the measured boot command line.
-// The approved node-image launch measurement authenticates that command line.
-func rootDeviceVerity(device uint64) bool {
+// rootDeviceVerityMismatch explains why device is not the measured root, or
+// returns "" when it is. The active root device must match roothash in the
+// measured boot command line, which the approved node-image launch measurement
+// authenticates.
+func rootDeviceVerityMismatch(device uint64) string {
 	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return "cannot read /proc/cmdline"
+	}
 	expected := bootRootHash(string(cmdline))
-	return err == nil && expected != "" && deviceVerityRootHash(device) == expected
+	if expected == "" {
+		return "no single roothash= on the boot command line"
+	}
+	actual, err := deviceVerityRootHash(device)
+	if err != nil {
+		return err.Error()
+	}
+	if actual != expected {
+		return "root device is not a strict dm-verity target with the boot roothash"
+	}
+	return ""
 }
 
-func deviceVerityRootHash(device uint64) string {
+func deviceVerityRootHash(device uint64) (string, error) {
 	fd, err := unix.Open("/dev/mapper/control", unix.O_RDWR|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("open /dev/mapper/control: %w", err)
 	}
 	defer unix.Close(fd) //nolint:errcheck // Read-only table query.
 	data := make([]byte, 8192)
@@ -75,9 +114,9 @@ func deviceVerityRootHash(device uint64) string {
 	header.Flags = unix.DM_STATUS_TABLE_FLAG
 	_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), unix.DM_TABLE_STATUS, uintptr(unsafe.Pointer(&data[0])))
 	if errno != 0 {
-		return ""
+		return "", fmt.Errorf("query device-mapper table: %w", errno)
 	}
-	return verityTableRootHash(data, device)
+	return verityTableRootHash(data, device), nil
 }
 
 func safeVerityTable(data []byte, device uint64) bool { return verityTableRootHash(data, device) != "" }
