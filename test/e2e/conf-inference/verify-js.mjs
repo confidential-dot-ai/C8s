@@ -9,7 +9,7 @@ import { parseArgs } from "node:util";
 
 const { values: a } = parseArgs({
   options: Object.fromEntries(
-    ["url", "server-name", "image-manifest", "workload", "api-key", "allowlist"].map((k) => [k, { type: "string" }]),
+    ["url", "server-name", "mode", "image-manifest", "workload", "api-key", "allowlist"].map((k) => [k, { type: "string" }]),
   ),
 });
 for (const [k, v] of Object.entries(a)) if (!v) throw new Error(`--${k} is required`);
@@ -80,7 +80,7 @@ const at = session.attestation;
 const problems = [];
 if (at.platform !== "tdx") problems.push(`platform ${at.platform}, want tdx`);
 if (!at.identityBound) problems.push("the identity transcript is not bound into the evidence");
-if (at.frontDoorMode !== "cds") problems.push(`front-door mode ${at.frontDoorMode}, want cds`);
+if (at.frontDoorMode !== a.mode) problems.push(`front-door mode ${at.frontDoorMode}, want ${a.mode}`);
 if (at.workload?.name !== a.workload) problems.push(`stamped workload ${at.workload?.name}, want ${a.workload}`);
 if (problems.length) throw new Error(problems.join("; "));
 
@@ -89,6 +89,6 @@ if (res.status !== 200) throw new Error(`tunnel GET /v1/models: HTTP ${res.statu
 const models = JSON.parse(res.text());
 if (!models.data?.length) throw new Error("tunnel GET /v1/models listed no models");
 console.log(
-  `ok: c8s-verify-js verified ${a.workload} (tdx, cds front door, ${at.trustClass}) and listed ${models.data[0].id} through the tunnel`,
+  `ok: c8s-verify-js verified ${a.workload} (tdx, ${a.mode} front door, ${at.trustClass}) and listed ${models.data[0].id} through the tunnel`,
 );
 for (const w of at.warnings) console.log(`warning: ${w}`);

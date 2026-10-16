@@ -10,7 +10,7 @@
 #     on a PVC the VM attaches with serial c8s-vol-gwstate.
 #
 # Needs: c8s, crane, go, jq, kubectl (launcher cluster), python3, sudo.
-# Env: C8S_SOURCE_DIR, c8sRef, VM, NS, GH_TOKEN (reads the org-internal
+# Env: FRONT_DOOR (cds or acme, default cds), C8S_SOURCE_DIR, c8sRef, VM, NS, GH_TOKEN (reads the org-internal
 # confidential-inference images). Writes everything to $CIE_DIR.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
@@ -44,6 +44,16 @@ echo "$helm_sha  helm.tgz" | sha256sum -c -
 mkdir -p bin && tar -xzf helm.tgz -C bin --strip-components 1 linux-amd64/helm
 export PATH="$CIE_DIR/bin:$PATH"
 
+# The front door: cds by default, acme against pebble with FRONT_DOOR=acme.
+if [ "${FRONT_DOOR:-cds}" = acme ]; then
+  bash "$here/pebble.sh"
+else
+  printf 'FRONT_DOOR_MODE=cds\nSERVER_NAME=c8s.local\n' > front-door.env
+fi
+. ./front-door.env
+# The gateway names its public origin in its (allowlisted) environment.
+printf 'attestationReceipts:\n  evidenceBaseUrl: https://%s\n' "$SERVER_NAME" > front-door-values.yaml
+
 render=()
 for pair in image:c8s-operator cds-image:cds armtls-mesh-image:armtls-mesh; do
   flag=${pair%%:*} repo=ghcr.io/confidential-dot-ai/${pair#*:}
@@ -62,6 +72,7 @@ python3 "$here/allowlist.py" --ci ci \
   --values release/profile-values-release-staging-values.yaml \
   --values release/release-values.yaml \
   --values "$here/values.yaml" \
+  --values front-door-values.yaml \
   --policy "$here/policy.json" --seed node-image/allowlist-seed.json \
   --c8s "$(command -v c8s)" --c8s-release "$c8s_release" \
   --canonical-tool bin/c8s-allowlist-canonical --out-dir allowlist

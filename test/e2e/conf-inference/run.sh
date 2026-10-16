@@ -18,6 +18,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 : "${GUEST_IP:?}" "${KUBECONFIG:?}" "${CIE_DIR:?}" "${LAUNCH_DIR:?}" "${IMAGE_MANIFEST:?}" "${GH_TOKEN:?}"
 export PATH="$CIE_DIR/bin:$PATH"
 cd "$CIE_DIR"
+set -a
+. ./front-door.env
+set +a
 
 ns=confidential-inference
 front=https://$GUEST_IP:443
@@ -72,6 +75,7 @@ helm template confidential-inference ci/helm/confidential-inference --namespace 
   --values release/profile-values-release-staging-values.yaml \
   --values release/release-values.yaml \
   --values "$here/values.yaml" \
+  --values front-door-values.yaml \
   --set-file attestationReceipts.cds.imagePolicy=cds-image-policy.json \
   --set-file attestationReceipts.cds.servedImagePolicy=served-image-policy.json \
   --set-string "attestationReceipts.expectedOperatorPublicKeySha256=sha256:$op_sha" \
@@ -99,6 +103,12 @@ git -C teerminator-src checkout -q FETCH_HEAD
 export HOME=$CIE_DIR/teerminator-home XDG_CONFIG_HOME=$CIE_DIR/teerminator-home/config
 mkdir -p "$XDG_CONFIG_HOME"
 local_addr=127.0.0.1:18080
+# An acme front door serves pebble's WebPKI chain; TEErminator checks it
+# against pebble's issuing root.
+if [ "$FRONT_DOOR_MODE" = acme ]; then
+  curl -fsk https://127.0.0.1:15000/roots/0 -o pebble-root.pem
+  teerminator certs add pebble-root.pem
+fi
 
 # A verified row names the remote, attest-lb and Verified.
 verified() {
@@ -112,7 +122,7 @@ verified() {
 # doubling to 30s), so allow a few rounds.
 attest() {
   teerminator remote rm "$local_addr" >/dev/null 2>&1 || true
-  teerminator remote add "$local_addr" "https://$GUEST_IP" --mode attest-lb --server-name c8s.local \
+  teerminator remote add "$local_addr" "https://$GUEST_IP" --mode attest-lb --server-name "$SERVER_NAME" \
     --image-manifest "$IMAGE_MANIFEST" --tdx-tcb-status UpToDate --workload "$router"
   for _ in $(seq 1 12); do verified && return 0; sleep 10; done
   fail "the front door is not Verified as $router"
@@ -143,7 +153,7 @@ customer_round() {
   python3 "$here/client.py" complete --api-key "$api_key"
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
-  python3 "$here/client.py" attestation --allowlist "$fetched" "${workload_args[@]}"
+  python3 "$here/client.py" attestation --mode "$FRONT_DOOR_MODE" --allowlist "$fetched" "${workload_args[@]}"
   "$here/verify-js.sh" "$router" "$api_key" "$fetched"
 }
 

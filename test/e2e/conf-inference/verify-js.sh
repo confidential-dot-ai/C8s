@@ -6,12 +6,12 @@
 # Usage: verify-js.sh <router-workload> <api-key> <allowlist-file>
 #   allowlist-file holds the canonical bytes the caller already fetched; the
 #   bytes this client fetches from /allowlist must equal them.
-# Env: GUEST_IP, IMAGE_MANIFEST, CIE_DIR. Needs node >= 20, npm, cargo and
+# Env: GUEST_IP, IMAGE_MANIFEST, CIE_DIR, SERVER_NAME, FRONT_DOOR_MODE. Needs node >= 20, npm, cargo and
 # wasm-pack (the verifier WASM is built from the pinned attestation-rs).
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins.env"
-: "${GUEST_IP:?}" "${IMAGE_MANIFEST:?}" "${CIE_DIR:?}"
+: "${GUEST_IP:?}" "${IMAGE_MANIFEST:?}" "${CIE_DIR:?}" "${SERVER_NAME:?}" "${FRONT_DOOR_MODE:?}"
 [ $# -eq 3 ] || { echo "usage: $0 <router-workload> <api-key> <allowlist-file>" >&2; exit 2; }
 
 src=$CIE_DIR/verify-js-src
@@ -26,5 +26,5 @@ fi
 
 cd "$src"
 VERIFY_JS_SRC=$src node --import tsx "$here/verify-js.mjs" \
-  --url "https://$GUEST_IP" --server-name c8s.local --image-manifest "$IMAGE_MANIFEST" \
+  --url "https://$GUEST_IP" --server-name "$SERVER_NAME" --mode "$FRONT_DOOR_MODE" --image-manifest "$IMAGE_MANIFEST" \
   --workload "$1" --api-key "$2" --allowlist "$3"

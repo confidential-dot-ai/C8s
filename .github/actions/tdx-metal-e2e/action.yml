@@ -14,6 +14,9 @@ inputs:
   keep_cvm:
     description: 'Keep the CVM for staged-run debugging.'
     default: 'false'
+  front_door:
+    description: 'Front-door mode of the conf-inference e2e: cds, or acme against pebble on the runner.'
+    default: 'cds'
   suite_artifact:
     description: 'Optional extra suite: an artifact of the calling run, see ../extra-suite.'
     default: ''
@@ -389,6 +392,7 @@ runs:
     # the gateway's state volume must be attached at VM creation.
     env:
       CIE_DIR: /tmp/conf-inference
+      FRONT_DOOR: ${{ inputs.front_door }}
       GH_TOKEN: ${{ github.token }}
     shell: bash
     run: bash "$GITHUB_WORKSPACE/test/e2e/conf-inference/prepare.sh"
@@ -400,10 +404,16 @@ runs:
     run: |
       set -euo pipefail
       # The published manifest pins the image before its launch is signed.
+      . /tmp/conf-inference/front-door.env
+      router_args=()
+      if [ "$FRONT_DOOR_MODE" = acme ]; then
+        router_args=(--router-hostname "$SERVER_NAME" --acme-directory-url "$ACME_DIRECTORY_URL"
+          --acme-ca-file /tmp/conf-inference/acme-ca.pem)
+      fi
       c8s launch-config new --out /tmp/launch-data --cluster-id "$VM" --server-name c8s-node \
         --image-manifest /tmp/image-manifest.json \
         --workloads /tmp/conf-inference/allowlist/app.json \
-        --router-upstream c8s-gateway.confidential-inference.svc.cluster.local:9443
+        --router-upstream c8s-gateway.confidential-inference.svc.cluster.local:9443 "${router_args[@]}"
       kubectl -n "$NS" create secret generic "$VM-opkey" \
         --from-file=pubkey=/tmp/launch-data/server/pubkey \
         --from-file=launch.yaml=/tmp/launch-data/server/launch.yaml \
@@ -679,6 +689,7 @@ runs:
       kubectl -n "$NS" delete vm "$VM" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
       kubectl -n "$NS" delete secret "$VM-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
       kubectl -n "$NS" delete pod "$VM-gwstate-copy" --ignore-not-found --wait=false || cleanup_failed=1
+      kubectl -n "$NS" delete service "$VM-front" --ignore-not-found --wait=false || cleanup_failed=1
       kubectl -n "$NS" delete pvc "$VM-scratch" "$VM-gwstate" --ignore-not-found --wait=false || cleanup_failed=1
       # The helper ignores absent disks and refuses anything not owned by
       # this run, including the shared staged root PVC.

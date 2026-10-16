@@ -75,8 +75,8 @@ def attestation(args: argparse.Namespace) -> None:
     workloads = json.loads(served)["workloads"]
     c8s = response["c8s"]
     problems = []
-    if c8s["discovery"]["public_tls"]["mode"] != "cds":
-        problems.append(f"discovery public_tls.mode is {c8s['discovery']['public_tls']['mode']}, want cds")
+    if c8s["discovery"]["public_tls"]["mode"] != args.mode:
+        problems.append(f"discovery public_tls.mode is {c8s['discovery']['public_tls']['mode']}, want {args.mode}")
     if c8s["activeAllowlist"]["sha256"] != "sha256:" + hashlib.sha256(served).hexdigest():
         problems.append("the gateway reports a different active allowlist than the front door serves")
     receipts = response.get("receipts", [])
@@ -91,7 +91,7 @@ def attestation(args: argparse.Namespace) -> None:
     if problems:
         print(json.dumps(response, indent=2)[:20000], file=sys.stderr)
         raise SystemExit("FAIL: " + "; ".join(problems))
-    print(f"ok: /attestation v{response['schemaVersion']} matches the served allowlist and cds front door")
+    print(f"ok: /attestation v{response['schemaVersion']} matches the served allowlist and {args.mode} front door")
 
 
 def main() -> None:
@@ -101,6 +101,7 @@ def main() -> None:
     sub.add_parser("mint-key").add_argument("--admin-key", required=True)
     sub.add_parser("complete").add_argument("--api-key", required=True)
     check = sub.add_parser("attestation")
+    check.add_argument("--mode", required=True, choices=["cds", "acme"], help="the launch's front-door mode")
     check.add_argument("--allowlist", required=True, help="the bytes `teerminator allowlist fetch` wrote")
     check.add_argument("--workload", action="append", required=True)
     args = parser.parse_args()
