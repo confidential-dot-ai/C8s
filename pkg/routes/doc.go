@@ -43,7 +43,7 @@
 // Times come from the router's clock, which the policy trusts (§4).
 //
 // Freshness proves contact with the verified CDS, not that a manifest is
-// current: VerifySigned checks no time claim (W3), and State lives in
+// current: VerifySigned checks no expiry (W3), and State lives in
 // memory, so after a restart any validly signed revision is accepted (Q1).
 // Operator tokens carry no deployment binding, so clusters that share an
 // operator key can replay each other's manifests; pinning the route digest
