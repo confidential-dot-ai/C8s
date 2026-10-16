@@ -475,33 +475,48 @@ func TestAuthorizeKeyRejectsUnparsedServerKey(t *testing.T) {
 	}
 }
 
-// TestNodePasswordIsStablePerNode: a rebooted node stages the same RKE2 node
-// password, so the server accepts its name again; different nodes or
-// clusters get different ones.
-func TestNodePasswordIsStablePerNode(t *testing.T) {
+// TestNodePasswordFromDocument: a node stages exactly its document's
+// rke2.nodePassword on every boot, so a rebooted node rejoins under its name;
+// a document without one leaves RKE2 to generate its own.
+func TestNodePasswordFromDocument(t *testing.T) {
 	doc, key, pub := testDocument(t, "tdx", Agent)
+	doc.RKE2.NodePassword = strings.Repeat("c", 64)
 	testLoader(t, doc, pub)
-	stageOnce := func() string {
+	for range 2 {
 		cfg := testConfig(t, doc, key)
 		if err := Stage(context.Background(), cfg); err != nil {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(cfg.path(nodePasswordPath))
-		if err != nil {
-			t.Fatal(err)
+		if err != nil || string(data) != doc.RKE2.NodePassword+"\n" {
+			t.Fatalf("staged node password %q: %v", data, err)
 		}
-		info, _ := os.Stat(cfg.path(nodePasswordPath))
-		if info.Mode().Perm() != 0o600 {
+		if info, _ := os.Stat(cfg.path(nodePasswordPath)); info.Mode().Perm() != 0o600 {
 			t.Fatalf("node password mode %v", info.Mode().Perm())
 		}
-		return string(data)
 	}
-	first, second := stageOnce(), stageOnce()
-	if first != second || len(strings.TrimSpace(first)) != 64 {
-		t.Fatalf("node password not stable across boots: %q %q", first, second)
+	doc.RKE2.NodePassword = ""
+	testLoader(t, doc, pub)
+	cfg := testConfig(t, doc, key)
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
 	}
-	if NodePassword(doc.RKE2.AgentToken, "other-node") == strings.TrimSpace(first) ||
-		NodePassword(strings.Repeat("b", 64), doc.Node.Name) == strings.TrimSpace(first) {
-		t.Fatal("node password does not depend on node name and cluster token")
+	if _, err := os.Stat(cfg.path(nodePasswordPath)); !os.IsNotExist(err) {
+		t.Fatalf("a document without rke2.nodePassword staged one: %v", err)
+	}
+}
+
+func TestNodePasswordValidation(t *testing.T) {
+	doc, _, _ := testDocument(t, "tdx", Agent)
+	for name, p := range map[string]string{
+		"short":           "abc",
+		"uppercase":       strings.Repeat("C", 64),
+		"the agent token": doc.RKE2.AgentToken,
+	} {
+		d := doc
+		d.RKE2.NodePassword = p
+		if err := d.validate(); err == nil {
+			t.Errorf("%s node password accepted", name)
+		}
 	}
 }
