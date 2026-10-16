@@ -630,9 +630,9 @@ changes. Before signing, `add` and `rm` print each route the new revision
 carries to stderr. After a CDS reset, check that list: the stored manifest may
 be older than the one routers hold, and an edit would re-authorize the routes
 you had removed since. Once the router applies the manifest, it keeps the
-highest revision it applied, even across a CDS reset. The default revision,
-the current Unix time, outranks it unless a router applied a revision ahead of
-your clock; then pass `--revision` above that revision.
+highest revision it accepted, applied or staged, even across a CDS reset. The
+default revision, the current Unix time, outranks it unless a router accepted a
+revision ahead of your clock; then pass `--revision` above that revision.
 
 `GET /routes` serves the write token, so any reader can replay it as a
 `PUT /routes` until its `exp` plus the CDS `--jwt-clock-skew` allowance
