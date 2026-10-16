@@ -218,7 +218,9 @@ func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount
 }
 
 // endsReadOnly reports whether m is read-only once runc has applied its
-// options in order: the last "ro" or "rw" wins.
+// options: the last "ro" or "rw" wins, and "rrw" (a recursive setattr applied
+// after the mount) leaves it writable whatever came before. "rro" alone is
+// not taken as read-only, so a caller fails closed on it.
 func endsReadOnly(m *api.Mount) bool {
 	readOnly := false
 	for _, option := range m.GetOptions() {
@@ -227,6 +229,8 @@ func endsReadOnly(m *api.Mount) bool {
 			readOnly = true
 		case "rw":
 			readOnly = false
+		case "rrw":
+			return false
 		}
 	}
 	return readOnly

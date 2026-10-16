@@ -225,6 +225,45 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 	}
 }
 
+// A socket directory observed as a host mount is a pod-spec hostPath, not the
+// NRI plugin's own bind, so the seed refuses the sidecar and keeps it in
+// workload matching.
+func TestChartSeedRefusesHostSocketMount(t *testing.T) {
+	seed := chartSeed(t)
+	index := seed.BuildIndex()
+	imageEnv := chartImageEnv(t)
+	pod := podWithApp()
+	pod.Annotations = map[string]string{AnnotationWorkload: "api"}
+	inj, err := parseAnnotations(pod)
+	if err != nil {
+		t.Fatalf("parseAnnotations: %v", err)
+	}
+	mutatePod(pod, inj, secretsConfig())
+	i := slices.IndexFunc(pod.Spec.InitContainers, func(c corev1.Container) bool { return c.Name == workloadclaims.CertContainerName })
+	if i < 0 {
+		t.Fatal("no cert sidecar injected")
+	}
+	c := pod.Spec.InitContainers[i]
+	digest, err := allowlist.HostSourceDigest(chartRuntimeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounts := append(observedSidecarMounts(t, pod, c, false),
+		allowlist.ObservedMount{Destination: workloadclaims.SidecarSocketDir, Class: allowlist.MountHost, ReadOnly: true, HostSourceDigest: digest})
+	argv := c.Command
+	if len(argv) == 0 {
+		argv = append([]string{secrets.InjectedBinary}, c.Args...)
+	}
+	env := sidecarEnv(t, pod, c, imageEnv)
+	if index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}) {
+		t.Errorf("chart seed admits %s with a host socket mount %+v", c.Name, mounts)
+	}
+	ctr := workloadclaims.SandboxContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}
+	if left := secrets.WorkloadContainers(seed, []workloadclaims.SandboxContainer{ctr}); len(left) != 1 {
+		t.Errorf("WorkloadContainers dropped %s with a host socket mount, want it kept", c.Name)
+	}
+}
+
 // A discovery or reload-watch volume the sidecar's mount rules cannot admit is
 // refused at admission rather than by the node at container creation. A
 // disk-backed emptyDir and a ConfigMap pass: encrypted scratch admits them.

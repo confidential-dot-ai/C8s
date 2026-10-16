@@ -167,6 +167,7 @@ func TestMountObserverClassifiesItsOwnSocketDirAsPlatform(t *testing.T) {
 		{"writable", injected, workloadclaims.AttestContainerName, socketDir, mount(socketDir, "rbind", "rw"), allowlist.MountHost},
 		{"ro then rw", injected, workloadclaims.AttestContainerName, socketDir, mount(socketDir, "rbind", "ro", "rw"), allowlist.MountHost},
 		{"rw then ro", injected, workloadclaims.AttestContainerName, socketDir, mount(socketDir, "rbind", "rw", "ro"), allowlist.MountPlatform},
+		{"ro then rrw", injected, workloadclaims.AttestContainerName, socketDir, mount(socketDir, "rbind", "ro", "rrw"), allowlist.MountHost},
 		{"inventory disabled", injected, workloadclaims.AttestContainerName, "", mount(socketDir, "rbind", "ro"), allowlist.MountHost},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
