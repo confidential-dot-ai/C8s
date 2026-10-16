@@ -170,27 +170,6 @@ func TestAdmitsAnyArgs(t *testing.T) {
 	}
 }
 
-func TestPinsAtMostCommand(t *testing.T) {
-	any := ArgvPolicy{Policy: PolicyAny}
-	for name, tc := range map[string]struct {
-		c    Container
-		want bool
-	}{
-		"any argv, any mounts":       {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, true},
-		"pinned command, any mounts": {Container{Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"/c8s"}}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyAny}}, true},
-		"pinned args":                {Container{Command: any, Args: ArgvPolicy{Policy: PolicyExact, Argv: []string{"x"}}, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-		"denied command":             {Container{Command: ArgvPolicy{Policy: PolicyDeny}, Args: any, Mounts: MountPolicy{Policy: PolicyAny}}, false},
-		"mounts left absent (deny)":  {Container{Command: any, Args: any}, false},
-		"exact env":                  {Container{Command: any, Args: any, Mounts: MountPolicy{Policy: PolicyAny}, Env: EnvPolicy{Policy: PolicyExact, Values: map[string]string{"A": "1"}}}, false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := tc.c.PinsAtMostCommand(); got != tc.want {
-				t.Fatalf("PinsAtMostCommand() = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestParseJSON_AbsentPolicyDefaultsToDeny(t *testing.T) {
 	al := mustParse(t, `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"`+digestA+`"}]}}}`)
 	c := al.Workloads["w"].Containers[0]

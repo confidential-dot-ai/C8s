@@ -1,3 +1,124 @@
+{{- define "c8s.operatorPodSpec" -}}
+serviceAccountName: {{ include "c8s.operatorName" . }}
+securityContext:
+{{ toYaml .Values.podSecurityContext | indent 2 }}
+containers:
+  - name: operator
+    image: {{ include "c8s.image" . }}
+    imagePullPolicy: {{ .Values.image.pullPolicy }}
+    securityContext:
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 65532
+      capabilities:
+        drop: [ALL]
+    command: {{ include "c8s.entrypoint" (dict "root" . "valuePath" "image") }}
+    args:
+      - operator
+      - --leader-election-namespace={{ .Release.Namespace }}
+      - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
+      - --get-cert-image={{ include "c8s.image" . }}
+      - --cds-url={{ include "c8s.trustRootURL" . }}
+      - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
+      - --webhook-service-name={{ include "c8s.operatorName" . }}
+      - --webhook-service-namespace={{ .Release.Namespace }}
+      - --attestation-api-url={{ include "c8s.sidecarAttestationApiURL" . }}
+      {{- /* The same measurements CDS is pinned to elsewhere: the
+             injected secret fetcher verifies CDS before handing it a
+             sandbox token and taking a value back. */}}
+      {{- if .Values.node.baked }}
+      - --image-policy-file=/run/c8s-node/cds.json
+      {{- else if .Values.cds.measurementsConfig }}
+      - --image-policy-file=/mnt/c8s-data/measurements/cds.json
+      {{- else }}
+      {{- range .Values.cds.measurements }}
+      - --cds-measurements={{ . }}
+      {{- end }}
+      {{- range .Values.cds.rtmrs }}
+      - --cds-rtmrs={{ . }}
+      {{- end }}
+      {{- end }}
+      {{- range .Values.webhook.extraExcluded }}
+      - --exclude-namespaces={{ . }}
+      {{- end }}
+      {{- if and .Values.armtlsMesh.enabled .Values.armtlsMesh.egressCompanionPolicy.enabled }}
+      - --mesh-outbound-port={{ include "c8s.int" .Values.armtlsMesh.ports.outbound }}
+      {{- range .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces }}
+      - --mesh-exclude-source-namespaces={{ . }}
+      {{- end }}
+      {{- end }}
+      - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
+      - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
+      - --get-cert-run-as-user={{ include "c8s.int" .Values.webhook.getCert.runAsUser }}
+      - --get-cert-run-as-group={{ include "c8s.int" .Values.webhook.getCert.runAsGroup }}
+      - --get-cert-run-as-non-root={{ .Values.webhook.getCert.runAsNonRoot }}
+
+      {{- /* Workload-digest claims (docs/armtls.md): get-cert
+             redeems a sandbox token from the node's inventory over a
+             compiled endpoint: the nri-image-policy socket that plugin
+             NRI-mounts into c8s-cert on node-CVM. */}}
+      {{- /* cvmMode=bare-metal bakes the plugin into the node image instead of
+             installing it from the chart, so the socket exists even when
+             nriImagePolicy.enabled is false. */}}
+      - --workload-claims-host-dir={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
+      {{- range .Values.operator.extraArgs }}
+      - {{ . | quote }}
+      {{- end }}
+    env:
+      # The webhook CA carries the pod name as its identity in the
+      # caBundle; the hostname is truncated past 63 characters.
+      - name: POD_NAME
+        valueFrom:
+          fieldRef: { fieldPath: metadata.name }
+    ports:
+      - name: metrics
+        containerPort: 8080
+      - name: health
+        containerPort: 8081
+    # setupManager (CRD discovery + webhook PKI bootstrap) runs before the
+    # health server serves, with :8081 already bound by NewManager, so
+    # probes hang rather than refuse. 30x10s covers that window.
+    startupProbe:
+      httpGet: { path: /healthz, port: health }
+      periodSeconds: 10
+      failureThreshold: 30
+    readinessProbe:
+      httpGet: { path: /readyz, port: health }
+      initialDelaySeconds: 3
+    livenessProbe:
+      httpGet: { path: /healthz, port: health }
+      periodSeconds: 30
+    resources:
+{{ toYaml .Values.operator.resources | indent 6 }}
+    volumeMounts:
+      # readOnlyRootFilesystem: true forces any transient files
+      # (controller-runtime cache tempfiles, etc.) to land in
+      # this emptyDir rather than the immutable image. Memory-backed, like
+      # every component volume (see cds.yaml).
+      - name: tmp
+        mountPath: /tmp
+      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
+      {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
+      - name: measurements-config
+        mountPath: /mnt/c8s-data/measurements
+        readOnly: true
+      {{- end }}
+volumes:
+  - name: tmp
+    emptyDir:
+      medium: Memory
+      sizeLimit: 16Mi
+  {{- include "c8s.nodeConfigVolume" . | nindent 2 }}
+  {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
+  - name: measurements-config
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.fullname" . }}-measurements
+  {{- end }}
+{{- end -}}
+
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,118 +155,7 @@ spec:
         {{- end }}
       {{- end }}
     spec:
-      serviceAccountName: {{ include "c8s.operatorName" . }}
-      securityContext:
-{{ toYaml .Values.podSecurityContext | indent 8 }}
-      containers:
-        - name: operator
-          image: {{ include "c8s.image" . }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          securityContext:
-            allowPrivilegeEscalation: false
-            readOnlyRootFilesystem: true
-            runAsNonRoot: true
-            runAsUser: 65532
-            capabilities:
-              drop: [ALL]
-          args:
-            - operator
-            - --leader-election-namespace={{ .Release.Namespace }}
-            - --status-mirror-enabled={{ .Values.statusMirror.enabled }}
-            - --get-cert-image={{ include "c8s.image" . }}
-            - --cds-url={{ include "c8s.trustRootURL" . }}
-            - --webhook-config-name={{ include "c8s.fullname" . }}-pod-injector
-            - --webhook-service-name={{ include "c8s.operatorName" . }}
-            - --webhook-service-namespace={{ .Release.Namespace }}
-            - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
-            {{- /* The same measurements CDS is pinned to elsewhere: the
-                   injected secret fetcher verifies CDS before handing it a
-                   sandbox token and taking a value back. */}}
-            {{- if .Values.node.baked }}
-            - --image-policy-file=/run/c8s-node/cds.json
-            {{- else if .Values.cds.measurementsConfig }}
-            - --image-policy-file=/etc/c8s-measurements/cds.json
-            {{- else }}
-            {{- range .Values.cds.measurements }}
-            - --cds-measurements={{ . }}
-            {{- end }}
-            {{- range .Values.cds.rtmrs }}
-            - --cds-rtmrs={{ . }}
-            {{- end }}
-            {{- end }}
-            {{- range .Values.webhook.extraExcluded }}
-            - --exclude-namespaces={{ . }}
-            {{- end }}
-            {{- if and .Values.armtlsMesh.enabled .Values.armtlsMesh.egressCompanionPolicy.enabled }}
-            - --mesh-outbound-port={{ include "c8s.int" .Values.armtlsMesh.ports.outbound }}
-            {{- range .Values.armtlsMesh.iptablesSync.excludeSourceNamespaces }}
-            - --mesh-exclude-source-namespaces={{ . }}
-            {{- end }}
-            {{- end }}
-            - --cert-fs-group={{ include "c8s.int" .Values.webhook.certVolume.fsGroup }}
-            - --get-cert-renew-interval={{ .Values.webhook.getCert.renewInterval }}
-            - --get-cert-run-as-user={{ include "c8s.int" .Values.webhook.getCert.runAsUser }}
-            - --get-cert-run-as-group={{ include "c8s.int" .Values.webhook.getCert.runAsGroup }}
-            - --get-cert-run-as-non-root={{ .Values.webhook.getCert.runAsNonRoot }}
-
-            {{- /* Workload-digest claims (docs/armtls.md): get-cert
-                   redeems a sandbox token from the node's inventory over a
-                   compiled endpoint: the nri-image-policy socket that plugin
-                   NRI-mounts into c8s-cert on node-CVM. */}}
-            {{- /* cvmMode=bare-metal bakes the plugin into the node image instead of
-                   installing it from the chart, so the socket exists even when
-                   nriImagePolicy.enabled is false. */}}
-            - --workload-claims-host-dir={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}
-            {{- range .Values.operator.extraArgs }}
-            - {{ . | quote }}
-            {{- end }}
-          env:
-            # The webhook CA carries the pod name as its identity in the
-            # caBundle; the hostname is truncated past 63 characters.
-            - name: POD_NAME
-              valueFrom:
-                fieldRef: { fieldPath: metadata.name }
-          ports:
-            - name: metrics
-              containerPort: 8080
-            - name: health
-              containerPort: 8081
-          # setupManager (CRD discovery + webhook PKI bootstrap) runs before the
-          # health server serves, with :8081 already bound by NewManager, so
-          # probes hang rather than refuse. 30x10s covers that window.
-          startupProbe:
-            httpGet: { path: /healthz, port: health }
-            periodSeconds: 10
-            failureThreshold: 30
-          readinessProbe:
-            httpGet: { path: /readyz, port: health }
-            initialDelaySeconds: 3
-          livenessProbe:
-            httpGet: { path: /healthz, port: health }
-            periodSeconds: 30
-          resources:
-{{ toYaml .Values.operator.resources | indent 12 }}
-          volumeMounts:
-            # readOnlyRootFilesystem: true forces any transient files
-            # (controller-runtime cache tempfiles, etc.) to land in
-            # this emptyDir rather than the immutable image.
-            - name: tmp
-              mountPath: /tmp
-            {{- include "c8s.nodeConfigMount" . | nindent 12 }}
-            {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
-            - name: measurements-config
-              mountPath: /etc/c8s-measurements
-              readOnly: true
-            {{- end }}
-      volumes:
-        - name: tmp
-          emptyDir: {}
-        {{- include "c8s.nodeConfigVolume" . | nindent 8 }}
-        {{- if and (not .Values.node.baked) .Values.cds.measurementsConfig }}
-        - name: measurements-config
-          configMap:
-            name: {{ include "c8s.fullname" . }}-measurements
-        {{- end }}
+{{- include "c8s.operatorPodSpec" . | nindent 6 }}
 ---
 apiVersion: v1
 kind: Service

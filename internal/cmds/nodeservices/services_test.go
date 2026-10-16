@@ -176,6 +176,10 @@ func TestPublishNodeIPHonorsAuthenticatedAddress(t *testing.T) {
 	if err != nil || string(data) != "192.0.2.22\n" {
 		t.Fatalf("got %q, %v", data, err)
 	}
+	// Non-root components read the address (cmdsutil.NodeIPPath).
+	if info, err := os.Stat(filepath.Join(root, nodeIPPath)); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("node-ip mode = %v, %v, want 0644", info.Mode().Perm(), err)
+	}
 	for _, ip := range []string{"0.0.0.0", "127.0.0.1", "::1"} {
 		doc.Node.IP = ip
 		if err := PublishNodeIP(t.TempDir(), doc); err == nil {
@@ -307,7 +311,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	}{
 		{"unset", nil, map[string]string{
 			"upstream.conf":      "set $c8s_upstream \"\";\n",
-			"tls.conf":           "include /etc/nginx/c8s/tls-cds.conf;\n",
+			"tls.conf":           "include /mnt/c8s-data/nginx/tls-cds.conf;\n",
 			"upstream":           "",
 			"hostnames":          "",
 			"acme-email":         "",
@@ -316,7 +320,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 		}},
 		{"upstream only", &launchconfig.Router{Upstream: upstream}, map[string]string{
 			"upstream.conf":   "set $c8s_upstream \"" + upstream + "\";\n",
-			"tls.conf":        "include /etc/nginx/c8s/tls-cds.conf;\n",
+			"tls.conf":        "include /mnt/c8s-data/nginx/tls-cds.conf;\n",
 			"upstream":        upstream + "\n",
 			"hostnames":       "",
 			"front-door-mode": "cds\n",
@@ -331,7 +335,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"acme-email":         "ops@confidential.ai\n",
 			"acme-directory-url": "https://acme-staging-v02.api.letsencrypt.org/directory\n",
 			"front-door-mode":    "acme\n",
-			"tls.conf":           "include /etc/nginx/c8s/tls-acme.conf;\n",
+			"tls.conf":           "include /mnt/c8s-data/nginx/tls-acme.conf;\n",
 		}},
 	}
 	for _, tc := range tests {

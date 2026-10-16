@@ -139,8 +139,8 @@ var serverOutputNames = []string{
 
 // RouterTLSSnippetDir is where the router chart mounts tls-cds.conf and
 // tls-acme.conf for nginx; router/tls.conf includes the one the front-door
-// mode selects. The chart's router.tlsSnippetDir must equal it.
-const RouterTLSSnippetDir = "/etc/nginx/c8s"
+// mode selects. The chart's router.configDir must equal it.
+const RouterTLSSnippetDir = "/mnt/c8s-data/nginx"
 
 // line renders an optional single-line value: empty stays empty.
 func line(s string) []byte {

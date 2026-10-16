@@ -14,19 +14,22 @@ import (
 	"github.com/distribution/reference"
 	"github.com/spf13/cobra"
 
+	cdsallowlist "github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/crane"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 func newLintCmd(o *options) *cobra.Command {
 	var online, strict bool
+	var seedPath string
 	cmd := &cobra.Command{
 		Use:   "lint <file|->",
 		Short: "Validate an allowlist file and report semantic warnings",
 		Long: `Parse and validate an allowlist file (or stdin with '-') and report semantic
 findings: entries with no containers, a container that can never start, digests
 whose effective policy is unconstrained, tag-form image labels (TOCTOU),
-root-subtree path grants, and pinned search paths that overlap data mounts.
+root-subtree path grants, pinned search paths that overlap data mounts, and
+C8s component containers that leave args or mounts open.
 --online additionally checks each digest exists in
 its registry via crane.
 
@@ -36,7 +39,12 @@ entries, the shapes 'apply' accepts and 'derive' emits.
 Two entries declaring the same containers with the same launch policies are an
 error: release requires exactly one entry to match, so both are refused
 forever. Errors exit non-zero on their own; --strict makes warnings do the
-same.`,
+same.
+
+--seed names the release's allowlist seed (allowlist-seed.json in the CDS seed
+ConfigMap). Lint then names each chart-generated entry, "<image>-<digest>-<policy>",
+whose image the seed generates under another name: the stale shape of an
+earlier configuration, safe to delete once no pod runs it.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			data, err := readFileOrStdin(cmd, args[0])
@@ -49,6 +57,17 @@ same.`,
 			}
 			al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: entries}
 			findings := lintOffline(al)
+			if seedPath != "" {
+				data, err := readFileOrStdin(cmd, seedPath)
+				if err != nil {
+					return err
+				}
+				seed, err := pkgallowlist.ParseJSON(data)
+				if err != nil {
+					return fmt.Errorf("seed: %w", err)
+				}
+				findings = append(findings, staleShapes(al, seed)...)
+			}
 			if online {
 				if err := crane.Require(); err != nil {
 					return err
@@ -74,6 +93,7 @@ same.`,
 	}
 	cmd.Flags().BoolVar(&online, "online", false, "also check each digest exists in its registry via crane")
 	cmd.Flags().BoolVar(&strict, "strict", false, "exit non-zero if there are any warnings")
+	cmd.Flags().StringVar(&seedPath, "seed", "", "the release's allowlist seed, to name stale chart-generated entries")
 	cmd.Flags().String("cvm-mode", "", "deprecated; has no effect")
 	_ = cmd.Flags().MarkDeprecated("cvm-mode", "mount and environment policies are enforced by NRI; this flag has no effect")
 	return cmd
@@ -183,6 +203,7 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 			if argvPolicyName(c.Command) == pkgallowlist.PolicyDeny {
 				warnings = append(warnings, warnf("workload %q container %s command is deny; the effective argv must be empty, so the container can never start", name, d))
 			}
+			warnings = append(warnings, componentFindings(name, c)...)
 			if c.Image != "" && isTagForm(c.Image) {
 				warnings = append(warnings, warnf("workload %q container %s image %q is a tag, not a digest (informational, but tags are mutable — TOCTOU)", name, d, c.Image))
 			}
@@ -211,6 +232,47 @@ func lintOffline(al *pkgallowlist.Allowlist) []finding {
 	warnings = append(warnings, shadowedEntries(al)...)
 	warnings = append(warnings, searchPathFindings(al)...)
 	return warnings
+}
+
+// staleShapes names each generated entry of al that seed lacks while seed
+// generates another entry for the same image: a shape an earlier
+// configuration seeded, which CDS keeps until an operator deletes it.
+func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
+	current := map[string]string{}
+	for name := range seed.Workloads {
+		if key := cdsallowlist.GeneratedKey(name); key != "" {
+			current[key] = name
+		}
+	}
+	var out []finding
+	for _, name := range slices.Sorted(maps.Keys(al.Workloads)) {
+		key := cdsallowlist.GeneratedKey(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seed.Workloads[name]; ok {
+			continue
+		}
+		if now, ok := current[key]; ok {
+			out = append(out, warnf("workload %q is a stale shape: the seed now generates %q for its image; once no pod runs it, run 'c8s allowlist delete %s'", name, now, name))
+		}
+	}
+	return out
+}
+
+// componentFindings reports a container pinned to a component executable that
+// leaves its args or mounts to the pod (cdsallowlist.OpenComponent).
+func componentFindings(name string, c pkgallowlist.Container) []finding {
+	openArgs, openMounts := cdsallowlist.OpenComponent(c)
+	argv := c.Command.Argv
+	var out []finding
+	if openArgs {
+		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves args any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+	}
+	if openMounts {
+		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves mounts any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+	}
+	return out
 }
 
 // pinsNoEnvValue reports whether the host may choose every environment value:

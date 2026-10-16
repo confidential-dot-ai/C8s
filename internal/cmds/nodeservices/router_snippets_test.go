@@ -12,7 +12,7 @@ func TestRouterTLSSnippetDirMatchesChart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{{- define "router.tlsSnippetDir" -}}` + RouterTLSSnippetDir + `{{- end -}}`
+	want := `{{- define "router.configDir" -}}` + RouterTLSSnippetDir + `{{- end -}}`
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("router-helpers.tpl no longer defines %s", want)
 	}

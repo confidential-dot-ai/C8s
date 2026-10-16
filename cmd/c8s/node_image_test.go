@@ -308,6 +308,7 @@ spec:
       containers:
         - name: operator
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
       initContainers:
         - name: native-sidecar
           restartPolicy: Always
@@ -323,6 +324,7 @@ spec:
       containers:
         - name: cds
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -334,6 +336,7 @@ spec:
       containers:
         - name: router
           image: registry.example.com/operator@CORE_DIGEST
+          command: ["/app/c8s"]
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -469,7 +472,6 @@ func TestNodeImageCollectRejectsUnpinnedOrUnseededImages(t *testing.T) {
 		{"missing core workload", "name: c8s-cds", "name: other-cds"},
 		{"restricted core bootstrap", `"command":{"policy":"any"}`, `"command":{"policy":"deny"}`},
 		{"pinned args", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"deny"},"mounts":{"policy":"any"}}]},"init"`},
-		{"restricted mounts", `"args":{"policy":"any"},"mounts":{"policy":"any"}}]},"init"`, `"args":{"policy":"any"},"mounts":{"policy":"deny"}}]},"init"`},
 		{"pinned executable other than the baked command", `"` + testDigest + `","command":{"policy":"any"}`, `"` + testDigest + `","command":{"policy":"exact","argv":["/other"]}`},
 		{"unexpected namespace", "name: c8s-cds", "name: c8s-cds\n  namespace: outside"},
 		{"cluster resource namespace", "name: confidentialworkloads.confidential.ai", "name: confidentialworkloads.confidential.ai\n  namespace: c8s-system"},
@@ -589,6 +591,63 @@ func testNodeImageBootstrap(t *testing.T, seed []byte) {
 
 // A seed that pins a component's executable is accepted when the pin admits
 // every command the baked manifests spell out for the image.
+// The chart pins a component's args and mounts too; the seed must still admit
+// every baked container, whether the manifest names the command or runs the
+// image's entrypoint, with the mounts the manifest gives it.
+func TestNodeImageCollectPinnedArgs(t *testing.T) {
+	core := `{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"any"},"mounts":{"policy":"any"}}`
+	mesh := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s","armtls-mesh"]},"args":{"policy":"exact","argv":["--platform","snp"]}}`
+	entrypoint := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"}}`
+	const entrypointRouter = "        - name: router\n          image: registry.example.com/operator@" + testDigest
+	const router = entrypointRouter + "\n          command: [\"/app/c8s\"]"
+	urlArgs := `{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"exact","argv":["--url=http://$(HOST_IP):8080"]}}`
+	tmpRule := func(rule string) string {
+		return `,{"digest":"` + testDigest + `","command":{"policy":"exact","argv":["/app/c8s"]},"args":{"policy":"deny"},"mounts":{"policy":"exact","rules":[` + rule + `]}}`
+	}
+	hostTmp := router + "\n          volumeMounts: [{name: tmp, mountPath: /tmp, readOnly: true}]\n      volumes:\n        - name: tmp\n          hostPath: {path: /var/tmp}"
+	placeholder := router + "\n          volumeMounts: [{name: c8s-volume-db, mountPath: /mnt/c8s-data/db}]\n      volumes:\n        - name: c8s-volume-db\n          emptyDir: {}"
+	subPath := router + "\n          volumeMounts: [{name: cache, mountPath: /mnt/c8s-data/cache, subPath: cache}]\n      volumes:\n        - name: cache\n          emptyDir: {}"
+	for _, tc := range []struct {
+		name, seed, manifest string
+		ok                   bool
+	}{
+		{"every invocation pinned", mesh + "," + entrypoint, "", true},
+		{"image entrypoint under a pinned command", mesh + "," + entrypoint, entrypointRouter, false},
+		{"image entrypoint and CMD under denied args", mesh + "," + entrypoint + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, entrypointRouter, false},
+		{"image entrypoint under any command and args", mesh + "," + entrypoint + "," + core, entrypointRouter, true},
+		{"entrypoint arguments not pinned", mesh + "," + entrypoint, router + "\n          args: [\"--other\"]", false},
+		{"mount the manifest lacks", strings.Replace(mesh, `"args"`, `"mounts":{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]},"args"`, 1) + "," + entrypoint, "", false},
+		{"entrypoint under any command with pinned args", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"any"},"args":{"policy":"deny"}}`, "", false},
+		{"host mount pinned", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp","readOnly":true}`), hostTmp, true},
+		{"host mount pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"emptyDir"}`), hostTmp, false},
+		{"host mount pinned writable", mesh + "," + entrypoint + tmpRule(`{"destination":"/tmp","kind":"host","source":"/var/tmp"}`), hostTmp, false},
+		{"subpath pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"data"}`), subPath, true},
+		{"subpath pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/cache","kind":"emptyDir"}`), subPath, false},
+		{"volumed placeholder pinned as data", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"data"}`), placeholder, true},
+		{"volumed placeholder pinned as an emptyDir", mesh + "," + entrypoint + tmpRule(`{"destination":"/mnt/c8s-data/db","kind":"emptyDir"}`), placeholder, false},
+		{"entrypoint under a denied command", mesh + `,{"digest":"` + testDigest + `","command":{"policy":"deny"},"args":{"policy":"any"}}`, "", false},
+		{"env pinned", strings.Replace(mesh, `"args"`, `"env":{"policy":"deny"},"args"`, 1) + "," + entrypoint, "", false},
+		{"escaped variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", true},
+		{"escape not expanded", mesh + "," + entrypoint + "," + strings.Replace(urlArgs, "$(", "$$(", 1), router + "\n          args: [\"--url=http://$$(HOST_IP):8080\"]", false},
+		{"defined variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]\n          env: [{name: HOST_IP, value: 10.0.0.1}]", false},
+		{"service variable reference", mesh + "," + entrypoint + "," + urlArgs, router + "\n          args: [\"--url=http://$(HOST_IP):8080\"]", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := strings.Replace(nodeImageCollectFixture(), core, tc.seed, 1)
+			if input == nodeImageCollectFixture() {
+				t.Fatal("fixture seed did not change")
+			}
+			if tc.manifest != "" {
+				input = strings.Replace(input, router, tc.manifest, 1)
+			}
+			_, err := collectNodeImageArtifacts([]byte(input))
+			if (err == nil) != tc.ok {
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
+			}
+		})
+	}
+}
+
 func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	input := strings.Replace(nodeImageCollectFixture(),
 		`"`+testDigest+`","command":{"policy":"any"}`,
@@ -598,5 +657,35 @@ func TestNodeImageCollectAcceptsPinnedEntrypoint(t *testing.T) {
 	}
 	if _, err := collectNodeImageArtifacts([]byte(input)); err != nil {
 		t.Fatalf("rejected a seed pinning the baked image to its entrypoint: %v", err)
+	}
+}
+
+func TestKubeletArgv(t *testing.T) {
+	for _, tc := range []struct {
+		name, in, want string
+		err            bool
+	}{
+		{name: "plain", in: "--port=1", want: "--port=1"},
+		{name: "escape", in: "$$(HOST_IP)", want: "$(HOST_IP)"},
+		{name: "escaped dollar", in: "a$$b", want: "a$b"},
+		{name: "undefined reference", in: "echo $(echo $$)", err: true},
+		{name: "service variable", in: "--cds-url=https://$(C8S_CDS_SERVICE_HOST):8443", err: true},
+		{name: "unclosed reference", in: "$(a $$", want: "$(a $"},
+		{name: "trailing dollar", in: "a$", want: "a$"},
+		{name: "lone dollar", in: "$x", want: "$x"},
+		{name: "defined reference", in: "http://$(HOST_IP):1", err: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := kubeletArgv([]string{tc.in})
+			if tc.err {
+				if err == nil {
+					t.Fatalf("kubeletArgv(%q) = %q, want an error", tc.in, got)
+				}
+				return
+			}
+			if err != nil || len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("kubeletArgv(%q) = %q, %v, want %q", tc.in, got, err, tc.want)
+			}
+		})
 	}
 }

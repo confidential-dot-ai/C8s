@@ -29,6 +29,7 @@ var bakedArgs = []string{
 }
 
 func TestChartBakedNodeLaunchContract(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -140,6 +141,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 }
 
 func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
+	t.Parallel()
 	args := append(slices.Clone(bakedArgs), "--set-string", "nriImagePolicy.distro=rke2")
 	out, err := helmTemplate(t, args...)
 	if err != nil {
@@ -233,12 +235,12 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	assertContainerMount(t, nginx, "node-config", "/run/c8s-node")
 	snippetDir := false
 	for _, m := range nginx.VolumeMounts {
-		if m.Name == "nginx-config" && m.MountPath == "/etc/nginx/c8s" && m.ReadOnly {
+		if m.Name == "nginx-config" && m.MountPath == "/mnt/c8s-data/nginx" && m.ReadOnly {
 			snippetDir = true
 		}
 	}
 	if !snippetDir {
-		t.Error("nginx must mount the TLS snippets read-only at /etc/nginx/c8s")
+		t.Error("nginx must mount the TLS snippets read-only at /mnt/c8s-data/nginx")
 	}
 	if port, ok := findContainerPort(nginx, "http"); !ok || port.ContainerPort != 8080 || port.HostPort != 80 {
 		t.Error("launch-driven router must publish the ACME challenge port on host 80")
@@ -260,6 +262,7 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 }
 
 func TestChartBakedRouterRejectsReplacedValues(t *testing.T) {
+	t.Parallel()
 	for name, args := range map[string][]string{
 		"upstream": append(slices.Clone(bakedArgs), "--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000"),
 		"tls mode": append(slices.Clone(bakedArgs), "--set", "router.publicTLS.mode=acme"),
@@ -275,6 +278,7 @@ func TestChartBakedRouterRejectsReplacedValues(t *testing.T) {
 
 // A regular Helm install never reads launch files.
 func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
@@ -289,6 +293,7 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 // A measured router must also provide the workload identity that clients pin.
 // Image admission alone does not put a matched-workload stamp in its mesh leaf.
 func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
+	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)

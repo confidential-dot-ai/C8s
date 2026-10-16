@@ -10,6 +10,7 @@ import (
 )
 
 func TestChartImagePolicyUsesCanonicalFlags(t *testing.T) {
+	t.Parallel()
 	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("first", chartDigestA, `[null,"`+chartDigestB+`"]`)))
 	out, err := helmTemplate(t,
 		"--set-file", "cds.measurementsConfig="+policy,
@@ -66,6 +67,7 @@ func writeChartImagePolicy(t *testing.T, policy string) string {
 }
 
 func TestChartNRIRejectsPolicyLoss(t *testing.T) {
+	t.Parallel()
 	image := chartTDXImage("first", chartDigestA, `[null,"`+chartDigestB+`"]`)
 	policy := chartTDXPolicy(image)
 	for _, tc := range []struct {
@@ -108,6 +110,7 @@ func TestChartNRIRejectsPolicyLoss(t *testing.T) {
 }
 
 func TestChartNRIEquivalentPolicy(t *testing.T) {
+	t.Parallel()
 	zero := strings.Repeat("0", 96)
 	policy := chartTDXPolicy(chartTDXImage("first", chartDigestA, `[null,"`+chartDigestB+`",""]`), chartTDXImage("second", chartDigestB, `[null,"`+chartDigestB+`","`+zero+`",null]`))
 	path := writeChartImagePolicy(t, policy)
@@ -144,6 +147,7 @@ func TestChartNRIEquivalentPolicy(t *testing.T) {
 }
 
 func TestChartDisabledNRIAllowsCompletePolicy(t *testing.T) {
+	t.Parallel()
 	policy, err := filepath.Abs("../testdata/node-identities.json")
 	if err != nil {
 		t.Fatal(err)
@@ -158,6 +162,7 @@ func TestChartDisabledNRIAllowsCompletePolicy(t *testing.T) {
 }
 
 func TestChartNRISNPDigestPolicy(t *testing.T) {
+	t.Parallel()
 	policy := fmt.Sprintf(`{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"snp","measurement":%q}]}`, chartDigestA)
 	path := writeChartImagePolicy(t, policy)
 	out, err := helmTemplate(t, "--set-file", "cds.measurementsConfig="+path, "--set-string", "cds.measurements[0]="+chartDigestA)

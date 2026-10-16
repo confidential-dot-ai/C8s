@@ -25,7 +25,7 @@ func (m stubStartManager) Start(context.Context) error { return m.startErr }
 func stubRunWiring(t *testing.T, mgr manager.Manager, mgrErr error) {
 	t.Helper()
 	origConfig, origManager := getKubeConfig, newManager
-	getKubeConfig = func() *rest.Config { return &rest.Config{} }
+	getKubeConfig = func() (*rest.Config, error) { return &rest.Config{}, nil }
 	newManager = func(*rest.Config, ctrl.Options) (manager.Manager, error) { return mgr, mgrErr }
 	t.Cleanup(func() { getKubeConfig, newManager = origConfig, origManager })
 }
@@ -98,5 +98,18 @@ func TestRunManagerStartError(t *testing.T) {
 	err := Run(context.Background(), opts)
 	if err == nil || !strings.Contains(err.Error(), "manager exited: boom") {
 		t.Fatalf("Run error = %v, want wrapped manager-exit error", err)
+	}
+}
+
+func TestRunDisablesClientRateLimit(t *testing.T) {
+	stubRunWiring(t, nil, errors.New("stop"))
+	var qps float32
+	newManager = func(c *rest.Config, _ ctrl.Options) (manager.Manager, error) {
+		qps = c.QPS
+		return nil, errors.New("stop")
+	}
+	_ = Run(context.Background(), Options{}) // Only the config handed to newManager matters.
+	if qps >= 0 {
+		t.Fatalf("newManager config QPS = %v, want < 0", qps)
 	}
 }

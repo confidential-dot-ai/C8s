@@ -58,8 +58,9 @@ const InjectedBinary = "/c8s"
 // A pod author can also add the image in one of these modes, with arguments of
 // their own. That container is dropped too: the inventory reports no container
 // name, and matching keys on nothing the host writes. It is dropped only while
-// its mounts confine it to the node (confinedMount), so whatever it fetches or
-// writes cannot reach any location the host reads.
+// its open-args entry admits it whole and its mounts confine it to the node
+// (AdmitsInjected), so whatever it fetches or writes cannot reach any location
+// the host reads.
 var InjectedModes = []string{"get-cert", "get-secret", "get-volume", "probe-file"}
 
 // RateKey charges a request to the sandbox its client certificate names, so a
@@ -475,15 +476,14 @@ func WorkloadContainers(al *pkgallowlist.Allowlist, reported []workloadclaims.Sa
 }
 
 // isInjected reports whether a reported container is one C8s injected: its
-// argv is the C8s binary in one of the modes the webhook injects, its image is
-// admitted running that binary under an unconstrained args policy (the seeded
-// component entry pins the executable and nothing else, since the arguments
-// are per-pod), and every mount it holds is confined to the node. All three
-// conditions are required. An image admitted with open args but running a
-// shell is not injected. Nor is the C8s image in a mode the webhook never
-// injects: that container is declared, however it is invoked. Nor is an
-// injected mode with a mount the host can read: dropping it would exempt from
-// matching the one container able to fetch for the pod (docs/secrets.md).
+// argv is the C8s binary in one of the modes the webhook injects, and one
+// open-args container of some entry admits it whole, mounts and environment
+// included, with every mount confined to the node (AdmitsInjected). An image
+// admitted with open args but running a shell is not injected. Nor is the C8s
+// image in a mode the webhook never injects: that container is declared,
+// however it is invoked. Nor is an injected mode with a mount the host can
+// read, or one its open-args entry does not list: dropping it would exempt
+// from matching the one container able to fetch for the pod (docs/secrets.md).
 func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) bool {
 	if len(c.Argv) < 2 || c.Argv[0] != InjectedBinary {
 		return false
@@ -491,28 +491,5 @@ func isInjected(al *pkgallowlist.Allowlist, c workloadclaims.SandboxContainer) b
 	if !slices.Contains(InjectedModes, c.Argv[1]) {
 		return false
 	}
-	if !al.AdmitsAnyArgs(c.Digest, c.Argv) {
-		return false
-	}
-	// nil is unavailable evidence, which fails closed like an exact policy.
-	if c.Mounts == nil {
-		return false
-	}
-	return !slices.ContainsFunc(c.Mounts, func(m pkgallowlist.ObservedMount) bool { return !confinedMount(m) })
-}
-
-// confinedMount reports whether a mount keeps what a container writes inside
-// the node's TEE boundary: a node-created platform mount, a read-only host
-// path, or a volume on memory or encrypted scratch. The host can read what a
-// container writes to a writable host path, or to a volume on storage the node
-// cannot vouch for (a disk-backed emptyDir, a PVC).
-func confinedMount(m pkgallowlist.ObservedMount) bool {
-	switch m.Class {
-	case pkgallowlist.MountPlatform:
-		return true
-	case pkgallowlist.MountHost:
-		return m.ReadOnly
-	default:
-		return m.Storage == pkgallowlist.MountMemory || m.Storage == pkgallowlist.MountEncrypted
-	}
+	return al.AdmitsInjected(pkgallowlist.RunningContainer{Digest: c.Digest, Argv: c.Argv, Env: c.Env, Mounts: c.Mounts})
 }

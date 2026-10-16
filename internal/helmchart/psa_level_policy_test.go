@@ -59,6 +59,7 @@ func checkDenyPolicyShape(t *testing.T, vap admissionregv1.ValidatingAdmissionPo
 }
 
 func TestPSALevelPolicyShape(t *testing.T) {
+	t.Parallel()
 	vap, binding := loadImagePolicy(t, psaLevelPolicyPath, "confos-psa-level")
 	checkDenyPolicyShape(t, vap, binding)
 	if len(vap.Spec.Validations) != 1 {
@@ -143,6 +144,7 @@ func nsWithLabels(labels map[string]any) map[string]any {
 }
 
 func TestPSALevelPolicyExpression(t *testing.T) {
+	t.Parallel()
 	vap, _ := loadImagePolicy(t, psaLevelPolicyPath, "confos-psa-level")
 	expr := vap.Spec.Validations[0].Expression
 	const enforce = "pod-security.kubernetes.io/enforce"

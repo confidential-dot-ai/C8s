@@ -24,6 +24,7 @@ import (
 	k8syaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
+	"github.com/confidential-dot-ai/c8s/internal/cmds/volume"
 	"github.com/confidential-dot-ai/c8s/internal/helmchart"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
@@ -298,25 +299,24 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		return nil, fmt.Errorf("decode node-image bootstrap seed: %w", err)
 	}
 	// A baked component must start before CDS serves policy, with the
-	// arguments, environment and mounts its manifest gives it: the seed must
-	// leave those to the pod and pin at most the executable, and a pin must
-	// admit every invocation the manifests spell out.
-	seedDigests := make(map[string]bool)
+	// arguments and mounts its manifest gives it: the seed must carry an
+	// entry for its image with a container admitting each.
+	seeded := make(map[string][]pkgallowlist.Container)
 	for _, workload := range seed.Workloads {
 		for _, c := range append(workload.InitContainers, workload.Containers...) {
-			if c.PinsAtMostCommand() {
-				seedDigests[c.Digest.String()] = true
-			}
+			seeded[c.Digest.String()] = append(seeded[c.Digest.String()], c)
 		}
 	}
-	index := seed.BuildIndex()
 	for image, baked := range images {
-		if !seedDigests[baked.digest] {
-			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry that leaves its args, env and mounts unconstrained", image)
+		if len(seeded[baked.digest]) == 0 {
+			return nil, fmt.Errorf("node-image image %s lacks a bootstrap seed entry", image)
 		}
-		for _, argv := range baked.argvs {
-			if !index.AdmitsProcess(pkgallowlist.RunningContainer{Digest: baked.digest, Argv: argv}) {
-				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit the baked command %q", image, argv)
+		for _, k := range baked.containers {
+			if !slices.ContainsFunc(seeded[baked.digest], func(c pkgallowlist.Container) bool { return admitsBaked(c, baked.digest, k) }) {
+				if len(k.command) == 0 {
+					return nil, fmt.Errorf("node-image image %s: container %s runs the image's entrypoint, which the bootstrap seed cannot check: give it an explicit command", image, k.name)
+				}
+				return nil, fmt.Errorf("node-image image %s: the bootstrap seed does not admit container %s with argv %q and mounts %+v", image, k.name, k.argv(), k.mounts)
 			}
 		}
 		artifacts.images = append(artifacts.images, image)
@@ -345,13 +345,81 @@ func setNodeImageNamespace(object *unstructured.Unstructured) error {
 	return nil
 }
 
-// bakedImage is one container image a baked workload runs: its digest, and
-// every argv a manifest spells out for it with an explicit command. A container
-// that runs the image's entrypoint records no argv; its executable is the
-// image's own.
+// bakedImage is one container image a baked workload runs: its digest and
+// every container that runs it.
 type bakedImage struct {
-	digest string
-	argvs  [][]string
+	digest     string
+	containers []bakedContainer
+}
+
+// bakedContainer is what a manifest says one container runs: an explicit
+// command, or the image's entrypoint, with its args and the mount rule each of
+// its volume mounts needs.
+type bakedContainer struct {
+	name    string
+	command []string
+	args    []string
+	mounts  []pkgallowlist.MountRule
+}
+
+func (k bakedContainer) argv() []string {
+	return slices.Concat(k.command, k.args)
+}
+
+// admitsBaked reports whether a seed container admits a baked one. A
+// container without a command runs the image's ENTRYPOINT and, without args,
+// its CMD, neither of which the manifest shows: only a seed leaving command
+// and args any admits it. The mount check compares the rules the manifest implies; whether
+// the storage behind a volume is memory or encrypted is the node's to see. Env
+// must be any: the image and the runtime add variables the manifest does not
+// list.
+func admitsBaked(c pkgallowlist.Container, digest string, k bakedContainer) bool {
+	if c.Env.Policy != "" && c.Env.Policy != pkgallowlist.PolicyAny {
+		return false
+	}
+	argv := k.argv()
+	if len(k.command) == 0 && (c.Command.Policy != pkgallowlist.PolicyAny || c.Args.Policy != pkgallowlist.PolicyAny) {
+		return false
+	}
+	one := pkgallowlist.Allowlist{Workloads: map[string]pkgallowlist.Workload{"c": {Containers: []pkgallowlist.Container{c}}}}
+	if !one.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digest, Argv: argv}) {
+		return false
+	}
+	switch c.Mounts.Policy {
+	case pkgallowlist.PolicyAny:
+		return true
+	case pkgallowlist.PolicyExact:
+		byDestination := func(a, b pkgallowlist.MountRule) int { return strings.Compare(a.Destination, b.Destination) }
+		return slices.Equal(slices.SortedFunc(slices.Values(c.Mounts.Rules), byDestination), slices.SortedFunc(slices.Values(k.mounts), byDestination))
+	default:
+		return len(k.mounts) == 0
+	}
+}
+
+// mountRule is the rule a pod-spec volume mount needs: a host rule naming the
+// hostPath and the access mode, an emptyDir rule, or a data rule for
+// operator-supplied content. A subpath of any volume, and a reserved volumed
+// placeholder emptyDir, is data, as the node classifies them. It fails on a
+// source no rule describes.
+func mountRule(m corev1.VolumeMount, volumes map[string]corev1.Volume) (pkgallowlist.MountRule, error) {
+	v, ok := volumes[m.Name]
+	if !ok {
+		return pkgallowlist.MountRule{}, fmt.Errorf("mount %q names no volume", m.Name)
+	}
+	rule := pkgallowlist.MountRule{Destination: m.MountPath}
+	switch {
+	case m.SubPath != "" || m.SubPathExpr != "", v.EmptyDir != nil && strings.HasPrefix(v.Name, volume.KubeVolumePrefix):
+		rule.Kind = pkgallowlist.MountData
+	case v.HostPath != nil:
+		rule.Kind, rule.Source, rule.ReadOnly = pkgallowlist.MountHost, v.HostPath.Path, m.ReadOnly
+	case v.EmptyDir != nil:
+		rule.Kind = pkgallowlist.MountEmptyDir
+	case v.ConfigMap != nil, v.Secret != nil, v.Projected != nil, v.DownwardAPI != nil, v.PersistentVolumeClaim != nil:
+		rule.Kind = pkgallowlist.MountData
+	default:
+		return pkgallowlist.MountRule{}, fmt.Errorf("mount %q has a volume source no mount rule describes", m.Name)
+	}
+	return rule, nil
 }
 
 // collectWorkloadImages records every container image a baked workload runs,
@@ -369,6 +437,10 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 	if len(spec.Containers) == 0 || len(spec.EphemeralContainers) != 0 {
 		return fmt.Errorf("node-image workload %s requires containers and no ephemeral containers", key)
 	}
+	volumes := make(map[string]corev1.Volume, len(spec.Volumes))
+	for _, v := range spec.Volumes {
+		volumes[v.Name] = v
+	}
 	for _, c := range append(spec.InitContainers, spec.Containers...) {
 		ref, err := reference.ParseDockerRef(c.Image)
 		if err != nil {
@@ -383,11 +455,57 @@ func collectWorkloadImages(object unstructured.Unstructured, key string, images 
 			baked = &bakedImage{digest: pinned.Digest().String()}
 			images[ref.String()] = baked
 		}
-		if len(c.Command) > 0 {
-			baked.argvs = append(baked.argvs, slices.Concat(c.Command, c.Args))
+		command, err := kubeletArgv(c.Command)
+		if err != nil {
+			return fmt.Errorf("node-image workload %s container %q command: %w", key, c.Name, err)
 		}
+		args, err := kubeletArgv(c.Args)
+		if err != nil {
+			return fmt.Errorf("node-image workload %s container %q args: %w", key, c.Name, err)
+		}
+		k := bakedContainer{name: c.Name, command: command, args: args}
+		for _, m := range c.VolumeMounts {
+			rule, err := mountRule(m, volumes)
+			if err != nil {
+				return fmt.Errorf("node-image workload %s container %q: %w", key, c.Name, err)
+			}
+			k.mounts = append(k.mounts, rule)
+		}
+		baked.containers = append(baked.containers, k)
 	}
 	return nil
+}
+
+// kubeletArgv is the argv the kubelet hands the runtime for a manifest's
+// command or args, following its expansion (k8s.io/kubernetes
+// third_party/forked/golang/expansion): $$ becomes $ and an unclosed $( is
+// literal. A closed $(NAME) is an error: the kubelet expands it from env,
+// envFrom or a service variable, values a pinned argv cannot know, so the
+// manifest must escape it as $$(NAME), as the chart's c8s.kubeletExpand
+// requires.
+func kubeletArgv(argv []string) ([]string, error) {
+	out := make([]string, 0, len(argv))
+	for _, token := range argv {
+		var b strings.Builder
+		for i := 0; i < len(token); i++ {
+			if token[i] != '$' || i+1 == len(token) {
+				b.WriteByte(token[i])
+				continue
+			}
+			switch next := token[i+1:]; {
+			case next[0] == '$':
+				b.WriteByte('$')
+				i++
+			case next[0] == '(' && strings.IndexByte(next, ')') > 0:
+				name := next[1:strings.IndexByte(next, ')')]
+				return nil, fmt.Errorf("%q references $(%s), which the kubelet may expand; escape it as $$(%s)", token, name, name)
+			default:
+				b.WriteByte('$')
+			}
+		}
+		out = append(out, b.String())
+	}
+	return out, nil
 }
 
 // collectConfigMapArtifact lifts the two ConfigMaps the build consumes as
