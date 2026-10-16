@@ -60,7 +60,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 			if imageDigest(c.Image) != operatorDigest {
 				continue
 			}
-			mounts := observedMounts(t, w.spec, c, true)
+			mounts := observedMounts(t, w.spec, c)
 			pin := componentPins(t, after, args)[operatorDigest]
 			if previous.BuildIndex().AdmitsContainer(pkgallowlist.RunningContainer{Digest: operatorDigest, Argv: runtimeArgv(c, pin.entrypoint), Mounts: mounts, Env: launchEnv(t, w.spec, c, pin.imageEnv)}) {
 				t.Fatalf("previous policies admit the upgraded operator container %s; the test no longer exercises a policy change", c.Name)
@@ -87,7 +87,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 						continue
 					}
 					checked["operator"]++
-					mounts := observedMounts(t, w.spec, c, true)
+					mounts := observedMounts(t, w.spec, c)
 					if !index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: runtimeArgv(c, pins[digest].entrypoint), Mounts: mounts, Env: launchEnv(t, w.spec, c, pins[digest].imageEnv)}) {
 						t.Errorf("%s: operator container %s refused after both seeds", release, c.Name)
 					}

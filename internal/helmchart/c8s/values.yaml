@@ -772,7 +772,7 @@ nriImagePolicy:
     pluginDir: /opt/nri/plugins
     configDir: /etc/nri/conf.d
     cacheDir: /var/lib/nri-image-policy
-    runtimeDir: /var/run/nri-image-policy
+    runtimeDir: /run/nri-image-policy
 
   ## The CDS-facing sandbox-digests endpoint (docs/armtls.md, "Sandbox
   ## identity"). Its port is a compiled constant, not a value: it is privileged

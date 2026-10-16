@@ -145,7 +145,7 @@ func TestHostMountSourceAndAccess(t *testing.T) {
 }
 
 func TestMountObserverClassifiesItsOwnSocketDirAsPlatform(t *testing.T) {
-	const socketDir = "/var/run/nri-image-policy"
+	const socketDir = "/run/nri-image-policy"
 	injected := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a", Annotations: map[string]string{workloadclaims.AnnotationInjected: "true"}}
 	plain := &api.PodSandbox{Id: "sandbox-a", Uid: "pod-a"}
 	mount := func(src string, options ...string) *api.Mount {

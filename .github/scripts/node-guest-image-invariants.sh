@@ -509,7 +509,7 @@ for service in cds armtls-mesh armtls-mesh-iptables c8s-get-cert cds-attest allo
     exit 1
   fi
 done
-if ! grep -qF 'ExecStart=/usr/local/bin/c8s volumed --socket-dir=/var/run/nri-image-policy ' "$units/volumed.service"; then
+if ! grep -qF 'ExecStart=/usr/local/bin/c8s volumed --socket-dir=/run/nri-image-policy ' "$units/volumed.service"; then
   echo "::error::volumed must serve in the inventory socket directory the NRI plugin mounts into workload sidecars"
   exit 1
 fi

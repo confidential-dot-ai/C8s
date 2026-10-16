@@ -346,7 +346,7 @@ base_declares() {
 # containerd launches at its own start (plugin_path), and its runtimeDir/
 # healthSocketName, both on the node.
 PLUGIN_BIN=/opt/nri/plugins/10-nri-image-policy
-PLUGIN_HEALTH=/var/run/nri-image-policy/health.sock
+PLUGIN_HEALTH=/run/nri-image-policy/health.sock
 
 # Refused is exit 7 from curl, as a TLS failure against the CDS is not; the
 # kind node image ships curl.
