@@ -217,6 +217,12 @@ cds:
   ## publish it with `c8s allowlist apply`, wait for every node to pull it, and
   ## set this to its name (docs/allowlist-and-capabilities.md).
   publishedShape: ""
+  ## Reread the seed ConfigMap while CDS runs and publish its changes. Off by
+  ## default: anyone who can edit that ConfigMap could then publish allowlist
+  ## entries without an operator token. Off, a configuration-only upgrade
+  ## publishes its new entries through `c8s allowlist apply`
+  ## (docs/allowlist-and-capabilities.md).
+  followSeed: false
   ## CIDR(s) holding this cluster's node addresses. CDS dials a node's admission
   ## inventory inside them and nowhere else, which is what stops a workload
   ## pointing the sandbox-digests callback at its own pod IP and answering as

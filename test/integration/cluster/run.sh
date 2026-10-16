@@ -175,6 +175,8 @@ with open(sys.argv[2], "w") as f:
             "enabled": False,
             "bootstrapAllowlist": {"workloads": workloads},
         },
+        # The conformance suite changes the seed while CDS runs.
+        "cds": {"followSeed": True},
     }, f)
 print(f"floor: {len(workloads)} any-argv entries")
 PYEOF

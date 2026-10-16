@@ -184,11 +184,9 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
-		if err != nil {
+		if err := startSeed(ctx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed); err != nil {
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
-		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
 	}
 
 	// C6: there is no route seed; an empty store waits for an operator write.

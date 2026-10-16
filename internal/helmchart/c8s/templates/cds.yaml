@@ -50,6 +50,9 @@ containers:
       - --dns-san-file=/run/c8s-node/tls-san
       {{- else }}
       - --allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json
+      {{- if .Values.cds.followSeed }}
+      - --follow-seed
+      {{- end }}
       {{- end }}
       - --jwt-clock-skew={{ .Values.cds.jwtClockSkew }}
       - --ca-common-name={{ .Values.cds.ca.commonName }}

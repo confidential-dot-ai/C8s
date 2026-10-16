@@ -12,9 +12,29 @@ import (
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
-// seedRecheckInterval is how often followSeed rereads the seed. A package var
-// so tests can shorten it.
+// seedRecheckInterval is how often a following CDS rereads the seed. A package
+// var so tests can shorten it.
 var seedRecheckInterval = 30 * time.Second
+
+// startSeed seeds store from path and, when follow is set, starts following
+// it until ctx is done. Following is off by default: anyone who can edit the
+// seed's ConfigMap could otherwise publish entries without an operator token.
+func startSeed(ctx context.Context, store *allowlist.Store, path string, follow bool) error {
+	applied, err := seedStore(store, path)
+	if err != nil {
+		return err
+	}
+	if !follow {
+		return nil
+	}
+	slog.Warn("--follow-seed: a change to the mounted seed is published without an operator token", "path", path, "interval", seedRecheckInterval)
+	t := time.NewTicker(seedRecheckInterval)
+	go func() {
+		defer t.Stop()
+		followSeed(ctx, store, path, applied, t.C)
+	}()
+	return nil
+}
 
 // seedStore reads the JSON allowlist at path, seeds its workload entries into
 // store and returns the content it applied. It owns the file/wire-format
@@ -43,20 +63,18 @@ func seedStore(store *allowlist.Store, path string) ([]byte, error) {
 	return data, nil
 }
 
-// followSeed seeds store again each time the content at path differs from
-// applied, until ctx is done. A chart upgrade rewrites the mounted seed in
-// place, so the running CDS publishes the new release's entries and the
-// enforcers admit its components on their next pull, without a CDS restart
-// that would reset a memory-backed store. Unchanged content is not reseeded,
-// so an entry deleted since stays deleted until the seed changes.
-func followSeed(ctx context.Context, store *allowlist.Store, path string, applied []byte) {
-	t := time.NewTicker(seedRecheckInterval)
-	defer t.Stop()
+// followSeed seeds store again on each tick at which the content at path
+// differs from applied, until ctx is done. A chart upgrade rewrites the
+// mounted seed in place, so the running CDS publishes the new release's
+// entries without a restart that would reset a memory-backed store.
+// Unchanged content is not reseeded, so an entry deleted since stays deleted
+// until the seed changes.
+func followSeed(ctx context.Context, store *allowlist.Store, path string, applied []byte, tick <-chan time.Time) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-tick:
 		}
 		data, err := os.ReadFile(path)
 		if err != nil || bytes.Equal(data, applied) {

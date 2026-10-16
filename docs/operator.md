@@ -539,7 +539,8 @@ launch configuration.
 For chart-managed CDS:
 
 Pod recreation also resets the **served allowlist**. CDS seeds its store
-from the install seed at startup and when the seed changes, then serves whatever an operator writes
+from the install seed at startup (and when the seed changes, with
+`cds.followSeed`), then serves whatever an operator writes
 with `c8s allowlist add` or `apply`. With `cds.persistence.enabled=false`
 (the default), that store is a memory-backed `emptyDir` capped by
 `cds.persistence.memorySizeLimit` (64Mi) and counted toward

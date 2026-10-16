@@ -18,8 +18,8 @@ import (
 // operator's argv and so the installer's boot config. The store starts with
 // the previous release's policies only, which admit neither new launch. CDS
 // keeps its shape, so the old boot base still admits it and it is not
-// recreated; it reseeds when the mounted seed changes (cds.followSeed), and
-// after that the old and the new launches are all admitted.
+// recreated. Once the new seed is published (c8s allowlist apply, or
+// cds.followSeed), the old and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
