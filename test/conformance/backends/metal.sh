@@ -9,6 +9,9 @@
 : "${C8S_ALLOWLIST_URL:?the allowlist front door of the guest}"
 : "${C8S_OPERATOR_KEY:?the operator key of the launch}"
 PLATFORM="${SUITE_PLATFORM:-metal}"
+# Not the router's nginx digest: the served allowlist carries the router's
+# pinned entry for that one, and lint refuses an any-argv entry beside it.
+NGINX_IMAGE=nginxinc/nginx-unprivileged@sha256:56b8272e43a0525f67aed68d1e0794a712d10e3e45a563e118e9a77c817e6f86  # 1.30.5-alpine
 # shellcheck source=common.sh
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 . "$C8S_ROOT/test/e2e/lib.sh"  # cds_measurement_args
