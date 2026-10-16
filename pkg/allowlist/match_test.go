@@ -226,8 +226,8 @@ func TestAdmitsContainerShadowRuleOnlyForAbsolutePinnedCommand(t *testing.T) {
 	}
 }
 
-// An entry admitting any mounts names a pod that mounts a writable host path:
-// MatchWorkload does not judge mounts, so a route to that name trusts them.
+// An entry with mounts: any admits a pod that mounts a writable host path, so
+// a route to that name trusts the mount.
 func TestMatchWorkloadAnyMountsNamesHostPathPod(t *testing.T) {
 	c := exactly(t, dApp, "/serve")
 	c.Mounts = MountPolicy{Policy: PolicyAny}

@@ -774,7 +774,7 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 		t.Fatalf("buildWorkloadImageArgs(upstream infer) = %v, want nil", err)
 	}
 	if !strings.Contains(warn.String(), "warning: adopted workload web") || !strings.Contains(warn.String(), "a route to it trusts those mounts") {
-		t.Fatalf("warning = %q, want one naming web as no route backend", warn.String())
+		t.Fatalf("warning = %q, want one warning that a route to web trusts its mounts", warn.String())
 	}
 	if _, ok := entries["web"]; ok {
 		t.Fatalf("entries = %v, want no modelled entry for web", slices.Sorted(maps.Keys(entries)))
