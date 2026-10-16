@@ -87,8 +87,10 @@ canonical JSON 'export' writes). CDS assigns the new version.
 If any required core c8s component is missing from the file's image labels (` + fmt.Sprintf("%v", defaultRequiredComponents) + `),
 upload refuses unless --force, since a cluster missing them cannot pull its own
 control plane. --cvm-mode bare-metal omits attestation-api from this set because
-the measured node image supplies it. With gke, aks, or no mode, the full set is
-required. Override the required set with --require. The file is lint-checked
+the measured node image supplies it. A baked node image also serves no
+nri-image-policy entry, since its base allowlist admits the plugin, so an
+allowlist exported from one re-uploads only with --force. With gke, aks, or no
+mode, the full set is required. Override the required set with --require. The file is lint-checked
 before upload; --strict makes lint warnings fatal.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -131,7 +133,11 @@ before upload; --strict makes lint warnings fatal.`,
 				fmt.Fprintf(cmd.ErrOrStderr(),
 					"warning: uploaded allowlist is missing core c8s component(s): %v\n", missing)
 				if !force {
-					return fmt.Errorf("refusing to upload an allowlist missing core components %v; re-run with --force if this is intentional", missing)
+					hint := "re-run with --force if this is intentional"
+					if cvmMode == "bare-metal" && slices.Contains(missing, "nri-image-policy") {
+						hint = "a baked node image serves no nri-image-policy entry (the plugin is admitted from its measured base allowlist), so re-run with --force when uploading to a baked node; otherwise the installer could no longer start"
+					}
+					return fmt.Errorf("refusing to upload an allowlist missing core components %v; %s", missing, hint)
 				}
 				fmt.Fprintln(cmd.ErrOrStderr(), "proceeding anyway (--force)")
 			}

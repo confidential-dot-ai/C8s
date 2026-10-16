@@ -21,6 +21,7 @@ func TestUploadDeploymentMode(t *testing.T) {
 		{name: "bare metal still requires cds", flags: []string{"--cvm-mode=bare-metal"}, missing: "cds", wantErr: "[cds]"},
 		{name: "bare metal still requires mesh", flags: []string{"--cvm-mode=bare-metal"}, missing: "armtls-mesh", wantErr: "[armtls-mesh]"},
 		{name: "bare metal still requires nri installer", flags: []string{"--cvm-mode=bare-metal"}, missing: "nri-image-policy", wantErr: "[nri-image-policy]"},
+		{name: "missing nri installer names the baked case", flags: []string{"--cvm-mode=bare-metal"}, missing: "nri-image-policy", wantErr: "--force when uploading to a baked node"},
 		{name: "bare metal still requires router", flags: []string{"--cvm-mode=bare-metal"}, missing: "nginx", wantErr: "[nginx]"},
 		{name: "require can include host service", flags: []string{"--cvm-mode=bare-metal", "--require=attestation-api"}, wantErr: "[attestation-api]"},
 		{name: "require replaces mode defaults", flags: []string{"--cvm-mode=bare-metal", "--require=cds"}, missing: "nginx"},
