@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -163,23 +162,10 @@ func (h OperatorHandler) authorize(w http.ResponseWriter, r *http.Request) ([]by
 	}
 	if err := h.Authorize(r, body); err != nil {
 		h.logger().Warn("operator secret write rejected", "remote", r.RemoteAddr, "reason", err)
-		refuseToken(w, err)
+		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true
-}
-
-// refuseToken answers a refused operator token the way allowlist writes do: a
-// spent token is 409, anything else 401.
-func refuseToken(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, operatorauth.ErrTokenReused):
-		http.Error(w, operatorauth.ErrTokenReused.Error(), http.StatusConflict)
-	case errors.Is(err, operatorauth.ErrTokenBeforeStart):
-		http.Error(w, operatorauth.ErrTokenBeforeStart.Error(), http.StatusUnauthorized)
-	default:
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-	}
 }
 
 func writeResult(w http.ResponseWriter, status int, resp PutResponse) {

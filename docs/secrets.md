@@ -232,8 +232,10 @@ against a different path or a different value. `overwrite` travels in the body
 for that reason: a query parameter is outside what the token covers.
 
 CDS spends each token once, as for allowlist writes, including on
-`GET /secrets-explain`. A reused token answers `409` with a plain-text error,
-whether or not its first request succeeded, so a retry mints a fresh token.
+`GET /secrets-explain`. A token is spent once it verifies, before CDS checks the
+request it carries, so a retry mints a fresh token. Reusing a spent token
+answers `409` with a plain-text error. Each CDS keeps its own record of spent
+tokens.
 Without `cds.persistence.enabled`, CDS also refuses every token issued before
 its start plus `--jwt-clock-skew` (`cds.jwtClockSkew`, 30 seconds by default)
 with `401`; wait that long after a restart.

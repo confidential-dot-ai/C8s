@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
@@ -101,17 +102,17 @@ func (h ExplainHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "operator writes are not configured", http.StatusUnauthorized)
 		return
 	}
+	// Validated first so a malformed ID does not spend the token.
+	sandboxID := chi.URLParam(r, "sandboxID")
+	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
+		http.Error(w, "invalid sandbox ID", http.StatusBadRequest)
+		return
+	}
 	// The read has no body; the token still binds the method and the sandbox ID
 	// in the path.
 	if err := h.Authorize(r, nil); err != nil {
 		h.logger().Warn("secret explain rejected", "remote", r.RemoteAddr, "reason", err)
-		refuseToken(w, err)
-		return
-	}
-
-	sandboxID := chi.URLParam(r, "sandboxID")
-	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
-		http.Error(w, "invalid sandbox ID", http.StatusBadRequest)
+		httputil.RefuseOperatorToken(w, err)
 		return
 	}
 

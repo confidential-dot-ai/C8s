@@ -160,6 +160,20 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 	}
 }
 
+// A token CDS cannot record as spent is refused as a store failure, not as a
+// bad credential.
+func TestSingleUseReportsStoreFailure(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	authorize := singleUse(func(*http.Request, []byte) (time.Time, error) { return time.Time{}, nil }, &store, time.Time{}, 0)
+	if err := authorize(bearerRequest(t, jwt.MapClaims{}), nil); !errors.Is(err, operatorauth.ErrTokenNotRecorded) {
+		t.Fatalf("authorize on a closed store = %v, want operatorauth.ErrTokenNotRecorded", err)
+	}
+}
+
 func bearerRequest(t *testing.T, claims jwt.MapClaims) *http.Request {
 	t.Helper()
 	token, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte("k"))

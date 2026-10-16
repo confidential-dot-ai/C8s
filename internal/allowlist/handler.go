@@ -12,7 +12,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // DefaultMaxWriteBodyBytes caps a mutation body when Handler.MaxWriteBodyBytes
@@ -173,15 +172,7 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
-		if errors.Is(err, operatorauth.ErrTokenReused) {
-			http.Error(w, err.Error(), http.StatusConflict)
-			return nil, false
-		}
-		if errors.Is(err, operatorauth.ErrTokenBeforeStart) {
-			http.Error(w, operatorauth.ErrTokenBeforeStart.Error(), http.StatusUnauthorized)
-			return nil, false
-		}
-		w.WriteHeader(http.StatusUnauthorized)
+		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true
