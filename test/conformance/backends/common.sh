@@ -62,7 +62,8 @@
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
 #   seed_add <name> <file>           add the entry in file to the seed the CDS
 #                                    follows, under name; 77 where the seed is
-#                                    not the cluster's to change
+#                                    not the cluster's to change or the CDS
+#                                    does not follow it (cds.followSeed)
 #   seed_restore                     put back the seed seed_add changed, if any
 #   cds_instance                     the CDS pod's uid and restart count, one
 #                                    line, so a later read tells a restart
@@ -445,16 +446,23 @@ seed_declares() {
 
 # The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
 # in the image instead, and renders no ConfigMap, so there it is not the
-# cluster's to change. The first change keeps the original for seed_restore.
+# cluster's to change. A CDS rereads it only with --follow-seed. The first
+# change keeps the original for seed_restore.
 seed_configmap() {
     kubectl -n "$NS" get configmaps -o json |
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
+}
+
+seed_followed() {
+    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
+        jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
 }
 
 seed_add() {
     local cm original
     cm="$(seed_configmap)"
     [ -n "$cm" ] || return $UNSUPPORTED
+    seed_followed || return $UNSUPPORTED
     original="$(scratch)/seed-original.json"
     [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
     kubectl -n "$NS" get configmap "$cm" -o json |

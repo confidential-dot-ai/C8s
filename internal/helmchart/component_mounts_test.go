@@ -47,10 +47,14 @@ func kubeletExpand(token string, env map[string]string) string {
 }
 
 // runtimeArgv is the OCI process.args the runtime starts: the container's
-// command and args after kubelet expansion, with the image entrypoint in
-// place of an absent command.
+// command and args after kubelet expansion over its env and the kubelet's
+// service variables, with the image entrypoint in place of an absent command.
 func runtimeArgv(c corev1.Container, entrypoint []string) []string {
 	env := map[string]string{}
+	for _, kv := range kubeletServiceEnv {
+		name, value, _ := strings.Cut(kv, "=")
+		env[name] = value
+	}
 	for _, e := range c.Env {
 		env[e.Name] = e.Value
 		if e.ValueFrom != nil {
@@ -244,7 +248,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			"--set", "cds.measurements={"+measurements+"}"), true},
 		{"acme", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
-		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)"]`), true},
+		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
 		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

@@ -128,18 +128,13 @@ func parseDurationFormatFailure(t *testing.T, out string) durationFormatFailure 
 	return durationFormatFailure{}
 }
 
-// containerArgs returns the args of the named container, searching main and
-// init containers. Fails the test if no such container exists.
+// containerArgs returns the args of the named container, main or init, after
+// kubelet expansion. Fails the test if no such container exists.
 func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
 	t.Helper()
-	for _, c := range ds.Spec.Template.Spec.Containers {
+	for _, c := range slices.Concat(ds.Spec.Template.Spec.Containers, ds.Spec.Template.Spec.InitContainers) {
 		if c.Name == name {
-			return c.Args
-		}
-	}
-	for _, c := range ds.Spec.Template.Spec.InitContainers {
-		if c.Name == name {
-			return c.Args
+			return runtimeArgv(corev1.Container{Args: c.Args, Env: c.Env}, nil)
 		}
 	}
 	t.Fatalf("container %q not found in DaemonSet", name)
@@ -4707,6 +4702,8 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		// (helm 3.14 simulates 1.29, below the base).
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+		// helm template cannot look up the running CDS; these are first installs.
+		"--set-string", "cds.liveShape=none",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
@@ -5504,6 +5501,8 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"template", "c8s", "c8s",
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+		// helm template cannot look up the running CDS; these are first installs.
+		"--set-string", "cds.liveShape=none",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
@@ -6650,6 +6649,8 @@ func renderExampleRouterNginxConf() string {
 		"template", "c8s", "c8s",
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
+		// helm template cannot look up the running CDS; these are first installs.
+		"--set-string", "cds.liveShape=none",
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",

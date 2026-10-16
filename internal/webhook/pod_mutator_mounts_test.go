@@ -32,6 +32,7 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--kube-version", "1.30.0",
 		"--namespace", "c8s-system",
 		"--show-only", "templates/cds.yaml",
+		"--set-string", "cds.liveShape=none",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",

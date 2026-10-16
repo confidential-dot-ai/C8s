@@ -18,8 +18,8 @@ import (
 // operator's argv and so the installer's boot config. The store starts with
 // the previous release's policies only, which admit neither new launch. CDS
 // keeps its shape, so the old boot base still admits it and it is not
-// recreated; it reseeds when the mounted seed changes (cds.followSeed), and
-// after that the old and the new launches are all admitted.
+// recreated. Once the new seed is published (c8s allowlist apply, or
+// cds.followSeed), the old and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
@@ -128,7 +128,8 @@ func cdsShapeAnnotation(t *testing.T, out string) string {
 }
 
 // A changed CDS command line fails the upgrade until its entry is published:
-// otherwise the old CDS stops and the enforcers refuse the new one.
+// otherwise the old CDS stops and the enforcers refuse the new one. So does a
+// running CDS the render cannot see.
 func TestCDSShapeGuard(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -157,12 +158,14 @@ func TestCDSShapeGuard(t *testing.T) {
 		name, live, want, published string
 		fails                       bool
 	}{
-		{name: "first install", want: "cds-new"},
+		{name: "first install", live: "none", want: "cds-new"},
 		{name: "unchanged", live: "cds-old", want: "cds-old"},
 		{name: "not digest-pinned", live: "cds-old"},
 		{name: "changed and unpublished", live: "cds-old", want: "cds-new", fails: true},
 		{name: "changed and another shape published", live: "cds-old", want: "cds-new", published: "cds-old", fails: true},
 		{name: "changed and published", live: "cds-old", want: "cds-new", published: "cds-new"},
+		{name: "unknown", want: "cds-new", fails: true},
+		{name: "unknown and published", want: "cds-new", published: "cds-new"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := exec.Command("helm", "template", "g", dir,
@@ -173,7 +176,39 @@ func TestCDSShapeGuard(t *testing.T) {
 			if tc.fails && !strings.Contains(string(out), "cds.publishedShape="+tc.want) {
 				t.Errorf("failure does not name the entry to publish:\n%s", out)
 			}
+			// A CDS recreated since the nodes last pulled counts from a lower
+			// version, which the nodes ignore until it passes theirs.
+			if tc.fails && !strings.Contains(string(out), "above every allowlist_version the nodes' image policy plugins reported") {
+				t.Errorf("failure does not require publication past the nodes' versions:\n%s", out)
+			}
+			if tc.fails && tc.live == "" && !strings.Contains(string(out), "cds.liveShape=none") {
+				t.Errorf("failure on an unknown CDS does not name cds.liveShape:\n%s", out)
+			}
 		})
+	}
+}
+
+// A digest bump alone changes the CDS shape, so it trips the guard against
+// the shape a live Deployment records. helm template cannot look one up, so
+// cds.liveShape stands in for the annotation.
+func TestChartCDSDigestBumpTripsShapeGuard(t *testing.T) {
+	t.Parallel()
+	before, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, before)
+	}
+	live := cdsShapeAnnotation(t, before)
+	const bumped = "sha256:c100000000000000000000000000000000000000000000000000000000000000"
+	out, err := helmTemplate(t, "--set-string", "cds.liveShape="+live, "--set", "cds.image.digest="+bumped)
+	if err == nil {
+		t.Fatalf("a CDS digest bump rendered without its shape published")
+	}
+	msg := helmFailMessage(t, out)
+	if !strings.Contains(msg, "CDS image, command line or mounts") || !strings.Contains(msg, "cds.publishedShape=cds-c10000000000-") {
+		t.Fatalf("guard failure = %q, want the image named as a cause and the bumped entry to publish", msg)
+	}
+	if out, err := helmTemplate(t, "--set-string", "cds.liveShape="+live); err != nil {
+		t.Fatalf("an unchanged CDS against its live shape: %v\n%s", err, out)
 	}
 }
 
@@ -268,5 +303,38 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		if _, ok := live.Workloads[name]; ok {
 			t.Errorf("pre-shape entry %q survived the seed", name)
 		}
+	}
+}
+
+// Following the seed lets whoever edits its ConfigMap publish entries, so CDS
+// with operator keys follows it only when cds.followSeed asks. Without keys
+// the seed is the only way to publish, so CDS follows it.
+func TestChartCDSFollowsSeedOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
+	keys := filepath.Join(t.TempDir(), "operator.pub")
+	if err := os.WriteFile(keys, []byte("-----BEGIN PUBLIC KEY-----\nMFkwfakefakefake\n-----END PUBLIC KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withKeys := []string{"--set-file", "cds.operatorKeys=" + keys}
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		follow bool
+	}{
+		{name: "default", args: withKeys},
+		{name: "off", args: append(slices.Clone(withKeys), "--set", "cds.followSeed=false")},
+		{name: "on", args: append(slices.Clone(withKeys), "--set", "cds.followSeed=true"), follow: true},
+		{name: "no operator keys", args: []string{"--set", "cds.followSeed=false"}, follow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+			if got := slices.Contains(args, "--follow-seed"); got != tc.follow {
+				t.Errorf("CDS args contain --follow-seed = %t, want %t: %q", got, tc.follow, args)
+			}
+		})
 	}
 }

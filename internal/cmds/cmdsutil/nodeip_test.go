@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// A component restarts once the node address it dials is replaced or gone,
-// but not on a value it reads once: the plugin's in-place write can be caught
-// half done.
+// A component restarts once the node address it dials is replaced, but not on
+// a value it reads once, since the plugin's in-place write can be caught half
+// done, nor when the file holds no address.
 func TestWatchNodeIP(t *testing.T) {
 	const want = "http://192.0.2.10:8080"
 	for _, tc := range []struct {
@@ -21,7 +21,8 @@ func TestWatchNodeIP(t *testing.T) {
 		{"one torn read", []string{want, "http://192.0.2.1:8080", want, want}, false},
 		{"two different torn reads", []string{"http://192.0.2.1:8080", "http://192.0.2.11", want}, false},
 		{"changed", []string{want, "http://192.0.2.11:8080", "http://192.0.2.11:8080"}, true},
-		{"emptied", []string{"not an IP address", "not an IP address"}, true},
+		{"emptied", []string{"", "", ""}, false},
+		{"emptied between changes", []string{"http://192.0.2.11:8080", "", "http://192.0.2.11:8080"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithCancelCause(t.Context())
@@ -33,7 +34,12 @@ func TestWatchNodeIP(t *testing.T) {
 			}
 			done := make(chan struct{})
 			go func() {
-				watchNodeIP(ctx, cancel, tick, want, func() string { return <-reads })
+				watchNodeIP(ctx, cancel, tick, want, func() (string, error) {
+					if r := <-reads; r != "" {
+						return r, nil
+					}
+					return "", errors.New("no address")
+				})
 				close(done)
 			}()
 			for range tc.reads {

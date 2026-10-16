@@ -81,13 +81,16 @@ spec:
           command: ["/bin/sh", "-c"]
           args:
             - |
-{{ .Files.Get "files/scripts/containerd-prep.sh" | indent 14 }}
+{{ .Files.Get "files/scripts/containerd-prep.sh" | replace "$" "$$" | indent 14 }}
           volumeMounts:
             - name: host-containerd-config
               mountPath: /host{{ include "nri-image-policy.containerdConfigDir" . }}
           resources:
             {{- toYaml .Values.nriImagePolicy.resources | nindent 12 }}
         {{- end }}
+        # Each script's argv is pinned in the seed as the runtime receives it,
+        # and the install script embeds component argv that may hold $(NAME),
+        # so every $ is escaped against the kubelet's expansion.
         - name: install
           image: {{ include "nri-image-policy.image" . }}
           imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
@@ -97,11 +100,11 @@ spec:
           args:
             - |
 {{- if .Values.nriImagePolicy.baked }}
-{{ include "nri-image-policy.pinsScript" (dict "root" .) | indent 14 }}
+{{ include "nri-image-policy.pinsScript" (dict "root" .) | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.pinsVolumeMounts" . | nindent 12 }}
 {{- else }}
-{{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | indent 14 }}
+{{ include "nri-image-policy.installScript" (dict "root" . "bootConfig" (include "nri-image-policy.bootConfig" (dict "root" .))) | replace "$" "$$" | indent 14 }}
           volumeMounts:
             {{- include "nri-image-policy.hostVolumeMounts" . | nindent 12 }}
 {{- end }}
@@ -122,7 +125,7 @@ spec:
           imagePullPolicy: {{ .Values.nriImagePolicy.image.pullPolicy }}
           command: ["/bin/sh", "-c"]
           args:
-            - {{ include "nri-image-policy.pluginReadyScript" . | quote }}
+            - {{ include "nri-image-policy.pluginReadyScript" . | replace "$" "$$" | quote }}
           ports:
             - name: plugin-ready
               containerPort: {{ include "nri-image-policy.pluginReadyPort" . }}

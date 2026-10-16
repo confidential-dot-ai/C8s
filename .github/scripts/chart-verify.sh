@@ -36,6 +36,8 @@ common_set=(
   # digests (what `c8s install --resolve-digests` turns on) — the representative
   # way to render a valid fail-closed config without hand-listing CI placeholders.
   --set nriImagePolicy.bootstrapAllowlist.deriveComponents=true
+  # lint and template cannot look up a running CDS: render a first install.
+  --set-string cds.liveShape=none
 )
 
 echo "::group::helm lint"

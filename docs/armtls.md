@@ -563,15 +563,21 @@ The node inventory is wired through NRI.
   `--node-ip`. Without the flag it writes the default-route interface's
   address, which a kubelet without `--node-ip` usually registers. k3s runs its
   kubelet inside the `k3s` process, so on a k3s node with more than one
-  interface set `nriImagePolicy.sandboxDigests.advertiseHost`. It
-  retries until an address exists and rewrites the file in place when it
-  changes, so a running pod's read-only mount of the file sees the new address;
-  when it has none, it empties the file. Until the file holds an address, the
+  interface set `nriImagePolicy.sandboxDigests.advertiseHost`. Once a kubelet
+  supplied the address, a recheck that finds no kubelet, as while it
+  restarts, keeps that address instead of the default route's. The plugin
+  logs the source of each address it publishes. It retries until an address
+  exists and rewrites the file in place when it changes, so a running pod's
+  read-only mount of the file sees the new address. It publishes a change
+  only once two rechecks a minute apart agree, and a failed lookup or write
+  leaves the file as it is; only an `advertiseHost` that is no dialable
+  address empties it. Until the file holds an address, the
   token socket answers 503 and enforcement runs regardless. Once issuing, the
   plugin rechecks the file every minute and signs later tokens with the new
   address, under the key `/identity` already serves. Components that dial the
   attestation-api through `node-ip` reread it every 15 seconds and restart when
-  the address changes or goes away. On a node whose kubelet registers an address
+  it names another address; an empty or unreadable file keeps them on theirs.
+  A CDS restarted this way regenerates the mesh CA, as any CDS restart does. On a node whose kubelet registers an address
   neither source finds, such as one a hostname resolves to, set
   `nriImagePolicy.sandboxDigests.advertiseHost`, which overrides both. Route
   inference is the last resort and is wrong under the chart's own default,

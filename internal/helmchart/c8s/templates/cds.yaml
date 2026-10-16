@@ -50,6 +50,9 @@ containers:
       - --dns-san-file=/run/c8s-node/tls-san
       {{- else }}
       - --allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json
+      {{- if or .Values.cds.followSeed (not .Values.cds.operatorKeys) }}
+      - --follow-seed
+      {{- end }}
       {{- end }}
       - --jwt-clock-skew={{ .Values.cds.jwtClockSkew }}
       - --ca-common-name={{ .Values.cds.ca.commonName }}
@@ -252,8 +255,7 @@ spec:
 ---
 {{- end }}
 {{- $cdsShape := include "c8s.cdsShapeName" . }}
-{{- $liveCDS := lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) | default dict }}
-{{- include "c8s.cdsShapeGuard" (dict "live" (dig "metadata" "annotations" "confidential.ai/cds-shape" "" $liveCDS) "want" $cdsShape "published" (default "" .Values.cds.publishedShape)) }}
+{{- include "c8s.cdsShapeCheck" (dict "root" . "want" $cdsShape "entry" (include "c8s.cdsEntryName" .)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
