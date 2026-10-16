@@ -152,9 +152,10 @@ and at CDS matching.
 An absent policy normalizes to `deny`, so a minimally specified container is
 maximally restrictive. `command: deny` requires an empty argv and therefore can
 never start (a workload that wants any argv should say `command: any`); `lint`
-flags it. Because `command`/`args` map 1:1 to the Kubernetes fields, `derive` (on
-its own branch) reads them straight off a pod spec, and `inspect-image` shows an
-image's baked `ENTRYPOINT`/`CMD` so an operator can see what to pin.
+flags it. `derive` reads `command`/`args` off a pod spec and fills what the spec
+leaves unset the way the runtime does: an unset command is the image's
+`ENTRYPOINT`, and unset args are its `CMD` when the command is unset too. It
+reads the image config with `crane`, as `inspect-image` does.
 
 ### A digest may run many ways
 
@@ -183,16 +184,61 @@ entry, edit it; do not add a narrower entry for the same image beside it.
 `env` constrains the complete OCI launch environment: `exact` requires
 equality, so all names and values must match, including image defaults and
 runtime additions. `deny` requires an observed empty environment; `any` permits
-any environment. Missing env evidence fails `exact` and `deny`. An empty
+any environment. `match` requires exactly the listed variable names and applies
+each variable’s matcher. Missing env evidence fails `exact`, `deny`, and `match`. An empty
 `exact.values` normalizes to `deny`, and an absent policy defaults to `any`.
 
 ```json
 "env": { "policy": "exact", "values": {"PATH": "/usr/bin:/bin", "MODEL_DIR": "/models"} }
 ```
 
-The NRI plugin enforces env after cumulative NRI adjustments, and the admission
-inventory carries an environment fingerprint for CDS workload matching and
-secret release.
+```json
+"env": { "policy": "match", "variables": {"MODE": {"exact": "production"}, "GPU_SERIAL": {"present": true}} }
+```
+
+Each variable requires exactly one matcher: `exact` pins its string value,
+including `""`; `present: true` accepts any value, including empty. Missing or
+additional variables are rejected. An empty `variables: {}` requires an observed
+empty environment. The allowlisted program and its dependencies must be safe for
+every possible value of a variable matched with `present`. `lint` rejects
+`present` on `PATH`, `LD_PRELOAD`, `LD_LIBRARY_PATH`, `LD_AUDIT`,
+`GLIBC_TUNABLES`, `BASH_ENV`, `ENV`, `PYTHONPATH`, `PYTHONHOME`,
+`PYTHONSTARTUP`, `NODE_PATH`, `NODE_OPTIONS`, `JAVA_TOOL_OPTIONS`,
+`_JAVA_OPTIONS`, `PERL5LIB`, `PERL5OPT`, `RUBYLIB` and `RUBYOPT`, because the
+host would choose what code is loaded. The list is not exhaustive: check what
+else your program's runtime reads from its environment.
+
+Supply these policies per container through `c8s allowlist derive --env-file`.
+The NRI plugin enforces env after cumulative NRI adjustments. The admission
+inventory carries the complete environment digest for CDS workload matching and
+secret release, plus per-variable digests bound to their names for images a
+`match` policy lists ([bounds](secrets.md#what-the-inventory-reports)). Names
+are visible; raw values are omitted, but digests allow guessing low-entropy
+values. The node omits per-variable evidence for environments over 128
+variables or 4 KiB of names, so `derive`, `lint` and `apply` reject a `match`
+policy past either limit; set `enableServiceLinks: false` on pods that use
+`match`. Deferred CDI edits leave env and
+mount evidence unavailable, so constrained policies reject those launches.
+
+Consumers that predate `match` reject the whole allowlist when it contains one,
+and nodes that predate it report no per-variable evidence. To start using
+`match`:
+
+1. Upgrade CDS, the node images and every other allowlist consumer.
+2. Add the `match` policies.
+3. Wait until every node that runs the affected pods has applied the published
+   version: its plugin logs `pull loop: allowlist refreshed` or, when it
+   started after publication, `initial allowlist pulled from CDS`, with a
+   version at or above the one `c8s allowlist list` reports
+   ([refresh](#refresh-and-anti-rollback)). A pod recreated earlier is admitted
+   against the old policy.
+4. Recreate the affected pods. Restarting their containers is not enough: the
+   sandbox's admission history keeps the records from the old node software.
+
+A workload's containers of `match`-listed images may together need at most
+512 KiB of per-variable evidence, about 40 containers at both limits. Restarts
+with new environments are not covered
+([bounds](secrets.md#what-the-inventory-reports)).
 
 ## Mount policy (`mounts`)
 
@@ -513,7 +559,11 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins.
+operator public keys it pins. Each token authorizes one allowlist write: CDS
+remembers every spent token and answers a replay with 409. Without
+`cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
+token issued before its start plus `--jwt-clock-skew`; after a restart, wait
+that long and mint a fresh token.
 
 ### Refresh and anti-rollback
 
@@ -547,6 +597,38 @@ leaving the arguments and environment unconstrained so the platform can start
 before CDS is reachable; the node image's generated RKE2 system entries leave
 command and args open as well.
 
+### Allowlist history
+
+CDS keeps an append-only history of every document it served, in the
+allowlist database. Each write that changes the document appends an entry,
+and so does CDS's start when the document differs from the last entry; a
+fresh database starts with the document CDS first serves. A write that leaves
+the document unchanged bumps the ETag but appends nothing. A policy digest is
+`sha256:<hex>` of the exact bytes `GET /allowlist` serves. The routes are
+unauthenticated reads like `GET /allowlist`, and the router and
+`c8s allowlist-proxy` pass them through:
+
+| Route | Returns |
+|---|---|
+| `GET /allowlist/history` | `{"entries":[{"position","version","digest","published_at","signed"}]}`, oldest first |
+| `GET /allowlist/objects/sha256/<hex>` | The exact bytes of a document in the history |
+| `GET /allowlist/objects/sha256/<hex>/signature` | Its operator signature, as `text/plain`; 404 when unsigned |
+
+CDS refuses to start when a stored document no longer hashes to its digest.
+Without `cds.persistence.enabled`, the history restarts with each CDS start.
+
+#### Operator-signed allowlists
+
+A document's operator signature is the write token of a `PUT /allowlist`
+whose body is exactly its canonical bytes; the token's `pbh` claim hashes that
+body. `c8s allowlist upload` sends canonical bytes, so its writes are signed.
+A per-workload write (`add`, `apply`, `edit`, `delete`) signs nothing:
+upload the whole document to sign it. A signature belongs to a document, not
+to an entry, so `signed` is true on every entry with that digest. `operatorauth.VerifyStored` checks a
+stored token: signature, method, path and body, but not its expiry.
+`pkg/operatorauth/testdata/operator_signature_vector.json` is a test vector
+for other verifiers.
+
 ## Bootstrap
 
 The chart renders the seed (`--allowlist-seed`) from the resolved component
@@ -571,6 +653,29 @@ entries for the digests it already had: the pin reaches such a cluster with
 the next image bump, or by editing the stored entry (`c8s allowlist edit`).
 A measured node image carries the pins in its base as soon as it is rebuilt. During an upgrade an enforcer that pulls the old document shape
 before CDS restarts admits only workload containers until its next pull.
+
+When the router runs with digest-pinned nginx and c8s images and
+`deriveComponents` is on, the seed also carries `c8s-router-<first 12 hex of the
+entry's SHA-256>`: nginx plus the c8s image pinned to the exact `cds-attest`,
+`allowlist-proxy` and (as an init container) `acme` command lines the chart
+renders. It is the only entry the router pod matches, so the router's mesh leaf
+is stamped with that name. An upgrade that changes the router's image
+repositories, digests or arguments seeds a new entry beside the old one. CDS
+reads the seed only at start, so after an upgrade that rolls the router but not
+CDS, the router's leaf stays unnamed until CDS restarts or you add the new
+entry with `c8s allowlist apply`. Old entries persist like the
+digest-named ones; remove them with `c8s allowlist delete`. Remove a
+superseded `c8s-router-*` entry after the upgrade: when the two differ only in
+image repositories, both match the router pod, and so do two that differ only
+in `acme`'s arguments while `acme` is not running. CDS then issues the
+router's leaf unnamed. To supply your own
+router entry instead, add it under `bootstrapAllowlist.workloads` and set
+`router.attest.expectedWorkload` to its name; the chart then seeds no
+`c8s-router-*` entry and passes that name on unchecked. The chart does not
+check whether your entries match the router pod: an entry that also matches it
+beside the seeded one makes the match ambiguous, and CDS issues the router's
+leaf unnamed. An explicit `c8s-router-*` value must equal the seeded entry's
+name, or the render fails.
 
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes

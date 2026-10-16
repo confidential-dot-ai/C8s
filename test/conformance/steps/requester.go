@@ -190,7 +190,7 @@ func requesterOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	if status != 200 {
-		sockets, _ := kubectl(nil, "-n", p.namespace, "exec", p.name, "--", "ls", "-la", "/run/c8s/workload-claims")
+		sockets, _ := w.podExec(p, "", "ls", "-la", "/run/c8s/workload-claims")
 		return fmt.Errorf("harness: the requester %q got %d from %s/healthz; its socket directory holds:\n%s", name, status, url, sockets)
 	}
 	return nil

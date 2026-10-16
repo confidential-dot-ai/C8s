@@ -28,6 +28,9 @@ type ReportedContainer struct {
 	Digest   string                       `json:"digest"`
 	Argv     []string                     `json:"argv"`
 	Injected bool                         `json:"injected"`
+	// EnvEvidence names why the entry's match env policies reject this
+	// foreign container's environment: an allowlist.EnvEvidence constant.
+	EnvEvidence string `json:"envEvidence,omitempty"`
 }
 
 // EntryVerdict is one workload entry measured against the candidate set.
@@ -180,7 +183,10 @@ func (h ExplainHandler) explain(ctx context.Context, sandboxID string) ExplainRe
 			HasGrant: al.Workloads[name].Secrets != nil,
 		}
 		for _, f := range d.Foreign {
-			v.Foreign = append(v.Foreign, ReportedContainer{Digest: f.Digest, Argv: f.Argv, Env: f.Env, Mounts: f.Mounts})
+			v.Foreign = append(v.Foreign, ReportedContainer{
+				Digest: f.Digest, Argv: f.Argv, Env: f.Env, Mounts: f.Mounts,
+				EnvEvidence: al.Workloads[name].DiagnoseEnvEvidence(f),
+			})
 		}
 		for _, m := range d.MissingMains {
 			v.MissingMains = append(v.MissingMains, MissingContainer{Digest: m.Digest.String(), Image: m.Image})
