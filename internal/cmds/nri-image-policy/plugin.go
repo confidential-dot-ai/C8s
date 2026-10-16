@@ -318,14 +318,14 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
 		}
 	}
-	p.recordDigest(ctr, digest, observedMounts(pod, ctr))
+	p.recordDigest(ctr, digest, observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
 }
 
 // recordUncheckedForInventory records the digest inlined in the reference
 // without resolving; the pre-Ready hook must answer inside NRI's
 // plugin_request_timeout, so recording adds no containerd round-trip.
 func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr))
+	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
@@ -338,11 +338,11 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
 }
 
-func observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
+func observedMounts(pod *api.PodSandbox, ctr *api.Container, socketDir string) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(nil).Observe(pod, ctr)
+	return newMountObserver(nil, socketDir).Observe(pod, ctr)
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -552,7 +552,7 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
-		mounts = newMountObserver(nil).Observe(pod, ctr)
+		mounts = newMountObserver(nil, cfg.WorkloadClaims.SocketDir).Observe(pod, ctr)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
 	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {

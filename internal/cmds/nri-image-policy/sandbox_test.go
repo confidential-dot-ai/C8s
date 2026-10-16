@@ -388,7 +388,7 @@ func TestCheckSandboxModes(t *testing.T) {
 			verdict := verdictAllow
 			reason := ""
 			if cfg.sandboxObserved() {
-				mounts := newMountObserver(nil).Observe(pod, ctr)
+				mounts := newMountObserver(nil, "").Observe(pod, ctr)
 				verdict, reason = p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
 			}
 			if verdict != tt.want {
