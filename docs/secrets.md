@@ -458,6 +458,10 @@ webhook injects: the cert volume, and the secret directory. An absent policy is
 `deny`, which admits platform mounts alone and so refuses the pod at container
 creation.
 
+The workload-claims socket directory that the node policy bind-mounts into the
+sidecars and an application's `cds-attest` container is a platform mount: no
+rule names it, and a `host` rule for it would refuse the grant.
+
 Both are memory-backed `emptyDir`s, so an `exact` policy names them by
 destination:
 

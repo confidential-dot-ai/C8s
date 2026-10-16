@@ -21,7 +21,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 		return fmt.Errorf("missing container or sandbox in NRI validation")
 	}
 	ctr, env := adjustedLaunchContainer(req)
-	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, adjustedMounts(req, ctr))
+	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, adjustedMounts(req, ctr, p.cfg.WorkloadClaims.SocketDir))
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
 		releaseVerifiedMounts(ctr.GetId())
 		return fmt.Errorf("%s", reason)
@@ -78,7 +78,7 @@ func adjustedLaunchContainer(req *api.ValidateContainerAdjustmentRequest) (*api.
 }
 
 // adjustedMounts observes cumulative edits; deferred CDI leaves evidence unavailable.
-func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container) []allowlist.ObservedMount {
+func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Container, socketDir string) []allowlist.ObservedMount {
 	if len(req.GetAdjust().GetCDIDevices()) > 0 {
 		return nil
 	}
@@ -94,5 +94,5 @@ func adjustedMounts(req *api.ValidateContainerAdjustmentRequest, ctr *api.Contai
 			ctr.Mounts = append(ctr.Mounts, proto.Clone(edit).(*api.Mount))
 		}
 	}
-	return newMountObserver(nil).Observe(req.GetPod(), ctr)
+	return newMountObserver(nil, socketDir).Observe(req.GetPod(), ctr)
 }

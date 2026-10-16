@@ -31,8 +31,13 @@ var containerdRoots = []string{
 type MountContext struct {
 	PodUID    string
 	SandboxID string
+	Pod       *api.PodSandbox
 	Container *api.Container
 	Storage   mountStorageInspector
+	// SocketDir is the inventory socket directory this plugin bind-mounts into
+	// an injected pod's socket consumers itself; empty when the inventory is
+	// disabled.
+	SocketDir string
 }
 
 func (c MountContext) valid() bool {
@@ -46,12 +51,14 @@ type mountHandler interface {
 // mountObserver applies handlers in order. Each handler owns a disjoint,
 // readable piece of the node's mount contract; unmatched mounts are host-backed.
 type mountObserver struct {
-	handlers []mountHandler
-	storage  mountStorageInspector
+	handlers  []mountHandler
+	storage   mountStorageInspector
+	socketDir string
 }
 
-func newMountObserver(storage mountStorageInspector) mountObserver {
-	return mountObserver{storage: defaultStorage(storage), handlers: []mountHandler{
+func newMountObserver(storage mountStorageInspector, socketDir string) mountObserver {
+	return mountObserver{storage: defaultStorage(storage), socketDir: socketDir, handlers: []mountHandler{
+		injectedSocketMountHandler{},
 		platformMountHandler{},
 		emptyDirMountHandler{},
 		kubeletDataMountHandler{},
@@ -60,7 +67,7 @@ func newMountObserver(storage mountStorageInspector) mountObserver {
 }
 
 func (o mountObserver) Observe(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
-	ctx := MountContext{PodUID: pod.GetUid(), SandboxID: pod.GetId(), Container: ctr, Storage: o.storage}
+	ctx := MountContext{PodUID: pod.GetUid(), SandboxID: pod.GetId(), Pod: pod, Container: ctr, Storage: o.storage, SocketDir: o.socketDir}
 	out := make([]allowlist.ObservedMount, 0, len(ctr.GetMounts()))
 	for _, m := range ctr.GetMounts() {
 		if carriesHostBytes(m) {
@@ -95,6 +102,23 @@ func defaultStorage(s mountStorageInspector) mountStorageInspector {
 		return s
 	}
 	return newMountStorageInspector()
+}
+
+// injectedSocketMountHandler classifies the inventory socket directory this
+// plugin bind-mounts itself (socketDirAdjustment) as a platform mount. The
+// policy put it there, read-only, so no entry pins it: a host rule for it would
+// refuse every secrets grant (allowlist.Workload.PinnedForGrant), and hostBinds
+// already excuses the same bind. The source must be this plugin's own
+// directory; a tenant bind at the same destination stays a host mount.
+type injectedSocketMountHandler struct{}
+
+func (injectedSocketMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
+	if ctx.SocketDir == "" || !ctx.valid() || m.GetSource() != ctx.SocketDir || !isInjectedSocketMount(ctx.Pod, ctx.Container, m) {
+		return allowlist.ObservedMount{}, false
+	}
+	mount := observed(m, allowlist.MountPlatform, allowlist.MountUnknown)
+	mount.ReadOnly = true
+	return mount, true
 }
 
 type platformMountHandler struct{}
