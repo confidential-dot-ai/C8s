@@ -19,6 +19,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
+	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -233,7 +234,7 @@ func TestTunnelForwardsToUpstream(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("X-Echo-Method", r.Method)
 		w.Header().Set("X-Echo-Auth", r.Header.Get("Authorization"))
-		w.Header().Set("X-Echo-Exporter", r.Header.Get(exporterHeader))
+		w.Header().Set("X-Echo-Exporter", r.Header.Get(routing.ExporterHeader))
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte("upstream saw: " + r.URL.Path + " / " + string(body)))
 	}))
@@ -265,7 +266,7 @@ func TestTunnelForwardsToUpstream(t *testing.T) {
 		Headers: []types.HeaderField{
 			{Name: "Authorization", Value: "Bearer sekret"},
 			// A client-supplied exporter header must be stripped, never trusted.
-			{Name: exporterHeader, Value: "spoofed"},
+			{Name: routing.ExporterHeader, Value: "spoofed"},
 		},
 		Body: []byte("payload"),
 	})
