@@ -59,16 +59,20 @@ entry pinned to a component executable (`/c8s`, `/app/c8s`, `/attestation-api`,
 `/docker-entrypoint.sh nginx`) with mounts or env `any`, or with args `any`
 outside a sidecar invocation, covers nothing: `c8s allowlist lint` refuses that shape.
 
-`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per derived
-image digest outside `c8s.argvPinnedDigests`, with that digest's
-`c8s.componentShapes` containers, followed by
+`c8s.allowlistSeedJSON` emits `c8s.allowlist/v1`: one workload per
+`c8s.generatedShapes` digest, with its containers, followed by
 `c8s.argvPinnedEntries`, the [router entry](#router-entry) and
 `bootstrapAllowlist.workloads`. The volumed entry
 also carries the pre-delete teardown hook's script and pause. A
 `bootstrapAllowlist.workloads` override named `c8s.digestWorkloadName`
 replaces a component entry whole, hook
 containers included; an override must declare them too, or the pre-delete hook
-is refused and the uninstall fails. The document must satisfy
+is refused and the uninstall fails. `c8s.generatedShapes` is
+`c8s.componentShapes` less the argv-pinned digests and the overridden ones,
+and `c8s.baseWorkloads` builds from it too, so an override replaces the
+generated entry in the boot base as well. An override named for an
+argv-pinned image's digest replaces its `c8s.argvPinnedEntries` entry in the
+seed the same way. The document must satisfy
 `pkg/allowlist.ParseJSON`.
 
 ## Entry names

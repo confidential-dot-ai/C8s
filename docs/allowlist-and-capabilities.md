@@ -740,7 +740,10 @@ container with the source under `/run`, because containerd resolves that
 symlink on most nodes. The chart refuses to render a component container whose
 argv references one of its own variables (`$(NAME)`): the value would differ
 per node. An operator-authored `workloads` entry named `<image basename>-<first 12 hex
-of digest>` replaces the entry whole in the rendered seed. The same component entries feed the host
+of digest>` replaces the entry whole in the rendered seed and in the host
+plugin's base, and one named for the installer's digest replaces the
+installer's argv-pinned entry; keep the host-sweep script and its pause in
+it, or `c8s uninstall` cannot replay them. The same component entries feed the host
 plugin's base allowlist, as does every operator entry that leaves args,
 environment and mounts unconstrained, whether its command is `any` or pinned,
 and every operator entry for a component's digest whatever it pins; other
