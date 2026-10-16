@@ -167,13 +167,9 @@ func versionBelowApplied(ctx context.Context, node string) error {
 	if err != nil {
 		return fmt.Errorf("applied version %q: %w", w.appliedVersion, err)
 	}
-	s, err := w.be.call("served_version")
+	now, err := w.servedVersion()
 	if err != nil {
 		return err
-	}
-	now, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("served version %q: %w", s, err)
 	}
 	if now >= applied {
 		return fmt.Errorf("the served version is %d, not below the applied %d", now, applied)

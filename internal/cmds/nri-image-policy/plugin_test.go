@@ -26,6 +26,7 @@ func newTestPlugin(cfg *config) *plugin {
 	}
 	return &plugin{
 		cfg:        cfg,
+		policy:     newPolicyStore(cfg.Allowlist.Base),
 		audit:      audit.NewLogger(),
 		logger:     slog.Default(),
 		containerd: &fakeContainerd{},
