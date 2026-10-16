@@ -33,7 +33,7 @@ func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest) (type
 	return f(outer, req)
 }
 
-func (backendFunc) Acquire(string) (func(), bool) { return func() {}, true }
+func (backendFunc) Acquire(int64) (func(), bool) { return func() {}, true }
 
 // echoBackend reflects the request, for tests of the channel rather than of
 // routing.

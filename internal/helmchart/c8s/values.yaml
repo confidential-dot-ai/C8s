@@ -1035,12 +1035,12 @@ router:
     # whole number of ms, s, m or h, such as 30s. Keep it under half the
     # manifest's maxAgeSeconds.
     pollInterval: 30s
-    # -- Tunnelled requests in flight in each router replica, shared by all
-    # clients; further ones get 503 tunnel_busy. Budget about 150 MiB of
-    # cds-attest memory per slot. nginx caps /.well-known/c8s/tunnel at the
-    # same count, and a quarter per client address, with its own 503 page;
-    # budget 8 MiB of nginx memory per slot as well.
-    tunnelSlots: 32
+    # -- Bytes the tunnelled requests in flight in each router replica may
+    # buffer, as a quantity such as 64Gi. Each reserves its record and the
+    # largest response, 32 MiB; further ones get 503 tunnel_busy. Empty uses
+    # 75% of the cds-attest memory limit (router.attest.resources), or 16Gi
+    # without one.
+    tunnelBudget: ""
     # -- Development only. With no CDS pin (cds.measurements,
     # cds.measurementsConfig) and no cds.operatorKeys off a baked node, true
     # lets any attested CDS supply both the route manifest and its keys;
@@ -1305,6 +1305,10 @@ router:
     runAsGroup: 101
     runAsNonRoot: true
     resources: {}
+    # -- Memory for the tunnel request bodies nginx holds until cds-attest
+    # reads them, up to 8 MiB per upload in progress, charged to nginx. An
+    # upload that does not fit fails with 500.
+    tunnelBodySpace: 8Gi
 
   service:
     # -- Service type. Set to LoadBalancer to expose the listener publicly
@@ -1317,11 +1321,9 @@ router:
     # would SNAT away) and Cluster otherwise. Local delivers traffic only
     # through nodes running the router pod; set Cluster explicitly if your LB
     # cannot health-check nodes, and every client behind a node then shares one
-    # budget and one per-client bound: 512 concurrent attestation sessions for
-    # that whole node, past which any one client's traffic refuses new sessions
-    # for every other client behind it, and a quarter of
-    # router.routing.tunnelSlots tunnel requests in flight for that whole
-    # node, past which nginx answers 503.
+    # per-client bound: 512 concurrent attestation sessions, 10 new ones and
+    # 400 tunnel requests per second for that whole node, past which any one
+    # client's traffic refuses the others behind it.
     externalTrafficPolicy: ""
     # -- Optional annotations on the Service. Use the provider's LB annotation to
     # pin a static IP (e.g. networking.gke.io/load-balancer-ip-addresses on GKE,

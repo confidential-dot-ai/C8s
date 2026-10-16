@@ -122,7 +122,7 @@ func routedRunConfig(t *testing.T, port int) config {
 			backendTimeout:   time.Hour,
 			host:             "127.0.0.1",
 			reservedPaths:    defaultReservedPaths,
-			tunnelSlots:      1,
+			tunnelBudget:     quantityFlag{bytes: oneRequestBudget, set: true},
 		},
 	}
 }

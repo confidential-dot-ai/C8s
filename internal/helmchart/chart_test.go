@@ -2901,7 +2901,6 @@ var routerRoutingArgs = []string{
 	"--routing-port=8802",
 	"--routes-poll-interval=30s",
 	"--backend-timeout=1h",
-	"--tunnel-slots=32",
 	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/cds-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
 }
 
@@ -2939,9 +2938,8 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
 
-	// Bodies are buffered in nginx memory and never spill to the 16Mi temp
-	// volume; the tunnel alone takes 8 MiB records, under connection limits
-	// that mirror cds-attest's --tunnel-slots.
+	// The protocol endpoints take 16k bodies. Tunnel records up to 8 MiB
+	// spill to a sized tmpfs, with no connection caps in front.
 	cfg := renderedRouterNginxConfig(t, out)
 	protocol := cfg.location(t, "prefix", "/.well-known/c8s/")
 	tunnel := cfg.location(t, "exact", "/.well-known/c8s/tunnel")
@@ -2955,28 +2953,36 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
 		loc.assertDirective(t, "proxy_read_timeout", "3630s")
 		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+		loc.assertNoDirective(t, "limit_conn")
 	}
 	protocol.assertDirective(t, "client_max_body_size", "16k")
 	protocol.assertDirective(t, "client_body_buffer_size", "16k")
-	protocol.assertNoDirective(t, "limit_conn")
 	tunnel.assertDirective(t, "client_max_body_size", "8m")
-	tunnel.assertDirective(t, "client_body_buffer_size", "8m")
+	tunnel.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_body_temp_path", "/var/lib/c8s-tunnel-body")
 	tunnel.assertDirective(t, "client_body_timeout", "10s")
-	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_total", "32")
-	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "8")
-	tunnel.assertDirective(t, "limit_conn_status", "503")
-	cfg.http.assertDirective(t, "limit_conn_zone", "$c8s_tunnel_total_key", "zone=c8s_tunnel_total:1m")
-	cfg.http.assertDirective(t, "limit_conn_zone", "$binary_remote_addr", "zone=c8s_tunnel_per_client:10m")
+	cfg.http.assertNoDirective(t, "limit_conn_zone")
+	conf := renderedRouterNginxConf(t, out)
+	for _, want := range []string{"\nworker_rlimit_nofile 65536;\n", "\n    worker_connections 16384;\n"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("router nginx.conf lacks %q", want)
+		}
+	}
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	if m, ok := containerVolumeMount(nginx, "nginx-tunnel-body"); !ok || m.MountPath != "/var/lib/c8s-tunnel-body" {
+		t.Fatalf("nginx tunnel body mount = %+v, %v, want /var/lib/c8s-tunnel-body", m, ok)
+	}
+	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
+		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
+	}
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 
-	slotsOut, err := helmTemplate(t, "--set", "router.routing.tunnelSlots=8")
+	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--tunnel-budget")
+	budgetOut, err := helmTemplate(t, "--set-string", "router.routing.tunnelBudget=64Gi")
 	if err != nil {
-		t.Fatalf("helm template (tunnelSlots=8): %v\n%s", err, slotsOut)
+		t.Fatalf("helm template (tunnelBudget=64Gi): %v\n%s", err, budgetOut)
 	}
-	assertContainerArgs(t, renderedDeploymentContainer(t, slotsOut, "c8s-router", "cds-attest"), "--tunnel-slots=8")
-	slotsTunnel := renderedRouterNginxConfig(t, slotsOut).location(t, "exact", "/.well-known/c8s/tunnel")
-	slotsTunnel.assertDirective(t, "limit_conn", "c8s_tunnel_total", "8")
-	slotsTunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "2")
+	assertContainerArgs(t, renderedDeploymentContainer(t, budgetOut, "c8s-router", "cds-attest"), "--tunnel-budget=64Gi")
 
 	// attest.enabled=false keeps cds-attest for application routing and only
 	// unregisters the attestation endpoints; /readyz stays proxied to it.
@@ -3753,9 +3759,9 @@ func TestRouterRejectsInvalidValues(t *testing.T) {
 			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 30m1h",
 		},
 		{
-			name: "routing-tunnelSlots-zero",
-			args: []string{"--set", "routing.tunnelSlots=0"},
-			want: "router.routing.tunnelSlots must be a positive integer, got: 0",
+			name: "routing-tunnelBudget-not-a-quantity",
+			args: []string{"--set-string", "routing.tunnelBudget=lots"},
+			want: "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: lots",
 		},
 		{
 			// The path joins --reserved-paths, which cds-attest refuses unless
@@ -5178,11 +5184,14 @@ func Example_routerConfig() {
 	fmt.Print(renderExampleRouterNginxConf())
 	// Output:
 	// worker_processes auto;
+	// # Each connection may hold a client socket, an upstream socket and a
+	// # request body temp file.
+	// worker_rlimit_nofile 65536;
 	// error_log /var/log/nginx/error.log warn;
 	// pid /tmp/nginx.pid;
 	//
 	// events {
-	//     worker_connections 1024;
+	//     worker_connections 16384;
 	// }
 	//
 	// http {

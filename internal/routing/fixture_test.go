@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -185,6 +186,22 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 		case "/big":
 			_, err := w.Write(make([]byte, bigBytes))
 			b.bigDone <- err
+			return
+		case "/echo":
+			// An upgraded connection that echoes each line back.
+			conn, brw, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			fmt.Fprint(brw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: echo\r\nConnection: Upgrade\r\n\r\n")
+			for brw.Flush() == nil {
+				line, err := brw.ReadString('\n')
+				if err != nil {
+					return
+				}
+				brw.WriteString(line)
+			}
 			return
 		case "/endless":
 			chunk := make([]byte, 1<<20)
