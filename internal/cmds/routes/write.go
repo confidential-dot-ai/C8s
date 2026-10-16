@@ -70,7 +70,8 @@ the stored value when it is later. A route with the same --path and --match is
 replaced. When CDS stores no route manifest, add refuses unless --new is
 passed, and then writes a new one with --max-age; otherwise it keeps the
 stored maxAgeSeconds. After a CDS reset, 'c8s routes put' your last manifest
-instead: a new one outranks the routes routers hold and drops all but this one.
+instead: once routers apply manifests, a new one outranks the routes they hold
+and drops all but this one.
 --dry-run also fetches the stored manifest from CDS.
 
 Name the backend in one of two ways:
@@ -170,7 +171,8 @@ func bindRevisionFlag(f *pflag.FlagSet, revision *uint64) {
 
 // nextRevision returns the revision after stored (C6): revision when nonzero,
 // else the later of stored+1 and now in Unix seconds, so a manifest written
-// after a CDS reset outranks the revisions routers keep.
+// after a CDS reset outranks the revisions routers keep once they apply
+// manifests.
 func nextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 	if revision == 0 {
 		return max(stored+1, uint64(max(now.Unix(), 1))), nil
@@ -213,8 +215,8 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 	case errors.Is(err, routesclient.ErrNotFound) && newMaxAge > 0:
 		m = &pkgroutes.Manifest{MaxAge: newMaxAge, Hosts: map[string]pkgroutes.Host{}}
 	case errors.Is(err, routesclient.ErrNotFound):
-		// A CDS reset also looks like this. A new manifest would outrank the
-		// routes routers hold and drop all but this one.
+		// A CDS reset also looks like this. Once routers apply manifests, a
+		// new one outranks the routes they hold and drops all but this one.
 		return errors.New("CDS stores no route manifest. After a CDS reset, 'c8s routes put' the last manifest you stored; to start the first one, run 'c8s routes add --new'")
 	case err != nil:
 		return err
