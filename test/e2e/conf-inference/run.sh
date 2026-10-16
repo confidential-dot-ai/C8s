@@ -78,25 +78,34 @@ helm template confidential-inference ci/helm/confidential-inference --namespace 
   --set-string "attestationReceipts.expectedOperatorKeySetSha256=sha256:$set_sha" \
   | kubectl -n "$ns" apply -f -
 # Not `rollout status`: the deployments' 10-minute progress deadline is shorter
-# than a cold pull of the 14 GB sglang image.
-for app in gateway sglang-router inference-worker-0; do
-  case $app in
-    gateway | sglang-router) selector=$(kubectl -n "$ns" get deployment "$app" -o jsonpath='{.spec.selector.matchLabels}') ;;
-    *) selector=$(kubectl -n "$ns" get statefulset "$app" -o jsonpath='{.spec.selector.matchLabels}') ;;
-  esac
-  selector=$(jq -r 'to_entries | map("\(.key)=\(.value)") | join(",")' <<<"$selector")
-  if ! kubectl -n "$ns" wait pod -l "$selector" --for=condition=Ready --timeout=30m; then
-    kubectl get nodes -o json | jq -r '.items[].status.conditions[] | "node \(.type)=\(.status) \(.message)"'
-    kubectl -n "$ns" get pods -o wide
-    for p in $(kubectl -n "$ns" get pods -o name); do
-      kubectl -n "$ns" get "$p" -o json | jq -r '
-        (.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
-        | "\(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state) last=\(.lastState.terminated // {} | tostring | .[0:600])"'
-      kubectl -n "$ns" describe "$p" | sed -n '/^Events:/,$p' | tail -10
-    done
-    fail "$app did not become ready"
+# than a cold pull of the 14 GB sglang image. The minute-by-minute listing is
+# the timeline a failure needs; exec and logs are closed on the node image.
+dump() {
+  kubectl get namespace "$ns" -o jsonpath='{.status.phase} {.metadata.deletionTimestamp}{"\n"}' || true
+  kubectl get nodes -o json | jq -r '.items[].status.conditions[] | "node \(.type)=\(.status) \(.message)"'
+  kubectl -n "$ns" get events --sort-by=.lastTimestamp | tail -60
+  for p in $(kubectl -n "$ns" get pods -o name); do
+    kubectl -n "$ns" get "$p" -o json | jq -r '
+      "\(.metadata.name) deletion=\(.metadata.deletionTimestamp) phase=\(.status.phase) reason=\(.status.reason) \(.status.message)",
+      ((.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
+      | "  \(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state) last=\(.lastState.terminated // {} | tostring | .[0:600])")'
+  done
+}
+ready=""
+for _ in $(seq 1 30); do
+  kubectl -n "$ns" get pods --no-headers -o wide | sed "s/^/$(date -u +%H:%M:%S) /"
+  if kubectl -n "$ns" get pods -o json | jq -e '
+      [.items[] | select(.metadata.deletionTimestamp == null)
+       | select(any(.status.conditions[]?; .type == "Ready" and .status == "True"))] | length == 3' >/dev/null; then
+    ready=1
+    break
   fi
+  sleep 60
 done
+if [ -z "$ready" ]; then
+  dump
+  fail "the gateway, router and worker did not all become ready in 30 minutes"
+fi
 echo "ok: gateway (pepper, gwstate, claims socket), worker and router are ready"
 
 # TEErminator, built at the pinned commit, with its state in a temp HOME.
