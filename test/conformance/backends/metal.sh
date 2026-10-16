@@ -46,7 +46,8 @@ setup() {
 }
 
 teardown_backend() {
-    local pid="$(scratch)/external-hello/pid"
+    local pid
+    pid="$(scratch)/external-hello/pid"
     [ ! -s "$pid" ] || { kill "$(cat "$pid")" 2>/dev/null; rm -f "$pid"; }
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
@@ -167,7 +168,8 @@ attestation_endpoint() { return "$UNSUPPORTED"; }
 # rendered once per run with the Helm the image build pins. The files carry
 # no image reference, so the render's required digests are placeholders.
 router_nginx_conf() {
-    local out="$(scratch)/node-integration"
+    local out
+    out="$(scratch)/node-integration"
     [ -s "$out/router-nginx/nginx.conf" ] || render_node_integration "$out" >&2 || return
     cat "$out"/router-nginx/*.conf
 }

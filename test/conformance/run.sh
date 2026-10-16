@@ -47,7 +47,7 @@ skipped="$(jq -r --arg must "$must" '
        | .tags[]?.name | select(IN($tags[]))]
     | unique[]' "$report")"
 if [ -n "$skipped" ]; then
-    echo "conformance: scenarios must-run lists for $CONFORMANCE_BACKEND did not run:" $skipped >&2
+    echo "conformance: scenarios must-run lists for $CONFORMANCE_BACKEND did not run: ${skipped//$'\n'/ }" >&2
     rc=1
 fi
 exit "$rc"

@@ -134,7 +134,7 @@ esac
 			cmd := exec.CommandContext(ctx, "bash", "-c", script)
 			cmd.Env = append(os.Environ(),
 				"PATH="+filepath.Join(fixture, "bin")+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"IMAGE_REPO="+repository, "c8sRef=abcdef0", "GITHUB_WORKSPACE="+fixture,
+				"IMAGE_REPO="+repository, "VARIANT=rke2-tdx", "c8sRef=abcdef0", "GITHUB_WORKSPACE="+fixture,
 				"GITHUB_ENV="+filepath.Join(output, "environment"),
 				"FIXTURE_IMAGE_STATUS="+status, "FIXTURE_IMAGE_DIGEST="+imageDigest,
 				"FIXTURE_ORAS="+filepath.Join(output, "oras.json"), "FIXTURE_MANIFEST="+filepath.Join(output, "manifest.json"),
