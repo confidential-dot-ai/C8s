@@ -39,6 +39,8 @@ import (
 const (
 	serverKeyFile = "server.key"
 	agentKeyFile  = "agent.key"
+	cdsKeyFile    = "cds.key"    // launch key of cds-role nodes (HA CDS)
+	decreeKeyFile = "decree.key" // signs HA decrees (Genesis, UpdateMeasurements, RotateKey)
 	serverPolicy  = "server.json"
 	peersPolicy   = "peers.json"
 	serverDir     = "server"
@@ -56,6 +58,9 @@ type BundleOptions struct {
 	ServerName    string
 	ServerAddress string
 	Agents        []string
+	// CDSNodes are the cds-role nodes of a highly available CDS. Setting any
+	// makes the bundle generate cds.key and decree.key and declare cdsHA.
+	CDSNodes      []string
 	TLSSAN        string
 	WorkloadsPath string
 	Router        Router
@@ -75,8 +80,11 @@ func NewBundle(opts BundleOptions) (err error) {
 	if opts.TLSSAN == "" {
 		opts.TLSSAN = defaultTLSSAN
 	}
-	if len(opts.Agents) > 0 && opts.ServerAddress == "" {
-		return errors.New("--server-address is required when the bundle has agents: an agent must be told where its server is")
+	if (len(opts.Agents) > 0 || len(opts.CDSNodes) > 0) && opts.ServerAddress == "" {
+		return errors.New("--server-address is required when the bundle has agents or cds nodes: they must be told where the server is")
+	}
+	if n := len(opts.CDSNodes); n == 1 {
+		return errors.New("a highly available CDS needs at least two --cds-node")
 	}
 	image, err := imageFromManifest(opts.ManifestPath, opts.VCPUs)
 	if err != nil {
@@ -130,6 +138,18 @@ func NewBundle(opts BundleOptions) (err error) {
 		router := opts.Router
 		server.Router = &router
 	}
+	if len(opts.CDSNodes) > 0 {
+		_, cdsPub, err := newLaunchKey(filepath.Join(opts.Dir, cdsKeyFile))
+		if err != nil {
+			return err
+		}
+		_, decreePub, err := newLaunchKey(filepath.Join(opts.Dir, decreeKeyFile))
+		if err != nil {
+			return err
+		}
+		server.CDSOperatorPublicKeys = []string{cdsPub}
+		server.CDSHA = &CDSHA{DecreeKey: decreePub, Replicas: len(opts.CDSNodes)}
+	}
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err
 	}
@@ -143,8 +163,14 @@ func NewBundle(opts BundleOptions) (err error) {
 	if serverPinIndex < 0 {
 		return errors.New("peer policy is missing the server launch-key anchor")
 	}
-	serverPin := peerPins.Images[serverPinIndex]
-	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: peerPins.Family, Images: []remote.ImagePin{serverPin}})
+	// CDS clients accept CDS on the server and, with HA, on cds-role nodes.
+	cdsImages := []remote.ImagePin{peerPins.Images[serverPinIndex]}
+	for _, pin := range peerPins.Images {
+		if slices.Contains(server.CDSOperatorPublicKeys, string(pin.Anchor)) {
+			cdsImages = append(cdsImages, pin)
+		}
+	}
+	policy, err := refvalues.Format(refvalues.ReferenceValues{Family: peerPins.Family, Images: cdsImages})
 	if err != nil {
 		return err
 	}
@@ -163,7 +189,18 @@ func NewBundle(opts BundleOptions) (err error) {
 			return err
 		}
 	}
+	for _, name := range opts.CDSNodes {
+		if err := AddCDSNode(opts.Dir, name, opts.ServerAddress); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// AddCDSNode is AddAgent for the cds role: the document is signed with the
+// bundle's cds key, which only cds-role documents accept.
+func AddCDSNode(dir, name, serverAddress string) error {
+	return addJoiningNode(dir, name, serverAddress, CDS, cdsKeyFile)
 }
 
 // AddAgent derives an agent document from the bundle's server document
@@ -172,9 +209,13 @@ func NewBundle(opts BundleOptions) (err error) {
 // signs it with the bundle's agent key and writes <dir>/<name>. It works
 // on a bundle created earlier, so a cluster can grow without regenerating or
 // re-signing anything the server already booted with.
-func AddAgent(dir, name, serverAddress string) (err error) {
+func AddAgent(dir, name, serverAddress string) error {
+	return addJoiningNode(dir, name, serverAddress, Agent, agentKeyFile)
+}
+
+func addJoiningNode(dir, name, serverAddress string, role Role, keyFile string) (err error) {
 	if !dnsLabel(name) {
-		return fmt.Errorf("agent name %q must be an RFC1123 label", name)
+		return fmt.Errorf("%s name %q must be an RFC1123 label", role, name)
 	}
 	if name == serverDir {
 		return fmt.Errorf("agent name %q is reserved for the server", name)
@@ -193,9 +234,12 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 	if name == server.Node.Name {
 		return fmt.Errorf("agent name %q is the server's node name", name)
 	}
-	key, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, agentKeyFile))
+	if role == CDS && server.CDSHA == nil {
+		return errors.New("bundle was created without --cds-node: the server document declares no cdsHA")
+	}
+	key, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, keyFile))
 	if err != nil {
-		return fmt.Errorf("bundle agent key: %w", err)
+		return fmt.Errorf("bundle %s key: %w", role, err)
 	}
 	pub, err := publicKeyPEM(key)
 	if err != nil {
@@ -208,7 +252,7 @@ func AddAgent(dir, name, serverAddress string) (err error) {
 		serverAddress = server.Server.Address
 	}
 	agent := *server
-	agent.Role = Agent
+	agent.Role = role
 	agent.Node = Node{Name: name}
 	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken}
 	agent.Server.Address = serverAddress

@@ -312,3 +312,58 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 		t.Fatalf("unmeshed upstream: %v", err)
 	}
 }
+
+// TestNewBundleWithCDSNodes: --cds-node adds a third launch key, the cds
+// documents stage with the cds role, and server.json (what CDS clients pin)
+// covers the server and the cds key.
+func TestNewBundleWithCDSNodes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--agent", "demo-f1", "--cds-node", "demo-cds-1", "--cds-node", "demo-cds-2", "--cds-node", "demo-cds-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, _ := readBundleDocument(t, dir, serverDir)
+	if server.CDSHA == nil || server.CDSHA.Replicas != 3 || len(server.CDSOperatorPublicKeys) != 1 {
+		t.Fatalf("server document lacks cdsHA: %+v", server)
+	}
+	cdsKey, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, cdsKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cdsPub, _ := publicKeyPEM(cdsKey)
+	if cdsPub != server.CDSOperatorPublicKeys[0] {
+		t.Fatal("cds.key is not the cds launch key")
+	}
+	decreeKey, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, decreeKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decreePub, _ := publicKeyPEM(decreeKey); decreePub != server.CDSHA.DecreeKey {
+		t.Fatal("decree.key is not cdsHA.decreeKey")
+	}
+	for _, name := range []string{"demo-cds-1", "demo-cds-2", "demo-cds-3"} {
+		doc, data := readBundleDocument(t, dir, name)
+		if doc.Role != CDS || bytes.Contains(data, []byte("serverToken")) {
+			t.Fatalf("%s: role %q or carries the server token", name, doc.Role)
+		}
+		pub, _ := os.ReadFile(filepath.Join(dir, name, pubkeyFile))
+		if string(pub) != cdsPub {
+			t.Fatalf("%s pubkey is not the cds key", name)
+		}
+	}
+	for _, node := range []string{serverDir, "demo-f1", "demo-cds-1"} {
+		stageBundleNode(t, dir, node)
+	}
+	policy, err := refvalues.Load(filepath.Join(dir, serverPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(policy.Images) != 2 || string(policy.Images[0].Anchor) != server.Server.OperatorPublicKey || string(policy.Images[1].Anchor) != cdsPub {
+		t.Fatalf("server.json must pin the server and the cds launch keys: %+v", policy.Images)
+	}
+	if err := runBundleCmd(t, "new", "--out", dir+"-one", "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
+		"--server-address", "10.0.0.10", "--cds-node", "lonely"); err == nil {
+		t.Fatal("one cds node accepted")
+	}
+}
