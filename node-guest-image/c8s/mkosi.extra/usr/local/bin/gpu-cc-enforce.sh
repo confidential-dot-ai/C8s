@@ -30,6 +30,7 @@ set -eu
 API=${GPU_CC_API:-http://127.0.0.1:8400}
 DRIVER_TIMEOUT=${GPU_CC_DRIVER_TIMEOUT:-180}
 API_TIMEOUT=${GPU_CC_API_TIMEOUT:-60}
+CLOCK_TIMEOUT=${GPU_CC_CLOCK_TIMEOUT:-120}
 
 fail() {
     echo "gpu-cc-enforce: $1 — refusing to start the node (GPU memory would be unprotected)." >&2
@@ -113,6 +114,14 @@ post() {
     fi
     cat "$body"; rm -f "$body"
 }
+
+# NRAS tokens carry nbf=now, so /verify needs a synchronised clock. Waited
+# for here rather than via time-sync.target so GPU-less boots skip it.
+clock_deadline=$(deadline "$CLOCK_TIMEOUT")
+until [ "$(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = yes ]; do
+    expired "$clock_deadline" && fail "clock not NTP-synchronised within ${CLOCK_TIMEOUT}s (NRAS tokens would be not yet valid)"
+    sleep 1
+done
 
 api_deadline=$(deadline "$API_TIMEOUT")
 until curl -sf "$API/health" >/dev/null 2>&1; do

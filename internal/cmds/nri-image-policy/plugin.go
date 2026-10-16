@@ -134,6 +134,10 @@ type plugin struct {
 	// lifecycle callback over bookkeeping.
 	inventory *admissionInventory
 
+	// measurer extends each started workload into RTMR[3]; nil unless
+	// measure.rtmr3. Pause sandboxes never reach StartContainer.
+	measurer workloadMeasurer
+
 	// boot is the boot gate: nil unless policy.fatal_existing. See
 	// bootgate.go. bootRestart records that this registration is a plugin
 	// restart, which makes the startup check's denials fatal.
@@ -162,6 +166,11 @@ func newPlugin(
 		containerd: ctrd,
 	}
 	p.boot = newBootGate(cfg, logger)
+	measurer, err := openMeasurer(cfg.Measure, cfg.Platform)
+	if err != nil {
+		return nil, err
+	}
+	p.measurer = measurer
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -915,12 +924,18 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
 			return err
 		}
+		if err := p.measureStarted(ctx, imageRef); err != nil {
+			return err
+		}
 		p.recordUncheckedForInventory(pod, ctr, imageRef)
 		return nil
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
 		return fmt.Errorf("%s", reason)
+	}
+	if err := p.measureStarted(ctx, imageRef); err != nil {
+		return err
 	}
 	p.recordForInventory(ctx, pod, ctr, imageRef)
 	return nil

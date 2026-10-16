@@ -52,8 +52,8 @@ if grep -qx 'CONFIG_MODULES=y' "$ngi/kernel/c8s.config"; then
     echo "::error::$preset must enable c8s-modules-latch.service; an unenabled latch never runs"
     exit 1
   fi
-  if ! grep -qx 'RequiredBy=rke2-server.service rke2-agent.service' "$latch"; then
-    echo "::error::$latch must be RequiredBy the rke2 pair so rke2 cannot start with modules still loadable"
+  if ! grep -qx 'RequiredBy=rke2-server.service rke2-agent.service podcvm-containerd.service' "$latch"; then
+    echo "::error::$latch must be RequiredBy the rke2 pair and the pod-role containerd so no runtime starts with modules still loadable"
     exit 1
   fi
 fi
@@ -473,6 +473,28 @@ for rke2_role in server agent; do
     exit 1
   fi
 done
+# The pod role's runtime gates on its own verdict and on the same boot
+# enforcement units as the RKE2 pair.
+require_launch_dependency "$units/podcvm-containerd.service"
+require_launch_dependency "$units/podcvm-status.service"
+if ! grep -qE '^address: 127[.]0[.]0[.]1$' "$ngi/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/kubelet.yaml"; then
+  echo "::error::the pod-role kubelet must listen on loopback only; pod-status is its external reader"
+  exit 1
+fi
+for service in podcvm-containerd podcvm-kubelet podcvm-status; do
+  if ! grep -qxF "ConditionPathExists=/run/confos/role-pod" "$units/$service.service" \
+     || ! grep -qxF "enable $service.service" "$preset"; then
+    echo "::error::$service.service must be enabled and gate on the authenticated pod verdict"
+    exit 1
+  fi
+done
+for service in apparmor-enforce c8s-modules-latch nri-node-ip scratch-enforce gpu-cc-enforce; do
+  if ! grep -qE '^RequiredBy=.*podcvm-containerd[.]service' "$units/$service.service"; then
+    echo "::error::$service.service must be RequiredBy podcvm-containerd.service"
+    exit 1
+  fi
+done
+
 if ! grep -qE '^Requires=.*attestation-api[.]service' "$role" \
    || ! grep -qE '^After=.*attestation-api[.]service' "$role"; then
   echo "::error::$role must require the local attester before launch verification"

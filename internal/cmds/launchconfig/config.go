@@ -52,6 +52,8 @@ type Role string
 const (
 	Server Role = "server"
 	Agent  Role = "agent"
+	// Pod runs one static pod under a standalone kubelet; RKE2 never starts.
+	Pod Role = "pod"
 )
 
 // Document is the signed launch.yaml wire contract. All secrets are boot
@@ -74,6 +76,9 @@ type Document struct {
 	// Router is the server's front door. A baked image cannot know it at
 	// build time, so the signed launch file carries it.
 	Router *Router `yaml:"router,omitempty" json:"router,omitempty"`
+
+	// Pod is the one static pod a pod-role boot runs; forbidden otherwise.
+	Pod *PodSpec `yaml:"pod,omitempty" json:"pod,omitempty"`
 
 	serverTokenPresent bool
 }
@@ -341,8 +346,8 @@ func (d *Document) validate() error {
 	if !dnsLabel(d.Node.Name) {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
-	if d.Role != Server && d.Role != Agent {
-		return fmt.Errorf("role must be server or agent")
+	if d.Role != Server && d.Role != Agent && d.Role != Pod {
+		return fmt.Errorf("role must be server, agent or pod")
 	}
 	platform, ok := d.Image.platform()
 	if !ok {
@@ -372,7 +377,11 @@ func (d *Document) validate() error {
 			return fmt.Errorf("node.externalIP: %w", err)
 		}
 	}
-	if !tokenRE.MatchString(d.RKE2.AgentToken) {
+	if d.Role == Pod {
+		if d.RKE2.AgentToken != "" || d.RKE2.ServerToken != "" || d.serverTokenPresent {
+			return fmt.Errorf("pod must not carry rke2 tokens")
+		}
+	} else if !tokenRE.MatchString(d.RKE2.AgentToken) {
 		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
 	}
 	if d.Role == Server {
@@ -382,7 +391,7 @@ func (d *Document) validate() error {
 		if d.RKE2.ServerToken == d.RKE2.AgentToken {
 			return fmt.Errorf("server and agent tokens must differ")
 		}
-	} else if d.RKE2.ServerToken != "" || d.serverTokenPresent {
+	} else if d.Role == Agent && (d.RKE2.ServerToken != "" || d.serverTokenPresent) {
 		return fmt.Errorf("agent must not carry rke2.serverToken")
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
@@ -394,6 +403,9 @@ func (d *Document) validate() error {
 	}
 	if d.Role == Agent && len(d.AgentOperatorPublicKeys) == 0 {
 		return fmt.Errorf("agent requires agentOperatorPublicKeys")
+	}
+	if d.Role == Pod && len(d.AgentOperatorPublicKeys) != 0 {
+		return fmt.Errorf("pod must not carry agentOperatorPublicKeys")
 	}
 	seen := []*ecdsa.PublicKey{server}
 	for _, raw := range d.AgentOperatorPublicKeys {
@@ -422,6 +434,19 @@ func (d *Document) validate() error {
 			return err
 		}
 	}
+	if d.Role == Pod {
+		if d.Pod == nil {
+			return fmt.Errorf("pod requires a pod section")
+		}
+		if d.Workloads == "" {
+			return fmt.Errorf("pod requires workloads: they are its only admitted images")
+		}
+		if err := d.Pod.validate(); err != nil {
+			return err
+		}
+	} else if d.Pod != nil {
+		return fmt.Errorf("pod section requires role pod")
+	}
 	if d.Workloads != "" {
 		if !json.Valid([]byte(d.Workloads)) {
 			return fmt.Errorf("workloads must contain one valid JSON document")
@@ -438,9 +463,10 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("parse server operator public key: %w", err)
 	}
-	if d.Role == Server {
+	if d.Role == Server || d.Role == Pod {
+		// A pod document carries its own launch key in server.operatorPublicKey.
 		if !bytes.Equal(pub, []byte(d.Server.OperatorPublicKey)) {
-			return fmt.Errorf("server launch key does not match server.operatorPublicKey bytes")
+			return fmt.Errorf("%s launch key does not match server.operatorPublicKey bytes", d.Role)
 		}
 		return nil
 	}
@@ -519,6 +545,9 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
 	for i, pub := range keys {
 		name := "server"
+		if d.Role == Pod {
+			name = "pod"
+		}
 		if i > 0 {
 			name = fmt.Sprintf("agent-%d", i)
 		}
@@ -563,7 +592,7 @@ func LoadStaged(path string) (*Document, error) {
 	if err := doc.validate(); err != nil {
 		return nil, err
 	}
-	if doc.Server.Address == "" {
+	if doc.Server.Address == "" && doc.Role != Pod {
 		return nil, fmt.Errorf("staged configuration must contain a resolved server address")
 	}
 	return &doc, nil

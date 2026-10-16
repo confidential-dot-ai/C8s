@@ -51,6 +51,10 @@ type measuredPolicy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
+	// imageOnlyTDX skips the RTMR[3] check on TDX: a measuring guest's
+	// register moves after boot, so its channel cert cannot pin it. Only for
+	// channels whose answers are then checked with fresh nonce evidence.
+	imageOnlyTDX bool
 }
 
 // platform is the bare-metal tag of the manifest's family. Cloud overlays are
@@ -124,6 +128,9 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
+	}
+	if exp.imageOnlyTDX && exp.identity.Family() == teetypes.FamilyTDX {
+		return nil
 	}
 	return runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
 }

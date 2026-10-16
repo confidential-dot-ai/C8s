@@ -2,12 +2,15 @@ package credrelease
 
 import (
 	"context"
+	"crypto"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/netutil"
@@ -123,18 +126,37 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return fmt.Errorf("build handler: %w", err)
 	}
-	attestationClient := attestclient.NewClient("")
-	handler.attester = localEvidenceGenerator{client: attestationClient, apiURL: cfg.AttestationAPIURL}
+	handler.attester = localEvidenceGenerator{client: attestclient.NewClient(""), apiURL: cfg.AttestationAPIURL}
+	return ServeARMTLS(ctx, cfg.ListenAddr, cfg.Platform, cfg.AttestationAPIURL, handler)
+}
 
-	// armTLS serving config: the presented cert embeds a fresh TDX quote
-	// bound to its own public key, so the operator's armTLS client verifies
-	// it's talking to a genuine, correctly-measured guest before sending the
-	// CSR or trusting the returned cert. AttestFunc fetches the quote from the
-	// local attestation-api (platform-generic despite the SNP name — it reads
-	// resp.Platform, so it yields a TDX quote here); same pattern as cds.
-	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestationClient, cfg.AttestationAPIURL)
+type servingKeyCtx struct{}
+
+// ServingKey returns the public key of the armTLS certificate that served
+// the request's connection, or nil outside ServeARMTLS.
+func ServingKey(ctx context.Context) crypto.PublicKey {
+	if f, ok := ctx.Value(servingKeyCtx{}).(func() crypto.PublicKey); ok {
+		return f()
+	}
+	return nil
+}
+
+// WithServingKey is for tests of handlers that call ServingKey.
+func WithServingKey(ctx context.Context, pub crypto.PublicKey) context.Context {
+	return context.WithValue(ctx, servingKeyCtx{}, func() crypto.PublicKey { return pub })
+}
+
+// ServeARMTLS serves handler over armTLS on addr until ctx is done: the
+// self-signed serving cert embeds a fresh quote from the local
+// attestation-api whose report data binds the cert's own key, so a client
+// verifying it (getkubeconfig) knows the channel ends in the measured guest.
+// platform must already be a parsed family name.
+func ServeARMTLS(ctx context.Context, addr, platform, attestationAPIURL string, handler http.Handler) error {
+	// AttestFunc is platform-generic despite the SNP name: it reads
+	// resp.Platform, so it yields a TDX quote on TDX; same pattern as cds.
+	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationAPIURL)
 	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(&armtls.ServerConfig{
-		Platform:   cfg.Platform,
+		Platform:   platform,
 		AttestFunc: attestFunc,
 		Logger:     slog.Default(),
 	})
@@ -150,13 +172,43 @@ func Run(ctx context.Context, cfg Config) error {
 		return fmt.Errorf("warm up armTLS serving cert: %w", err)
 	}
 
-	srv := newServer(cfg.ListenAddr, handler, tlsCfg)
+	// Remember which certificate each connection was served with, so a
+	// handler can bind evidence to this channel (ServingKey).
+	var served sync.Map // underlying net.Conn -> crypto.PublicKey
+	getCert := tlsCfg.GetCertificate
+	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+		cert, err := getCert(hello)
+		if err == nil && cert != nil && cert.Leaf != nil {
+			served.Store(hello.Conn, cert.Leaf.PublicKey)
+		} else if err == nil && cert != nil && len(cert.Certificate) > 0 {
+			if leaf, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
+				served.Store(hello.Conn, leaf.PublicKey)
+			}
+		}
+		return cert, err
+	}
+	srv := newServer(addr, handler, tlsCfg)
+	srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
+		if tc, ok := c.(*tls.Conn); ok {
+			return context.WithValue(ctx, servingKeyCtx{}, func() crypto.PublicKey {
+				key, _ := served.Load(tc.NetConn())
+				pub, _ := key.(crypto.PublicKey)
+				return pub
+			})
+		}
+		return ctx
+	}
+	srv.ConnState = func(c net.Conn, state http.ConnState) {
+		if tc, ok := c.(*tls.Conn); ok && (state == http.StateClosed || state == http.StateHijacked) {
+			served.Delete(tc.NetConn())
+		}
+	}
 
 	// Bind explicitly so the accepted sockets can be capped: every connection
-	// costs an armTLS handshake before the operator token is ever checked.
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
+	// costs an armTLS handshake before any request is read.
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return fmt.Errorf("listen %s: %w", cfg.ListenAddr, err)
+		return fmt.Errorf("listen %s: %w", addr, err)
 	}
 
 	errCh := make(chan error, 1)

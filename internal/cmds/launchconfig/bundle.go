@@ -265,14 +265,7 @@ func imageFromManifest(path string, vcpus int) (Image, error) {
 // same strict rules the guest applies, signs it with key and writes the
 // three opkeydata files into dir, which must not exist yet.
 func writeSignedDocument(dir string, doc Document, key *ecdsa.PrivateKey, pub string) (err error) {
-	data, err := yaml.Marshal(doc)
-	if err != nil {
-		return fmt.Errorf("render launch document: %w", err)
-	}
-	if _, err := Parse(data); err != nil {
-		return fmt.Errorf("rendered launch document for %s: %w", doc.Node.Name, err)
-	}
-	signature, err := operatorauth.SignDetached(key, data)
+	data, signature, err := SignDocument(doc, key)
 	if err != nil {
 		return err
 	}
@@ -292,6 +285,23 @@ func writeSignedDocument(dir string, doc Document, key *ecdsa.PrivateKey, pub st
 		return err
 	}
 	return writeNew(filepath.Join(dir, signatureFile), []byte(signature+"\n"), 0o600)
+}
+
+// SignDocument renders doc, proves the rendering parses under the strict
+// rules the guest applies and returns the bytes with their detached signature.
+func SignDocument(doc Document, key *ecdsa.PrivateKey) (data []byte, signature string, err error) {
+	data, err = yaml.Marshal(doc)
+	if err != nil {
+		return nil, "", fmt.Errorf("render launch document: %w", err)
+	}
+	if _, err := Parse(data); err != nil {
+		return nil, "", fmt.Errorf("rendered launch document for %s: %w", doc.Node.Name, err)
+	}
+	signature, err = operatorauth.SignDetached(key, data)
+	if err != nil {
+		return nil, "", err
+	}
+	return data, signature, nil
 }
 
 func newLaunchKey(path string) (*ecdsa.PrivateKey, string, error) {

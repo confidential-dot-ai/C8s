@@ -13,9 +13,14 @@ enable c8s-modules-latch.service
 enable rke2-role.service
 enable rke2-server.service
 enable rke2-agent.service
+# Pod role: containerd and a standalone kubelet, gated on /run/confos/role-pod.
+enable podcvm-containerd.service
+enable podcvm-kubelet.service
+enable podcvm-status.service
 enable systemd-timesyncd.service
-# Makes time-sync.target block until the clock is actually synchronised,
-# which gpu-cc-enforce now orders after (NRAS JWT nbf).
+# Makes time-sync.target block until the clock is actually synchronised.
+# gpu-cc-enforce no longer orders after it; it waits for NTPSynchronized
+# itself, and only when a GPU is present (NRAS JWT nbf).
 enable systemd-time-wait-sync.service
 enable cred-release.service
 enable attest-proxy.service

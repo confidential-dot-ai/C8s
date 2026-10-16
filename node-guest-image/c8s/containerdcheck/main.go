@@ -13,6 +13,9 @@
 //	containerdcheck -wrapper /usr/local/bin/c8s-runc \
 //	    -config-dir node-guest-image/c8s/mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
 //
+// -base checks an already-rendered config (the pod role's, which runs
+// containerd without RKE2) against the same drop-ins.
+//
 // -extra-runtime NAME=BINARY adds a handler the way RKE2's runtime
 // auto-detection would; the gate uses it to prove the check still fails when
 // an unwrapped runtime appears on the node's PATH.
@@ -64,6 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	wrapper := flags.String("wrapper", "/usr/local/bin/c8s-runc", "absolute path every ordinary-pod handler must run")
 	configDir := flags.String("config-dir", "", "containerd config directory holding "+dropInDirName+" and, optionally, "+userTemplateName)
+	base := flags.String("base", "", "an already-rendered containerd config to check instead of RKE2's template (the pod role's baked config)")
 	var extra extraRuntimes
 	flags.Var(&extra, "extra-runtime", "NAME=BINARY handler RKE2 auto-detection would add (repeatable; for negative tests)")
 	if err := flags.Parse(args); err != nil {
@@ -73,7 +77,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "containerdcheck: -config-dir is required")
 		return 2
 	}
-	cfg, err := effectiveConfig(*configDir, extra)
+	cfg, err := effectiveConfig(*configDir, *base, extra)
 	if err != nil {
 		fmt.Fprintf(stderr, "containerdcheck: %v\n", err)
 		return 1
@@ -106,10 +110,22 @@ func (e *extraRuntimes) Set(v string) error {
 
 // effectiveConfig renders the template in configDir and merges its drop-ins,
 // returning what containerd would hold after loading the imports.
-func effectiveConfig(configDir string, extra extraRuntimes) (map[string]any, error) {
-	rendered, err := render(filepath.Join(configDir, userTemplateName), extra)
-	if err != nil {
-		return nil, err
+func effectiveConfig(configDir, base string, extra extraRuntimes) (map[string]any, error) {
+	var rendered string
+	if base == "" {
+		var err error
+		if rendered, err = render(filepath.Join(configDir, userTemplateName), extra); err != nil {
+			return nil, err
+		}
+	} else {
+		if len(extra) > 0 {
+			return nil, fmt.Errorf("-extra-runtime applies to the RKE2 template only, not -base")
+		}
+		data, err := os.ReadFile(base)
+		if err != nil {
+			return nil, err
+		}
+		rendered = string(data)
 	}
 	cfg := map[string]any{}
 	if err := toml.Unmarshal([]byte(rendered), &cfg); err != nil {

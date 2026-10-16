@@ -48,6 +48,33 @@ func newARMTLSClient(cfg Config, exp platformVerifier) *http.Client {
 	}
 }
 
+// NewMeasuringGuestClient returns an HTTPS client for a guest that extends
+// RTMR[3] at runtime (pod CVMs): the armTLS certificate must prove the
+// image pinned by manifestPath and, on SNP, the launch key's HOSTDATA. On
+// TDX it does not pin RTMR[3]; the caller must check that with
+// VerifyFreshEvidence over this channel.
+func NewMeasuringGuestClient(manifestPath string, launchPubPEM []byte, timeout time.Duration) (*http.Client, error) {
+	exp, err := policyFor(manifestPath, launchPubPEM, nil)
+	if err != nil {
+		return nil, err
+	}
+	exp.imageOnlyTDX = true
+	return newARMTLSClient(Config{Timeout: timeout}, exp), nil
+}
+
+// VerifyFreshEvidence verifies a nonce-bound evidence envelope with the
+// get-kubeconfig gate: platform evidence, image tuple, report data = nonce
+// and, on SNP, the launch key's HOSTDATA. On TDX the caller checks RTMR[3]
+// with runtimemeasure.VerifyBinding against the guest's measured digests.
+func VerifyFreshEvidence(manifestPath string, launchPubPEM []byte, envelope, nonce []byte) (*teetypes.VerificationResult, error) {
+	exp, err := policyFor(manifestPath, launchPubPEM, nil)
+	if err != nil {
+		return nil, err
+	}
+	exp.imageOnlyTDX = true
+	return verifyEvidence(envelope, nonce, exp)
+}
+
 // verifyServerCert runs the armTLS check on the :8443 leaf cert: it
 // authenticates the certificate body itself (validity within the shared skew
 // bound; the self-signature under the cert's own key — the quote binds only
