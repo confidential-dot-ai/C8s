@@ -1,4 +1,6 @@
 {{- define "c8s.volumedTeardownPodSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
 {{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 automountServiceAccountToken: false
 {{- with .Values.volumed.priorityClassName }}

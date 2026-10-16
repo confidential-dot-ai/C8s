@@ -1,4 +1,6 @@
 {{- define "c8s.cdsPodSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
 
 serviceAccountName: {{ include "c8s.cdsName" . }}
 # The live node-list bound needs the API token; static CIDRs do not.
