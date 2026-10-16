@@ -119,7 +119,8 @@ It accepts an optional `workloads` string containing a complete
 `c8s.allowlist/v1` JSON document. It does not accept Helm values, arbitrary
 service arguments or component toggles. The measured image runs volumed as a
 host service, so encrypted volumes ([docs/volumes.md](volumes.md)) open on
-every node without an install.
+every node without an install. Its router always publishes the applied route
+manifest ([Route manifest](#route-manifest)).
 
 Use **distinct launch keys for server and agent roles, and new keys for
 each cluster**. `clusterID` is a descriptive RFC1123 label; the distinct
@@ -810,11 +811,14 @@ old public key. To recover, do one of the following:
 The route digest `show` and `digest` print is the value
 `c8s verify --route-digest` takes. The router binds the digest of the
 manifest it applied into its attest-pq and attest-lb evidence. With
-`router.routePublication.enabled: true` (default `false`, but on in a baked
-node image; requires `router.attest.enabled`), the router also serves that signed manifest at
+`router.routePublication.enabled: true` (default `false`; requires
+`router.attest.enabled`), the router also serves that signed manifest at
 `/.well-known/c8s/routes` for `c8s verify --operator-keys`. Leave route
 publication off when the hosts, backend addresses and workload names in the
-manifest are not public. See [Route evidence](routes-evidence.md).
+manifest are not public, and have clients pin `--route-digest` instead. A baked
+node image always publishes: `c8s node-image render` sets the value in the
+measured image, so keep names that must stay private out of a baked node's
+manifest. See [Route evidence](routes-evidence.md).
 
 ### Route by the manifest
 

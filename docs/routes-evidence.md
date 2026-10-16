@@ -81,7 +81,7 @@ Helm `router.routePublication.enabled: true` (default `false`; `c8s node-image r
 {"manifest": "<standard padded base64 of the manifest bytes>", "token": "<write token>"}
 ```
 
-The response carries `Cache-Control: no-store`. The path returns 404 when publication is off, before the first apply, and when the attestation endpoints are off. A stale manifest is still the applied one and is still served. Publication is off by default because the manifest names hosts, backend addresses and workload names. `cds-attest` refuses `--publish-routes` without `--cds-url` or with `--attest-endpoints=false`, and the chart refuses the value with `router.attest.enabled: false`.
+The response carries `Cache-Control: no-store`. The path returns 404 when publication is off, before the first apply, and when the attestation endpoints are off. A stale manifest is still the applied one and is still served. Publication is off by default because the manifest names hosts, backend addresses and workload names. Without publication, clients pin `--route-digest`. A baked node always publishes: `c8s node-image render` sets the value in the measured image, so keep names that must stay private out of a baked node's manifest. `cds-attest` refuses `--publish-routes` without `--cds-url` or with `--attest-endpoints=false`, and the chart refuses the value with `router.attest.enabled: false`.
 
 ## Verify with `c8s verify`
 
