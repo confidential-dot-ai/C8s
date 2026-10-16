@@ -2,9 +2,6 @@ package launchconfig
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,20 +24,10 @@ const (
 	rke2FragmentPath = "/etc/rancher/rke2/config.yaml.d/50-role.yaml"
 	// nodePasswordPath is where RKE2 keeps the secret that proves this node's
 	// name to the server. /etc/rancher is per-boot scratch, so a random one
-	// would lock a rebooted node out of its own name.
+	// would lock a rebooted node out of its own name: the document's
+	// rke2.nodePassword is staged here instead.
 	nodePasswordPath = "/etc/rancher/node/password"
 )
-
-// NodePassword derives the node's RKE2 password from the agent join token
-// and the node name, so a rebooted node presents the same one and rejoins
-// under its name. It adds no exposure: deriving it needs the agent token,
-// which already admits any node name. Hex, as RKE2 generates its own.
-func NodePassword(agentToken, nodeName string) string {
-	mac := hmac.New(sha256.New, []byte(agentToken))
-	mac.Write([]byte("c8s-node-password\x00"))
-	mac.Write([]byte(nodeName))
-	return hex.EncodeToString(mac.Sum(nil))
-}
 
 // Stage authenticates the launch document and writes only fixed boot paths.
 // Both role markers are cleared before verification, and the selected marker
@@ -127,7 +114,10 @@ func stageVerified(cfg Config, v *Verified) error {
 		{Dir + "/config.json", append(encoded, '\n')},
 		{agentTokenPath, []byte(doc.RKE2.AgentToken)},
 		{rke2FragmentPath, fragment},
-		{nodePasswordPath, []byte(NodePassword(doc.RKE2.AgentToken, doc.Node.Name) + "\n")},
+	}
+	if doc.RKE2.NodePassword != "" {
+		// Without one (an older bundle), RKE2 generates its own per boot.
+		outputs = append(outputs, outputFile{nodePasswordPath, []byte(doc.RKE2.NodePassword + "\n")})
 	}
 	if doc.Workloads != "" {
 		outputs = append(outputs, outputFile{Dir + "/workloads.json", []byte(doc.Workloads)})
