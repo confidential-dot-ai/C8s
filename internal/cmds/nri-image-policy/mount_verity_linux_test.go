@@ -82,19 +82,19 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	ctr.Mounts = []*api.Mount{{Type: "bind", Source: source, Destination: "/usr/bin/tool", Options: []string{"rbind", "rprivate", "ro"}}}
 	// Create-time staging returns the immutable inode's node-owned mount path.
 	rule := allowlist.MountRule{Destination: "/usr/bin/tool", Kind: allowlist.MountHost, Source: source, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: digest}
-	if adjust := stageVerityMounts(discardLogger(), pod, ctr, nil, nil); adjust != nil {
+	if adjust := stageVerityMounts(t.Context(), discardLogger(), pod, ctr, nil, nil); adjust != nil {
 		t.Fatal("staged fs-verity without a policy pin")
 	}
 	wrong := rule
 	wrong.VerityDigest = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if adjust := stageVerityMounts(discardLogger(), pod, ctr, nil, []allowlist.MountRule{wrong}); adjust != nil {
+	if adjust := stageVerityMounts(t.Context(), discardLogger(), pod, ctr, nil, []allowlist.MountRule{wrong}); adjust != nil {
 		t.Fatalf("stageVerityMounts(unpinned digest) = %v, want no staging", adjust)
 	}
 	overlay := &api.Mount{Type: "overlay", Source: source, Destination: "/usr/bin/tool", Options: []string{"ro", "lowerdir=" + root}}
-	if adjust := stageVerityMounts(discardLogger(), pod, &api.Container{Id: ctr.Id, PodSandboxId: pod.Id, Mounts: []*api.Mount{overlay}}, nil, []allowlist.MountRule{rule}); adjust != nil {
+	if adjust := stageVerityMounts(t.Context(), discardLogger(), pod, &api.Container{Id: ctr.Id, PodSandboxId: pod.Id, Mounts: []*api.Mount{overlay}}, nil, []allowlist.MountRule{rule}); adjust != nil {
 		t.Fatalf("stageVerityMounts(overlay) = %v, want no staging", adjust)
 	}
-	adjust := stageVerityMounts(discardLogger(), pod, ctr, nil, []allowlist.MountRule{rule})
+	adjust := stageVerityMounts(t.Context(), discardLogger(), pod, ctr, nil, []allowlist.MountRule{rule})
 	defer releaseVerifiedMounts(discardLogger(), ctr.Id)
 	if adjust == nil || len(adjust.Mounts) != 1 {
 		t.Fatal("missing inode pin")

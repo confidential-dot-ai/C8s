@@ -4,6 +4,7 @@ package nriimagepolicy
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -11,9 +12,12 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/containerd/nri/pkg/api"
+	"golang.org/x/sys/unix"
 
+	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
@@ -286,5 +290,227 @@ func TestStartContainerDenyReleasesPins(t *testing.T) {
 	}
 	if _, err := os.Stat(staged); !os.IsNotExist(err) {
 		t.Fatalf("staged file %s not released: %v", staged, err)
+	}
+}
+
+func TestBindStagingRollback(t *testing.T) {
+	file, err := os.Open(filepath.Join(t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { file.Close() })
+	for _, tc := range []struct {
+		name        string
+		failingCall int
+		unmountErr  error
+		wantPath    bool
+	}{
+		{"bind fails without privilege", 1, unix.EPERM, false},
+		{"remount fails and detaches", 2, nil, false},
+		{"propagation fails and detaches", 3, nil, false},
+		{"remount fails and stays attached", 2, unix.EBUSY, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			originalRoot, originalMount, originalUnmount := verifiedMountRoot, mountSyscall, unmountSyscall
+			t.Cleanup(func() { verifiedMountRoot, mountSyscall, unmountSyscall = originalRoot, originalMount, originalUnmount })
+			verifiedMountRoot = t.TempDir()
+			calls := 0
+			mountSyscall = func(string, string, string, uintptr, string) error {
+				calls++
+				if calls == tc.failingCall {
+					return unix.EPERM
+				}
+				return nil
+			}
+			unmountSyscall = func(string, int) error { return tc.unmountErr }
+			path, err := bindStaging(file)
+			if err == nil {
+				t.Fatal("bindStaging succeeded despite a failing mount")
+			}
+			entries, _ := os.ReadDir(verifiedMountRoot)
+			if tc.wantPath {
+				if path == "" || len(entries) != 1 {
+					t.Fatalf("bindStaging = %q with %d staging entries, want the attached path reported", path, len(entries))
+				}
+				return
+			}
+			if path != "" || len(entries) != 0 {
+				t.Fatalf("bindStaging = %q, left %d staging entries, want none", path, len(entries))
+			}
+		})
+	}
+}
+
+func TestUndetachedStagingIsTrackedAsStale(t *testing.T) {
+	var leaked string
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+		leaked = fakeStaging(t)
+		return leaked, "", unix.EPERM
+	})
+	adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
+	if err != nil || adjust != nil {
+		t.Fatalf("CreateContainer = %v, %v, want no adjustment and no error", adjust, err)
+	}
+	verifiedMountRegistry.Lock()
+	entry, ok := verifiedMountRegistry.mounts[leaked]
+	verifiedMountRegistry.Unlock()
+	if !ok || !entry.stale {
+		t.Fatalf("undetached staging %s not registered as stale: %+v", leaked, entry)
+	}
+	releaseVerifiedMounts(discardLogger(), "another-container")
+	if got := registeredMounts(f.ctr.Id); len(got) != 0 {
+		t.Fatalf("stale staging not reclaimed: %v", got)
+	}
+}
+
+func TestNodeRootFileKeepsBothProofs(t *testing.T) {
+	original := nodeRootEvidence
+	nodeRootEvidence = func(string) (string, bool) { return testVerityDigest, true }
+	t.Cleanup(func() { nodeRootEvidence = original })
+	pinned := 0
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+		pinned++
+		return fakeStaging(t), testVerityDigest, nil
+	})
+	// Only a node-root entry admits /bin/app; the fs-verity entry admits another argv.
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	verity := al.Workloads["w"].Containers[0]
+	verity.Command.Argv = []string{"/bin/other"}
+	verity.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/srv/tool", Kind: allowlist.MountHost, Source: f.ctr.Mounts[0].Source, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: testVerityDigest}}}
+	al.Workloads["verity"] = allowlist.Workload{Containers: []allowlist.Container{verity}}
+	nodeRoot := al.Workloads["w"].Containers[0]
+	nodeRoot.Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/srv/tool", Kind: allowlist.MountHost, Source: f.ctr.Mounts[0].Source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}}}
+	al.Workloads["w"] = allowlist.Workload{Containers: []allowlist.Container{nodeRoot}}
+	if err := al.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	f.p.policy.apply(al, 2)
+	adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
+	if err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if pinned != 0 {
+		t.Fatalf("staged a node-root file %d times", pinned)
+	}
+	if err := f.validate(t, adjust); err != nil {
+		t.Fatalf("fs-verity alternative invalidated the node-root entry: %v", err)
+	}
+	f.ctr.Args = []string{"/bin/other"}
+	if err := f.validate(t, adjust); err != nil {
+		t.Fatalf("fs-verity rule rejected a node-root file with that digest: %v", err)
+	}
+}
+
+func TestStagingTimeoutReleasesLatePins(t *testing.T) {
+	originalBudget := verityStagingBudget
+	verityStagingBudget = 10 * time.Millisecond
+	t.Cleanup(func() { verityStagingBudget = originalBudget })
+	release := make(chan struct{})
+	staged := fakeStaging(t)
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+		<-release
+		return staged, testVerityDigest, nil
+	})
+	unpinned := make(chan string, 1)
+	unpinFSVerity = func(path string) error {
+		unpinned <- path
+		return nil
+	}
+	done := make(chan *api.ContainerAdjustment, 1)
+	go func() {
+		adjust, _, _ := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
+		done <- adjust
+	}()
+	select {
+	case adjust := <-done:
+		if adjust != nil {
+			t.Fatalf("CreateContainer = %v, want no adjustment after a timeout", adjust)
+		}
+	case <-time.After(5 * time.Second):
+		close(release)
+		t.Fatal("CreateContainer blocked on a hung staging call")
+	}
+	close(release)
+	select {
+	case path := <-unpinned:
+		if path != staged {
+			t.Fatalf("released %s, want late staging %s", path, staged)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("late staging never released")
+	}
+	if got := registeredMounts(f.ctr.Id); len(got) != 0 {
+		t.Fatalf("late staging still registered: %v", got)
+	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func TestFullRegistryRetriesStalePins(t *testing.T) {
+	var capacity bool
+	f := newVerityFixture(t, ModeFailClosed, false, func(_ string, c bool, _ []string) (string, string, error) {
+		capacity = c
+		return "", "", errVerityNotPinned
+	})
+	unpinFSVerity = func(string) error { return nil }
+	verifiedMountRegistry.Lock()
+	for i := range maxVerifiedMounts {
+		verifiedMountRegistry.mounts[fmt.Sprintf("/stale/%d", i)] = verifiedMount{containerID: "gone", stale: true}
+	}
+	verifiedMountRegistry.Unlock()
+	t.Cleanup(func() { releaseVerifiedMounts(discardLogger(), "gone") })
+	if _, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if !capacity {
+		t.Fatal("staging reported no capacity while stale pins were reclaimable")
+	}
+}
+
+func TestCreateContainerResolvesDigestOnlyForVerityRules(t *testing.T) {
+	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+	if err := al.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeAudit}}, al)
+	p.SetReady()
+	resolved := 0
+	p.containerd = &fakeContainerd{resolve: func(context.Context, string) (string, error) {
+		resolved++
+		return pushDigestB, nil
+	}}
+	pod := makePod("default", "pod")
+	pod.Uid = "pod-uid"
+	ctr := makeCtrWithImageArgs(pod.Id, "app", "registry/repo:tag", []string{"/bin/app"})
+	if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	baseline := resolved
+	ctr.Mounts = []*api.Mount{{Type: "bind", Source: "/var/lib/kubelet/pods/pod-uid/volumes/token", Destination: "/var/run/secrets/token", Options: []string{"rbind", "ro"}}}
+	if _, _, err := p.CreateContainer(t.Context(), pod, ctr); err != nil {
+		t.Fatal(err)
+	}
+	if resolved != baseline {
+		t.Fatalf("CreateContainer resolved the digest %d extra times without an fs-verity rule", resolved-baseline)
+	}
+}
+
+func TestNewPluginLeavesStagingAlone(t *testing.T) {
+	t.Setenv("NRI_PLUGIN_NAME", "")
+	originalRoot := verifiedMountRoot
+	verifiedMountRoot = t.TempDir()
+	t.Cleanup(func() { verifiedMountRoot = originalRoot })
+	staged := filepath.Join(verifiedMountRoot, "file-live")
+	if err := os.Mkdir(staged, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}}, &fakeContainerd{}, newPolicyStore(nil), audit.NewLogger(), discardLogger()); err != nil {
+		t.Fatal(err)
+	}
+	if !fileExists(staged) {
+		t.Fatal("newPlugin removed staging; only Run may sweep it")
 	}
 }

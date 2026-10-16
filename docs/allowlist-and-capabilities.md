@@ -372,6 +372,9 @@ runtime; unsupported kernels/filesystems or failed staging deny the rule, and
 final matching then decides whether another entry admits the unstaged mount.
 Only explicitly declared fs-verity rules cause staging. Files introduced later
 by other plugins are rejected unless they already have valid node-root evidence.
+Staging that exceeds its one-second budget is abandoned, and its late pins are
+released. A node-root file is never staged: its evidence carries its fs-verity
+digest, if any, so both a `node-root` rule and a matching `fs-verity` rule admit it.
 
 Blocking adjustment validation checks provenance before creation, and the
 persisted launch is checked again. Evidence includes provenance and, for
@@ -393,6 +396,8 @@ with only access and propagation flags). Any other mount type or option, such
 as an overlay naming the verified file with another `lowerdir`, gets no
 provenance. A read-only file bind with provenance is not a host bind for the
 sandbox policy (`policy.sandbox`), so a CDS-served entry can admit it.
+A provenance rule is still a host rule, so an entry with one cannot carry a
+secrets grant.
 
 This exception is scoped to read-only regular files. It does not implement
 whole-volume provenance, arbitrary dm-verity volume trust, directory mounts,

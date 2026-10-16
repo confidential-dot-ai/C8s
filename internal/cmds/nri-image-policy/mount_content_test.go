@@ -40,7 +40,7 @@ func TestContentPinRejectsWritableSourceBeforeCreation(t *testing.T) {
 
 func TestNodeRootProvenanceRequiresFileBind(t *testing.T) {
 	original := nodeRootEvidence
-	nodeRootEvidence = func(string) bool { return true }
+	nodeRootEvidence = func(string) (string, bool) { return "", true }
 	t.Cleanup(func() { nodeRootEvidence = original })
 	file := filepath.Join(t.TempDir(), "nvidia-smi")
 	if err := os.WriteFile(file, []byte("reviewed bytes"), 0600); err != nil {

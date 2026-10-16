@@ -2,4 +2,4 @@
 
 package nriimagepolicy
 
-func nodeRootFile(string) bool { return false }
+func nodeRootFile(string) (string, bool) { return "", false }

@@ -175,7 +175,6 @@ func newPlugin(
 		containerd: ctrd,
 	}
 	p.boot = newBootGate(cfg, logger)
-	sweepVerifiedMounts(logger)
 	if cfg.WorkloadClaims.SocketDir != "" {
 		procRoot := cfg.WorkloadClaims.ProcRoot
 		if procRoot == "" {
@@ -949,15 +948,26 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		}
 		return nil, nil, fmt.Errorf("%s", reason)
 	}
-	var rules []allowlist.MountRule
-	if p.policy != nil && len(ctr.GetMounts()) > 0 {
-		digest := p.resolveDigest(ctx, ctr.GetAnnotations()[annotationImageName])
-		rules = append(rules, p.policy.base.FSVerityMountRules(digest)...)
-		if snap := p.policy.current(); snap != nil {
-			rules = append(rules, snap.index.FSVerityMountRules(digest)...)
-		}
+	return stageVerityMounts(ctx, p.logger, pod, ctr, p.socketDirAdjustment(pod, ctr), p.fsVerityMountRules(ctx, ctr)), nil, nil
+}
+
+// fsVerityMountRules returns the staging candidates for ctr. It resolves the
+// image digest only when a read-only file bind could match an fs-verity rule,
+// so an ordinary container costs no containerd round-trip.
+func (p *plugin) fsVerityMountRules(ctx context.Context, ctr *api.Container) []allowlist.MountRule {
+	if p.policy == nil || !slices.ContainsFunc(ctr.GetMounts(), func(m *api.Mount) bool { return fileBind(m) && slices.Contains(m.GetOptions(), "ro") }) {
+		return nil
 	}
-	return stageVerityMounts(p.logger, pod, ctr, p.socketDirAdjustment(pod, ctr), rules), nil, nil
+	snap := p.policy.current()
+	if !p.policy.base.HasFSVerityMountRules() && (snap == nil || !snap.index.HasFSVerityMountRules()) {
+		return nil
+	}
+	digest := p.resolveDigest(ctx, ctr.GetAnnotations()[annotationImageName])
+	rules := p.policy.base.FSVerityMountRules(digest)
+	if snap != nil {
+		rules = append(rules, snap.index.FSVerityMountRules(digest)...)
+	}
+	return rules
 }
 
 // StartContainer runs before task.Start/execve. Its environment is the final

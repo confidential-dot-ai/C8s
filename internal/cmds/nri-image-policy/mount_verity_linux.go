@@ -48,6 +48,8 @@ func openVeritySource(source string) (*os.File, error) {
 	return os.NewFile(uintptr(fd), source), nil
 }
 
+// pinFSVerityFile stages source when its fs-verity digest is accepted. A
+// non-empty path with an error is a staging mount it could not detach.
 func pinFSVerityFile(source string, capacity bool, accepted []string) (string, string, error) {
 	file, err := openVeritySource(source)
 	if err != nil {
@@ -77,30 +79,51 @@ func pinFSVerityFile(source string, capacity bool, accepted []string) (string, s
 	if err != nil || st.Uid != 0 || st.Mode&0077 != 0 || st.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return "", "", fmt.Errorf("unsafe verified mount directory")
 	}
+	path, err := bindStaging(file)
+	if err != nil {
+		return path, "", err
+	}
+	return path, digest, nil
+}
+
+// Tests replace these to inject partial mount failures.
+var (
+	mountSyscall   = unix.Mount
+	unmountSyscall = unix.Unmount
+)
+
+// bindStaging bind-mounts the opened file into a new staging directory. On
+// failure it returns a non-empty path only when a mount stays attached there;
+// the caller must track that path until a later unpin detaches it.
+func bindStaging(file *os.File) (string, error) {
 	staging, err := os.MkdirTemp(verifiedMountRoot, "file-")
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	target := filepath.Join(staging, "inode")
 	targetFile, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_RDONLY, 0600)
 	if err != nil {
-		os.Remove(staging)
-		return "", "", err
+		os.Remove(staging) //nolint:errcheck // Best effort; the startup sweep retries.
+		return "", err
 	}
 	targetFile.Close() //nolint:errcheck // No writes to flush.
 	// Mount the opened inode, never reopen the operator-controlled path.
-	err = unix.Mount("/proc/self/fd/"+strconv.Itoa(int(file.Fd())), target, "", unix.MS_BIND, "")
+	if err := mountSyscall("/proc/self/fd/"+strconv.Itoa(int(file.Fd())), target, "", unix.MS_BIND, ""); err != nil {
+		os.Remove(target)  //nolint:errcheck // Best effort; the startup sweep retries.
+		os.Remove(staging) //nolint:errcheck // Best effort; the startup sweep retries.
+		return "", err
+	}
+	err = mountSyscall("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV, "")
 	if err == nil {
-		err = unix.Mount("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV, "")
+		err = mountSyscall("", target, "", unix.MS_PRIVATE, "")
 	}
 	if err == nil {
-		err = unix.Mount("", target, "", unix.MS_PRIVATE, "")
+		return target, nil
 	}
-	if err != nil {
-		_ = unpinFSVerityFile(target)
-		return "", "", err
+	if unpinErr := unpinFSVerityFile(target); errors.Is(unpinErr, errStillMounted) {
+		return target, err
 	}
-	return target, digest, nil
+	return "", err
 }
 
 func pinnedFSVerityFile(source, digest string) bool {
@@ -114,7 +137,7 @@ func pinnedFSVerityFile(source, digest string) bool {
 }
 
 func unpinFSVerityFile(path string) error {
-	if err := unix.Unmount(path, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
+	if err := unmountSyscall(path, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
 		return fmt.Errorf("%w: %w", errStillMounted, err)
 	}
 	if err := os.Remove(path); err != nil {

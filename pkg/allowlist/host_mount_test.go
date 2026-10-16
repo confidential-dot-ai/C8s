@@ -183,3 +183,36 @@ func TestNodeRootHostMount(t *testing.T) {
 		t.Fatal("accepted redundant file digest")
 	}
 }
+
+func TestNodeRootVerityFileMatchesBothProvenanceForms(t *testing.T) {
+	const hash = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	source, _ := HostSourceDigest("/usr/bin/nvidia-smi")
+	mount := ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: MountHost, HostSourceDigest: source, ReadOnly: true, Provenance: ProvenanceNodeRoot, VerityDigest: hash}
+	for _, tc := range []struct {
+		name         string
+		provenance   string
+		verityDigest string
+		want         bool
+	}{
+		{"node-root", ProvenanceNodeRoot, "", true},
+		{"fs-verity", ProvenanceFSVerity, hash, true},
+		{"other fs-verity digest", ProvenanceFSVerity, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: mount.Destination, Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: tc.provenance, VerityDigest: tc.verityDigest}}}
+			if err := normalizeMounts(&policy); err != nil {
+				t.Fatal(err)
+			}
+			if got := policy.admits([]ObservedMount{mount}); got != tc.want {
+				t.Fatalf("admits(%+v) = %t, want %t", mount, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestProvenanceHostRuleIsNotPinnedForGrant(t *testing.T) {
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}}}
+	if (mountConstraint{policy: &policy}).hostIndependent() {
+		t.Fatal("node-root host rule reported host-independent, so a secrets grant would accept it")
+	}
+}

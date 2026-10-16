@@ -17,27 +17,32 @@ import (
 // nodeRootFile proves the source is reached through the measured read-only
 // root, without traversing symlinks or any intervening mount. Bind mounts of
 // arbitrary verity devices and writable overlays are not node-image evidence.
-func nodeRootFile(source string) bool {
+// It also returns the file's fs-verity digest, or "" when fs-verity is off, so
+// a node-root file satisfies an fs-verity rule without staging.
+func nodeRootFile(source string) (string, bool) {
 	if !cleanAbsolute(source) {
-		return false
+		return "", false
 	}
 	root, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return false
+		return "", false
 	}
 	defer unix.Close(root) //nolint:errcheck // No writes to flush.
 	var st unix.Stat_t
 	device, ok := measuredRootDevice()
 	if !ok || unix.Fstat(root, &st) != nil || uint64(st.Dev) != device {
-		return false
+		return "", false
 	}
 	file, err := openRootFile(root, source)
 	if err != nil {
-		return false
+		return "", false
 	}
 	defer file.Close() //nolint:errcheck // No writes to flush.
 	info, err := file.Stat()
-	return err == nil && info.Mode().IsRegular()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return fsVerityDigest(file), true
 }
 
 // measuredRootDevice is the root filesystem's device when it is the measured

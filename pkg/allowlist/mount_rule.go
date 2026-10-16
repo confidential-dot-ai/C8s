@@ -91,9 +91,25 @@ func (r hostRule) validate() error {
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.Provenance == "" || m.Provenance == r.Provenance && m.VerityDigest == r.VerityDigest)
+	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && r.provenanceAdmits(m)
 }
 
+// provenanceAdmits checks each proof independently: a node-root file can carry
+// an fs-verity digest too, and either rule form must accept it.
+func (r hostRule) provenanceAdmits(m ObservedMount) bool {
+	switch r.Provenance {
+	case "":
+		return true
+	case ProvenanceNodeRoot:
+		return m.Provenance == ProvenanceNodeRoot
+	case ProvenanceFSVerity:
+		return m.Provenance != "" && m.VerityDigest == r.VerityDigest
+	}
+	return false
+}
+
+// hostIndependent is false even with provenance: the rule still names a host
+// path, so secrets grants (PinnedForGrant) reject it.
 func (hostRule) hostIndependent() bool {
 	return false
 }

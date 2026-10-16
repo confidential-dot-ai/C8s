@@ -258,8 +258,12 @@ func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 		return mount
 	}
 	mount.HostSourceDigest = digest
-	if mount.ReadOnly && fileBind(m) && nodeRootEvidence(m.GetSource()) {
+	if !mount.ReadOnly || !fileBind(m) {
+		return mount
+	}
+	if verityDigest, ok := nodeRootEvidence(m.GetSource()); ok {
 		mount.Provenance = allowlist.ProvenanceNodeRoot
+		mount.VerityDigest = verityDigest
 	}
 	return mount
 }

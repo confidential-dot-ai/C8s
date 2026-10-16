@@ -18,7 +18,7 @@ func TestHostContentRequiresImmutableRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, source := range []string{path, "/dev/null", "/proc/self/cmdline", "relative", "/usr/../usr/bin/nvidia-smi"} {
-		if got := nodeRootFile(source); got {
+		if _, got := nodeRootFile(source); got {
 			t.Fatalf("reported node-root authority for %s: %v", source, got)
 		}
 	}
