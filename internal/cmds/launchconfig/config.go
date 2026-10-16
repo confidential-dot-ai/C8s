@@ -81,9 +81,6 @@ type Document struct {
 // non-empty Hostnames switches the front door to ACME. The route manifest, not
 // this block, names every backend.
 type Router struct {
-	// RemovedUpstream is decoded only so validation can name the route
-	// manifest as its replacement; any value is refused.
-	RemovedUpstream  string   `yaml:"upstream,omitempty" json:"upstream,omitempty"`
 	Hostnames        []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
 	ACMEEmail        string   `yaml:"acmeEmail,omitempty" json:"acme_email,omitempty"`
 	ACMEDirectoryURL string   `yaml:"acmeDirectoryURL,omitempty" json:"acme_directory_url,omitempty"`
@@ -108,9 +105,6 @@ func ValidateHostname(name string) error {
 const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
 
 func (r *Router) validate() error {
-	if r.RemovedUpstream != "" {
-		return fmt.Errorf("router.upstream is removed: the route manifest names every backend; drop it and write the route with c8s routes add")
-	}
 	if len(r.Hostnames) > maxRouterHostnames {
 		return fmt.Errorf("router.hostnames lists more than %d names", maxRouterHostnames)
 	}

@@ -117,6 +117,7 @@ func routedRunConfig(t *testing.T, port int) config {
 		routing: routingConfig{
 			cdsURL:           "https://127.0.0.1:9",
 			operatorKeysFile: filepath.Join(t.TempDir(), "absent"),
+			allowUnpinnedCDS: true,
 			pollInterval:     time.Hour,
 			backendTimeout:   time.Hour,
 			host:             "127.0.0.1",

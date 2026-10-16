@@ -1058,9 +1058,6 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		if err != nil {
 			return err
 		}
-		if err := refuseRemovedRouterValues(installValues); err != nil {
-			return err
-		}
 		installRoutesOutSet, installRoutesMaxAgeSet = cmd.Flags().Changed("routes-out"), cmd.Flags().Changed("routes-max-age")
 		if err := preflightUpstreamRoutes(); err != nil {
 			return err

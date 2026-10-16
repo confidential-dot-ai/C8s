@@ -598,7 +598,9 @@ The router routes only by this manifest. Its `cds-attest` sidecar polls
 (default 30s). It verifies CDS against the same pins as the allowlist route.
 It verifies the manifest against the operator keys: the node's launch
 configuration on a baked node, else the verified CDS's `GET /operator-keys`.
-nginx sends every request that no protocol endpoint claims to the sidecar's
+Keys from an unpinned CDS need the development opt-in
+`router.routing.allowUnpinnedCDS`, on by default (see
+[Route by the manifest](#route-by-the-manifest)). nginx sends every request that no protocol endpoint claims to the sidecar's
 loopback routing listener (`router.routing.port`, default 8802). Requests
 decrypted from the attested tunnel route by the same manifest. Routing
 follows these rules:
@@ -658,10 +660,9 @@ require `--upstream`; `C8S_OPERATOR_KEY` does not.
 
 `router.upstream.*`, `router.routes[]` and `router.nginx.resolver` are gone.
 The chart fails a render that still sets any of them
-(`kind=removed_router_routes`), and `c8s install` refuses such a `-f` file before
-touching the cluster. Write each route into the manifest with `c8s routes add`
+(`kind=removed_router_routes`). Write each route into the manifest with `c8s routes add`
 instead, and move `router.upstream.readTimeout` to `router.routing.readTimeout`.
-`c8s render-values` refuses `--upstream` and `--workload-ref`. Expect these
+`c8s render-values` has no `--upstream` or `--workload-ref`. Expect these
 changes:
 
 - **Backends serve TLS.** The plaintext route to an adopted workload's
@@ -823,8 +824,9 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | Flag | Default | Effect |
 |---|---|---|
 | `--cds-url` | none | CDS origin to poll. Required, with `--attestation-api-url` and the three `--mesh-identity-*` files. |
-| `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest, and the operator keys when they come from `GET /operator-keys`. |
+| `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest. |
 | `--operator-keys-file` | `/run/c8s-node/operator-pubkey` | PEM operator public keys a manifest must verify under. |
+| `--allow-unpinned-cds` | `false` | Development only. Route with no CDS pin and the operator keys from that CDS. Without it, `cds-attest` refuses to start in that case. |
 | `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
 | `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
@@ -839,7 +841,15 @@ The chart sets these flags from `router.routing` and the CDS pins.
 file exists at startup. When the default path is absent, it takes them from
 CDS's `GET /operator-keys` and logs a warning: that list is control-plane
 configuration, and the router does not stop a substituted key. An explicit
-`--operator-keys-file` that is absent stops `cds-attest` at startup.
+`--operator-keys-file` that is absent stops `cds-attest` at startup. Keys from
+an unpinned CDS stop it too, unless `--allow-unpinned-cds` is set: any attested
+TEE answering as CDS would then choose both the manifest and its keys.
+
+The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`, and on a
+baked node reads the keys from the launch configuration. Off a baked node with
+no CDS pin, it passes `--allow-unpinned-cds` while
+`router.routing.allowUnpinnedCDS` is `true`, the default, because the default
+install pins nothing. Set it to `false` to make such a render fail.
 
 Until it applies a manifest, `cds-attest` answers routed requests with 503
 and refuses attest-pq and attest-lb handshakes with 503 `routes_unavailable`.

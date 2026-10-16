@@ -1003,18 +1003,13 @@ func TestInstallAdoptsWorkloadAfterHelm(t *testing.T) {
 	}
 }
 
-// install refuses, before touching the cluster, values that configure the
-// router's removed backends, and a route flag with no route to write.
-func TestInstallRefusesRemovedRouting(t *testing.T) {
-	values := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(values, []byte("router:\n  routes:\n    - path: /api\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+// install refuses, before touching the cluster, a route flag with no route
+// to write.
+func TestInstallRefusesRouteFlagsWithoutUpstream(t *testing.T) {
 	for _, tc := range []struct {
 		args    []string
 		wantErr string
 	}{
-		{[]string{"-f", values}, "router.routes"},
 		{[]string{"--operator-key", "op.pem"}, "pass --upstream"},
 		{[]string{"--routes-out", "routes.json"}, "--routes-out applies"},
 		{[]string{"--routes-max-age", "1h"}, "--routes-max-age applies"},

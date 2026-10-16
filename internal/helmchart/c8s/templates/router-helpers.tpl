@@ -516,9 +516,15 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = concat $args (include "router.cdsPinArgs" $root | fromJsonArray) -}}
 {{- /* Off a baked node the operator keys come from CDS's GET /operator-keys,
        which is control-plane configuration (route policy W6; docs/operator.md,
-       Route manifest). */ -}}
+       Route manifest). Unpinned, that CDS could be any attested TEE, so
+       cds-attest refuses without the opt-in. */ -}}
 {{- if $root.Values.node.baked -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
+{{- else if not (or $root.Values.cds.measurements $root.Values.cds.measurementsConfig) -}}
+{{- if not $v.routing.allowUnpinnedCDS -}}
+{{- fail "VALIDATION_ERROR kind=unpinned_route_source: router.routing.allowUnpinnedCDS=false, but no CDS pin is set (cds.measurements or cds.measurementsConfig) and the router takes its operator keys from CDS. Pin CDS with `c8s install --measurements` or `--image-policy-file`, or set router.routing.allowUnpinnedCDS=true for development." -}}
+{{- end -}}
+{{- $args = append $args "--allow-unpinned-cds" -}}
 {{- end -}}
 {{- $args = append $args (printf "--routes-poll-interval=%v" $v.routing.pollInterval) -}}
 {{- $args = append $args "--routing-host=127.0.0.1" -}}

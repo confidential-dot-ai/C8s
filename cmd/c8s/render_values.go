@@ -81,9 +81,6 @@ the consuming -f.
 
 Requires the 'helm' CLI on PATH, and 'crane' unless --resolve-digests=false.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if installUpstream != "" || len(installWorkloadRefs) > 0 {
-			return fmt.Errorf("render-values no longer takes --%s or --%s: the router routes only by the operator-signed route manifest on CDS, which values cannot carry. Render without them, then adopt with `c8s install --%s` or write the route with `c8s routes add`", flagUpstream, flagWorkloadRef, flagWorkloadRef)
-		}
 		if err := validateCvmMode(installCvmMode); err != nil {
 			return err
 		}
@@ -407,14 +404,9 @@ func init() {
 	renderValuesCmd.Flags().StringSliceVar(&installMeasurements, "measurements", nil, "expected hex launch measurement(s) of the CVM components that speak to CDS (repeatable/comma-separated). Emits cds.measurements + armtlsMesh.measurements; empty = no pinning (UNSAFE). Under --cvm-mode=bare-metal/gke/aks this is the node image's manifest.json value")
 	cmdsutil.BindImagePolicyFlags(renderValuesCmd.Flags(), &installMeasurementsConfig, nil, "", "pins CDS, mesh and NRI; Helm requires unanchored images with identical RTMR pins; excludes --measurements and --rtmrs")
 	renderValuesCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Emits cds.rtmrs + armtlsMesh.rtmrs; ignored for SNP evidence")
-	renderValuesCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "refused: adoption patches workloads, which values cannot do; use c8s install")
-	renderValuesCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "refused: the router routes by the signed route manifest, which values cannot carry; use c8s routes add after the install")
 	renderValuesCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each component image tag to its registry digest (via crane), pin it, and enable the NRI allowlist derivation")
 	renderValuesCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing dockerconfigjson Secret the chart wires into every component's imagePullSecrets")
 	renderValuesCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main'). Override to pin a specific branch/tag/release")
 	renderValuesCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes; the file's content is embedded as cds.operatorKeys in the emitted values (the chart value is PEM content, never a path)")
-	// Kept, hidden, so a script still passing them gets the refusal above.
-	_ = renderValuesCmd.Flags().MarkHidden(flagWorkloadRef)
-	_ = renderValuesCmd.Flags().MarkHidden(flagUpstream)
 	rootCmd.AddCommand(renderValuesCmd)
 }

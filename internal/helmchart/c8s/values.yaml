@@ -1038,6 +1038,13 @@ router:
     # clients; further ones get 503 tunnel_busy. Budget about 150 MiB of
     # cds-attest memory per slot.
     tunnelSlots: 32
+    # -- Development only. Off a baked node with no CDS pin (cds.measurements
+    # or cds.measurementsConfig), any attested CDS supplies both the route
+    # manifest and the operator keys it is verified under. true passes
+    # cds-attest --allow-unpinned-cds in exactly that case, because the
+    # default install pins nothing; false fails the render instead. Pinned
+    # and baked installs ignore it.
+    allowUnpinnedCDS: true
 
   # -- Route publication. When enabled, cds-attest serves the applied signed
   # route manifest at /.well-known/c8s/routes (the CDS GET /routes envelope,
