@@ -162,7 +162,7 @@ func (h OperatorHandler) authorize(w http.ResponseWriter, r *http.Request) ([]by
 	}
 	if err := h.Authorize(r, body); err != nil {
 		h.logger().Warn("operator secret write rejected", "remote", r.RemoteAddr, "reason", err)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}
 	return body, true

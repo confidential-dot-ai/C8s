@@ -265,8 +265,9 @@ cds:
   logLevel: info
   allowlistDB: /mnt/c8s-data/cds/allowlist.db
   # -- Operator token clock skew tolerance in seconds. Without
-  # `persistence.enabled`, CDS also refuses allowlist writes for this long
-  # after it starts, since it forgets spent tokens at restart.
+  # `persistence.enabled`, CDS also refuses operator-token requests
+  # (allowlist, routes, secrets) for this long after it starts, since it
+  # forgets spent tokens at restart.
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp

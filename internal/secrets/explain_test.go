@@ -399,3 +399,13 @@ func TestExplainNamesTheEnvEvidenceCase(t *testing.T) {
 		})
 	}
 }
+
+// A malformed sandbox ID is refused before the token is checked, so it does not
+// spend a single-use token.
+func TestExplainValidatesTheIDBeforeAuthorizing(t *testing.T) {
+	eh := newExplainHarness(t)
+	eh.authErr = fmt.Errorf("authorize must not run")
+	if w, _ := eh.serve(strings.Repeat("a", 129)); w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 without authorizing: %s", w.Code, w.Body)
+	}
+}
