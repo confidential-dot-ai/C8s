@@ -43,13 +43,19 @@ var (
 // running is the set the node inventory reports for a rendered pod: a pod
 // command replaces the entrypoint, which is /c8s for the c8s image, the
 // image's own for nginx, and the one the seed pins for the other component
-// images. The argv is the kubelet's expansion, and the mounts are what the
-// node observes, where /var/run is /run when resolveVarRun is set.
+// images. The argv is the kubelet's expansion, the env the launch
+// environment (launchEnv), and the mounts are what the node observes, where
+// /var/run is /run when resolveVarRun is set.
 func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec, resolveVarRun bool) []workloadclaims.SandboxContainer {
 	t.Helper()
+	envs := componentImageEnvValues(t)
 	var out []workloadclaims.SandboxContainer
 	for _, c := range slices.Concat(pod.InitContainers, pod.Containers) {
 		_, digest, _ := strings.Cut(c.Image, "@")
+		imageEnv := envs["image"]
+		if strings.Contains(c.Image, "nginx-unprivileged@") {
+			imageEnv = envs["router.nginx"]
+		}
 		command, args := c.Command, c.Args
 		switch {
 		case len(command) > 0:
@@ -68,6 +74,7 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec, res
 			Digest: digest,
 			Argv:   runtimeArgv(c, nil),
 			Mounts: observedMounts(t, pod, c, resolveVarRun),
+			Env:    launchEnv(t, pod, c, imageEnv),
 		})
 	}
 	return out

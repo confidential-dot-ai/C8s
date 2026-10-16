@@ -732,6 +732,7 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
+	var warnings []string
 	if getCertNeeded {
 		// ensureVolume keeps a pre-declared same-named volume rather than
 		// overwriting it, so a pod that declares the reserved cert volume as a
@@ -753,6 +754,12 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 			return admission.Errored(http.StatusBadRequest, err)
 		}
 		l.Info("injecting c8s get-cert containers", "workload", inj.WorkloadID)
+		// Only an explicit true: an unset field is the default on nearly every
+		// pod, and a controller-created pod's warning reaches the controller's
+		// log, not its author.
+		if pod.Spec.EnableServiceLinks != nil && *pod.Spec.EnableServiceLinks {
+			warnings = append(warnings, serviceLinksWarning)
+		}
 		mutatePod(pod, inj, m.cfg)
 	}
 
@@ -760,8 +767,14 @@ func (m *podMutator) Handle(ctx context.Context, req admission.Request) admissio
 	if err != nil {
 		return admission.Errored(http.StatusInternalServerError, err)
 	}
-	return admission.PatchResponseFromRaw(req.Object.Raw, raw)
+	resp := admission.PatchResponseFromRaw(req.Object.Raw, raw)
+	resp.Warnings = warnings
+	return resp
 }
+
+// serviceLinksWarning tells the pod's author that mutatePod overrode an
+// explicit enableServiceLinks: true.
+const serviceLinksWarning = "c8s: enableServiceLinks set to false; the pod no longer receives <SERVICE>_SERVICE_HOST and <SERVICE>_PORT_* variables, so resolve Services by DNS and re-derive allowlist entries that pin them; set enableServiceLinks: false in the pod template to silence this warning"
 
 // workloadServiceNamePrefix marks the operator-managed headless Service inside
 // the workload namespace and keeps it from colliding with the workload's own
@@ -864,6 +877,11 @@ func mutatePod(pod *corev1.Pod, inj *injection, cfg Config) {
 	if effective.Reload.Nginx {
 		pod.Spec.ShareProcessNamespace = new(true)
 	}
+	// The injected sidecars share the C8s image's allowlist entry, whose env
+	// match lists every variable by name. Service links would add one set per
+	// Service in the namespace, so the sidecar's names would change whenever
+	// a Service is added; the KUBERNETES_* variables stay either way.
+	pod.Spec.EnableServiceLinks = new(false)
 
 	injected := []corev1.Container{certContainer(&effective, cfg), certWaitContainer(&effective, cfg)}
 	if len(effective.Secrets.Specs) > 0 {

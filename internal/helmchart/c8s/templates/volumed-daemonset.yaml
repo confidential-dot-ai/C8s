@@ -1,4 +1,6 @@
 {{- define "c8s.volumedPodSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
 {{- $kubeletRoot := required "volumed.hostPaths.kubeletRoot is required" .Values.volumed.hostPaths.kubeletRoot }}
 # SO_PEERCRED reports a peer's PID in the reader's PID namespace, so a
 # caller in another pod resolves to 0 without this.

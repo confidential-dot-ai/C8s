@@ -156,6 +156,66 @@ func TestMutatePodCertSidecarCarriesHostIPEnv(t *testing.T) {
 	}
 }
 
+func TestMutatePodDisablesServiceLinks(t *testing.T) {
+	for name, links := range map[string]*bool{
+		"unset":       nil,
+		"enabled":     ptr.To(true),
+		"already off": ptr.To(false),
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				Annotations: map[string]string{},
+				Spec:        corev1.PodSpec{EnableServiceLinks: links, Containers: []corev1.Container{{Name: "app"}}},
+			}
+			mutatePod(pod, &injection{WorkloadID: "api"}, Config{GetCertImage: "image", CDSURL: "http://cds"})
+			if got := pod.Spec.EnableServiceLinks; got == nil || *got {
+				t.Errorf("mutatePod(service links %s).EnableServiceLinks = %v, want false", name, ptr.Deref(got, true))
+			}
+		})
+	}
+}
+
+// An injected pod that asked for service links is admitted with a warning, so
+// its author learns the variables are gone; the default stays quiet.
+func TestHandleWarnsWhenDisablingServiceLinks(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	m := &podMutator{
+		decoder: admission.NewDecoder(scheme),
+		cfg:     Config{GetCertImage: "image", CDSURL: "http://cds", AttestationApiURL: "http://attestation-api"},
+	}
+	for name, tc := range map[string]struct {
+		annotations map[string]string
+		links       *bool
+		want        bool
+	}{
+		"links on":      {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(true), want: true},
+		"links default": {annotations: map[string]string{AnnotationWorkload: "api"}},
+		"links off":     {annotations: map[string]string{AnnotationWorkload: "api"}, links: ptr.To(false)},
+		"not injected":  {links: ptr.To(true)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pod := &corev1.Pod{
+				Annotations: tc.annotations,
+				Spec:        corev1.PodSpec{EnableServiceLinks: tc.links, Containers: []corev1.Container{{Name: "app"}}},
+			}
+			raw, err := json.Marshal(pod)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp := m.Handle(context.Background(), admission.Request{Namespace: "default", Object: runtime.RawExtension{Raw: raw}})
+			if !resp.Allowed {
+				t.Fatalf("Handle denied: %v", resp.Result)
+			}
+			if got := slices.Contains(resp.Warnings, serviceLinksWarning); got != tc.want {
+				t.Errorf("Handle(%s) warns about service links = %v, want %v (warnings %q)", name, got, tc.want, resp.Warnings)
+			}
+		})
+	}
+}
+
 func TestMutatePodPreservesExistingFSGroup(t *testing.T) {
 	existing := int64(1234)
 	pod := &corev1.Pod{

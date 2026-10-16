@@ -6,7 +6,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -729,6 +731,99 @@ func TestKubeletArgv(t *testing.T) {
 			}
 			if err != nil || len(got) != 1 || got[0] != tc.want {
 				t.Fatalf("kubeletArgv(%q) = %q, %v, want %q", tc.in, got, err, tc.want)
+			}
+		})
+	}
+}
+
+// nodeImageEnvSeed is a seed whose core entries match the launch env: the
+// runtime's variables plus extra, under any operator, CDS and router command
+// and the mesh's pinned argv.
+func nodeImageEnvSeed(t *testing.T, extra map[string]any) string {
+	t.Helper()
+	variables := map[string]any{
+		"HOSTNAME":                      map[string]any{"present": true},
+		"PATH":                          map[string]any{"exact": containerdDefaultPath},
+		"KUBERNETES_SERVICE_HOST":       map[string]any{"present": true},
+		"KUBERNETES_SERVICE_PORT":       map[string]any{"exact": "443"},
+		"KUBERNETES_SERVICE_PORT_HTTPS": map[string]any{"exact": "443"},
+		"KUBERNETES_PORT":               map[string]any{"present": true},
+		"KUBERNETES_PORT_443_TCP":       map[string]any{"present": true},
+		"KUBERNETES_PORT_443_TCP_ADDR":  map[string]any{"present": true},
+		"KUBERNETES_PORT_443_TCP_PORT":  map[string]any{"exact": "443"},
+		"KUBERNETES_PORT_443_TCP_PROTO": map[string]any{"exact": "tcp"},
+	}
+	component := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s"}}, "args": map[string]any{"policy": "deny"}, "env": map[string]any{"policy": "match", "variables": variables}}
+	mesh := maps.Clone(variables)
+	for name, matcher := range extra {
+		mesh[name] = matcher
+	}
+	meshEntry := map[string]any{"digest": testDigest, "command": map[string]any{"policy": "exact", "argv": []string{"/app/c8s", "armtls-mesh"}}, "args": map[string]any{"policy": "exact", "argv": []string{"--platform", "snp"}}, "env": map[string]any{"policy": "match", "variables": mesh}}
+	initEntry := map[string]any{"digest": nodeImageTestCDSDigest, "command": map[string]any{"policy": "any"}, "args": map[string]any{"policy": "any"}, "mounts": map[string]any{"policy": "any"}}
+	seed, err := json.Marshal(map[string]any{"schema": "c8s.allowlist/v1", "workloads": map[string]any{
+		"core": map[string]any{"containers": []any{component, meshEntry}},
+		"init": map[string]any{"containers": []any{initEntry}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(seed)
+}
+
+const nodeImageFixtureMeshArgs = `          args: ["--platform", "snp"]`
+
+// nodeImageEnvFixture is the collect fixture with service links off, the seed
+// replaced, and env lines added to the mesh container.
+func nodeImageEnvFixture(t *testing.T, seed, meshEnv string) string {
+	t.Helper()
+	fixture := strings.ReplaceAll(nodeImageCollectFixture(), "    spec:\n      containers:", "    spec:\n      enableServiceLinks: false\n      containers:")
+	start := strings.Index(fixture, "allowlist-seed.json: '") + len("allowlist-seed.json: '")
+	end := start + strings.Index(fixture[start:], "'")
+	fixture = fixture[:start] + seed + fixture[end:]
+	return strings.Replace(fixture, nodeImageFixtureMeshArgs, nodeImageFixtureMeshArgs+meshEnv, 1)
+}
+
+func TestNodeImageCollectMatchedEnv(t *testing.T) {
+	const meshEnv = "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {fieldRef: {fieldPath: metadata.name}}}]"
+	present, exact := map[string]any{"present": true}, func(v string) map[string]any { return map[string]any{"exact": v} }
+	listed := map[string]any{"MODE": exact("strict"), "POD": present}
+	with := func(name string, matcher any) map[string]any {
+		out := maps.Clone(listed)
+		if matcher == nil {
+			delete(out, name)
+		} else {
+			out[name] = matcher
+		}
+		return out
+	}
+	for _, tc := range []struct {
+		name    string
+		extra   map[string]any
+		meshEnv string
+		links   bool
+		ok      bool
+	}{
+		{"every variable listed", listed, meshEnv, false, true},
+		{"image variable pinned exact", with("LANG", exact("C.UTF-8")), meshEnv, false, true},
+		{"literal pinned to another value", with("MODE", exact("lax")), meshEnv, false, false},
+		{"reference pinned exact", with("POD", exact("mesh-0")), meshEnv, false, false},
+		{"manifest variable not listed", with("POD", nil), meshEnv, false, false},
+		{"listed variable nothing sets", with("EXTRA", present), meshEnv, false, false},
+		{"kubelet-expanded literal pinned exact", with("MODE", exact("$(POD)")), "\n          env: [{name: MODE, value: $(POD)}, {name: POD, value: x}]", false, false},
+		{"kubelet-expanded literal matched present", with("MODE", present), "\n          env: [{name: MODE, value: $(POD)}, {name: POD, value: x}]", false, true},
+		{"runtime port pinned to another value", with("KUBERNETES_SERVICE_PORT", exact("6443")), meshEnv, false, false},
+		{"envFrom", listed, meshEnv + "\n          envFrom: [{configMapRef: {name: extra}}]", false, false},
+		{"optional key reference", with("POD", present), "\n          env: [{name: MODE, value: strict}, {name: POD, valueFrom: {secretKeyRef: {name: s, key: k, optional: true}}}]", false, false},
+		{"service links on", listed, meshEnv, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := nodeImageEnvFixture(t, nodeImageEnvSeed(t, tc.extra), tc.meshEnv)
+			if tc.links {
+				input = strings.Replace(input, "enableServiceLinks: false\n      containers:\n        - name: mesh", "containers:\n        - name: mesh", 1)
+			}
+			_, err := collectNodeImageArtifacts([]byte(input))
+			if (err == nil) != tc.ok {
+				t.Fatalf("collectNodeImageArtifacts() error = %v, want ok %v", err, tc.ok)
 			}
 		})
 	}

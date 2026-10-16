@@ -1,4 +1,6 @@
 {{- define "armtls-mesh.podSpec" -}}
+# Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
+enableServiceLinks: false
 {{- $attestationApiURL := include "c8s.attestationApiURL" . -}}
 {{/*
   cds mode points a single --cds-url at the unified CDS, which serves both

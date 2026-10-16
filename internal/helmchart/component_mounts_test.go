@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -67,6 +68,52 @@ func runtimeArgv(c corev1.Container, entrypoint []string) []string {
 	return argv
 }
 
+// kubeletServiceEnv is what the kubelet adds to every container of a pod
+// with service links off: the variables of the default namespace's
+// kubernetes Service.
+var kubeletServiceEnv = []string{
+	"KUBERNETES_SERVICE_HOST=10.96.0.1",
+	"KUBERNETES_SERVICE_PORT=443",
+	"KUBERNETES_SERVICE_PORT_HTTPS=443",
+	"KUBERNETES_PORT=tcp://10.96.0.1:443",
+	"KUBERNETES_PORT_443_TCP=tcp://10.96.0.1:443",
+	"KUBERNETES_PORT_443_TCP_PROTO=tcp",
+	"KUBERNETES_PORT_443_TCP_PORT=443",
+	"KUBERNETES_PORT_443_TCP_ADDR=10.96.0.1",
+}
+
+// launchEnv is the environment a node reports for c, plus extra: containerd's
+// HOSTNAME, the image config's Env (containerd's default PATH when it sets
+// none), the kubelet's service variables, then the container's env, a
+// valueFrom resolved to a placeholder. A pod with service links on fails the
+// test: the kubelet would add variables for every Service in the namespace.
+func launchEnv(t *testing.T, spec corev1.PodSpec, c corev1.Container, imageEnv map[string]string, extra ...string) *pkgallowlist.EnvObservation {
+	t.Helper()
+	if spec.EnableServiceLinks == nil || *spec.EnableServiceLinks {
+		t.Fatalf("container %s runs in a pod with service links on", c.Name)
+	}
+	entries := []string{"HOSTNAME=c8s-0"}
+	if _, ok := imageEnv["PATH"]; !ok {
+		entries = append(entries, "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+	}
+	for _, name := range slices.Sorted(maps.Keys(imageEnv)) {
+		entries = append(entries, name+"="+imageEnv[name])
+	}
+	entries = append(entries, kubeletServiceEnv...)
+	for _, e := range c.Env {
+		value := e.Value
+		if e.ValueFrom != nil {
+			value = "192.0.2.1"
+		}
+		entries = append(entries, e.Name+"="+value)
+	}
+	env, err := pkgallowlist.ObserveLaunchEnv(append(entries, extra...))
+	if err != nil {
+		t.Fatalf("container %s env: %v", c.Name, err)
+	}
+	return env
+}
+
 // observedMounts classifies a rendered container's mounts the way the node
 // plugin does on a node without encrypted scratch, the least the chart's
 // entries must admit: tmpfs-backed volumes (memory emptyDirs, Secrets,
@@ -117,13 +164,24 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container, resol
 	return out
 }
 
-// componentPins maps each component digest a render sets to the entrypoint
-// its image runs, from the render's own --set arguments, the CDS digest
+// componentPin is what values.yaml declares for one component image: the
+// entrypoint it runs and its image config's Env.
+type componentPin struct {
+	entrypoint []string
+	imageEnv   map[string]string
+}
+
+// componentPins maps each component digest a render sets to its
+// componentPin, from the render's own --set arguments, the CDS digest
 // helmTemplate pins and the nginx digest the router renders.
-func componentPins(t *testing.T, out string, args []string) map[string][]string {
+func componentPins(t *testing.T, out string, args []string) map[string]componentPin {
 	t.Helper()
-	values := componentPinValues(t)
-	pins := map[string][]string{"sha256:0000000000000000000000000000000000000000000000000000000000000001": values["cds.image"]}
+	entrypoints, envs := componentPinValues(t), componentImageEnvValues(t)
+	values := map[string]componentPin{}
+	for key, entrypoint := range entrypoints {
+		values[key] = componentPin{entrypoint: entrypoint, imageEnv: envs[key]}
+	}
+	pins := map[string]componentPin{"sha256:0000000000000000000000000000000000000000000000000000000000000001": values["cds.image"]}
 	for _, arg := range args {
 		key, digest, ok := strings.Cut(arg, ".digest=")
 		if !ok {
@@ -152,11 +210,12 @@ func injectedShape(c pkgallowlist.Container) bool {
 }
 
 // Every component container the chart renders must be admitted by the seed,
-// and by the plugin's base where one renders, under exactly the argv and mount
-// table it is rendered with: one argument more, one mount fewer or one more is
-// refused. On default, bare-metal and baked renders alike, no component entry
-// leaves args or mounts open except the injected sidecar shapes, whose args
-// are per pod.
+// and by the plugin's base where one renders, under exactly the argv, mount
+// table and environment it is rendered with: one argument more, one mount
+// fewer or one more, a loader variable or a redirected PATH is refused. On
+// default, bare-metal and baked renders alike, no component entry leaves env
+// open, nor args or mounts except the injected sidecar shapes, whose args are
+// per pod.
 func TestChartComponentShapesAreExact(t *testing.T) {
 	t.Parallel()
 	digests := []string{}
@@ -202,7 +261,13 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			for source, al := range sources {
 				for name, w := range al.Workloads {
 					for _, c := range w.Containers {
-						if _, ok := pins[c.Digest.String()]; !ok || injectedShape(c) {
+						if _, ok := pins[c.Digest.String()]; !ok {
+							continue
+						}
+						if c.Env.Policy != pkgallowlist.PolicyMatch {
+							t.Errorf("%s entry %s leaves env %q", source, name, c.Env.Policy)
+						}
+						if injectedShape(c) {
 							continue
 						}
 						if c.Args.Policy == pkgallowlist.PolicyAny || c.Mounts.Policy == pkgallowlist.PolicyAny {
@@ -215,7 +280,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			for _, w := range renderedPodSpecs(t, out) {
 				for _, c := range slices.Concat(w.spec.InitContainers, w.spec.Containers) {
 					digest := imageDigest(c.Image)
-					entrypoint, ok := pins[digest]
+					pin, ok := pins[digest]
 					if !ok {
 						continue
 					}
@@ -223,11 +288,14 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 					if len(c.Command) == 0 {
 						t.Errorf("%s/%s runs its image's ENTRYPOINT, which the allowlist cannot see; render its command", w.name, c.Name)
 					}
-					argv := runtimeArgv(c, entrypoint)
+					argv := runtimeArgv(c, pin.entrypoint)
+					launch := func(extra ...string) *pkgallowlist.EnvObservation {
+						return launchEnv(t, w.spec, c, pin.imageEnv, extra...)
+					}
 					for _, resolve := range []bool{false, true} {
 						mounts := observedMounts(t, w.spec, c, resolve)
 						for source, al := range sources {
-							checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts)
+							checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, launch)
 						}
 					}
 				}
@@ -253,14 +321,15 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 		t.Fatal("baked router has no nginx container")
 	}
 	nginx := spec.Containers[i]
-	argv := runtimeArgv(nginx, componentPinValues(t)["router.nginx"])
+	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
+	argv := runtimeArgv(nginx, pin.entrypoint)
 	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/nginx.conf") {
 		t.Errorf("baked nginx argv = %q, want -c /usr/lib/c8s/router-nginx/nginx.conf", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {
 		return index.AdmitsContainer(pkgallowlist.RunningContainer{
-			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx, false), Env: &pkgallowlist.EnvObservation{},
+			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx, false), Env: launchEnv(t, spec, nginx, pin.imageEnv),
 		})
 	}
 	if !admits() {
@@ -277,16 +346,23 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 }
 
 // checkExactShape fails unless index admits the container as rendered and
-// refuses it with an extra argument, without any one of its own mounts, or
-// with one mount more.
-func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, digest string, argv []string, mounts []pkgallowlist.ObservedMount) {
+// refuses it with an extra argument, without any one of its own mounts, with
+// one mount more, or with LD_PRELOAD set or PATH pointed elsewhere. launch
+// returns its launch environment with the given variables set over it.
+func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, digest string, argv []string, mounts []pkgallowlist.ObservedMount, launch func(...string) *pkgallowlist.EnvObservation) {
 	t.Helper()
+	env := launch()
 	admits := func(argv []string, mounts []pkgallowlist.ObservedMount) bool {
-		return index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: &pkgallowlist.EnvObservation{}})
+		return index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: env})
 	}
 	if !admits(argv, mounts) {
 		t.Errorf("%s: refused as rendered: argv %q, mounts %+v", what, argv, mounts)
 		return
+	}
+	for _, variable := range []string{"LD_PRELOAD=/tmp/hook.so", "PATH=/tmp"} {
+		if index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: argv, Mounts: mounts, Env: launch(variable)}) {
+			t.Errorf("%s: admitted with %s", what, variable)
+		}
 	}
 	if admits(append(slices.Clone(argv), "--kubeconfig=/tmp/kubeconfig"), mounts) {
 		t.Errorf("%s: admitted with an extra argument", what)

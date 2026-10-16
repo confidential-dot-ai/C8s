@@ -612,12 +612,17 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 	}
 }
 
-// A container pinned to a component executable must pin its args and mounts too:
-// either left open lets a pod point the component at code of its choosing.
-// The injected sidecar shapes keep their per-pod args, not open mounts.
+// A container pinned to a component executable must pin its args and mounts
+// and match its env too: any left open lets a pod point the component at code
+// of its choosing. The injected sidecar shapes keep their per-pod args, not
+// open mounts or env.
 func TestLintComponentShapes(t *testing.T) {
+	matchedEnv := `{"policy":"match","variables":{"HOSTNAME":{"present":true}}}`
+	containerEnv := func(command, args, mounts, env string) string {
+		return `{"digest":"` + digA + `","command":{"policy":"exact","argv":` + command + `},"args":` + args + `,"mounts":` + mounts + `,"env":` + env + `}`
+	}
 	container := func(command, args, mounts string) string {
-		return `{"digest":"` + digA + `","command":{"policy":"exact","argv":` + command + `},"args":` + args + `,"mounts":` + mounts + `}`
+		return containerEnv(command, args, mounts, matchedEnv)
 	}
 	exactArgs := `{"policy":"exact","argv":["operator"]}`
 	exactMounts := `{"policy":"exact","rules":[{"destination":"/tmp","kind":"emptyDir"}]}`
@@ -632,6 +637,11 @@ func TestLintComponentShapes(t *testing.T) {
 		{"old seeded shape", container(`["/c8s"]`, anyPolicy, anyPolicy), []string{"leaves args any", "leaves mounts any"}},
 		{"injected sidecar", container(`["/c8s","get-cert"]`, anyPolicy, exactMounts), nil},
 		{"injected sidecar with open mounts", container(`["/c8s","get-cert"]`, anyPolicy, anyPolicy), []string{"leaves mounts any"}},
+		{"open env", containerEnv(`["/c8s"]`, exactArgs, exactMounts, anyPolicy), []string{"leaves env any"}},
+		{"env left out", `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app/c8s","volumed"]},"args":` + exactArgs + `,"mounts":` + exactMounts + `}`, []string{"leaves env any"}},
+		{"injected sidecar with open env", containerEnv(`["/c8s","get-cert"]`, anyPolicy, exactMounts, anyPolicy), []string{"leaves env any"}},
+		{"nginx open env", containerEnv(`["/docker-entrypoint.sh","nginx"]`, exactArgs, exactMounts, anyPolicy), []string{"leaves env any"}},
+		{"not a component executable with open env", containerEnv(`["/bin/sh","-c"]`, exactArgs, exactMounts, anyPolicy), nil},
 		{"attestation-api open args", container(`["/attestation-api"]`, anyPolicy, exactMounts), []string{"leaves args any"}},
 		{"nginx open mounts", container(`["/docker-entrypoint.sh","nginx"]`, exactArgs, anyPolicy), []string{"leaves mounts any"}},
 		{"nginx split across command and args", container(`["/docker-entrypoint.sh"]`, `{"policy":"exact","argv":["nginx","-g","daemon off;"]}`, anyPolicy), []string{"leaves mounts any"}},

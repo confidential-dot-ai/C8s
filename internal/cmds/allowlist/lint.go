@@ -29,7 +29,7 @@ func newLintCmd(o *options) *cobra.Command {
 findings: entries with no containers, a container that can never start, digests
 whose effective policy is unconstrained, tag-form image labels (TOCTOU),
 root-subtree path grants, pinned search paths that overlap data mounts, and
-C8s component containers that leave args or mounts open.
+C8s component containers that leave args, mounts or env open.
 --online additionally checks each digest exists in
 its registry via crane.
 
@@ -261,9 +261,9 @@ func staleShapes(al, seed *pkgallowlist.Allowlist) []finding {
 }
 
 // componentFindings reports a container pinned to a component executable that
-// leaves its args or mounts to the pod (cdsallowlist.OpenComponent).
+// leaves its args, mounts or env to the pod (cdsallowlist.OpenComponent).
 func componentFindings(name string, c pkgallowlist.Container) []finding {
-	openArgs, openMounts := cdsallowlist.OpenComponent(c)
+	openArgs, openMounts, openEnv := cdsallowlist.OpenComponent(c)
 	argv := c.Command.Argv
 	var out []finding
 	if openArgs {
@@ -271,6 +271,9 @@ func componentFindings(name string, c pkgallowlist.Container) []finding {
 	}
 	if openMounts {
 		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves mounts any; pin them exact, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
+	}
+	if openEnv {
+		out = append(out, errorf("workload %q container %s pins the component executable %q but leaves env any; match it by name, as the chart's component entries do", name, c.Digest, strings.Join(argv, " ")))
 	}
 	return out
 }
