@@ -749,10 +749,13 @@ its upload or download loses its slot after `--tunnel-io-timeout`. The
 chart's nginx buffers request bodies in memory, so a slow upload holds nginx
 memory rather than a slot; keep `proxy_request_buffering` on for
 `/.well-known/c8s/`. Replies stream once they outgrow `proxy_buffers`, so a
-slow download of a large reply holds its slot. That location admits bodies up
-to 8 MiB, spills nothing to the memory-backed temp volume, serves at most 32
-requests at once (503 beyond), and waits `router.upstream.readTimeout` for the
-sidecar. Budget up to 256 MiB of nginx memory for those bodies.
+slow download of a large reply holds its slot. nginx spills nothing under
+`/.well-known/c8s/` to the memory-backed temp volume and waits
+`router.upstream.readTimeout` for the sidecar. The handshake endpoints admit
+bodies up to 16 KiB. `/.well-known/c8s/tunnel` admits bodies up to 8 MiB,
+drops an upload that sends nothing for 10s, and serves at most 32 requests
+at once and 8 per client address, answering nginx's own 503 page beyond
+either. Budget up to 256 MiB of nginx memory for tunnel bodies.
 
 ## Attestation-api
 

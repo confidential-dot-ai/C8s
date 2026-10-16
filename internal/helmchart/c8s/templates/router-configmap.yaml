@@ -135,12 +135,13 @@ data:
 {{- end }}
 {{- if .Values.router.attest.enabled }}
 
-        # One constant key: /.well-known/c8s/ is limited in total, not per
-        # client, since a SNATed Service gives every client the node's address.
+        # The tunnel's limits mirror cds-attest's --tunnel-slots: 32 in total
+        # and a quarter per client address.
         map $host $c8s_protocol_total_key {
             default "all";
         }
-        limit_conn_zone $c8s_protocol_total_key zone=c8s_protocol_total:1m;
+        limit_conn_zone $c8s_protocol_total_key zone=c8s_tunnel_total:1m;
+        limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
 {{- end }}
 
         {{- if or $upstreamMeshWrapped $launchDriven }}
@@ -319,30 +320,24 @@ data:
             # the attest-lb challenge, and the over-encrypted tunnel — are
             # proxied to the in-pod `cds-attest` sidecar.
             # X-Real-IP is the address the sidecar meters each client by.
-            # Request bodies (tunnel records up to 8 MiB) are buffered in nginx
-            # memory, never in the 16Mi temp volume, so a slow upload holds no
-            # sidecar slot; replies past proxy_buffers stream instead of
-            # spilling. limit_conn bounds that memory to 32 x 8 MiB; 32 matches
-            # cds-attest's default --tunnel-slots.
+            # Request bodies are buffered in nginx memory, never in the 16Mi
+            # temp volume, so a slow upload holds no sidecar slot; replies past
+            # proxy_buffers stream instead of spilling.
             location /.well-known/c8s/ {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
-                {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
-                {{- end }}
-                proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
-                proxy_buffering on;
-                proxy_request_buffering on;
+                {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $readTimeout) | nindent 16 }}
+                client_max_body_size 16k;
+                client_body_buffer_size 16k;
+            }
+
+            # Tunnel records go up to 8 MiB, so limit_conn bounds their memory.
+            location = /.well-known/c8s/tunnel {
+                {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $readTimeout) | nindent 16 }}
                 client_max_body_size 8m;
                 client_body_buffer_size 8m;
-                proxy_max_temp_file_size 0;
-                limit_conn c8s_protocol_total 32;
+                client_body_timeout 10s;
+                limit_conn c8s_tunnel_total 32;
+                limit_conn c8s_tunnel_per_client 8;
                 limit_conn_status 503;
-                proxy_read_timeout {{ $readTimeout }};
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
             }
 
             {{- end }}
