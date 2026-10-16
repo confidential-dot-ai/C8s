@@ -230,9 +230,10 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 // tdxRTMRPinWarning is the "MRTD does not confer code identity" warning for a
 // TDX install that pins no RTMRs: measurement pinning then covers the TDVF
 // firmware only, and a host can boot it with a substituted kernel and rootfs.
-// Satisfied by --rtmrs or by a -f values file that sets a non-empty cds.rtmrs.
-func tdxRTMRPinWarning(hardwarePlatform string, rtmrs, valuesFiles []string) (string, error) {
-	if hardwarePlatform != "tdx" || len(rtmrs) > 0 {
+// Satisfied by rtmrPinned (--rtmrs or --image-policy-file registers) or by a
+// -f values file that sets a non-empty cds.rtmrs.
+func tdxRTMRPinWarning(hardwarePlatform string, rtmrPinned bool, valuesFiles []string) (string, error) {
+	if hardwarePlatform != "tdx" || rtmrPinned {
 		return "", nil
 	}
 	set, err := valuesFilesSetRTMRs(valuesFiles)
@@ -1043,7 +1044,11 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 		} else if warn != "" {
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
 		}
-		if warn, err := tdxRTMRPinWarning(installHardwarePlatform, installRegisters, installValues); err != nil {
+		_, pinnedRTMRs, _, err := installPins()
+		if err != nil {
+			return err
+		}
+		if warn, err := tdxRTMRPinWarning(installHardwarePlatform, len(pinnedRTMRs) > 0, installValues); err != nil {
 			return err
 		} else if warn != "" {
 			fmt.Fprintln(os.Stderr, "warning: "+warn)
@@ -1224,8 +1229,8 @@ Requires the 'helm' and 'kubectl' CLIs to be on PATH, and 'crane' unless
 // (its manifest.json), known before the cluster runs. --measurements <M> pins it
 // into the internal mesh (cds.measurements + armtlsMesh.measurements) on the
 // install itself; external clients pin the same M when they verify. When
-// --measurements was omitted, the mesh accepts any attested peer (UNSAFE), so
-// the hint says how to fix it.
+// --image-policy-file pins it the same way. When neither was passed, the mesh
+// accepts any attested peer (UNSAFE), so the hint says how to fix it.
 func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
 	if !attestEnabled {
 		return
@@ -1233,6 +1238,11 @@ func printAttestVerifyHint(w io.Writer, attestEnabled bool) {
 	if len(installMeasurements) > 0 {
 		fmt.Fprintln(w, "+ router attestation sidecar enabled; mesh pinned to --measurements.")
 		fmt.Fprintln(w, "  Clients verify with the same M: c8s verify https://<router> --measurements <M>")
+		return
+	}
+	if installMeasurementsConfig != "" {
+		fmt.Fprintln(w, "+ router attestation sidecar enabled; mesh pinned to --image-policy-file.")
+		fmt.Fprintln(w, "  Clients verify with the same policy: c8s verify https://<router> --image-policy-file <file>")
 		return
 	}
 	fmt.Fprintln(w, "+ router attestation sidecar enabled, but the mesh is UNPINNED (accepts any")
@@ -1413,7 +1423,7 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // does not grant device-cgroup access):
 //
 //	node, gke      → native /dev/sev-guest (SEV-SNP) by default, or
-//	                 /dev/tdx-guest (Intel TDX) if --hardware-platform tdx
+//	                 ConfigFS TSM (Intel TDX) if --hardware-platform tdx
 //	aks            → vTPM /dev/tpm0
 //
 // bare-metal and gke are distinct deployment targets that happen to share the
@@ -1440,7 +1450,7 @@ func appendDistroInstallArgs(helmArgs []string, distro string) []string {
 // tdx). aks uses the Azure vTPM path regardless of the CPU TEE type: the node's
 // vTPM HCL report wraps an SNP report on an SEV-SNP CVM (az-snp) or a TD quote
 // on an Intel TDX CVM (az-tdx). Both are supported; --hardware-platform tdx on
-// aks selects the az-tdx shape (no /dev/tdx-guest needed — the TD quote comes
+// aks selects the az-tdx shape (no TDX guest device needed — the TD quote comes
 // from the vTPM), and the mesh/CDS armTLS platform is set to tdx accordingly.
 //
 // Mixed-hardware inside a single cluster (some SNP hosts, some TDX hosts) is
@@ -1471,7 +1481,7 @@ func appendCvmModeInstallArgs(helmArgs []string, cvmMode, hardwarePlatform strin
 	//        exposes no /dev/sev-guest or /dev/tdx_guest to the guest, so the
 	//        vTPM is the only evidence source for both SNP and TDX aks nodes.
 	//   node/gke + --hardware-platform sev-snp: native /dev/sev-guest
-	//   node/gke + --hardware-platform tdx:     native /dev/tdx-guest
+	//   node/gke + --hardware-platform tdx:     ConfigFS TSM (/sys/kernel/config)
 	sevGuest, tdxGuest, tpm := "false", "false", "false"
 	switch {
 	case cvmMode == "aks":
@@ -2312,7 +2322,7 @@ func init() {
 	installCmd.Flags().BoolVar(&installWait, "wait", true, "wait for the release to become ready (helm --wait)")
 	installCmd.Flags().BoolVar(&installCRDs, "install-crds", true, "install chart CRDs (false passes helm --skip-crds)")
 	installCmd.Flags().Int64Var(&installCertFSGroup, "webhook-cert-fs-group", 65532, "fsGroup for injected certificate volume")
-	installCmd.Flags().DurationVar(&installGetCertRenewInterval, "webhook-get-cert-renew-interval", 6*time.Hour, "renewal interval for injected workload certificates")
+	installCmd.Flags().DurationVar(&installGetCertRenewInterval, "webhook-get-cert-renew-interval", 2*time.Hour, "renewal interval for injected workload certificates; sets webhook.getCert.renewInterval only when passed (the chart default is also 2h). Must stay below the 6h named-leaf TTL ceiling")
 	installCmd.Flags().Int64Var(&installGetCertRunAsUser, "webhook-get-cert-run-as-user", 65532, "runAsUser for injected get-cert containers")
 	installCmd.Flags().Int64Var(&installGetCertRunAsGroup, "webhook-get-cert-run-as-group", 65532, "runAsGroup for injected get-cert containers")
 	installCmd.Flags().BoolVar(&installGetCertRunAsNonRoot, "webhook-get-cert-run-as-non-root", true, "set runAsNonRoot for injected get-cert containers")
@@ -2321,7 +2331,7 @@ func init() {
 	installCmd.Flags().StringSliceVar(&installWorkloadRefs, flagWorkloadRef, nil, "existing workload to adopt as a c8s confidential workload, as <cw-id>=<namespace>/<kind>/<name>[:<port>]; repeatable. Kind is any resource exposing a pod template at spec.template (deployment, statefulset, daemonset, or an operator CRD such as <kind>.<group>). The optional :<port> is the router upstream port, needed on the ref --upstream selects")
 	installCmd.Flags().StringVar(&installUpstream, flagUpstream, "", "confidential.ai/cw id of the adopted --workload-ref workload router routes its catch-all to; derives the mesh-wrapped upstream c8s-<id>.<ns>.svc.cluster.local:<port> from that ref's :<port>. Without this or a verified-https router.upstream, router renders no catch-all route until one is attached")
 	installCmd.Flags().StringVar(&installCvmMode, flagCvmMode, "", "CVM deployment shape (REQUIRED; orthogonal to --hardware-platform): bare-metal (generalized node-as-CVM: our own TDX/SNP nodes are themselves confidential VMs, pods run as ordinary processes, attestation-api + nri baked into the node image), gke (GKE managed confidential VMs), or aks (vTPM /dev/tpm0). bare-metal/gke/aks are node-as-CVM shapes: the node is one trust domain, so they are single-tenant")
-	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, /dev/tdx-guest). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
+	installCmd.Flags().StringVar(&installHardwarePlatform, flagHardwarePlatform, "", "CPU-level TEE hardware (REQUIRED; orthogonal to --cvm-mode): sev-snp (/dev/sev-guest) or tdx (Intel TDX, quotes through ConfigFS TSM at /sys/kernel/config). Under --cvm-mode=aks the CPU TEE rides the Azure vTPM: sev-snp selects az-snp and tdx selects az-tdx (no guest device needed — the report comes from /dev/tpm0)")
 	installCmd.Flags().BoolVar(&installResolveDigests, "resolve-digests", true, "resolve each c8s component image tag to its registry digest (via crane), pin it, and add the resolved images to the NRI allowlist (enables deriveComponents). Also reads each pinned image config, the router nginx image included (docker.io unless router.nginx.image.repository names a mirror). On by default; pass --resolve-digests=false when supplying digests via -f")
 	installCmd.Flags().BoolVar(&installAttestEnabled, "attest", true, "deploy the router attestation sidecar serving /.well-known/c8s/ (browser/CLI verification via c8s-verify). On by default; pass --attest=false to omit it")
 	installCmd.Flags().StringSliceVar(&installInventoryCIDRs, "node-cidr", nil, "CIDR(s) holding this cluster's sandbox inventories (repeatable/comma-separated): CDS dials an inventory inside them and nowhere else. Under --cvm-mode=bare-metal/gke/aks these are node addresses, which is what stops a workload pointing the sandbox-digests callback at its own pod IP; the default is CDS deriving one host route per node from the live node list, so set a range only when the node network is separate from the pod network")
@@ -2330,7 +2340,7 @@ func init() {
 	installCmd.Flags().StringSliceVar(&installRegisters, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> completing --measurements on --hardware-platform=tdx (repeatable/comma-separated). Pins cds.rtmrs + armtlsMesh.rtmrs: RTMR[1] is the guest kernel, RTMR[2] the command line carrying the dm-verity root hash — without them the measurement pin covers TDVF firmware only. Read the values off a boot you trust; ignored for SNP evidence")
 	installCmd.Flags().StringVar(&installImagePullSecret, "image-pull-secret", "", "name of an existing registry-credential Secret (kubernetes.io/dockerconfigjson) in the release namespace; the chart appends it to every component's imagePullSecrets, so all pods can pull the c8s images from an authenticated registry (e.g. a private mirror) from first start. The Secret itself is never created or managed by the install — the install fails fast if it is missing or has the wrong type")
 	installCmd.Flags().StringVar(&installImageTag, "image-tag", "", "component image tag to resolve digests at (default: the CLI build version, or 'main' for an unstamped build). Override to pin a specific branch/tag/release")
-	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize `c8s allowlist` writes; sets cds.operatorKeys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
+	installCmd.Flags().StringVar(&installOperatorKeys, "operator-keys", "", "path to a PEM bundle of operator EC public keys that authorize 'c8s allowlist' writes; sets cds.operatorKeys. Without it, allowlist writes are disabled (reads still served). See the README \"Operator allowlist credentials\"")
 	installCmd.Flags().BoolVar(&installForce, "force", false, "proceed past guarded prompts — currently: install without --operator-keys (allowlist writes disabled), and a fail-closed image policy that would deny the cluster's own platform pods (they do not come back after the containerd restart)")
 	rootCmd.AddCommand(installCmd)
 }
