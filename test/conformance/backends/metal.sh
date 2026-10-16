@@ -230,9 +230,15 @@ requester_request() {
     else
         script="curl $(shq "${opts[@]}" "$url")"
     fi
-    resp="$(agent_run "$ns" "$pod" "$REQUESTER_CONTAINER" "$script")"
-    [ $? != "$UNSUPPORTED" ] || return "$UNSUPPORTED"
+    local rc=0
+    resp="$(agent_run "$ns" "$pod" "$REQUESTER_CONTAINER" "$script")" || rc=$?
+    [ "$rc" != "$UNSUPPORTED" ] || return "$UNSUPPORTED"
     resp="$(printf '%s' "$resp" | base64 -d)"
+    # curl exits non-zero only when no response came back.
+    if [ "$rc" != 0 ]; then
+        echo "backend: the requester's curl ($((${#script} / 1024)) KiB of script) exited $rc: $resp" >&2
+        return 1
+    fi
     echo "${resp##*$'\n'}"
     printf '%s\n' "${resp%$'\n'*}"
 }
