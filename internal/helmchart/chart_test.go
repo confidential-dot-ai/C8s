@@ -2951,6 +2951,13 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		}
 	}
 	tunnel.assertDirective(t, "client_max_body_size", "8m")
+	// Nothing spills to the 16Mi memory-backed temp volume, and the
+	// in-memory buffers are bounded in total.
+	tunnel.assertDirective(t, "client_body_buffer_size", "8m")
+	tunnel.assertDirective(t, "proxy_max_temp_file_size", "0")
+	tunnel.assertDirective(t, "limit_conn", "c8s_protocol_total", "32")
+	tunnel.assertDirective(t, "limit_conn_status", "503")
+	cfg.http.assertDirective(t, "limit_conn_zone", "$c8s_protocol_total_key", "zone=c8s_protocol_total:1m")
 	tunnel.assertDirective(t, "proxy_read_timeout", "3630s")
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 

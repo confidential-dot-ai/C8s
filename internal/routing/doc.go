@@ -10,10 +10,11 @@
 //	State      router public path         automated ingress service
 //	unapplied  503 (A2)                   refuse attested sessions (A2)
 //	stale      route (F2 allows it)       refuse new attested sessions (F2)
-//	fresh      route                      accept, bind the applied digest (E1)
+//	fresh      route                      accept (E1's digest binding lands later)
 //
-// A manifest that is only staged counts as unapplied. The state does not
-// change readiness reporting (A2).
+// A manifest that is only staged counts as unapplied, so a replica that
+// starts while CDS serves a manifest whose notBefore is still ahead refuses
+// sessions until then. The state does not change readiness reporting (A2).
 //
 // Requirement IDs in comments (A1, B3, F2, …) refer to
 // the route policy specification.

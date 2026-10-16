@@ -470,7 +470,9 @@ the chart accepts only in `audit` mode). The
 operator injects pods with the chart-managed CDS Service URL. Allowlist
 writes (`POST`, `PUT`, `DELETE /allowlist`) are authorized by an operator key:
 the caller presents a short-lived token signed by an operator EC private key
-whose public half is pinned in `cds.operatorKeys`. The `c8s allowlist` CLI mints
+whose public half is pinned in `cds.operatorKeys`. The token algorithm must
+match the key's curve: ES256 for P-256, ES384 for P-384, ES512 for P-521; CDS
+rejects any other pairing. The `c8s allowlist` CLI mints
 that token (see the README, "Managing the image allowlist"). Without
 `cds.operatorKeys` set, allowlist writes are rejected while reads keep serving.
 
@@ -827,7 +829,7 @@ The chart sets these flags from `router.routing` and the CDS pins.
 | `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
 | `--backend-timeout` | `1h` | Limit on one forwarded request, body included. Must be positive. |
 | `--tunnel-io-timeout` | `30s` | Limit on reading one tunnel request body, and separately on writing its sealed response. Must be positive. |
-| `--tunnel-slots` | `32` | Tunnelled requests in flight in one replica, shared by all clients; one client holds at most a quarter of them. Must be positive. Set by `router.routing.tunnelSlots`. |
+| `--tunnel-slots` | `32` | Tunnelled requests in flight in one replica, each held for its whole backend call, shared by all clients; one client (by `X-Real-IP`) holds at most a quarter of them. Must be positive. Set by `router.routing.tunnelSlots`. |
 | `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
 | `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--routing-port`. |
 
@@ -855,7 +857,12 @@ When `maxAgeSeconds` passes without a successful poll, it refuses them with
 sessions and the routing listener. A manifest whose `notBefore` is in the
 future counts as a successful poll. `cds-attest` applies it at the first poll
 at or after `notBefore` and keeps no timer, so while CDS is unreachable the
-applied revision keeps serving. The handshake gates on a fresh applied
+applied revision keeps serving. CDS serves only the staged manifest, so a
+replica that starts before its `notBefore` (a restart, rollout or scale-up)
+has nothing to apply: until `notBefore` it refuses handshakes with
+`routes_unavailable` and answers routed requests with 503, while `/readyz`
+stays 200. Keep the `notBefore` window short, and avoid restarts and
+scale-ups inside it. The handshake gates on a fresh applied
 manifest; binding the route digest into the evidence and publishing the
 manifest land in a later change, with the verifier. Until evidence carries
 the digest, manifest routing is not ready for production.
@@ -894,17 +901,25 @@ Each `cds-attest` replica holds at most `--tunnel-slots`
 tunnelled requests at once, shared by all clients (one client holds at most a
 quarter of them), from reading the sealed
 request to writing the sealed response, and answers further ones with 503
-`tunnel_busy`. Each request buffers up to about 150 MiB (three copies of an 8 MiB request and four of a
+`tunnel_busy`. A slot is held for the whole backend call, up to
+`--backend-timeout`, so `--tunnel-slots` caps concurrent tunnelled requests,
+not only memory. The per-client quarter keys on `X-Real-IP`: clients behind
+one NAT share it, and so do all clients when the Service SNATs them
+(`externalTrafficPolicy: Cluster`). Each request buffers up to about 150 MiB (three copies of an 8 MiB request and four of a
 32 MiB response), so budget about 150 MiB per slot, 5 GiB at the default,
 for `cds-attest`. A request body over 8 MiB gets 413, and a response over
 32 MiB gets a sealed 502; the routing listener streams responses without a
 cap. A client that stalls
 its upload or download loses its slot after `--tunnel-io-timeout`. The
-chart's nginx buffers the tunnel in both directions, so a slow client holds
-nginx buffers rather than a slot; keep `proxy_buffering` and
-`proxy_request_buffering` on for `/.well-known/c8s/`. That location admits
-bodies up to 8 MiB and waits `router.routing.backendTimeout` plus 30s for the
-sidecar.
+chart's nginx buffers request bodies in memory, so a slow upload holds nginx
+memory rather than a slot; keep `proxy_request_buffering` on for
+`/.well-known/c8s/`. Replies stream once they outgrow `proxy_buffers`, so a
+slow download of a large reply holds its slot. That location admits bodies up
+to 8 MiB, spills nothing to the memory-backed temp volume, serves at most
+`router.routing.tunnelSlots` requests at once (503 beyond), and waits
+`router.routing.backendTimeout` plus 30s for the sidecar. Budget
+`router.routing.tunnelSlots` times 8 MiB of nginx memory for those bodies
+(256 MiB at the default).
 
 ## Attestation-api
 
