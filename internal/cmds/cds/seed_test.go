@@ -241,13 +241,19 @@ func TestStartSeedWithoutFollowIgnoresChanges(t *testing.T) {
 	fixed, following := open(), open()
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	if err := startSeed(ctx, fixed, path, false); err != nil {
+	fixedDone, err := startSeed(ctx, fixed, path, false)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := startSeed(ctx, following, path, true); err != nil {
+	followingDone, err := startSeed(ctx, following, path, true)
+	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		cancel()
+		<-fixedDone
+		<-followingDone
+	})
 	_, before, err := fixed.LoadAll()
 	if err != nil {
 		t.Fatal(err)
@@ -275,5 +281,41 @@ func TestStartSeedWithoutFollowIgnoresChanges(t *testing.T) {
 	}
 	if _, ok := doc.Workloads["intruder"]; ok || after != before {
 		t.Errorf("without --follow-seed: workloads %v at version %s, want no intruder at version %s", doc.Workloads, after, before)
+	}
+}
+
+// Once startSeed's channel closes, the follower no longer touches the store,
+// so a caller may close it.
+func TestStartSeedDoneStopsFollowing(t *testing.T) {
+	orig := seedRecheckInterval
+	seedRecheckInterval = time.Millisecond
+	t.Cleanup(func() { seedRecheckInterval = orig })
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := startSeed(ctx, &store, path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the follower did not stop after its context was cancelled")
+	}
+	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "late": digestB})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * seedRecheckInterval)
+	doc, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := doc.Workloads["late"]; ok {
+		t.Errorf("the store took a seed change after the follower reported it stopped: %v", doc.Workloads)
 	}
 }

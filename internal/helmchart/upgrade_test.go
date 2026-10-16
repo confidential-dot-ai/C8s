@@ -176,6 +176,11 @@ func TestCDSShapeGuard(t *testing.T) {
 			if tc.fails && !strings.Contains(string(out), "cds.publishedShape="+tc.want) {
 				t.Errorf("failure does not name the entry to publish:\n%s", out)
 			}
+			// A CDS recreated since the nodes last pulled counts from a lower
+			// version, which the nodes ignore until it passes theirs.
+			if tc.fails && !strings.Contains(string(out), "above every allowlist_version the nodes' image policy plugins reported") {
+				t.Errorf("failure does not require publication past the nodes' versions:\n%s", out)
+			}
 			if tc.fails && tc.live == "" && !strings.Contains(string(out), "cds.liveShape=none") {
 				t.Errorf("failure on an unknown CDS does not name cds.liveShape:\n%s", out)
 			}
@@ -302,17 +307,24 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 }
 
 // Following the seed lets whoever edits its ConfigMap publish entries, so CDS
-// follows it only when cds.followSeed asks.
+// with operator keys follows it only when cds.followSeed asks. Without keys
+// the seed is the only way to publish, so CDS follows it.
 func TestChartCDSFollowsSeedOnlyWhenAsked(t *testing.T) {
 	t.Parallel()
+	keys := filepath.Join(t.TempDir(), "operator.pub")
+	if err := os.WriteFile(keys, []byte("-----BEGIN PUBLIC KEY-----\nMFkwfakefakefake\n-----END PUBLIC KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	withKeys := []string{"--set-file", "cds.operatorKeys=" + keys}
 	for _, tc := range []struct {
 		name   string
 		args   []string
 		follow bool
 	}{
-		{name: "default"},
-		{name: "off", args: []string{"--set", "cds.followSeed=false"}},
-		{name: "on", args: []string{"--set", "cds.followSeed=true"}, follow: true},
+		{name: "default", args: withKeys},
+		{name: "off", args: append(slices.Clone(withKeys), "--set", "cds.followSeed=false")},
+		{name: "on", args: append(slices.Clone(withKeys), "--set", "cds.followSeed=true"), follow: true},
+		{name: "no operator keys", args: []string{"--set", "cds.followSeed=false"}, follow: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)

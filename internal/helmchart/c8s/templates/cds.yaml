@@ -50,7 +50,7 @@ containers:
       - --dns-san-file=/run/c8s-node/tls-san
       {{- else }}
       - --allowlist-seed=/mnt/c8s-data/cds-seed/allowlist-seed.json
-      {{- if .Values.cds.followSeed }}
+      {{- if or .Values.cds.followSeed (not .Values.cds.operatorKeys) }}
       - --follow-seed
       {{- end }}
       {{- end }}
@@ -255,7 +255,7 @@ spec:
 ---
 {{- end }}
 {{- $cdsShape := include "c8s.cdsShapeName" . }}
-{{- include "c8s.cdsShapeCheck" (dict "root" . "want" $cdsShape) }}
+{{- include "c8s.cdsShapeCheck" (dict "root" . "want" $cdsShape "entry" (include "c8s.cdsEntryName" .)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

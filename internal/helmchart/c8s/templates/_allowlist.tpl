@@ -559,7 +559,7 @@
      characters at most. A configuration change that alters
      an argv, env or mount table names a new entry, which CDS's seeding adds
      beside the old one (it retires an old one only when it left a
-     component's args, mounts or env open). See
+     component's args, mounts or env open, or an override replaces it). See
      ../helpers/allowlist/README.md#entry-names. */ -}}
 {{- define "c8s.shapeWorkloadName" -}}
 {{- $matched := list -}}
@@ -567,13 +567,28 @@
 {{- printf "%s-%s" (include "c8s.digestWorkloadName" (dict "digest" .digest "image" .image "baseMax" 41)) ($matched | toJson | sha256sum | trunc 8) -}}
 {{- end -}}
 
-{{/* The seed entry name of CDS's own shape, or "" when CDS is not
-     digest-pinned. */ -}}
+{{/* CDS's own launch shape, named as its generated entry, or "" when CDS
+     is not digest-pinned. The upgrade guard compares it across releases, so
+     it changes with CDS's argv and mounts even when an override admits CDS. */ -}}
 {{- define "c8s.cdsShapeName" -}}
 {{- $digest := .Values.cds.image.digest -}}
 {{- with get (include "c8s.componentShapes" . | fromJson) (default "" $digest) -}}
 {{- include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get . "image") "containers" (get . "containers")) -}}
 {{- end -}}
+{{- end -}}
+
+{{/* The seed entry that admits CDS: the operator's override for CDS's
+     digest, else c8s.cdsShapeName. */ -}}
+{{- define "c8s.cdsEntryName" -}}
+{{- $name := include "c8s.cdsShapeName" . -}}
+{{- $digest := .Values.cds.image.digest -}}
+{{- with get (include "c8s.componentShapes" . | fromJson) (default "" $digest) -}}
+{{- $override := include "c8s.digestWorkloadName" (dict "digest" $digest "image" (get . "image")) -}}
+{{- if hasKey ($.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) $override -}}
+{{- $name = $override -}}
+{{- end -}}
+{{- end -}}
+{{- $name -}}
 {{- end -}}
 
 {{/* See ../helpers/allowlist/README.md#argv-pinned-entries for the seed contract. */}}

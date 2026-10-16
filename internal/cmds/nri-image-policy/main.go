@@ -492,8 +492,11 @@ func (p *nodeIPPublisher) publish() time.Duration {
 	host, source, err := p.resolve()
 	if err == nil && !usableNodeIP(net.ParseIP(host)) {
 		// Not transient: the configuration names an address no pod can dial.
-		err = errors.Join(fmt.Errorf("node address %q from %s is not a unicast address other pods can dial", host, source), emptyIfExists(path))
 		p.pending = ""
+		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
+		p.logger.Error("node-ip emptied: the node address is not a unicast address other pods can dial; running components keep the address they read, and components that start will not until an address is published",
+			"address", host, "source", source, "error", emptyIfExists(path), "retry_in", p.delay)
+		return p.delay
 	}
 	if err == nil {
 		err = p.write(path, host, source)

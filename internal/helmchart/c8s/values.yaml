@@ -227,7 +227,8 @@ cds:
   ## default: anyone who can edit that ConfigMap could then publish allowlist
   ## entries without an operator token. Off, a configuration-only upgrade
   ## publishes its new entries through `c8s allowlist apply`
-  ## (docs/allowlist-and-capabilities.md).
+  ## (docs/allowlist-and-capabilities.md). Without operatorKeys CDS follows
+  ## its seed regardless: the seed is then the only way to publish.
   followSeed: false
   ## CIDR(s) holding this cluster's node addresses. CDS dials a node's admission
   ## inventory inside them and nowhere else, which is what stops a workload

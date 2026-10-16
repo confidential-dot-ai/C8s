@@ -146,6 +146,29 @@ func TestPublishNodeIP(t *testing.T) {
 	}
 }
 
+// An unusable address empties the file, and the log says so rather than
+// claim the file keeps its last address.
+func TestNodeIPPublisherLogsEmptiedFile(t *testing.T) {
+	fakeHostInterface(t, net.ParseIP("192.0.2.10"), nil)
+	cfg := &config{}
+	cfg.WorkloadClaims.SocketDir = t.TempDir()
+	cfg.WorkloadClaims.AdvertiseHost = "0.0.0.0"
+	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, nil, nil)
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	if err := os.WriteFile(path, []byte("192.0.2.10\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	p := &nodeIPPublisher{cfg: cfg, logger: slog.New(slog.NewTextHandler(&logs, nil))}
+	p.publish()
+	if got, err := os.ReadFile(path); err != nil || len(got) != 0 {
+		t.Fatalf("node-ip = %q, %v; want empty", got, err)
+	}
+	if out := logs.String(); !strings.Contains(out, "node-ip emptied") || strings.Contains(out, "keeps its last address") {
+		t.Errorf("publish logged %q, want it to report the emptied file", out)
+	}
+}
+
 func fakeHostInterface(t *testing.T, ip net.IP, err error) {
 	t.Helper()
 	orig := chooseHostInterface

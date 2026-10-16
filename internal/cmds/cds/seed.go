@@ -19,21 +19,26 @@ var seedRecheckInterval = 30 * time.Second
 // startSeed seeds store from path and, when follow is set, starts following
 // it until ctx is done. Following is off by default: anyone who can edit the
 // seed's ConfigMap could otherwise publish entries without an operator token.
-func startSeed(ctx context.Context, store *allowlist.Store, path string, follow bool) error {
+// The returned channel closes once the follower has stopped; close store only
+// after it does.
+func startSeed(ctx context.Context, store *allowlist.Store, path string, follow bool) (<-chan struct{}, error) {
+	done := make(chan struct{})
 	applied, err := seedStore(store, path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !follow {
-		return nil
+		close(done)
+		return done, nil
 	}
 	slog.Warn("--follow-seed: a change to the mounted seed is published without an operator token", "path", path, "interval", seedRecheckInterval)
 	t := time.NewTicker(seedRecheckInterval)
 	go func() {
+		defer close(done)
 		defer t.Stop()
 		followSeed(ctx, store, path, applied, t.C)
 	}()
-	return nil
+	return done, nil
 }
 
 // seedStore reads the JSON allowlist at path, seeds its workload entries into

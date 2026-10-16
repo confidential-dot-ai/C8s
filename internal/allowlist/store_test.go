@@ -574,3 +574,50 @@ func TestEnvironmentValuesPersist(t *testing.T) {
 	}
 
 }
+
+// An operator override named <image>-<12 hex> replaces every generated shape
+// of that digest, exact ones included, so narrowing a component through an
+// override stops admitting what the generated shapes allowed.
+func TestSeedWorkloadsOverrideRetiresGeneratedShapes(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+
+	digest := mustParseDigest(t, digestA)
+	hex := digest.Hex()[:12]
+	exact := func(args ...string) pkgallowlist.Workload {
+		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
+			Digest:  digest,
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
+			Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: args},
+			Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyDeny},
+			Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: map[string]pkgallowlist.EnvMatcher{}},
+		}}}
+	}
+	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{
+		"cds-" + hex + "-0000000a":   exact("--debug"),
+		"other-" + hex + "-0000000b": exact("--other"),
+		"mine":                       exact("--mine"),
+	}); err != nil {
+		t.Fatalf("seed previous release: %v", err)
+	}
+
+	added, retired, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{"cds-" + hex: exact()})
+	if err != nil || added != 1 || retired != 1 {
+		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 1, nil", added, retired, err)
+	}
+	doc, _, _ := store.LoadAll()
+	if _, ok := doc.Workloads["cds-"+hex+"-0000000a"]; ok {
+		t.Errorf("generated shape survived the override that replaces it")
+	}
+	for _, name := range []string{"cds-" + hex, "other-" + hex + "-0000000b", "mine"} {
+		if _, ok := doc.Workloads[name]; !ok {
+			t.Errorf("entry %q retired, want it kept", name)
+		}
+	}
+	if doc.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digestA, Argv: []string{"/c8s", "cds", "--debug"}}) {
+		t.Error("the overridden launch is still admitted")
+	}
+}

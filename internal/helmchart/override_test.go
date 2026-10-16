@@ -113,3 +113,51 @@ func TestChartOverrideReplacesArgvPinnedEntry(t *testing.T) {
 		}
 	}
 }
+
+// With an override admitting CDS, the guard names the override as the entry
+// to publish, since the seed holds no generated CDS entry, and still trips on
+// a change to CDS's launch that keeps the override's name.
+func TestChartCDSShapeGuardNamesOverride(t *testing.T) {
+	t.Parallel()
+	base, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, base)
+	}
+	seed := renderedSeed(t, base)
+	live := cdsShapeAnnotation(t, base)
+	entry, ok := seed.Workloads[live]
+	if !ok {
+		t.Fatalf("seed has no entry %s for the CDS shape", live)
+	}
+	digest := entry.Containers[0].Digest
+	override := pkgallowlist.DigestEntryName(digest, entry.Label)
+	raw, err := json.Marshal(map[string]any{"label": entry.Label, "containers": entry.Containers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := []string{
+		"--set-json", "nriImagePolicy.bootstrapAllowlist.workloads." + override + "=" + string(raw),
+		"--set-string", "cds.liveShape=" + live,
+		"--set", "cds.logLevel=warn",
+	}
+	out, err := helmTemplate(t, args...)
+	if err == nil {
+		t.Fatal("a changed CDS command line under an override rendered without publication")
+	}
+	msg := helmFailMessage(t, out)
+	if !strings.Contains(msg, "publish entry "+override+" ") {
+		t.Errorf("guard failure = %q, want it to name the override %s", msg, override)
+	}
+	_, shape, ok := strings.Cut(msg, "cds.publishedShape=")
+	if !ok {
+		t.Fatalf("guard failure = %q, want a cds.publishedShape value", msg)
+	}
+	shape = strings.TrimSpace(shape)
+	published, err := helmTemplate(t, append(args, "--set-string", "cds.publishedShape="+shape)...)
+	if err != nil {
+		t.Fatalf("helm template with the named shape published: %v\n%s", err, published)
+	}
+	if got := entriesFor(renderedSeed(t, published), digest.String()); !slices.Equal(got, []string{override}) {
+		t.Errorf("seed entries for the CDS digest = %v, want only the override %s", got, override)
+	}
+}

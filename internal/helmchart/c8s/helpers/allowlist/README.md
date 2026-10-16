@@ -92,7 +92,8 @@ beside the old one; the old entry keeps admitting running pods and rollbacks
 until an operator deletes it. `c8s allowlist lint --seed` names such stale
 entries. CDS deletes a replaced generated entry itself, the pre-shape
 `<image>-<12hex>` form included, when it leaves a component's args or mounts
-open (`internal/allowlist` `retiredBySeed`). The node image merges the seed into its measured base, so it carries
+open, and every generated entry for a digest the seed carries an operator
+override for (`internal/allowlist` `retiredBySeed`). The node image merges the seed into its measured base, so it carries
 the same names.
 
 ## Component shapes

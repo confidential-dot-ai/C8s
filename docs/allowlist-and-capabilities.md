@@ -778,18 +778,47 @@ operator key, before you upgrade:
    `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap as
    `seed.json`. `helm template` cannot read the running CDS, so add the
    `--set cds.publishedShape=NAME` its error names.
-2. Publish it: `c8s allowlist apply seed.json`. Each entry replaces the live
-   entry of that name whole.
-3. Wait until every node has taken the write: its image policy plugin reports
-   an `allowlist_version` on `GET /healthz` at or above the one
-   `c8s allowlist list` reports ([Refresh and
-   anti-rollback](#refresh-and-anti-rollback)).
-4. Run the upgrade.
+2. Note the highest `allowlist_version` any node's image policy plugin
+   reports on `GET /healthz`.
+3. Publish the seed: `c8s allowlist apply seed.json`. Each entry replaces the
+   live entry of that name whole.
+4. Check that `c8s allowlist list` reports a version above the one you noted.
+   If it does not, CDS restarted since the nodes last pulled, and they ignore
+   its versions up to the one they hold ([Refresh and
+   anti-rollback](#refresh-and-anti-rollback)): run the `apply` again until it
+   does. A node at or above an older version may hold a policy the restarted
+   CDS never served.
+5. Wait until every node has taken the write: its plugin reports an
+   `allowlist_version` at or above the one `c8s allowlist list` reports.
+6. Run the upgrade.
+
+An override that narrows a component (an entry named `<image>-<first 12 hex
+of the digest>`, see above) needs one more change: the store still serves the
+generated entries it replaces, which admit what the override forbids, and
+`apply` refuses an override that such an entry shadows. Publish it in one
+write that retires them, in place of step 3:
+
+```sh
+c8s allowlist export live.json
+jq --slurpfile seed seed.json --arg override OVERRIDE \
+  '.workloads |= (with_entries(select(.key | startswith($override + "-") | not)) + $seed[0].workloads)' \
+  live.json > next.json
+c8s allowlist upload next.json
+```
+
+`OVERRIDE` is the override's entry name. Pods that still run the narrowed-away
+launch keep running, but cannot restart under it. A CDS that seeds the
+override, at start or while following its seed, retires those entries itself.
 
 With `cds.followSeed` on, a running CDS rereads its mounted seed every 30
 seconds and seeds it again when it changed, so a configuration-only upgrade
 publishes its own entries. Whoever can edit the seed ConfigMap then publishes
-allowlist entries without an operator token, so it is off by default.
+allowlist entries without an operator token, so it is off by default. Without
+`cds.operatorKeys`, CDS accepts no operator write, so it follows its seed
+whatever `cds.followSeed` says: the seed is then the only way to publish.
+Adding operator keys later changes CDS's command line, which the following
+CDS publishes from the seed as described below; once they are set, publish
+with `c8s allowlist apply`.
 
 A rollback that keeps CDS running needs no publication: the store still holds
 the previous release's entries. A rollback across an upgrade that recreated
@@ -798,22 +827,28 @@ the previous CDS or installer, and `helm rollback` reapplies the stored
 manifests without the upgrade guard below. Before you roll back, save the
 `allowlist-seed.json` of the seed ConfigMap in
 `helm get manifest <release> --revision <previous>`, publish it with
-`c8s allowlist apply`, and wait for every node as in step 3.
+`c8s allowlist apply`, and wait for every node as in steps 2 to 5.
 
 CDS itself is recreated, not rolled, so it cannot publish its own new shape:
-the old CDS stops before the new one starts. The chart records CDS's entry
-name on its Deployment, and an upgrade that changes CDS's image, command line
-or mounts fails until you publish the new entry. A plain `cds.image.digest`
-bump changes the entry too. To publish it:
+the old CDS stops before the new one starts. The chart records CDS's shape,
+named as its generated entry, on its Deployment, and an upgrade that changes
+CDS's image, command line or mounts fails until you publish the entry that
+admits the new shape. A plain `cds.image.digest` bump changes the shape too.
+The error names the entry to publish, which is your override when one admits
+CDS, and the `cds.publishedShape` value. To publish it:
 
 1. Run the failed upgrade's values through `helm template` with
-   `--set cds.publishedShape=NAME`, where `NAME` is the entry name from the
+   `--set cds.publishedShape=NAME`, where `NAME` is the value from the
    error, and save the `allowlist-seed.json` of the
    `<release>-cds-allowlist-seed` ConfigMap.
-2. Copy the entry the error names into a file and publish it:
-   `c8s allowlist apply ENTRY_FILE`.
-3. Wait until every node has taken the write, as in the configuration-only
-   procedure above.
+2. Copy the entry the error names into a file and publish it as in steps 2
+   to 4 of the configuration-only procedure above, with
+   `c8s allowlist apply ENTRY_FILE`. Without operator keys, a CDS that follows
+   its seed publishes it instead: first run a configuration-only upgrade that
+   keeps CDS's shape and adds the entry under
+   `nriImagePolicy.bootstrapAllowlist.workloads`.
+3. Wait until every node has taken the write, as in step 5 of that
+   procedure.
 4. Rerun the upgrade with `--set cds.publishedShape=NAME`.
 
 The guard reads the running CDS's entry name from the live Deployment. When
@@ -822,7 +857,7 @@ controller, where `lookup` answers nothing, and against a Deployment from a
 release before the annotation. Then either publish the entry and set
 `cds.publishedShape` as above, or, when no CDS runs yet, set
 `cds.liveShape=none`. A GitOps controller that renders every sync can set
-`cds.liveShape` to the running entry's name instead, which the guard then
+`cds.liveShape` to the running shape's annotation instead, which the guard then
 compares as it would the annotation.
 
 When it seeds, CDS deletes a stored entry the seed replaces if it pins a
