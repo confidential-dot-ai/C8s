@@ -937,14 +937,35 @@ func (w *world) cdsVerification(p *pod) ([]string, error) {
 	if p.verifyCDS != nil {
 		return p.verifyCDS, nil
 	}
-	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o",
-		`jsonpath={.status.hostIP}{"\n"}{range .spec.initContainers[?(@.name=="`+certContainer+`")].args[*]}{@}{"\n"}{end}`)
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
 	if err != nil {
 		return nil, err
 	}
-	hostIP, rest, _ := strings.Cut(out, "\n")
+	// JSON, not one arg per line: the image policy argument is a JSON
+	// document that may span lines.
+	var spec struct {
+		Spec struct {
+			InitContainers []struct {
+				Name string   `json:"name"`
+				Args []string `json:"args"`
+			} `json:"initContainers"`
+		} `json:"spec"`
+		Status struct {
+			HostIP string `json:"hostIP"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(out), &spec); err != nil {
+		return nil, err
+	}
+	hostIP := spec.Status.HostIP
+	var args []string
+	for _, c := range spec.Spec.InitContainers {
+		if c.Name == certContainer {
+			args = c.Args
+		}
+	}
 	flags := []string{}
-	for _, arg := range strings.Split(rest, "\n") {
+	for _, arg := range args {
 		name, value, _ := strings.Cut(arg, "=")
 		switch name {
 		case "--attestation-api-url", "--image-policy-json":
