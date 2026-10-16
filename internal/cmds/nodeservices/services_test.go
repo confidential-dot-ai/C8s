@@ -32,6 +32,7 @@ func document(t *testing.T, role launchconfig.Role) *launchconfig.Document {
 }
 
 const floor = "platform: tdx\nallowlist:\n  base:\n    schema: c8s.allowlist/v1\n    workloads:\n      system:\n        containers:\n          - digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n            command: {policy: any}\n            args: {policy: any}\n  pull:\n    url: https://127.0.0.1:30808\n    timeout: 30s\n    cds_measurements: []\npolicy:\n  mode: fail-closed\n  enforce_existing: true\n"
+const cdsFloor = `{"schema":"c8s.allowlist/v1","workloads":{"cds-ha-replica":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"exact","argv":["/c8s","cds"]},"args":{"policy":"exact","argv":["--ha-config=/run/c8s-node/cds-ha.json"]}}]}}}`
 const seed = `{"schema":"c8s.allowlist/v1","workloads":{"operator":{"containers":[{"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
 
 func writeInput(t *testing.T, root, name string, data []byte) {
@@ -215,9 +216,9 @@ func TestPreparePublishesOnlyPublicRoleInputs(t *testing.T) {
 					t.Fatalf("secret or unreadable public file %s: %v", entry.Name(), err)
 				}
 			}
-			want := []string{"cds.json", "peers.json"}
+			want := []string{"cds-mode", "cds.json", "peers.json"}
 			if role == launchconfig.Server {
-				want = []string{"allowlist-seed.json", "cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
+				want = []string{"allowlist-seed.json", "cds-mode", "cds.json", "operator-pubkey", "peers.json", "router", "tls-san"}
 				for name, expected := range map[string]string{"operator-pubkey": doc.Server.OperatorPublicKey, "tls-san": doc.TLSSAN + "\n"} {
 					data, err := os.ReadFile(filepath.Join(root, PublicDir, name))
 					if err != nil || string(data) != expected {
@@ -369,4 +370,77 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, PublicDir, "router", "upstream.conf")); !os.IsNotExist(err) {
 		t.Fatalf("rejected document published router input: %v", err)
 	}
+}
+
+// TestPrepareHACluster: with cdsHA, cds.json pins the server and the cds
+// launch key; the server publishes cds-mode=ha; a cds node gets cds-ha.json
+// and an NRI policy without the served-allowlist pull.
+func TestPrepareHACluster(t *testing.T) {
+	pins := testPins(t)
+	if len(pins.Images) < 2 {
+		t.Skip("testdata needs two identities")
+	}
+	haRoot := func(t *testing.T, cdsImages int) string {
+		root := prepareRoot(t)
+		writeInput(t, root, "/usr/lib/c8s/cds-floor.json", []byte(cdsFloor))
+		p := pins
+		p.Images = pins.Images[:cdsImages]
+		data, err := refvalues.Format(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeInput(t, root, launchDir+"cds.json", data)
+		return root
+	}
+	haDoc := func(role launchconfig.Role) *launchconfig.Document {
+		d := document(t, role)
+		d.ClusterID = "cdsha"
+		d.CDSOperatorPublicKeys = []string{string(pins.Images[1].Anchor)}
+		d.CDSHA = &launchconfig.CDSHA{DecreeKey: string(pins.Images[1].Anchor), Replicas: 3}
+		d.Image.Measurement = strings.Repeat("11", 48)
+		d.Image.RTMRs = map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}
+		return d
+	}
+	t.Run("server", func(t *testing.T) {
+		root := haRoot(t, 2)
+		if err := Prepare(root, haDoc(launchconfig.Server)); err != nil {
+			t.Fatal(err)
+		}
+		mode, _ := os.ReadFile(filepath.Join(root, PublicDir, CDSModeFile))
+		if string(mode) != "ha\n" {
+			t.Fatalf("cds-mode %q", mode)
+		}
+		manifests := filepath.Join(root, rke2ManifestsDir)
+		if _, err := os.Stat(filepath.Join(manifests, "c8s-cds-singleton.yaml.skip")); err != nil {
+			t.Fatal("HA server does not skip the singleton CDS")
+		}
+		if _, err := os.Stat(filepath.Join(manifests, "c8s-cds-ha.yaml.skip")); err == nil {
+			t.Fatal("HA server skips the HA CDS")
+		}
+	})
+	t.Run("cds", func(t *testing.T) {
+		root := haRoot(t, 2)
+		if err := Prepare(root, haDoc(launchconfig.CDS)); err != nil {
+			t.Fatal(err)
+		}
+		var ha CDSHAConfig
+		raw, err := os.ReadFile(filepath.Join(root, PublicDir, cdsHAFile))
+		if err != nil || json.Unmarshal(raw, &ha) != nil || ha.ClusterID != "cdsha" || ha.Replicas != 3 {
+			t.Fatalf("cds-ha.json: %s %v", raw, err)
+		}
+		policy, err := os.ReadFile(filepath.Join(root, "/etc/nri/conf.d/image-policy.yaml"))
+		if err != nil || bytes.Contains(policy, []byte("pull:")) {
+			t.Fatalf("cds node NRI policy must not pull the served allowlist:\n%s", policy)
+		}
+		// The cds floor replaces the chart seed: the replica entry is in, the
+		// operator image (same c8s binary, any argv) is out.
+		if !bytes.Contains(policy, []byte("cds-ha-replica")) || bytes.Contains(policy, []byte("operator:")) {
+			t.Fatalf("cds node NRI floor is not the cds floor:\n%s", policy)
+		}
+	})
+	t.Run("cds.json without the cds pin", func(t *testing.T) {
+		if err := Prepare(haRoot(t, 1), haDoc(launchconfig.Server)); err == nil {
+			t.Fatal("accepted a cds.json that does not pin the cds launch key")
+		}
+	})
 }
