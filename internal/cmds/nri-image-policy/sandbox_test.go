@@ -183,6 +183,13 @@ func TestSandboxViolations(t *testing.T) {
 			want: "writable sysfs or cgroupfs",
 		},
 		{
+			name: "privileged: sysfs ro then rw",
+			ctr: func(c *api.Container) {
+				c.Mounts[1].Options = []string{"nosuid", "noexec", "nodev", "ro", "rw"}
+			},
+			want: "writable sysfs or cgroupfs",
+		},
+		{
 			name: "privileged: host devices",
 			ctr: func(c *api.Container) {
 				c.Linux.Devices = []*api.LinuxDevice{{Path: "/dev/sda", Type: "b"}}

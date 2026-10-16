@@ -297,8 +297,9 @@
      (internal/webhook): each pinned to its invocation with args open, since
      the SAN and file paths are per pod, to a fixed mount table, and to the
      env names getCertEnv gives it, matched present since they differ per
-     pod. The discovery, reload-watch and inventory socket mounts are
-     optional, so each combination is its own shape. The destinations match
+     pod. The discovery and reload-watch mounts are optional, so each
+     combination is its own shape. The plugin's own inventory socket mount
+     observes as platform, so no shape names it. The destinations match
      the webhook's defaults, which pods can no longer move. Takes root, digest,
      image and imageEnv. */ -}}
 {{- define "c8s.injectedShapes" -}}
@@ -306,18 +307,15 @@
 {{- $discovery := dict "destination" "/run/c8s/discovery" "kind" "emptyDir" -}}
 {{- $reload := dict "destination" "/mnt/c8s-data/c8s-reload-watch" "kind" "data" -}}
 {{- $secrets := dict "destination" "/run/c8s/secrets" "kind" "emptyDir" -}}
-{{- /* An NRI mount, so containerd does not resolve the source: it is the
-       plugin's configured socket directory verbatim. */ -}}
-{{- $socket := dict "destination" "/run/c8s/workload-claims" "kind" "host" "source" (toString .root.Values.nriImagePolicy.hostPaths.runtimeDir) "readOnly" true -}}
 {{- $podEnv := list -}}
 {{- range $name := list "C8S_WORKLOAD_ID" "C8S_POD_NAME" "C8S_POD_UID" "HOST_IP" -}}
 {{- $podEnv = append $podEnv (dict "name" $name "valueFrom" (dict "fieldRef" dict)) -}}
 {{- end -}}
 {{- $sidecars := list
-      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload $socket) "env" $podEnv)
+      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload) "env" $podEnv)
       (dict "mode" "probe-file" "fixed" (list $certs) "optional" (list $discovery) "env" list)
-      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery $socket) "env" $podEnv)
-      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery $socket) "env" $podEnv) -}}
+      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery) "env" $podEnv)
+      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery) "env" $podEnv) -}}
 {{- $out := list -}}
 {{- range $s := $sidecars -}}
 {{- $tables := list (get $s "fixed") -}}

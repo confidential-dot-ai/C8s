@@ -119,7 +119,8 @@ func sidecarEnv(t *testing.T, pod *corev1.Pod, c corev1.Container, imageEnv map[
 // observedSidecarMounts classifies an injected sidecar's mounts the way the
 // node does: the webhook's volumes and the pod's discovery volume are memory
 // emptyDirs, the reload-watch volume is a Secret, and on a node with the
-// inventory the NRI plugin adds its socket directory read-only.
+// inventory the NRI plugin adds its socket directory read-only, which it
+// observes as a platform mount.
 func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, inventory bool) []allowlist.ObservedMount {
 	t.Helper()
 	volumes := map[string]corev1.Volume{}
@@ -139,11 +140,7 @@ func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, in
 		mounts = append(mounts, mount)
 	}
 	if inventory && workloadclaims.IsSocketConsumer(c.Name) {
-		digest, err := allowlist.HostSourceDigest(chartRuntimeDir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mounts = append(mounts, allowlist.ObservedMount{Destination: workloadclaims.SidecarSocketDir, Class: allowlist.MountHost, ReadOnly: true, HostSourceDigest: digest})
+		mounts = append(mounts, allowlist.ObservedMount{Destination: workloadclaims.SidecarSocketDir, Class: allowlist.MountPlatform, ReadOnly: true})
 	}
 	return mounts
 }
