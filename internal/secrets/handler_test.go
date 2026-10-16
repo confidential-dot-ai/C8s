@@ -710,41 +710,62 @@ func TestEntryWithoutGrantRefused(t *testing.T) {
 	}
 }
 
-// A grant on an entry that leaves a container's argv unconstrained is refused
-// at release, whatever the write path let through: the value would go to
-// whatever command line the host chose.
+// A grant on an entry that leaves a container's argv or mounts to the host is
+// refused at release, whatever the write path let through: the value would go
+// to whatever command line the host chose, or beside a volume it added.
 func TestGrantOnUnpinnedEntryRefused(t *testing.T) {
-	hn := newHarness(t)
-	var log bytes.Buffer
-	hn.h.Logger = slog.New(slog.NewTextHandler(&log, nil))
-	hn.h.Policy = fakePolicy{al: &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
-		"c8s": anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
-		"api": {
-			Containers: []pkgallowlist.Container{
-				{
-					Digest:  mustDigest(t, testAppImg),
-					Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/serve"}},
-					Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
-				},
-				{
-					Digest:  mustDigest(t, testAppImg2),
-					Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
-					Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
-				},
+	for name, tc := range map[string]struct {
+		metrics pkgallowlist.Container
+		want    string
+	}{
+		"args any": {
+			metrics: pkgallowlist.Container{
+				Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
+				Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny},
 			},
-			Secrets: &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"/api/**"}},
+			want: "command and args policy",
 		},
-	}}}
-	stored := []byte("stored-secret")
-	hn.seed(t, "/api/db", stored)
+		"mounts any": {
+			metrics: pkgallowlist.Container{
+				Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/metrics"}},
+				Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
+				Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyAny},
+			},
+			want: "mounts policy",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hn := newHarness(t)
+			var log bytes.Buffer
+			hn.h.Logger = slog.New(slog.NewTextHandler(&log, nil))
+			metrics := tc.metrics
+			metrics.Digest = mustDigest(t, testAppImg2)
+			hn.h.Policy = fakePolicy{al: &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{
+				"c8s": anyEntry(t, testInjected, "ghcr.io/confidential-dot-ai/c8s@"+testInjected),
+				"api": {
+					Containers: []pkgallowlist.Container{
+						{
+							Digest:  mustDigest(t, testAppImg),
+							Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/serve"}},
+							Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyDeny},
+						},
+						metrics,
+					},
+					Secrets: &pkgallowlist.SecretsPolicy{Policy: pkgallowlist.PolicyAllow, Read: []string{"/api/**"}},
+				},
+			}}}
+			stored := []byte("stored-secret")
+			hn.seed(t, "/api/db", stored)
 
-	w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("unpinned entry with a grant = %d, want 403", w.Code)
-	}
-	assertNoRelease(t, w, stored)
-	if !strings.Contains(log.String(), "unconstrained") {
-		t.Fatalf("refusal did not name the unpinned argv:\n%s", log.String())
+			w := do(hn.h, hn.request(t, http.MethodGet, "/api/db"))
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("unpinned entry with a grant = %d, want 403", w.Code)
+			}
+			assertNoRelease(t, w, stored)
+			if !strings.Contains(log.String(), tc.want) {
+				t.Fatalf("refusal did not name the unpinned field %q:\n%s", tc.want, log.String())
+			}
+		})
 	}
 }
 

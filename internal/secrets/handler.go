@@ -357,8 +357,8 @@ func (h Handler) authorize(ctx context.Context, r *http.Request, nonce []byte) (
 	}
 	// The write path refuses this shape; the store may still hold one written
 	// before it did.
-	if !workload.ArgvPinned() {
-		return grant{}, deny("workload %q holds a secret grant but leaves a container's argv unconstrained", name)
+	if err := workload.PinnedForGrant(); err != nil {
+		return grant{}, deny("workload %q holds a secret grant but leaves a container's launch to the host: %v", name, err)
 	}
 	return grant{workload: name, secrets: workload.Secrets}, nil
 }
