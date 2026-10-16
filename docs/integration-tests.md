@@ -58,6 +58,10 @@ a port-forward).
   restarts it, registers, serves the admission inventory socket.
 - Allowlist authorization: unsigned writes and wrong-key writes are 401; a
   write signed by the pinned operator key lands, is served, and deletes.
+- Route API: unsigned and wrong-key `PUT /routes` are 401, a manifest
+  anchored on the mesh CA is 422, a signed write is 204 and the same revision
+  again 409; `GET /routes` serves the PUT bytes with a token whose `pbh` is
+  their digest.
 - Webhook injection: `confidential.ai/cw` pods gain the get-cert sidecar, the
   wait gate, and the cw label; the operator provisions the `c8s-<id>` headless
   Service.

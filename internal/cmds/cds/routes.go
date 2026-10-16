@@ -11,12 +11,14 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	"github.com/confidential-dot-ai/c8s/internal/server"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
 // dependencies bundles everything the cds router needs.
 type dependencies struct {
 	AttestHandler     AttestHandler
 	AllowlistHandler  allowlist.Handler
+	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
 	CACertPEM         []byte
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
@@ -65,6 +67,10 @@ func newRouter(deps dependencies) http.Handler {
 	r.Method(http.MethodPut, "/allowlist", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleReplaceAll)))
 	r.Method(http.MethodPut, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandlePutWorkload)))
 	r.Method(http.MethodDelete, "/allowlist/workloads/{name}", deps.allowlistWrite(http.HandlerFunc(deps.AllowlistHandler.HandleDeleteWorkload)))
+
+	// The route manifest is written like the allowlist (W1) and read like it.
+	r.Get(routes.Path, deps.Routes.handleGet)
+	r.Method(http.MethodPut, routes.Path, deps.allowlistWrite(http.HandlerFunc(deps.Routes.handlePut)))
 
 	// GET and POST are the workload's, authenticated by mesh leaf and sandbox
 	// token. PUT is the operator's, on allowlistWrite so it carries the same
