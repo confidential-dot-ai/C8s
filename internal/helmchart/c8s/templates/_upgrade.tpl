@@ -35,3 +35,12 @@ none
 {{- $live -}}
 {{- end -}}
 {{- end -}}
+
+{{/* c8s.cdsShapeGuard over the running shape, for root's release rendering
+     want. A published shape needs no lookup, which reads the cluster. */ -}}
+{{- define "c8s.cdsShapeCheck" -}}
+{{- $published := default "" .root.Values.cds.publishedShape -}}
+{{- if and .want (ne $published .want) -}}
+{{- include "c8s.cdsShapeGuard" (dict "live" (include "c8s.cdsLiveShape" .root) "want" .want "published" $published) -}}
+{{- end -}}
+{{- end -}}

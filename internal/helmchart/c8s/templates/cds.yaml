@@ -255,11 +255,7 @@ spec:
 ---
 {{- end }}
 {{- $cdsShape := include "c8s.cdsShapeName" . }}
-{{- $publishedShape := default "" .Values.cds.publishedShape }}
-{{- /* A published shape needs no lookup, which reads the cluster. */}}
-{{- if and $cdsShape (ne $publishedShape $cdsShape) }}
-{{- include "c8s.cdsShapeGuard" (dict "live" (include "c8s.cdsLiveShape" .) "want" $cdsShape "published" $publishedShape) }}
-{{- end }}
+{{- include "c8s.cdsShapeCheck" (dict "root" . "want" $cdsShape) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
