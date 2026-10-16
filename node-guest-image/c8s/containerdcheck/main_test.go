@@ -17,7 +17,7 @@ const bakedConfigDir = "../mkosi.extra/var/lib/rancher/rke2/agent/etc/containerd
 // The image as committed must pass: RKE2's own base template and the baked
 // drop-ins.
 func TestBakedConfigWrapsEveryHandler(t *testing.T) {
-	cfg, err := effectiveConfig(bakedConfigDir, nil)
+	cfg, err := effectiveConfig(bakedConfigDir, "", nil)
 	if err != nil {
 		t.Fatalf("effectiveConfig(baked) = %v", err)
 	}
@@ -38,7 +38,7 @@ func TestAutoDetectedRuntimeFails(t *testing.T) {
 		"nvidia": "/usr/local/nvidia/toolkit/nvidia-container-runtime",
 	} {
 		t.Run(name, func(t *testing.T) {
-			cfg, err := effectiveConfig(bakedConfigDir, extraRuntimes{name: binary})
+			cfg, err := effectiveConfig(bakedConfigDir, "", extraRuntimes{name: binary})
 			if err != nil {
 				t.Fatalf("effectiveConfig = %v", err)
 			}
@@ -118,7 +118,7 @@ func TestCheckRejectsUnwrappedHandlers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := buildConfigDir(t, tt.dropIns)
-			cfg, err := effectiveConfig(dir, nil)
+			cfg, err := effectiveConfig(dir, "", nil)
 			if err != nil {
 				t.Fatalf("effectiveConfig = %v", err)
 			}
@@ -140,7 +140,7 @@ func TestKataHandlerIsRejectedBesideAWrappedRunc(t *testing.T) {
 		"20-kata.toml": "[plugins.\"io.containerd.cri.v1.runtime\".containerd.runtimes.kata-qemu-tdx]\n" +
 			`runtime_type = "io.containerd.kata-qemu-tdx.v2"` + "\n",
 	})
-	cfg, err := effectiveConfig(dir, nil)
+	cfg, err := effectiveConfig(dir, "", nil)
 	if err != nil {
 		t.Fatalf("effectiveConfig = %v", err)
 	}
@@ -159,7 +159,7 @@ func TestUserTemplateWithoutBaseFails(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, userTemplateName), []byte("version = 3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := effectiveConfig(dir, nil); err == nil || !strings.Contains(err.Error(), "no import matching") {
+	if _, err := effectiveConfig(dir, "", nil); err == nil || !strings.Contains(err.Error(), "no import matching") {
 		t.Fatalf("effectiveConfig(user template without base) = %v, want an error about the missing import", err)
 	}
 }
@@ -243,5 +243,20 @@ func TestRun(t *testing.T) {
 				t.Errorf("run(%v) stderr = %q, want it to contain %q", tt.args, &stderr, tt.wantStderr)
 			}
 		})
+	}
+}
+
+// The pod role runs containerd from a baked config without RKE2; it must
+// reach the same wrapper through the same drop-ins.
+func TestPodRoleConfigWrapsEveryHandler(t *testing.T) {
+	cfg, err := effectiveConfig(bakedConfigDir, "../mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkHandlers(cfg, "/usr/local/bin/c8s-runc"); err != nil {
+		t.Fatal(err)
+	}
+	if nri := table(cfg, "plugins", "io.containerd.nri.v1.nri", "default_validator"); nri["enable"] != true {
+		t.Fatalf("pod-role config lost the NRI validator: %v", nri)
 	}
 }
