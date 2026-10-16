@@ -33,8 +33,10 @@ c8s install --namespace c8s-system --cvm-mode=bare-metal --hardware-platform=sev
 single-tenant), `gke`, or `aks`. So is `--hardware-platform`, naming the nodes' CPU TEE: `sev-snp` or
 `tdx` (under `aks` it selects the Azure vTPM shape instead). `--operator-keys`
 takes a PEM bundle of EC public keys that authorize
-`c8s allowlist` writes; without it the install refuses to proceed (pass
-`--force` to install with allowlist writes disabled):
+`c8s allowlist` writes and that the router verifies route manifests under;
+without it the install refuses to proceed (pass
+`--force` to install with allowlist writes disabled, and
+`--measurements` to pin CDS so the router can still route):
 
 ```sh
 openssl ecparam -genkey -name prime256v1 -noout -out operator.key

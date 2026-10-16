@@ -514,15 +514,18 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
        decrypted from the tunnel. */ -}}
 {{- $args = append $args (printf "--cds-url=%s" (include "c8s.cdsURL" $root)) -}}
 {{- $args = concat $args (include "router.cdsPinArgs" $root | fromJsonArray) -}}
-{{- /* Off a baked node the operator keys come from CDS's GET /operator-keys,
-       which is control-plane configuration (route policy W6; docs/operator.md,
-       Route manifest). Unpinned, that CDS could be any attested TEE, so
-       cds-attest refuses without the opt-in. */ -}}
+{{- /* Operator keys: the launch configuration on a baked node, else
+       cds.operatorKeys, else CDS's GET /operator-keys (route policy W6;
+       docs/operator.md, Route manifest). An unpinned CDS could be any
+       attested TEE, so cds-attest refuses that last source without the
+       opt-in. */ -}}
 {{- if $root.Values.node.baked -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
+{{- else if $root.Values.cds.operatorKeys -}}
+{{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
 {{- else if not (or $root.Values.cds.measurements $root.Values.cds.measurementsConfig) -}}
 {{- if not $v.routing.allowUnpinnedCDS -}}
-{{- fail "VALIDATION_ERROR kind=unpinned_route_source: router.routing.allowUnpinnedCDS=false, but no CDS pin is set (cds.measurements or cds.measurementsConfig) and the router takes its operator keys from CDS. Pin CDS with `c8s install --measurements` or `--image-policy-file`, or set router.routing.allowUnpinnedCDS=true for development." -}}
+{{- fail "VALIDATION_ERROR kind=unpinned_route_source: the router would take its operator keys from an unpinned CDS. Pin CDS with `c8s install --measurements` or `--image-policy-file`, pin the operator keys with `--operator-keys`, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true." -}}
 {{- end -}}
 {{- $args = append $args "--allow-unpinned-cds" -}}
 {{- end -}}

@@ -6,6 +6,7 @@ enableServiceLinks: false
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
+{{- $operatorKeys := and (not .Values.node.baked) .Values.cds.operatorKeys -}}
 {{- /* Same control-plane pin as CDS: a baked image boots one server,
        and only servers carry this RKE2 role label. */}}
 {{- if .Values.node.baked }}
@@ -206,6 +207,11 @@ containers:
         mountPath: /mnt/c8s-data/measurements
         readOnly: true
       {{- end }}
+      {{- if $operatorKeys }}
+      - name: operator-keys
+        mountPath: /mnt/c8s-data/operator-keys
+        readOnly: true
+      {{- end }}
       {{- if eq $publicTLSMode "webpki" }}
       # cds-attest reads the same public leaf nginx serves
       # (--serving-cert-file).
@@ -279,6 +285,13 @@ volumes:
       sources:
         - configMap:
             name: {{ include "c8s.fullname" . }}-measurements
+  {{- end }}
+  {{- if $operatorKeys }}
+  - name: operator-keys
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-operator-keys
   {{- end }}
   {{- if eq $publicTLSMode "webpki" }}
   - name: public-tls
@@ -410,6 +423,9 @@ spec:
         # A ConfigMap edit alone does not change the pod template, so without
         # this a tightened pin would not roll the router.
         checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
+        {{- end }}
+        {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
+        checksum/operator-keys: {{ .Values.cds.operatorKeys | sha256sum }}
         {{- end }}
     spec:
 {{- include "router.podSpec" . | nindent 6 }}

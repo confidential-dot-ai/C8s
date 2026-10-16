@@ -1038,13 +1038,11 @@ router:
     # clients; further ones get 503 tunnel_busy. Budget about 150 MiB of
     # cds-attest memory per slot.
     tunnelSlots: 32
-    # -- Development only. Off a baked node with no CDS pin (cds.measurements
-    # or cds.measurementsConfig), any attested CDS supplies both the route
-    # manifest and the operator keys it is verified under. true passes
-    # cds-attest --allow-unpinned-cds in exactly that case, because the
-    # default install pins nothing; false fails the render instead. Pinned
-    # and baked installs ignore it.
-    allowUnpinnedCDS: true
+    # -- Development only. With no CDS pin (cds.measurements,
+    # cds.measurementsConfig) and no cds.operatorKeys off a baked node, true
+    # lets any attested CDS supply both the route manifest and its keys;
+    # false fails the render.
+    allowUnpinnedCDS: false
 
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the

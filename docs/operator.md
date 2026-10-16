@@ -365,11 +365,11 @@ workload's certificate, which the router requires of a workload backend.
 
 Mounts in that entry are exact: each container may mount the injected cert
 volume and its own memory-backed `emptyDir` volumes, nothing else. When the
-template does any of the following, install writes the entry without a mount
-policy, which admits only platform mounts, and warns that the workload cannot
-be a route backend until it mounts only memory-backed `emptyDir` volumes. For
-the `--upstream` workload, install refuses instead; write that entry yourself
-with `c8s allowlist`:
+template does any of the following, install writes the entry admitting any
+mounts and warns. CDS still names the pod after the entry, so a route that
+`c8s routes add` writes to it later trusts those mounts. For the `--upstream`
+workload, install refuses instead; write that entry yourself with
+`c8s allowlist`:
 
 - mounts any other volume. A `hostPath` puts host-controlled content under the
   app; an exact rule cannot admit a ConfigMap, Secret, PVC or disk `emptyDir`.
@@ -498,7 +498,8 @@ cds:
 ```
 
 Prefer `c8s install --operator-keys operator.pub`, which reads the file and
-sets this value for you. In a GitOps flow, `c8s render-values --operator-keys
+sets this value for you. The router also verifies route manifests under these
+keys. In a GitOps flow, `c8s render-values --operator-keys
 operator.pub` embeds the content into the emitted values.
 
 The value is the PEM **content**, never a file path — a path from the machine
@@ -597,10 +598,12 @@ The router routes only by this manifest. Its `cds-attest` sidecar polls
 `GET /routes` from the chart-managed CDS every `router.routing.pollInterval`
 (default 30s). It verifies CDS against the same pins as the allowlist route.
 It verifies the manifest against the operator keys: the node's launch
-configuration on a baked node, else the verified CDS's `GET /operator-keys`.
-Keys from an unpinned CDS need the development opt-in
-`router.routing.allowUnpinnedCDS`, on by default (see
-[Route by the manifest](#route-by-the-manifest)). nginx sends every request that no protocol endpoint claims to the sidecar's
+configuration on a baked node, else `cds.operatorKeys` (`c8s install
+--operator-keys`), else the verified CDS's `GET /operator-keys`. That last
+source needs a CDS pin or, on a development cluster only,
+`router.routing.allowUnpinnedCDS=true`; `c8s install` refuses otherwise (see
+[Route by the manifest](#route-by-the-manifest)). nginx sends every request
+that no protocol endpoint claims to the sidecar's
 loopback routing listener (`router.routing.port`, default 8802). Requests
 decrypted from the attested tunnel route by the same manifest. Routing
 follows these rules:
@@ -836,11 +839,14 @@ configuration, and the router does not stop a substituted key. An explicit
 an unpinned CDS stop it too, unless `--allow-unpinned-cds` is set: any attested
 TEE answering as CDS would then choose both the manifest and its keys.
 
-The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`, and on a
-baked node reads the keys from the launch configuration. Off a baked node with
-no CDS pin, it passes `--allow-unpinned-cds` while
-`router.routing.allowUnpinnedCDS` is `true`, the default, because the default
-install pins nothing. Set it to `false` to make such a render fail.
+The chart pins CDS from `cds.measurements` or `cds.measurementsConfig`. It
+passes `--operator-keys-file` from the launch configuration on a baked node,
+else from `cds.operatorKeys`. With neither a CDS pin nor `cds.operatorKeys`,
+the render fails with `kind=unpinned_route_source` and `c8s install` refuses
+before it starts. Fix it with `--measurements` (or `--image-policy-file`) or
+`--operator-keys`. On a development cluster only, set
+`router.routing.allowUnpinnedCDS=true` in a `-f` file; the chart then passes
+`--allow-unpinned-cds`.
 
 Until it applies a manifest, `cds-attest` answers routed requests with 503
 and refuses attest-pq and attest-lb handshakes with 503 `routes_unavailable`.

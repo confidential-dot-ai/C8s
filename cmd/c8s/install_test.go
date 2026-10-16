@@ -50,6 +50,46 @@ func TestOperatorKeysPreflight(t *testing.T) {
 	}
 }
 
+func TestRouteSourcePreflight(t *testing.T) {
+	dir := t.TempDir()
+	file := func(name, body string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	optIn := file("opt-in.yaml", "router:\n  routing:\n    allowUnpinnedCDS: true\n")
+	optOut := file("opt-out.yaml", "router:\n  routing:\n    allowUnpinnedCDS: false\n")
+	for _, tc := range []struct {
+		name               string
+		measurements       []string
+		measurementsConfig string
+		operatorKeys       string
+		values             []string
+		wantErr            bool
+	}{
+		{name: "nothing pinned", wantErr: true},
+		{name: "--measurements", measurements: []string{"ab"}},
+		{name: "--image-policy-file", measurementsConfig: "server.json"},
+		{name: "--operator-keys", operatorKeys: "operator-pub.pem"},
+		{name: "opt-in", values: []string{optIn}},
+		{name: "later file opts out", values: []string{optIn, optOut}, wantErr: true},
+		{name: "cds.measurements", values: []string{file("m.yaml", "cds:\n  measurements: [ab]\n")}},
+		{name: "empty cds.measurements", values: []string{file("e.yaml", "cds:\n  measurements: []\n")}, wantErr: true},
+		{name: "cds.operatorKeys", values: []string{file("k.yaml", "cds:\n  operatorKeys: pem\n")}},
+		{name: "router disabled", values: []string{file("r.yaml", "router:\n  enabled: false\n")}},
+		{name: "baked node", values: []string{file("b.yaml", "node:\n  baked: true\n")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := routeSourcePreflight(tc.measurements, tc.measurementsConfig, tc.operatorKeys, tc.values)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("routeSourcePreflight() = %v, want error %v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestDefaultInstallImageTag(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -733,7 +773,7 @@ func TestBuildWorkloadImageArgsUnmodelledMountsOffUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildWorkloadImageArgs(upstream infer) = %v, want nil", err)
 	}
-	if !strings.Contains(warn.String(), "warning: adopted workload web") || !strings.Contains(warn.String(), "cannot be a route backend") {
+	if !strings.Contains(warn.String(), "warning: adopted workload web") || !strings.Contains(warn.String(), "a route to it trusts those mounts") {
 		t.Fatalf("warning = %q, want one naming web as no route backend", warn.String())
 	}
 	if _, ok := entries["web"]; ok {

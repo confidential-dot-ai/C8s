@@ -122,7 +122,7 @@ func checkSeedModel(t *testing.T, model map[string]pkgallowlist.Workload, render
 // renderedSeed is the allowlist seed the chart renders with set.
 func renderedSeed(t *testing.T, chart string, set []string) *pkgallowlist.Allowlist {
 	t.Helper()
-	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5"}, set...)
+	args := append([]string{"template", "c8s", chart, "--skip-tests", "--kube-version", "v1.34.5", "--set", "router.routing.allowUnpinnedCDS=true"}, set...)
 	out, err := exec.Command("helm", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
