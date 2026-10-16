@@ -1,17 +1,28 @@
-package allowlist
+// Package strictjson rejects JSON that encoding/json would accept but
+// silently reinterpret: duplicate object keys, unpaired surrogate escapes,
+// invalid UTF-8 and trailing documents.
+package strictjson
 
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
-// Reject duplicate object keys before decoding into maps (which otherwise
-// silently keep the last value). Error messages must not expose env literals.
-func validateJSON(data []byte) error {
+// maxDepth is encoding/json's nesting limit.
+const maxDepth = 10000
+
+// Validate returns an error unless data is exactly one UTF-8 JSON document
+// with no duplicate object keys, no unpaired surrogate escapes and at most
+// 10000 levels of nesting. Run it before encoding/json, which keeps the last
+// duplicate and maps unpaired surrogates to U+FFFD. Errors never quote
+// document content, so callers may return them for documents holding secrets.
+func Validate(data []byte) error {
 	if !utf8.Valid(data) {
 		return fmt.Errorf("JSON must be UTF-8")
 	}
@@ -19,8 +30,10 @@ func validateJSON(data []byte) error {
 		return err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
-	var value func() error
-	value = func() error {
+	// A float64 overflow is valid JSON, and its error would quote the number.
+	dec.UseNumber()
+	var value func(depth int) error
+	value = func(depth int) error {
 		tok, err := dec.Token()
 		if err != nil {
 			return err
@@ -28,6 +41,11 @@ func validateJSON(data []byte) error {
 		d, ok := tok.(json.Delim)
 		if !ok {
 			return nil
+		}
+		// Bound the recursion here rather than rely on the decoder: a stack
+		// overflow is fatal, not a recoverable panic.
+		if depth >= maxDepth {
+			return fmt.Errorf("JSON exceeds nesting depth %d", maxDepth)
 		}
 		switch d {
 		case '{':
@@ -45,13 +63,13 @@ func validateJSON(data []byte) error {
 					return fmt.Errorf("duplicate JSON object key")
 				}
 				seen[k] = true
-				if err := value(); err != nil {
+				if err := value(depth + 1); err != nil {
 					return err
 				}
 			}
 		case '[':
 			for dec.More() {
-				if err := value(); err != nil {
+				if err := value(depth + 1); err != nil {
 					return err
 				}
 			}
@@ -61,7 +79,14 @@ func validateJSON(data []byte) error {
 		_, err = dec.Token()
 		return err
 	}
-	if err := value(); err != nil {
+	if err := value(0); err != nil {
+		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+			return fmt.Errorf("JSON document is empty or truncated")
+		}
+		// This SyntaxError quotes the offending byte.
+		if se := (*json.SyntaxError)(nil); errors.As(err, &se) && strings.HasPrefix(se.Error(), "invalid character") {
+			return fmt.Errorf("invalid character in JSON at offset %d", se.Offset)
+		}
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {

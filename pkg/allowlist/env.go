@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 )
 
 // EnvObservation commits to the complete OCI launch environment. Nil means
@@ -192,7 +194,7 @@ func (p EnvPolicy) admitsObservation(o *EnvObservation) bool {
 // ParseEnvPoliciesJSON reads per-container policies for CLI derivation. Exact
 // literals are deliberately supplied by the operator, never fetched from a Pod.
 func ParseEnvPoliciesJSON(data []byte) (map[string]EnvPolicy, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	var policies map[string]EnvPolicy
