@@ -55,7 +55,7 @@ type haConfig struct {
 func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.StringVar(&c.yieldFile, "ha-yield-file", "", "baked singleton: path of the node's public cds-mode file; when it says \"ha\" (the signed launch document declares cdsHA), this singleton exits so the HA replicas on cds-role nodes are the only CDS")
 	flags.StringVar(&c.configFile, "ha-config", "", "baked nodes: path of cds-ha.json published from the signed launch document (cluster id, decree key, image pins); it overrides --ha-cluster-id, --ha-operator-key and --ha-replica-pins, so none of those trust roots is a pod flag")
-	flags.StringVar(&c.clusterID, "ha-cluster-id", "", "PROTOTYPE: enable CDS high availability for this cluster id; replicas with the same id share one mesh CA (empty = singleton CDS)")
+	flags.StringVar(&c.clusterID, "ha-cluster-id", "", "enable CDS high availability for this cluster id (dev/test; baked nodes use --ha-config); replicas with the same id share one mesh CA (empty = singleton CDS)")
 	flags.StringVar(&c.namespace, "ha-namespace", os.Getenv("POD_NAMESPACE"), "namespace holding the HA Lease and the CDSEpoch object")
 	flags.StringVar(&c.decreeNS, "ha-decree-namespace", "", "namespace where operators write CDSDecree objects (default --ha-namespace; on a locked node image the CDS namespace is privileged, so use one the operator credential can write)")
 	flags.StringVar(&c.peersDNS, "ha-peers-dns", "", "headless Service DNS name resolving to every CDS replica")

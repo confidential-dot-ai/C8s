@@ -20,9 +20,9 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cdsha"
 )
 
-// newHACmd groups the operator side of the HA prototype (spec §14).
+// newHACmd groups the operator side of HA CDS (spec §14).
 func newHACmd() *cobra.Command {
-	cmd := &cobra.Command{Use: "ha", Short: "PROTOTYPE: operate a highly available CDS"}
+	cmd := &cobra.Command{Use: "ha", Short: "Operate a highly available CDS"}
 	cmd.AddCommand(newHADecreeCmd(), newHAStatusCmd())
 	return cmd
 }
@@ -40,7 +40,7 @@ func newHADecreeCmd() *cobra.Command {
 		Use:   "decree",
 		Short: "Sign a decree and print it as a CDSDecree object for kubectl apply",
 		Long: "Signs a Genesis, UpdateMeasurements or RotateKey decree with the operator key and prints the\n" +
-			"CDSDecree object (a ConfigMap in this prototype) as JSON. Apply it with kubectl; the\n" +
+			"CDSDecree object (a ConfigMap) as JSON. Apply it with kubectl; the\n" +
 			"writer replica validates and applies it. Re-sign with the current epoch if it is\n" +
 			"rejected for a base_epoch conflict (D3).",
 		RunE: func(cmd *cobra.Command, _ []string) error {
