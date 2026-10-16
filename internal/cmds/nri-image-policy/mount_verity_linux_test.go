@@ -28,7 +28,7 @@ func TestFSVerityRequiresKernelEvidence(t *testing.T) {
 	if fsVerityDigest(file) != "" {
 		t.Fatal("ordinary file reported fs-verity")
 	}
-	if path, digest, err := pinFSVerityFile(source, true, nil); err != nil || path != "" || digest != "" {
+	if path, digest, err := pinFSVerityFile(source, nil); err != nil || path != "" || digest != "" {
 		t.Fatalf("pinned mutable file: %s %s %v", path, digest, err)
 	}
 	if err := os.Symlink(source, source+"-alias"); err != nil {
@@ -145,19 +145,28 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	if name, _, err := al.MatchWorkload([]allowlist.RunningContainer{running}); err != nil || name != "w" {
 		t.Fatalf("MatchWorkload(recorded launch) = %q, %v, want w", name, err)
 	}
+	// Provenance checks run while the pin is registered: the rejected
+	// validation below releases it.
 	last := len(ctr.Mounts) - 1
-	ctr.Mounts[last].Source = source
-	if err := p.ValidateContainerAdjustment(t.Context(), req); err == nil {
-		t.Fatal("substituted unverified source admitted")
+	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != allowlist.ProvenanceFSVerity {
+		t.Fatal("staged bind lost provenance")
 	}
-	ctr.Mounts[last].Source = snapshot
-	ctr.Mounts[last].Type, ctr.Mounts[last].Options = "overlay", []string{"ro", "lowerdir=" + root}
+	overlay = proto.Clone(staged).(*api.Mount)
+	overlay.Type, overlay.Options = "overlay", []string{"ro", "lowerdir=" + root}
+	ctr.Mounts[last] = overlay
 	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != "" {
 		t.Fatal("overlay naming the snapshot kept provenance")
 	}
 	ctr.Mounts[last] = staged
-	ctr.Id = "another-container"
-	if got := newMountObserver(nil, "").Observe(pod, ctr); got[last].Provenance != "" {
+	another := proto.Clone(ctr).(*api.Container)
+	another.Id = "another-container"
+	if got := newMountObserver(nil, "").Observe(pod, another); got[last].Provenance != "" {
 		t.Fatal("another container borrowed provenance")
+	}
+	substituted := proto.Clone(staged).(*api.Mount)
+	substituted.Source = source
+	ctr.Mounts[last] = substituted
+	if err := p.ValidateContainerAdjustment(t.Context(), req); err == nil {
+		t.Fatal("substituted unverified source admitted")
 	}
 }

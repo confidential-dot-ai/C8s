@@ -10,7 +10,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -32,7 +36,7 @@ type verityFixture struct {
 // newVerityFixture builds a ready plugin whose workload entry pins the
 // container's host file by fs-verity digest. withPathOnly adds a second entry
 // for the same image that admits that file without provenance.
-func newVerityFixture(t *testing.T, mode string, withPathOnly bool, pin func(string, bool, []string) (string, string, error)) verityFixture {
+func newVerityFixture(t *testing.T, mode string, withPathOnly bool, pin func(string, []string) (string, string, error)) verityFixture {
 	t.Helper()
 	originalPin, originalUnpin := pinFSVerity, unpinFSVerity
 	pinFSVerity = pin
@@ -122,7 +126,7 @@ func TestUnstagedVerityMountIsDeniedAtValidation(t *testing.T) {
 		{"capacity reached", errVerityCapacity},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) { return "", "", tc.err })
+			f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) { return "", "", tc.err })
 			other := registerStaging(t, "other-container")
 			adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
 			if err != nil || adjust != nil {
@@ -142,7 +146,7 @@ func TestUnstagedVerityMountIsDeniedAtValidation(t *testing.T) {
 }
 
 func TestUnstagedVerityMountMatchesEntryWithoutProvenance(t *testing.T) {
-	f := newVerityFixture(t, ModeFailClosed, true, func(string, bool, []string) (string, string, error) { return "", "", errVerityNotPinned })
+	f := newVerityFixture(t, ModeFailClosed, true, func(string, []string) (string, string, error) { return "", "", errVerityNotPinned })
 	adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
 	if err != nil {
 		t.Fatalf("CreateContainer: %v", err)
@@ -167,7 +171,7 @@ func TestStagingFailureLeavesFinalMatchingToDecide(t *testing.T) {
 		{"path-only entry", true, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := newVerityFixture(t, ModeFailClosed, tc.pathOnly, func(string, bool, []string) (string, string, error) { return "", "", failure })
+			f := newVerityFixture(t, ModeFailClosed, tc.pathOnly, func(string, []string) (string, string, error) { return "", "", failure })
 			adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
 			if err != nil || adjust != nil {
 				t.Fatalf("CreateContainer = %v, %v, want no adjustment and no error", adjust, err)
@@ -184,7 +188,7 @@ func TestStagingFailureLeavesFinalMatchingToDecide(t *testing.T) {
 
 func TestNonBindMountIsNeverStaged(t *testing.T) {
 	pinned := 0
-	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
 		pinned++
 		return fakeStaging(t), testVerityDigest, nil
 	})
@@ -210,7 +214,7 @@ func TestNonBindMountIsNeverStaged(t *testing.T) {
 
 func TestStagingDoesNotHoldRegistryLock(t *testing.T) {
 	entered, release := make(chan struct{}), make(chan struct{})
-	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
 		close(entered)
 		<-release
 		return "", "", errVerityNotPinned
@@ -343,7 +347,7 @@ func TestBindStagingRollback(t *testing.T) {
 
 func TestUndetachedStagingIsTrackedAsStale(t *testing.T) {
 	var leaked string
-	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
 		leaked = fakeStaging(t)
 		return leaked, "", unix.EPERM
 	})
@@ -368,7 +372,7 @@ func TestNodeRootFileKeepsBothProofs(t *testing.T) {
 	nodeRootEvidence = func(string) (string, bool) { return testVerityDigest, true }
 	t.Cleanup(func() { nodeRootEvidence = original })
 	pinned := 0
-	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
 		pinned++
 		return fakeStaging(t), testVerityDigest, nil
 	})
@@ -407,7 +411,7 @@ func TestStagingTimeoutReleasesLatePins(t *testing.T) {
 	t.Cleanup(func() { verityStagingBudget = originalBudget })
 	release := make(chan struct{})
 	staged := fakeStaging(t)
-	f := newVerityFixture(t, ModeFailClosed, false, func(string, bool, []string) (string, string, error) {
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
 		<-release
 		return staged, testVerityDigest, nil
 	})
@@ -450,9 +454,9 @@ func fileExists(path string) bool {
 }
 
 func TestFullRegistryRetriesStalePins(t *testing.T) {
-	var capacity bool
-	f := newVerityFixture(t, ModeFailClosed, false, func(_ string, c bool, _ []string) (string, string, error) {
-		capacity = c
+	pinned := false
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
+		pinned = true
 		return "", "", errVerityNotPinned
 	})
 	unpinFSVerity = func(string) error { return nil }
@@ -465,8 +469,166 @@ func TestFullRegistryRetriesStalePins(t *testing.T) {
 	if _, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
-	if !capacity {
+	if !pinned {
 		t.Fatal("staging reported no capacity while stale pins were reclaimable")
+	}
+}
+
+func TestFullRegistryRefusesBeforePinning(t *testing.T) {
+	pinned := false
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
+		pinned = true
+		return "", "", errVerityNotPinned
+	})
+	verifiedMountRegistry.Lock()
+	for i := range maxVerifiedMounts {
+		verifiedMountRegistry.mounts[fmt.Sprintf("/busy/%d", i)] = verifiedMount{containerID: "busy"}
+	}
+	verifiedMountRegistry.Unlock()
+	t.Cleanup(func() { releaseVerifiedMounts(discardLogger(), "busy") })
+	if _, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil {
+		t.Fatalf("CreateContainer: %v", err)
+	}
+	if pinned {
+		t.Fatal("full registry still opened the source")
+	}
+}
+
+func TestHungStagingIsBounded(t *testing.T) {
+	originalBudget := verityStagingBudget
+	verityStagingBudget = time.Millisecond
+	t.Cleanup(func() { verityStagingBudget = originalBudget })
+	release := make(chan struct{})
+	var pins, active atomic.Int32
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
+		pins.Add(1)
+		active.Add(1)
+		defer active.Add(-1)
+		<-release
+		return "", "", errVerityNotPinned
+	})
+	t.Cleanup(func() {
+		close(release)
+		for deadline := time.Now().Add(5 * time.Second); len(stagingWorkers) > 0 && time.Now().Before(deadline); {
+			runtime.Gosched()
+		}
+	})
+	const attempts = 64
+	for range attempts {
+		if _, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil {
+			t.Fatalf("CreateContainer: %v", err)
+		}
+	}
+	if got := pins.Load(); got >= attempts {
+		t.Fatalf("%d create retries left %d hung staging calls, want a bound", attempts, got)
+	}
+}
+
+func TestReleasingPinStaysCounted(t *testing.T) {
+	pinned := false
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
+		pinned = true
+		return fakeStaging(t), testVerityDigest, nil
+	})
+	path := fakeStaging(t)
+	mount := f.ctr.Mounts[0]
+	verifiedMountRegistry.Lock()
+	verifiedMountRegistry.mounts[path] = verifiedMount{source: mount.Source, digest: testVerityDigest, containerID: f.ctr.Id, sandboxID: f.pod.Id, podUID: f.pod.Uid, destination: mount.Destination}
+	verifiedMountRegistry.Unlock()
+	entered, gate, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	enter := sync.OnceFunc(func() { close(entered) })
+	unpinFSVerity = func(string) error {
+		enter()
+		<-gate
+		return nil
+	}
+	go func() {
+		defer close(done)
+		releaseVerifiedMounts(discardLogger(), f.ctr.Id)
+	}()
+	<-entered
+	counted := slices.Contains(registeredMounts(f.ctr.Id), path)
+	adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
+	close(gate)
+	<-done
+	if !counted {
+		t.Fatal("pin being released no longer counts against the limit")
+	}
+	if err != nil || adjust != nil || pinned {
+		t.Fatalf("CreateContainer during release = %v, %v, pinned %t, want no staging", adjust, err, pinned)
+	}
+	if got := registeredMounts(f.ctr.Id); len(got) != 0 {
+		t.Fatalf("pins left after release: %v", got)
+	}
+}
+
+// An attempt that timed out must not release a pin a later retry returned.
+func TestTimedOutAttemptKeepsRetryPins(t *testing.T) {
+	originalBudget := verityStagingBudget
+	verityStagingBudget = 200 * time.Millisecond
+	t.Cleanup(func() { verityStagingBudget = originalBudget })
+	first := fakeStaging(t)
+	secondEntered, gate := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
+		switch calls.Add(1) {
+		case 1:
+			return first, testVerityDigest, nil
+		case 2:
+			close(secondEntered)
+			<-gate
+		}
+		dir, err := os.MkdirTemp(filepath.Dir(filepath.Dir(first)), "file-")
+		if err != nil {
+			return "", "", err
+		}
+		path := filepath.Join(dir, "inode")
+		return path, testVerityDigest, os.WriteFile(path, nil, 0600)
+	})
+	var mu sync.Mutex
+	var unpinned []string
+	unpinFSVerity = func(path string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		unpinned = append(unpinned, path)
+		return nil
+	}
+	tool := f.ctr.Mounts[0]
+	other := &api.Mount{Type: "bind", Source: tool.Source + "-other", Destination: "/srv/other", Options: []string{"bind", "ro"}}
+	f.ctr.Mounts = append(f.ctr.Mounts, other)
+	rules := []allowlist.MountRule{
+		{Destination: tool.Destination, Source: tool.Source, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: testVerityDigest},
+		{Destination: other.Destination, Source: other.Source, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: testVerityDigest},
+	}
+	if adjust := stageVerityMounts(t.Context(), discardLogger(), f.pod, f.ctr, nil, rules); adjust != nil {
+		t.Fatalf("timed-out attempt = %v, want no adjustment", adjust)
+	}
+	<-secondEntered
+	retry := stageVerityMounts(t.Context(), discardLogger(), f.pod, f.ctr, nil, rules)
+	close(gate)
+	if retry == nil || len(retry.Mounts) != 2 {
+		t.Fatalf("retry = %v, want both mounts staged", retry)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		mu.Lock()
+		released := slices.Contains(unpinned, first)
+		mu.Unlock()
+		if released {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed-out attempt never released its pins")
+		}
+		runtime.Gosched()
+	}
+	registered := registeredMounts(f.ctr.Id)
+	for _, mount := range retry.Mounts {
+		mu.Lock()
+		gone := slices.Contains(unpinned, mount.Source)
+		mu.Unlock()
+		if gone || !slices.Contains(registered, mount.Source) {
+			t.Fatalf("retry pin %s released by the timed-out attempt", mount.Source)
+		}
 	}
 }
 

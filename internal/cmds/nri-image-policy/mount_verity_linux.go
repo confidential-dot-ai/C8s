@@ -49,8 +49,9 @@ func openVeritySource(source string) (*os.File, error) {
 }
 
 // pinFSVerityFile stages source when its fs-verity digest is accepted. A
-// non-empty path with an error is a staging mount it could not detach.
-func pinFSVerityFile(source string, capacity bool, accepted []string) (string, string, error) {
+// non-empty path with an error is a staging mount it could not detach. The
+// caller reserves registry capacity first.
+func pinFSVerityFile(source string, accepted []string) (string, string, error) {
 	file, err := openVeritySource(source)
 	if err != nil {
 		return "", "", nil
@@ -62,9 +63,6 @@ func pinFSVerityFile(source string, capacity bool, accepted []string) (string, s
 	}
 	if !slices.Contains(accepted, digest) {
 		return "", "", errVerityNotPinned
-	}
-	if !capacity {
-		return "", "", errVerityCapacity
 	}
 	if err := os.MkdirAll(verifiedMountRoot, 0700); err != nil {
 		return "", "", err

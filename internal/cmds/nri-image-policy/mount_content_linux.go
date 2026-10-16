@@ -3,8 +3,8 @@
 package nriimagepolicy
 
 import (
+	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -45,27 +45,70 @@ func nodeRootFile(source string) (string, bool) {
 	return fsVerityDigest(file), true
 }
 
-// measuredRootDevice is the root filesystem's device when it is the measured
-// dm-verity root. Both facts are fixed for the boot, so they are read once and
-// a node that cannot supply node-root evidence says why, once.
-var measuredRootDevice = sync.OnceValues(func() (uint64, bool) {
+// measuredRoot caches whether the root filesystem is the measured dm-verity
+// root. Both facts are fixed for the boot, so a definitive answer is kept;
+// an I/O failure is retried on the next lookup.
+var measuredRoot = &rootCache{probe: probeMeasuredRoot}
+
+func measuredRootDevice() (uint64, bool) {
+	device, reason := measuredRoot.device()
+	return device, reason == ""
+}
+
+// nodeRootUnavailable explains why node-root provenance is unavailable, or
+// returns "" when the root is the measured one.
+func nodeRootUnavailable() string {
+	_, reason := measuredRoot.device()
+	return reason
+}
+
+type rootProbe struct {
+	device uint64
+	// reason is empty when device is the measured root.
+	reason string
+	// transient marks a reason that a later probe may not repeat.
+	transient bool
+}
+
+type rootCache struct {
+	probe  func() rootProbe
+	mu     sync.Mutex
+	result *rootProbe
+}
+
+func (c *rootCache) device() (uint64, string) {
+	c.mu.Lock()
+	result := c.result
+	c.mu.Unlock()
+	if result == nil {
+		probe := c.probe()
+		result = &probe
+		if !probe.transient {
+			c.mu.Lock()
+			c.result = result
+			c.mu.Unlock()
+		}
+	}
+	return result.device, result.reason
+}
+
+func probeMeasuredRoot() rootProbe {
 	var fs unix.Statfs_t
+	if err := unix.Statfs("/", &fs); err != nil {
+		return rootProbe{reason: "cannot statfs root filesystem", transient: true}
+	}
+	if fs.Flags&unix.ST_RDONLY == 0 {
+		return rootProbe{reason: "root filesystem is not read-only"}
+	}
 	var st unix.Stat_t
-	reason := ""
-	switch {
-	case unix.Statfs("/", &fs) != nil || fs.Flags&unix.ST_RDONLY == 0:
-		reason = "root filesystem is not read-only"
-	case unix.Stat("/", &st) != nil:
-		reason = "cannot stat root filesystem"
-	default:
-		reason = rootDeviceVerityMismatch(uint64(st.Dev))
+	if err := unix.Stat("/", &st); err != nil {
+		return rootProbe{reason: "cannot stat root filesystem", transient: true}
 	}
-	if reason != "" {
-		slog.Warn("node-root provenance unavailable", "reason", reason)
-		return 0, false
+	if reason, transient := rootDeviceVerityMismatch(uint64(st.Dev)); reason != "" {
+		return rootProbe{reason: reason, transient: transient}
 	}
-	return uint64(st.Dev), true
-})
+	return rootProbe{device: uint64(st.Dev)}
+}
 
 func openRootFile(root int, source string) (*os.File, error) {
 	if !cleanAbsolute(source) {
@@ -82,26 +125,27 @@ func openRootFile(root int, source string) (*os.File, error) {
 }
 
 // rootDeviceVerityMismatch explains why device is not the measured root, or
-// returns "" when it is. The active root device must match roothash in the
+// returns "" when it is, and whether that reason may be transient. The active root device must match roothash in the
 // measured boot command line, which the approved node-image launch measurement
 // authenticates.
-func rootDeviceVerityMismatch(device uint64) string {
+func rootDeviceVerityMismatch(device uint64) (string, bool) {
 	cmdline, err := os.ReadFile("/proc/cmdline")
 	if err != nil {
-		return "cannot read /proc/cmdline"
+		return "cannot read /proc/cmdline", true
 	}
 	expected := bootRootHash(string(cmdline))
 	if expected == "" {
-		return "no single roothash= on the boot command line"
+		return "no single roothash= on the boot command line", false
 	}
 	actual, err := deviceVerityRootHash(device)
 	if err != nil {
-		return err.Error()
+		// A root that is no device-mapper device never becomes one.
+		return err.Error(), !errors.Is(err, unix.ENXIO)
 	}
 	if actual != expected {
-		return "root device is not a strict dm-verity target with the boot roothash"
+		return "root device is not a strict dm-verity target with the boot roothash", false
 	}
-	return ""
+	return "", false
 }
 
 func deviceVerityRootHash(device uint64) (string, error) {

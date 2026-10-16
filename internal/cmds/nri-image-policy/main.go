@@ -127,6 +127,9 @@ func Run(args []string) error {
 
 	// Before registration, while the staging registry is empty.
 	sweepVerifiedMounts(logger)
+	if reason := nodeRootUnavailable(); reason != "" {
+		logger.Warn("node-root provenance unavailable", "reason", reason)
+	}
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)

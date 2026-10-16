@@ -179,7 +179,30 @@ func TestDMVerityMountedRootIntegration(t *testing.T) {
 	if err != nil || string(buffer[:count]) != "approved executable" {
 		t.Fatalf("verity file=%q, %v", buffer[:count], err)
 	}
-	if rootDeviceVerityMismatch(uint64(st.Dev)) == "" {
+	if reason, _ := rootDeviceVerityMismatch(uint64(st.Dev)); reason == "" {
 		t.Fatal("operator-created verity device matched host measured boot root")
+	}
+}
+
+func TestMeasuredRootRetriesTransientFailures(t *testing.T) {
+	probes := []rootProbe{
+		{reason: "open /dev/mapper/control: too many open files", transient: true},
+		{device: 7},
+	}
+	calls := 0
+	cache := &rootCache{probe: func() rootProbe {
+		calls++
+		return probes[calls-1]
+	}}
+	if _, reason := cache.device(); reason == "" {
+		t.Fatal("device() = measured root, want the transient failure")
+	}
+	for range 2 {
+		if device, reason := cache.device(); device != 7 || reason != "" {
+			t.Fatalf("device() = %d, %q, want 7 after a transient failure", device, reason)
+		}
+	}
+	if calls != 2 {
+		t.Fatalf("probed %d times, want 2", calls)
 	}
 }

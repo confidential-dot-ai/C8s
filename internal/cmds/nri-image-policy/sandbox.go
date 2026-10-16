@@ -85,8 +85,9 @@ type sandboxObservation struct {
 // ownSocketDir is the inventory socket directory this plugin bind-mounts into
 // injected sidecars itself (socketDirAdjustment); the policy put it there, so
 // it does not hold that bind against a container. mounts is the container's
-// mount evidence: a read-only file bind with verified provenance carries known,
-// immutable bytes rather than host state, so it is not a host bind either.
+// mount evidence, as mountObserver.Observe returns it: a read-only file bind
+// with verified provenance carries known, immutable bytes rather than host
+// state, so it is not a host bind either.
 func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
@@ -191,8 +192,15 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mou
 			owned = append(owned, root+"/io.containerd.grpc.v1.cri/sandboxes/"+id+"/")
 		}
 	}
+	// mounts holds one observation per mount that carries host bytes, in
+	// order. Any other shape exempts no mount.
+	paired := len(slices.DeleteFunc(slices.Clone(ctr.GetMounts()), func(m *api.Mount) bool { return !carriesHostBytes(m) })) == len(mounts)
 	var out []string
+	index := -1
 	for _, m := range ctr.GetMounts() {
+		if carriesHostBytes(m) {
+			index++
+		}
 		src := m.GetSource()
 		if !strings.HasPrefix(src, "/") {
 			continue
@@ -203,9 +211,7 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mou
 		if ownSocketDir != "" && src == ownSocketDir && isInjectedSocketMount(pod, ctr, m) {
 			continue
 		}
-		if slices.ContainsFunc(mounts, func(o allowlist.ObservedMount) bool {
-			return o.Provenance != "" && o.ReadOnly && o.Source == src && o.Destination == m.GetDestination()
-		}) {
+		if paired && mounts[index].Provenance != "" && mounts[index].ReadOnly && mounts[index].Source == src && mounts[index].Destination == m.GetDestination() {
 			continue
 		}
 		out = append(out, src)

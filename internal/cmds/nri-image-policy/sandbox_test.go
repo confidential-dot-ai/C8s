@@ -500,23 +500,38 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 	const source, destination = "/opt/tools/tool", "/usr/bin/tool"
 	verified := allowlist.ObservedMount{Source: source, Destination: destination, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity}
 	for _, tc := range []struct {
-		name     string
-		evidence func(*allowlist.ObservedMount)
-		hostBind bool
+		name      string
+		evidence  func(*allowlist.ObservedMount)
+		duplicate *api.Mount
+		hostBind  bool
 	}{
-		{"verified read-only file", nil, false},
-		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, true},
-		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, true},
-		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, true},
+		{"verified read-only file", nil, nil, false},
+		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, nil, true},
+		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, nil, true},
+		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, nil, true},
+		{"writable duplicate", nil, &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "rw"}}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod, ctr := sandboxedPod(), sandboxedContainer()
-			ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "ro"}})
+			bind := &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "ro"}}
+			ctr.Mounts = append(ctr.Mounts, bind)
+			if tc.duplicate != nil {
+				ctr.Mounts = append(ctr.Mounts, tc.duplicate)
+			}
 			evidence := verified
 			if tc.evidence != nil {
 				tc.evidence(&evidence)
 			}
-			got := observeSandbox(pod, ctr, "", []allowlist.ObservedMount{evidence}).HostBinds
+			var mounts []allowlist.ObservedMount
+			for _, m := range ctr.Mounts {
+				switch {
+				case m == bind:
+					mounts = append(mounts, evidence)
+				case carriesHostBytes(m):
+					mounts = append(mounts, allowlist.ObservedMount{Source: m.Source, Destination: m.Destination})
+				}
+			}
+			got := observeSandbox(pod, ctr, "", mounts).HostBinds
 			if (len(got) > 0) != tc.hostBind {
 				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
 			}
