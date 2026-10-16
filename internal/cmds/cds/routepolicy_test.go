@@ -227,7 +227,7 @@ func TestRoutePutStatus(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRouteFixture(t, inMemoryStore(t))
 			seed := manifest(t, 5, "")
-			if err := f.store.ReplaceRoutes(routes.Envelope{Manifest: seed, Token: "seed"}, 5, ""); err != nil {
+			if err := f.store.ReplaceRoutes(routes.Envelope{Manifest: seed, Token: "seed"}, ""); err != nil {
 				t.Fatal(err)
 			}
 			in := tc.build(t, f)
@@ -270,7 +270,7 @@ func TestRoutePutIfMatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newRouteFixture(t, inMemoryStore(t))
-			if err := f.store.ReplaceRoutes(routes.Envelope{Manifest: seed, Token: "seed"}, 5, ""); err != nil {
+			if err := f.store.ReplaceRoutes(routes.Envelope{Manifest: seed, Token: "seed"}, ""); err != nil {
 				t.Fatal(err)
 			}
 			b := manifest(t, tc.revision, "")
