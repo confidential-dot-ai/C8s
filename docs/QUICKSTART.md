@@ -34,9 +34,12 @@ single-tenant), `gke`, or `aks`. So is `--hardware-platform`, naming the nodes' 
 `tdx` (under `aks` it selects the Azure vTPM shape instead). `--operator-keys`
 takes a PEM bundle of EC public keys that authorize
 `c8s allowlist` writes and that the router verifies route manifests under;
-without it the install refuses to proceed (pass
-`--force` to install with allowlist writes disabled, and
-`--measurements` to pin CDS so the router can still route):
+without it the install refuses to proceed. `--force` installs with
+allowlist writes disabled, but CDS then stores no route manifest, so the
+router answers 503 to every application request until you set
+`cds.operatorKeys` and upgrade the release. Such an install also needs
+`--measurements` (or `--image-policy-file`) to pin CDS, or it refuses to
+render. Generate a key pair:
 
 ```sh
 openssl ecparam -genkey -name prime256v1 -noout -out operator.key

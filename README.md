@@ -395,8 +395,9 @@ openssl ec -in operator.key -pubout -out operator.pub
 c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
-Installing without `--operator-keys` leaves allowlist writes disabled, and
-`c8s install` refuses that on the default path unless you pass `--force` to
+Installing without `--operator-keys` leaves allowlist writes disabled and
+CDS unable to store a route manifest, so the router routes nothing. `c8s
+install` refuses that on the default path unless you pass `--force` to
 acknowledge. Supply the private key to the CLI by flag (`--operator-key`) or
 environment (`C8S_OPERATOR_KEY`). Write tokens are short-lived and bound to
 the request body, so a captured token cannot be replayed against a different

@@ -628,9 +628,10 @@ follows these rules:
   under `ca`, which must not hold the mesh CA. The router presents its mesh
   certificate to every backend. A failed handshake gets 502; no backend is
   reached in plaintext.
-- `router.routing.readTimeout` bounds nginx's wait between reads and
-  `router.routing.backendTimeout` (default 1h) one forwarded request, body
-  included. `router.routing.tunnelSlots` (default 32) bounds the tunnelled
+- `router.routing.readTimeout` bounds nginx's wait between reads, and
+  `router.routing.backendTimeout` (default 1h) how long a routed request may
+  go with no data moving; a tunnelled request gets that long in total for its
+  backend call. `router.routing.tunnelSlots` (default 32) bounds the tunnelled
   requests in flight in each router replica, shared by all clients; one
   client holds at most a quarter of them.
 
@@ -719,8 +720,9 @@ changes:
   the highest revision any router accepted, applied or staged: `--revision` on `add` and `rm`,
   `--routes-revision` on install, or a `put` of a file with that revision.
 - **Operator keys are control-plane configuration off baked nodes.** Without
-  a launch configuration, the router trusts the operator keys CDS serves, and
-  CDS reads them from `cds.operatorKeys`. Whoever controls the Kubernetes
+  a launch configuration, the router trusts `cds.operatorKeys`, mounted from
+  the chart, or else the keys CDS serves; both are Kubernetes configuration.
+  Whoever controls the Kubernetes
   configuration can substitute a key and sign routes to a backend of their
   choice. A client detects that only by pinning the route digest or the
   operator keys. The handshake does not commit to the route digest yet; that

@@ -22,7 +22,7 @@ EOF
 [install-flows.md](install-flows.md)), as is `--hardware-platform` (`sev-snp`
 or `tdx`). `--operator-keys` points at a PEM bundle
 of EC public keys authorizing `c8s allowlist` writes (or pass `--force` to
-install with writes disabled).
+install with writes disabled; the router then routes nothing).
 
 ## 2. Apply optional CRD object
 

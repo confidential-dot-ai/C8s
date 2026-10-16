@@ -1025,10 +1025,11 @@ router:
     # non-streaming completion sends nothing until it is done, so this must
     # outlive the longest generation.
     readTimeout: 3600s
-    # -- Bound on one request cds-attest forwards to a backend, body
-    # included, as a positive whole number of ms, s, m or h, such as 1h or 90m. A
-    # streamed response longer than this is cut. nginx waits 30s longer for a
-    # tunnel reply.
+    # -- How long a routed request may go with no data moving either way, as a
+    # positive whole number of ms, s, m or h, such as 1h or 90m; a slow client
+    # that keeps reading is never cut. A tunnelled request, whose response
+    # cds-attest buffers whole, gets this long in total for its backend call,
+    # and nginx waits 30s longer for its reply.
     backendTimeout: 1h
     # -- How often cds-attest polls CDS for the route manifest, as a positive
     # whole number of ms, s, m or h, such as 30s. Keep it under half the
@@ -1036,7 +1037,9 @@ router:
     pollInterval: 30s
     # -- Tunnelled requests in flight in each router replica, shared by all
     # clients; further ones get 503 tunnel_busy. Budget about 150 MiB of
-    # cds-attest memory per slot.
+    # cds-attest memory per slot. nginx caps /.well-known/c8s/tunnel at the
+    # same count, and a quarter per client address, with its own 503 page;
+    # budget 8 MiB of nginx memory per slot as well.
     tunnelSlots: 32
     # -- Development only. With no CDS pin (cds.measurements,
     # cds.measurementsConfig) and no cds.operatorKeys off a baked node, true

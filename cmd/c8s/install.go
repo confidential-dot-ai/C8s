@@ -217,8 +217,8 @@ func seedPins(m map[string]any) (entrypoint []string, imageEnv map[string]string
 // operatorKeysPreflight enforces that installing without pinned operator keys is
 // a deliberate choice. On the default path — no --operator-keys and no -f values
 // file that could carry cds.operatorKeys — it requires --force, because the
-// resulting CDS has allowlist writes disabled and nobody could add/remove/upload
-// allowlist entries via `c8s allowlist`. When keys are supplied, or the operator
+// resulting CDS has allowlist writes disabled and stores no route manifest, so
+// nobody could change allowlist entries and the router routes nothing. When keys are supplied, or the operator
 // is managing values via -f, it is a no-op.
 func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool) (warn string, err error) {
 	if operatorKeys != "" || len(valuesFiles) > 0 {
@@ -227,7 +227,7 @@ func operatorKeysPreflight(operatorKeys string, valuesFiles []string, force bool
 	if !force {
 		return "", fmt.Errorf("no operator keys provided: allowlist writes will be DISABLED — nobody can add/remove/upload allowlist entries via `c8s allowlist`. Re-run with --operator-keys <file> to enable writes, or --force to install with writes disabled anyway")
 	}
-	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work until you set cds.operatorKeys and reinstall", nil
+	return "installing with allowlist writes DISABLED (no --operator-keys); `c8s allowlist` add/remove/upload will not work, and CDS stores no route manifest, so the router answers 503 to every application request, until you set cds.operatorKeys and reinstall", nil
 }
 
 // routeSourcePreflight refuses an install whose router would take its route
