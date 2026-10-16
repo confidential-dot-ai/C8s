@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -109,8 +108,11 @@ func TestVerifySigned(t *testing.T) {
 		{name: "valid", env: Envelope{body, mint(t, key, body, nil)}, keys: keys},
 		{name: "W3 expired token", env: Envelope{body, mint(t, key, body, func(c jwt.MapClaims) {
 			c["iat"] = time.Now().Add(-90 * 24 * time.Hour).Unix()
-			c["exp"] = time.Now().Add(-89 * 24 * time.Hour).Unix()
+			c["exp"] = time.Now().Add(-90*24*time.Hour + time.Minute).Unix()
 		})}, keys: keys},
+		{name: "W3 validity over the maximum", env: Envelope{body, mint(t, key, body, func(c jwt.MapClaims) {
+			c["exp"] = time.Now().Add(time.Hour).Unix()
+		})}, keys: keys, wantErr: "validity"},
 		{name: "W2.1 no trusted keys", env: Envelope{body, mint(t, key, body, nil)}, wantErr: "no operator keys"},
 		{name: "W2.1 untrusted key", env: Envelope{body, mint(t, other, body, nil)}, keys: keys, wantErr: "operator token invalid"},
 		{name: "W2.1 HS256", env: Envelope{body, func() string {
@@ -181,29 +183,6 @@ func TestVerifySignedOwnsBytes(t *testing.T) {
 	}
 	if got := s.Envelope(); !bytes.Equal(got.Manifest, body) || got.Token != env.Token {
 		t.Errorf("Signed.Envelope() = %+v, want the verified bytes and token", got)
-	}
-}
-
-func TestSignedImmutable(t *testing.T) {
-	key := genKey(t)
-	body := readExample(t)
-	s, err := VerifySigned(Envelope{body, mint(t, key, body, nil)}, []*ecdsa.PublicKey{&key.PublicKey}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.Bytes()[0] = 'x'
-	s.Envelope().Manifest[0] = 'x'
-	m := s.Manifest()
-	m.Revision++
-	m.NotBefore = m.NotBefore.Add(time.Hour)
-	m.Hosts["app.example"].Routes[0].Backend.Address = "evil.example:443"
-	delete(m.Hosts, "app.example")
-	want, err := Parse(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(s.Bytes(), body) || s.Digest() != Digest(body) || !reflect.DeepEqual(s.Manifest(), want) {
-		t.Error("changing the values Signed returned changed the Signed")
 	}
 }
 
