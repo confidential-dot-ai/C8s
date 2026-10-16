@@ -406,8 +406,17 @@ actually released.
 - A grant requires every container in the entry — init and main — to pin its
   argv: `command` and `args` both `exact` or `deny`. A container under `any`
   runs whatever command line the host chose, and the value would be released
-  to it. The write path refuses the entry, and release refuses an entry stored
-  before it did.
+  to it.
+- A grant also requires every container to pin its mounts: `mounts` is `deny`
+  or `exact` with no `host` rule. Under `any` the host can add a volume over
+  what the pinned command reads, and a `host` rule commits to a node path
+  whose content the host chooses. A `data` rule is allowed: its content
+  (a ConfigMap, a PVC) is still the cluster's, but only at a destination
+  under `/mnt/c8s-data/` the entry declares.
+- The write path refuses an entry that breaks either rule, and release refuses
+  one stored before it did. `env` is not required yet: `exact` fingerprints
+  the whole environment, including the pod's `HOSTNAME`, so no policy pins it
+  on a real pod; `lint` warns instead.
 - Paths are absolute, clean, and the only wildcard is a trailing `/**`, which
   matches strictly beneath its base — `/a/**` does not grant `/a`.
 - `write` requires `read`. The only client creates with `POST`, then re-reads;
@@ -454,7 +463,8 @@ every other non-platform mount the pod declares; a configMap, projected or PVC
 source classes as `data`, whose destination sits below `/mnt/c8s-data/`.
 
 `{"policy": "any"}` admits any mount table, leaving the host free to add one.
-The chart seeds C8s's own components with `exact` instead. See
+The chart seeds C8s's own components with `exact` instead, and an entry with a
+grant may not use it. See
 [`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#mount-policy-mounts).
 
 ### Fixed sidecar mounts
