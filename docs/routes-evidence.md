@@ -35,13 +35,13 @@ SHA-384( LP("c8s/attest-lb/v1") || LP(mode) || LP(nonce) ||
 - `route_digest` is exactly 32 bytes. `pkg/overenc` refuses any other length, including an empty one.
 - The attest-pq domain string is `c8s-verify/v1`, shared with the HKDF labels and tunnel AAD tags (`c8s-verify/v1/...`); the attest-pq transcript is also the HKDF salt. The attest-lb domain is its binding id.
 - There is no negotiation. The bundle's `version` carries the binding id, and a client rejects any other value.
-- The bundle carries `route_digest` in hex. A client may recompute the transcript with it, since a forged value fails verification, but that proves only which manifest the router applied. To require a specific manifest, a client pins its digest or verifies the published manifest. `c8s verify` requires one of the two and uses the field only to name a mismatch early.
+- The bundle carries `route_digest` in hex. A client may recompute the transcript with it, since a forged value fails verification, but that proves only which manifest the router applied. To require a specific manifest, a client pins its digest or verifies the published manifest. `c8s verify` requires one of the two. It uses the field to choose among `--route-digest` pins, to trigger the V2 re-fetch, and to name a mismatch early; `report_data` alone binds the digest.
 
 The golden vectors in `pkg/overenc/testdata/` pin both layouts.
 
 ### Upgrade from the earlier layout
 
-The route digest field redefines both transcripts, and the attest-pq channel keys derived from them, under the same binding ids. Nothing on the wire tells the two layouts apart, so this is a breaking replacement. Only new against new works; any mixed pair fails verification, and an attest-pq channel fails to open, with no version error to say why.
+The route digest field redefines both transcripts, and the attest-pq channel keys derived from them, under the same binding ids. No version field marks the layout (only a new router sets `route_digest`), so this is a breaking replacement. Only new against new works; any mixed pair fails verification, and an attest-pq channel fails to open, with no version error to say why.
 
 Each independent implementation of a transcript must change:
 

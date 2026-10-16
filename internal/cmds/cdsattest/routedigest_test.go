@@ -68,8 +68,6 @@ func signedManifest(t *testing.T, manifest string) *routing.Applied {
 // noMeshCAs is a CASource for manifests with no address backend.
 func noMeshCAs() ([]*x509.Certificate, error) { return nil, nil }
 
-// testRoutes is a route state with the test manifest applied, so the attested
-// handshakes a server serves from it bind testRouteDigest.
 // testRoutes is a router with testManifest applied that echoes tunnel
 // requests.
 func testRoutes(t *testing.T) testRouter {
@@ -112,7 +110,7 @@ func (r *swappingRoutes) Current() *routing.Applied {
 	return r.second
 }
 
-// digestServer serves both attested handshakes from source.
+// digestServer serves both attested handshakes from router.
 type digestServer struct {
 	url        string
 	prov       *capturingProvider

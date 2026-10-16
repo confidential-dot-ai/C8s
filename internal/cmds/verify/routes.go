@@ -298,8 +298,9 @@ func resolveRoute(served string, route *boundRoute) (*boundRoute, error) {
 		}
 		return nil, &securityError{err: fmt.Errorf("route digest mismatch: the responder reports %s, the manifest published at %s has %x; the router may have applied another manifest after the publication fetch, and one re-fetch already ran", served, routes.PublicationPath, route.digest)}
 	}
-	// The router may have applied a newer manifest between the publication
-	// fetch and the handshake (spec V2).
+	// The router may have applied another manifest (a newer apply, or a
+	// replica on a different one) between the publication fetch and the
+	// handshake (spec V2).
 	fresh, err := route.refetch()
 	if err != nil {
 		return nil, err
