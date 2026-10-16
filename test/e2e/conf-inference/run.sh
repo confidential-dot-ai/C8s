@@ -63,7 +63,7 @@ set_sha=$({ printf 'c8s-operator-key-set-v1\0'; pub_der | openssl dgst -sha256 -
 openssl ecparam -name prime256v1 -genkey -noout -out admin.key
 openssl req -x509 -new -key admin.key -sha256 -days 1 -subj /CN=c8s-e2e-admin -out admin.crt
 kubectl create namespace "$ns"
-kubectl -n "$ns" create secret docker-registry registry-pull --docker-server ghcr.io \
+kubectl -n "$ns" create secret docker-registry ghcr-pull --docker-server ghcr.io \
   --docker-username "${GITHUB_ACTOR:-c8s-e2e}" --docker-password "$GH_TOKEN"
 kubectl -n "$ns" create secret generic gateway-admin-mtls --from-file=client.crt=admin.crt
 
