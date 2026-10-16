@@ -32,7 +32,7 @@ func TestInventoryPreservesUnavailableMountEvidence(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := &plugin{inventory: newAdmissionInventory(t.TempDir())}
 			ctr := &api.Container{Id: "ctr", PodSandboxId: "pod", Args: []string{"/app"}}
-			p.recordDigest(ctr, digestApp, observedMounts(tc.pod, ctr))
+			p.recordDigest(ctr, digestApp, observedMounts(tc.pod, ctr, ""))
 			_, reported, known, err := p.inventory.DigestsForSandbox("pod")
 			if err != nil || !known || len(reported) != 1 {
 				t.Fatalf("inventory = %+v, %v, %v", reported, known, err)

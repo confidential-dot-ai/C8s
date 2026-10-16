@@ -38,6 +38,8 @@ teardown_backend() {
     docker rm -f "$EXTERNAL_HELLO" >/dev/null 2>&1 || true
 }
 
+scratch_encrypted() { echo no; }
+
 node_name() {
     case "$1" in
         one) echo "$NODE" ;;
@@ -312,6 +314,12 @@ image_entrypoint() {
     node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | ((.Entrypoint // []) + (.Cmd // []))[]"' _ "$1"
 }
 
+image_env() {
+    image_digest "$1" >/dev/null
+    # shellcheck disable=SC2016  # $1 expands on the node
+    node_exec sh -c 'crictl inspecti "$1" | jq -r ".info.imageSpec.config | (.Env // [])[]"' _ "$1"
+}
+
 # Signed with the harness's operator key, as its own allowlist checks are.
 allowlist_put() {
     local code
@@ -355,6 +363,11 @@ plugin_pids() { node_exec pgrep -f "^$PLUGIN_BIN" || true; }
 # kind node image ships curl.
 plugin_healthy() {
     node_exec curl -sf --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz >/dev/null 2>&1
+}
+
+# The version in that answer, whatever its status: the one the plugin applied.
+applied_version() {
+    node_exec curl -s --max-time 2 --unix-socket "$PLUGIN_HEALTH" http://localhost/healthz | jq -r .allowlist_version
 }
 
 # Ready within the installer's budget: a containerd restart, then the first
