@@ -892,7 +892,10 @@ name, or the render fails.
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes
 those digests from the local floors. Their first startup may wait for the
-plugin's first successful policy pull and kubelet retry.
+plugin's first successful policy pull and kubelet retry. The chart escapes every `$` in
+those scripts as `$$`, so the kubelet's `$(NAME)` expansion hands the runtime
+the script the seed pins, including a component argument the operator
+escaped as `$$(NAME)` that the install script embeds.
 
 ## CLI
 
