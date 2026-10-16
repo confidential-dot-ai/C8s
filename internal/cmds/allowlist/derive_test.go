@@ -440,6 +440,15 @@ func TestDeriveAddsInjectedMounts(t *testing.T) {
 			want: exact(pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir}),
 		},
 		{
+			name: "cert volume mounted twice, once by subpath",
+			object: strings.ReplaceAll(cwDeployJSON(cw), `"image": "`+testImage+`",`,
+				`"image": "`+testImage+`", "volumeMounts": [{"name": "c8s-certs", "mountPath": "/tls"}, {"name": "c8s-certs", "mountPath": "/mnt/c8s-data/cert.pem", "subPath": "cert.pem"}],`),
+			want: exact(
+				pkgallowlist.MountRule{Destination: "/mnt/c8s-data/cert.pem", Kind: pkgallowlist.MountData},
+				pkgallowlist.MountRule{Destination: "/tls", Kind: pkgallowlist.MountEmptyDir},
+			),
+		},
+		{
 			name: "renamed cert volume",
 			object: strings.ReplaceAll(cwDeployJSON(cw+`, "confidential.ai/c8s-cert-volume": "tls"`), `"image": "`+testImage+`",`,
 				`"image": "`+testImage+`", "volumeMounts": [{"name": "tls", "mountPath": "/tls"}, {"name": "c8s-certs", "mountPath": "/other"}],`),

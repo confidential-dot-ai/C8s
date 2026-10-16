@@ -32,19 +32,32 @@ type templateContainer struct {
 	Command      []string `json:"command"`
 	Args         []string `json:"args"`
 	VolumeMounts []struct {
-		Name      string `json:"name"`
-		MountPath string `json:"mountPath"`
+		Name        string `json:"name"`
+		MountPath   string `json:"mountPath"`
+		SubPath     string `json:"subPath"`
+		SubPathExpr string `json:"subPathExpr"`
 	} `json:"volumeMounts"`
 }
 
-// mountPath is where c mounts volume, or fallback when it does not.
-func (c templateContainer) mountPath(volume, fallback string) string {
+// emptyDirMounts are the rules for every mount c declares of an emptyDir
+// volume, or one at fallback when it declares none. A subpath mount is
+// observed as data, so its rule is a data rule.
+func (c templateContainer) emptyDirMounts(volume, fallback string) []allowlist.MountRule {
+	var rules []allowlist.MountRule
 	for _, m := range c.VolumeMounts {
-		if m.Name == volume {
-			return m.MountPath
+		if m.Name != volume {
+			continue
 		}
+		kind := allowlist.MountEmptyDir
+		if m.SubPath != "" || m.SubPathExpr != "" {
+			kind = allowlist.MountData
+		}
+		rules = append(rules, allowlist.MountRule{Destination: m.MountPath, Kind: kind})
 	}
-	return fallback
+	if len(rules) == 0 {
+		rules = append(rules, allowlist.MountRule{Destination: fallback, Kind: allowlist.MountEmptyDir})
+	}
+	return rules
 }
 
 // podSpecOf finds the pod spec in a Pod or in any workload that carries a pod
@@ -100,7 +113,7 @@ func dropInjected(cs []templateContainer) ([]templateContainer, []string) {
 
 // injectedMounts are the mounts the webhook adds to c in an injected pod,
 // which a deny or exact policy must list to admit it. The webhook keeps a
-// mount c already declares for the volume, so that destination wins.
+// mount c already declares for the volume, so those destinations win.
 func injectedMounts(annotations map[string]string, c templateContainer) []allowlist.MountRule {
 	if annotations[workloadclaims.AnnotationWorkload] == "" {
 		return nil
@@ -109,12 +122,9 @@ func injectedMounts(annotations map[string]string, c templateContainer) []allowl
 	if certVolume == "" {
 		certVolume = workloadclaims.CertVolumeName
 	}
-	rules := []allowlist.MountRule{{Destination: c.mountPath(certVolume, workloadclaims.CertDir), Kind: allowlist.MountEmptyDir}}
+	rules := c.emptyDirMounts(certVolume, workloadclaims.CertDir)
 	if requestsSecrets(annotations[workloadclaims.AnnotationSecrets]) {
-		rules = append(rules, allowlist.MountRule{
-			Destination: c.mountPath(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir),
-			Kind:        allowlist.MountEmptyDir,
-		})
+		rules = append(rules, c.emptyDirMounts(workloadclaims.SecretsVolumeName, workloadclaims.SecretDir)...)
 	}
 	return rules
 }
