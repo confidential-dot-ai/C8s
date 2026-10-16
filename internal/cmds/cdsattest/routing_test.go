@@ -269,8 +269,8 @@ func TestA7M1TunnelRoutesByManifest(t *testing.T) {
 }
 
 // TestTunnelStalledClientFreesSlot: a client that stalls its upload, below or
-// past the body limit, or its download holds its tunnel slot only until the
-// I/O timeout, though it stays connected.
+// past the body limit, or its download holds its tunnel slot only until it
+// has made no progress for the I/O timeout, though it stays connected.
 func TestTunnelStalledClientFreesSlot(t *testing.T) {
 	host := types.HeaderField{Name: "Host", Value: "app.example"}
 	tests := []struct {
@@ -351,6 +351,61 @@ func TestTunnelStalledClientFreesSlot(t *testing.T) {
 				time.Sleep(20 * time.Millisecond)
 			}
 		})
+	}
+}
+
+// slowReader hands out at most 32 KiB per Read, after a pause.
+type slowReader struct{ r io.Reader }
+
+func (s slowReader) Read(p []byte) (int, error) {
+	time.Sleep(4 * time.Millisecond)
+	return s.r.Read(p[:min(len(p), 32<<10)])
+}
+
+// TestTunnelSlowClientGetsWholeResponse: a client that reads a sealed
+// response slower than it could cross within the I/O timeout, but never
+// stops, receives it whole.
+func TestTunnelSlowClientGetsWholeResponse(t *testing.T) {
+	const timeout = time.Second
+	rs := newRoutedServer(t, func(_ *routing.ProxyConfig, s *Config) { s.TunnelIOTimeout = timeout })
+	rs.apply(t, 1, time.Hour)
+	channel, sessionID := establishSession(t, rs.ts.URL, make([]byte, 32))
+	plain, _ := cbor.Marshal(types.TunnelRequest{Method: "GET", Path: "/big", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}})
+	rec, err := channel.SealRequest(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recBody, _ := cbor.Marshal(rec)
+	req, _ := http.NewRequest(http.MethodPost, rs.ts.URL+"/.well-known/c8s/tunnel", bytes.NewReader(recBody))
+	req.Header.Set("X-C8s-Session", sessionID)
+	req.Header.Set("Content-Type", "application/cbor")
+	start := time.Now()
+	httpResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer httpResp.Body.Close()
+	sealed, err := io.ReadAll(slowReader{httpResp.Body})
+	if err != nil {
+		t.Fatalf("slow read of the sealed response after %d bytes: %v", len(sealed), err)
+	}
+	if elapsed := time.Since(start); elapsed < 2*timeout {
+		t.Fatalf("slow read took %v, want over %v for the test to mean anything", elapsed, 2*timeout)
+	}
+	var out overenc.Record
+	if err := cbor.Unmarshal(sealed, &out); err != nil {
+		t.Fatal(err)
+	}
+	respCBOR, err := channel.OpenResponse(out, rec.Seq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp types.TunnelResponse
+	if err := cbor.Unmarshal(respCBOR, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != http.StatusOK || len(resp.Body) != bigResponseBytes {
+		t.Fatalf("slowly read tunnel GET /big = %d with %d bytes, want 200 with %d", resp.Status, len(resp.Body), bigResponseBytes)
 	}
 }
 

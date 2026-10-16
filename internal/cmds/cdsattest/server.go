@@ -26,6 +26,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -99,9 +100,14 @@ const (
 	// The idle TTL alone would let whoever keeps records flowing keep one key
 	// alive indefinitely.
 	defaultSessionMaxAge = 5 * time.Hour
-	// defaultTunnelIOTimeout bounds reading one sealed request and writing
-	// one sealed response.
+	// defaultTunnelIOTimeout is how long a tunnel upload or download may
+	// make no progress.
 	defaultTunnelIOTimeout = 30 * time.Second
+	// tunnelWriteChunk is the piece of a sealed response written under one
+	// write deadline. nginx reads the next piece only once the client has
+	// drained one of its 16k proxy_buffers, so a smaller piece moves no
+	// sooner.
+	tunnelWriteChunk = 16 << 10
 	// tunnelBodyLimit bounds one sealed tunnel request record.
 	tunnelBodyLimit = 8 << 20
 	// attestBodyLimit bounds the attest-pq request body: a nonce and an X-Wing
@@ -172,9 +178,11 @@ type Config struct {
 	// SessionMaxAge is the absolute session lifetime from establishment,
 	// enforced regardless of activity. Defaults to defaultSessionMaxAge.
 	SessionMaxAge time.Duration
-	// TunnelIOTimeout bounds reading a tunnel request body, and separately
-	// writing its sealed response, so a stalled client cannot hold a tunnel
-	// handler. Defaults to defaultTunnelIOTimeout.
+	// TunnelIOTimeout is how long reading a tunnel request body, or writing
+	// its sealed response, may make no progress before the handler gives up.
+	// It restarts after every read and every written chunk, so a slow client
+	// is never cut off and a stalled one cannot hold a tunnel slot. Defaults
+	// to defaultTunnelIOTimeout.
 	TunnelIOTimeout time.Duration
 }
 
@@ -756,7 +764,8 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	// MaxBytesReader, unlike a LimitReader, fails an oversized body and makes
 	// net/http close the connection rather than drain the rest with no
 	// deadline while the slot is held.
-	recBytes, err := io.ReadAll(http.MaxBytesReader(w, r.Body, tunnelBodyLimit))
+	body := deadlineReader{ReadCloser: r.Body, extend: func() error { return rc.SetReadDeadline(ioDeadline()) }}
+	recBytes, err := io.ReadAll(http.MaxBytesReader(w, body, tunnelBodyLimit))
 	var tooLarge *http.MaxBytesError
 	switch {
 	case errors.As(err, &tooLarge):
@@ -799,8 +808,6 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
 	}
 
-	_ = rc.SetWriteDeadline(ioDeadline())
-
 	respCBOR, err := cbor.Marshal(resp)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal response envelope")
@@ -811,7 +818,37 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "seal failed")
 		return
 	}
-	writeCBOR(w, http.StatusOK, out)
+	outCBOR, err := cbor.Marshal(out)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/cbor")
+	w.Header().Set("Content-Length", strconv.Itoa(len(outCBOR)))
+	w.WriteHeader(http.StatusOK)
+	for len(outCBOR) > 0 {
+		n := min(len(outCBOR), tunnelWriteChunk)
+		_ = rc.SetWriteDeadline(ioDeadline())
+		// A failed write has no one left to tell.
+		if _, err := w.Write(outCBOR[:n]); err != nil || rc.Flush() != nil {
+			return
+		}
+		outCBOR = outCBOR[n:]
+	}
+}
+
+// deadlineReader calls extend before every Read, so a read deadline it pushes
+// forward expires only when no data arrives for its whole window.
+type deadlineReader struct {
+	io.ReadCloser
+	extend func() error
+}
+
+func (d deadlineReader) Read(p []byte) (int, error) {
+	if err := d.extend(); err != nil {
+		return 0, err
+	}
+	return d.ReadCloser.Read(p)
 }
 
 // setHeaderField replaces every field named name (case-insensitively) with one
@@ -928,17 +965,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
-}
-
-func writeCBOR(w http.ResponseWriter, status int, v any) {
-	b, err := cbor.Marshal(v)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
-		return
-	}
-	w.Header().Set("Content-Type", "application/cbor")
-	w.WriteHeader(status)
-	w.Write(b)
 }
 
 func writeErr(w http.ResponseWriter, status int, code, msg string) {

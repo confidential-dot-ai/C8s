@@ -1316,7 +1316,9 @@ router:
     # cannot health-check nodes, and every client behind a node then shares one
     # budget and one per-client bound: 512 concurrent attestation sessions for
     # that whole node, past which any one client's traffic refuses new sessions
-    # for every other client behind it.
+    # for every other client behind it, and a quarter of
+    # router.routing.tunnelSlots tunnel requests in flight for that whole
+    # node, past which nginx answers 503.
     externalTrafficPolicy: ""
     # -- Optional annotations on the Service. Use the provider's LB annotation to
     # pin a static IP (e.g. networking.gke.io/load-balancer-ip-addresses on GKE,

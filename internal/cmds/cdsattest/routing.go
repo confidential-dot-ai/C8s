@@ -64,7 +64,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
-	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "maximum duration of one request forwarded to a backend, body included")
+	f.DurationVar(&cfg.backendTimeout, "backend-timeout", time.Hour, "how long a request on the routing listener may go with no data moving either way; a tunnelled request, whose response is buffered whole, gets this long in total")
 	f.StringSliceVar(&cfg.reservedPaths, "reserved-paths", defaultReservedPaths, "reserved paths the router serves itself; a request under one matches no manifest route")
 	f.IntVar(&cfg.tunnelSlots, "tunnel-slots", 32, "maximum tunnelled requests in flight in this replica, each held for its whole backend call, shared by all clients, one client (by X-Real-IP, so one NAT or SNAT address) holding at most a quarter; further requests get 503 tunnel_busy")
 }

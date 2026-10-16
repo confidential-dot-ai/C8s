@@ -132,10 +132,10 @@ data:
 
         # The tunnel's limits mirror cds-attest's --tunnel-slots: all of them in
         # total and a quarter per client address.
-        map $host $c8s_protocol_total_key {
+        map $host $c8s_tunnel_total_key {
             default "all";
         }
-        limit_conn_zone $c8s_protocol_total_key zone=c8s_tunnel_total:1m;
+        limit_conn_zone $c8s_tunnel_total_key zone=c8s_tunnel_total:1m;
         limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
 {{- end }}
 

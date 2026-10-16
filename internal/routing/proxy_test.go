@@ -3,12 +3,15 @@ package routing
 import (
 	"crypto/tls"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -438,4 +441,59 @@ func TestListenerDropsClientExporter(t *testing.T) {
 	if got := web.seen().header.Values("X-C8s-Exporter"); len(got) != 0 {
 		t.Fatalf("backend X-C8s-Exporter = %q, want none", got)
 	}
+}
+
+// slowReader hands out at most 32 KiB per Read, after a pause.
+type slowReader struct{ r io.Reader }
+
+func (s slowReader) Read(p []byte) (int, error) {
+	time.Sleep(4 * time.Millisecond)
+	return s.r.Read(p[:min(len(p), 32<<10)])
+}
+
+// TestListenerTimeoutIsIdle: the routing listener's timeout spares a client
+// that reads slower than the whole response could cross within it, and cuts
+// off one that stops reading.
+func TestListenerTimeoutIsIdle(t *testing.T) {
+	const timeout = time.Second
+	f := newFixture(t)
+	f.proxy = NewProxy(ProxyConfig{State: f.state, Transports: f.transports, Timeout: timeout})
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
+	f.apply(t, simpleManifest(1, web.addr()))
+	ts := httptest.NewServer(f.proxy)
+	t.Cleanup(ts.Close)
+
+	t.Run("slow client", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/big", nil)
+		req.Host = testHost
+		start := time.Now()
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		n, err := io.Copy(io.Discard, slowReader{resp.Body})
+		if err != nil || n != bigBytes {
+			t.Fatalf("slow read of /big = %d bytes, %v, want %d bytes", n, err, bigBytes)
+		}
+		if elapsed := time.Since(start); elapsed < 2*timeout {
+			t.Fatalf("slow read took %v, want over %v for the test to mean anything", elapsed, 2*timeout)
+		}
+		if err := <-web.bigDone; err != nil {
+			t.Fatalf("backend write to a slow client = %v, want nil", err)
+		}
+	})
+	t.Run("stalled client", func(t *testing.T) {
+		conn, err := net.Dial("tcp", ts.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		fmt.Fprintf(conn, "GET /endless HTTP/1.1\r\nHost: %s\r\n\r\n", testHost)
+		select {
+		case <-web.bigDone:
+		case <-time.After(10 * timeout):
+			t.Fatal("a client reading nothing still holds the request")
+		}
+	})
 }
