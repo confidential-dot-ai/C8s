@@ -105,7 +105,7 @@ func (h ExplainHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// in the path.
 	if err := h.Authorize(r, nil); err != nil {
 		h.logger().Warn("secret explain rejected", "remote", r.RemoteAddr, "reason", err)
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		refuseToken(w, err)
 		return
 	}
 

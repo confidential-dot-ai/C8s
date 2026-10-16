@@ -11,6 +11,7 @@ import (
 	"time"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // The journal is the append-only history of every allowlist document CDS
@@ -51,13 +52,6 @@ type HistoryEntry struct {
 	// returns to a signed document shows it signed.
 	Signed bool `json:"signed"`
 }
-
-// ErrTokenReused refuses an operator token that already authorized a write.
-var ErrTokenReused = errors.New("operator token already used")
-
-// ErrTokenBeforeStart refuses an operator token that a store without
-// persistence cannot tell apart from one spent before CDS started.
-var ErrTokenBeforeStart = errors.New("operator token issued too early for a non-persistent store; wait --jwt-clock-skew (Helm cds.jwtClockSkew) after CDS start and mint a fresh one")
 
 // objectDigest is "sha256:<hex>" of b, the name history gives a document.
 func objectDigest(b []byte) string {
@@ -222,7 +216,7 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 }
 
 // ConsumeToken records that the JWT token authorized a write, or returns
-// ErrTokenReused if it or another encoding of it already did. Stored
+// operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
 // signatures make write tokens public, so each must authorize one write only.
 // Records are never pruned: expiry is judged on a clock the host can turn
 // back, and a pruned record would let a published token write again.
@@ -243,7 +237,7 @@ func (s *Store) ConsumeToken(token string) error {
 		return err
 	}
 	if n == 0 {
-		return ErrTokenReused
+		return operatorauth.ErrTokenReused
 	}
 	return nil
 }

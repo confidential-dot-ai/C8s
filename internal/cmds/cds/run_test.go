@@ -33,6 +33,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -580,8 +581,8 @@ func TestRun_NonPersistentStoreRefusesTokensAfterStart(t *testing.T) {
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), allowlist.ErrTokenBeforeStart.Error()) {
-		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying ErrTokenBeforeStart", resp.StatusCode, respBody)
+	if resp.StatusCode != http.StatusUnauthorized || !strings.Contains(string(respBody), operatorauth.ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist = %d (%s), want 401 carrying operatorauth.ErrTokenBeforeStart", resp.StatusCode, respBody)
 	}
 }
 
@@ -923,5 +924,79 @@ func TestRun_ARMTLSRefusesPlainHTTP(t *testing.T) {
 	}
 	if block, _ := pem.Decode(body); block != nil {
 		t.Fatalf("plain-HTTP GET /ca refused but the body carries a PEM block: %s", body)
+	}
+}
+
+// Secret writes and explain spend the operator token once, as allowlist writes
+// do: the replay is 409 and a freshly minted token still works.
+func TestRun_SecretsOperatorTokenSpendsOnce(t *testing.T) {
+	cfg := armTLSRunConfig(t)
+	operatorKey, keysPath := writeOperatorKeyPair(t)
+	cfg.operatorKeys = keysPath
+	cfg.allowlistPersistent = true // a non-persistent store refuses tokens for --jwt-clock-skew after start
+	cfg.inventoryCIDRs = []string{"127.0.0.1/32"}
+	base := fmt.Sprintf("https://127.0.0.1:%d", cfg.port)
+	client := armTLSClient(nil)
+	startRunServerOn(t, cfg, base, client)
+
+	der, err := x509.MarshalPKCS8PrivateKey(operatorKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := operatorauth.NewSignerFromKeyPEM(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mint := func(method, path string, body []byte) string {
+		authz, err := signer.Authorization(method, path, body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return authz
+	}
+	send := func(method, path string, body []byte, authz string) int {
+		req, err := http.NewRequest(method, base+path, bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", authz)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s %s: %v", method, path, err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	put, _ := json.Marshal(secrets.PutRequest{Value: base64.StdEncoding.EncodeToString([]byte("v1")), Overwrite: true})
+	authz := mint(http.MethodPut, "/secrets/a", put)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusCreated},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodPut, "/secrets/a", put), http.StatusOK},
+	} {
+		if got := send(http.MethodPut, "/secrets/a", put, step.authz); got != step.want {
+			t.Fatalf("PUT /secrets/a, %s = %d, want %d", step.name, got, step.want)
+		}
+	}
+
+	explain := "/secrets-explain/" + strings.Repeat("a", 64)
+	authz = mint(http.MethodGet, explain, nil)
+	for _, step := range []struct {
+		name  string
+		authz string
+		want  int
+	}{
+		{"first use", authz, http.StatusOK},
+		{"replay", authz, http.StatusConflict},
+		{"fresh token", mint(http.MethodGet, explain, nil), http.StatusOK},
+	} {
+		if got := send(http.MethodGet, explain, nil, step.authz); got != step.want {
+			t.Fatalf("GET %s, %s = %d, want %d", explain, step.name, got, step.want)
+		}
 	}
 }

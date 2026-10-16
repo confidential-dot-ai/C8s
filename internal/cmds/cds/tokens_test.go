@@ -43,7 +43,7 @@ func TestSingleUse(t *testing.T) {
 	}{
 		{"rejected token is not consumed", denied, denied},
 		{"first use", nil, nil},
-		{"replay", nil, allowlist.ErrTokenReused},
+		{"replay", nil, operatorauth.ErrTokenReused},
 	} {
 		verdict = step.verdict
 		if err := authorize(r, nil); !errors.Is(err, step.want) {
@@ -97,8 +97,8 @@ func TestSingleUseRejectsSignatureTwin(t *testing.T) {
 	if err := authorize(request(token), nil); err != nil {
 		t.Fatalf("first use = %v", err)
 	}
-	if err := authorize(request(twin), nil); !errors.Is(err, allowlist.ErrTokenReused) {
-		t.Fatalf("twin after first use = %v, want ErrTokenReused", err)
+	if err := authorize(request(twin), nil); !errors.Is(err, operatorauth.ErrTokenReused) {
+		t.Fatalf("twin after first use = %v, want operatorauth.ErrTokenReused", err)
 	}
 }
 
@@ -155,8 +155,8 @@ func TestSingleUseRefusesReplayAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer restarted.Close()
-	if err := singleUse(allow, &restarted, start.Add(time.Second), skew)(r, nil); !errors.Is(err, allowlist.ErrTokenBeforeStart) {
-		t.Fatalf("replay after restart = %v, want ErrTokenBeforeStart", err)
+	if err := singleUse(allow, &restarted, start.Add(time.Second), skew)(r, nil); !errors.Is(err, operatorauth.ErrTokenBeforeStart) {
+		t.Fatalf("replay after restart = %v, want operatorauth.ErrTokenBeforeStart", err)
 	}
 }
 

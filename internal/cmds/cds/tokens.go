@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 // singleUse lets each operator token authorize one write. CDS serves the token
@@ -27,7 +28,7 @@ func singleUse(authorize func(*http.Request, []byte) (time.Time, error), store *
 			return err
 		}
 		if !notBefore.IsZero() && iat.Before(notBefore) {
-			return fmt.Errorf("%w: issued at %s, before %s", allowlist.ErrTokenBeforeStart, iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
+			return fmt.Errorf("%w: issued at %s, before %s", operatorauth.ErrTokenBeforeStart, iat.UTC().Format(time.RFC3339), notBefore.UTC().Format(time.RFC3339))
 		}
 		token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 		return store.ConsumeToken(token)
