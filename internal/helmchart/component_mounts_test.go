@@ -321,14 +321,15 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 		t.Fatal("baked router has no nginx container")
 	}
 	nginx := spec.Containers[i]
-	argv := runtimeArgv(nginx, componentPinValues(t)["router.nginx"])
+	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
+	argv := runtimeArgv(nginx, pin.entrypoint)
 	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/nginx.conf") {
 		t.Errorf("baked nginx argv = %q, want -c /usr/lib/c8s/router-nginx/nginx.conf", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {
 		return index.AdmitsContainer(pkgallowlist.RunningContainer{
-			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx, false), Env: &pkgallowlist.EnvObservation{},
+			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx, false), Env: launchEnv(t, spec, nginx, pin.imageEnv),
 		})
 	}
 	if !admits() {
