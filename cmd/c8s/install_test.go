@@ -1376,11 +1376,11 @@ func TestChartComponentsFromValues(t *testing.T) {
 	}
 }
 
-// componentEnabledPredicate must honor a -f values file, not just chart
+// effectiveValues must honor a -f values file, not just chart
 // defaults and --set. volumed defaults to disabled; a -f file that enables it
 // has to make the resolver see it as enabled, or its digest is never pinned and
 // the render fails with no image ref.
-func TestComponentEnabledPredicateHonorsValuesFile(t *testing.T) {
+func TestEffectiveValuesHonorsValuesFile(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH")
 	}
@@ -1398,22 +1398,22 @@ func TestComponentEnabledPredicateHonorsValuesFile(t *testing.T) {
 
 	// Default (no -f): volumed reads as disabled.
 	installValues = nil
-	pred, err := componentEnabledPredicate(context.Background(), chartPath, nil)
+	tree, err := effectiveValues(context.Background(), chartPath, nil)
 	if err != nil {
-		t.Fatalf("predicate (defaults): %v", err)
+		t.Fatalf("effectiveValues (defaults): %v", err)
 	}
-	if on, _ := pred("volumed.enabled"); on {
+	if boolAtPath(tree, "volumed.enabled") {
 		t.Fatal("volumed.enabled true with no -f; expected the chart default false")
 	}
 
 	// With the -f file: volumed reads as enabled.
 	installValues = []string{vf}
 	defer func() { installValues = nil }()
-	pred, err = componentEnabledPredicate(context.Background(), chartPath, nil)
+	tree, err = effectiveValues(context.Background(), chartPath, nil)
 	if err != nil {
-		t.Fatalf("predicate (-f): %v", err)
+		t.Fatalf("effectiveValues (-f): %v", err)
 	}
-	if on, _ := pred("volumed.enabled"); !on {
+	if !boolAtPath(tree, "volumed.enabled") {
 		t.Fatal("volumed.enabled false despite a -f file enabling it; the resolver would skip pinning its digest")
 	}
 }

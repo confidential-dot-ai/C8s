@@ -29,6 +29,22 @@ type ObservedMount struct {
 	ReadOnly         bool         `json:"readOnly,omitempty"`
 }
 
+// confined reports whether a mount keeps what a container writes inside the
+// node's TEE boundary: a node-created platform mount, a read-only host path, or
+// a volume on memory or encrypted scratch. The host can read what a container
+// writes to a writable host path, or to a volume on storage the node cannot
+// vouch for (a disk-backed emptyDir, a PVC).
+func (m ObservedMount) confined() bool {
+	switch m.Class {
+	case MountPlatform:
+		return true
+	case MountHost:
+		return m.ReadOnly
+	default:
+		return m.Storage == MountMemory || m.Storage == MountEncrypted
+	}
+}
+
 // ErrNoMatch reports that no entry describes the running set; ErrAmbiguous that
 // more than one does. Both are refusals, but they say different things to an
 // operator: the first is a set that matches nothing, the second a pair of

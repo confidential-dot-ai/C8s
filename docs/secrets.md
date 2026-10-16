@@ -51,14 +51,16 @@ Annotate the pod alongside `confidential.ai/cw`:
 
 | Annotation | |
 |---|---|
-| `confidential.ai/c8s-secrets` | comma-separated `NAME=/store/path`; `NAME` is the file each value is written to |
-| `confidential.ai/c8s-secret-dir` | where the files land; default `/run/c8s/secrets` |
+| `confidential.ai/c8s-secrets` | comma-separated `NAME=/store/path`; `NAME` is the file each value is written to under `/run/c8s/secrets` |
 
 ```yaml
 annotations:
   confidential.ai/cw: api
   confidential.ai/c8s-secrets: "DB=/tenant-a/db,HF=/tenant-a/hf-token"
 ```
+
+The files land in `/run/c8s/secrets`. The directory is fixed; see
+[Fixed sidecar mounts](#fixed-sidecar-mounts).
 
 The webhook injects a `c8s-secret` sidecar and a memory-backed volume. Every
 container in the pod mounts that volume **read-only**; only the fetcher may
@@ -327,6 +329,16 @@ a whole certificate lifetime — worse than what it prevents. The sandbox is
 instead unusable for secrets, which costs one workload rather than every pod on
 the node.
 
+### Service links are off in injected pods
+
+The webhook sets `enableServiceLinks: false` on every pod it injects into. The
+kubelet then adds only the `KUBERNETES_*` variables for the API server, not the
+`<SERVICE>_SERVICE_HOST` and `<SERVICE>_PORT_*` set for each Service in the
+namespace. The injected sidecars are admitted with an `env: match` policy that
+lists every variable by name, so a set that changes whenever a Service is added
+would deny them. A workload that reads service-link variables must resolve the
+Service by DNS instead (`<service>.<namespace>.svc`).
+
 ### The injected drop set
 
 C8s injects its own containers into every confidential pod. They are not part of
@@ -336,9 +348,14 @@ has to enumerate C8s's own sidecars.
 A container is dropped when its argv is the C8s binary in a mode the webhook
 injects — `/c8s get-cert`, `/c8s get-secret`, `/c8s get-volume`, or `/c8s
 probe-file` — *and* some entry admits its digest running that binary under an
-**unconstrained args policy**: `command` exact at `/c8s` with `args: any`, the
-shape the chart seeds the C8s image in, or `command` and `args` both `any`, the
-shape earlier releases seeded. Both conditions are required. Admission alone
+**unconstrained args policy**: `command` exact at the invocation (`/c8s
+get-cert`) with `args: any`, the sidecar shapes the chart seeds the C8s image
+with, `command` exact at `/c8s` with `args: any`, or `command` and `args` both
+`any`, the shapes earlier releases seeded. The same entry container must
+admit the complete observed launch, mounts and environment included, under its
+own policies; a second entry cannot supply the mount or environment half of a
+decision whose open arguments came from the first. The shared predicate is
+`allowlist.AdmitsInjected`. Both conditions are required. Admission alone
 would let a pod add any component image with its entrypoint overridden — and
 have it ignored. The mode matters for the same reason. The C8s image in any
 other mode — `cds-attest`, `allowlist-proxy`, or a mode a pod author chose — is
@@ -355,7 +372,14 @@ or encrypted scratch. A writable host path, a disk-backed `emptyDir`, or a PVC
 turns the container into a foreign container, and the pod matches nothing.
 Missing mount evidence fails closed the same way. The same holds for the real
 sidecars: a discovery or reload-watch volume the pod names for `get-cert` must
-be memory-backed, or the sidecar is foreign and the pod matches nothing. Each
+be memory-backed, or the sidecar is foreign and the pod matches nothing. The
+node admits a real sidecar only under the mount table its shape pins, so a
+discovery volume must be an `emptyDir` and a reload-watch volume a Secret,
+ConfigMap, projected or downward API volume; the webhook refuses any other
+kind at admission. On a node without encrypted scratch (a GKE,
+AKS or kind node), a ConfigMap volume and a disk-backed `emptyDir` observe as
+`unknown` and the node refuses the sidecar: use `emptyDir: {medium: Memory}`
+for discovery, and a Secret or projected volume for reload-watch. Each
 mode finds the node's sockets at a baked-in path, never a flag, so a pod author
 cannot point one at a socket of their choosing.
 
@@ -365,9 +389,10 @@ beside the old one ([`allowlist-and-capabilities.md`](allowlist-and-capabilities
 
 What this rests on, in both directions: no image admitted with open args for
 `/c8s` other than C8s's carries an executable at that path, and the injected
-image's own entry keeps its args open. An operator who pins them
-(`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every injected
-sidecar into a foreign container, and every release in the cluster is refused.
+image's own entry keeps the sidecar shapes' args open. An operator who pins
+them (`bootstrapAllowlist.workloads` or `c8s allowlist edit`) turns every
+injected sidecar into a foreign container, and every release in the cluster is
+refused.
 Allowlist contents are operator-controlled and auditable, but that is a property
 of the deployment rather than something enforced here.
 
@@ -391,8 +416,17 @@ actually released.
 - A grant requires every container in the entry — init and main — to pin its
   argv: `command` and `args` both `exact` or `deny`. A container under `any`
   runs whatever command line the host chose, and the value would be released
-  to it. The write path refuses the entry, and release refuses an entry stored
-  before it did.
+  to it.
+- A grant also requires every container to pin its mounts: `mounts` is `deny`
+  or `exact` with no `host` rule. Under `any` the host can add a volume over
+  what the pinned command reads, and a `host` rule commits to a node path
+  whose content the host chooses. A `data` rule is allowed: its content
+  (a ConfigMap, a PVC) is still the cluster's, but only at a destination
+  under `/mnt/c8s-data/` the entry declares.
+- The write path refuses an entry that breaks either rule, and release refuses
+  one stored before it did. `env` is not required yet: `exact` fingerprints
+  the whole environment, including the pod's `HOSTNAME`, so no policy pins it
+  on a real pod; `lint` warns instead.
 - Paths are absolute, clean, and the only wildcard is a trailing `/**`, which
   matches strictly beneath its base — `/a/**` does not grant `/a`.
 - `write` requires `read`. The only client creates with `POST`, then re-reads;
@@ -434,15 +468,45 @@ destination:
 ]}
 ```
 
-The destinations follow `confidential.ai/c8s-cert-dir` and
-`confidential.ai/c8s-secret-dir` where the pod sets them. `exact` is set
-equality, so the rules also cover every other non-platform mount the pod
-declares; a configMap, projected or PVC source classes as `data`, whose
-destination sits below `/mnt/c8s-data/`.
+These destinations are fixed. `exact` is set equality, so the rules also cover
+every other non-platform mount the pod declares; a configMap, projected or PVC
+source classes as `data`, whose destination sits below `/mnt/c8s-data/`.
 
 `{"policy": "any"}` admits any mount table, leaving the host free to add one.
-It is what the chart seeds for C8s's own components. See
+The chart seeds C8s's own components with `exact` instead, and an entry with a
+grant may not use it. See
 [`allowlist-and-capabilities.md`](allowlist-and-capabilities.md#mount-policy-mounts).
+
+### Fixed sidecar mounts
+
+The C8s image's component entry pins each injected sidecar's mount table
+exactly, so the webhook mounts at fixed destinations:
+
+| Mount | Destination | Sidecars |
+|---|---|---|
+| cert volume | `/etc/c8s/certs` | all four, and every workload container |
+| secrets volume | `/run/c8s/secrets` | `c8s-secret`, and every workload container read-only |
+| discovery volume (`confidential.ai/c8s-discovery-volume`) | `/run/c8s/discovery` | `c8s-cert`, `c8s-cert-wait`, `c8s-secret`, `c8s-volume` |
+| reload-watch volume (`confidential.ai/c8s-reload-watch-volume`) | `/mnt/c8s-data/c8s-reload-watch` | `c8s-cert` |
+| inventory socket directory (added by the NRI plugin) | `/run/c8s/workload-claims` | `c8s-cert`, `c8s-secret`, `c8s-volume` |
+
+The annotations that used to move these mounts —
+`confidential.ai/c8s-cert-dir`, `confidential.ai/c8s-secret-dir`,
+`confidential.ai/c8s-discovery-mount-path` and
+`confidential.ai/c8s-reload-watch-mount-path` — are refused at admission
+unless they name the fixed destination. To migrate a pod, remove the
+annotation and read the files at the fixed path.
+`confidential.ai/c8s-discovery-out` must name a file directly in the fixed
+discovery destination, not in a subdirectory, and
+`confidential.ai/c8s-reload-watch-paths` must name files below the fixed
+reload-watch destination, or the webhook refuses the pod. The discovery
+volume must be a volume of its own: the webhook refuses one that is also the
+cert, secrets or an encrypted volume, since get-cert writes into it. Back the discovery and reload-watch volumes
+with tmpfs unless the node has encrypted scratch; see
+[The injected drop set](#the-injected-drop-set). A pod admitted before
+the upgrade keeps its old mounts until a sidecar restarts or the pod is
+recreated; from then on the node refuses its sidecars, and the webhook refuses
+the pod until the annotation is gone.
 
 ## What the inventory reports
 

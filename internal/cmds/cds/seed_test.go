@@ -1,9 +1,11 @@
 package cds
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -55,7 +57,7 @@ func TestSeedStore_AddsAllEntries(t *testing.T) {
 	defer store.Close()
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA, "as": digestB}))
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("seedStore: %v", err)
 	}
 
@@ -88,7 +90,7 @@ func TestSeedStore_IdempotentDoesNotBumpVersion(t *testing.T) {
 	defer store.Close()
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("first seed: %v", err)
 	}
 	_, v1, err := store.LoadAll()
@@ -96,7 +98,7 @@ func TestSeedStore_IdempotentDoesNotBumpVersion(t *testing.T) {
 		t.Fatalf("LoadAll: %v", err)
 	}
 
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("second seed: %v", err)
 	}
 	_, v2, err := store.LoadAll()
@@ -123,7 +125,7 @@ func TestSeedStore_PreservesExistingEntries(t *testing.T) {
 	}
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA, "runtime": digestA}))
-	if err := seedStore(&store, path); err != nil {
+	if _, err := seedStore(&store, path); err != nil {
 		t.Fatalf("seedStore: %v", err)
 	}
 
@@ -148,7 +150,7 @@ func TestSeedStore_FailsClosedOnBadDigest(t *testing.T) {
 
 	// "sha256:bad" fails ParseJSON's digest validation.
 	path := writeSeed(t, anySeed(map[string]string{"cds": "sha256:bad"}))
-	if err := seedStore(&store, path); err == nil {
+	if _, err := seedStore(&store, path); err == nil {
 		t.Fatal("seedStore accepted a malformed digest; want fail-closed error")
 	}
 }
@@ -160,7 +162,7 @@ func TestSeedStore_FailsClosedOnMissingFile(t *testing.T) {
 	}
 	defer store.Close()
 
-	if err := seedStore(&store, filepath.Join(t.TempDir(), "does-not-exist.json")); err == nil {
+	if _, err := seedStore(&store, filepath.Join(t.TempDir(), "does-not-exist.json")); err == nil {
 		t.Fatal("seedStore accepted a missing seed file; want fail-closed error")
 	}
 }
@@ -174,7 +176,55 @@ func TestSeedStore_FailsClosedOnStoreError(t *testing.T) {
 	_ = store.Close()
 
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
-	if err := seedStore(&store, path); err == nil {
+	if _, err := seedStore(&store, path); err == nil {
 		t.Fatal("seedStore succeeded on a closed store; want fail-closed error")
+	}
+}
+
+// A chart upgrade rewrites the mounted seed while CDS runs: the new entries
+// reach the store without a restart, and an entry deleted while the seed is
+// unchanged stays deleted.
+func TestFollowSeedAppliesChangedSeed(t *testing.T) {
+	orig := seedRecheckInterval
+	seedRecheckInterval = time.Millisecond
+	t.Cleanup(func() { seedRecheckInterval = orig })
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
+	applied, err := seedStore(&store, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := store.DeleteWorkload("cds"); err != nil || !ok {
+		t.Fatalf("DeleteWorkload(cds) = %t, %v", ok, err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { followSeed(ctx, &store, path, applied); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	time.Sleep(20 * time.Millisecond)
+	if doc, _, err := store.LoadAll(); err != nil || len(doc.Workloads) != 0 {
+		t.Fatalf("unchanged seed reapplied: %v, %v", doc.Workloads, err)
+	}
+	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "operator-v2": digestB})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		doc, _, err := store.LoadAll()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := doc.Workloads["operator-v2"]; ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("changed seed not applied: %v", doc.Workloads)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

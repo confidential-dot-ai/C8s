@@ -189,6 +189,19 @@ func NewSandboxTokenSigner(host string) (*SandboxTokenSigner, error) {
 	return &SandboxTokenSigner{key: key, pubDER: pubDER, host: host}, nil
 }
 
+// Host is the inventory host every token names.
+func (s *SandboxTokenSigner) Host() string { return s.host }
+
+// WithHost returns a signer that names host and keeps s's key, so the digests
+// endpoint, which serves that key, needs no restart when the node's address
+// changes.
+func (s *SandboxTokenSigner) WithHost(host string) (*SandboxTokenSigner, error) {
+	if err := ValidateInventoryHost(host); err != nil {
+		return nil, err
+	}
+	return &SandboxTokenSigner{key: s.key, pubDER: s.pubDER, host: host}, nil
+}
+
 // PublicKey is the signing key CDS fetches from the digests endpoint.
 func (s *SandboxTokenSigner) PublicKey() *ecdsa.PublicKey { return &s.key.PublicKey }
 
