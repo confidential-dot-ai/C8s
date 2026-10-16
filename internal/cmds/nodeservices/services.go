@@ -53,5 +53,7 @@ func PublishNodeIP(rootDir string, d *launchconfig.Document) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
-	return fileutil.WriteAtomic(dst, []byte(address+"\n"), 0600)
+	// World-readable: non-root components read it as their attestation-api
+	// address (cmdsutil.NodeIPPath).
+	return fileutil.WriteAtomic(dst, []byte(address+"\n"), 0644)
 }

@@ -23,7 +23,6 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/refvalues"
@@ -49,22 +48,14 @@ func Run(args []string) error {
 var inClusterConfig = rest.InClusterConfig
 
 // newKubeClientset builds the Kubernetes client used by the proxy and the
-// iptables-sync sidecar: from kubeconfigPath when set, else from the
-// in-cluster service-account config. Package var so tests can substitute a
-// fake clientset.
-var newKubeClientset = func(kubeconfigPath string) (kubernetes.Interface, error) {
-	var restCfg *rest.Config
-	var err error
-	if kubeconfigPath != "" {
-		restCfg, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("k8s config from --kubeconfig %s: %w", kubeconfigPath, err)
-		}
-	} else {
-		restCfg, err = inClusterConfig()
-		if err != nil {
-			return nil, fmt.Errorf("k8s in-cluster config: %w", err)
-		}
+// iptables-sync sidecar from the in-cluster service-account config. There is
+// no kubeconfig flag: client-go runs a kubeconfig's exec credential plugin, so
+// a pod-chosen kubeconfig would load code the pinned arguments never named.
+// Package var so tests can substitute a fake clientset.
+var newKubeClientset = func() (kubernetes.Interface, error) {
+	restCfg, err := inClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("k8s in-cluster config: %w", err)
 	}
 	clientset, err := kubernetes.NewForConfig(restCfg)
 	if err != nil {
@@ -101,7 +92,6 @@ type proxyListeners struct {
 type proxyConfig struct {
 	platform                  string
 	attestationApiURL         string
-	kubeconfig                string
 	outboundPort              int
 	inboundPort               int
 	nodeIP                    string
@@ -150,8 +140,7 @@ type proxyConfig struct {
 
 func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.StringVar(&c.platform, "platform", "auto", "TEE platform: sev-snp, tdx, or auto (probes /dev/{tdx_guest,sev-guest})")
-	fs.StringVar(&c.attestationApiURL, "attestation-api-url", "", "URL of the local attestation-api (e.g. http://localhost:8400)")
-	fs.StringVar(&c.kubeconfig, "kubeconfig", "", "path to a kubeconfig for the pod resolver's API access; empty uses the in-cluster service-account config")
+	fs.StringVar(&c.attestationApiURL, "attestation-api-url", "", "URL of the local attestation-api (e.g. http://localhost:8400)"+cmdsutil.NodeAddressHelp)
 	fs.IntVar(&c.outboundPort, "outbound-port", 15001, "outbound listener port (intercepted app traffic)")
 	fs.IntVar(&c.inboundPort, "inbound-port", 15006, "inbound listener port (armTLS from peer nodes)")
 	fs.StringVar(&c.nodeIP, "node-ip", "", "this node's IP (auto-detected from NODE_IP env if unset)")
@@ -215,11 +204,17 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 	}
 	c.nodeIP = canonicalNodeIP
 
+	attestationURL, err := cmdsutil.ExpandHostIP(c.attestationApiURL)
+	if err != nil {
+		return err
+	}
+	ctx = cmdsutil.WatchNodeIP(ctx, c.attestationApiURL, attestationURL)
+	c.attestationApiURL = attestationURL
 	if err := validateConfig(c.attestationApiURL, c.outboundPort, c.inboundPort, c.healthPort, c.certTTL); err != nil {
 		return fmt.Errorf("invalid configuration: %w", err)
 	}
 
-	clientset, err := newKubeClientset(c.kubeconfig)
+	clientset, err := newKubeClientset()
 	if err != nil {
 		return err
 	}
@@ -329,9 +324,9 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		CDSImages:         c.cdsPins.Images,
 	}
 	if err := runtime.run(ctx, hostMesh{c: c, resolver: resolver, cds: cdsCfg}); err != nil {
-		return fmt.Errorf("proxy: %w", err)
+		return cmdsutil.NodeIPChanged(ctx, fmt.Errorf("proxy: %w", err))
 	}
-	return nil
+	return cmdsutil.NodeIPChanged(ctx, nil)
 }
 
 type hostMesh struct {
@@ -491,7 +486,6 @@ func (e hostMesh) start(ctx context.Context, r *meshRuntime) {
 
 type iptablesSyncConfig struct {
 	outboundPort            int
-	kubeconfig              string
 	uid                     int
 	excludeUIDs             string
 	excludeSourceNamespaces string
@@ -519,7 +513,6 @@ func newIptablesSyncCommand() *cobra.Command {
 	}
 	fs := cmd.Flags()
 	fs.IntVar(&cfg.outboundPort, "outbound-port", 15001, "outbound listener port")
-	fs.StringVar(&cfg.kubeconfig, "kubeconfig", "", "path to a kubeconfig for the pod watch; empty uses the in-cluster service-account config")
 	fs.IntVar(&cfg.uid, "uid", defaultProxyUID, "UID to exclude from redirect")
 	fs.StringVar(&cfg.excludeUIDs, "exclude-uids", "0", "comma-separated UIDs to skip (e.g. root=0 so kubelet/containerd can reach registries)")
 	fs.StringVar(&cfg.excludeSourceNamespaces, "exclude-source-namespaces", defaultMeshExcludedSourceNamespacesCSV(), "comma-separated local source namespaces excluded from transparent mesh interception")

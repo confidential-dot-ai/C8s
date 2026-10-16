@@ -17,8 +17,8 @@ func newAddCmd(o *options) *cobra.Command {
 		Use:   "add <digest> <image>",
 		Short: "Add an entry admitting an image under any command line",
 		Long: `Write the entry "<image basename>-<first 12 hex of digest>": one container at
-<digest> whose command and args policy are both "any", the entry the chart seeds
-for a bootstrap digest. To pin a command line or grant secrets, write the entry
+<digest> whose command and args policy are both "any". The chart's seed takes an
+entry of that name in place of the one it generates for the digest. To pin a command line or grant secrets, write the entry
 with 'apply' or 'derive' instead.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {

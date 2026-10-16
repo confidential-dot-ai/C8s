@@ -28,6 +28,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -263,13 +264,41 @@ const maxSandboxRequestBytes = 64 << 10
 // socket the caller is bound by kernel peer credentials.
 // Errors from the resolver are returned as 500s — get-cert fails closed on them.
 func ServeTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, signer *SandboxTokenSigner) error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST "+SandboxPath, func(w http.ResponseWriter, r *http.Request) {
+	return serveTokenRoute(ctx, l, resolver, func() (*SandboxTokenSigner, int) {
 		if signer == nil {
 			// No CDS to attest the signing key against, and an unverifiable
 			// token is worse than none. Terminal, so the caller is told to
 			// stop asking rather than to wait.
-			http.Error(w, "inventory serves no sandbox tokens", http.StatusNotFound)
+			return nil, http.StatusNotFound
+		}
+		return signer, 0
+	})
+}
+
+// ServePendingTokens is ServeTokens for a signer that initializes after the
+// listener starts. Until signer holds one, the route answers 503: callers fail
+// closed and retry, rather than issue without a sandbox ID as a 404 tells them to.
+func ServePendingTokens(ctx context.Context, l net.Listener, resolver SandboxResolver, signer *atomic.Pointer[SandboxTokenSigner]) error {
+	return serveTokenRoute(ctx, l, resolver, func() (*SandboxTokenSigner, int) {
+		if s := signer.Load(); s != nil {
+			return s, 0
+		}
+		return nil, http.StatusServiceUnavailable
+	})
+}
+
+// serveTokenRoute serves the token route with the signer current returns, or
+// answers with its status when there is none.
+func serveTokenRoute(ctx context.Context, l net.Listener, resolver SandboxResolver, current func() (*SandboxTokenSigner, int)) error {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST "+SandboxPath, func(w http.ResponseWriter, r *http.Request) {
+		signer, status := current()
+		switch {
+		case status == http.StatusServiceUnavailable:
+			http.Error(w, "sandbox-token signer not initialized yet", status)
+			return
+		case signer == nil:
+			http.Error(w, "inventory serves no sandbox tokens", status)
 			return
 		}
 		var req SandboxTokenRequest

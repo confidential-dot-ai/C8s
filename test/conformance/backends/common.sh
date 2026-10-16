@@ -103,6 +103,7 @@
 #                                    the node's
 #   evidence_unsigned <ns> <pod> <report-data-hex>
 #                                    evidence whose signature does not verify
+#   pod_exec                         yes: steps may exec in a pod's containers
 #   pod_cert_file <ns> <pod> <file> [container]
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
@@ -168,7 +169,8 @@
 #                                    the Service's endpoints say so
 # node_name, image_ref, image_digest, pull_interval, cds_pod_url, cert_paths,
 # node_address, mesh_port, mesh_uids, mesh_platform, excluded_namespace,
-# host_namespace_ns and attestation_endpoint answer the same for a whole run;
+# host_namespace_ns, attestation_endpoint and pod_exec answer the same for a
+# whole run;
 # callers may cache them. The allowlist is state: served_allowlist answers for
 # the moment of the call.
 #
@@ -289,6 +291,7 @@ render_pod() {
 # The webhook mounts the certificate volume here in every container of a pod
 # carrying a workload ID; read through one of them, once it runs.
 CERT_VOLUME_PATH=/etc/c8s/certs
+pod_exec() { echo yes; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is
@@ -434,6 +437,10 @@ write_token() {
     "$bin" "$key" "$@"
 }
 
+# Raw reads, so the steps see the document the CDS serves, as served.
+served_allowlist() { curl -sSfk "$(cds_url)/allowlist"; }
+served_version() { allowlist_get "" | awk 'NR == 1 {print $2}'; }
+
 allowlist_get() {
     local url headers body status
     url="$(cds_url)" || return
@@ -483,9 +490,22 @@ http_request() {
     [ -z "$body" ] || opts+=(-H 'Content-Type: application/json' --data-binary "@$body")
     [ -z "$authorization" ] || opts+=(-H "Authorization: $authorization")
     [ -z "$cert" ] || opts+=(--cert "$cert" --key "$key")
-    answer="$(curl "${opts[@]}" "$url$route" 2>/dev/null)" || answer=$'\n000'
+    answer="$(curl_paced "${opts[@]}" "$url$route")"
     echo "${answer##*$'\n'}"
     printf '%s' "${answer%$'\n'*}"
+}
+
+# The router admits one allowlist write a second per client (burst 5), and
+# the harness is one client: a 429 is waited out, never an answer. No
+# scenario observes rate limiting.
+curl_paced() {
+    local answer _
+    for _ in $(seq 10); do
+        answer="$(curl "$@" 2>/dev/null)" || answer=$'\n000'
+        [ "${answer##*$'\n'}" = 429 ] || break
+        sleep 1
+    done
+    printf '%s' "$answer"
 }
 
 cds_read() {
@@ -538,13 +558,13 @@ router_nginx_conf() {
 }
 
 # The attest container is started with --front-door-mode, or, where a launch
-# configuration drives the router, with the file that holds it. get-cert
-# reads the same file into the discovery document it writes, so that mode is
+# configuration drives the router, with the file that holds it. get-cert, an
+# init container, reads the same file into the discovery document it writes, so that mode is
 # read from the document the router serves, which needs no exec.
 router_tls_mode() {
     local args mode out path
     args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
-        jq -r '.spec.template.spec.containers[] | (.args // [])[]')" || return
+        jq -r '.spec.template.spec | ((.initContainers // []) + .containers)[] | (.args // [])[]')" || return
     mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
     if [ -z "$mode" ]; then
         grep -q '^--front-door-mode-file=' <<<"$args" || { echo "backend: the router names no front-door mode" >&2; return 1; }

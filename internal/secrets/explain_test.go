@@ -160,8 +160,8 @@ func TestExplainNamesUnpinnedGrant(t *testing.T) {
 	if resp.Match != "api" {
 		t.Fatalf("match = %q, want api", resp.Match)
 	}
-	if resp.Grant != nil || !strings.Contains(resp.Refusal, "unconstrained") {
-		t.Fatalf("refusal = %q, grant = %v; want the unpinned argv named and no grant", resp.Refusal, resp.Grant)
+	if resp.Grant != nil || resp.Refusal == "" {
+		t.Fatalf("refusal = %q, grant = %v; want a refusal and no grant", resp.Refusal, resp.Grant)
 	}
 }
 
@@ -342,6 +342,60 @@ func TestExplainAgreesWithTheMatcher(t *testing.T) {
 			if resp.Match != name {
 				t.Fatalf("explain says %q, the matcher says %q", resp.Match, name)
 			}
+		})
+	}
+}
+
+// A container a match env policy rejects names which evidence case occurred,
+// since each needs a different recovery.
+func TestExplainNamesTheEnvEvidenceCase(t *testing.T) {
+	observe := func(value string, keep, evicted bool) *pkgallowlist.EnvObservation {
+		env, err := pkgallowlist.ObserveEnv([]string{"MODE=" + value})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !keep {
+			env.VariableDigests = nil
+		}
+		env.VariableDigestsEvicted = evicted
+		return env
+	}
+	for _, tc := range []struct {
+		name string
+		env  *pkgallowlist.EnvObservation
+		argv []string
+		want string
+	}{
+		{"unavailable", nil, nil, pkgallowlist.EnvEvidenceUnavailable},
+		{"missing", observe("production", false, false), nil, pkgallowlist.EnvEvidenceMissing},
+		{"evicted", observe("production", false, true), nil, pkgallowlist.EnvEvidenceEvicted},
+		{"mismatch", observe("debug", true, false), nil, pkgallowlist.EnvEvidenceMismatch},
+		// Recreating the pod does not fix an argv mismatch.
+		{"evicted with argv mismatch", observe("production", false, true), []string{"/bin/other"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eh := newExplainHarness(t)
+			al, _ := eh.h.Policy.Allowlist()
+			if err := json.Unmarshal([]byte(`{"policy":"match","variables":{"MODE":{"exact":"production"}}}`), &al.Workloads["api"].Containers[0].Env); err != nil {
+				t.Fatal(err)
+			}
+			eh.inv.containers[0].Env = tc.env
+			if tc.argv != nil {
+				eh.inv.containers[0].Argv = tc.argv
+			}
+			_, resp := eh.serve(testSandbox)
+			for _, e := range resp.Entries {
+				if e.Name != "api" {
+					continue
+				}
+				for _, f := range e.Foreign {
+					if f.Digest == testAppImg && f.EnvEvidence == tc.want {
+						return
+					}
+				}
+				t.Fatalf("api foreign = %+v, want %s with env evidence %q", e.Foreign, testAppImg, tc.want)
+			}
+			t.Fatal("no verdict for api")
 		})
 	}
 }

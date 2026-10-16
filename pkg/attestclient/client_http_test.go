@@ -543,3 +543,18 @@ func TestRedirectStatusIsNotSuccess(t *testing.T) {
 		}
 	})
 }
+
+// An attestation-api behind a private CA verifies through the client
+// WithAttestationHTTP sets.
+func TestGenerateEvidenceWithAttestationHTTP(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"platform":"snp","evidence":{"q":1}}`))
+	}))
+	defer srv.Close()
+
+	c := NewClientWithHTTP("https://cds.invalid", &http.Client{}).WithAttestationHTTP(srv.Client())
+	if _, err := c.GenerateEvidence(srv.URL, []byte("report-data")); err != nil {
+		t.Fatalf("GenerateEvidence over the private-CA client: %v", err)
+	}
+}
