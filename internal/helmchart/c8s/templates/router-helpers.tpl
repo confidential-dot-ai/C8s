@@ -756,3 +756,27 @@ trust the same CDS.
 {{- end -}}
 {{- $args | toJson -}}
 {{- end -}}
+
+{{/*
+router.wellKnownProxyDirectives renders the directives every
+/.well-known/c8s/ location shares: CORS, the proxy to cds-attest with
+buffering on and no temp-file spill, and the forwarded headers. Inputs: root
+(the chart context) and readTimeout.
+*/}}
+{{- define "router.wellKnownProxyDirectives" -}}
+{{- $root := .root -}}
+{{- if default false $root.Values.router.cors.enabled -}}
+{{ include "router.corsLocationDirectives" $root.Values.router.cors | trim }}
+{{ else if eq (include "router.protocolCorsEnabled" $root) "true" -}}
+{{ include "router.protocolCorsLocationDirectives" $root | trim }}
+{{ end -}}
+proxy_pass http://127.0.0.1:{{ $root.Values.router.attest.port }};
+proxy_buffering on;
+proxy_request_buffering on;
+proxy_max_temp_file_size 0;
+proxy_read_timeout {{ .readTimeout }};
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+{{- end -}}
