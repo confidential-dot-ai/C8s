@@ -88,7 +88,7 @@ func NewCmd() *cobra.Command {
 	f.DurationVar(&cfg.sessionTTL, "session-ttl", 5*time.Minute, "established-session idle TTL")
 	f.DurationVar(&cfg.sessionMaxAge, "session-max-age", defaultSessionMaxAge, "absolute session lifetime: a session's keys retire this long after establishment, however busy it is")
 	f.DurationVar(&cfg.readHeaderTimeout, "read-header-timeout", 5*time.Second, "HTTP read-header timeout")
-	f.DurationVar(&cfg.tunnelIOTimeout, "tunnel-io-timeout", defaultTunnelIOTimeout, "limit on reading one tunnel request body, and separately on writing its sealed response")
+	f.DurationVar(&cfg.tunnelIOTimeout, "tunnel-io-timeout", defaultTunnelIOTimeout, "how long a tunnel upload, or its sealed response download, may make no progress")
 	f.StringVar(&cfg.frontDoorModeFile, "front-door-mode-file", "", "file holding the front-door mode, read at start instead of --front-door-mode")
 	f.StringVar(&cfg.acmeServingCertFile, "acme-serving-cert-file", "", "serving-leaf PEM nginx presents in acme front-door mode; used instead of --serving-cert-file when --front-door-mode-file reads acme")
 	f.BoolVar(&attestEndpoints, "attest-endpoints", true, "serve attest-pq, attest-lb and the tunnel; false serves only the routing listener and probes")

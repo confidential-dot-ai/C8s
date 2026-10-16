@@ -40,7 +40,9 @@ const ExporterHeader = "X-C8s-Exporter"
 type ProxyConfig struct {
 	State      *State
 	Transports *Transports
-	// Timeout bounds one forwarded request, body included. Zero means none.
+	// Timeout bounds a request on the routing listener while no data moves
+	// either way, and a tunnelled request's whole backend exchange, which
+	// Forward buffers. Zero means none.
 	Timeout time.Duration
 	// TunnelSlots bounds tunnelled requests in flight (Acquire). Zero means
 	// 32.
@@ -130,9 +132,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.timeout > 0 {
-		ctx, cancel := context.WithTimeout(r.Context(), p.timeout)
-		defer cancel()
-		r = r.WithContext(ctx)
+		var stop func()
+		w, r, stop = idleExchange(w, r, p.timeout)
+		defer stop()
 	}
 	p.reverseProxy(route, target, func(err error) {
 		p.log.Warn("backend request failed", "host", r.Host, "path", target.RawPath, "backend", route.Backend.Address, "error", err)

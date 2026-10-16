@@ -2965,7 +2965,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_total", "32")
 	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "8")
 	tunnel.assertDirective(t, "limit_conn_status", "503")
-	cfg.http.assertDirective(t, "limit_conn_zone", "$c8s_protocol_total_key", "zone=c8s_tunnel_total:1m")
+	cfg.http.assertDirective(t, "limit_conn_zone", "$c8s_tunnel_total_key", "zone=c8s_tunnel_total:1m")
 	cfg.http.assertDirective(t, "limit_conn_zone", "$binary_remote_addr", "zone=c8s_tunnel_per_client:10m")
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 

@@ -257,7 +257,9 @@ whose release a bare `helm uninstall` already deleted. See [`operator.md`](opera
 # Every flow below also requires --hardware-platform (the nodes' CPU TEE:
 # sev-snp or tdx). --operator-keys authorizes `c8s allowlist` writes and pins
 # the router's route-manifest keys; a -f values file may carry the keys
-# instead. --force installs without, but the router then needs --measurements.
+# instead. --force installs without, but CDS then stores no route manifest, so
+# the router answers 503 until cds.operatorKeys is set and the release upgraded;
+# the install also needs --measurements to pin CDS.
 # --upstream (with the port on its --workload-ref) writes a route manifest that
 # routes / to an adopted workload serving TLS on that port with its get-cert
 # certificate; install prints how to store it (see operator.md, "Route manifest").
