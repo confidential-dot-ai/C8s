@@ -440,7 +440,9 @@ the chart accepts only in `audit` mode). The
 operator injects pods with the chart-managed CDS Service URL. Allowlist
 writes (`POST`, `PUT`, `DELETE /allowlist`) are authorized by an operator key:
 the caller presents a short-lived token signed by an operator EC private key
-whose public half is pinned in `cds.operatorKeys`. The `c8s allowlist` CLI mints
+whose public half is pinned in `cds.operatorKeys`. The token algorithm must
+match the key's curve: ES256 for P-256, ES384 for P-384, ES512 for P-521; CDS
+rejects any other pairing. The `c8s allowlist` CLI mints
 that token (see the README, "Managing the image allowlist"). Without
 `cds.operatorKeys` set, allowlist writes are rejected while reads keep serving.
 

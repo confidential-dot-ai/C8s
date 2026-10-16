@@ -9,7 +9,8 @@
 // keys, re-hashes the body against pbh, matches htm/htu against the request,
 // and rejects any token whose exp−iat exceeds MaxTokenValidity — so a captured
 // token cannot be replayed against a different payload, verb, or path, and
-// cannot be minted long-lived regardless of client tooling.
+// cannot be minted long-lived regardless of client tooling. The algorithm must
+// match the key's curve: ES256 for P-256, ES384 for P-384, ES512 for P-521.
 //
 // FUTURE IMPROVEMENT — a CA + operator certificates (chain carried in the JWT
 // x5c header), giving delegated issuance and CA-based revocation instead of
