@@ -404,7 +404,7 @@ func TestTunnelSlowClientGetsWholeResponse(t *testing.T) {
 }
 
 // oneRequestBudget admits one tunnelled request at a time.
-const oneRequestBudget = routing.MaxTunnelResponseBytes + tunnelBodyLimit
+const oneRequestBudget = 3*tunnelBodyLimit + 4*routing.MaxTunnelResponseBytes
 
 // TestTunnelBudgetNeedsSession: a request naming no live session, or
 // declaring an oversized record, is refused before it reads the body, so a

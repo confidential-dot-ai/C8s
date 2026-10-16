@@ -2939,7 +2939,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	}
 
 	// The protocol endpoints take 16k bodies. Tunnel records up to 8 MiB
-	// spill to a sized tmpfs, with no connection caps in front.
+	// spill to a sized tmpfs, capped per client address only.
 	cfg := renderedRouterNginxConfig(t, out)
 	protocol := cfg.location(t, "prefix", "/.well-known/c8s/")
 	tunnel := cfg.location(t, "exact", "/.well-known/c8s/tunnel")
@@ -2953,15 +2953,19 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
 		loc.assertDirective(t, "proxy_read_timeout", "3630s")
 		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
-		loc.assertNoDirective(t, "limit_conn")
 	}
+	protocol.assertNoDirective(t, "limit_conn")
 	protocol.assertDirective(t, "client_max_body_size", "16k")
 	protocol.assertDirective(t, "client_body_buffer_size", "16k")
 	tunnel.assertDirective(t, "client_max_body_size", "8m")
 	tunnel.assertDirective(t, "client_body_buffer_size", "16k")
 	tunnel.assertDirective(t, "client_body_temp_path", "/var/lib/c8s-tunnel-body")
 	tunnel.assertDirective(t, "client_body_timeout", "10s")
-	cfg.http.assertNoDirective(t, "limit_conn_zone")
+	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "64")
+	tunnel.assertDirective(t, "limit_conn_status", "503")
+	if got := cfg.http.directives["limit_conn_zone"]; len(got) != 1 || !slices.Equal(got[0], []string{"$binary_remote_addr", "zone=c8s_tunnel_per_client:10m"}) {
+		t.Fatalf("limit_conn_zone = %v, want only the per-client tunnel zone", got)
+	}
 	conf := renderedRouterNginxConf(t, out)
 	for _, want := range []string{"\nworker_rlimit_nofile 65536;\n", "\n    worker_connections 16384;\n"} {
 		if !strings.Contains(conf, want) {
@@ -2974,6 +2978,17 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	}
 	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
 		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
+	}
+	capOut, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.tunnelConnectionsPerClient=512")
+	if err != nil {
+		t.Fatalf("helm template (tunnelConnectionsPerClient=512): %v\n%s", err, capOut)
+	}
+	renderedRouterNginxConfig(t, capOut).location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "512")
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=8Gi"); err == nil || !strings.Contains(out, "must exceed router.nginx.tunnelBodySpace") {
+		t.Fatalf("helm template with an nginx memory limit of tunnelBodySpace = %v, want the tmpfs refusal\n%s", err, out)
+	}
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=9Gi"); err != nil {
+		t.Fatalf("helm template with an nginx memory limit above tunnelBodySpace: %v\n%s", err, out)
 	}
 	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 

@@ -54,7 +54,7 @@ func tunnelBudget(flag quantityFlag, limitFile string, logger *slog.Logger) int6
 	if b, err := os.ReadFile(limitFile); err == nil {
 		// "max" means no limit.
 		if limit, err := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64); err == nil && limit > 0 {
-			budget = max(limit/4*3, routing.MaxTunnelResponseBytes+tunnelBodyLimit)
+			budget = max(limit/4*3, routing.TunnelReservation(tunnelBodyLimit))
 		}
 	}
 	logger.Info("tunnel budget", "bytes", budget)

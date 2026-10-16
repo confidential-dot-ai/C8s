@@ -109,7 +109,7 @@ const (
 	// sooner.
 	tunnelWriteChunk = 16 << 10
 	// tunnelBodyLimit bounds one sealed tunnel request record.
-	tunnelBodyLimit = 8 << 20
+	tunnelBodyLimit = routing.MaxTunnelRecordBytes
 	// attestBodyLimit bounds the attest-pq request body: a nonce and an X-Wing
 	// encapsulation key in JSON is well under 8 KiB.
 	attestBodyLimit = 8 << 10
@@ -129,11 +129,11 @@ var (
 // the sidecar seals back to the client. outer is the tunnel request itself,
 // whose Host routes a sealed request that carries none (route policy M1). An
 // error means the backend failed and is sealed as 502. Acquire reserves tunnel
-// budget for a record of recordBytes, as routing.Proxy.Acquire does.
-// *routing.Proxy implements it.
+// budget for a record of recordBytes from client, as routing.Proxy.Acquire
+// does. *routing.Proxy implements it.
 type Backend interface {
 	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
-	Acquire(recordBytes int64) (release func(), ok bool)
+	Acquire(client string, recordBytes int64) (release func(), ok bool)
 }
 
 // Config configures the sidecar server.
@@ -748,13 +748,13 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.cfg.Backend != nil {
-		// Only a request naming a live session gets here, so an
-		// unauthenticated client never holds budget.
+		// Budget goes only to a request naming a live session. Anyone can
+		// open one, so the per-client share is what bounds a single client.
 		recordBytes := r.ContentLength
 		if recordBytes < 0 {
 			recordBytes = tunnelBodyLimit
 		}
-		release, ok := s.cfg.Backend.Acquire(recordBytes)
+		release, ok := s.cfg.Backend.Acquire(clientBucket(r), recordBytes)
 		if !ok {
 			refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 			return
