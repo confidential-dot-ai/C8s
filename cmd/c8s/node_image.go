@@ -5,11 +5,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
@@ -156,6 +159,9 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		// the chart DaemonSet, which the chart refuses on a baked node.
 		"--set", "volumed.enabled=false",
 		"--set", "router.attest.enabled=true",
+		// Both CDS Deployments are baked; the signed launch document selects
+		// which one runs (cds-role nodes, or the singleton on the server).
+		"--set", "cds.ha.enabled=true",
 	)
 	for _, input := range cfg.images() {
 		args = append(args, "--set-string", input.valuePath+".pullPolicy=Never")
@@ -188,7 +194,13 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 		{"c8s-integration.yaml", artifacts.integration},
 		{"allowlist-seed.json", artifacts.seed},
 		{"images.txt", []byte(strings.Join(artifacts.images, "\n") + "\n")},
+		{"cds-floor.json", artifacts.cdsFloor},
+		{"c8s-cds-singleton.yaml", artifacts.cdsSingleton},
+		{"c8s-cds-ha.yaml", artifacts.cdsHA},
 	} {
+		if len(artifact.body) == 0 {
+			continue
+		}
 		if err := os.WriteFile(filepath.Join(cfg.outputDir, artifact.name), artifact.body, 0o644); err != nil {
 			return fmt.Errorf("write %s: %w", artifact.name, err)
 		}
@@ -198,8 +210,23 @@ func renderNodeImage(ctx context.Context, cfg nodeImageRenderConfig) error {
 
 type nodeImageArtifacts struct {
 	integration []byte
-	seed        []byte
-	images      []string
+	// cdsSingleton and cdsHA hold the objects only one CDS flavour needs; the
+	// server's node-services skips the file the launch document did not pick.
+	cdsSingleton []byte
+	cdsHA        []byte
+	seed         []byte
+	images       []string
+	// cdsFloor is the NRI floor a cds-role node admits instead of the seed:
+	// the HA CDS container pinned exactly, plus the DaemonSets every node runs.
+	// Empty when the chart renders no HA CDS.
+	cdsFloor []byte
+}
+
+// cdsFloorContainer is a container that may run on a cds-role node.
+type cdsFloorContainer struct {
+	key       string // workload, for the entry name
+	container corev1.Container
+	digest    string
 }
 
 // collectNodeImageArtifacts retains complete chart resources and copies the seed
@@ -234,8 +261,12 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		"ConfigMap/c8s-router-nginx":                                     false,
 		"ConfigMap/c8s-cds-allowlist-seed":                               false,
 	}
+	// Workloads the chart may render without being required by every render.
+	optional := map[string]bool{"DaemonSet/c8s-cds-ha": true}
 	seen := make(map[string]bool)
 	images := make(map[string]*bakedImage)
+	var cdsNode []cdsFloorContainer // containers a cds-role node runs
+	var singleton, ha bytes.Buffer
 	for {
 		var raw runtime.RawExtension
 		if err := decoder.Decode(&raw); err == io.EOF {
@@ -264,16 +295,26 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		seen[key] = true
 		switch kind {
 		case "Deployment", "DaemonSet":
-			if _, expected := required[key]; !expected {
+			if _, expected := required[key]; !expected && !optional[key] {
 				return nil, fmt.Errorf("unexpected node-image workload %s", key)
 			}
 			if err := collectWorkloadImages(object, key, images); err != nil {
 				return nil, err
 			}
+			if kind == "DaemonSet" {
+				containers, err := podContainers(object, key)
+				if err != nil {
+					return nil, err
+				}
+				cdsNode = append(cdsNode, containers...)
+			}
 		case "ConfigMap":
 			if err := collectConfigMapArtifact(object, key, name, &artifacts); err != nil {
 				return nil, err
 			}
+		case "Namespace":
+			// The chart's own namespace is added by the collector; others
+			// (the HA CDS decree namespace) are kept as rendered.
 		case "CustomResourceDefinition", "ServiceAccount", "ClusterRole", "ClusterRoleBinding", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy", "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "ValidatingAdmissionPolicy", "ValidatingAdmissionPolicyBinding":
 		default:
 			return nil, fmt.Errorf("unexpected node-image resource %s", key)
@@ -285,8 +326,15 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 		if err != nil {
 			return nil, fmt.Errorf("encode node-image resource %s: %w", key, err)
 		}
-		manifests.WriteString("---\n")
-		manifests.Write(doc)
+		out := &manifests
+		switch flavour := cdsFlavour(object); flavour {
+		case "singleton":
+			out = &singleton
+		case "ha":
+			out = &ha
+		}
+		out.WriteString("---\n")
+		out.Write(doc)
 	}
 	for key, found := range required {
 		if !found {
@@ -323,14 +371,121 @@ func collectNodeImageArtifacts(rendered []byte) (*nodeImageArtifacts, error) {
 	}
 	slices.Sort(artifacts.images)
 	artifacts.integration = manifests.Bytes()
+	artifacts.cdsSingleton, artifacts.cdsHA = singleton.Bytes(), ha.Bytes()
+	if seen["DaemonSet/c8s-cds-ha"] {
+		floor, err := buildCDSFloor(seed, cdsNode)
+		if err != nil {
+			return nil, err
+		}
+		artifacts.cdsFloor = floor
+	}
 	return &artifacts, nil
+}
+
+// cdsFlavour assigns the objects only one CDS flavour uses: the singleton
+// Deployment, and everything the HA chart template renders (labelled
+// c8s.confidential.ai/cds-ha, or named after it). Shared objects return "".
+func cdsFlavour(object unstructured.Unstructured) string {
+	key := object.GetKind() + "/" + object.GetName()
+	switch {
+	case key == "Deployment/c8s-cds":
+		return "singleton"
+	case key == "DaemonSet/c8s-cds-ha", key == "Service/c8s-cds-peers", key == "NetworkPolicy/c8s-cds-ha-peers",
+		key == "Role/c8s-cds-ha", key == "RoleBinding/c8s-cds-ha", key == "Role/c8s-cds-decrees",
+		key == "RoleBinding/c8s-cds-decrees", key == "Namespace/"+nodeImageDecreeNamespace:
+		return "ha"
+	}
+	return ""
+}
+
+// podContainers lists a workload's containers with their pinned digests.
+func podContainers(object unstructured.Unstructured, key string) ([]cdsFloorContainer, error) {
+	pod, _, err := unstructured.NestedMap(object.Object, "spec", "template", "spec")
+	if err != nil {
+		return nil, fmt.Errorf("node-image workload %s: %w", key, err)
+	}
+	var spec corev1.PodSpec
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(pod, &spec); err != nil {
+		return nil, fmt.Errorf("decode node-image workload %s: %w", key, err)
+	}
+	var out []cdsFloorContainer
+	for _, c := range append(spec.InitContainers, spec.Containers...) {
+		ref, err := reference.ParseDockerRef(c.Image)
+		if err != nil {
+			return nil, err
+		}
+		pinned, ok := ref.(reference.Canonical)
+		if !ok {
+			return nil, fmt.Errorf("node-image workload %s container %q is not digest-pinned", key, c.Name)
+		}
+		out = append(out, cdsFloorContainer{key: key, container: c, digest: pinned.Digest().String()})
+	}
+	return out, nil
+}
+
+// buildCDSFloor derives the cds-role NRI floor from the seed. DaemonSet
+// containers keep their seed entries (their entrypoint stays pinned, so the
+// c8s binary inside cannot be started as `cds`). The HA CDS container is
+// pinned to its exact argv: on a cds node any other invocation of the CDS
+// image, or of the operator image, is refused, so nothing but the replica
+// can ask the node's attester for a cds-anchored quote.
+func buildCDSFloor(seed *pkgallowlist.Allowlist, containers []cdsFloorContainer) ([]byte, error) {
+	floor := pkgallowlist.Allowlist{Schema: seed.Schema, Workloads: map[string]pkgallowlist.Workload{}}
+	for _, fc := range containers {
+		entry, name, ok := seedEntryFor(seed, fc.digest)
+		if !ok {
+			return nil, fmt.Errorf("cds floor: %s container %q has no seed entry", fc.key, fc.container.Name)
+		}
+		if fc.key == "DaemonSet/c8s-cds-ha" {
+			command := fc.container.Command
+			args := fc.container.Args
+			if len(command) == 0 {
+				// The image entrypoint, as the seed pins it.
+				command = entry.Command.Argv
+			}
+			if entry.Command.Policy != pkgallowlist.PolicyExact || !slices.Equal(command, entry.Command.Argv) {
+				return nil, fmt.Errorf("cds floor: HA CDS command %q does not match the seed's pinned entrypoint", command)
+			}
+			entry.Args = pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: slices.Clone(args)}
+			name = "cds-ha-replica"
+		}
+		w := floor.Workloads[name]
+		w.Label = name
+		if !slices.ContainsFunc(w.Containers, func(c pkgallowlist.Container) bool { return reflect.DeepEqual(c, entry) }) {
+			w.Containers = append(w.Containers, entry)
+		}
+		floor.Workloads[name] = w
+	}
+	if _, ok := floor.Workloads["cds-ha-replica"]; !ok {
+		return nil, errors.New("cds floor: no HA CDS container")
+	}
+	return json.MarshalIndent(floor, "", "  ")
+}
+
+// seedEntryFor returns the seed's container entry for digest and its workload name.
+func seedEntryFor(seed *pkgallowlist.Allowlist, digest string) (pkgallowlist.Container, string, bool) {
+	for name, w := range seed.Workloads {
+		for _, c := range append(w.InitContainers, w.Containers...) {
+			if c.Digest.String() == digest {
+				return c, name, true
+			}
+		}
+	}
+	return pkgallowlist.Container{}, "", false
 }
 
 // setNodeImageNamespace pins a namespaced resource to the node-image namespace
 // and rejects one the chart placed elsewhere. Cluster-scoped kinds must carry
 // no namespace at all, so a namespaced rendering of them is an error.
+// nodeImageDecreeNamespace is the chart's cds.ha.decreeNamespace default:
+// the HA CDS reads operator decrees there through a Role of its own.
+const nodeImageDecreeNamespace = "c8s-cds-decrees"
+
 func setNodeImageNamespace(object *unstructured.Unstructured) error {
 	kind, name := object.GetKind(), object.GetName()
+	if (kind == "Role" || kind == "RoleBinding") && object.GetNamespace() == nodeImageDecreeNamespace {
+		return nil
+	}
 	switch kind {
 	case "Deployment", "DaemonSet", "ConfigMap", "ServiceAccount", "Role", "RoleBinding", "Service", "PersistentVolumeClaim", "PodDisruptionBudget", "NetworkPolicy":
 		if namespace := object.GetNamespace(); namespace != "" && namespace != nodeImageNamespace {

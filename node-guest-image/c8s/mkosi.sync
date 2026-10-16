@@ -282,8 +282,21 @@ render_node_integration() {
     # after authenticated launch staging selects the server role.
     install -D -m 0644 "$out/c8s-integration.yaml" \
         "$STAGE_DIR/var/lib/rancher/rke2/server/manifests/c8s-integration.yaml"
+    # One CDS flavour per cluster: the server's node-services writes a .skip
+    # marker for the one its signed launch document does not select.
+    for flavour in c8s-cds-singleton c8s-cds-ha; do
+        if [ -f "$out/$flavour.yaml" ]; then
+            install -D -m 0644 "$out/$flavour.yaml" \
+                "$STAGE_DIR/var/lib/rancher/rke2/server/manifests/$flavour.yaml"
+        fi
+    done
     install -D -m 0644 "$out/allowlist-seed.json" \
         "$STAGE_DIR/usr/lib/c8s/allowlist-seed.json"
+    # cds-role nodes admit only this floor (exact HA CDS argv); see
+    # nodeservices.Prepare. Absent when the chart renders no HA CDS.
+    if [ -f "$out/cds-floor.json" ]; then
+        install -D -m 0644 "$out/cds-floor.json" "$STAGE_DIR/usr/lib/c8s/cds-floor.json"
+    fi
     bash "$SRCDIR/mkosi.profiles/c8s/airgap-images.sh" \
         "$out/images.txt" "$CACHE_DIR/core-images" "$AIRGAP_DIR" \
         "$LOCAL_IMAGES_DIR" "$C8S_REGISTRY"

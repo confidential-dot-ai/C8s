@@ -182,6 +182,15 @@ webhook:
 ## The mesh CA key is generated inside the cds process and stays in memory
 ## only — it is never rendered into a Kubernetes Secret or volume.
 cds:
+  ## Highly available CDS (baked node images only). Renders a second CDS
+  ## Deployment that runs one replica per cds-role node, sharing one mesh CA
+  ## key (internal/cdsha). The signed launch document selects HA at boot;
+  ## the singleton yields to it. Decrees are ConfigMaps in decreeNamespace.
+  ha:
+    enabled: false
+    replicas: 3
+    peerPort: 9443
+    decreeNamespace: c8s-cds-decrees
   ## Pin the deployed image by digest in production to decouple it from a
   ## floating tag's movement. This applies to every C8s .image.digest field.
   image:
