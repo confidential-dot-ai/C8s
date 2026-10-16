@@ -63,7 +63,6 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
 		{"router on agent", Agent, func(d *Document) { d.Router = &Router{Hostnames: []string{"a.example.com"}} }, "router is server-only"},
 		{"empty router on agent", Agent, func(d *Document) { d.Router = &Router{} }, "router is server-only"},
-		{"router upstream", Server, func(d *Document) { d.Router = &Router{RemovedUpstream: "c8s-gateway.ns.svc.cluster.local:9443"} }, "route manifest"},
 		{"router hostname ip", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"10.0.0.1"}} }, "router.hostnames"},
 		{"router hostname wildcard", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"*.example.com"}} }, "router.hostnames"},
 		{"router hostname case", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"API.example.com"}} }, "router.hostnames"},
@@ -110,6 +109,14 @@ func TestParseAcceptsServerRouter(t *testing.T) {
 	}
 	if parsed.Router == nil || len(parsed.Router.Hostnames) != 2 {
 		t.Fatalf("router = %+v", parsed.Router)
+	}
+	// The removed router.upstream key is refused as unknown.
+	withUpstream := bytes.Replace(data, []byte("    hostnames:"), []byte("    upstream: gw.ns.svc:9443\n    hostnames:"), 1)
+	if bytes.Equal(withUpstream, data) {
+		t.Fatal("router.hostnames not found in the marshalled document")
+	}
+	if _, err := Parse(withUpstream); err == nil {
+		t.Fatal("Parse accepted router.upstream")
 	}
 }
 

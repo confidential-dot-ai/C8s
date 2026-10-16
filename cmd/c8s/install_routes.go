@@ -47,26 +47,6 @@ var (
 
 const flagOperatorKey = "operator-key"
 
-// removedRouterValues are the router value paths the route manifest replaced.
-// The chart refuses them too (kind=removed_router_routes); install refuses
-// first, before it touches the cluster.
-var removedRouterValues = []string{"router.upstream", "router.routes", "router.nginx.resolver"}
-
-func refuseRemovedRouterValues(files []string) error {
-	for _, f := range files {
-		tree, err := decodeValuesFile(f)
-		if err != nil {
-			return err
-		}
-		for _, path := range removedRouterValues {
-			if _, ok := valueAtPath(tree, path); ok {
-				return fmt.Errorf("values file %q sets %s, which the router no longer reads: it routes only by the operator-signed route manifest on CDS. Drop the key, then write the route with `c8s routes add`, or pass --%s <cw-id> for an adopted workload. Every backend must serve TLS, so a plaintext http route has no replacement", f, path, flagUpstream)
-			}
-		}
-	}
-	return nil
-}
-
 // routeHosts are the manifest hosts --upstream routes: the router.san
 // entries, lower-cased, that are valid manifest hosts (route policy D5).
 // skipped lists the others, such as wildcards and IPs.

@@ -45,6 +45,7 @@ type routingConfig struct {
 	imagePolicyFile     string
 	operatorKeysFile    string
 	operatorKeysFileSet bool
+	allowUnpinnedCDS    bool
 	pollInterval        time.Duration
 	host                string
 	port                int
@@ -59,6 +60,7 @@ func bindRoutingFlags(f *pflag.FlagSet, cfg *routingConfig) {
 	f.StringSliceVar(&cfg.cdsRTMRs, "cds-rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy, repeatable/comma-separated")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.imagePolicyFile, nil, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	f.StringVar(&cfg.operatorKeysFile, "operator-keys-file", nodeOperatorKeysFile, "PEM operator public keys a route manifest must be signed under; when the default path is absent, the keys come from the verified CDS's GET /operator-keys")
+	f.BoolVar(&cfg.allowUnpinnedCDS, "allow-unpinned-cds", false, "development only: route with no CDS pin and the operator keys from that CDS, so any attested CDS chooses both the keys and the manifest")
 	f.DurationVar(&cfg.pollInterval, "routes-poll-interval", 30*time.Second, "how often to poll the CDS for the route manifest")
 	f.StringVar(&cfg.host, "routing-host", "127.0.0.1", "routing listener host (loopback: nginx proxies application requests to it)")
 	f.IntVar(&cfg.port, "routing-port", 0, "routing listener port; 0 disables the listener (the tunnel still routes by the applied manifest)")
@@ -121,7 +123,8 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(policy.Measurements) == 0 && len(policy.Images) == 0 {
+	cdsPinned := len(policy.Measurements) > 0 || len(policy.Images) > 0
+	if !cdsPinned {
 		logger.Warn("no CDS measurements pinned; accepting any armTLS-attested CDS as the route manifest source (unsafe outside development)")
 	}
 	httpClient, err := armtls.NewVerifyingHTTPClient(armtls.Pins(policy), cfg.attestationAPIURL) // A1
@@ -132,7 +135,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
-	keys, err := operatorKeySource(r, cds, logger)
+	keys, err := operatorKeySource(r, cdsPinned, cds, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -157,8 +160,9 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 
 // operatorKeySource implements W6: the node's signed launch configuration
 // when it carries the keys, else the verified CDS. An explicit
-// --operator-keys-file must exist.
-func operatorKeySource(r routingConfig, cds *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
+// --operator-keys-file must exist. Keys from an unpinned CDS need
+// --allow-unpinned-cds: that CDS could be any attested TEE.
+func operatorKeySource(r routingConfig, cdsPinned bool, cds *routing.CDSClient, logger *slog.Logger) (routing.KeySource, error) {
 	_, statErr := os.Stat(r.operatorKeysFile)
 	switch {
 	case statErr == nil:
@@ -166,6 +170,8 @@ func operatorKeySource(r routingConfig, cds *routing.CDSClient, logger *slog.Log
 		return routing.KeyFile(r.operatorKeysFile), nil
 	case r.operatorKeysFileSet || !errors.Is(statErr, os.ErrNotExist):
 		return nil, fmt.Errorf("--operator-keys-file: %w", statErr)
+	case !cdsPinned && !r.allowUnpinnedCDS:
+		return nil, fmt.Errorf("refusing to route: no CDS pin and no operator keys at %s, so any attested CDS would supply both the manifest and its keys; pin CDS with --cds-measurements or --image-policy-file, provide --operator-keys-file, or pass --allow-unpinned-cds in development", r.operatorKeysFile)
 	}
 	logger.Warn("route manifest operator keys from the CDS (GET /operator-keys): control-plane configuration, so clients detect a substituted key but the router does not prevent it",
 		"absent", r.operatorKeysFile)

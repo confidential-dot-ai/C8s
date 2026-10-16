@@ -468,16 +468,20 @@ func TestW6OperatorKeySource(t *testing.T) {
 	tests := []struct {
 		name    string
 		cfg     routingConfig
+		pinned  bool
 		want    routing.KeySource
 		wantErr bool
 	}{
-		{"W6 launch configuration present", routingConfig{operatorKeysFile: present}, routing.KeyFile(present), false},
-		{"W6 launch configuration absent", routingConfig{operatorKeysFile: missing}, cds, false},
-		{"W6 explicit file absent", routingConfig{operatorKeysFile: missing, operatorKeysFileSet: true}, nil, true},
+		{"W6 launch configuration present", routingConfig{operatorKeysFile: present}, true, routing.KeyFile(present), false},
+		{"W6 launch configuration absent", routingConfig{operatorKeysFile: missing}, true, cds, false},
+		{"W6 explicit file absent", routingConfig{operatorKeysFile: missing, operatorKeysFileSet: true}, true, nil, true},
+		{"unpinned CDS with keys file", routingConfig{operatorKeysFile: present}, false, routing.KeyFile(present), false},
+		{"unpinned CDS supplying keys", routingConfig{operatorKeysFile: missing}, false, nil, true},
+		{"unpinned CDS supplying keys, dev opt-in", routingConfig{operatorKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := operatorKeySource(tc.cfg, cds, logger)
+			got, err := operatorKeySource(tc.cfg, tc.pinned, cds, logger)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("operatorKeySource() error = %v, want error %v", err, tc.wantErr)
 			}
@@ -497,6 +501,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"backend-timeout", "1h0m0s"},
 		{"attest-endpoints", "true"},
 		{"operator-keys-file", nodeOperatorKeysFile},
+		{"allow-unpinned-cds", "false"},
 	} {
 		f := flags.Lookup(tc.flag)
 		if f == nil {

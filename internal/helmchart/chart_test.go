@@ -3014,6 +3014,41 @@ func TestChartRouterCDSPins(t *testing.T) {
 	}
 }
 
+// TestChartRouterUnpinnedCDS pins that the chart passes --allow-unpinned-cds
+// only off a baked node with no CDS pin, and fails the render there when
+// router.routing.allowUnpinnedCDS is false.
+func TestChartRouterUnpinnedCDS(t *testing.T) {
+	t.Parallel()
+	pinned := []string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{name: "default", wantFlag: true},
+		{name: "pinned", args: pinned},
+		{name: "pinned without opt-in", args: append([]string{"--set", "router.routing.allowUnpinnedCDS=false"}, pinned...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			if got := slices.Contains(c.Args, "--allow-unpinned-cds"); got != tc.wantFlag {
+				t.Errorf("cds-attest has --allow-unpinned-cds = %v, want %v", got, tc.wantFlag)
+			}
+		})
+	}
+	out, err := helmTemplate(t, "--set", "router.routing.allowUnpinnedCDS=false")
+	if err == nil {
+		t.Fatalf("helm template accepted an unpinned CDS without the opt-in\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "unpinned_route_source" {
+		t.Fatalf("validation kind = %q, want unpinned_route_source\n%s", got, out)
+	}
+}
+
 func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t,

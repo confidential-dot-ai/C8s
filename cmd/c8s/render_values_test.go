@@ -467,7 +467,7 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	}
 }
 
-// render-values refuses --upstream and --workload-ref: values carry neither
+// render-values has no --upstream or --workload-ref: values carry neither
 // the route manifest nor the workload patch.
 func TestRenderValuesRefusesRoutingFlags(t *testing.T) {
 	for _, args := range [][]string{
@@ -475,8 +475,8 @@ func TestRenderValuesRefusesRoutingFlags(t *testing.T) {
 		{"--workload-ref", "infer=vllm/deployment/x:8000"},
 	} {
 		err := runC8s(t, append([]string{"render-values", "--cvm-mode=bare-metal"}, args...)...)
-		if err == nil || !strings.Contains(err.Error(), "c8s routes add") {
-			t.Errorf("render-values %v = %v, want the refusal naming c8s routes add", args, err)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Errorf("render-values %v = %v, want unknown flag", args, err)
 		}
 	}
 }
