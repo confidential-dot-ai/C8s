@@ -128,7 +128,7 @@ func (o *options) trustedKeys() ([]*ecdsa.PublicKey, error) {
 // 412 it appends rebase, the recovery step for the calling command.
 func put(ctx context.Context, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
 	err := c.Put(ctx, manifest, signer, ifMatch)
-	var se *routesclient.StatusError
+	var se *operatorauth.StatusError
 	if errors.As(err, &se) {
 		switch se.Status {
 		case http.StatusConflict, http.StatusPreconditionFailed:

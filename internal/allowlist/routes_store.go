@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"math"
 
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
@@ -37,24 +36,27 @@ func (s *Store) LoadRoutes() (routes.Envelope, error) {
 	return env, nil
 }
 
-// ReplaceRoutes stores env as the signed route manifest when revision is
+// ReplaceRoutes stores env as the signed route manifest when its revision is
 // greater than the stored one and, when ifMatch is not empty, the stored
 // manifest's lower-case hex route digest equals ifMatch. One statement checks
 // both and replaces the previous manifest (C3, C4). It returns
 // ErrRevisionNotGreater, else ErrDigestMismatch, when a check fails; with
-// ifMatch set and no manifest stored, that is ErrDigestMismatch. revision must
-// be the one parsed from env.Manifest. Route writes leave Generation alone: no
+// ifMatch set and no manifest stored, that is ErrDigestMismatch. It fails on a
+// manifest routes.Parse refuses. Route writes leave Generation alone: no
 // allowlist reader depends on them.
-func (s *Store) ReplaceRoutes(env routes.Envelope, revision uint64, ifMatch string) error {
-	if revision > math.MaxInt64 {
-		return fmt.Errorf("route manifest revision %d out of range", revision)
+func (s *Store) ReplaceRoutes(env routes.Envelope, ifMatch string) error {
+	m, err := routes.Parse(env.Manifest)
+	if err != nil {
+		return err
 	}
+	// D2 caps the revision at 2^53-1, so it fits the INTEGER column.
+	revision := int64(m.Revision)
 	d := routes.Digest(env.Manifest)
 	digest := hex.EncodeToString(d[:])
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	args := []any{int64(revision), digest, env.Manifest, env.Token}
+	args := []any{revision, digest, env.Manifest, env.Token}
 	query := `
 INSERT INTO route_manifest (id, revision, digest, manifest, token) VALUES (1, ?1, ?2, ?3, ?4)
 ON CONFLICT (id) DO UPDATE SET
@@ -86,7 +88,7 @@ WHERE id = 1 AND ?1 > revision AND digest = ?5`
 		return ErrDigestMismatch
 	case err != nil:
 		return fmt.Errorf("store route manifest: %w", err)
-	case int64(revision) <= stored:
+	case revision <= stored:
 		return ErrRevisionNotGreater
 	default:
 		return ErrDigestMismatch

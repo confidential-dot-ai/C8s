@@ -11,11 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net/http"
 	"net/url"
-	"strings"
 
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -28,19 +26,6 @@ const maxEnvelopeBytes = 4 << 20
 
 // ErrNotFound reports that the CDS stores no route manifest.
 var ErrNotFound = errors.New("no route manifest stored on CDS")
-
-// StatusError is a response status other than the one a call expects.
-type StatusError struct {
-	Status int    // HTTP status code
-	Body   string // first 4 KiB of the response body, trimmed
-}
-
-func (e *StatusError) Error() string {
-	if e.Body != "" {
-		return fmt.Sprintf("CDS returned %d: %s", e.Status, e.Body)
-	}
-	return fmt.Sprintf("CDS returned %d", e.Status)
-}
 
 // Client talks to one CDS. The zero value is unusable; construct with New.
 type Client struct {
@@ -80,7 +65,7 @@ func (c Client) Get(ctx context.Context) (routes.Envelope, error) {
 		return routes.Envelope{}, ErrNotFound
 	}
 	if resp.StatusCode != http.StatusOK {
-		return routes.Envelope{}, statusError(resp)
+		return routes.Envelope{}, operatorauth.ResponseError(resp)
 	}
 	if mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type")); err != nil || mt != "application/json" {
 		return routes.Envelope{}, fmt.Errorf("fetch route manifest: unexpected content type %q", resp.Header.Get("Content-Type"))
@@ -98,8 +83,9 @@ func (c Client) Get(ctx context.Context) (routes.Envelope, error) {
 
 // Put sends manifest verbatim, authorized by auth for PUT /routes. A non-empty
 // ifMatch is the lower-case hex route digest of the manifest the caller read;
-// CDS then refuses the write with 412 if another one landed since. A
-// StatusError carries the CDS's refusal: 400, 401, 409, 412 or 422 (C3).
+// CDS then refuses the write with 412 if another one landed since. An
+// *operatorauth.StatusError carries the CDS's refusal: 400, 401, 409, 412 or
+// 422 (C3).
 func (c Client) Put(ctx context.Context, manifest []byte, auth operatorauth.Authorizer, ifMatch string) error {
 	req, err := operatorauth.NewRequest(ctx, http.MethodPut, c.baseURL+routes.Path, manifest, auth)
 	if err != nil {
@@ -115,12 +101,7 @@ func (c Client) Put(ctx context.Context, manifest []byte, auth operatorauth.Auth
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		return statusError(resp)
+		return operatorauth.ResponseError(resp)
 	}
 	return nil
-}
-
-func statusError(resp *http.Response) error {
-	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	return &StatusError{Status: resp.StatusCode, Body: strings.TrimSpace(string(msg))}
 }

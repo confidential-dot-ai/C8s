@@ -129,7 +129,7 @@ func TestPutThenGet(t *testing.T) {
 		t.Fatalf("VerifySigned(Get()) error = %v", err)
 	}
 
-	var se *routesclient.StatusError
+	var se *operatorauth.StatusError
 	if err := c.Put(ctx, []byte(manifest), signer, ""); !errors.As(err, &se) || se.Status != http.StatusConflict {
 		t.Fatalf("second Put() error = %v, want a 409 StatusError", err)
 	}
