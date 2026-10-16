@@ -169,8 +169,13 @@ confirm which one was sent.
 serves at `GET /ca` over the attested connection and refuses unless it is one
 you pinned.
 
-The write goes to the peer whose CA was read. Through a router front door the
-CLI uses one connection for both. On a direct URL, a connection the CLI has to
+`$CDS` is CDS itself: its NodePort (`https://<node>:30808`,
+`cds.service.nodePort`) or a port-forward to `svc/c8s-cds`, pinned with the CDS
+launch digest. A router front door relays `/allowlist` but not `/ca` or
+`/secrets`, so `c8s secrets put`, `c8s volume create` and `c8s cds ca` refuse
+it before reading or writing anything.
+
+The write goes to the peer whose CA was read. A connection the CLI has to
 reopen must present the same serving certificate as the first one, or the write
 is refused before anything is sent: a fresh handshake proves only an attested
 build at `$M`, which another CDS can match.
@@ -199,8 +204,8 @@ c8s cds ca --url "$CDS" --measurements "$M" --out mesh-ca.pem
 ```
 
 Endpoint pins are required: use `--image-policy-file` for a complete image
-policy, or `--measurements` / `--measurements-file` for launch digests. Pin CDS
-for a direct URL or the router for a front door. The SHA-256 of each certificate
+policy, or `--measurements` / `--measurements-file` for launch digests, and pin
+CDS: `--url` is CDS itself, as for the write. The SHA-256 of each certificate
 goes to stderr.
 Record it. The read proves an attested build at `$M` served these bytes, which
 is the bound the gate has too: comparing that digest against an earlier read, or
