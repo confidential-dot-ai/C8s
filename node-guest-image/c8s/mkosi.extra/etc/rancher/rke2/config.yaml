@@ -63,6 +63,12 @@ kubelet-arg:
   # subresources in admission for every principal, the operator included.
   # Probes are unaffected (they go over CRI).
   - enable-debugging-handlers=true
+# Notice a dead node sooner (default 40-50 s). Until then kube-proxy keeps
+# routing Service traffic to its pods: on the HA CDS test cluster a deleted
+# CDS node made half of all CDS requests fail for ~49 s. The kubelet renews
+# its node Lease every 10 s, so 20 s tolerates one missed renewal.
+kube-controller-manager-arg:
+  - node-monitor-grace-period=20s
 kube-apiserver-arg:
   - audit-log-path=/var/log/kube-audit/audit.log
   - audit-log-maxage=30
