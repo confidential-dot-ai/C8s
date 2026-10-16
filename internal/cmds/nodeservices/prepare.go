@@ -134,7 +134,7 @@ type serverConfig struct {
 var serverOutputNames = []string{
 	"operator-pubkey", "allowlist-seed.json", "tls-san",
 	"router/upstream.conf", "router/tls.conf", "router/upstream", "router/hostnames",
-	"router/acme-email", "router/acme-directory-url", "router/front-door-mode",
+	"router/acme-email", "router/acme-directory-url", "router/acme-ca.pem", "router/front-door-mode",
 }
 
 // RouterTLSSnippetDir is where the node image installs tls-cds.conf and
@@ -172,6 +172,7 @@ func (c serverConfig) files() map[string][]byte {
 		"router/hostnames":          hostnames,
 		"router/acme-email":         line(c.router.ACMEEmail),
 		"router/acme-directory-url": line(c.router.ACMEDirectoryURL),
+		"router/acme-ca.pem":        []byte(c.router.ACMECA),
 		"router/front-door-mode":    []byte(mode + "\n"),
 	}
 	// A server output an agent does not clear would survive a demotion, so

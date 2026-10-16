@@ -9,7 +9,10 @@
 package acme
 
 import (
+	"bytes"
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
@@ -46,6 +49,7 @@ type config struct {
 	domainsFile      string
 	emailFile        string
 	directoryURLFile string
+	caFile           string
 	standbyCertDir   string
 }
 
@@ -97,6 +101,7 @@ leaf exists.`,
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
 	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
+	f.StringVar(&cfg.caFile, "acme-ca-file", "", "PEM roots trusted for the ACME directory's TLS besides the system roots; an empty file trusts the system roots only")
 	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the cert.pem and key.pem nginx serves instead")
 
 	return cmd
@@ -166,6 +171,31 @@ func overrideFromFile(path string, target *string) error {
 		*target = v
 	}
 	return nil
+}
+
+// directoryClient returns the HTTP client for the ACME directory: nil (the
+// acme package default, system roots) unless the CA file holds roots to add.
+func directoryClient(path string) (*http.Client, error) {
+	if path == "" {
+		return nil, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, nil
+	}
+	pool, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, err
+	}
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("%s holds no PEM certificate", path)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	return &http.Client{Transport: transport}, nil
 }
 
 func validateConfig(cfg *config) error {
@@ -240,6 +270,9 @@ func runWith(cfg config, probe *http.Client) error {
 		return err
 	}
 	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, reload)
+	if mgr.directoryClient, err = directoryClient(cfg.caFile); err != nil {
+		return fmt.Errorf("--acme-ca-file: %w", err)
+	}
 	mgr.httpPort = cfg.httpPort
 	if probe == nil {
 		probe = publicProbeClient()

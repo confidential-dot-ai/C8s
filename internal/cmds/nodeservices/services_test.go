@@ -316,6 +316,7 @@ func TestPrepareWritesRouterInputs(t *testing.T) {
 			"hostnames":          "",
 			"acme-email":         "",
 			"acme-directory-url": "",
+			"acme-ca.pem":        "",
 			"front-door-mode":    "cds\n",
 		}},
 		{"upstream only", &launchconfig.Router{Upstream: upstream}, map[string]string{
