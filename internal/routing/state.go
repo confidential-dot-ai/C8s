@@ -58,15 +58,18 @@ type StateConfig struct {
 	Now func() time.Time
 }
 
-// State holds the applied manifest. Its readers are lock-free and see one
-// applied manifest per load (A5). It is safe for concurrent use.
+// State is the router's route state: the applied manifest, at most one
+// staged manifest waiting for its notBefore (A4), and the last refresh (F1).
+// Its readers are lock-free and see one applied manifest per load (A5). It
+// lives in memory, so after a restart any validly signed revision is
+// accepted (Q1). It is safe for concurrent use.
 type State struct {
 	reserved []string
 	meshCAs  CASource
 	now      func() time.Time
 
-	mu     sync.Mutex   // serializes Accept and guards routes
-	routes routes.State // W4, staging and the applied manifest
+	mu     sync.Mutex     // serializes Accept and guards staged
+	staged *routes.Signed // accepted, waiting for its notBefore
 	snap   atomic.Pointer[snapshot]
 }
 
@@ -95,37 +98,37 @@ func (s *State) Current() *Applied {
 }
 
 // Session returns the manifest a new attested session would be bound to. It
-// fails with ErrNotApplied before the first apply (A2) and with ErrStale while
-// the applied manifest is stale (F2); with ErrStale it still returns the
-// applied manifest.
+// fails with ErrNotApplied before the first apply, even while a manifest is
+// staged (A2), and with ErrStale while the applied manifest is stale (F2);
+// with ErrStale it still returns the applied manifest.
 func (s *State) Session() (*Applied, error) {
 	snap := s.snap.Load()
-	switch s.status(snap) {
-	case routes.Unapplied:
+	switch {
+	case snap == nil || snap.applied == nil:
 		return nil, ErrNotApplied
-	case routes.Stale:
+	case s.stale(snap):
 		return snap.applied, ErrStale
 	}
 	return snap.applied, nil
 }
 
-// Status reports whether a manifest is applied and whether it is stale (F1).
-func (s *State) Status() routes.Status { return s.status(s.snap.Load()) }
+// Stale reports whether the applied manifest outlived its maxAgeSeconds
+// since the last refresh (F1). It is false before the first apply.
+func (s *State) Stale() bool { return s.stale(s.snap.Load()) }
 
-func (s *State) status(snap *snapshot) routes.Status {
-	switch {
-	case snap == nil || snap.applied == nil:
-		return routes.Unapplied
-	case s.now().Sub(snap.refreshed) >= snap.applied.Manifest.MaxAge:
-		return routes.Stale
-	}
-	return routes.Fresh
+func (s *State) stale(snap *snapshot) bool {
+	return snap != nil && snap.applied != nil && s.now().Sub(snap.refreshed) >= snap.applied.Manifest.MaxAge
 }
 
 // Accept verifies env under keys and the current mesh CAs (W2, B3), then
-// records it in the routes.State, which applies W4 against the staged or
-// applied manifest (A3) and applies nothing before notBefore (A4). On any
-// error the applied manifest and its freshness are unchanged (A6).
+// applies W4 against the highest accepted revision: the staged manifest while
+// one is held, else the applied one (A3). Refetching the applied revision
+// while a manifest is staged therefore fails W4 and keeps the staged one.
+//
+// On success Accept renews freshness (F1, F3), even when env is not yet due
+// (A4), and stages it unless it is the manifest already held. A staged
+// manifest is applied at the first Accept at or after its notBefore, never
+// from a timer. On any error the State is unchanged (A6).
 func (s *State) Accept(env routes.Envelope, keys []*ecdsa.PublicKey) (Outcome, error) {
 	cas, err := s.meshCAs()
 	if err != nil {
@@ -147,19 +150,27 @@ func (s *State) Accept(env routes.Envelope, keys []*ecdsa.PublicKey) (Outcome, e
 			return 0, fmt.Errorf("applied manifest: %w", err)
 		}
 	}
-	changed, err := s.routes.Fetched(signed, now)
-	if err != nil {
-		return 0, err
+	held := s.staged
+	if held == nil && cur != nil {
+		held = cur.Signed
+	}
+	if held != nil {
+		if err := signed.Supersedes(held.Manifest().Revision, held.Digest()); err != nil {
+			return 0, err
+		}
+	}
+	if held == nil || signed.Digest() != held.Digest() {
+		s.staged = signed
 	}
 	outcome := OutcomeUnchanged
-	switch {
-	case changed:
-		applied := s.routes.Applied()
-		m := applied.Manifest()
-		cur = &Applied{Signed: applied, Manifest: m, Table: routes.Compile(m, s.reserved)}
-		outcome = OutcomeApplied
-	case s.routes.Pending() != nil:
+	if p := s.staged; p != nil {
 		outcome = OutcomeStaged
+		if !now.Before(p.Manifest().NotBefore) {
+			m := p.Manifest()
+			cur = &Applied{Signed: p, Manifest: m, Table: routes.Compile(m, s.reserved)}
+			s.staged = nil
+			outcome = OutcomeApplied
+		}
 	}
 	s.snap.Store(&snapshot{applied: cur, refreshed: now})
 	return outcome, nil
