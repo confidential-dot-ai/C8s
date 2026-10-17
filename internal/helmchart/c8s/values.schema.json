@@ -80,7 +80,8 @@
             "enabled": {},
             "replicas": {},
             "peerPort": {},
-            "decreeNamespace": {}
+            "decreeNamespace": {},
+            "goMemLimit": {}
           }
         },
         "persistence": {

@@ -65,6 +65,9 @@ func TestNodeImageRender(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if f == "c8s-cds-ha.yaml" && !bytes.Contains(part, []byte("name: GOMEMLIMIT")) {
+					t.Fatal("HA replicas run without a Go heap target")
+				}
 				raw = append(raw, part...)
 			}
 			// The cds-role floor: the HA replica pinned to its exact argv, the

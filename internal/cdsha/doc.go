@@ -1,17 +1,17 @@
-// Package cdsha is a prototype of CDS high availability: several CDS replicas
-// share one mesh CA key without the Kubernetes control plane ever seeing it.
+// Package cdsha makes CDS highly available: replicas on cds-role nodes form
+// one Raft group (hashicorp/raft) over mutually attested TLS and replicate
+// everything a CDS holds: the mesh CA, the allowlist store, the secret store
+// and the sandbox ledger.
 //
-// It follows the proposed c8s-workspace specification "CDS High Availability"
-// (docs/specification/policy/cds-ha.md, branch spec/cds-ha). Requirement IDs in
-// comments (G1, E1, ...) refer to that document. Interim answers to its open
-// questions are recorded beside the prototype, not here.
+//   - attest.go, nodeattest.go, tdxattest.go: peer evidence and its checks.
+//   - transport.go: Raft and a control channel on one attested port; Raft
+//     addresses name the member, and live connections follow the pin set.
+//   - fsm.go, core.go: the replicated state machine and the agreed core.
+//   - node.go: bootstrap from a Genesis decree, join, voter seats and
+//     non-voters, forwarded writes, freshness (lease, clock jumps), decrees,
+//     Recover, sealed backups and Restore.
+//   - decree.go, decrees.go: operator decrees and their ConfigMaps.
+//   - backup.go: backups sealed to the operator's offline recovery key.
 //
-// Shape:
-//   - record.go:  the signed CDSEpoch chain (O2, O3, E2).
-//   - decree.go:  operator-signed decrees (D1-D4).
-//   - state.go:   the acceptance rules (E1, E4, E5, L6) as pure functions.
-//   - attest.go:  replica-to-replica TLS with attestation evidence in the cert.
-//   - peer.go:    heartbeat, sync and key transfer between replicas (H, K).
-//   - store.go:   CDSEpoch / CDSDecree persistence in ConfigMaps (a hint only, O6).
-//   - replica.go: the loops tying it together (lease, genesis, decrees).
+// The proposal and its rules are in the CDS-HA spec section (cds-ha-v2).
 package cdsha
