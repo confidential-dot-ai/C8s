@@ -122,7 +122,9 @@ git init -q teerminator-src
 git -C teerminator-src fetch -q --depth 1 "https://github.com/$TEERMINATOR_REPO.git" "$TEERMINATOR_COMMIT"
 git -C teerminator-src checkout -q FETCH_HEAD
 (cd teerminator-src && go build -o "$CIE_DIR/bin/teerminator" .)
-export HOME=$CIE_DIR/teerminator-home XDG_CONFIG_HOME=$CIE_DIR/teerminator-home/config
+# TEErminator keeps its state under os.UserConfigDir. HOME stays: rustup
+# and cargo for verify-js.sh live there.
+export XDG_CONFIG_HOME=$CIE_DIR/teerminator-home/config
 mkdir -p "$XDG_CONFIG_HOME"
 local_addr=127.0.0.1:18080
 # TEErminator v0.0.3 reads a flat {mrtd, rtmr1, rtmr2} manifest; the node
