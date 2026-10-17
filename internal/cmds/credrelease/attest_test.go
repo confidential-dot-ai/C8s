@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -290,6 +291,36 @@ func TestRunServesAuthenticatedBootstrap(t *testing.T) {
 			detail, _ := io.ReadAll(failed.Body)
 			if failed.StatusCode != http.StatusBadGateway || strings.TrimSpace(string(detail)) != "attestation unavailable" {
 				t.Errorf("upstream failure response = %d %s", failed.StatusCode, detail)
+			}
+		})
+	}
+}
+
+// The response lists the journal as read after the quote, and omits it when
+// the node journals nothing.
+func TestAttestCarriesMeasuredPolicies(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	for _, tc := range []struct {
+		name, journal string
+		want          []string
+	}{
+		{name: "journal", journal: p + "\n", want: []string{p}},
+		{name: "no journal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setMeasuredPolicies(t, tc.journal)
+			h, signer := newAttestHandler(t)
+			h.attester = evidenceGeneratorFunc(func(context.Context, []byte) (teetypes.AttestationEvidence, error) {
+				return teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{}`)}, nil
+			})
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, signedAttestRequest(t, context.Background(), AttestPath, attestBody(t, 32), signer))
+			var got AttestResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+				t.Fatalf("response = %d %s, %v", rec.Code, rec.Body, err)
+			}
+			if !slices.Equal(got.RuntimeExtensions, tc.want) {
+				t.Errorf("runtime_extensions = %v, want %v", got.RuntimeExtensions, tc.want)
 			}
 		})
 	}

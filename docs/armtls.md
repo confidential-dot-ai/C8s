@@ -90,9 +90,17 @@ proves possession of the corresponding private key in either path.
    TEEAttestation ::= SEQUENCE {
        teeType     INTEGER,      -- 1 = SEV-SNP, 2 = TDX
        report      OCTET STRING, -- evidence, two shapes (below)
-       certChain   OCTET STRING  -- optional inline VCEK chain
+       certChain   OCTET STRING, -- optional inline VCEK chain
+       runtimeExtensions [0] EXPLICIT SEQUENCE OF PrintableString OPTIONAL
+                                 -- TDX: the node's measured policies
    }
    ```
+
+   `runtimeExtensions` is omitted when empty, so verifiers predating it decode
+   the extension unchanged. On TDX it lists the allowlist policy digests the
+   node extended into RTMR[3] after the operator-key seed, read after the
+   quote; c8s's verifiers accept the seed followed by the longest prefix of
+   the list that replays.
 
 The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 

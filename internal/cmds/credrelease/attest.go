@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -21,6 +23,14 @@ const attestTimeout = 30 * time.Second
 // The operator token must authorize these exact request bytes.
 type AttestRequest struct {
 	Nonce []byte `json:"nonce"`
+}
+
+// AttestResponse is the evidence envelope plus the RTMR[3] runtime extensions
+// this node journaled, read after the quote so the list may run ahead of it
+// but never lag it. The verified armTLS channel authenticates the list.
+type AttestResponse struct {
+	teetypes.AttestationEvidence
+	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
 }
 
 // localEvidenceGenerator fixes the upstream to the configured local API.
@@ -58,7 +68,13 @@ func (h *Handler) serveAttest(w http.ResponseWriter, r *http.Request, body []byt
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return
 	}
-	response, err := json.Marshal(evidence)
+	extensions, err := armtls.ReadJournal(measuredPoliciesPath)
+	if err != nil {
+		extensions = nil
+		// The verifier falls back to the list in this server's certificate.
+		slog.Warn("attest response omits the measured policies", "path", measuredPoliciesPath, "error", err)
+	}
+	response, err := json.Marshal(AttestResponse{AttestationEvidence: evidence, RuntimeExtensions: extensions})
 	if err != nil {
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return

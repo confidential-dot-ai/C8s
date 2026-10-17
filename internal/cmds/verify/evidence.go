@@ -249,7 +249,7 @@ func authorizeLeafBody(cert *x509.Certificate, body certutil.BodyAuthentication,
 // once the body carrying that window is itself authenticated, which
 // authenticateLeafBody + authorizeLeafBody enforce together.
 func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*evidence, error) {
-	platform, raw, erd, err := localverify.CertEnvelope(cert)
+	platform, raw, params, err := localverify.CertEnvelope(cert)
 	if err != nil {
 		return nil, err
 	}
@@ -268,7 +268,7 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 	return &evidence{
 		platform:          platform,
 		rawEvidence:       raw,
-		erd:               erd,
+		erd:               params.ExpectedReportData,
 		fresh:             false,
 		source:            source,
 		certSHA256:        hex.EncodeToString(sum[:]),

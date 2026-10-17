@@ -45,8 +45,8 @@ type Client struct {
 }
 
 // CertificateResult is the complete CDS challenge/attest/certify result.
-// Certificate is the PEM chain issued by CDS. Challenge, Platform, and
-// Evidence are the attestation material that authorized issuance.
+// Certificate is the PEM chain issued by CDS. Challenge, Platform, Evidence
+// and RuntimeExtensions are the attestation material that authorized issuance.
 //
 // Authenticity of Certificate on the network path is provided by the armTLS
 // handshake the caller performed against CDS (see pkg/armtls.NewClientTLSConfig);
@@ -56,7 +56,15 @@ type CertificateResult struct {
 	Challenge   string
 	Platform    teetypes.PlatformType
 	Evidence    json.RawMessage
+
+	// RuntimeExtensions is the node's RTMR[3] runtime extension list sent
+	// with the evidence (armtls.RuntimeExtensions); nil off TDX.
+	RuntimeExtensions []string
 }
+
+// runtimeExtensions reads this node's measured-policy journal. Var so tests
+// can supply a list.
+var runtimeExtensions = armtls.RuntimeExtensions
 
 // NewClient creates a new attestation flow client.
 func NewClient(baseURL string) Client {
@@ -194,16 +202,23 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 	if err != nil {
 		return CertificateResult{}, fmt.Errorf("attestation-api: %w", err)
 	}
+	var extensions []string
+	if asResp.Platform.IsTDX() {
+		if extensions, err = runtimeExtensions(); err != nil {
+			return CertificateResult{}, err
+		}
+	}
 
 	// Submit evidence + CSR to CDS for verification and cert issuance.
 	// asResp.Evidence is the platform-specific evidence object as emitted by
 	// /attest; CDS's /attest expects it wrapped in an AttestationEvidence
 	// envelope keyed by Platform.
 	attestReq := attestRequest{
-		Challenge:    challenge,
-		Evidence:     asResp.Envelope(),
-		CSR:          csrPEM,
-		SandboxToken: sandboxToken,
+		Challenge:         challenge,
+		Evidence:          asResp.Envelope(),
+		CSR:               csrPEM,
+		SandboxToken:      sandboxToken,
+		RuntimeExtensions: extensions,
 	}
 	certPEM, err := c.AttestContext(ctx, attestReq)
 	if err != nil {
@@ -211,10 +226,11 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 	}
 
 	return CertificateResult{
-		Certificate: certPEM,
-		Challenge:   challenge,
-		Platform:    asResp.Platform,
-		Evidence:    asResp.Evidence,
+		Certificate:       certPEM,
+		Challenge:         challenge,
+		Platform:          asResp.Platform,
+		Evidence:          asResp.Evidence,
+		RuntimeExtensions: extensions,
 	}, nil
 }
 
@@ -242,6 +258,8 @@ type attestRequest struct {
 	Evidence     teetypes.AttestationEvidence `json:"evidence"`
 	CSR          string                       `json:"csr"`
 	SandboxToken json.RawMessage              `json:"sandbox_token,omitempty"`
+
+	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
 }
 
 // Attest submits attestation evidence and receives a signed certificate chain

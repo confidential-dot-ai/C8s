@@ -4,6 +4,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
+	"io/fs"
+	"time"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -35,6 +38,10 @@ const (
 	// SNPMeasurementSize is the size of an SEV-SNP launch measurement
 	// (SHA-384 digest = 48 bytes).
 	SNPMeasurementSize = runtimemeasure.Size
+
+	// MaxRuntimeExtensions caps Attestation.RuntimeExtensions: a longer list
+	// cannot be encoded, and verifiers refuse it.
+	MaxRuntimeExtensions = agarmtls.MaxRuntimeExtensions
 )
 
 // OID arc: 1.3.6.1.4.1.66378 is the C8s Private Enterprise Number. The library
@@ -57,6 +64,77 @@ var (
 func MarshalExtension(att *Attestation) (pkix.Extension, error) {
 	return att.MarshalExtension(OIDARMTLSAttestation)
 }
+
+// WithRuntimeExtensions returns att carrying this node's [RuntimeExtensions]
+// when it is TDX evidence without a list of its own, so peers can replay
+// RTMR[3]; otherwise att itself. Producers call it after obtaining the
+// evidence.
+func WithRuntimeExtensions(att *Attestation) (*Attestation, error) {
+	if att.Family != TEETypeTDX || att.RuntimeExtensions != nil {
+		return att, nil
+	}
+	list, err := RuntimeExtensions()
+	if err != nil {
+		return nil, err
+	}
+	withList := *att
+	withList.RuntimeExtensions = list
+	return &withList, nil
+}
+
+// runtimeJournals are where this node's measured-policy journal may be; the
+// first that exists wins. Var so tests can move it.
+// MeasuredPoliciesJournal is the journal of the allowlist policies a TDX node
+// extends into RTMR[3], in the NRI plugin's runtime directory. NodeJournal is
+// its path on the node and in pods that mount the runtime directory at its
+// host path; SidecarJournal is its path in sidecars the plugin mounts the
+// directory into.
+const (
+	MeasuredPoliciesJournal = "measured-policies"
+	NodeJournal             = "/var/run/nri-image-policy/" + MeasuredPoliciesJournal
+	SidecarJournal          = "/run/c8s/workload-claims/" + MeasuredPoliciesJournal
+)
+
+var runtimeJournals = []string{NodeJournal, SidecarJournal}
+
+// RuntimeExtensions returns the RTMR[3] runtime extensions this node
+// journaled, nil when it journals none. Call it after obtaining the evidence:
+// the journal records before it extends, so it may run ahead of the quote,
+// which verifiers allow for, but must not lag it.
+func RuntimeExtensions() ([]string, error) {
+	for _, path := range runtimeJournals {
+		if list, err := ReadJournal(path); err != nil || list != nil {
+			return list, err
+		}
+	}
+	return nil, nil
+}
+
+// ReadJournal is [runtimemeasure.ReadJournal] retrying a permission error:
+// after a failed extend the plugin rewrites the journal 0600 and restores 0644
+// right after. A missing journal is nil, nil.
+func ReadJournal(path string) ([]string, error) {
+	var err error
+	for attempt := range journalReadAttempts {
+		var list []string
+		if list, err = readJournalFile(path); !errors.Is(err, fs.ErrPermission) {
+			return list, err
+		}
+		if attempt < journalReadAttempts-1 {
+			time.Sleep(journalRetryDelay)
+		}
+	}
+	return nil, err
+}
+
+const (
+	journalReadAttempts = 5
+	journalRetryDelay   = 20 * time.Millisecond
+)
+
+// readJournalFile is the single read ReadJournal retries. Var so tests can
+// fail it.
+var readJournalFile = runtimemeasure.ReadJournal
 
 // ExtractAttestation parses the extension under OIDARMTLSAttestation out of a
 // certificate, failing with ErrNoAttestation when there is none.

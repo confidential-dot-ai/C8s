@@ -61,7 +61,10 @@ func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, t
 		return nil, 0, fmt.Errorf("armtls: get attestation: %w", err)
 	}
 
-	att := &Attestation{Family: teeType, Report: []byte(evidence)}
+	att, err := WithRuntimeExtensions(&Attestation{Family: teeType, Report: []byte(evidence)})
+	if err != nil {
+		return nil, 0, err
+	}
 	certDER, err := CreateAttestedCert(key, att, p.Opts)
 	if err != nil {
 		return nil, 0, err

@@ -73,6 +73,11 @@ type Params struct {
 	// enforced here on its claims. Empty = no pin; with a pin, a missing
 	// launch digest fails closed.
 	Measurements [][]byte
+
+	// RuntimeExtensions is the peer's claimed TDX RTMR[3] runtime extension
+	// list. Verify ignores it; a caller enforcing anchored image pins replays
+	// it (armtls.EnforceImages).
+	RuntimeExtensions []string
 }
 
 // VerifyFunc is the signature of [Verify], taken as a parameter by consumers
@@ -147,24 +152,27 @@ func enforceResult(res *teetypes.VerificationResult, p Params) error {
 }
 
 // CertEnvelope extracts the armTLS attestation from a certificate and returns
-// the evidence envelope plus the expected REPORTDATA anchor — SHA-384 over the
-// public key (no per-request nonce, so no freshness proof).
+// the evidence envelope plus the Params it carries: the expected REPORTDATA
+// anchor — SHA-384 over the public key (no per-request nonce, so no freshness
+// proof) — and the runtime extension list.
 //
 // An extension carrying a full envelope (az-snp, TDX) is forwarded verbatim; a
 // raw SEV-SNP report is wrapped as {attestation_report, cert_chain.vcek?}, with
 // the VCEK inline when the extension carried one.
-func CertEnvelope(cert *x509.Certificate) (platform string, evidence json.RawMessage, expectedReportData []byte, err error) {
+func CertEnvelope(cert *x509.Certificate) (platform string, evidence json.RawMessage, p Params, err error) {
 	att, err := armtls.ExtractAttestation(cert)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, Params{}, err
 	}
 	env, err := att.Envelope()
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, Params{}, err
 	}
 	rd, err := agarmtls.ReportDataForKey(cert.PublicKey, nil)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("compute expected REPORTDATA: %w", err)
+		return "", nil, Params{}, fmt.Errorf("compute expected REPORTDATA: %w", err)
 	}
-	return string(env.Platform), env.Evidence, rd[:sha512.Size384], nil
+	p.ExpectedReportData = rd[:sha512.Size384]
+	p.RuntimeExtensions = att.RuntimeExtensions
+	return string(env.Platform), env.Evidence, p, nil
 }
