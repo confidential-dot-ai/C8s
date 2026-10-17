@@ -224,6 +224,16 @@ type snapshot struct {
 	Bindings  []sandboxledger.Binding `json:"bindings"`
 }
 
+// StoreConfiguration implements raft.ConfigurationStore. The state machine
+// keeps no membership of its own; seeing configuration entries is what lets
+// its applied index pass them, without which Raft refuses to snapshot (so
+// backups stall) after a membership change until the next write.
+func (f *FSM) StoreConfiguration(index uint64, _ raft.Configuration) {
+	f.applied.Store(index)
+}
+
+var _ raft.ConfigurationStore = (*FSM)(nil)
+
 // Snapshot implements raft.FSM. Raft calls it between applies, so the
 // state captured here is one point of the log.
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {

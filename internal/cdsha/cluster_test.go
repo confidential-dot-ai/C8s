@@ -886,3 +886,21 @@ func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
 	}
 	c.settled(15 * time.Second)
 }
+
+// A membership change after the last write must not stall backups: the
+// backup catches up with no further write.
+func TestBackupAfterMembershipChange(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	if err := c.leader().al.PutWorkload("last", mkWorkload(t)); err != nil {
+		t.Fatal(err)
+	}
+	c.start("n3", "m1") // joins: configuration entries, no command
+	c.settled(10 * time.Second)
+	l := c.leader()
+	target := l.node.r().LastIndex()
+	eventually(t, 10*time.Second, "a backup past the membership change", func() bool {
+		b, ok := c.backups.get()
+		return ok && b.Meta.Index >= target
+	})
+}
