@@ -25,6 +25,13 @@ const (
 	// replaces G1's peer-reachability timers, which the host could game
 	// through DNS to obtain several genuine keys. base_epoch is 0.
 	Genesis DecreeKind = "Genesis"
+	// Recover is break-glass after the permanent loss of a majority: it
+	// makes the named surviving replica (BootstrapNode) the only voter, with
+	// the state it holds, and the replacements join it. Entries the lost
+	// replicas had committed but the survivor had not received are gone. If
+	// the lost replicas were only cut off, they could go on as the old
+	// majority: follow Recover with RotateKey, so they hold a retired key.
+	Recover DecreeKind = "Recover"
 )
 
 // Decree is an operator intent (D1). It never names a target epoch (D4).
@@ -128,11 +135,13 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return errors.New("empty measurement set") // D8
 	case d.Kind == Genesis && (len(tail.RootCert) != 0 || len(d.Measurements) != 0):
 		return errors.New("a Genesis decree applies only to a cluster without a key, and carries no measurements")
-	case d.Kind == Genesis && d.BootstrapNode == "":
-		return errors.New("a Genesis decree must name its bootstrap node")
-	case d.Kind != Genesis && d.BootstrapNode != "":
-		return errors.New("only a Genesis decree names a bootstrap node")
-	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis:
+	case (d.Kind == Genesis || d.Kind == Recover) && d.BootstrapNode == "":
+		return errors.New("a Genesis or Recover decree must name its node")
+	case d.Kind != Genesis && d.Kind != Recover && d.BootstrapNode != "":
+		return errors.New("only Genesis and Recover decrees name a node")
+	case d.Kind == Recover && (len(tail.RootCert) == 0 || len(d.Measurements) != 0):
+		return errors.New("a Recover decree applies to a cluster with a key, and carries no measurements")
+	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover:
 		return fmt.Errorf("unknown kind %q", d.Kind)
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")
