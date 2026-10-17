@@ -418,11 +418,17 @@ actually released.
   runs whatever command line the host chose, and the value would be released
   to it.
 - A grant also requires every container to pin its mounts: `mounts` is `deny`
-  or `exact` with no `host` rule. Under `any` the host can add a volume over
-  what the pinned command reads, and a `host` rule commits to a node path
-  whose content the host chooses. A `data` rule is allowed: its content
-  (a ConfigMap, a PVC) is still the cluster's, but only at a destination
-  under `/mnt/c8s-data/` the entry declares.
+  or `exact`, and every `host` rule is a read-only file of proven provenance.
+  Under `any` the host can add a volume over what the pinned command reads,
+  and a plain `host` rule commits to a node path whose content the host
+  chooses. A `host` rule with `provenance: node-root`, or `fs-verity` with a
+  `verityDigest`, and `readOnly: true` does not: the node proves at admission
+  that the file is on the measured dm-verity root, or has the pinned digest,
+  and the container cannot write back through it. This is how a GPU worker
+  holds a grant beside the NVIDIA CDI driver files of the node image. A
+  writable host path, such as a daemon's socket, stays refused. A `data` rule
+  is allowed: its content (a ConfigMap, a PVC) is still the cluster's, but
+  only at a destination under `/mnt/c8s-data/` the entry declares.
 - The write path refuses an entry that breaks either rule, and release refuses
   one stored before it did. `env` is not required yet: `exact` fingerprints
   the whole environment, including the pod's `HOSTNAME`, so no policy pins it
