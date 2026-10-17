@@ -574,7 +574,10 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		return
 	}
 	core := n.fsm.Core()
-	if !core.Joined() || n.fsm.AppliedIndex() == n.backupIndex {
+	// Read the index before the snapshot: a write applied while it is taken
+	// then still counts as not backed up, and the next round covers it.
+	applied := n.fsm.AppliedIndex()
+	if !core.Joined() || applied == n.backupIndex {
 		return
 	}
 	n.backupAt = time.Now()
@@ -609,7 +612,7 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: store", "err", err)
 		return
 	}
-	n.backupIndex = n.fsm.AppliedIndex()
+	n.backupIndex = applied
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
 }
 

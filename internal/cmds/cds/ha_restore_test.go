@@ -136,7 +136,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 	}
 	_, _, ca := do(t, http.MethodGet, bases[0]+"/ca", "", nil)
 	var backups []corev1.ConfigMap
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(45 * time.Second)
 	for {
 		list, _ := kube.CoreV1().ConfigMaps("ns").List(context.Background(), metav1.ListOptions{LabelSelector: cdsha.LabelBackup + "=c1"})
 		if b, err := cdsha.BackupFromConfigMaps("c1", list.Items); err == nil && b.Meta.Index >= applied {
