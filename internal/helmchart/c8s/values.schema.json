@@ -81,7 +81,9 @@
             "replicas": {},
             "peerPort": {},
             "decreeNamespace": {},
-            "goMemLimit": {}
+            "goMemLimit": {},
+            "storeSizeLimit": {},
+            "resources": {}
           }
         },
         "persistence": {
