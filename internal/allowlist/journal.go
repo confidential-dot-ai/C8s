@@ -59,6 +59,11 @@ var ErrTokenReused = errors.New("operator token already used")
 // persistence cannot tell apart from one spent before CDS started.
 var ErrTokenBeforeStart = errors.New("operator token issued too early for a non-persistent store; wait --jwt-clock-skew (Helm cds.jwtClockSkew) after CDS start and mint a fresh one")
 
+// ErrUnavailable wraps a replication failure: an HA replica that has no
+// leader or lost its quorum could not commit the write (or the token spend
+// before it). It is retryable, so handlers answer 503.
+var ErrUnavailable = errors.New("allowlist: replicated store unavailable (no leader or no quorum); retry")
+
 // objectDigest is "sha256:<hex>" of b, the name history gives a document.
 func objectDigest(b []byte) string {
 	sum := sha256.Sum256(b)

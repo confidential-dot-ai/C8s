@@ -1019,20 +1019,20 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 func (n *Node) Replicate(cmd allowlist.Command) (allowlist.Result, error) {
 	var res allowlist.Result
 	raw, err := n.propose(Entry{Kind: KindAllowlist, Allowlist: &cmd})
-	if err == nil {
-		err = json.Unmarshal(raw, &res)
+	if err != nil {
+		return res, fmt.Errorf("%w: %w", allowlist.ErrUnavailable, err)
 	}
-	return res, err
+	return res, json.Unmarshal(raw, &res)
 }
 
 // ReplicateSecret implements secrets.Replicator.
 func (n *Node) ReplicateSecret(cmd secrets.Command) (secrets.Result, error) {
 	var res secrets.Result
 	raw, err := n.propose(Entry{Kind: KindSecret, Secret: &cmd})
-	if err == nil {
-		err = json.Unmarshal(raw, &res)
+	if err != nil {
+		return res, fmt.Errorf("%w: %w", secrets.ErrUnavailable, err)
 	}
-	return res, err
+	return res, json.Unmarshal(raw, &res)
 }
 
 // ReplicateBinding implements sandboxledger.Replicator.
