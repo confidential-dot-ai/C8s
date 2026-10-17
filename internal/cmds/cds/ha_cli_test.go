@@ -97,6 +97,25 @@ func TestHADecreeCLI(t *testing.T) {
 	}
 }
 
+func TestHARecoverDecreeCLI(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	sec1, _ := x509.MarshalECPrivateKey(key)
+	p := writePEM(t, "EC PRIVATE KEY", sec1)
+	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", p, "--kind", "Recover", "--bootstrap-node", "n1"); err == nil {
+		t.Fatal("Recover without the acknowledgement")
+	}
+	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", p, "--kind", "Recover", "--i-understand-recover-is-break-glass"); err == nil {
+		t.Fatal("Recover without a node")
+	}
+	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", p, "--kind", "UpdateMeasurements", "--measurements", "m", "--bootstrap-node", "n1"); err == nil {
+		t.Fatal("UpdateMeasurements naming a node")
+	}
+	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", p, "--kind", "Recover", "--bootstrap-node", "n1", "--base-epoch", "3", "--i-understand-recover-is-break-glass")
+	if err != nil || !strings.Contains(out, "RotateKey") {
+		t.Fatalf("Recover: %v %q", err, out)
+	}
+}
+
 func TestHAStatusCLI(t *testing.T) {
 	serve := func(hb cdsha.Status, code int) *httptest.Server {
 		s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
