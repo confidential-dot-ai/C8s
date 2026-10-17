@@ -37,16 +37,17 @@ import (
 //	<dir>/server/         pubkey, launch.yaml, launch.yaml.sig
 //	<dir>/<agent>/     pubkey, launch.yaml, launch.yaml.sig, one per agent
 const (
-	serverKeyFile = "server.key"
-	agentKeyFile  = "agent.key"
-	cdsKeyFile    = "cds.key"    // launch key of cds-role nodes (HA CDS)
-	decreeKeyFile = "decree.key" // signs HA decrees (Genesis, UpdateMeasurements, RotateKey)
-	serverPolicy  = "server.json"
-	peersPolicy   = "peers.json"
-	serverDir     = "server"
-	pubkeyFile    = "pubkey"
-	documentFile  = "launch.yaml"
-	signatureFile = documentFile + ".sig"
+	serverKeyFile   = "server.key"
+	agentKeyFile    = "agent.key"
+	cdsKeyFile      = "cds.key"      // launch key of cds-role nodes (HA CDS)
+	decreeKeyFile   = "decree.key"   // signs HA decrees (Genesis, UpdateMeasurements, RotateKey, Recover, Restore)
+	recoveryKeyFile = "recovery.key" // opens HA state backups; keep it offline
+	serverPolicy    = "server.json"
+	peersPolicy     = "peers.json"
+	serverDir       = "server"
+	pubkeyFile      = "pubkey"
+	documentFile    = "launch.yaml"
+	signatureFile   = documentFile + ".sig"
 )
 
 // BundleOptions describes a new cluster's launch bundle.
@@ -151,8 +152,12 @@ func NewBundle(opts BundleOptions) (err error) {
 		if err != nil {
 			return err
 		}
+		_, recoveryPub, err := newLaunchKey(filepath.Join(opts.Dir, recoveryKeyFile))
+		if err != nil {
+			return err
+		}
 		server.CDSOperatorPublicKeys = []string{cdsPub}
-		server.CDSHA = &CDSHA{DecreeKey: decreePub, Replicas: len(opts.CDSNodes)}
+		server.CDSHA = &CDSHA{DecreeKey: decreePub, Replicas: len(opts.CDSNodes), RecoveryKey: recoveryPub}
 	}
 	if err := writeSignedDocument(filepath.Join(opts.Dir, serverDir), server, serverKey, serverPub); err != nil {
 		return err

@@ -32,6 +32,11 @@ const (
 	// the lost replicas were only cut off, they could go on as the old
 	// majority: follow Recover with RotateKey, so they hold a retired key.
 	Recover DecreeKind = "Recover"
+	// Restore starts a cluster that lost every replica from an operator
+	// backup: the named node (BootstrapNode) starts a one-voter group and
+	// commits the snapshot whose SHA-256 the decree names. Like Genesis it
+	// applies only to a replica that holds no cluster.
+	Restore DecreeKind = "Restore"
 )
 
 // Decree is an operator intent (D1). It never names a target epoch (D4).
@@ -46,6 +51,8 @@ type Decree struct {
 	// cluster's Raft group for a Genesis decree. Any other replica joins it,
 	// so one decree can never start two clusters.
 	BootstrapNode string `json:"bootstrap_node,omitempty"`
+	// SnapshotSHA256 names the backup a Restore decree restores (hex).
+	SnapshotSHA256 string `json:"snapshot_sha256,omitempty"`
 }
 
 // SignedDecree carries the operator's ECDSA signature over the decree.
@@ -133,15 +140,17 @@ func verifyDecree(sd SignedDecree, tail Core) error {
 		return fmt.Errorf("base_epoch %d, current epoch %d", d.BaseEpoch, tail.Epoch)
 	case d.Kind == UpdateMeasurements && len(d.Measurements) == 0:
 		return errors.New("empty measurement set") // D8
-	case d.Kind == Genesis && (len(tail.RootCert) != 0 || len(d.Measurements) != 0):
-		return errors.New("a Genesis decree applies only to a cluster without a key, and carries no measurements")
-	case (d.Kind == Genesis || d.Kind == Recover) && d.BootstrapNode == "":
-		return errors.New("a Genesis or Recover decree must name its node")
-	case d.Kind != Genesis && d.Kind != Recover && d.BootstrapNode != "":
-		return errors.New("only Genesis and Recover decrees name a node")
+	case (d.Kind == Genesis || d.Kind == Restore) && (len(tail.RootCert) != 0 || len(d.Measurements) != 0):
+		return errors.New("a Genesis or Restore decree applies only to a cluster without a key, and carries no measurements")
+	case (d.Kind == Restore) != (d.SnapshotSHA256 != ""):
+		return errors.New("a Restore decree, and only one, names the snapshot it restores")
+	case (d.Kind == Genesis || d.Kind == Recover || d.Kind == Restore) && d.BootstrapNode == "":
+		return errors.New("a Genesis, Recover or Restore decree must name its node")
+	case d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore && d.BootstrapNode != "":
+		return errors.New("only Genesis, Recover and Restore decrees name a node")
 	case d.Kind == Recover && (len(tail.RootCert) == 0 || len(d.Measurements) != 0):
 		return errors.New("a Recover decree applies to a cluster with a key, and carries no measurements")
-	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover:
+	case d.Kind != UpdateMeasurements && d.Kind != RotateKey && d.Kind != Genesis && d.Kind != Recover && d.Kind != Restore:
 		return fmt.Errorf("unknown kind %q", d.Kind)
 	case !slices.Equal(d.Measurements, normalizePins(d.Measurements)):
 		return errors.New("measurements not in canonical form")

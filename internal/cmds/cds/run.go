@@ -140,7 +140,7 @@ func run(cfg config) error {
 	// touches a Kubernetes Secret. In HA mode the replicas share one, minted
 	// by the Genesis replica and handed only to attested replicas, and every
 	// write is replicated through the Raft log.
-	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings})
+	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings}, restoreServer(cfg))
 	if err != nil {
 		return fmt.Errorf("cds-ha: %w", err)
 	}
@@ -402,35 +402,19 @@ func run(cfg config) error {
 	srv := newHTTPServer(addr, router, cfg)
 
 	if cfg.armtlsPlatform != "" {
-		attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
-		serverCfg := &armtls.ServerConfig{
-			Platform:   cfg.armtlsPlatform,
-			AttestFunc: attestFunc,
-			CertTTL:    cfg.armtlsCertTTL,
-			Logger:     slog.Default(),
-		}
 		// /secrets reads a CDS-stamped field out of the caller's leaf, so the
 		// chain has to be verified by crypto/tls against the mesh CA: the
 		// armTLS path would admit a self-signed peer whose sandbox-ID extension
 		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
 		// reachable by a caller with no certificate.
-		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
-		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
-		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
+		tlsCfg, err := armtlsServerTLS(ctx, cfg, []*x509.Certificate{mesh.Cert})
 		if err != nil {
-			return fmt.Errorf("armtls server config: %w", err)
+			return err
 		}
 		if haNode != nil {
 			tlsCfg = followMeshCA(tlsCfg, haNode.CA)
 		}
 		srv.TLSConfig = tlsCfg
-
-		warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-		err = certMgr.WarmUp(warmupCtx)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("warm up armtls serving cert: %w", err)
-		}
 
 		go cmdsutil.ShutdownOnDone(ctx, srv, 5*time.Second)
 
@@ -449,6 +433,29 @@ func run(cfg config) error {
 		return cmdsutil.NodeIPChanged(ctx, err)
 	}
 	return cmdsutil.NodeIPChanged(ctx, nil)
+}
+
+// armtlsServerTLS is the attested serving configuration of the CDS port,
+// warmed up so the first handshake has a certificate.
+func armtlsServerTLS(ctx context.Context, cfg config, clientCAs []*x509.Certificate) (*tls.Config, error) {
+	serverCfg := &armtls.ServerConfig{
+		Platform:   cfg.armtlsPlatform,
+		AttestFunc: attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL),
+		CertTTL:    cfg.armtlsCertTTL,
+		Logger:     slog.Default(),
+		ClientCAs:  clientCAs,
+		ClientAuth: tls.VerifyClientCertIfGiven,
+	}
+	tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
+	if err != nil {
+		return nil, fmt.Errorf("armtls server config: %w", err)
+	}
+	warmupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := certMgr.WarmUp(warmupCtx); err != nil {
+		return nil, fmt.Errorf("warm up armtls serving cert: %w", err)
+	}
+	return tlsCfg, nil
 }
 
 func newHTTPServer(addr string, handler http.Handler, cfg config) *http.Server {

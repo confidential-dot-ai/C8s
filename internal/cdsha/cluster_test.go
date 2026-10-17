@@ -26,6 +26,30 @@ const testCluster = "c1"
 var testTiming = Timing{
 	Heartbeat: 150 * time.Millisecond, Election: 150 * time.Millisecond, Lease: time.Second,
 	DeadAfter: 1500 * time.Millisecond, Stabilize: 200 * time.Millisecond, Apply: 3 * time.Second, Tick: 50 * time.Millisecond,
+	Backup: 100 * time.Millisecond,
+}
+
+// memBackups stands in for the backup ConfigMaps.
+type memBackups struct {
+	mu   sync.Mutex
+	last *Backup
+	n    int
+}
+
+func (m *memBackups) PutBackup(_ context.Context, b Backup) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.last, m.n = &b, m.n+1
+	return nil
+}
+
+func (m *memBackups) get() (Backup, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.last == nil {
+		return Backup{}, false
+	}
+	return *m.last, true
 }
 
 func operatorKey(t *testing.T) (*ecdsa.PrivateKey, []byte) {
@@ -91,6 +115,8 @@ type cluster struct {
 	opKey   *ecdsa.PrivateKey
 	opPub   []byte
 	decrees *memDecrees
+	backups *memBackups
+	recKey  *ecdsa.PrivateKey
 	seats   int
 	port    int
 	block   int32
@@ -116,7 +142,8 @@ func newCluster(t *testing.T, seats int) *cluster {
 	}
 	port := l.Addr().(*net.TCPAddr).Port
 	l.Close()
-	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port,
+	rk, _ := operatorKey(t)
+	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port, backups: &memBackups{}, recKey: rk,
 		decrees: &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}},
 		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{},
 		block: 1 + clusterSeq.Add(1)%250}
@@ -182,6 +209,7 @@ func (c *cluster) start(name, measurement string) *replica {
 		ClusterID: testCluster, NodeName: name, Bind: fmt.Sprintf("%s:%d", ip, c.port), Advertise: fmt.Sprintf("%s:%d", ip, c.port),
 		Attestor: testAttestor{measurement}, BakedPins: []string{measurement}, OperatorPubKey: c.opPub,
 		Seats: c.seats, MaxNonVoters: 8, Peers: c.peers(ip), Decrees: c.decrees, Timing: testTiming,
+		RecoveryKey: mustPKIX(c.t, &c.recKey.PublicKey), Backups: c.backups,
 		Allowlist: &al, Secrets: mem, Ledger: led,
 	})
 	if err != nil {
@@ -568,7 +596,7 @@ func contains(s []string, v string) bool {
 // replacements join, and the decree cannot be replayed.
 func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	c := newCluster(t, 3)
-	c.genesis("n0", "n1", "n2")
+	c.genesis("n0", "n1", "n2", "n3") // n3: a non-voter that survives too
 	l := c.leader()
 	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
 		t.Fatal(err)
@@ -577,13 +605,17 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := l.node.Status().CAFingerprint
-	var surv *replica
+	var surv, nonVoter *replica
+	st0 := l.node.Status()
 	for _, r := range c.live() {
-		if r != l && surv == nil {
+		switch {
+		case contains(st0.NonVoters, r.node.ID()):
+			nonVoter = r
+		case r != l && surv == nil:
 			surv = r
-			continue
+		default:
+			c.stopReplica(r)
 		}
-		c.stopReplica(r)
 	}
 	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
 	epoch := surv.node.Core().Epoch
@@ -596,6 +628,9 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	if v, err := surv.sec.Get(context.Background(), "/kept"); err != nil || string(v) != "v" {
 		t.Fatalf("recovery lost a secret: %q %v", v, err)
 	}
+	// The surviving non-voter was in the old configuration only: it asks to
+	// be added again and is served the recovered state.
+	eventually(t, 15*time.Second, "surviving non-voter rejoined", nonVoter.node.Serving)
 	c.start("n8", "m1")
 	c.start("n9", "m1")
 	c.settled(15 * time.Second)
@@ -611,5 +646,177 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	eventually(t, 5*time.Second, "replay recorded as already applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
 	if st := c.leader().node.Status(); len(st.Voters) != 3 {
 		t.Fatalf("replayed Recover changed the configuration: %+v", st)
+	}
+}
+
+// A clock jump stops a replica serving until it hears from the leader
+// again; a decree that does not apply is rejected with a reason.
+func TestClockJumpAndRejectedDecree(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	for _, r := range c.live() {
+		r.node.jumpAt.Store(time.Now().UnixMilli())
+		if r.node.Serving() {
+			t.Fatalf("%s serves right after a clock jump", r.name)
+		}
+	}
+	for _, r := range c.live() {
+		eventually(t, 5*time.Second, r.name+" serves after fresh contact", r.node.Serving)
+	}
+	bad := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 9, Measurements: []string{"m1"}})
+	eventually(t, 5*time.Second, "stale decree rejected", func() bool {
+		st, ok := c.decrees.get(bad)
+		return ok && st.RejectedReason != "" && st.AppliedEpoch == nil
+	})
+	// A Recover decree is only for a replica without a leader.
+	rec := c.decree(Decree{Kind: Recover, BootstrapNode: "n1", BaseEpoch: 1})
+	time.Sleep(time.Second)
+	if st, ok := c.decrees.get(rec); ok && st.AppliedEpoch != nil {
+		if s := c.leader().node.Status(); len(s.Voters) != 3 {
+			t.Fatalf("Recover reconfigured a healthy cluster: %+v", s)
+		}
+	}
+}
+
+// CatchUp waits for the leader's applied index; the control channel answers
+// status and refuses unknown requests.
+func TestCatchUpAndControl(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	if err := l.al.PutWorkload("x", mkWorkload(t)); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range c.live() {
+		if err := r.node.CatchUp(); err != nil {
+			t.Fatalf("%s: %v", r.name, err)
+		}
+		if r.node.fsm.AppliedIndex() < l.node.fsm.AppliedIndex() {
+			t.Fatalf("%s not caught up", r.name)
+		}
+	}
+	addr := l.node.cfg.Advertise
+	var other *replica
+	for _, r := range c.live() {
+		if r != l {
+			other = r
+		}
+	}
+	st, err := other.node.call(addr, time.Second, controlRequest{Op: ctlStatus})
+	if err != nil || st.Status == nil || !st.Member || st.Status.State != "Leader" {
+		t.Fatalf("status over control: %+v %v", st, err)
+	}
+	if resp, err := other.node.call(addr, time.Second, controlRequest{Op: "nope"}); err != nil || resp.Err == "" {
+		t.Fatalf("unknown control op: %+v %v", resp, err)
+	}
+	if resp, err := other.node.call(addr, time.Second, controlRequest{Op: ctlJoin, ID: "bad"}); err != nil || resp.Err == "" {
+		t.Fatalf("malformed join accepted: %+v %v", resp, err)
+	}
+	c.partition(other.name, true)
+	if err := other.node.CatchUp(); err == nil {
+		t.Fatal("a partitioned replica caught up")
+	}
+}
+
+func mustPKIX(t *testing.T, k *ecdsa.PublicKey) []byte {
+	t.Helper()
+	der, err := x509.MarshalPKIXPublicKey(k)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return der
+}
+
+// Total loss: every replica gone. The sealed backup, opened with the
+// operator's recovery key, restores the cluster on fresh replicas with the
+// same mesh CA, allowlist, spent tokens and secrets; a wrong key, a changed
+// backup, a second restore and a restore beside a live cluster are refused.
+func TestTotalLossRestoreFromBackup(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	ctx := context.Background()
+	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.al.ConsumeToken("h.p.spent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.sec.PutIfAbsent(ctx, "/kept", []byte("secret-v"), secrets.WorkloadHolder("w")); err != nil {
+		t.Fatal(err)
+	}
+	fp := l.node.Status().CAFingerprint
+	want := l.node.fsm.AppliedIndex()
+	eventually(t, 5*time.Second, "a backup of the latest state", func() bool {
+		b, ok := c.backups.get()
+		return ok && b.Meta.Index >= want-1 && b.Meta.CAFingerprint == fp
+	})
+	bk, _ := c.backups.get()
+	ver, _ := l.al.Version()
+	for _, r := range c.live() {
+		c.stopReplica(r)
+	}
+
+	// Only the recovery key opens it, and the metadata is bound.
+	if _, err := OpenBackup(c.opKey, bk); err == nil {
+		t.Fatal("backup opened with another key")
+	}
+	tampered := bk
+	tampered.Meta.Epoch = 99
+	if _, err := OpenBackup(c.recKey, tampered); err == nil {
+		t.Fatal("backup with changed metadata opened")
+	}
+	snap, err := OpenBackup(c.recKey, bk)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, n := range []string{"n0", "n1", "n2"} {
+		c.start(n, "m1")
+	}
+	sign := func(node string, s []byte) SignedDecree {
+		sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: fmt.Sprintf("restore-%d", time.Now().UnixNano()), Kind: Restore,
+			BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sd
+	}
+	if _, err := c.nodes["n1"].node.Restore(ctx, sign("n0", snap), snap); !errors.Is(err, ErrNotForThisNode) {
+		t.Fatalf("a restore for another node: %v", err)
+	}
+	if _, err := c.nodes["n0"].node.Restore(ctx, sign("n0", snap), append([]byte(" "), snap...)); err == nil {
+		t.Fatal("a snapshot other than the one the decree names was restored")
+	}
+	res, err := c.nodes["n0"].node.Restore(ctx, sign("n0", snap), snap)
+	if err != nil {
+		t.Fatalf("restore: %v %+v", err, res)
+	}
+	c.settled(15 * time.Second)
+	for _, r := range c.live() {
+		if r.node.Status().CAFingerprint != fp {
+			t.Fatalf("%s restored another mesh CA", r.name)
+		}
+		if v, err := r.sec.Get(ctx, "/kept"); err != nil || string(v) != "secret-v" {
+			t.Fatalf("%s lost a secret: %v", r.name, err)
+		}
+		if v, _ := r.al.Version(); v != ver {
+			t.Fatalf("%s allowlist version %s, want %s", r.name, v, ver)
+		}
+	}
+	if err := c.nodes["n2"].al.ConsumeToken("h.p.spent-again"); !errors.Is(err, allowlist.ErrTokenReused) {
+		t.Fatalf("restore forgot a spent token: %v", err)
+	}
+	if err := c.nodes["n1"].al.PutWorkload("after-restore", mkWorkload(t)); err != nil {
+		t.Fatalf("write after restore: %v", err)
+	}
+	// A second restore, beside the live cluster, is refused.
+	c.start("n3", "m1")
+	eventually(t, 10*time.Second, "n3 joined", c.nodes["n3"].node.Serving)
+	c.stopReplica(c.nodes["n3"])
+	c.start("n4", "m1")
+	time.Sleep(200 * time.Millisecond)
+	if _, err := c.nodes["n4"].node.Restore(ctx, sign("n4", snap), snap); err == nil {
+		t.Fatal("a restore beside a live cluster")
 	}
 }
