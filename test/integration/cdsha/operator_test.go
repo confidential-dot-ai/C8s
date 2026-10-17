@@ -220,9 +220,8 @@ func TestMajorityLoss(t *testing.T) {
 		}},
 		{name: "D5-recover-while-old-leader-alive", run: func(t *testing.T, c *Cluster, k *Checker) {
 			// The operator wrongly names a replica that is only cut off,
-			// while the majority still runs. Spec R3 accepts lost writes
-			// after a Recover; what must not happen is two clusters serving
-			// at once after the heal.
+			// while the majority still runs: the majority's leader refuses
+			// the decree, and two clusters never serve at once.
 			l := c.WaitLeader(10 * time.Second)
 			epoch, _ := c.epochCA()
 			c.Isolate(l)
@@ -232,6 +231,9 @@ func TestMajorityLoss(t *testing.T) {
 				BootstrapNode: c.Replicas[l].Node, ExpiresAt: time.Now().Add(10 * time.Minute)}, nil)
 			st := c.WaitDecreeStatus(name, 30*time.Second)
 			c.Logf("Recover naming the isolated %s while %s leads: status %+v", c.Replicas[l].Node, c.Replicas[nl].Node, st)
+			if st.AppliedEpoch != nil || !strings.Contains(st.RejectedReason, "majority") {
+				t.Errorf("the majority leader did not refuse the Recover: %+v", st)
+			}
 			// Both sides serving at once = split brain.
 			deadline := time.Now().Add(timing.deadAfter + 10*time.Second)
 			for time.Now().Before(deadline) {

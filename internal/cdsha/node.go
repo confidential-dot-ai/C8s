@@ -956,10 +956,24 @@ func (n *Node) applyDecrees(ctx context.Context) {
 		n.log.Debug("list decrees", "err", err)
 		return
 	}
+	applied := n.fsm.Core().AppliedDecrees
 	for _, d := range ds {
+		if d.Err == nil && d.Decree.Decree.Kind == Recover && !slices.Contains(applied, d.Decree.Decree.IntentID) {
+			// A leader holds a majority: nothing was lost for good. Applied
+			// here, the decree would only bump the epoch, and the replica it
+			// names, if merely cut off, would come back to an epoch it did
+			// not see.
+			n.log.Warn("Recover decree refused: the cluster has a leader with a majority", "decree", d.Name)
+			n.setStatus(ctx, d.Name, DecreeStatus{RejectedReason: ErrRecoverWithQuorum.Error()})
+			continue
+		}
 		n.applyDecree(ctx, d)
 	}
 }
+
+// ErrRecoverWithQuorum refuses a Recover decree on a cluster that has a
+// leader, and so a majority of its voters.
+var ErrRecoverWithQuorum = errors.New("refused: the cluster has a leader with a majority of its voters; Recover is break-glass after losing the majority for good")
 
 func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	core := n.fsm.Core()
