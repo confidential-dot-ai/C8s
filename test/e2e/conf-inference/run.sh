@@ -93,7 +93,8 @@ kubectl -n "$ns" apply -f deploy.yaml
 # needs; exec and logs are closed on the node image.
 dump() {
   kubectl get namespace "$ns" -o jsonpath='{.status.phase} {.metadata.deletionTimestamp}{"\n"}' || true
-  kubectl get nodes -o json | jq -r '.items[].status.conditions[] | "node \(.type)=\(.status) \(.message)"'
+  kubectl get nodes -o json | jq -r '.items[] | (.spec.taints // [] | .[] | "node taint \(.key):\(.effect) since \(.timeAdded)"),
+    (.status.conditions[] | "node \(.type)=\(.status) since \(.lastTransitionTime) \(.message)")'
   kubectl -n "$ns" get events --sort-by=.lastTimestamp | tail -60
   for p in $(kubectl -n "$ns" get pods -o name); do
     kubectl -n "$ns" get "$p" -o json | jq -r '
