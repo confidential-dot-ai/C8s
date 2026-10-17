@@ -141,6 +141,10 @@ containers:
         valueFrom: {fieldRef: {fieldPath: status.podIP}}
       - name: NODE_NAME
         valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+      {{- with .Values.cds.ha.goMemLimit }}
+      - name: GOMEMLIMIT
+        value: {{ . | quote }}
+      {{- end }}
       {{- end }}
     {{- end }}
     ports:
