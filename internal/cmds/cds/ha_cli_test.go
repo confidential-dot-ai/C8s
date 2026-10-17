@@ -325,7 +325,7 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	defer al.Close()
 	node, err := cdsha.NewNode(cdsha.Config{ClusterID: "c1", NodeName: "n0", Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1",
 		Attestor: fakeAttestor{"m1"}, BakedPins: []string{"m1"}, OperatorPubKey: pub, Seats: 3,
-		Peers: func(context.Context) ([]string, error) { return nil, nil },
+		Peers:     func(context.Context) ([]string, error) { return nil, nil },
 		Allowlist: &al, Secrets: secrets.NewMemoryStore(4, 2, 64), Ledger: sandboxledger.New(time.Hour, 4)})
 	if err != nil {
 		t.Fatal(err)
