@@ -118,6 +118,9 @@ func haStart(ctx context.Context, cfg config, st haStores, preJoin func(*cdsha.N
 	if err != nil {
 		return nil, err
 	}
+	if err := resetHAAllowlist(st.allowlist); err != nil {
+		return nil, err
+	}
 	st.allowlist.SetReplicator(node)
 	st.ledger.SetReplicator(node)
 	if err := node.Start(); err != nil {
@@ -153,6 +156,27 @@ func haStart(ctx context.Context, cfg config, st haStores, preJoin func(*cdsha.N
 	}
 	slog.Info("cds-ha: serving", "status", node.Status())
 	return node, nil
+}
+
+// resetHAAllowlist empties the allowlist database before the replica joins.
+// Its replicated state comes only from the Raft log and snapshots: rows an
+// earlier process left in a reused file (a container restart keeps the pod's
+// volume) would have the log applied on top of them, and the replica's
+// version, ETag and history would differ from every other replica's.
+func resetHAAllowlist(s *allowlist.Store) error {
+	fresh, err := allowlist.OpenInMemory()
+	if err != nil {
+		return err
+	}
+	defer fresh.Close()
+	empty, err := fresh.Dump()
+	if err != nil {
+		return err
+	}
+	if err := s.Restore(empty); err != nil {
+		return fmt.Errorf("reset the allowlist store for HA: %w", err)
+	}
+	return nil
 }
 
 func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
