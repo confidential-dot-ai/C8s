@@ -26,6 +26,9 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// Full, when set, refuses writes while it returns an error: the store's
+	// volume is too full to take more history (see cds --allowlist-max-fill).
+	Full func() error
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -182,6 +185,14 @@ func storeFull(err error) bool {
 // authorize reads the body (capped) and runs the configured authorizer.
 // On success returns the body for downstream decoding.
 func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if h.Full != nil {
+		// Checked before the token is spent, which is a write too.
+		if err := h.Full(); err != nil {
+			slog.Warn("allowlist write refused", "reason", err)
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return nil, false
+		}
+	}
 	cap := h.MaxWriteBodyBytes
 	if cap <= 0 {
 		cap = DefaultMaxWriteBodyBytes
@@ -209,6 +220,11 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 		}
 		if errors.Is(err, ErrUnavailable) {
 			WriteUnavailable(w)
+			return nil, false
+		}
+		if storeFull(err) {
+			// Spending the token is a write too; a full store is not a bad key.
+			writeStoreError(w, err)
 			return nil, false
 		}
 		if errors.Is(err, ErrTokenBeforeStart) {

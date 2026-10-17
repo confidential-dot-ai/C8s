@@ -3,6 +3,7 @@ package allowlist
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,9 +34,29 @@ func TestWriteStoreErrorFullStore(t *testing.T) {
 			t.Fatalf("%v: %d %q", e, rec.Code, rec.Body.String())
 		}
 	}
+	// The token spend that authorizes a write fails the same way.
+	auth := WriteAuthorizer(func(*http.Request, []byte) error { return fmt.Errorf("spend token: %w", full) })
 	rec := httptest.NewRecorder()
+	if _, ok := auth.ReadAuthorized(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")), 1<<10); ok || rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("token spend on a full store: %v %d", ok, rec.Code)
+	}
+	rec = httptest.NewRecorder()
 	writeStoreError(rec, errors.New("boom"))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("other errors: %d", rec.Code)
+	}
+}
+
+// A Full guard refuses before the authorizer runs, so no token is spent.
+func TestFullGuardRefusesBeforeTheToken(t *testing.T) {
+	spent := false
+	h := Handler{
+		WriteAuthorizer: func(*http.Request, []byte) error { spent = true; return nil },
+		Full:            func() error { return errors.New("nearly full") },
+	}
+	rec := httptest.NewRecorder()
+	h.HandlePutWorkload(rec, httptest.NewRequest(http.MethodPut, "/allowlist/workloads/w", strings.NewReader("{}")))
+	if rec.Code != http.StatusInsufficientStorage || spent {
+		t.Fatalf("code %d, token spent %v", rec.Code, spent)
 	}
 }

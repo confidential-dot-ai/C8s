@@ -367,8 +367,12 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	if c := call(http.MethodPost, "/ha/restore", string(body)); c != http.StatusConflict {
 		t.Fatalf("restore with a bad signature: %d", c)
 	}
-	if call(http.MethodGet, "/allowlist", "") != http.StatusNotFound {
-		t.Fatal("the pre-join server serves more than health, status and restore")
+	// Anything else is a retryable 503 (a client the Service sent here
+	// retries), never a 404 that reads as "CDS has no such route".
+	for _, path := range []string{"/allowlist", "/ca", "/secrets/x"} {
+		if c := call(http.MethodGet, path, ""); c != http.StatusServiceUnavailable {
+			t.Fatalf("pre-join %s: %d", path, c)
+		}
 	}
 }
 

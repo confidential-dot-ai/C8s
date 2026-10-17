@@ -140,6 +140,10 @@ func run(cfg config) error {
 	// touches a Kubernetes Secret. In HA mode the replicas share one, minted
 	// by the Genesis replica and handed only to attested replicas, and every
 	// write is replicated through the Raft log.
+	fullGuard, err := allowlistFullGuard(cfg)
+	if err != nil {
+		return err
+	}
 	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings}, restoreServer(cfg))
 	if err != nil {
 		return fmt.Errorf("cds-ha: %w", err)
@@ -359,6 +363,7 @@ func run(cfg config) error {
 			Store:             &allowlistStore,
 			WriteAuthorizer:   allowlistWriteAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
+			Full:              fullGuard,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,

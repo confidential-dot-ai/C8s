@@ -468,6 +468,10 @@ func preJoinMux(node *cdsha.Node) http.Handler {
 	})
 	mux.HandleFunc("GET /ha/status", haStatus(node))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))
+	// Anything else is retryable: the full server takes over once joined.
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "cds-ha: this replica has not joined the cluster yet", http.StatusServiceUnavailable)
+	})
 	return mux
 }
 
