@@ -216,12 +216,12 @@ customer_round() {
   c8s allowlist export --url "$front" "${pin[@]}" > exported.json
   cmp -s "$fetched" exported.json || fail "/allowlist bytes differ from c8s allowlist export"
   start_proxy
-  api_key=$(python3 "$here/client.py" mint-key --admin-key admin.key)
-  python3 "$here/client.py" complete --api-key "$api_key" || { inference_dump; fail "no completion through the gateway"; }
+  python3 "$here/client.py" mint-key --admin-key admin.key --out api-key
+  python3 "$here/client.py" complete --api-key-file api-key || { inference_dump; fail "no completion through the gateway"; }
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
   python3 "$here/client.py" attestation --allowlist "$fetched" "${workload_args[@]}"
-  IMAGE_MANIFEST=$CIE_DIR/tdx-image.json "$here/verify-js.sh" "$router" "$api_key" "$fetched"
+  IMAGE_MANIFEST=$CIE_DIR/tdx-image.json "$here/verify-js.sh" "$router" api-key "$fetched"
 }
 
 customer_round fetched-launch.json
