@@ -46,3 +46,17 @@ func TestWriteStoreErrorFullStore(t *testing.T) {
 		t.Fatalf("other errors: %d", rec.Code)
 	}
 }
+
+// A Full guard refuses before the authorizer runs, so no token is spent.
+func TestFullGuardRefusesBeforeTheToken(t *testing.T) {
+	spent := false
+	h := Handler{
+		WriteAuthorizer: func(*http.Request, []byte) error { spent = true; return nil },
+		Full:            func() error { return errors.New("nearly full") },
+	}
+	rec := httptest.NewRecorder()
+	h.HandlePutWorkload(rec, httptest.NewRequest(http.MethodPut, "/allowlist/workloads/w", strings.NewReader("{}")))
+	if rec.Code != http.StatusInsufficientStorage || spent {
+		t.Fatalf("code %d, token spent %v", rec.Code, spent)
+	}
+}
