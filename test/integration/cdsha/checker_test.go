@@ -17,8 +17,13 @@ import (
 	"time"
 )
 
-// gateMsg is the body of the freshness gate's 503 (ha.go haGate).
-const gateMsg = "cds-ha: this replica is not serving"
+// gateMsg is the body of the freshness gate's 503 (ha.go haGate);
+// unavailableMsg that of a write the replicated store could not commit
+// (allowlist.ErrUnavailable, secrets.ErrUnavailable).
+const (
+	gateMsg        = "cds-ha: this replica is not serving"
+	unavailableMsg = "replicated store unavailable"
+)
 
 // Op is one operator write and its outcome.
 type Op struct {
@@ -94,12 +99,14 @@ func (k *Checker) Pause() {
 }
 func (k *Checker) Resume() { k.paused.Store(false) }
 
-// badStatus: a 5xx that is not the freshness gate's 503.
+// badStatus: a 5xx that is not a retryable 503 (freshness gate, or a write
+// the cluster could not commit).
 func badStatus(code int, body string) bool {
 	if code < 500 {
 		return false
 	}
-	return code != http.StatusServiceUnavailable || !strings.Contains(body, gateMsg)
+	retryable := strings.Contains(body, gateMsg) || strings.Contains(body, unavailableMsg)
+	return code != http.StatusServiceUnavailable || !retryable
 }
 
 // NewChecker prepares writers concurrent writers; each sleeps pause
@@ -549,7 +556,7 @@ func (k *Checker) Require(rep Report) {
 	show("acknowledged writes lost", rep.Lost)
 	show("values nobody wrote", rep.Invented)
 	show("non-monotonic reads at one replica", rep.Regress)
-	show("5xx other than the freshness gate", rep.Bad5xx)
+	show("5xx other than a retryable 503", rep.Bad5xx)
 	show("valid writes refused with 401/409", rep.Bad4xx)
 	if len(rep.CrossIncarnation) > 0 {
 		t.Logf("note: a restarted replica served older values than its previous incarnation (allowed: a new member):\n  %s", strings.Join(rep.CrossIncarnation, "\n  "))

@@ -161,6 +161,30 @@ func freePort(t *testing.T) int {
 	return l.Addr().(*net.TCPAddr).Port
 }
 
+// freePortOn finds a port free on every replica address (advertise and bind).
+func freePortOn(t *testing.T, n int) int {
+	t.Helper()
+	for range 50 {
+		p := freePort(t)
+		ok := true
+		for i := 1; i <= n && ok; i++ {
+			for _, net0 := range []string{advertiseNet, bindNet} {
+				l, err := net.Listen("tcp", net.JoinHostPort(fmt.Sprintf("%s%d", net0, i), strconv.Itoa(p)))
+				if err != nil {
+					ok = false
+					break
+				}
+				l.Close()
+			}
+		}
+		if ok {
+			return p
+		}
+	}
+	t.Fatal("no port free on every replica address")
+	return 0
+}
+
 func writePEM(t *testing.T, path, typ string, der []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: typ, Bytes: der}), 0o600); err != nil {
@@ -196,8 +220,11 @@ func NewCluster(t *testing.T, o clusterOpts) *Cluster {
 	dir := t.TempDir()
 	c := &Cluster{t: t, N: o.n, Seats: o.seats, Net: newFaultNet(), Dir: dir, KubeDir: filepath.Join(dir, "kube"),
 		LogDir:   filepath.Join(logRoot, strings.ReplaceAll(t.Name(), "/", "_")),
-		HTTPPort: freePort(t), PeerPort: freePort(t),
+		HTTPPort: freePortOn(t, o.n), PeerPort: freePortOn(t, o.n),
 		client: &http.Client{Timeout: 15 * time.Second, Transport: &http.Transport{MaxIdleConnsPerHost: 64, DisableKeepAlives: false}}}
+	for c.PeerPort == c.HTTPPort {
+		c.PeerPort = freePortOn(t, o.n)
+	}
 	_ = os.RemoveAll(c.LogDir)
 	if err := os.MkdirAll(c.LogDir, 0o755); err != nil {
 		t.Fatal(err)
