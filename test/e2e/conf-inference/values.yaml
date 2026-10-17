@@ -19,7 +19,9 @@ attestationReceipts:
   evidenceConnectHost: c8s-router.c8s-system.svc.cluster.local
   targets:
     - {target: gateway, workload: gateway, identity: gateway, url: http://127.0.0.1:8800}
-    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://sglang-router:8801}
+    # The operator's headless Service: armtls-mesh does not intercept the
+    # chart's sglang-router ClusterIP (C8s#933).
+    - {target: sglang-router, workload: sglang-router, identity: sglang-router, url: http://c8s-sglang-router.confidential-inference.svc.cluster.local:8801}
     - {target: inference-worker-0, workload: inference-worker-0, identity: inference-worker-0, url: http://inference-worker-0-0.inference-workers:8802}
 
 gateway:
