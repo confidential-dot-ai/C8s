@@ -156,18 +156,27 @@ attest() {
   fail "the front door is not Verified as $router"
 }
 
-# The inference path on failure, read through the API server's proxy (exec
-# and logs are closed on the node image): what the router admitted, and the
-# gateway's own view of its upstream.
+# The inference path on failure. Exec, logs and the API server's proxy are
+# closed on the node image, so a plain (non-cw) probe pod with the gateway's
+# labels asks the router itself and reports through its termination message.
+# It reaches the router without the mesh, which the gateway's call crosses.
 inference_dump() {
-  local gw
-  gw=$(kubectl -n "$ns" get pods -l app.kubernetes.io/component=gateway -o jsonpath='{.items[0].metadata.name}')
-  for path in "services/sglang-router:30000/proxy/workers" "services/sglang-router:30000/proxy/readiness" \
-    "services/sglang-router:30000/proxy/health" "pods/$gw:9090/proxy/metrics"; do
-    echo "== $path"
-    kubectl get --raw "/api/v1/namespaces/$ns/$path" 2>&1 | grep -v -E '^# (HELP|TYPE)' | head -60
+  local busybox=busybox:1.36 digest probe=router-probe
+  digest=$(c8s allowlist inspect-image "$busybox" | awk '$1 == "digest:" { print $2 }')
+  c8s allowlist add "$digest" "$busybox" --url "$front" "${pin[@]}" --operator-key "$key" >/dev/null || true
+  # shellcheck disable=SC2016 # $p expands in the probe's shell.
+  kubectl -n "$ns" run "$probe" --image="$busybox" --restart=Never --labels=app.kubernetes.io/component=gateway \
+    --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"probe","image":"'"$busybox"'","command":["sh","-c","for p in workers readiness health v1/models; do echo \"== $p\"; wget -qO- -T 5 http://sglang-router:30000/$p 2>&1 | head -c 700; echo; done > /dev/termination-log"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
+    >/dev/null || true
+  for _ in $(seq 1 30); do
+    msg=$(kubectl -n "$ns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state.terminated.message}' 2>/dev/null || true)
+    [ -n "$msg" ] && break
+    sleep 2
   done
-  kubectl -n c8s-system get pods -o wide
+  echo "router as seen by a plain pod:"
+  echo "${msg:-no answer}"
+  kubectl -n "$ns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state}{"\n"}' || true
+  kubectl -n c8s-system get pods -o wide || true
 }
 
 proxy_pid=""
