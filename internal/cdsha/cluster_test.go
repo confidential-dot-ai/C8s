@@ -820,3 +820,55 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 		t.Fatal("a restore beside a live cluster")
 	}
 }
+
+// An expired Genesis does not start a cluster; a replica that has not joined
+// refuses writes; a stale Recover is not used, and catch-up needs a leader.
+func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
+	c := newCluster(t, 3)
+	for _, n := range []string{"n0", "n1", "n2"} {
+		c.start(n, "m1")
+	}
+	old := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
+	time.Sleep(500 * time.Millisecond)
+	if c.nodes["n0"].node.member() {
+		t.Fatal("an expired Genesis started a cluster")
+	}
+	if _, ok := c.decrees.get(old); ok {
+		t.Fatal("an expired Genesis was recorded as applied")
+	}
+	if err := c.nodes["n1"].al.PutWorkload("x", mkWorkload(t)); err == nil {
+		t.Fatal("a replica outside any cluster accepted a write")
+	}
+	if err := c.nodes["n1"].node.CatchUp(); err == nil {
+		t.Fatal("caught up without a leader")
+	}
+	if _, err := c.nodes["n1"].node.CA(); err == nil {
+		t.Fatal("a CA before Genesis")
+	}
+	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0"})
+	eventually(t, 10*time.Second, "genesis", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
+	c.settled(15 * time.Second)
+	// Cut two voters off: the survivor sees a Recover for a stale epoch and
+	// leaves it alone.
+	l := c.leader()
+	var surv *replica
+	for _, r := range c.live() {
+		if r != l && surv == nil {
+			surv = r
+		} else {
+			c.partition(r.name, true)
+		}
+	}
+	stale := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: 7})
+	time.Sleep(3 * time.Second)
+	if st, ok := c.decrees.get(stale); ok && st.AppliedEpoch != nil {
+		t.Fatal("a stale Recover was applied")
+	}
+	if surv.node.Serving() {
+		t.Fatal("a lone survivor serves")
+	}
+	for _, r := range c.live() {
+		c.partition(r.name, false)
+	}
+	c.settled(15 * time.Second)
+}
