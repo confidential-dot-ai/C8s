@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -601,8 +602,8 @@ func (n *Node) maybeBackup(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	var sn snapshot
-	if err := json.Unmarshal(body, &sn); err != nil {
+	sn, err := decodeSnapshot(bytes.NewReader(body))
+	if err != nil {
 		n.log.Warn("backup: decode snapshot", "err", err)
 		return
 	}
