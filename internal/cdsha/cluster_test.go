@@ -400,9 +400,13 @@ func TestLeaderKillAndRestartAsNewMember(t *testing.T) {
 	c.stopReplica(old)
 	eventually(t, 5*time.Second, "new leader", func() bool { l := c.leader(); return l != nil && l != old })
 	for _, r := range c.live() {
-		if err := r.al.PutWorkload("after-"+r.name, mkWorkload(t)); err != nil {
-			t.Fatalf("write at %s with one replica down: %v", r.name, err)
-		}
+		// A replica that has not heard from the new leader yet answers
+		// "unavailable" (a client's 503 + retry); it must not stay so.
+		var err error
+		eventually(t, 3*time.Second, "write at "+r.name+" with one replica down", func() bool {
+			err = r.al.PutWorkload("after-"+r.name, mkWorkload(t))
+			return err == nil
+		})
 	}
 	back := c.start(old.name, "m1")
 	c.settled(10 * time.Second)

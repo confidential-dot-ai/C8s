@@ -119,7 +119,7 @@ type Node struct {
 	rcfg        *raft.Config
 	logs        *raft.InmemStore
 	stable      *raft.InmemStore
-	snaps       *raft.InmemSnapshotStore
+	snaps       *snapStore
 	noLeader    time.Time    // since when a member has seen no leader
 	lastMember  atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
 	lastLoner   atomic.Int64 // Unix ms a reachable peer last answered that it holds no cluster either
@@ -271,7 +271,7 @@ func (n *Node) ID() string { return string(n.id) }
 
 // Start opens the peer port and starts Raft. Run drives it.
 func (n *Node) Start() error {
-	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), raft.NewInmemSnapshotStore()
+	n.logs, n.stable, n.snaps = raft.NewInmemStore(), raft.NewInmemStore(), newSnapStore()
 	rc := raft.DefaultConfig()
 	rc.LocalID = n.id
 	rc.HeartbeatTimeout = n.cfg.Timing.Heartbeat
