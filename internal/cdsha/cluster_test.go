@@ -266,7 +266,7 @@ func eventually(t *testing.T, within time.Duration, what string, ok func() bool)
 
 func (c *cluster) leader() *replica {
 	for _, r := range c.live() {
-		if r.node.raft.State() == raft.Leader {
+		if r.node.r().State() == raft.Leader {
 			return r
 		}
 	}
@@ -561,4 +561,55 @@ func contains(s []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// Two of three replicas lost for good: the survivor cannot form a majority.
+// A Recover decree naming it makes it the only voter, with its state;
+// replacements join, and the decree cannot be replayed.
+func TestRecoverAfterLosingTheMajority(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.sec.PutIfAbsent(context.Background(), "/kept", []byte("v"), secrets.WorkloadHolder("w")); err != nil {
+		t.Fatal(err)
+	}
+	fp := l.node.Status().CAFingerprint
+	var surv *replica
+	for _, r := range c.live() {
+		if r != l && surv == nil {
+			surv = r
+			continue
+		}
+		c.stopReplica(r)
+	}
+	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
+	epoch := surv.node.Core().Epoch
+	rec := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: epoch})
+	eventually(t, 10*time.Second, "recover applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
+	eventually(t, 5*time.Second, "survivor serves again", surv.node.Serving)
+	if surv.node.Status().CAFingerprint != fp {
+		t.Fatal("recovery changed the mesh CA")
+	}
+	if v, err := surv.sec.Get(context.Background(), "/kept"); err != nil || string(v) != "v" {
+		t.Fatalf("recovery lost a secret: %q %v", v, err)
+	}
+	c.start("n8", "m1")
+	c.start("n9", "m1")
+	c.settled(15 * time.Second)
+	for _, r := range c.live() {
+		if v, err := r.sec.Get(context.Background(), "/kept"); err != nil || string(v) != "v" {
+			t.Fatalf("%s lacks the recovered state: %v", r.name, err)
+		}
+	}
+	// Replayed: the intent is recorded as applied, so nothing happens.
+	c.decrees.mu.Lock()
+	delete(c.decrees.status, rec)
+	c.decrees.mu.Unlock()
+	eventually(t, 5*time.Second, "replay recorded as already applied", func() bool { st, ok := c.decrees.get(rec); return ok && st.AppliedEpoch != nil })
+	if st := c.leader().node.Status(); len(st.Voters) != 3 {
+		t.Fatalf("replayed Recover changed the configuration: %+v", st)
+	}
 }

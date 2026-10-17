@@ -29,12 +29,13 @@ func newHACmd() *cobra.Command {
 
 func newHADecreeCmd() *cobra.Command {
 	var (
-		d         cdsha.Decree
-		kind      string
-		keyPath   string
-		namespace string
-		expiresIn time.Duration
-		ackFork   bool
+		d          cdsha.Decree
+		kind       string
+		keyPath    string
+		namespace  string
+		expiresIn  time.Duration
+		ackFork    bool
+		ackRecover bool
 	)
 	cmd := &cobra.Command{
 		Use:   "decree",
@@ -47,15 +48,24 @@ func newHADecreeCmd() *cobra.Command {
 			"expires after 10 minutes by default: a cluster is born once.",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			d.Kind = cdsha.DecreeKind(kind)
-			if d.Kind == cdsha.Genesis {
+			switch d.Kind {
+			case cdsha.Genesis, cdsha.Recover:
 				if d.BootstrapNode == "" {
-					return errors.New("a Genesis decree needs --bootstrap-node: the node whose replica starts the cluster")
+					return fmt.Errorf("a %s decree needs --bootstrap-node: the node whose replica starts (or carries on) the cluster", d.Kind)
 				}
 				if !cmd.Flags().Changed("expires-in") {
 					expiresIn = 10 * time.Minute
 				}
-			} else if d.BootstrapNode != "" {
-				return errors.New("--bootstrap-node is for Genesis only")
+				if d.Kind == cdsha.Recover {
+					if !ackRecover {
+						return errors.New("a Recover decree is break-glass after losing a majority of replicas for good: writes the lost replicas had and the survivor did not are gone, and if they were only cut off they could carry on as the old majority. Make sure they are destroyed, follow with RotateKey, and pass --i-understand-recover-is-break-glass")
+					}
+					fmt.Fprintln(cmd.ErrOrStderr(), "WARNING: follow Recover with a RotateKey decree, so any lost replica that comes back holds a retired key.")
+				}
+			default:
+				if d.BootstrapNode != "" {
+					return errors.New("--bootstrap-node is for Genesis and Recover only")
+				}
 			}
 			if d.Kind == cdsha.RotateKey {
 				if !ackFork {
@@ -89,14 +99,15 @@ func newHADecreeCmd() *cobra.Command {
 	f := cmd.Flags()
 	f.StringVar(&d.ClusterID, "cluster-id", "", "cluster the decree is for")
 	f.Uint64Var(&d.BaseEpoch, "base-epoch", 0, "the epoch you observed (c8s cds ha status)")
-	f.StringVar(&kind, "kind", string(cdsha.UpdateMeasurements), "Genesis (mint the first key), UpdateMeasurements or RotateKey")
+	f.StringVar(&kind, "kind", string(cdsha.UpdateMeasurements), "Genesis (mint the first key), UpdateMeasurements, RotateKey, or Recover (break-glass after losing a majority)")
 	f.StringSliceVar(&d.Measurements, "measurements", nil, "complete new replica pin set (D6); optional for RotateKey (D14)")
 	f.StringVar(&d.IntentID, "intent-id", "", "decree nonce (default random)")
-	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster")
+	f.StringVar(&d.BootstrapNode, "bootstrap-node", "", "Genesis: the node whose replica starts the cluster; Recover: the surviving node")
 	f.StringVar(&keyPath, "operator-key", "", "PEM EC private key matching the cluster's --ha-operator-key")
 	f.StringVar(&namespace, "namespace", "c8s-cds-decrees", "namespace the decree object is written to (the replicas' --ha-decree-namespace)")
 	f.DurationVar(&expiresIn, "expires-in", time.Hour, "decree lifetime")
 	f.BoolVar(&ackFork, "i-understand-rotation-forks-the-cluster", false, "required for RotateKey")
+	f.BoolVar(&ackRecover, "i-understand-recover-is-break-glass", false, "required for Recover")
 	_ = cmd.MarkFlagRequired("cluster-id")
 	_ = cmd.MarkFlagRequired("operator-key")
 	return cmd
