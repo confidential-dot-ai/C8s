@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -38,13 +39,14 @@ func attestLBServer(t *testing.T, id *endpointIdentity, bindLeaf []byte) *httpte
 			t.Error(err)
 		}
 		json.NewEncoder(w).Encode(map[string]any{
-			"version":         types.BindingAttestLB,
-			"platform":        "snp",
-			"nonce":           base64.RawURLEncoding.EncodeToString(nonce),
-			"evidence":        map[string]any{"attestation_report": "AAAA"},
-			"front_door_mode": "cds",
-			"cds_cert_pem":    id.chainPEM,
-			"identity_proof":  id.proofJSON(t, transcript),
+			"version":           types.BindingAttestLB,
+			"platform":          "snp",
+			"nonce":             base64.RawURLEncoding.EncodeToString(nonce),
+			"evidence":          map[string]any{"attestation_report": "AAAA"},
+			"front_door_mode":   "cds",
+			"cds_cert_pem":      id.chainPEM,
+			"identity_proof":    id.proofJSON(t, transcript),
+			"measured_policies": []string{testPolicyP},
 		})
 	}))
 	return ts
@@ -61,6 +63,9 @@ func TestGatherFromAttestLB(t *testing.T) {
 	}
 	if !ev.fresh || ev.leaf == nil || !bytes.Equal(ev.leaf.Raw, id.leaf.Raw) {
 		t.Errorf("evidence = fresh %v, leaf %v; want a fresh verdict on the committed mesh leaf", ev.fresh, ev.leaf != nil)
+	}
+	if !slices.Equal(ev.measured, []string{testPolicyP}) {
+		t.Errorf("evidence.measured = %v, want the bundle's measured_policies", ev.measured)
 	}
 
 	relayed := attestLBServer(t, id, []byte("another serving leaf"))
