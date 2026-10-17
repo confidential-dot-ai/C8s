@@ -65,7 +65,16 @@ def complete(args: argparse.Namespace) -> None:
     models = json.loads(request(args.proxy + "/v1/models", headers=auth))
     model = models["data"][0]["id"]
     chat = {"model": model, "max_tokens": 16, "messages": [{"role": "user", "content": "Say hello."}]}
-    answer = json.loads(request(args.proxy + "/v1/chat/completions", "POST", json.dumps(chat).encode(), auth))
+    # The router admits the worker after its own health checks, which can
+    # trail pod readiness; retry inference_unavailable for a few minutes.
+    for attempt in range(18):
+        try:
+            answer = json.loads(request(args.proxy + "/v1/chat/completions", "POST", json.dumps(chat).encode(), auth))
+            break
+        except SystemExit as error:
+            if "HTTP 503" not in str(error) or attempt == 17:
+                raise
+            time.sleep(10)
     if not answer.get("choices"):
         raise SystemExit(f"the completion has no choices: {answer}")
     print(f"ok: {model} answered a chat completion")
