@@ -15,6 +15,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 [ $# -eq 3 ] || { echo "usage: $0 <router-workload> <api-key> <allowlist-file>" >&2; exit 2; }
 
 src=$CIE_DIR/verify-js-src
+allowlist=$(realpath "$3")
 if [ ! -e "$src/src/wasm/attestation_wasm_bg.wasm" ]; then
   rm -rf "$src"
   git init -q "$src"
@@ -27,4 +28,4 @@ fi
 cd "$src"
 VERIFY_JS_SRC=$src node --import tsx "$here/verify-js.mjs" \
   --url "https://$GUEST_IP" --server-name c8s.local --image-manifest "$IMAGE_MANIFEST" \
-  --workload "$1" --api-key "$2" --allowlist "$3"
+  --workload "$1" --api-key "$2" --allowlist "$allowlist"
