@@ -130,6 +130,8 @@ type Node struct {
 
 	jumpAt atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
 
+	seatsOKAt atomic.Int64 // Unix ms the leader last reported every seat filled (non-voters)
+
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
 	blocked func(addr string) bool
@@ -137,6 +139,7 @@ type Node struct {
 	mu       sync.Mutex
 	failing  map[raft.ServerID]time.Time // leader: when a member's heartbeats started failing
 	joinedAt map[raft.ServerID]time.Time // leader: when a member was added
+	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 
 	backupAt    time.Time // leader: last backup attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
@@ -159,6 +162,9 @@ type Status struct {
 	NonVoters     []string `json:"non_voters,omitempty"`
 	AppliedIndex  uint64   `json:"applied_index"`
 	LastContactMS int64    `json:"last_contact_ms,omitempty"`
+	// SeatsFilled (leader only): every voter seat is held by a member whose
+	// heartbeats succeed.
+	SeatsFilled bool `json:"seats_filled,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -205,6 +211,7 @@ func NewNode(cfg Config) (*Node, error) {
 		log:         cfg.Logger.With("component", "cds-ha"),
 		failing:     map[raft.ServerID]time.Time{},
 		joinedAt:    map[raft.ServerID]time.Time{},
+		addedAt:     map[raft.ServerID]time.Time{},
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -419,6 +426,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.maybeBackup(ctx)
 		case addr != "":
 			n.noLeader = time.Time{}
+			n.refreshSeats()
 		case n.noLeader.IsZero():
 			n.noLeader = time.Now()
 		case time.Since(n.noLeader) > n.cfg.Timing.DeadAfter:
@@ -767,6 +775,8 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	}
 	n.mu.Lock()
 	n.joinedAt[id] = time.Now()
+	n.addedAt[id] = n.joinedAt[id]
+	delete(n.failing, id) // failures of an earlier membership (see noteFailure)
 	n.mu.Unlock()
 	n.log.Info("replica joined as non-voter", "id", id, "address", req.Address)
 	return controlResponse{Member: true}
@@ -794,14 +804,61 @@ func (n *Node) observe(ch <-chan raft.Observation) {
 		n.mu.Lock()
 		switch d := o.Data.(type) {
 		case raft.FailedHeartbeatObservation:
-			if _, ok := n.failing[d.PeerID]; !ok {
-				n.failing[d.PeerID] = time.Now()
-			}
+			n.noteFailure(d.PeerID, d.LastContact, time.Now())
 		case raft.ResumedHeartbeatObservation:
 			delete(n.failing, d.PeerID)
 		}
 		n.mu.Unlock()
 	}
+}
+
+// clearReachable probes the members due for removal as dead and forgets the
+// failures of any that answers: a removal is for a member unreachable now,
+// not for a stale observation.
+func (n *Node) clearReachable(servers []raft.Server, now time.Time) {
+	n.mu.Lock()
+	var suspects []raft.Server
+	for _, s := range servers {
+		if since, bad := n.failing[s.ID]; bad && s.ID != n.id && now.Sub(since) >= n.cfg.Timing.DeadAfter {
+			suspects = append(suspects, s)
+		}
+	}
+	n.mu.Unlock()
+	for _, s := range suspects {
+		hostport, _ := splitRaftAddr(string(s.Address))
+		// The same member must answer, not a later process at its address.
+		if resp, err := n.call(hostport, time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Status != nil && resp.Status.ID == string(s.ID) {
+			n.log.Info("member answers; its heartbeat failures were stale", "id", s.ID)
+			n.mu.Lock()
+			delete(n.failing, s.ID)
+			n.mu.Unlock()
+		}
+	}
+}
+
+// noteFailure records that heartbeats to a member fail, as of its last
+// successful contact. A replication stream outlives the member's removal, so
+// a member removed and added again can still see failures from the stream of
+// its earlier membership, after the new stream already reaches it; nothing
+// would clear them (the new stream never "resumes"), and the member would be
+// removed again after dead_after. Those failures carry a last contact from
+// before the member was added; they are ignored. Callers hold n.mu.
+func (n *Node) noteFailure(id raft.ServerID, lastContact, now time.Time) {
+	joined, ok := n.addedAt[id]
+	if ok && !lastContact.IsZero() && lastContact.Before(joined) {
+		return
+	}
+	if _, already := n.failing[id]; already {
+		return
+	}
+	since := lastContact
+	if since.IsZero() {
+		since = now
+	}
+	if ok && since.Before(joined) {
+		since = joined
+	}
+	n.failing[id] = since
 }
 
 // reconcile keeps the voter seats filled with one healthy replica per node:
@@ -814,6 +871,7 @@ func (n *Node) reconcile() {
 	}
 	servers := f.Configuration().Servers
 	now := time.Now()
+	n.clearReachable(servers, now)
 	n.mu.Lock()
 	failingSince := func(id raft.ServerID) (time.Time, bool) { t, ok := n.failing[id]; return t, ok }
 	healthy := func(id raft.ServerID) bool {
@@ -875,6 +933,7 @@ func (n *Node) reconcile() {
 		n.mu.Lock()
 		delete(n.failing, id)
 		delete(n.joinedAt, id)
+		delete(n.addedAt, id)
 		n.mu.Unlock()
 		n.log.Info("member removed", "id", id)
 	}
@@ -897,10 +956,24 @@ func (n *Node) applyDecrees(ctx context.Context) {
 		n.log.Debug("list decrees", "err", err)
 		return
 	}
+	applied := n.fsm.Core().AppliedDecrees
 	for _, d := range ds {
+		if d.Err == nil && d.Decree.Decree.Kind == Recover && !slices.Contains(applied, d.Decree.Decree.IntentID) {
+			// A leader holds a majority: nothing was lost for good. Applied
+			// here, the decree would only bump the epoch, and the replica it
+			// names, if merely cut off, would come back to an epoch it did
+			// not see.
+			n.log.Warn("Recover decree refused: the cluster has a leader with a majority", "decree", d.Name)
+			n.setStatus(ctx, d.Name, DecreeStatus{RejectedReason: ErrRecoverWithQuorum.Error()})
+			continue
+		}
 		n.applyDecree(ctx, d)
 	}
 }
+
+// ErrRecoverWithQuorum refuses a Recover decree on a cluster that has a
+// leader, and so a majority of its voters.
+var ErrRecoverWithQuorum = errors.New("refused: the cluster has a leader with a majority of its voters; Recover is break-glass after losing the majority for good")
 
 func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	core := n.fsm.Core()
@@ -1020,20 +1093,20 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 func (n *Node) Replicate(cmd allowlist.Command) (allowlist.Result, error) {
 	var res allowlist.Result
 	raw, err := n.propose(Entry{Kind: KindAllowlist, Allowlist: &cmd})
-	if err == nil {
-		err = json.Unmarshal(raw, &res)
+	if err != nil {
+		return res, fmt.Errorf("%w: %w", allowlist.ErrUnavailable, err)
 	}
-	return res, err
+	return res, json.Unmarshal(raw, &res)
 }
 
 // ReplicateSecret implements secrets.Replicator.
 func (n *Node) ReplicateSecret(cmd secrets.Command) (secrets.Result, error) {
 	var res secrets.Result
 	raw, err := n.propose(Entry{Kind: KindSecret, Secret: &cmd})
-	if err == nil {
-		err = json.Unmarshal(raw, &res)
+	if err != nil {
+		return res, fmt.Errorf("%w: %w", secrets.ErrUnavailable, err)
 	}
-	return res, err
+	return res, json.Unmarshal(raw, &res)
 }
 
 // ReplicateBinding implements sandboxledger.Replicator.
@@ -1137,7 +1210,83 @@ func (n *Node) Status() Status {
 			}
 		}
 	}
+	if n.r().State() == raft.Leader {
+		st.SeatsFilled = n.seatsFilled()
+	}
 	return st
+}
+
+// seatsFilled (leader): the configuration has Seats voters and none of them
+// is failing heartbeats.
+func (n *Node) seatsFilled() bool {
+	f := n.r().GetConfiguration()
+	if f.Error() != nil {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	voters := 0
+	for _, s := range f.Configuration().Servers {
+		if s.Suffrage != raft.Voter {
+			continue
+		}
+		if _, bad := n.failing[s.ID]; bad && s.ID != n.id {
+			return false
+		}
+		voters++
+	}
+	return voters >= n.cfg.Seats
+}
+
+// isVoter reports whether this member holds a voter seat.
+func (n *Node) isVoter() bool {
+	f := n.r().GetConfiguration()
+	if f.Error() != nil {
+		return false
+	}
+	for _, s := range f.Configuration().Servers {
+		if s.ID == n.id {
+			return s.Suffrage == raft.Voter
+		}
+	}
+	return false
+}
+
+// Ready is readiness for a rolling restart (a DaemonSet with
+// maxUnavailable 1 restarts the next replica once this one is Ready): the
+// replica serves, and either holds a voter seat or the leader reports every
+// seat held by a healthy voter. A restarted voter comes back as a new member
+// that serves as a non-voter until it is promoted; were it Ready then, the
+// next restart could take a second voter and the majority with it.
+func (n *Node) Ready() bool {
+	if !n.Serving() {
+		return false
+	}
+	if n.isVoter() {
+		return true
+	}
+	if n.r().State() == raft.Leader {
+		return n.seatsFilled()
+	}
+	at := n.seatsOKAt.Load()
+	return at != 0 && time.Since(time.UnixMilli(at)) < 3*n.cfg.Timing.Tick+time.Second
+}
+
+// refreshSeats asks the leader whether every seat is filled (non-voters
+// only; see Ready).
+func (n *Node) refreshSeats() {
+	if n.isVoter() {
+		return
+	}
+	addr, _ := n.r().LeaderWithID()
+	if addr == "" {
+		return
+	}
+	hp, _ := splitRaftAddr(string(addr))
+	resp, err := n.call(hp, time.Second, controlRequest{Op: ctlStatus})
+	if err == nil && resp.Status != nil && resp.Status.SeatsFilled {
+		n.seatsOKAt.Store(time.Now().UnixMilli())
+	}
 }
 
 // watchClock notices the wall clock moving apart from the monotonic one: a

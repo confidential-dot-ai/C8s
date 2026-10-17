@@ -15,6 +15,11 @@ import (
 // ErrNotFound reports a path the store does not hold.
 var ErrNotFound = errors.New("secrets: no such path")
 
+// ErrUnavailable wraps a replication failure: an HA replica that has no
+// leader or lost its quorum could not commit the write. It is retryable, so
+// handlers answer 503.
+var ErrUnavailable = errors.New("secrets: replicated store unavailable (no leader or no quorum); retry")
+
 // The two refusals a write that grows the path map can meet.
 var (
 	ErrHolderQuota = errors.New("secrets: holder path quota")
