@@ -1,12 +1,15 @@
 package cdsha
 
 import (
+	"bufio"
 	"bytes"
+	"compress/gzip"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -162,9 +165,9 @@ func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
 	if SnapshotSHA256(re.Snapshot) != re.Decree.Decree.SnapshotSHA256 {
 		return fail(errors.New("snapshot differs from the one the decree names"))
 	}
-	var sn snapshot
-	if err := json.Unmarshal(re.Snapshot, &sn); err != nil {
-		return fail(fmt.Errorf("decode snapshot: %w", err))
+	sn, err := decodeSnapshot(bytes.NewReader(re.Snapshot))
+	if err != nil {
+		return fail(err)
 	}
 	switch {
 	case sn.Core.ClusterID != cur.ClusterID:
@@ -235,7 +238,8 @@ func (f *FSM) StoreConfiguration(index uint64, _ raft.Configuration) {
 var _ raft.ConfigurationStore = (*FSM)(nil)
 
 // Snapshot implements raft.FSM. Raft calls it between applies, so the
-// state captured here is one point of the log.
+// state captured here is one point of the log. Encoding happens in Persist,
+// as a stream, so the state is held once, not once per encoding stage.
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
 	sn := snapshot{Core: f.core.clone()}
@@ -253,21 +257,78 @@ func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 		return nil, err
 	}
 	sn.Allowlist, sn.Secrets, sn.Bindings = al, f.secrets.Dump(), f.ledger.Dump()
-	body, err := json.Marshal(sn)
-	if err != nil {
-		return nil, err
-	}
-	return fsmSnapshot(body), nil
+	return &fsmSnapshot{sn: sn}, nil
 }
 
 // Restore implements raft.FSM: a joining replica takes the leader's state.
 func (f *FSM) Restore(rc io.ReadCloser) error {
 	defer rc.Close()
-	var sn snapshot
-	if err := json.NewDecoder(rc).Decode(&sn); err != nil {
-		return fmt.Errorf("decode snapshot: %w", err)
+	sn, err := decodeSnapshot(rc)
+	if err != nil {
+		return err
 	}
 	return f.restore(sn)
+}
+
+// A snapshot is gzip over JSON lines: a header line with everything but the
+// allowlist tables, then one line per allowlist row (a one-row
+// allowlist.Snapshot, which keeps BLOB columns apart). The allowlist history
+// keeps a whole document per version, so it is most of the state; lines keep
+// encoding and decoding to one row at a time. A snapshot that does not start
+// with the gzip magic is the earlier single JSON object (older backups).
+func encodeSnapshot(w io.Writer, sn snapshot) error {
+	zw, err := gzip.NewWriterLevel(w, gzip.BestSpeed)
+	if err != nil {
+		return err
+	}
+	enc := json.NewEncoder(zw)
+	head := sn
+	head.Allowlist = nil
+	if err := enc.Encode(head); err != nil {
+		return err
+	}
+	tables := slices.Sorted(maps.Keys(sn.Allowlist))
+	for _, t := range tables {
+		for _, row := range sn.Allowlist[t] {
+			if err := enc.Encode(allowlist.Snapshot{t: {row}}); err != nil {
+				return err
+			}
+		}
+	}
+	return zw.Close()
+}
+
+func decodeSnapshot(r io.Reader) (snapshot, error) {
+	var sn snapshot
+	br := bufio.NewReader(r)
+	if magic, _ := br.Peek(2); len(magic) < 2 || magic[0] != 0x1f || magic[1] != 0x8b {
+		if err := json.NewDecoder(br).Decode(&sn); err != nil {
+			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+		}
+		return sn, nil
+	}
+	zr, err := gzip.NewReader(br)
+	if err != nil {
+		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+	}
+	dec := json.NewDecoder(zr)
+	if err := dec.Decode(&sn); err != nil {
+		return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+	}
+	sn.Allowlist = allowlist.Snapshot{}
+	for {
+		var rows allowlist.Snapshot
+		err := dec.Decode(&rows)
+		if errors.Is(err, io.EOF) {
+			return sn, nil
+		}
+		if err != nil {
+			return snapshot{}, fmt.Errorf("decode snapshot: %w", err)
+		}
+		for t, rs := range rows {
+			sn.Allowlist[t] = append(sn.Allowlist[t], rs...)
+		}
+	}
 }
 
 func (f *FSM) restore(sn snapshot) error {
@@ -289,14 +350,14 @@ func (f *FSM) restore(sn snapshot) error {
 	return nil
 }
 
-type fsmSnapshot []byte
+type fsmSnapshot struct{ sn snapshot }
 
-func (s fsmSnapshot) Persist(sink raft.SnapshotSink) error {
-	if _, err := sink.Write(s); err != nil {
+func (s *fsmSnapshot) Persist(sink raft.SnapshotSink) error {
+	if err := encodeSnapshot(sink, s.sn); err != nil {
 		_ = sink.Cancel()
 		return err
 	}
 	return sink.Close()
 }
 
-func (fsmSnapshot) Release() {}
+func (s *fsmSnapshot) Release() { s.sn = snapshot{} }

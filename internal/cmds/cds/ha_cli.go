@@ -67,6 +67,11 @@ func newHADecreeCmd() *cobra.Command {
 					return errors.New("--bootstrap-node is for Genesis and Recover only")
 				}
 			}
+			if d.Kind != cdsha.Genesis && !cmd.Flags().Changed("base-epoch") {
+				// Replicas apply a decree only at the epoch it names; one
+				// signed without it (epoch 0) is refused, and only in their logs.
+				return fmt.Errorf("a %s decree needs --base-epoch: the epoch 'c8s cds ha status' shows now", d.Kind)
+			}
 			if d.Kind == cdsha.RotateKey {
 				if !ackFork {
 					return errors.New("RotateKey forks the mesh: every workload must be re-issued under the new key. Pass --i-understand-rotation-forks-the-cluster to continue (C4, D11)")
