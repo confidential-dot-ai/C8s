@@ -315,3 +315,50 @@ func TestHAStartWiring(t *testing.T) {
 		t.Fatalf("singleton: %v", err)
 	}
 }
+
+// The pre-join server answers health and status, and refuses malformed or
+// misdirected restores.
+func TestPreJoinRestoreHandler(t *testing.T) {
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	pub, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+	al, _ := allowlist.OpenInMemory()
+	defer al.Close()
+	node, err := cdsha.NewNode(cdsha.Config{ClusterID: "c1", NodeName: "n0", Bind: "127.0.0.1:0", Advertise: "127.0.0.1:1",
+		Attestor: fakeAttestor{"m1"}, BakedPins: []string{"m1"}, OperatorPubKey: pub, Seats: 3,
+		Peers: func(context.Context) ([]string, error) { return nil, nil },
+		Allowlist: &al, Secrets: secrets.NewMemoryStore(4, 2, 64), Ledger: sandboxledger.New(time.Hour, 4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); _ = node.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	time.Sleep(300 * time.Millisecond)
+	mux := preJoinMux(node)
+	call := func(method, path string, body string) int {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest(method, path, strings.NewReader(body)))
+		return w.Code
+	}
+	if call(http.MethodGet, "/healthz", "") != http.StatusOK || call(http.MethodGet, "/ha/status", "") != http.StatusOK {
+		t.Fatal("health and status")
+	}
+	if call(http.MethodPost, "/ha/restore", "{") != http.StatusBadRequest {
+		t.Fatal("malformed restore")
+	}
+	sd, _ := cdsha.SignDecree(cdsha.Decree{ClusterID: "c1", IntentID: "r", Kind: cdsha.Restore, BootstrapNode: "n9",
+		SnapshotSHA256: cdsha.SnapshotSHA256([]byte("s")), ExpiresAt: time.Now().Add(time.Hour)}, k)
+	body, _ := json.Marshal(RestoreRequest{Decree: sd, Snapshot: []byte("s")})
+	if c := call(http.MethodPost, "/ha/restore", string(body)); c != http.StatusMisdirectedRequest {
+		t.Fatalf("restore for another node: %d", c)
+	}
+	sd.Decree.BootstrapNode = "n0" // signature no longer matches
+	body, _ = json.Marshal(RestoreRequest{Decree: sd, Snapshot: []byte("s")})
+	if c := call(http.MethodPost, "/ha/restore", string(body)); c != http.StatusConflict {
+		t.Fatalf("restore with a bad signature: %d", c)
+	}
+	if call(http.MethodGet, "/allowlist", "") != http.StatusNotFound {
+		t.Fatal("the pre-join server serves more than health, status and restore")
+	}
+}

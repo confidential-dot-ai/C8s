@@ -443,6 +443,9 @@ func (n *Node) shutdown() {
 
 // member reports whether this replica is in a Raft configuration.
 func (n *Node) member() bool {
+	if n.r() == nil {
+		return false
+	}
 	f := n.r().GetConfiguration()
 	if f.Error() != nil {
 		return false
@@ -619,6 +622,8 @@ var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another nod
 func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
 	d := sd.Decree
 	switch {
+	case n.r() == nil:
+		return DecreeResult{}, errors.New("cds-ha: replica not started")
 	case d.Kind != Restore:
 		return DecreeResult{}, errors.New("cds-ha: not a Restore decree")
 	case d.BootstrapNode != n.cfg.NodeName:
