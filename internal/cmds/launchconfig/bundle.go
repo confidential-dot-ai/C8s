@@ -122,13 +122,17 @@ func NewBundle(opts BundleOptions) (err error) {
 	if err != nil {
 		return err
 	}
+	serverPassword, err := newToken()
+	if err != nil {
+		return err
+	}
 	server := Document{
 		SchemaVersion:           SchemaVersion,
 		ClusterID:               opts.ClusterID,
 		Role:                    Server,
 		Image:                   image,
 		Node:                    Node{Name: opts.ServerName},
-		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken},
+		RKE2:                    RKE2{ServerToken: serverToken, AgentToken: agentToken, NodePassword: serverPassword},
 		Server:                  ServerConfig{Address: opts.ServerAddress, OperatorPublicKey: serverPub},
 		AgentOperatorPublicKeys: []string{agentPub},
 		TLSSAN:                  opts.TLSSAN,
@@ -254,7 +258,11 @@ func addJoiningNode(dir, name, serverAddress string, role Role, keyFile string) 
 	agent := *server
 	agent.Role = role
 	agent.Node = Node{Name: name}
-	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken}
+	password, err := newToken()
+	if err != nil {
+		return err
+	}
+	agent.RKE2 = RKE2{AgentToken: server.RKE2.AgentToken, NodePassword: password}
 	agent.Server.Address = serverAddress
 	agent.Router = nil
 	return writeSignedDocument(filepath.Join(dir, name), agent, key, pub)
