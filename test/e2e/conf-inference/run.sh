@@ -218,7 +218,16 @@ customer_round() {
   cmp -s "$fetched" exported.json || fail "/allowlist bytes differ from c8s allowlist export"
   start_proxy
   api_key=$(python3 "$here/client.py" mint-key --admin-key admin.key)
-  python3 "$here/client.py" complete --api-key "$api_key" || { inference_dump; fail "no completion through the gateway"; }
+  if ! python3 "$here/client.py" complete --api-key "$api_key"; then
+    if [ -n "${C8S_NODE_SSH_CONFIG:-}" ]; then
+      local shoot=nicolaka/netshoot:v0.13
+      c8s allowlist add "$(c8s allowlist inspect-image "$shoot" | awk '$1 == "digest:" { print $2 }')" "$shoot" --url "$front" "${pin[@]}" --operator-key "$key" || true
+      sleep 12
+      bash "$here/node-dump.sh" "$ns" "$shoot" 2>&1 | tee /tmp/node-dump.log
+    fi
+    inference_dump
+    fail "no completion through the gateway"
+  fi
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
   python3 "$here/client.py" attestation --allowlist "$fetched" "${workload_args[@]}"

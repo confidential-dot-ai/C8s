@@ -30,6 +30,11 @@ on:
         required: false
         type: string
         default: ''
+      dev:
+        description: 'boot the C8S_DEV=1 SSH image of the commit (rke2-snp-dev-ssh-cdi-<sha>), with a node shell for the suite'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       c8s_ref:
@@ -38,6 +43,11 @@ on:
         default: ''
       keep_cvm:
         description: 'Skip teardown to debug a failure. The reaper still clears it after 3h.'
+        required: false
+        type: boolean
+        default: false
+      dev:
+        description: 'Boot the C8S_DEV=1 SSH image of the commit instead of the measured one.'
         required: false
         type: boolean
         default: false
@@ -76,7 +86,7 @@ jobs:
     # ~3m + asserts, with headroom for a cold go cache. The first run of a new
     # image also imports its disk (~2.4 GiB) and IGVM, up to 10 more; an extra
     # suite gets 20 more.
-    timeout-minutes: ${{ inputs.suite_run != '' && 75 || 55 }}
+    timeout-minutes: ${{ inputs.suite_run != '' && (inputs.dev && 120 || 75) || 55 }}
     steps:
       # This repository even when another one calls the lane, so .github/scripts
       # and .github/actions are the lane's: the run's own commit here, the
@@ -262,6 +272,8 @@ jobs:
           c8s --version || true
 
       - name: resolve the node image built from the commit under test
+        env:
+          VARIANT: ${{ inputs.dev && 'rke2-snp-dev-ssh' || 'rke2-snp' }}
         run: |
           set -euo pipefail
           # Only the pair built from one commit works: the image's measured base
@@ -276,24 +288,24 @@ jobs:
           IMG_DIGEST=""; code=""
           for attempt in 1 2 3 4; do
             hdr=$(curl -sI --max-time 20 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
-              "https://ghcr.io/v2/${oci}/manifests/rke2-snp-cdi-${c8sRef}" | tr -d '\r')
+              "https://ghcr.io/v2/${oci}/manifests/${VARIANT}-cdi-${c8sRef}" | tr -d '\r')
             code=$(awk 'NR==1{print $2}' <<<"$hdr")
             case "$code" in
               200) IMG_DIGEST=$(awk 'tolower($1)=="docker-content-digest:"{print $2}' <<<"$hdr"); break ;;
-              404) echo "::error::no node image for the commit under test: ${IMAGE_REPO}:rke2-snp-cdi-${c8sRef} is not published. The lane needs the exact pair; wait for this commit's c8s-image run, or dispatch with a c8s_ref whose image exists"; exit 1 ;;
+              404) echo "::error::no node image for the commit under test: ${IMAGE_REPO}:${VARIANT}-cdi-${c8sRef} is not published. The lane needs the exact pair; wait for this commit's c8s-image run, or dispatch with a c8s_ref whose image exists"; exit 1 ;;
               *)   sleep $((attempt * 3)) ;;
             esac
           done
-          [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for rke2-snp-cdi-${c8sRef} on 4 attempts"; exit 1; }
+          [[ "$IMG_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::ghcr answered ${code:-none} for ${VARIANT}-cdi-${c8sRef} on 4 attempts"; exit 1; }
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" -H "Accept: $accept" \
-            "https://ghcr.io/v2/${oci}/manifests/rke2-snp-${c8sRef}" -o /tmp/image-oras.json
+            "https://ghcr.io/v2/${oci}/manifests/${VARIANT}-${c8sRef}" -o /tmp/image-oras.json
           mlayer=$(bash .github/scripts/snp-node-image.sh manifest-layer /tmp/image-oras.json)
           retry curl -fsSL --max-time 60 -H "Authorization: Bearer $tok" "https://ghcr.io/v2/${oci}/blobs/$mlayer" -o /tmp/image-manifest.json
           # Refuses anything but one smp=$SMP variant whose IGVM is a layer of
           # the artifact; names the digest-keyed claims the stages below share.
           resolved=$(bash .github/scripts/snp-node-image.sh env /tmp/image-oras.json /tmp/image-manifest.json "$IMG_DIGEST" "$SMP")
           printf '%s\n' "$resolved" >> "$GITHUB_ENV"
-          echo "c8s under test ${c8sRef} on its own node image rke2-snp-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^snpLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
+          echo "c8s under test ${c8sRef} on its own node image ${VARIANT}-cdi-${c8sRef} (${IMG_DIGEST:0:19}...), launch digest $(sed -n 's/^snpLaunchDigest=\(.\{16\}\).*/\1/p' <<<"$resolved")..."
 
       - name: stage the root disk on the launcher (no-op when already staged)
         run: |
@@ -541,6 +553,10 @@ jobs:
           echo "OK: attested kubeconfig, identity=$WHO"
           KUBECONFIG=/tmp/guest.kubeconfig kubectl get nodes
 
+      - name: node shell and admin kubeconfig (dev image)
+        if: inputs.dev
+        run: bash .github/scripts/dev-node-shell.sh "$GUEST_IP" /tmp/launch-data/server.key
+
       - name: assert the host cidata disk is inert
         run: .github/scripts/cidata-tripwire.sh
 
@@ -584,10 +600,13 @@ jobs:
       - name: extra suite
         if: inputs.suite_run != ''
         uses: ./.github/actions/extra-suite
+        env:
+          # The conformance backend for this image (test/conformance/backends).
+          CONFORMANCE_BACKEND: ${{ inputs.dev && 'metal-dev' || 'metal' }}
         with:
           artifact: ${{ inputs.suite_artifact }}
           run: ${{ inputs.suite_run }}
-          platform: snp-metal
+          platform: ${{ inputs.dev && 'snp-metal-dev' || 'snp-metal' }}
 
       - name: diagnostics (on failure)
         if: failure() || cancelled()

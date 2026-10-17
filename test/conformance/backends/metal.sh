@@ -46,6 +46,9 @@ setup() {
 }
 
 teardown_backend() {
+    local pid
+    pid="$(scratch)/external-hello/pid"
+    [ ! -s "$pid" ] || { kill "$(cat "$pid")" 2>/dev/null; rm -f "$pid"; }
     [ -s "$written" ] || return 0
     # shellcheck disable=SC2046  # one argument per entry
     al delete $(sort -u "$written") >/dev/null || true
@@ -72,31 +75,22 @@ injected_image() { return $UNSUPPORTED; }
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
 
-# The lane's allowlist URL is the router on the guest's public address: the
-# c8s CLI's signed writes and raw reads reach the CDS through its built-in
-# allowlist route, which forwards the /allowlist routes unchanged. The
-# operator's credential may neither exec, port-forward nor write in $NS, so
-# that route is the harness's only way to the CDS: its other documents, its
-# own serving certificate and its Service answer 77 below. The launch
-# bundle's key is the run's operator key; the token minter is built from the
-# checkout on first use, with the Go toolchain that built the CLI.
-cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
-# The route relays the /allowlist routes alone; the CDS's others are out of
-# reach.
-cds_request() {
-    case "$2" in
-        /allowlist | /allowlist/*) http_request "$(cds_url)" "$@" ;;
-        *) return "$UNSUPPORTED" ;;
-    esac
+# The CDS Service's node port on the guest: the lane's runner reaches every
+# port of the guest at the address the router's front door has, and the
+# CDS's ingress policy admits its port from anywhere. Signed writes and raw
+# reads go there, as kind's go through its port-forward; the router keeps
+# the allowlist route. The launch bundle's key is the run's operator key; the
+# token minter is built from the checkout on first use, with the Go
+# toolchain that built the CLI.
+guest_host() { local host="${C8S_ALLOWLIST_URL#https://}"; echo "${host%%[:/]*}"; }
+cds_node_port() { cached cds-node-port kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}'; }
+cds_url() {
+    local port
+    port="$(cds_node_port)" || return
+    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
+    echo "https://$(guest_host):$port"
 }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
-cds_document_path() {
-    case "$1" in
-        allowlist) echo /allowlist ;;
-        *) return "$UNSUPPORTED" ;;
-    esac
-}
-cds_serving_cert() { return "$UNSUPPORTED"; }
 # No node shell, so the plugin's health socket is out of reach.
 applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
@@ -118,7 +112,8 @@ optoken_bin() {
     echo "$bin"
 }
 
-cds_plain_url() { return "$UNSUPPORTED"; }
+# The same listener dialled without TLS; it is TLS-only.
+cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
 
 # The pins the lane started the CDS with: a launch digest, or those of its
 # policy file.
@@ -144,10 +139,57 @@ attest_direct() { return "$UNSUPPORTED"; }
 # The lane pins the node's own measurement, so its evidence satisfies them.
 mesh_pins_satisfied() { echo yes; }
 
-# No address outside the cluster answers for the lane, and a pod that is not
-# injected has no socket to the attestation service.
-external_endpoint() { return "$UNSUPPORTED"; }
+# A hello API on the lane's runner, outside the cluster: pods reach the
+# runner's address through the launcher's address translation. It is kept
+# for the run and stopped by teardown. A pod that is not injected has no
+# socket to the attestation service.
+EXTERNAL_HELLO_PORT=18080
+external_endpoint() {
+    local dir addr _
+    dir="$(scratch)/external-hello"
+    addr="$(hostname -I | awk '{print $1}')"
+    [ -n "$addr" ] || { echo "backend: the runner has no address" >&2; return 1; }
+    if [ ! -s "$dir/pid" ]; then
+        mkdir -p "$dir/www"
+        echo hello > "$dir/www/index.html"
+        setsid python3 -m http.server -b 0.0.0.0 -d "$dir/www" "$EXTERNAL_HELLO_PORT" >"$dir/log" 2>&1 < /dev/null &
+        echo $! > "$dir/pid"
+        for _ in $(seq 30); do
+            curl -sf --max-time 1 "http://127.0.0.1:$EXTERNAL_HELLO_PORT/" >/dev/null && break
+            sleep 0.5
+        done
+    fi
+    echo "$addr:$EXTERNAL_HELLO_PORT"
+}
 attestation_endpoint() { return "$UNSUPPORTED"; }
+
+# The node image installs the router's nginx files from what `c8s node-image
+# render` writes at the image's ref, which is this checkout's and the CLI's;
+# rendered once per run with the Helm the image build pins. The files carry
+# no image reference, so the render's required digests are placeholders.
+router_nginx_conf() {
+    local out
+    out="$(scratch)/node-integration"
+    [ -s "$out/router-nginx/nginx.conf" ] || render_node_integration "$out" >&2 || return
+    cat "$out"/router-nginx/*.conf
+}
+
+render_node_integration() {
+    local out="$1" sync="$C8S_ROOT/node-guest-image/c8s/mkosi.sync" helm version sha kube platform
+    local zero="sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    version="$(sed -n 's/^HELM_VERSION="\(.*\)"$/\1/p' "$sync")"
+    sha="$(sed -n 's/^HELM_LINUX_AMD64_SHA256="\(.*\)"$/\1/p' "$sync")"
+    kube="$(sed -n 's/^RKE2_VERSION="\(.*\)"$/\1/p' "$sync")"
+    platform="$(mesh_platform)" || return
+    helm="$(scratch)/helm"
+    mkdir -p "$helm"
+    curl -fsSL "https://get.helm.sh/helm-$version-linux-amd64.tar.gz" -o "$helm/helm.tgz" || return
+    echo "$sha  $helm/helm.tgz" | sha256sum -c - >/dev/null || return
+    tar -xzf "$helm/helm.tgz" -C "$helm" linux-amd64/helm || return
+    PATH="$helm/linux-amd64:$PATH" c8s node-image render --hardware-platform "$platform" \
+        --kube-version "${kube%%+*}" --image-digest "$zero" --cds-image-digest "$zero" \
+        --armtls-mesh-image-digest "$zero" --output-dir "$out"
+}
 
 # The node's local attestation service, over the socket the plugin binds into
 # the requester (the webhook rebases a unix:// attestation-api URL under
@@ -267,5 +309,5 @@ plugin_stop() { return $UNSUPPORTED; }
 plugin_start() { return $UNSUPPORTED; }
 cds_restart() { return $UNSUPPORTED; }
 
-
-dispatch "$@"
+# metal-dev.sh sources this file for its definitions.
+[ "${BASH_SOURCE[0]}" != "$0" ] || dispatch "$@"
