@@ -92,9 +92,9 @@ func assertNodeIPFile(t *testing.T, args []string) {
 			continue
 		}
 		v := slices.IndexFunc(rc.spec.Volumes, func(v corev1.Volume) bool { return v.Name == rc.container.VolumeMounts[i].Name })
-		if v < 0 || rc.spec.Volumes[v].HostPath == nil || rc.spec.Volumes[v].HostPath.Path != "/var/run/nri-image-policy/node-ip" ||
+		if v < 0 || rc.spec.Volumes[v].HostPath == nil || rc.spec.Volumes[v].HostPath.Path != "/run/nri-image-policy/node-ip" ||
 			rc.spec.Volumes[v].HostPath.Type == nil || *rc.spec.Volumes[v].HostPath.Type != corev1.HostPathFile {
-			t.Errorf("%s node-ip volume = %+v, want hostPath /var/run/nri-image-policy/node-ip of type File", name, rc.spec.Volumes)
+			t.Errorf("%s node-ip volume = %+v, want hostPath /run/nri-image-policy/node-ip of type File", name, rc.spec.Volumes)
 		}
 	}
 }

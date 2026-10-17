@@ -181,7 +181,7 @@ func (o *Options) loadMeasurements() ([][]byte, error) {
 // Signer builds the operator credential from the flag or the environment. The
 // private key never leaves the CLI: it signs a short-lived token bound to the
 // exact method, path, and body of one write. It refuses an unpinned endpoint —
-// see requirePinnedEndpoint.
+// see RequirePinnedEndpoint.
 func (o *Options) Signer() (*operatorauth.Signer, error) {
 	keyPath := o.OperatorKey
 	if keyPath == "" {
@@ -198,13 +198,13 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load operator key: %w", err)
 	}
-	if err := o.requirePinnedEndpoint(); err != nil {
+	if err := o.RequirePinnedEndpoint(); err != nil {
 		return nil, err
 	}
 	return signer, nil
 }
 
-// requirePinnedEndpoint refuses to mint an operator token for an endpoint whose
+// RequirePinnedEndpoint refuses to mint an operator token for an endpoint whose
 // build is not pinned. armTLS proves the peer is *a* TEE, not that it is the CDS
 // this operator meant; with no --measurements, `c8s secrets put` hands a secret,
 // and `c8s allowlist` a policy change, to whatever attested thing answered the
@@ -214,7 +214,7 @@ func (o *Options) Signer() (*operatorauth.Signer, error) {
 // A plaintext endpoint is left to HTTPClient, which refuses it outright without
 // --insecure and announces it with; adding a pinning complaint on top would only
 // bury the specific error under a general one.
-func (o *Options) requirePinnedEndpoint() error {
+func (o *Options) RequirePinnedEndpoint() error {
 	if u, err := url.Parse(o.URL); err == nil && u.Scheme == "http" {
 		return nil
 	}

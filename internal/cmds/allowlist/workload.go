@@ -15,7 +15,7 @@ import (
 	"github.com/spf13/cobra"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 func newGetCmd(o *options) *cobra.Command {
@@ -190,7 +190,7 @@ func newDeleteCmd(o *options) *cobra.Command {
 			}
 			for _, name := range args {
 				if err := c.DeleteWorkload(ctx(cmd), name, signer); err != nil {
-					var se *allowlistclient.StatusError
+					var se *operatorauth.StatusError
 					if errors.As(err, &se) && se.Status == 404 {
 						return fmt.Errorf("no workload entry named %q", name)
 					}

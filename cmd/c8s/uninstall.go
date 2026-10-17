@@ -356,7 +356,7 @@ func nriConfigFromValues(tree map[string]any, cfg hostUninstallConfig) hostUnins
 	cfg.NriPluginDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.pluginDir", "/opt/nri/plugins")
 	cfg.NriPluginFilename = stringOrDefault(tree, "nriImagePolicy.pluginFilename", "10-nri-image-policy")
 	cfg.NriConfigDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.configDir", "/etc/nri/conf.d")
-	cfg.NriRuntimeDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.runtimeDir", "/var/run/nri-image-policy")
+	cfg.NriRuntimeDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.runtimeDir", "/run/nri-image-policy")
 	cfg.NriCacheDir = stringOrDefault(tree, "nriImagePolicy.hostPaths.cacheDir", "/var/lib/nri-image-policy")
 	return cfg
 }

@@ -189,7 +189,7 @@ func TestValidateAttestationAPIURL(t *testing.T) {
 	}{
 		{"http://localhost:8400", false},
 		{"https://attestation-api:8400", false},
-		{"unix:///var/run/nri-image-policy/attestation-api.sock", false},
+		{"unix:///run/nri-image-policy/attestation-api.sock", false},
 		{"unix://relative.sock", true},
 		{"unix://", true},
 		{"ftp://example.com", true},

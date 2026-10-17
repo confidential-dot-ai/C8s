@@ -35,7 +35,7 @@ func TestWorkloadClaims_NodeCVMLeavesMountToNRI(t *testing.T) {
 		GetCertImage:          "img",
 		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
-		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
+		WorkloadClaimsHostDir: "/run/nri-image-policy",
 	})
 
 	cert := pod.Spec.InitContainers[0]
@@ -65,7 +65,7 @@ func TestWorkloadClaims_PassesNoInitContainerNames(t *testing.T) {
 		GetCertImage:          "img",
 		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
-		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
+		WorkloadClaimsHostDir: "/run/nri-image-policy",
 	})
 	cert := pod.Spec.InitContainers[0]
 	if cert.Name != "c8s-cert" {
@@ -112,7 +112,7 @@ func TestWorkloadClaims_InjectsInventorySupplementalGroup(t *testing.T) {
 		GetCertImage:          "img",
 		CDSURL:                "http://cds:8443",
 		AttestationApiURL:     "http://as:8400",
-		WorkloadClaimsHostDir: "/var/run/nri-image-policy",
+		WorkloadClaimsHostDir: "/run/nri-image-policy",
 	})
 	if pod.Spec.SecurityContext == nil {
 		t.Fatal("pod securityContext not set")

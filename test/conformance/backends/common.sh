@@ -214,9 +214,10 @@ subject() { echo "c8s $(git -C "$C8S_ROOT" rev-parse --short HEAD) on $PLATFORM"
 kubeconfig() { echo "$KUBECONFIG"; }
 
 # "rogue" is the harness's curl image, which no entry declares at install;
-# "nginx" is its workload image, the router's nginx digest, which the install
-# seed admits only under its entrypoint and setup therefore admits under any
-# argv with an entry it writes. The rest are public images no
+# "nginx" is NGINX_IMAGE when a backend sets one, else the harness's workload
+# image, the router's nginx digest, which the install seed admits only under
+# its entrypoint; setup admits it under any argv with an entry it writes. The
+# rest are public images no
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
@@ -229,7 +230,7 @@ kubeconfig() { echo "$KUBECONFIG"; }
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
-        nginx) echo "docker.io/$WORKLOAD_IMAGE" ;;
+        nginx) echo "docker.io/${NGINX_IMAGE:-$WORKLOAD_IMAGE}" ;;
         tenant-app) echo "docker.io/library/python:3.12-alpine" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;

@@ -6,7 +6,7 @@
 platform: "@PLATFORM@"
 
 plugin:
-  health_addr: "unix:///var/run/nri-image-policy/health.sock"
+  health_addr: "unix:///run/nri-image-policy/health.sock"
 
 # The node-CVM admission inventory (c8s docs/armtls.md, "Sandbox identity").
 # get-cert dials this socket for its pod's digests before CDS will issue a
@@ -14,7 +14,7 @@ plugin:
 # configuration; without it the socket is never created and every adopted workload
 # hangs waiting for a certificate that cannot be issued.
 workload_claims:
-  socket_dir: "/var/run/nri-image-policy"
+  socket_dir: "/run/nri-image-policy"
   # The plugin is launched by containerd on the host, so its /proc is the
   # host's — a caller PID from SO_PEERCRED resolves directly.
   proc_root: "/proc"

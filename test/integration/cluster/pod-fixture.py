@@ -85,6 +85,9 @@ def main():
         "name": args.container_name,
         "image": args.image,
         "command": args.command,
+        # A container that exits non-zero keeps its last log lines in the pod
+        # status, which outlives the pod the harness tears down.
+        "terminationMessagePolicy": "FallbackToLogsOnError",
         "securityContext": {
             "allowPrivilegeEscalation": False,
             "capabilities": {"drop": ["ALL"]},

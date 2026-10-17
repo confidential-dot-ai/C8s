@@ -150,6 +150,29 @@ cds_write() {
     echo "$code"
 }
 
+# cds_get <path> <out-file> -> http code; the response body lands in out-file.
+cds_get() {
+    cds_pf_start
+    curl -sSk -o "$2" -w '%{http_code}' "https://127.0.0.1:$CDS_LOCAL_PORT$1" || true
+}
+
+# route_manifest <revision> [<ca-pem-file>]: print a route manifest with one
+# workload route, plus an address backend anchored on the CA file when given.
+route_manifest() {
+    python3 - "$@" <<'PY'
+import json, sys
+routes = [{"path": "/", "match": "prefix",
+           "backend": {"address": "c8s-it.default.svc.cluster.local:8443", "workload": "it"}}]
+if len(sys.argv) > 2:
+    routes.append({"path": "/admin", "match": "prefix",
+                   "backend": {"address": "admin.default.svc.cluster.local:8443",
+                               "serverName": "admin.default.svc", "ca": open(sys.argv[2]).read()}})
+print(json.dumps({"schema": "c8s.routes/v1", "revision": int(sys.argv[1]),
+                  "notBefore": "2026-01-01T00:00:00Z", "maxAgeSeconds": 86400,
+                  "hosts": {"it.example": {"routes": routes}}}))
+PY
+}
+
 # run_pod <ns> <name> <shell command>: run a curl-image pod to completion and
 # print its stdout. Exit status is swallowed; callers assert on the output, so
 # reachable (200) and dropped (rc=28) outcomes are both observable. Only for

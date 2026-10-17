@@ -428,6 +428,15 @@ GitOps consumers, `c8s render-values --operator-keys operator.pub` embeds the
 PEM content (the chart value takes content, never a file path); the chart
 wiring is described in [docs/operator.md](docs/operator.md).
 
+## Manage the route manifest
+
+`c8s routes` (`show`, `digest`, `put`, `add`, `rm`) reads and writes the signed
+route manifest that CDS stores at `/routes`, with the operator key used for
+allowlist writes. Point `--url` at CDS directly, for example through a
+port-forward, because the router does not relay `/routes`. The commands only
+store the manifest: the router does not apply it yet. See
+[Route manifest](docs/operator.md#route-manifest).
+
 ## Docker images
 
 All images are published to GHCR on pushes to `main`. Release-worthy merges also

@@ -78,7 +78,7 @@ func injectedSocketMount(c *api.Container) {
 	c.Mounts = append(c.Mounts, &api.Mount{
 		Destination: workloadclaims.SidecarSocketDir,
 		Type:        "bind",
-		Source:      "/var/run/nri-image-policy",
+		Source:      "/run/nri-image-policy",
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
 	})
 }
@@ -98,7 +98,7 @@ func TestSandboxViolations(t *testing.T) {
 			name:      "the plugin's own inventory socket mount",
 			pod:       injectedPod,
 			ctr:       injectedSocketMount,
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 		},
 		{
 			name: "a writable mount of the socket directory",
@@ -107,7 +107,7 @@ func TestSandboxViolations(t *testing.T) {
 				injectedSocketMount(c)
 				c.Mounts[len(c.Mounts)-1].Options = []string{"rbind", "rw"}
 			},
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
@@ -117,13 +117,13 @@ func TestSandboxViolations(t *testing.T) {
 				injectedSocketMount(c)
 				c.Name = "app"
 			},
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
 			name:      "the socket mount in a pod without the injection annotation",
 			ctr:       injectedSocketMount,
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
@@ -132,10 +132,10 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts = append(c.Mounts, &api.Mount{
 					Destination: "/elsewhere",
 					Type:        "bind",
-					Source:      "/var/run/nri-image-policy",
+					Source:      "/run/nri-image-policy",
 				})
 			},
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
@@ -179,6 +179,20 @@ func TestSandboxViolations(t *testing.T) {
 			name: "privileged: writable sysfs",
 			ctr: func(c *api.Container) {
 				c.Mounts[1].Options = []string{"nosuid", "noexec", "nodev", "rw"}
+			},
+			want: "writable sysfs or cgroupfs",
+		},
+		{
+			name: "privileged: sysfs ro then rw",
+			ctr: func(c *api.Container) {
+				c.Mounts[1].Options = []string{"nosuid", "noexec", "nodev", "ro", "rw"}
+			},
+			want: "writable sysfs or cgroupfs",
+		},
+		{
+			name: "privileged: sysfs ro then rrw",
+			ctr: func(c *api.Container) {
+				c.Mounts[1].Options = []string{"nosuid", "noexec", "nodev", "ro", "rrw"}
 			},
 			want: "writable sysfs or cgroupfs",
 		},

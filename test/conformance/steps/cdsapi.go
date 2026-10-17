@@ -22,6 +22,7 @@ func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^the CDS has (?:an operator key|operator keys)$`, cdsHasOperatorKey)
 	sc.Step(`^the seed of the CDS declares image "([^"]*)"$`, seedDeclares)
 	sc.Step(`^the seed of the CDS changes to also declare image "([^"]*)"$`, seedChanges)
+	sc.Step(`^the seed of the CDS changes to declare image "([^"]*)" under its generated name$`, seedChangesGenerated)
 	sc.Step(`^the CDS has not restarted$`, cdsNotRestarted)
 	sc.Step(`^the served allowlist has (a|no) workload entry "([^"]*)"$`, servedHasEntry)
 	sc.Step(`^a workload entry in the served allowlist admits image "([^"]*)" under any argv$`, servedAdmitsAnyArgv)
@@ -219,6 +220,22 @@ const seedFollowTimeout = 4 * time.Minute
 // at the scenario's end, and so does the entry, which seeding never removes.
 func seedChanges(ctx context.Context, image string) error {
 	w := getWorld(ctx)
+	return w.seedAdds(image, w.writtenName("seed-"+image))
+}
+
+// seedChangesGenerated is seedChanges with the entry under the name the
+// chart generates for image, so a stored entry of that generated form, under
+// another name, is one the seed replaces (B2).
+func seedChangesGenerated(ctx context.Context, image string) error {
+	w := getWorld(ctx)
+	name, err := w.generatedBase(image)
+	if err != nil {
+		return err
+	}
+	return w.seedAdds(image, name)
+}
+
+func (w *world) seedAdds(image, name string) error {
 	ref, err := w.be.call("image_ref", image)
 	if err != nil {
 		return err
@@ -235,7 +252,6 @@ func seedChanges(ctx context.Context, image string) error {
 		return errors.New("harness precondition: no CDS pod found")
 	}
 	w.cdsInstance = instance
-	name := w.writtenName("seed-" + image)
 	e := &entry{Label: ref, InitContainers: []entryContainer{}, Containers: []entryContainer{{
 		Digest: digest, Image: ref, Command: anyArgv(), Args: anyArgv(),
 		Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},

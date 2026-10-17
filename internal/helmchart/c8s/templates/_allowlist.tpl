@@ -154,12 +154,10 @@
 {{- if $rest -}}{{- $argsPolicy = dict "policy" "exact" "argv" $rest -}}{{- end -}}
 {{- $mounts := include "c8s.mountRules" (dict "mounts" (default list $c.volumeMounts) "volumes" $volumes "where" $where) | fromJsonArray -}}
 {{- $env := include "c8s.componentEnv" (dict "imageEnv" (get $.envs $digest) "container" $c "where" $where) | fromJson -}}
-{{- range $rules := $mounts -}}
 {{- $mountPolicy := dict "policy" "deny" -}}
-{{- if $rules -}}{{- $mountPolicy = dict "policy" "exact" "rules" $rules -}}{{- end -}}
+{{- if $mounts -}}{{- $mountPolicy = dict "policy" "exact" "rules" $mounts -}}{{- end -}}
 {{- $shape := dict "digest" $digest "image" (get $.refs $digest) "command" $commandPolicy "args" $argsPolicy "mounts" $mountPolicy "env" $env -}}
 {{- if not (has $shape $out) -}}{{- $out = append $out $shape -}}{{- end -}}
-{{- end -}}
 {{- end -}}
 {{- end -}}
 {{ $out | toJson }}
@@ -242,14 +240,12 @@
 {{ dict "policy" "match" "variables" $variables | toJson }}
 {{- end -}}
 
-{{/* The exact mount rules for one container, as a JSON list of rule lists:
-     one per host layout. containerd resolves symlinks in a hostPath source,
-     and /var/run is a symlink to /run on most nodes, so a container with a
-     source under /var/run gets a second rule list with the resolved path;
-     the entry admits whichever the node produces. */ -}}
+{{/* The exact mount rules for one container. containerd resolves symlinks
+     in a hostPath source, so a source under /var/run, a symlink to /run on
+     some nodes and not on others, has no single spelling the node reports:
+     host paths must name /run. */ -}}
 {{- define "c8s.mountRules" -}}
-{{- $layouts := list (list) (list) -}}
-{{- $resolves := false -}}
+{{- $rules := list -}}
 {{- $seen := dict -}}
 {{- range $m := .mounts -}}
 {{- $v := get $.volumes $m.name -}}
@@ -261,44 +257,34 @@
 {{- if hasKey $seen $dest -}}{{- fail (printf "%s destination %q is mounted twice" $where $dest) -}}{{- end -}}
 {{- $_ := set $seen $dest true -}}
 {{- $rule := dict "destination" $dest -}}
-{{- $resolved := dict "destination" $dest -}}
 {{- if hasKey $v "hostPath" -}}
 {{- $source := toString $v.hostPath.path -}}
 {{- if or (not (isAbs $source)) (ne (clean $source) $source) -}}{{- fail (printf "%s host path %q is not a clean absolute path" $where $source) -}}{{- end -}}
+{{- if or (eq $source "/var/run") (hasPrefix "/var/run/" $source) -}}{{- fail (printf "%s host path %q sits under /var/run: name it under /run" $where $source) -}}{{- end -}}
 {{- $rule = dict "destination" $dest "kind" "host" "source" $source -}}
-{{- $target := $source -}}
-{{- if or (eq $source "/var/run") (hasPrefix "/var/run/" $source) -}}
-{{- $target = printf "/run%s" (trimPrefix "/var/run" $source) -}}
-{{- $resolves = true -}}
-{{- end -}}
-{{- $resolved = dict "destination" $dest "kind" "host" "source" $target -}}
-{{- if $m.readOnly -}}
-{{- $_ := set $rule "readOnly" true -}}
-{{- $_ := set $resolved "readOnly" true -}}
-{{- end -}}
+{{- if $m.readOnly -}}{{- $_ := set $rule "readOnly" true -}}{{- end -}}
 {{- else if hasKey $v "emptyDir" -}}
 {{- $rule = dict "destination" $dest "kind" "emptyDir" -}}
-{{- $resolved = $rule -}}
 {{- else if or (hasKey $v "configMap") (hasKey $v "secret") (hasKey $v "projected") (hasKey $v "downwardAPI") (hasKey $v "persistentVolumeClaim") -}}
 {{- if not (hasPrefix "/mnt/c8s-data/" $dest) -}}
 {{- fail (printf "%s mounts a ConfigMap, Secret or PVC at %q: data volumes must sit under /mnt/c8s-data/" $where $dest) -}}
 {{- end -}}
 {{- $rule = dict "destination" $dest "kind" "data" -}}
-{{- $resolved = $rule -}}
 {{- else -}}
 {{- fail (printf "%s has a volume source the allowlist cannot pin" $where) -}}
 {{- end -}}
-{{- $layouts = list (append (index $layouts 0) $rule) (append (index $layouts 1) $resolved) -}}
+{{- $rules = append $rules $rule -}}
 {{- end -}}
-{{- if $resolves -}}{{ $layouts | toJson }}{{- else -}}{{ list (index $layouts 0) | toJson }}{{- end -}}
+{{ $rules | toJson }}
 {{- end -}}
 
 {{/* The shapes of the sidecars the webhook injects with the C8s image
      (internal/webhook): each pinned to its invocation with args open, since
      the SAN and file paths are per pod, to a fixed mount table, and to the
      env names getCertEnv gives it, matched present since they differ per
-     pod. The discovery, reload-watch and inventory socket mounts are
-     optional, so each combination is its own shape. The destinations match
+     pod. The discovery and reload-watch mounts are optional, so each
+     combination is its own shape. The plugin's own inventory socket mount
+     observes as platform, so no shape names it. The destinations match
      the webhook's defaults, which pods can no longer move. Takes root, digest,
      image and imageEnv. */ -}}
 {{- define "c8s.injectedShapes" -}}
@@ -306,18 +292,15 @@
 {{- $discovery := dict "destination" "/run/c8s/discovery" "kind" "emptyDir" -}}
 {{- $reload := dict "destination" "/mnt/c8s-data/c8s-reload-watch" "kind" "data" -}}
 {{- $secrets := dict "destination" "/run/c8s/secrets" "kind" "emptyDir" -}}
-{{- /* An NRI mount, so containerd does not resolve the source: it is the
-       plugin's configured socket directory verbatim. */ -}}
-{{- $socket := dict "destination" "/run/c8s/workload-claims" "kind" "host" "source" (toString .root.Values.nriImagePolicy.hostPaths.runtimeDir) "readOnly" true -}}
 {{- $podEnv := list -}}
 {{- range $name := list "C8S_WORKLOAD_ID" "C8S_POD_NAME" "C8S_POD_UID" "HOST_IP" -}}
 {{- $podEnv = append $podEnv (dict "name" $name "valueFrom" (dict "fieldRef" dict)) -}}
 {{- end -}}
 {{- $sidecars := list
-      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload $socket) "env" $podEnv)
+      (dict "mode" "get-cert" "fixed" (list $certs) "optional" (list $discovery $reload) "env" $podEnv)
       (dict "mode" "probe-file" "fixed" (list $certs) "optional" (list $discovery) "env" list)
-      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery $socket) "env" $podEnv)
-      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery $socket) "env" $podEnv) -}}
+      (dict "mode" "get-secret" "fixed" (list $certs $secrets) "optional" (list $discovery) "env" $podEnv)
+      (dict "mode" "get-volume" "fixed" (list $certs) "optional" (list $discovery) "env" $podEnv) -}}
 {{- $out := list -}}
 {{- range $s := $sidecars -}}
 {{- $tables := list (get $s "fixed") -}}
@@ -673,13 +656,7 @@
 {{- end -}}
 
 {{- /* Every container of router.podSpec whose image is nginx or the c8s
-       image, pinned and env-matched as c8s.podShapes pins a component's. A main
-       container whose hostPath source sits under /var/run has two layouts
-       (c8s.mountRules). It stays a required main in the layout containerd
-       produces where /var/run is /run, and its other layout is an init
-       container, admitted but not required. On a node where /var/run is its
-       own directory the main is missing, so the router pod matches nothing
-       rather than a partial pod matching. */ -}}
+       image, pinned and env-matched as c8s.podShapes pins a component's. */ -}}
 {{- define "c8s.routerEntry" -}}
 {{- $components := include "c8s.imageAllowlist" . | fromJson -}}
 {{- $pins := dict -}}
@@ -701,9 +678,8 @@
 {{- $shapes := include "c8s.podShapes" (dict "name" "router" "spec" (dict "volumes" $volumes "containers" (list $c)) "pins" $pins "envs" $envs "refs" $refs) | fromJsonArray -}}
 {{- if $init -}}
 {{- $inits = concat $inits $shapes -}}
-{{- else if $shapes -}}
-{{- $mains = append $mains (last $shapes) -}}
-{{- $inits = concat $inits (initial $shapes) -}}
+{{- else -}}
+{{- $mains = concat $mains $shapes -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}

@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 )
 
 // ParseMountPoliciesJSON reads a map of container names to explicit mount policies.
 func ParseMountPoliciesJSON(data []byte) (map[string]MountPolicy, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	var policies map[string]MountPolicy

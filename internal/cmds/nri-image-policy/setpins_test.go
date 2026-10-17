@@ -19,10 +19,10 @@ const bakedConfig = `# nri-image-policy boot config — the MEASURED boot-time b
 platform: "snp"
 
 plugin:
-  health_addr: "unix:///var/run/nri-image-policy/health.sock"
+  health_addr: "unix:///run/nri-image-policy/health.sock"
 
 workload_claims:
-  socket_dir: "/var/run/nri-image-policy"
+  socket_dir: "/run/nri-image-policy"
   proc_root: "/proc"
   advertise_host: ""
 
@@ -123,7 +123,7 @@ func TestSetCDSPinsKeepsTheBakedBase(t *testing.T) {
 	if len(cfg.Allowlist.Base.Workloads) != 2 {
 		t.Errorf("base = %v, want the 2 baked entries", cfg.Allowlist.Base.Workloads)
 	}
-	if cfg.Platform != "snp" || cfg.WorkloadClaims.SocketDir != "/var/run/nri-image-policy" {
+	if cfg.Platform != "snp" || cfg.WorkloadClaims.SocketDir != "/run/nri-image-policy" {
 		t.Errorf("patch disturbed unrelated keys: platform=%q socket_dir=%q", cfg.Platform, cfg.WorkloadClaims.SocketDir)
 	}
 	if !strings.Contains(string(data), "MEASURED boot-time base allowlist") {

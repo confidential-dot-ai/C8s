@@ -490,7 +490,9 @@ grant may not use it. See
 ### Fixed sidecar mounts
 
 The C8s image's component entry pins each injected sidecar's mount table
-exactly, so the webhook mounts at fixed destinations:
+exactly, so the webhook mounts at fixed destinations. The inventory socket
+directory the NRI plugin adds at `/run/c8s/workload-claims` is a platform
+mount and is not in the table:
 
 | Mount | Destination | Sidecars |
 |---|---|---|
@@ -498,7 +500,6 @@ exactly, so the webhook mounts at fixed destinations:
 | secrets volume | `/run/c8s/secrets` | `c8s-secret`, and every workload container read-only |
 | discovery volume (`confidential.ai/c8s-discovery-volume`) | `/run/c8s/discovery` | `c8s-cert`, `c8s-cert-wait`, `c8s-secret`, `c8s-volume` |
 | reload-watch volume (`confidential.ai/c8s-reload-watch-volume`) | `/mnt/c8s-data/c8s-reload-watch` | `c8s-cert` |
-| inventory socket directory (added by the NRI plugin) | `/run/c8s/workload-claims` | `c8s-cert`, `c8s-secret`, `c8s-volume` |
 
 The annotations that used to move these mounts —
 `confidential.ai/c8s-cert-dir`, `confidential.ai/c8s-secret-dir`,

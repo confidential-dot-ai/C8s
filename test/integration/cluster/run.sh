@@ -238,9 +238,9 @@ openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 
 # fail-closed policy with no attestation-api socket mount this file (type
 # File) and read $(NODE_IP) from it, so without it they never leave
 # ContainerCreating. Same path, content and mode the plugin writes.
-node_exec sh -c "install -d -m 0711 /var/run/nri-image-policy \
-    && printf '%s\n' '$NODE_IP' > /var/run/nri-image-policy/node-ip \
-    && chmod 0644 /var/run/nri-image-policy/node-ip" \
+node_exec sh -c "install -d -m 0711 /run/nri-image-policy \
+    && printf '%s\n' '$NODE_IP' > /run/nri-image-policy/node-ip \
+    && chmod 0644 /run/nri-image-policy/node-ip" \
     || fail "could not publish the node-ip file"
 
 log "c8s install"
@@ -263,7 +263,7 @@ kubectl apply -f "$WORKDIR/nri-installer.yaml"
 # DaemonSet reports Ready once the plugin answers its health socket.
 kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=300s \
     || fail "NRI plugin did not become healthy"
-node_exec test -S /var/run/nri-image-policy/workload-claims.sock \
+node_exec test -S /run/nri-image-policy/workload-claims.sock \
     || fail "admission inventory socket missing on the node"
 pass "NRI plugin registered with containerd and serves the admission inventory"
 
@@ -326,6 +326,49 @@ if curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" | grep -q "$THROWAWAY
     fail "deleted digest still served from /allowlist"
 fi
 pass "signed allowlist write + delete round-trip through CDS"
+
+log "Route API"
+# PUT /routes is authorized like an allowlist write (W1) and checked in the C3
+# order; GET serves the stored bytes and token, and the token's pbh is the
+# route digest of exactly those bytes.
+route_manifest 1 > "$WORKDIR/routes-1.json"
+code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H 'Content-Type: application/json' \
+    --data-binary @"$WORKDIR/routes-1.json" "https://127.0.0.1:$CDS_LOCAL_PORT/routes" || true)"
+[ "$code" = "401" ] || fail "unsigned route write: want HTTP 401, got $code"
+rogue_token="$("$WORKDIR/optoken" "$WORKDIR/rogue.key" PUT /routes "$WORKDIR/routes-1.json")"
+code="$(curl -sSk -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: $rogue_token" -H 'Content-Type: application/json' \
+    --data-binary @"$WORKDIR/routes-1.json" "https://127.0.0.1:$CDS_LOCAL_PORT/routes" || true)"
+[ "$code" = "401" ] || fail "wrong-key route write: want HTTP 401, got $code"
+pass "unsigned and wrong-key route writes rejected (401)"
+
+code="$(cds_get /ca "$WORKDIR/cds-mesh-ca.pem")"
+[ "$code" = "200" ] || fail "GET /ca: want HTTP 200, got $code"
+route_manifest 1 "$WORKDIR/cds-mesh-ca.pem" > "$WORKDIR/routes-mesh-ca.json"
+code="$(cds_write PUT /routes "$WORKDIR/routes-mesh-ca.json")"
+[ "$code" = "422" ] || fail "route write anchored on the mesh CA: want HTTP 422, got $code"
+pass "route write anchored on the mesh CA rejected (422)"
+
+code="$(cds_write PUT /routes "$WORKDIR/routes-1.json")"
+[ "$code" = "204" ] || fail "signed route write: want HTTP 204, got $code"
+code="$(cds_write PUT /routes "$WORKDIR/routes-1.json")"
+[ "$code" = "409" ] || fail "route write at the stored revision: want HTTP 409, got $code"
+pass "signed route write stored (204); the same revision again refused (409)"
+
+code="$(cds_get /routes "$WORKDIR/routes-envelope.json")"
+[ "$code" = "200" ] || fail "GET /routes: want HTTP 200, got $code"
+python3 - "$WORKDIR/routes-envelope.json" "$WORKDIR/routes-1.json" <<'PY' || fail "served route envelope does not match the stored manifest"
+import base64, hashlib, json, sys
+env = json.load(open(sys.argv[1]))
+assert sorted(env) == ["manifest", "token"], sorted(env)
+manifest = base64.b64decode(env["manifest"], validate=True)
+assert manifest == open(sys.argv[2], "rb").read(), "served bytes differ from the PUT body"
+payload = env["token"].split(".")[1]
+claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+digest = base64.urlsafe_b64encode(hashlib.sha256(manifest).digest()).rstrip(b"=").decode()
+assert claims["pbh"] == digest, (claims["pbh"], digest)
+assert claims["htm"] == "PUT" and claims["htu"] == "/routes", claims
+PY
+pass "GET /routes serves the PUT bytes and a token whose pbh is their digest"
 
 log "Confidential workload"
 kubectl apply -f test/integration/cluster/manifests/workload.yaml
