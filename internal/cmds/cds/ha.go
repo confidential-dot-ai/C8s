@@ -43,6 +43,8 @@ type haConfig struct {
 	clusterID      string
 	decreeNS       string
 	peersDNS       string
+	peers          []string // static peer list, instead of DNS
+	advertiseIP    string
 	port           int
 	nodeName       string
 	attestor       string
@@ -62,6 +64,8 @@ func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.StringVar(&c.clusterID, "ha-cluster-id", "", "enable CDS high availability for this cluster id (dev/test; baked nodes use --ha-config); replicas with the same id form one Raft group and share one mesh CA (empty = singleton CDS)")
 	flags.StringVar(&c.decreeNS, "ha-decree-namespace", os.Getenv("POD_NAMESPACE"), "namespace where operators write CDS decree objects (on a locked node image the CDS namespace is privileged, so use one the operator credential can write)")
 	flags.StringVar(&c.peersDNS, "ha-peers-dns", "", "headless Service DNS name resolving to every CDS replica")
+	flags.StringSliceVar(&c.peers, "ha-peers", nil, "static ip:port list of the other replicas' peer ports, instead of --ha-peers-dns")
+	flags.StringVar(&c.advertiseIP, "ha-advertise-ip", os.Getenv("POD_IP"), "address the other replicas reach this one at (default $POD_IP)")
 	flags.IntVar(&c.port, "ha-port", 9443, "port of the replica-to-replica channel (mutually attested TLS; Raft and control)")
 	flags.StringVar(&c.nodeName, "ha-node-name", os.Getenv("NODE_NAME"), "the node this replica runs on: one voter seat per node, and a Genesis decree names its bootstrap node")
 	flags.StringVar(&c.attestor, "ha-attestor", "node", "peer attestor: node (the node attestation-api at --attestation-api-url; TDX and SEV-SNP), tdx (DCAP quotes read in-process, inside a TD), or mock in c8s_dev builds")
@@ -141,10 +145,10 @@ func haStart(ctx context.Context, cfg config, st haStores) (*cdsha.Node, error) 
 
 func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	h := cfg.ha
-	if h.peersDNS == "" || h.decreeNS == "" || h.nodeName == "" {
-		return nil, errors.New("--ha-peers-dns, --ha-decree-namespace and --ha-node-name are required with --ha-cluster-id")
+	if (h.peersDNS == "" && len(h.peers) == 0) || h.decreeNS == "" || h.nodeName == "" {
+		return nil, errors.New("--ha-peers-dns (or --ha-peers), --ha-decree-namespace and --ha-node-name are required with --ha-cluster-id")
 	}
-	att, err := cdsha.NewAttestor(h.attestor, cdsha.AttestorOptions{
+	att, err := newHAAttestor(h.attestor, cdsha.AttestorOptions{
 		MockMeasurement:   h.measurement,
 		TDXTCBStatuses:    h.tdxTCB,
 		AttestationAPIURL: cfg.attestationApiURL, // the node's attestation-api, as every CDS path uses
@@ -163,9 +167,14 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	podIP := os.Getenv("POD_IP")
+	podIP := h.advertiseIP
 	if podIP == "" {
-		return nil, errors.New("POD_IP is required in HA mode: replicas advertise it to each other")
+		return nil, errors.New("--ha-advertise-ip (default $POD_IP) is required in HA mode: replicas advertise it to each other")
+	}
+	peers := dnsPeers(h.peersDNS, podIP, h.port)
+	if len(h.peers) > 0 {
+		static := h.peers
+		peers = func(context.Context) ([]string, error) { return static, nil }
 	}
 	return cdsha.NewNode(cdsha.Config{
 		ClusterID:      h.clusterID,
@@ -177,7 +186,7 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		OperatorPubKey: opKey,
 		Seats:          h.seats,
 		MaxNonVoters:   h.maxNonVoters,
-		Peers:          dnsPeers(h.peersDNS, podIP, h.port),
+		Peers:          peers,
 		Decrees:        cdsha.KubeDecrees{Client: kube, Namespace: h.decreeNS, ClusterID: h.clusterID},
 		Timing:         h.timing,
 		CACommonName:   cfg.caCommonName,
@@ -188,6 +197,9 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		Logger:         slog.Default(),
 	})
 }
+
+// newHAAttestor resolves the peer attestor; tests replace it.
+var newHAAttestor = cdsha.NewAttestor
 
 // errYield is returned by the baked singleton when the launch document selects HA.
 var errYield = errors.New("this cluster runs CDS as HA replicas on cds-role nodes (launch document cdsHA); the singleton yields")
