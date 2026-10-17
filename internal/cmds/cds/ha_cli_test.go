@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/pflag"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/fake"
 
@@ -360,5 +363,108 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	}
 	if call(http.MethodGet, "/allowlist", "") != http.StatusNotFound {
 		t.Fatal("the pre-join server serves more than health, status and restore")
+	}
+}
+
+// recover refuses what it cannot read before it reaches any replica.
+func TestHARecoverCLIErrors(t *testing.T) {
+	dir := t.TempDir()
+	k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	der, _ := x509.MarshalECPrivateKey(k)
+	keyPath := filepath.Join(dir, "k.pem")
+	_ = os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}), 0o600)
+	garbage := filepath.Join(dir, "garbage.json")
+	_ = os.WriteFile(garbage, []byte("{"), 0o600)
+	empty := filepath.Join(dir, "empty.json")
+	_ = os.WriteFile(empty, []byte(`{"items":[]}`), 0o600)
+	// A real backup sealed to k, so the key paths are what fails.
+	b, _ := cdsha.SealBackup(&k.PublicKey, cdsha.BackupMeta{ClusterID: "c1", Epoch: 1, Index: 5}, []byte("{}"))
+	kube := fake.NewClientset()
+	if err := (cdsha.KubeDecrees{Client: kube, Namespace: "ns", ClusterID: "c1"}).PutBackup(context.Background(), b); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := kube.CoreV1().ConfigMaps("ns").List(context.Background(), metav1.ListOptions{})
+	raw, _ := json.Marshal(list)
+	good := filepath.Join(dir, "backup.json")
+	_ = os.WriteFile(good, raw, 0o600)
+	run := func(args ...string) error {
+		cmd := newHARecoverCmd()
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(append([]string{"--cluster-id", "c1", "--bootstrap-node", "n0", "--url", "http://127.0.0.1:1", "--insecure",
+			"--min-epoch", "0", "--min-index", "0", "--attempts", "1"}, args...))
+		return cmd.ExecuteContext(context.Background())
+	}
+	none := filepath.Join(dir, "none")
+	for name, args := range map[string][]string{
+		"missing backup file": {"--backup-file", none, "--recovery-key", keyPath, "--decree-key", keyPath},
+		"garbage backup file": {"--backup-file", garbage, "--recovery-key", keyPath, "--decree-key", keyPath},
+		"no backup in file":   {"--backup-file", empty, "--recovery-key", keyPath, "--decree-key", keyPath},
+		"no recovery key":     {"--backup-file", good, "--recovery-key", none, "--decree-key", keyPath},
+		"wrong recovery key": {"--backup-file", good, "--recovery-key", writePEM(t, "EC PRIVATE KEY", func() []byte {
+			o, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			d, _ := x509.MarshalECPrivateKey(o)
+			return d
+		}()), "--decree-key", keyPath},
+		"no decree key":  {"--backup-file", good, "--recovery-key", keyPath, "--decree-key", none},
+		"nobody answers": {"--backup-file", good, "--recovery-key", keyPath, "--decree-key", keyPath},
+	} {
+		if err := run(args...); err == nil {
+			t.Errorf("%s: recover succeeded", name)
+		}
+	}
+}
+
+// The HA flags and cds-ha.json fill the replica's recovery key and seats.
+func TestHARecoveryKeyAndSeatsWiring(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "rec.pem")
+	_ = os.WriteFile(p, []byte("PEM"), 0o600)
+	var h haConfig
+	fs := pflag.NewFlagSet("t", pflag.ContinueOnError)
+	bindHAFlags(fs, &h)
+	if err := fs.Parse([]string{"--ha-recovery-key", p}); err != nil || string(h.recoveryKeyPEM) != "PEM" {
+		t.Fatalf("--ha-recovery-key: %v %q", err, h.recoveryKeyPEM)
+	}
+	if err := fs.Parse([]string{"--ha-recovery-key", filepath.Join(dir, "none")}); err == nil {
+		t.Fatal("a missing recovery key file parsed")
+	}
+	img := launchconfig.Image{Platform: "tdx", Measurement: strings.Repeat("11", 48), RTMRs: map[int]string{1: strings.Repeat("22", 48), 2: strings.Repeat("33", 48)}}
+	raw, _ := json.Marshal(nodeservices.CDSHAConfig{ClusterID: "c1", DecreeKey: "PEM", Replicas: 5, RecoveryKey: "REC", Image: img})
+	cf := filepath.Join(dir, "cds-ha.json")
+	_ = os.WriteFile(cf, raw, 0o600)
+	hc := haConfig{configFile: cf, seats: 3}
+	if err := loadHAConfigFile(&hc); err != nil || hc.seats != 5 || string(hc.recoveryKeyPEM) != "REC" {
+		t.Fatalf("cds-ha.json: %v %+v", err, hc)
+	}
+	al, _ := allowlist.OpenInMemory()
+	defer al.Close()
+	st := haStores{allowlist: &al, secrets: secrets.NewMemoryStore(4, 2, 64), ledger: sandboxledger.New(time.Hour, 4)}
+	orig := newInClusterKubeClientset
+	t.Cleanup(func() { newInClusterKubeClientset = orig })
+	newInClusterKubeClientset = func() (kubernetes.Interface, error) { return fake.NewClientset(), nil }
+	base := config{attestationApiURL: "http://127.0.0.1:1", requestTimeout: time.Second, ha: haConfig{
+		clusterID: "c1", decreeNS: "ns", peersDNS: "p.invalid", port: 0, nodeName: "n0", attestor: "node",
+		pins: []string{"m1"}, operatorKeyPEM: pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: func() []byte {
+			k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+			d, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
+			return d
+		}()}), seats: 3, timing: cdsha.DefaultTiming}}
+	origAtt := newHAAttestor
+	t.Cleanup(func() { newHAAttestor = origAtt })
+	newHAAttestor = func(string, cdsha.AttestorOptions) (cdsha.Attestor, error) { return fakeAttestor{"m1"}, nil }
+	noIP := base
+	if _, err := newHANode(noIP, st); err == nil {
+		t.Fatal("a replica without an advertise address")
+	}
+	badRec := base
+	badRec.ha.advertiseIP, badRec.ha.recoveryKeyPEM = "127.0.0.1", []byte("not pem")
+	if _, err := newHANode(badRec, st); err == nil {
+		t.Fatal("a recovery key that is not PEM")
+	}
+	staticPeers := base
+	staticPeers.ha.advertiseIP, staticPeers.ha.peersDNS, staticPeers.ha.peers = "127.0.0.1", "", []string{"127.0.0.2:1"}
+	if _, err := newHANode(staticPeers, st); err != nil {
+		t.Fatalf("static peers: %v", err)
 	}
 }
