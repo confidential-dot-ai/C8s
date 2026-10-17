@@ -21,12 +21,17 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 
 def request(url: str, method: str = "GET", body: bytes | None = None, headers: dict | None = None) -> bytes:
     req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
-    with urllib.request.urlopen(req, timeout=120) as response:
+    try:
+        response = urllib.request.urlopen(req, timeout=120)
+    except urllib.error.HTTPError as error:
+        raise SystemExit(f"{method} {url}: HTTP {error.code}: {error.read()[:2000]!r}") from None
+    with response:
         if response.status not in (200, 201):
             raise SystemExit(f"{method} {url}: HTTP {response.status}")
         return response.read()
