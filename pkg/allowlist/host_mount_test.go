@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -210,9 +211,69 @@ func TestNodeRootVerityFileMatchesBothProvenanceForms(t *testing.T) {
 	}
 }
 
-func TestProvenanceHostRuleIsNotPinnedForGrant(t *testing.T) {
+func TestProvenanceHostRuleStaysHostDependent(t *testing.T) {
 	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}}}
 	if (mountConstraint{policy: &policy}).hostIndependent() {
-		t.Fatal("node-root host rule reported host-independent, so a secrets grant would accept it")
+		t.Fatal("node-root host rule reported host-independent; it still names a host path")
+	}
+}
+
+// A secrets grant accepts a host rule only when the node must prove what the
+// container reads, and the container cannot write back (#934).
+func TestHostRuleGrantPinnedRequiresProvenAndReadOnly(t *testing.T) {
+	const digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, tc := range []struct {
+		name string
+		rule MountRule
+		want bool
+	}{
+		{"node-root read-only", MountRule{Provenance: ProvenanceNodeRoot, ReadOnly: true}, true},
+		{"fs-verity read-only with digest", MountRule{Provenance: ProvenanceFSVerity, VerityDigest: digest, ReadOnly: true}, true},
+		{"fs-verity without digest", MountRule{Provenance: ProvenanceFSVerity, ReadOnly: true}, false},
+		{"no provenance read-only", MountRule{ReadOnly: true}, false},
+		{"node-root writable", MountRule{Provenance: ProvenanceNodeRoot}, false},
+		{"no provenance writable", MountRule{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rule := tc.rule
+			rule.Kind, rule.Source, rule.Destination = MountHost, "/usr/bin/nvidia-smi", "/usr/bin/nvidia-smi"
+			if got := rule.behavior().grantPinned(); got != tc.want {
+				t.Fatalf("grantPinned(%+v) = %t, want %t", rule, got, tc.want)
+			}
+		})
+	}
+}
+
+// The NVIDIA CDI file set of a GPU worker, proven node-root, passes a grant;
+// an unproven host path and the writable persistenced socket still do not.
+func TestGPUWorkerGrantWithProvenCDIFiles(t *testing.T) {
+	files := []string{
+		"/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+		"/usr/bin/nvidia-smi",
+		"/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
+		"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
+	}
+	worker := func(extra ...MountRule) Workload {
+		rules := []MountRule{{Destination: "/models", Kind: MountEmptyDir}}
+		for _, f := range files {
+			rules = append(rules, MountRule{Destination: f, Kind: MountHost, Source: f, ReadOnly: true, Provenance: ProvenanceNodeRoot})
+		}
+		rules = append(rules, extra...)
+		return Workload{Containers: []Container{{
+			Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"python3"}},
+			Args:    ArgvPolicy{Policy: PolicyExact, Argv: []string{"-m", "sglang.launch_server"}},
+			Mounts:  MountPolicy{Policy: PolicyExact, Rules: rules},
+		}}}
+	}
+	if err := worker().PinnedForGrant(); err != nil {
+		t.Fatalf("proven CDI files: PinnedForGrant = %v, want nil", err)
+	}
+	for name, extra := range map[string]MountRule{
+		"unproven host path":  {Destination: "/opt/tools", Kind: MountHost, Source: "/opt/tools", ReadOnly: true},
+		"persistenced socket": {Destination: "/run/nvidia-persistenced/socket", Kind: MountHost, Source: "/run/nvidia-persistenced/socket"},
+	} {
+		if err := worker(extra).PinnedForGrant(); !errors.Is(err, errGrantUnpinnedMounts) {
+			t.Errorf("%s: PinnedForGrant = %v, want errGrantUnpinnedMounts", name, err)
+		}
 	}
 }

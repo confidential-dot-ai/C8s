@@ -10,6 +10,9 @@ type mountRuleBehavior interface {
 	validate() error
 	admits(ObservedMount) bool
 	hostIndependent() bool
+	// grantPinned reports whether the host cannot choose what this mount
+	// gives a container, which a secrets grant requires (docs/secrets.md).
+	grantPinned() bool
 }
 
 var (
@@ -47,6 +50,10 @@ func (emptyDirRule) admits(m ObservedMount) bool {
 }
 
 func (emptyDirRule) hostIndependent() bool {
+	return true
+}
+
+func (emptyDirRule) grantPinned() bool {
 	return true
 }
 
@@ -109,7 +116,26 @@ func (r hostRule) provenanceAdmits(m ObservedMount) bool {
 }
 
 // hostIndependent is false even with provenance: the rule still names a host
-// path, so secrets grants (PinnedForGrant) reject it.
+// path.
 func (hostRule) hostIndependent() bool {
+	return false
+}
+
+// grantPinned is true only when the node must prove the file's content: a
+// read-only node-root file is on the measured dm-verity root, and a read-only
+// fs-verity file matches the pinned digest. The host then chooses neither the
+// bytes the container reads nor a place to write, which is what a secrets grant
+// guards against (#888). A host path without provenance, or a writable one,
+// still gives the container content the host controls.
+func (r hostRule) grantPinned() bool {
+	if !r.ReadOnly {
+		return false
+	}
+	switch r.Provenance {
+	case ProvenanceNodeRoot:
+		return true
+	case ProvenanceFSVerity:
+		return r.VerityDigest != ""
+	}
 	return false
 }
