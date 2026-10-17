@@ -142,11 +142,12 @@ func SnapshotSHA256(snapshot []byte) string {
 
 // Backups are ConfigMaps in the decree namespace: a manifest
 // (cds-backup-<cluster>) and ciphertext parts small enough for one object.
+var backupPartBytes = 900 << 10
+
 const (
-	backupPartBytes = 900 << 10
-	keyBackup       = "backup"
-	keyPart         = "part"
-	LabelBackup     = "c8s.confidential.ai/cds-backup"
+	keyBackup   = "backup"
+	keyPart     = "part"
+	LabelBackup = "c8s.confidential.ai/cds-backup"
 )
 
 // BackupName is the manifest object of a cluster's backup.

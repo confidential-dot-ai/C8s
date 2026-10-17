@@ -119,7 +119,8 @@ type Node struct {
 	logs        *raft.InmemStore
 	stable      *raft.InmemStore
 	snaps       *raft.InmemSnapshotStore
-	noLeader    time.Time // since when a member has seen no leader
+	noLeader    time.Time    // since when a member has seen no leader
+	lastMember  atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
 	joinLogged  bool
 	certs       *certHolder
 	tls         *tls.Config
@@ -213,6 +214,7 @@ func NewNode(cfg Config) (*Node, error) {
 		n.recovery = pub
 	}
 	n.fsm = NewFSM(PreGenesis(cfg.ClusterID, cfg.OperatorPubKey), cfg.Allowlist, cfg.Secrets, cfg.Ledger)
+	n.lastMember.Store(time.Now().UnixMilli())
 	if n.certs, err = newCertHolder(func() (tls.Certificate, error) { return newPeerCert(cfg.ClusterID, cfg.Attestor) }); err != nil {
 		return nil, err
 	}
@@ -443,6 +445,9 @@ func (n *Node) shutdown() {
 
 // member reports whether this replica is in a Raft configuration.
 func (n *Node) member() bool {
+	if n.r() == nil {
+		return false
+	}
 	f := n.r().GetConfiguration()
 	if f.Error() != nil {
 		return false
@@ -474,6 +479,9 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 		if err != nil || resp.Err != "" {
 			n.log.Debug("join refused", "peer", p, "err", errors.Join(err, errorsOrNil(resp.Err)))
 		}
+	}
+	if anyMember {
+		n.lastMember.Store(time.Now().UnixMilli())
 	}
 	if anyMember || n.cfg.Decrees == nil {
 		return
@@ -571,7 +579,10 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		return
 	}
 	core := n.fsm.Core()
-	if !core.Joined() || n.fsm.AppliedIndex() == n.backupIndex {
+	// Read the index before the snapshot: a write applied while it is taken
+	// then still counts as not backed up, and the next round covers it.
+	applied := n.fsm.AppliedIndex()
+	if !core.Joined() || applied == n.backupIndex {
 		return
 	}
 	n.backupAt = time.Now()
@@ -606,8 +617,20 @@ func (n *Node) maybeBackup(ctx context.Context) {
 		n.log.Warn("backup: store", "err", err)
 		return
 	}
-	n.backupIndex = n.fsm.AppliedIndex()
+	n.backupIndex = applied
 	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
+}
+
+// AwaitingRestore reports a replica that holds no cluster and has not seen
+// one for dead_after: every replica was lost, and only an operator Restore
+// (or Genesis) can start one. It is how the pre-join server tells the Service
+// it may take the operator's restore; a replica on its way into a live
+// cluster is not ready.
+func (n *Node) AwaitingRestore() bool {
+	if n.member() || n.fsm.Core().Joined() {
+		return false
+	}
+	return time.Since(time.UnixMilli(n.lastMember.Load())) > n.cfg.Timing.DeadAfter
 }
 
 // ErrNotForThisNode refuses a Restore decree that names another node.
@@ -619,6 +642,8 @@ var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another nod
 func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
 	d := sd.Decree
 	switch {
+	case n.r() == nil:
+		return DecreeResult{}, errors.New("cds-ha: replica not started")
 	case d.Kind != Restore:
 		return DecreeResult{}, errors.New("cds-ha: not a Restore decree")
 	case d.BootstrapNode != n.cfg.NodeName:

@@ -774,6 +774,14 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	for _, n := range []string{"n0", "n1", "n2"} {
 		c.start(n, "m1")
 	}
+	eventually(t, 5*time.Second, "fresh replicas await a restore", func() bool {
+		for _, r := range c.live() {
+			if !r.node.AwaitingRestore() {
+				return false
+			}
+		}
+		return true
+	})
 	sign := func(node string, s []byte) SignedDecree {
 		sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: fmt.Sprintf("restore-%d", time.Now().UnixNano()), Kind: Restore,
 			BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
@@ -794,6 +802,9 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	}
 	c.settled(15 * time.Second)
 	for _, r := range c.live() {
+		if r.node.AwaitingRestore() {
+			t.Fatalf("%s still awaits a restore", r.name)
+		}
 		if r.node.Status().CAFingerprint != fp {
 			t.Fatalf("%s restored another mesh CA", r.name)
 		}
@@ -816,7 +827,62 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	c.stopReplica(c.nodes["n3"])
 	c.start("n4", "m1")
 	time.Sleep(200 * time.Millisecond)
+	if c.nodes["n4"].node.AwaitingRestore() {
+		t.Fatal("a replica beside a live cluster reports it awaits a restore")
+	}
 	if _, err := c.nodes["n4"].node.Restore(ctx, sign("n4", snap), snap); err == nil {
 		t.Fatal("a restore beside a live cluster")
 	}
+}
+
+// An expired Genesis does not start a cluster; a replica that has not joined
+// refuses writes; a stale Recover is not used, and catch-up needs a leader.
+func TestUnusableDecreesAndUnjoinedWrites(t *testing.T) {
+	c := newCluster(t, 3)
+	for _, n := range []string{"n0", "n1", "n2"} {
+		c.start(n, "m1")
+	}
+	old := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0", ExpiresAt: time.Now().Add(-time.Minute)})
+	time.Sleep(500 * time.Millisecond)
+	if c.nodes["n0"].node.member() {
+		t.Fatal("an expired Genesis started a cluster")
+	}
+	if _, ok := c.decrees.get(old); ok {
+		t.Fatal("an expired Genesis was recorded as applied")
+	}
+	if err := c.nodes["n1"].al.PutWorkload("x", mkWorkload(t)); err == nil {
+		t.Fatal("a replica outside any cluster accepted a write")
+	}
+	if err := c.nodes["n1"].node.CatchUp(); err == nil {
+		t.Fatal("caught up without a leader")
+	}
+	if _, err := c.nodes["n1"].node.CA(); err == nil {
+		t.Fatal("a CA before Genesis")
+	}
+	g := c.decree(Decree{Kind: Genesis, BootstrapNode: "n0"})
+	eventually(t, 10*time.Second, "genesis", func() bool { st, ok := c.decrees.get(g); return ok && st.AppliedEpoch != nil })
+	c.settled(15 * time.Second)
+	// Cut two voters off: the survivor sees a Recover for a stale epoch and
+	// leaves it alone.
+	l := c.leader()
+	var surv *replica
+	for _, r := range c.live() {
+		if r != l && surv == nil {
+			surv = r
+		} else {
+			c.partition(r.name, true)
+		}
+	}
+	stale := c.decree(Decree{Kind: Recover, BootstrapNode: surv.name, BaseEpoch: 7})
+	time.Sleep(3 * time.Second)
+	if st, ok := c.decrees.get(stale); ok && st.AppliedEpoch != nil {
+		t.Fatal("a stale Recover was applied")
+	}
+	if surv.node.Serving() {
+		t.Fatal("a lone survivor serves")
+	}
+	for _, r := range c.live() {
+		c.partition(r.name, false)
+	}
+	c.settled(15 * time.Second)
 }
