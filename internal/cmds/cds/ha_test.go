@@ -11,11 +11,14 @@ import (
 	"errors"
 	"math/big"
 	"net"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 )
 
 func leafFrom(t *testing.T, ca *issuer.CA) tls.Certificate {
@@ -85,6 +88,47 @@ func TestFollowMeshCA(t *testing.T) {
 	current.Store(nil)
 	if err := handshake(t, cfg, leafFrom(t, ca2)); err == nil {
 		t.Fatal("client certificate accepted while the replica cannot issue")
+	}
+}
+
+// A replica reusing its database file (a container restart keeps the pod's
+// volume) starts from an empty store, so the Raft log is not applied on top
+// of the rows the earlier process left (BUG: divergent ETag and history).
+func TestResetHAAllowlist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "allowlist.db")
+	fresh, err := allowlist.OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, want, err := fresh.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	al, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"web": digestA})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.StartJournal(); err != nil {
+		t.Fatal(err)
+	}
+	if err := fresh.ReplaceAll(al); err != nil {
+		t.Fatal(err)
+	}
+	fresh.Close()
+	reused, err := allowlist.OpenStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reused.Close()
+	if err := resetHAAllowlist(&reused); err != nil {
+		t.Fatal(err)
+	}
+	doc, version, err := reused.LoadAll()
+	if err != nil || len(doc.Workloads) != 0 || version != want {
+		t.Fatalf("after reset: %d workloads, version %q (want %q): %v", len(doc.Workloads), version, want, err)
+	}
+	if h, err := reused.History(); err != nil || len(h) != 0 {
+		t.Fatalf("history after reset: %d entries, %v", len(h), err)
 	}
 }
 
