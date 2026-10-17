@@ -204,7 +204,14 @@ start_proxy() {
 customer_round() {
   local fetched=$1
   attest
-  teerminator allowlist fetch "$local_addr" -o "$fetched" --pin
+  # After an upload the front door's leaf still names the previous snapshot
+  # until get-cert renews it, and fetch refuses that mismatch.
+  local i
+  for i in $(seq 1 12); do
+    teerminator allowlist fetch "$local_addr" -o "$fetched" --pin && break
+    [ "$i" -lt 12 ] || fail "the front door's stamp never named the served allowlist"
+    sleep 10
+  done
   verified || fail "status is not Verified with the pinned allowlist"
   c8s allowlist export --url "$front" "${pin[@]}" > exported.json
   cmp -s "$fetched" exported.json || fail "/allowlist bytes differ from c8s allowlist export"
