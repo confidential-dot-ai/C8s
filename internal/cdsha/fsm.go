@@ -220,6 +220,9 @@ func nextCore(cur Core, de DecreeEntry) (Core, *issuer.CA, error) {
 
 // snapshot is the whole replicated state.
 type snapshot struct {
+	// Index is the log index the snapshot was taken at (0 in snapshots and
+	// backups from before it was recorded).
+	Index     uint64                  `json:"index,omitempty"`
 	Core      Core                    `json:"core"`
 	Key       []byte                  `json:"key,omitempty"`
 	Allowlist allowlist.Snapshot      `json:"allowlist"`
@@ -242,7 +245,7 @@ var _ raft.ConfigurationStore = (*FSM)(nil)
 // as a stream, so the state is held once, not once per encoding stage.
 func (f *FSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.RLock()
-	sn := snapshot{Core: f.core.clone()}
+	sn := snapshot{Index: f.applied.Load(), Core: f.core.clone()}
 	if f.ca != nil {
 		key, err := x509.MarshalPKCS8PrivateKey(f.ca.Key)
 		if err != nil {
@@ -267,8 +270,25 @@ func (f *FSM) Restore(rc io.ReadCloser) error {
 	if err != nil {
 		return err
 	}
-	return f.restore(sn)
+	// Raft installs a snapshot the leader sends without comparing it with
+	// what this replica already applied. A delayed one (from a replication
+	// stream that outlived the member's removal and re-addition) would roll
+	// a serving replica back; the error keeps the state, and the leader
+	// sends the log instead.
+	if applied := f.applied.Load(); sn.Index != 0 && sn.Index < applied {
+		return fmt.Errorf("%w: snapshot at index %d, applied %d", ErrStaleSnapshot, sn.Index, applied)
+	}
+	if err := f.restore(sn); err != nil {
+		return err
+	}
+	if sn.Index != 0 {
+		f.applied.Store(sn.Index)
+	}
+	return nil
 }
+
+// ErrStaleSnapshot refuses a snapshot older than the state already applied.
+var ErrStaleSnapshot = errors.New("cds-ha: refusing a snapshot older than the applied state")
 
 // A snapshot is gzip over JSON lines: a header line with everything but the
 // allowlist tables, then one line per allowlist row (a one-row

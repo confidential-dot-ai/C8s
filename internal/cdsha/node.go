@@ -137,6 +137,7 @@ type Node struct {
 	mu       sync.Mutex
 	failing  map[raft.ServerID]time.Time // leader: when a member's heartbeats started failing
 	joinedAt map[raft.ServerID]time.Time // leader: when a member was added
+	addedAt  map[raft.ServerID]time.Time // leader: when this leader added a member (handleJoin)
 
 	backupAt    time.Time // leader: last backup attempt
 	backupIndex uint64    // leader: applied index of the last stored backup
@@ -205,6 +206,7 @@ func NewNode(cfg Config) (*Node, error) {
 		log:         cfg.Logger.With("component", "cds-ha"),
 		failing:     map[raft.ServerID]time.Time{},
 		joinedAt:    map[raft.ServerID]time.Time{},
+		addedAt:     map[raft.ServerID]time.Time{},
 	}
 	if len(cfg.RecoveryKey) > 0 {
 		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
@@ -767,6 +769,8 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 	}
 	n.mu.Lock()
 	n.joinedAt[id] = time.Now()
+	n.addedAt[id] = n.joinedAt[id]
+	delete(n.failing, id) // failures of an earlier membership (see noteFailure)
 	n.mu.Unlock()
 	n.log.Info("replica joined as non-voter", "id", id, "address", req.Address)
 	return controlResponse{Member: true}
@@ -794,14 +798,61 @@ func (n *Node) observe(ch <-chan raft.Observation) {
 		n.mu.Lock()
 		switch d := o.Data.(type) {
 		case raft.FailedHeartbeatObservation:
-			if _, ok := n.failing[d.PeerID]; !ok {
-				n.failing[d.PeerID] = time.Now()
-			}
+			n.noteFailure(d.PeerID, d.LastContact, time.Now())
 		case raft.ResumedHeartbeatObservation:
 			delete(n.failing, d.PeerID)
 		}
 		n.mu.Unlock()
 	}
+}
+
+// clearReachable probes the members due for removal as dead and forgets the
+// failures of any that answers: a removal is for a member unreachable now,
+// not for a stale observation.
+func (n *Node) clearReachable(servers []raft.Server, now time.Time) {
+	n.mu.Lock()
+	var suspects []raft.Server
+	for _, s := range servers {
+		if since, bad := n.failing[s.ID]; bad && s.ID != n.id && now.Sub(since) >= n.cfg.Timing.DeadAfter {
+			suspects = append(suspects, s)
+		}
+	}
+	n.mu.Unlock()
+	for _, s := range suspects {
+		hostport, _ := splitRaftAddr(string(s.Address))
+		// The same member must answer, not a later process at its address.
+		if resp, err := n.call(hostport, time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Status != nil && resp.Status.ID == string(s.ID) {
+			n.log.Info("member answers; its heartbeat failures were stale", "id", s.ID)
+			n.mu.Lock()
+			delete(n.failing, s.ID)
+			n.mu.Unlock()
+		}
+	}
+}
+
+// noteFailure records that heartbeats to a member fail, as of its last
+// successful contact. A replication stream outlives the member's removal, so
+// a member removed and added again can still see failures from the stream of
+// its earlier membership, after the new stream already reaches it; nothing
+// would clear them (the new stream never "resumes"), and the member would be
+// removed again after dead_after. Those failures carry a last contact from
+// before the member was added; they are ignored. Callers hold n.mu.
+func (n *Node) noteFailure(id raft.ServerID, lastContact, now time.Time) {
+	joined, ok := n.addedAt[id]
+	if ok && !lastContact.IsZero() && lastContact.Before(joined) {
+		return
+	}
+	if _, already := n.failing[id]; already {
+		return
+	}
+	since := lastContact
+	if since.IsZero() {
+		since = now
+	}
+	if ok && since.Before(joined) {
+		since = joined
+	}
+	n.failing[id] = since
 }
 
 // reconcile keeps the voter seats filled with one healthy replica per node:
@@ -814,6 +865,7 @@ func (n *Node) reconcile() {
 	}
 	servers := f.Configuration().Servers
 	now := time.Now()
+	n.clearReachable(servers, now)
 	n.mu.Lock()
 	failingSince := func(id raft.ServerID) (time.Time, bool) { t, ok := n.failing[id]; return t, ok }
 	healthy := func(id raft.ServerID) bool {
@@ -875,6 +927,7 @@ func (n *Node) reconcile() {
 		n.mu.Lock()
 		delete(n.failing, id)
 		delete(n.joinedAt, id)
+		delete(n.addedAt, id)
 		n.mu.Unlock()
 		n.log.Info("member removed", "id", id)
 	}
