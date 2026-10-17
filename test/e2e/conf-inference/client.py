@@ -57,11 +57,14 @@ def mint_key(args: argparse.Namespace) -> None:
         "x-admin-body-sha256": body_hash,
         "x-admin-signature": base64.urlsafe_b64encode(signature).rstrip(b"=").decode(),
     }))
-    print(created["apiKey"])
+    fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as out:
+        out.write(created["apiKey"])
 
 
 def complete(args: argparse.Namespace) -> None:
-    auth = {"authorization": f"Bearer {args.api_key}", "content-type": "application/json"}
+    with open(args.api_key_file) as f:
+        auth = {"authorization": f"Bearer {f.read()}", "content-type": "application/json"}
     models = json.loads(request(args.proxy + "/v1/models", headers=auth))
     model = models["data"][0]["id"]
     chat = {"model": model, "max_tokens": 16, "messages": [{"role": "user", "content": "Say hello."}]}
@@ -112,8 +115,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--proxy", default="http://127.0.0.1:18080")
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("mint-key").add_argument("--admin-key", required=True)
-    sub.add_parser("complete").add_argument("--api-key", required=True)
+    mint = sub.add_parser("mint-key")
+    mint.add_argument("--admin-key", required=True)
+    mint.add_argument("--out", required=True, help="written 0600; the key is never printed")
+    sub.add_parser("complete").add_argument("--api-key-file", required=True)
     check = sub.add_parser("attestation")
     check.add_argument("--mode", required=True, choices=["cds", "acme"], help="the launch's front-door mode")
     check.add_argument("--allowlist", required=True, help="the bytes `teerminator allowlist fetch` wrote")
