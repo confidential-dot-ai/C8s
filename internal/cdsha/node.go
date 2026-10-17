@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
@@ -37,6 +38,12 @@ type DecreeSource interface {
 	SetDecreeStatus(ctx context.Context, name string, st DecreeStatus) error
 }
 
+// BackupSink stores sealed backups (Kubernetes objects); they open only
+// with the operator's offline recovery key.
+type BackupSink interface {
+	PutBackup(ctx context.Context, b Backup) error
+}
+
 // Timing are the replica timers.
 type Timing struct {
 	// Heartbeat and Election are Raft's heartbeat and election timeouts.
@@ -56,12 +63,16 @@ type Timing struct {
 	Apply time.Duration
 	// Tick is the period of the membership and decree loop.
 	Tick time.Duration
+	// Backup is how often the leader writes a sealed state backup, when the
+	// state changed since the last one.
+	Backup time.Duration
 }
 
 // DefaultTiming suits replicas on one site.
 var DefaultTiming = Timing{
 	Heartbeat: time.Second, Election: time.Second, Lease: 5 * time.Second,
 	DeadAfter: 20 * time.Second, Stabilize: 3 * time.Second, Apply: 10 * time.Second, Tick: time.Second,
+	Backup: time.Minute,
 }
 
 // Config configures a replica.
@@ -82,6 +93,11 @@ type Config struct {
 	MaxNonVoters int
 	Peers        func(ctx context.Context) ([]string, error) // other replicas' ip:port
 	Decrees      DecreeSource
+	// RecoveryKey (PKIX DER, P-256) and Backups enable sealed backups: the
+	// leader seals the state to the operator's recovery key and stores it
+	// with Backups. Without them there is no recovery from total loss.
+	RecoveryKey  []byte
+	Backups      BackupSink
 	Timing       Timing
 	CACommonName string
 	CAValidity   time.Duration
@@ -119,6 +135,10 @@ type Node struct {
 	mu       sync.Mutex
 	failing  map[raft.ServerID]time.Time // leader: when a member's heartbeats started failing
 	joinedAt map[raft.ServerID]time.Time // leader: when a member was added
+
+	backupAt    time.Time // leader: last backup attempt
+	backupIndex uint64    // leader: applied index of the last stored backup
+	recovery    *ecdsa.PublicKey
 }
 
 // Status is a replica's view, served at /ha/status.
@@ -156,6 +176,9 @@ func NewNode(cfg Config) (*Node, error) {
 	if cfg.Timing == (Timing{}) {
 		cfg.Timing = DefaultTiming
 	}
+	if cfg.Timing.Backup == 0 {
+		cfg.Timing.Backup = DefaultTiming.Backup
+	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
 	}
@@ -180,6 +203,14 @@ func NewNode(cfg Config) (*Node, error) {
 		log:         cfg.Logger.With("component", "cds-ha"),
 		failing:     map[raft.ServerID]time.Time{},
 		joinedAt:    map[raft.ServerID]time.Time{},
+	}
+	if len(cfg.RecoveryKey) > 0 {
+		k, err := x509.ParsePKIXPublicKey(cfg.RecoveryKey)
+		pub, ok := k.(*ecdsa.PublicKey)
+		if err != nil || !ok || pub.Curve != elliptic.P256() {
+			return nil, errors.New("cds-ha: recovery key must be an ECDSA P-256 public key")
+		}
+		n.recovery = pub
 	}
 	n.fsm = NewFSM(PreGenesis(cfg.ClusterID, cfg.OperatorPubKey), cfg.Allowlist, cfg.Secrets, cfg.Ledger)
 	if n.certs, err = newCertHolder(func() (tls.Certificate, error) { return newPeerCert(cfg.ClusterID, cfg.Attestor) }); err != nil {
@@ -382,6 +413,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.noLeader = time.Time{}
 			n.reconcile()
 			n.applyDecrees(ctx)
+			n.maybeBackup(ctx)
 		case addr != "":
 			n.noLeader = time.Time{}
 		case n.noLeader.IsZero():
@@ -530,6 +562,110 @@ func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	n.applyDecree(ctx, g)
+}
+
+// maybeBackup seals and stores the state when it changed since the last
+// stored backup, at most every Timing.Backup (leader only).
+func (n *Node) maybeBackup(ctx context.Context) {
+	if n.recovery == nil || n.cfg.Backups == nil || time.Since(n.backupAt) < n.cfg.Timing.Backup {
+		return
+	}
+	core := n.fsm.Core()
+	if !core.Joined() || n.fsm.AppliedIndex() == n.backupIndex {
+		return
+	}
+	n.backupAt = time.Now()
+	f := n.r().Snapshot()
+	if err := f.Error(); err != nil {
+		n.log.Warn("backup: snapshot", "err", err)
+		return
+	}
+	meta, rc, err := f.Open()
+	if err != nil {
+		n.log.Warn("backup: open snapshot", "err", err)
+		return
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		return
+	}
+	var sn snapshot
+	if err := json.Unmarshal(body, &sn); err != nil {
+		n.log.Warn("backup: decode snapshot", "err", err)
+		return
+	}
+	sum := sha256.Sum256(sn.Core.RootCert)
+	b, err := SealBackup(n.recovery, BackupMeta{ClusterID: sn.Core.ClusterID, Epoch: sn.Core.Epoch, Index: meta.Index,
+		AppliedDecrees: sn.Core.AppliedDecrees, TakenAtMS: time.Now().UnixMilli(), CAFingerprint: hex.EncodeToString(sum[:])}, body)
+	if err != nil {
+		n.log.Warn("backup: seal", "err", err)
+		return
+	}
+	if err := n.cfg.Backups.PutBackup(ctx, b); err != nil {
+		n.log.Warn("backup: store", "err", err)
+		return
+	}
+	n.backupIndex = n.fsm.AppliedIndex()
+	n.log.Info("backup stored", "epoch", b.Meta.Epoch, "index", b.Meta.Index, "bytes", len(b.Ciphertext))
+}
+
+// ErrNotForThisNode refuses a Restore decree that names another node.
+var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another node")
+
+// Restore starts a cluster from an operator backup on this replica, which
+// must hold no cluster and be the node the decree names. No replica it can
+// reach may belong to a cluster: a restore never forks a live one.
+func (n *Node) Restore(ctx context.Context, sd SignedDecree, snapshot []byte) (DecreeResult, error) {
+	d := sd.Decree
+	switch {
+	case d.Kind != Restore:
+		return DecreeResult{}, errors.New("cds-ha: not a Restore decree")
+	case d.BootstrapNode != n.cfg.NodeName:
+		return DecreeResult{}, ErrNotForThisNode
+	case n.member() || n.fsm.Core().Joined():
+		return DecreeResult{}, errors.New("cds-ha: this replica already belongs to a cluster")
+	}
+	if err := CheckDecree(sd, n.fsm.Core(), time.Now()); err != nil {
+		return DecreeResult{}, err
+	}
+	if SnapshotSHA256(snapshot) != d.SnapshotSHA256 {
+		return DecreeResult{}, errors.New("cds-ha: snapshot differs from the one the decree names")
+	}
+	peers, _ := n.cfg.Peers(ctx)
+	for _, p := range peers {
+		if resp, err := n.call(p, 3*time.Second, controlRequest{Op: ctlStatus}); err == nil && resp.Member {
+			return DecreeResult{}, fmt.Errorf("cds-ha: replica %s belongs to a cluster; join it instead of restoring", p)
+		}
+	}
+	n.log.Warn("RESTORE: starting the cluster from an operator backup", "decree", d.IntentID, "snapshot", d.SnapshotSHA256)
+	conf := raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}}}
+	if err := n.r().BootstrapCluster(conf).Error(); err != nil {
+		return DecreeResult{}, err
+	}
+	deadline := time.Now().Add(20 * n.cfg.Timing.Election)
+	for n.r().State() != raft.Leader {
+		if time.Now().After(deadline) {
+			return DecreeResult{}, errors.New("cds-ha: did not become leader after bootstrap")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	raw, err := json.Marshal(Entry{Kind: KindRestore, Restore: &RestoreEntry{Decree: sd, AtMS: time.Now().UnixMilli(), Snapshot: snapshot}})
+	if err != nil {
+		return DecreeResult{}, err
+	}
+	_, resp, err := n.applyLocal(raw)
+	if err != nil {
+		return DecreeResult{}, err
+	}
+	var res DecreeResult
+	if err := json.Unmarshal(resp, &res); err != nil {
+		return DecreeResult{}, err
+	}
+	if res.Err != "" {
+		return res, errors.New("cds-ha: restore refused: " + res.Err)
+	}
+	return res, nil
 }
 
 // handleControl answers a control request from an attested peer.

@@ -1,6 +1,7 @@
 package cdsha
 
 import (
+	"bytes"
 	"crypto/x509"
 	"encoding/json"
 	"errors"
@@ -28,6 +29,7 @@ const (
 	KindSecret    EntryKind = "secret"
 	KindBinding   EntryKind = "binding"
 	KindDecree    EntryKind = "decree"
+	KindRestore   EntryKind = "restore"
 )
 
 // Entry is one Raft log entry. Exactly one payload is set.
@@ -37,6 +39,16 @@ type Entry struct {
 	Secret    *secrets.Command       `json:"secret,omitempty"`
 	Binding   *sandboxledger.Command `json:"binding,omitempty"`
 	Decree    *DecreeEntry           `json:"decree,omitempty"`
+	Restore   *RestoreEntry          `json:"restore,omitempty"`
+}
+
+// RestoreEntry restores a backup into a replica that holds no cluster. It is
+// the first entry of a restored cluster, so every replica that joins applies
+// the same state.
+type RestoreEntry struct {
+	Decree   SignedDecree `json:"decree"`
+	AtMS     int64        `json:"at_ms"`
+	Snapshot []byte       `json:"snapshot"`
 }
 
 // DecreeEntry applies one operator decree. The leader stamps the time and,
@@ -116,6 +128,8 @@ func (f *FSM) apply(e Entry) any {
 		return f.ledger.Apply(*e.Binding)
 	case e.Kind == KindDecree && e.Decree != nil:
 		return f.applyDecree(*e.Decree)
+	case e.Kind == KindRestore && e.Restore != nil:
+		return f.applyRestore(*e.Restore)
 	}
 	return fmt.Errorf("malformed log entry of kind %q", e.Kind)
 }
@@ -132,6 +146,40 @@ func (f *FSM) applyDecree(de DecreeEntry) DecreeResult {
 		f.ca = ca
 	}
 	return DecreeResult{Epoch: next.Epoch}
+}
+
+// applyRestore loads an operator backup, checked against the decree that
+// names it, into a replica that holds no cluster.
+func (f *FSM) applyRestore(re RestoreEntry) DecreeResult {
+	cur := f.Core()
+	fail := func(err error) DecreeResult { return DecreeResult{Epoch: cur.Epoch, Err: err.Error()} }
+	if re.Decree.Decree.Kind != Restore {
+		return fail(errors.New("restore entry without a Restore decree"))
+	}
+	if err := CheckDecree(re.Decree, cur, time.UnixMilli(re.AtMS)); err != nil {
+		return fail(err)
+	}
+	if SnapshotSHA256(re.Snapshot) != re.Decree.Decree.SnapshotSHA256 {
+		return fail(errors.New("snapshot differs from the one the decree names"))
+	}
+	var sn snapshot
+	if err := json.Unmarshal(re.Snapshot, &sn); err != nil {
+		return fail(fmt.Errorf("decode snapshot: %w", err))
+	}
+	switch {
+	case sn.Core.ClusterID != cur.ClusterID:
+		return fail(fmt.Errorf("snapshot is of cluster %q", sn.Core.ClusterID))
+	case !bytes.Equal(sn.Core.OperatorPubKey, cur.OperatorPubKey):
+		return fail(errors.New("snapshot names another operator key"))
+	case !sn.Core.Joined():
+		return fail(errors.New("snapshot holds no mesh CA"))
+	}
+	sn.Core.Epoch++
+	sn.Core.AppliedDecrees = append(sn.Core.AppliedDecrees, re.Decree.Decree.IntentID)
+	if err := f.restore(sn); err != nil {
+		return fail(err)
+	}
+	return DecreeResult{Epoch: sn.Core.Epoch}
 }
 
 // nextCore is the state after decree entry de, or why de does not apply.

@@ -85,7 +85,8 @@ spec:
       port: {{ .Values.cds.ha.peerPort }}
 ---
 # Decrees: operators write them here (the baked operator credential may
-# write any non-privileged namespace); CDS reads them and records status.
+# write any non-privileged namespace); CDS reads them and records status, and
+# the leader stores sealed backups here for `c8s cds ha recover`.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -102,9 +103,11 @@ metadata:
 {{ include "c8s.commonLabels" . | indent 4 }}
     app.kubernetes.io/component: cds
 rules:
+  # Decrees (read, status update) and the sealed state backups, which only
+  # the operator's offline recovery key opens.
   - apiGroups: [""]
     resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "update"]
+    verbs: ["get", "list", "watch", "create", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

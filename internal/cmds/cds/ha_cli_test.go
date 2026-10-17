@@ -304,14 +304,14 @@ func TestHAStartWiring(t *testing.T) {
 	}
 	c := base
 	c.ha.attestor = "nope"
-	if _, err := haStart(context.Background(), c, st); err == nil {
+	if _, err := haStart(context.Background(), c, st, nil); err == nil {
 		t.Fatal("haStart built a replica with an unknown attestor")
 	}
 	c = config{ha: haConfig{configFile: filepath.Join(t.TempDir(), "none")}}
-	if _, err := haStart(context.Background(), c, st); err == nil {
+	if _, err := haStart(context.Background(), c, st, nil); err == nil {
 		t.Fatal("haStart without its --ha-config file")
 	}
-	if n, err := haStart(context.Background(), config{}, st); err != nil || n != nil {
+	if n, err := haStart(context.Background(), config{}, st, nil); err != nil || n != nil {
 		t.Fatalf("singleton: %v", err)
 	}
 }

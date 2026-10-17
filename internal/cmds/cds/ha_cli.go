@@ -23,7 +23,7 @@ import (
 // newHACmd groups the operator side of HA CDS.
 func newHACmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "ha", Short: "Operate a highly available CDS"}
-	cmd.AddCommand(newHADecreeCmd(), newHAStatusCmd())
+	cmd.AddCommand(newHADecreeCmd(), newHAStatusCmd(), newHARecoverCmd())
 	return cmd
 }
 
