@@ -568,7 +568,7 @@ func contains(s []string, v string) bool {
 // replacements join, and the decree cannot be replayed.
 func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	c := newCluster(t, 3)
-	c.genesis("n0", "n1", "n2")
+	c.genesis("n0", "n1", "n2", "n3") // n3: a non-voter that survives too
 	l := c.leader()
 	if err := l.al.PutWorkload("kept", mkWorkload(t)); err != nil {
 		t.Fatal(err)
@@ -577,13 +577,17 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := l.node.Status().CAFingerprint
-	var surv *replica
+	var surv, nonVoter *replica
+	st0 := l.node.Status()
 	for _, r := range c.live() {
-		if r != l && surv == nil {
+		switch {
+		case contains(st0.NonVoters, r.node.ID()):
+			nonVoter = r
+		case r != l && surv == nil:
 			surv = r
-			continue
+		default:
+			c.stopReplica(r)
 		}
-		c.stopReplica(r)
 	}
 	eventually(t, 4*time.Second, "survivor stops serving", func() bool { return !surv.node.Serving() })
 	epoch := surv.node.Core().Epoch
@@ -596,6 +600,9 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 	if v, err := surv.sec.Get(context.Background(), "/kept"); err != nil || string(v) != "v" {
 		t.Fatalf("recovery lost a secret: %q %v", v, err)
 	}
+	// The surviving non-voter was in the old configuration only: it asks to
+	// be added again and is served the recovered state.
+	eventually(t, 15*time.Second, "surviving non-voter rejoined", nonVoter.node.Serving)
 	c.start("n8", "m1")
 	c.start("n9", "m1")
 	c.settled(15 * time.Second)
