@@ -18,10 +18,12 @@ import (
 )
 
 // gateMsg is the body of the freshness gate's 503 (ha.go haGate);
+// preJoinMsg that of the pre-join server, before a replica has joined;
 // unavailableMsg that of a write the replicated store could not commit
 // (allowlist.ErrUnavailable, secrets.ErrUnavailable).
 const (
 	gateMsg        = "cds-ha: this replica is not serving"
+	preJoinMsg     = "cds-ha: this replica has not joined the cluster yet"
 	unavailableMsg = "replicated store unavailable"
 )
 
@@ -105,7 +107,7 @@ func badStatus(code int, body string) bool {
 	if code < 500 {
 		return false
 	}
-	retryable := strings.Contains(body, gateMsg) || strings.Contains(body, unavailableMsg)
+	retryable := strings.Contains(body, gateMsg) || strings.Contains(body, preJoinMsg) || strings.Contains(body, unavailableMsg)
 	return code != http.StatusServiceUnavailable || !retryable
 }
 

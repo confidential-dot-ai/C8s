@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -915,4 +916,22 @@ func TestLonerDoesNotAwaitRestore(t *testing.T) {
 	if c.nodes["n0"].node.AwaitingRestore() {
 		t.Fatal("a replica that reached no peer reports it awaits a restore")
 	}
+}
+
+// A pin set that unpins a majority of the voters is refused (it would leave no
+// leader to apply the decree that undoes it); the upgrade order works: pin the
+// new image beside the old, then drop the old once a majority runs the new.
+func TestPinsMustKeepAMajority(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	bad := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m2"}})
+	eventually(t, 5*time.Second, "pin set refused", func() bool {
+		st, ok := c.decrees.get(bad)
+		return ok && strings.Contains(st.RejectedReason, "fewer than a majority")
+	})
+	if !c.leader().node.Serving() || c.leader().node.fsm.Core().Epoch != 1 {
+		t.Fatal("the refused pin set changed the cluster")
+	}
+	both := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 1, Measurements: []string{"m1", "m2"}})
+	eventually(t, 5*time.Second, "both pinned", func() bool { st, ok := c.decrees.get(both); return ok && st.AppliedEpoch != nil })
 }
