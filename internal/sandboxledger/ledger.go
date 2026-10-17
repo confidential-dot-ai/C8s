@@ -40,6 +40,10 @@ type Ledger struct {
 	ttl      time.Duration
 	max      int
 	now      func() time.Time
+	// repl, when set, makes every binding a replicated command (CDS HA), so
+	// a secret released by any replica asks the inventory bound at issuance
+	// by any other.
+	repl Replicator
 }
 
 // New builds a ledger. ttl should be the maximum leaf lifetime: a binding is
@@ -69,10 +73,16 @@ func (l *Ledger) Record(sandboxID, inventoryHost string) bool {
 	if sandboxID == "" || inventoryHost == "" {
 		return false
 	}
+	if l.repl != nil {
+		return l.recordReplicated(sandboxID, inventoryHost)
+	}
+	return l.recordAt(l.now(), sandboxID, inventoryHost)
+}
+
+func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.now()
 	if b, ok := l.bindings[sandboxID]; ok && now.Before(b.expires) {
 		if b.host != inventoryHost {
 			return false

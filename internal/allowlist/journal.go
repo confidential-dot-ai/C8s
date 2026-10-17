@@ -70,7 +70,7 @@ func objectDigest(b []byte) string {
 // already the head, so a fresh database starts its history with it. CDS calls
 // it before serving; an error means the store is corrupt and CDS must not
 // start.
-func (s *Store) StartJournal() error {
+func (s *Store) startJournal() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -103,7 +103,7 @@ func (s *Store) StartJournal() error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if err := publishTx(tx); err != nil {
+	if err := publishTx(tx, s.now()); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -111,7 +111,7 @@ func (s *Store) StartJournal() error {
 
 // publishTx appends a history entry for the document tx leaves in the store
 // when its digest differs from the head's.
-func publishTx(tx *sql.Tx) error {
+func publishTx(tx *sql.Tx, now time.Time) error {
 	workloads, err := loadWorkloads(tx)
 	if err != nil {
 		return err
@@ -139,7 +139,7 @@ func publishTx(tx *sql.Tx) error {
 		return err
 	}
 	_, err = tx.Exec("INSERT INTO journal_event (position, version, digest, published_at_ms) VALUES (?, ?, ?, ?)",
-		position+1, version, digest, time.Now().UnixMilli())
+		position+1, version, digest, now.UnixMilli())
 	return err
 }
 
@@ -192,7 +192,7 @@ func (s *Store) Object(digest string) ([]byte, bool, error) {
 // whole-document write of body, as the signature of that document. It stores
 // nothing unless body is byte for byte a journaled document: the token's pbh
 // claim binds body, so only then does it sign what verifiers fetch.
-func (s *Store) SignPolicy(body []byte, token string) error {
+func (s *Store) signPolicy(body []byte, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	digest := objectDigest(body)
@@ -226,7 +226,7 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 // signatures make write tokens public, so each must authorize one write only.
 // Records are never pruned: expiry is judged on a clock the host can turn
 // back, and a pruned record would let a published token write again.
-func (s *Store) ConsumeToken(token string) error {
+func (s *Store) consumeToken(token string) error {
 	// Key on the signed header.payload: the signature segment has several
 	// encodings that all verify (non-strict base64 padding bits, ECDSA (r, n-s)).
 	if i := strings.LastIndexByte(token, '.'); i >= 0 {

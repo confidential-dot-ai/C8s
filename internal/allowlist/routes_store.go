@@ -44,7 +44,7 @@ func (s *Store) LoadRoutes() (routes.Envelope, error) {
 // ifMatch set and no manifest stored, that is ErrDigestMismatch. It fails on a
 // manifest routes.Parse refuses. Route writes leave Generation alone: no
 // allowlist reader depends on them.
-func (s *Store) ReplaceRoutes(env routes.Envelope, ifMatch string) error {
+func (s *Store) replaceRoutes(env routes.Envelope, ifMatch string) error {
 	m, err := routes.Parse(env.Manifest)
 	if err != nil {
 		return err
