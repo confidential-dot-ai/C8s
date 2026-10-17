@@ -80,7 +80,7 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.ReplaceAll(al); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 	// The token that wrote a canonical whole document is the operator's
@@ -118,7 +118,7 @@ func (h Handler) HandlePutWorkload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 
@@ -136,7 +136,7 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	found, err := h.Store.DeleteWorkload(name)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 	if !found {
@@ -146,6 +146,22 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("allowlist workload deleted", "name", name)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// WriteUnavailable answers a write the replicated store could not commit:
+// 503, retryable, never 401 or 500.
+func WriteUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
+}
+
+// writeStoreError answers a failed store write.
+func writeStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrUnavailable) {
+		WriteUnavailable(w)
+		return
+	}
+	http.Error(w, "internal server error", http.StatusInternalServerError)
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.
@@ -174,6 +190,10 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
 		if errors.Is(err, ErrTokenReused) {
 			http.Error(w, err.Error(), http.StatusConflict)
+			return nil, false
+		}
+		if errors.Is(err, ErrUnavailable) {
+			WriteUnavailable(w)
 			return nil, false
 		}
 		if errors.Is(err, ErrTokenBeforeStart) {

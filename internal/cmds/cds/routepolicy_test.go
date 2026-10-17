@@ -452,6 +452,26 @@ func TestRouteHandlersReturn500OnStoreFailure(t *testing.T) {
 	}
 }
 
+type downReplicator struct{}
+
+func (downReplicator) Replicate(allowlist.Command) (allowlist.Result, error) {
+	return allowlist.Result{}, fmt.Errorf("%w: no leader", allowlist.ErrUnavailable)
+}
+
+// An HA replica that cannot commit answers a route write 503, not 500.
+func TestRoutePutUnavailableIs503(t *testing.T) {
+	store := inMemoryStore(t)
+	f := newRouteFixture(t, store)
+	store.SetReplicator(downReplicator{})
+	h := routeHandler{Store: store, Authorize: func(*http.Request, []byte) error { return nil }, MeshCA: f.meshCA}
+	b := manifest(t, 1, f.otherPEM)
+	w := httptest.NewRecorder()
+	h.handlePut(w, httptest.NewRequest(http.MethodPut, routes.Path, bytes.NewReader(b)))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("PUT /routes on an unavailable store = %d %q, want 503", w.Code, w.Body)
+	}
+}
+
 // C3 cannot run its mesh-CA check without the mesh CA, so writes fail closed,
 // after authorization.
 func TestRoutePutWithoutMeshCA(t *testing.T) {

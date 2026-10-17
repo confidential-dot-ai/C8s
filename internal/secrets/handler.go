@@ -246,6 +246,11 @@ func (h Handler) servePost(ctx context.Context, w http.ResponseWriter, g grant, 
 		writeError(w, http.StatusInsufficientStorage, types.ErrorCodeSecretStoreFull, "secret storage limit reached")
 		return
 	}
+	if errors.Is(err, ErrUnavailable) {
+		h.logger().Warn("secret create not committed", "path", path, "workload", g.workload, "error", err)
+		writeUnavailable(w)
+		return
+	}
 	if err != nil {
 		h.logger().Error("secret create failed", "path", path, "workload", g.workload, "error", err)
 		http.Error(w, "secret unavailable", http.StatusInternalServerError)
@@ -291,6 +296,13 @@ const censusHolders = 5
 // a store key, are the bytes the client sent. Chi routes on the raw or the
 // decoded path depending on whether the URL contained escapes, so deriving from
 // one source and rejecting "%" removes that difference.
+// writeUnavailable answers a write the replicated store could not commit:
+// 503, retryable.
+func writeUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
+}
+
 func requestPath(r *http.Request) (string, error) {
 	raw := r.URL.EscapedPath()
 	rest, ok := strings.CutPrefix(raw, "/secrets")
