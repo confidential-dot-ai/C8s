@@ -904,3 +904,15 @@ func TestBackupAfterMembershipChange(t *testing.T) {
 		return ok && b.Meta.Index >= target
 	})
 }
+
+// A replica that reaches no peer (its node's pod network still coming up)
+// does not offer to take a restore: that would route clients to its
+// pre-join server.
+func TestLonerDoesNotAwaitRestore(t *testing.T) {
+	c := newCluster(t, 3)
+	c.start("n0", "m1")
+	time.Sleep(3 * testTiming.DeadAfter)
+	if c.nodes["n0"].node.AwaitingRestore() {
+		t.Fatal("a replica that reached no peer reports it awaits a restore")
+	}
+}

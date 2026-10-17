@@ -122,6 +122,7 @@ type Node struct {
 	snaps       *raft.InmemSnapshotStore
 	noLeader    time.Time    // since when a member has seen no leader
 	lastMember  atomic.Int64 // Unix ms a reachable peer last reported membership (or this start)
+	lastLoner   atomic.Int64 // Unix ms a reachable peer last answered that it holds no cluster either
 	joinLogged  bool
 	certs       *certHolder
 	tls         *tls.Config
@@ -485,6 +486,9 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 		if err == nil && resp.Member {
 			anyMember = true
 		}
+		if err == nil && !resp.Member {
+			n.lastLoner.Store(time.Now().UnixMilli())
+		}
 		if err != nil || resp.Err != "" {
 			n.log.Debug("join refused", "peer", p, "err", errors.Join(err, errorsOrNil(resp.Err)))
 		}
@@ -635,12 +639,26 @@ func (n *Node) maybeBackup(ctx context.Context) {
 // (or Genesis) can start one. It is how the pre-join server tells the Service
 // it may take the operator's restore; a replica on its way into a live
 // cluster is not ready.
+//
+// Not hearing from a member is not enough: a replica on a node whose pod
+// network is still coming up hears from nobody, and taking client traffic
+// then would answer it from the pre-join server. It needs a peer that
+// answered and holds no cluster either, or, for a lone survivor of a total
+// loss, no member for lonerAfter.
 func (n *Node) AwaitingRestore() bool {
 	if n.member() || n.fsm.Core().Joined() {
 		return false
 	}
-	return time.Since(time.UnixMilli(n.lastMember.Load())) > n.cfg.Timing.DeadAfter
+	sinceMember := time.Since(time.UnixMilli(n.lastMember.Load()))
+	if sinceMember <= n.cfg.Timing.DeadAfter {
+		return false
+	}
+	return n.lastLoner.Load() > n.lastMember.Load() || sinceMember > lonerAfter
 }
+
+// lonerAfter is how long a replica that reaches no peer at all waits before
+// it offers to take a restore on its own.
+const lonerAfter = 5 * time.Minute
 
 // ErrNotForThisNode refuses a Restore decree that names another node.
 var ErrNotForThisNode = errors.New("cds-ha: the Restore decree names another node")
