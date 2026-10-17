@@ -584,6 +584,22 @@ func (c *Cluster) FullyServing(i int) bool {
 	return c.Get(i, "/ca").Code == http.StatusOK
 }
 
+// WaitReady waits until replica i's full server answers /readyz 200 (what
+// a DaemonSet's readiness probe sees).
+func (c *Cluster) WaitReady(i int, timeout time.Duration) time.Duration {
+	c.t.Helper()
+	start := time.Now()
+	for {
+		if c.FullyServing(i) && c.Get(i, "/readyz").Code == http.StatusOK {
+			return time.Since(start)
+		}
+		if time.Since(start) > timeout {
+			c.t.Fatalf("%s not ready after %s: %s", c.Replicas[i].Node, timeout, c.StatusAll())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 // WaitServing waits for the listed replicas to serve.
 func (c *Cluster) WaitServing(ids []int, timeout time.Duration) time.Duration {
 	c.t.Helper()

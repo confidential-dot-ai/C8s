@@ -387,9 +387,11 @@ func run(cfg config) error {
 		deps.AttestHandler.CASource = haNode.CA
 		deps.CACertSource = haCACertPEM(haNode)
 		deps.HAStatus = haStatus(haNode)
+		// Ready also waits for the voter seats to be full again (see
+		// cdsha.Node.Ready), so a rolling restart never takes the majority.
 		deps.ReadyFn = func() bool {
 			ca, err := haNode.CA()
-			return err == nil && readinessFn(checker.Ready, ca.Cert, cfg.minCAValidity)()
+			return err == nil && haNode.Ready() && readinessFn(checker.Ready, ca.Cert, cfg.minCAValidity)()
 		}
 		var store secrets.Store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
 		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), store, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
