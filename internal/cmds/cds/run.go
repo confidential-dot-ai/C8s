@@ -391,7 +391,8 @@ func run(cfg config) error {
 			ca, err := haNode.CA()
 			return err == nil && readinessFn(checker.Ready, ca.Cert, cfg.minCAValidity)()
 		}
-		router = haGate(haNode.Serving, newRouter(deps))
+		var store secrets.Store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
+		router = haGate(haNode.Serving, devHARoutes(newRouter(deps), store, secretsMem, writeAuthorizer, deps.SecretsOperator == nil))
 	} else {
 		router = newRouter(deps)
 	}

@@ -87,6 +87,7 @@ func bindHAFlags(flags *pflag.FlagSet, c *haConfig) {
 	flags.DurationVar(&c.timing.DeadAfter, "ha-dead-after", cdsha.DefaultTiming.DeadAfter, "the leader removes a member that failed heartbeats this long")
 	flags.DurationVar(&c.timing.Stabilize, "ha-stabilize", cdsha.DefaultTiming.Stabilize, "a non-voter must be healthy this long before it takes a seat")
 	flags.DurationVar(&c.timing.Apply, "ha-apply-timeout", cdsha.DefaultTiming.Apply, "bound on one replicated write")
+	flags.DurationVar(&c.timing.Backup, "ha-backup-interval", cdsha.DefaultTiming.Backup, "the leader seals and stores a backup of changed state at most this often")
 	flags.DurationVar(&c.timing.Tick, "ha-tick", cdsha.DefaultTiming.Tick, "membership and decree loop period")
 }
 
@@ -218,6 +219,12 @@ func newHANode(cfg config, st haStores) (*cdsha.Node, error) {
 		Ledger:         st.ledger,
 		Logger:         slog.Default(),
 	})
+}
+
+// devHARoutes adds the integration test's routes in c8s_dev builds
+// (devha_dev.go); in every other build it returns the router unchanged.
+var devHARoutes = func(next http.Handler, _ secrets.Store, _ *secrets.MemoryStore, _ allowlist.WriteAuthorizer, _ bool) http.Handler {
+	return next
 }
 
 // newHAAttestor resolves the peer attestor; tests replace it.
