@@ -59,6 +59,10 @@ containers:
       - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
       - --allowlist-db={{ .Values.cds.allowlistDB }}
       - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
+      {{- if .ha }}
+      # A memory emptyDir need not report its sizeLimit to statfs.
+      - --allowlist-max-bytes={{ .Values.cds.persistence.memorySizeLimit }}
+      {{- end }}
       {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json
       - --operator-keys=/run/c8s-node/operator-pubkey
