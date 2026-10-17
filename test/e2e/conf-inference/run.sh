@@ -130,9 +130,9 @@ git -C teerminator-src checkout -q FETCH_HEAD
 export XDG_CONFIG_HOME=$CIE_DIR/teerminator-home/config
 mkdir -p "$XDG_CONFIG_HOME"
 local_addr=127.0.0.1:18080
-# TEErminator v0.0.3 reads a flat {mrtd, rtmr1, rtmr2} manifest; the node
-# image publishes them under .tdx.
-jq -e '.tdx | {mrtd, rtmr1, rtmr2}' "$IMAGE_MANIFEST" > teerminator-manifest.json
+# TEErminator v0.0.3 and c8s-verify-js read a flat {mrtd, rtmr1, rtmr2}
+# manifest; the node image publishes them under .tdx.
+jq -e '.tdx | {mrtd, rtmr1, rtmr2}' "$IMAGE_MANIFEST" > tdx-image.json
 # An acme front door serves pebble's WebPKI chain; TEErminator checks it
 # against pebble's issuing root.
 if [ "$FRONT_DOOR_MODE" = acme ]; then
@@ -153,7 +153,7 @@ verified() {
 attest() {
   teerminator remote rm "$local_addr" >/dev/null 2>&1 || true
   teerminator remote add "$local_addr" "https://$GUEST_IP" --mode attest-lb --server-name "$SERVER_NAME" \
-    --image-manifest teerminator-manifest.json --tdx-tcb-status UpToDate --workload "$router"
+    --image-manifest tdx-image.json --tdx-tcb-status UpToDate --workload "$router"
   for _ in $(seq 1 12); do verified && return 0; sleep 10; done
   fail "the front door is not Verified as $router"
 }
@@ -223,7 +223,7 @@ customer_round() {
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
   python3 "$here/client.py" attestation --mode "$FRONT_DOOR_MODE" --allowlist "$fetched" "${workload_args[@]}"
-  "$here/verify-js.sh" "$router" "$api_key" "$fetched"
+  IMAGE_MANIFEST=$CIE_DIR/tdx-image.json "$here/verify-js.sh" "$router" "$api_key" "$fetched"
 }
 
 customer_round fetched-launch.json
