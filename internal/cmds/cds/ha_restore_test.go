@@ -68,6 +68,7 @@ func TestRunHARestoreAfterTotalLoss(t *testing.T) {
 		for i, host := range hosts {
 			cfg := validRunConfig(t, api.URL)
 			cfg.host, cfg.port, cfg.operatorKeys, cfg.jwtClockSkew = host, httpPort, keysPath, 1
+			cfg.logLevel = "info"
 			var peers []string
 			for j, h := range hosts {
 				if j != i {
