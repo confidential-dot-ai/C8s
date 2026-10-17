@@ -125,6 +125,9 @@ git -C teerminator-src checkout -q FETCH_HEAD
 export HOME=$CIE_DIR/teerminator-home XDG_CONFIG_HOME=$CIE_DIR/teerminator-home/config
 mkdir -p "$XDG_CONFIG_HOME"
 local_addr=127.0.0.1:18080
+# TEErminator v0.0.3 reads a flat {mrtd, rtmr1, rtmr2} manifest; the node
+# image publishes them under .tdx.
+jq -e '.tdx | {mrtd, rtmr1, rtmr2}' "$IMAGE_MANIFEST" > teerminator-manifest.json
 
 # A verified row names the remote, attest-lb and Verified.
 verified() {
@@ -139,7 +142,7 @@ verified() {
 attest() {
   teerminator remote rm "$local_addr" >/dev/null 2>&1 || true
   teerminator remote add "$local_addr" "https://$GUEST_IP" --mode attest-lb --server-name c8s.local \
-    --image-manifest "$IMAGE_MANIFEST" --tdx-tcb-status UpToDate --workload "$router"
+    --image-manifest teerminator-manifest.json --tdx-tcb-status UpToDate --workload "$router"
   for _ in $(seq 1 12); do verified && return 0; sleep 10; done
   fail "the front door is not Verified as $router"
 }
