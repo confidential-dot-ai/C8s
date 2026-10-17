@@ -347,6 +347,9 @@ func TestPreJoinRestoreHandler(t *testing.T) {
 	if call(http.MethodGet, "/healthz", "") != http.StatusOK || call(http.MethodGet, "/ha/status", "") != http.StatusOK {
 		t.Fatal("health and status")
 	}
+	if call(http.MethodGet, "/readyz", "") != http.StatusServiceUnavailable {
+		t.Fatal("ready before dead_after without a cluster")
+	}
 	if call(http.MethodPost, "/ha/restore", "{") != http.StatusBadRequest {
 		t.Fatal("malformed restore")
 	}
