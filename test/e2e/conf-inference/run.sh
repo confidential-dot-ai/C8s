@@ -147,6 +147,20 @@ attest() {
   fail "the front door is not Verified as $router"
 }
 
+# The inference path on failure, read through the API server's proxy (exec
+# and logs are closed on the node image): what the router admitted, and the
+# gateway's own view of its upstream.
+inference_dump() {
+  local gw
+  gw=$(kubectl -n "$ns" get pods -l app.kubernetes.io/component=gateway -o jsonpath='{.items[0].metadata.name}')
+  for path in "services/sglang-router:30000/proxy/workers" "services/sglang-router:30000/proxy/readiness" \
+    "services/sglang-router:30000/proxy/health" "pods/$gw:9090/proxy/metrics"; do
+    echo "== $path"
+    kubectl get --raw "/api/v1/namespaces/$ns/$path" 2>&1 | grep -v -E '^# (HELP|TYPE)' | head -60
+  done
+  kubectl -n c8s-system get pods -o wide
+}
+
 proxy_pid=""
 trap '[ -z "$proxy_pid" ] || kill "$proxy_pid" 2>/dev/null || true' EXIT
 start_proxy() {
@@ -169,7 +183,7 @@ customer_round() {
   cmp -s "$fetched" exported.json || fail "/allowlist bytes differ from c8s allowlist export"
   start_proxy
   api_key=$(python3 "$here/client.py" mint-key --admin-key admin.key)
-  python3 "$here/client.py" complete --api-key "$api_key"
+  python3 "$here/client.py" complete --api-key "$api_key" || { inference_dump; fail "no completion through the gateway"; }
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
   python3 "$here/client.py" attestation --allowlist "$fetched" "${workload_args[@]}"
