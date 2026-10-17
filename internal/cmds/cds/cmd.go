@@ -90,6 +90,8 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
 
+	bindHAFlags(flags, &cfg.ha)
+
 	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
 	_ = cmd.MarkFlagRequired("allowlist-db")
@@ -110,6 +112,7 @@ func NewCmd() *cobra.Command {
 	}))
 
 	cmd.AddCommand(cdsca.NewCmd())
+	cmd.AddCommand(newHACmd())
 
 	return cmd
 }
@@ -117,6 +120,7 @@ func NewCmd() *cobra.Command {
 type config struct {
 	host                string
 	port                int
+	ha                  haConfig
 	logLevel            string
 	attestationApiURL   string
 	caCommonName        string
@@ -166,6 +170,9 @@ type config struct {
 // Config directly.
 func validateARMTLSPlatformFlag(v string) error {
 	if strings.TrimSpace(v) == "" {
+		if allowPlainHTTP {
+			return nil // c8s_dev build: plain HTTP for the HA prototype
+		}
 		return fmt.Errorf("--armtls-platform must not be empty (armTLS is mandatory; tests construct Config directly)")
 	}
 	if _, err := teetypes.ParseFamily(v); err != nil {

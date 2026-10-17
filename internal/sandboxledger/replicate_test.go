@@ -13,6 +13,8 @@ type ledgerFanout struct {
 	writes  int
 }
 
+func (f *ledgerFanout) CatchUp() error { return nil }
+
 func (f *ledgerFanout) ReplicateBinding(cmd Command) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

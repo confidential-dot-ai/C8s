@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -92,14 +93,19 @@ type cluster struct {
 	decrees *memDecrees
 	seats   int
 	port    int
+	block   int32
 
-	mu      sync.Mutex
-	nodes   map[string]*replica // by node name: the live replica on that node
-	meas    map[string]string   // node name -> measurement
-	cut     map[string]bool     // partitioned IPs
-	nextIP  int
-	ipOf    map[string]string
+	mu     sync.Mutex
+	nodes  map[string]*replica // by node name: the live replica on that node
+	meas   map[string]string   // node name -> measurement
+	cut    map[string]bool     // partitioned IPs
+	nextIP int
+	ipOf   map[string]string
 }
+
+// clusterSeq gives every test cluster its own loopback range, so one
+// cluster's lingering sockets never collide with the next one's.
+var clusterSeq atomic.Int32
 
 func newCluster(t *testing.T, seats int) *cluster {
 	t.Helper()
@@ -112,7 +118,8 @@ func newCluster(t *testing.T, seats int) *cluster {
 	l.Close()
 	c := &cluster{t: t, opKey: k, opPub: pub, seats: seats, port: port,
 		decrees: &memDecrees{items: map[string]SignedDecree{}, status: map[string]DecreeStatus{}},
-		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{}}
+		nodes:   map[string]*replica{}, meas: map[string]string{}, cut: map[string]bool{}, nextIP: 2, ipOf: map[string]string{},
+		block: 1 + clusterSeq.Add(1)%250}
 	t.Cleanup(func() {
 		c.mu.Lock()
 		rs := make([]*replica, 0, len(c.nodes))
@@ -159,7 +166,7 @@ func (c *cluster) start(name, measurement string) *replica {
 	c.mu.Lock()
 	ip, ok := c.ipOf[name]
 	if !ok {
-		ip = fmt.Sprintf("127.0.0.%d", c.nextIP)
+		ip = fmt.Sprintf("127.%d.0.%d", c.block, c.nextIP)
 		c.nextIP++
 		c.ipOf[name] = ip
 	}
@@ -346,6 +353,7 @@ func TestGenesisJoinAndReplicatedState(t *testing.T) {
 	if !c.nodes["n1"].led.Record("sb1", "10.0.0.1") {
 		t.Fatal("binding refused")
 	}
+	// Lookup right after: a replica that has not applied it yet catches up.
 	for _, r := range c.live() {
 		if h, ok := r.led.Lookup("sb1"); !ok || h != "10.0.0.1" {
 			t.Fatalf("%s lacks the sandbox binding", r.name)

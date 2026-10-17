@@ -21,6 +21,8 @@ type dependencies struct {
 	Routes            routeHandler
 	ReadyFn           attestation.ReadinessFunc
 	CACertPEM         []byte
+	CACertSource      func() []byte         // HA mode: the current epoch's CA, replacing CACertPEM
+	HAStatus          http.HandlerFunc      // HA mode: GET /ha/status
 	OperatorKeysPEM   []byte                // pinned operator public keys; empty = /operator-keys 404s
 	MeasurementsDoc   []byte                // reference values being enforced, as served at /measurements
 	RateLimiter       *issuer.IPRateLimiter // per-source-IP limiter for attestation endpoints
@@ -86,7 +88,23 @@ func newRouter(deps dependencies) http.Handler {
 		r.Method(http.MethodGet, secrets.ExplainRoute, deps.allowlistWrite(deps.SecretsExplain))
 	}
 
-	r.Get("/ca", handleCA(deps.CACertPEM))
+	if deps.CACertSource != nil {
+		r.Get("/ca", func(w http.ResponseWriter, req *http.Request) {
+			ca := deps.CACertSource()
+			if len(ca) == 0 {
+				// HA replica not serving (no key, behind a rotation, retired):
+				// fail, never answer 200 with an empty bundle.
+				http.Error(w, "mesh CA unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			handleCA(ca)(w, req)
+		})
+	} else {
+		r.Get("/ca", handleCA(deps.CACertPEM))
+	}
+	if deps.HAStatus != nil {
+		r.Get("/ha/status", deps.HAStatus)
+	}
 	r.Get("/operator-keys", handleOperatorKeys(deps.OperatorKeysPEM))
 	r.Get("/measurements", handleMeasurements(deps.MeasurementsDoc))
 
