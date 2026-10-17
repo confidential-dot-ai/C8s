@@ -165,17 +165,28 @@ inference_dump() {
   digest=$(c8s allowlist inspect-image "$busybox" | awk '$1 == "digest:" { print $2 }') || true
   c8s allowlist add "$digest" "$busybox" --url "$front" "${pin[@]}" --operator-key "$key" >/dev/null || true
   # shellcheck disable=SC2016 # $p expands in the probe's shell.
-  kubectl -n "$ns" run "$probe" --image="$busybox" --restart=Never --labels=app.kubernetes.io/component=gateway \
-    --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"probe","image":"'"$busybox"'","command":["sh","-c","for p in workers readiness health v1/models; do echo \"== $p\"; wget -qO- -T 5 http://sglang-router:30000/$p 2>&1 | head -c 700; echo; done > /dev/termination-log"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
-    >/dev/null || true
-  for _ in $(seq 1 30); do
-    msg=$(kubectl -n "$ns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state.terminated.message}' 2>/dev/null || true)
-    [ -n "$msg" ] && break
-    sleep 2
+  # Twice: once with the gateway's labels and NetworkPolicies, once from a
+  # namespace with no policies. armtls-mesh DNATs pod-to-pod TCP to its host
+  # listener, so a pod whose egress policy names only pod destinations may
+  # never reach the mesh.
+  local where pns plabel
+  for where in "$ns gateway" "default none"; do
+    read -r pns plabel <<<"$where"
+    # shellcheck disable=SC2016 # $p expands in the probe's shell.
+    kubectl -n "$pns" run "$probe" --image="$busybox" --restart=Never --labels="app.kubernetes.io/component=$plabel" \
+      --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65534,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"probe","image":"'"$busybox"'","command":["sh","-c","for p in workers health v1/models; do echo \"== $p\"; wget -qO- -T 5 http://sglang-router.confidential-inference.svc:30000/$p 2>&1 | head -c 700; echo; done > /dev/termination-log"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
+      >/dev/null || true
+    msg=""
+    for _ in $(seq 1 30); do
+      msg=$(kubectl -n "$pns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state.terminated.message}' 2>/dev/null || true)
+      [ -n "$msg" ] && break
+      sleep 2
+    done
+    echo "router as seen by a plain pod in $pns (labels: $plabel):"
+    echo "${msg:-no answer}"
+    kubectl -n "$pns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state}{"\n"}' || true
+    kubectl -n "$pns" delete pod "$probe" --wait=false >/dev/null 2>&1 || true
   done
-  echo "router as seen by a plain pod:"
-  echo "${msg:-no answer}"
-  kubectl -n "$ns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state}{"\n"}' || true
   kubectl -n c8s-system get pods -o wide || true
   kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -80 || true
   # pods/log: the node image's kubelet may refuse it; the output says which.
