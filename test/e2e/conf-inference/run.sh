@@ -153,7 +153,7 @@ attest() {
 # It reaches the router without the mesh, which the gateway's call crosses.
 inference_dump() {
   local busybox=busybox:1.36 digest probe=router-probe
-  digest=$(c8s allowlist inspect-image "$busybox" | awk '$1 == "digest:" { print $2 }')
+  digest=$(c8s allowlist inspect-image "$busybox" | awk '$1 == "digest:" { print $2 }') || true
   c8s allowlist add "$digest" "$busybox" --url "$front" "${pin[@]}" --operator-key "$key" >/dev/null || true
   # shellcheck disable=SC2016 # $p expands in the probe's shell.
   kubectl -n "$ns" run "$probe" --image="$busybox" --restart=Never --labels=app.kubernetes.io/component=gateway \
@@ -168,6 +168,21 @@ inference_dump() {
   echo "${msg:-no answer}"
   kubectl -n "$ns" get pod "$probe" -o jsonpath='{.status.containerStatuses[0].state}{"\n"}' || true
   kubectl -n c8s-system get pods -o wide || true
+  kubectl get events -A --sort-by=.lastTimestamp 2>&1 | tail -80 || true
+  # pods/log: the node image's kubelet may refuse it; the output says which.
+  local pod container
+  for pod in $(kubectl -n "$ns" get pods -o name 2>/dev/null) \
+    $(kubectl -n c8s-system get pods -o name 2>/dev/null | grep -E 'armtls-mesh|c8s-cds|c8s-router'); do
+    local pns=$ns
+    kubectl -n "$ns" get "$pod" >/dev/null 2>&1 || pns=c8s-system
+    kubectl -n "$pns" get "$pod" -o json | jq -r '
+      "\(.metadata.name):", ((.status.initContainerStatuses // []) + (.status.containerStatuses // []) | .[]
+      | "  \(.name): ready=\(.ready) restarts=\(.restartCount) state=\(.state | tostring | .[0:300])")' || true
+    for container in $(kubectl -n "$pns" get "$pod" -o jsonpath='{.spec.initContainers[*].name} {.spec.containers[*].name}' 2>/dev/null); do
+      echo "== logs $pns/${pod#pod/}/$container"
+      kubectl -n "$pns" logs "$pod" -c "$container" --tail=40 2>&1 || true
+    done
+  done
 }
 
 proxy_pid=""
