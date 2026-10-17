@@ -140,6 +140,13 @@ func TestRunHAReplicasServeOneState(t *testing.T) {
 		ca = body
 	}
 
+	// Every replica issues challenges under the shared key.
+	for _, b := range bases {
+		if code, _, body := do(t, http.MethodPost, b+"/authenticate", "", nil); code != http.StatusOK || !strings.Contains(string(body), "challenge") {
+			t.Fatalf("%s /authenticate: %d %s", b, code, body)
+		}
+	}
+
 	// A whole-document write at replica 0, served by 1 and 2 with one ETag.
 	doc := []byte(anySeed(map[string]string{"web": digestA}))
 	tok := opToken(t, opKey, http.MethodPut, "/allowlist", doc)

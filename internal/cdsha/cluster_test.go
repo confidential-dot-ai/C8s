@@ -613,3 +613,32 @@ func TestRecoverAfterLosingTheMajority(t *testing.T) {
 		t.Fatalf("replayed Recover changed the configuration: %+v", st)
 	}
 }
+
+// A clock jump stops a replica serving until it hears from the leader
+// again; a decree that does not apply is rejected with a reason.
+func TestClockJumpAndRejectedDecree(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	for _, r := range c.live() {
+		r.node.jumpAt.Store(time.Now().UnixMilli())
+		if r.node.Serving() {
+			t.Fatalf("%s serves right after a clock jump", r.name)
+		}
+	}
+	for _, r := range c.live() {
+		eventually(t, 5*time.Second, r.name+" serves after fresh contact", r.node.Serving)
+	}
+	bad := c.decree(Decree{Kind: UpdateMeasurements, BaseEpoch: 9, Measurements: []string{"m1"}})
+	eventually(t, 5*time.Second, "stale decree rejected", func() bool {
+		st, ok := c.decrees.get(bad)
+		return ok && st.RejectedReason != "" && st.AppliedEpoch == nil
+	})
+	// A Recover decree is only for a replica without a leader.
+	rec := c.decree(Decree{Kind: Recover, BootstrapNode: "n1", BaseEpoch: 1})
+	time.Sleep(time.Second)
+	if st, ok := c.decrees.get(rec); ok && st.AppliedEpoch != nil {
+		if s := c.leader().node.Status(); len(s.Voters) != 3 {
+			t.Fatalf("Recover reconfigured a healthy cluster: %+v", s)
+		}
+	}
+}
