@@ -339,6 +339,18 @@ func TestNewBundleWithCDSNodes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	recoveryKey, err := certutil.LoadECPrivateKeyFile(filepath.Join(dir, recoveryKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveryPub, _ := publicKeyPEM(recoveryKey); recoveryPub != server.CDSHA.RecoveryKey || recoveryPub == server.CDSHA.DecreeKey {
+		t.Fatal("recovery.key is not the cdsHA.recoveryKey, or it is the decree key")
+	}
+	bad := *server
+	bad.CDSHA = &CDSHA{DecreeKey: server.CDSHA.DecreeKey, Replicas: 3, RecoveryKey: "junk"}
+	if err := bad.validate(); err == nil {
+		t.Fatal("a junk recovery key validated")
+	}
 	if decreePub, _ := publicKeyPEM(decreeKey); decreePub != server.CDSHA.DecreeKey {
 		t.Fatal("decree.key is not cdsHA.decreeKey")
 	}
