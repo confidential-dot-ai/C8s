@@ -68,7 +68,7 @@ chart_args=(--namespace confidential-inference --kube-version 1.32.0
   --values "$here/values.yaml")
 printf '%s\n' "${chart_args[@]}" > chart-args
 helm template confidential-inference ci/helm/confidential-inference "${chart_args[@]}" \
-  | SIM_IMAGE=$SIM_IMAGE python3 "$here/worker_sim.py" > manifest.yaml
+  | SIM_IMAGE=$SIM_IMAGE python3 "$here/patch_render.py" > manifest.yaml
 python3 "$here/allowlist.py" --ci ci --manifest manifest.yaml \
   --policy "$here/policy.json" --seed node-image/allowlist-seed.json \
   --c8s "$(command -v c8s)" --c8s-release "$c8s_release" \
