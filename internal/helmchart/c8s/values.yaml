@@ -215,6 +215,11 @@ cds:
     replicas: 3
     peerPort: 9443
     decreeNamespace: c8s-cds-decrees
+    ## Go heap target for an HA replica (GOMEMLIMIT). Keep it below
+    ## cds.resources.limits.memory minus cds.persistence.memorySizeLimit: the
+    ## memory emptyDir holding the store counts toward the same limit, and a
+    ## replica that is OOM-killed rejoins as a new member.
+    goMemLimit: 160MiB
   ## Pin the deployed image by digest in production to decouple it from a
   ## floating tag's movement. This applies to every C8s .image.digest field.
   image:
