@@ -642,3 +642,43 @@ func TestClockJumpAndRejectedDecree(t *testing.T) {
 		}
 	}
 }
+
+// CatchUp waits for the leader's applied index; the control channel answers
+// status and refuses unknown requests.
+func TestCatchUpAndControl(t *testing.T) {
+	c := newCluster(t, 3)
+	c.genesis("n0", "n1", "n2")
+	l := c.leader()
+	if err := l.al.PutWorkload("x", mkWorkload(t)); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range c.live() {
+		if err := r.node.CatchUp(); err != nil {
+			t.Fatalf("%s: %v", r.name, err)
+		}
+		if r.node.fsm.AppliedIndex() < l.node.fsm.AppliedIndex() {
+			t.Fatalf("%s not caught up", r.name)
+		}
+	}
+	addr := l.node.cfg.Advertise
+	var other *replica
+	for _, r := range c.live() {
+		if r != l {
+			other = r
+		}
+	}
+	st, err := other.node.call(addr, time.Second, controlRequest{Op: ctlStatus})
+	if err != nil || st.Status == nil || !st.Member || st.Status.State != "Leader" {
+		t.Fatalf("status over control: %+v %v", st, err)
+	}
+	if resp, err := other.node.call(addr, time.Second, controlRequest{Op: "nope"}); err != nil || resp.Err == "" {
+		t.Fatalf("unknown control op: %+v %v", resp, err)
+	}
+	if resp, err := other.node.call(addr, time.Second, controlRequest{Op: ctlJoin, ID: "bad"}); err != nil || resp.Err == "" {
+		t.Fatalf("malformed join accepted: %+v %v", resp, err)
+	}
+	c.partition(other.name, true)
+	if err := other.node.CatchUp(); err == nil {
+		t.Fatal("a partitioned replica caught up")
+	}
+}
