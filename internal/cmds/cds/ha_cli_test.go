@@ -81,7 +81,10 @@ func TestHADecreeCLI(t *testing.T) {
 	if _, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "RotateKey"); err == nil {
 		t.Fatal("RotateKey without the acknowledgement flag")
 	}
-	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "RotateKey", "--i-understand-rotation-forks-the-cluster")
+	if out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "RotateKey", "--i-understand-rotation-forks-the-cluster"); err == nil || !strings.Contains(out, "--base-epoch") {
+		t.Fatalf("RotateKey without --base-epoch (replicas would refuse it, silently): %v", err)
+	}
+	out, err := runHA(t, "decree", "--cluster-id", "c1", "--operator-key", keyPath, "--kind", "RotateKey", "--base-epoch", "1", "--i-understand-rotation-forks-the-cluster")
 	if err != nil || !strings.Contains(out, "WARNING") {
 		t.Fatalf("RotateKey without pins must warn (D14): %v %q", err, out)
 	}
