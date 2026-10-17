@@ -425,6 +425,16 @@ func handleRestore(node *cdsha.Node) http.HandlerFunc {
 func preJoinMux(node *cdsha.Node) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	// Ready only while waiting for a restore, so the operator can reach a
+	// replica through the Service after every replica was lost; a replica
+	// joining a live cluster takes no client traffic.
+	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) {
+		if !node.AwaitingRestore() {
+			http.Error(w, "joining", http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
 	mux.HandleFunc("GET /ha/status", haStatus(node))
 	mux.HandleFunc("POST /ha/restore", handleRestore(node))
 	return mux

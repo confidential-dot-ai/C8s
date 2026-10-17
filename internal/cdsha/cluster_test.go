@@ -774,6 +774,14 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	for _, n := range []string{"n0", "n1", "n2"} {
 		c.start(n, "m1")
 	}
+	eventually(t, 5*time.Second, "fresh replicas await a restore", func() bool {
+		for _, r := range c.live() {
+			if !r.node.AwaitingRestore() {
+				return false
+			}
+		}
+		return true
+	})
 	sign := func(node string, s []byte) SignedDecree {
 		sd, err := SignDecree(Decree{ClusterID: testCluster, IntentID: fmt.Sprintf("restore-%d", time.Now().UnixNano()), Kind: Restore,
 			BootstrapNode: node, SnapshotSHA256: SnapshotSHA256(s), ExpiresAt: time.Now().Add(time.Hour)}, c.opKey)
@@ -794,6 +802,9 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	}
 	c.settled(15 * time.Second)
 	for _, r := range c.live() {
+		if r.node.AwaitingRestore() {
+			t.Fatalf("%s still awaits a restore", r.name)
+		}
 		if r.node.Status().CAFingerprint != fp {
 			t.Fatalf("%s restored another mesh CA", r.name)
 		}
@@ -816,6 +827,9 @@ func TestTotalLossRestoreFromBackup(t *testing.T) {
 	c.stopReplica(c.nodes["n3"])
 	c.start("n4", "m1")
 	time.Sleep(200 * time.Millisecond)
+	if c.nodes["n4"].node.AwaitingRestore() {
+		t.Fatal("a replica beside a live cluster reports it awaits a restore")
+	}
 	if _, err := c.nodes["n4"].node.Restore(ctx, sign("n4", snap), snap); err == nil {
 		t.Fatal("a restore beside a live cluster")
 	}
