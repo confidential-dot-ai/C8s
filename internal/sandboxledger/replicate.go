@@ -9,6 +9,10 @@ import (
 // result this replica's Apply produced once it is committed.
 type Replicator interface {
 	ReplicateBinding(cmd Command) (bool, error)
+	// CatchUp returns once this replica has applied everything the cluster
+	// had committed when it was called, so a binding just taken at another
+	// replica is visible here.
+	CatchUp() error
 }
 
 // SetReplicator makes every later binding a replicated command.
@@ -50,6 +54,19 @@ func (l *Ledger) recordReplicated(sandboxID, inventoryHost string) bool {
 		return false
 	}
 	return held
+}
+
+// lookupReplicated is Lookup for a replica: a miss may be a binding another
+// replica took a moment ago (issuance there, release here), so catch up
+// with the cluster once before failing closed.
+func (l *Ledger) lookupReplicated(sandboxID string) (string, bool) {
+	if h, ok := l.lookupLocal(sandboxID); ok {
+		return h, true
+	}
+	if err := l.repl.CatchUp(); err != nil {
+		return "", false
+	}
+	return l.lookupLocal(sandboxID)
 }
 
 // Binding is one entry of a snapshot.

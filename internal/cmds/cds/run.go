@@ -127,13 +127,33 @@ func run(cfg config) error {
 	}
 	defer allowlistStore.Close()
 
+	// The secret store and the sandbox ledger exist before CDS serves: in HA
+	// mode they are part of the replicated state a joining replica receives.
+	secretsMem := newSecretsStore(cfg)
+	// The ledger is written on every issuance, not only when secrets are on:
+	// enabling the feature later would otherwise start with an empty ledger and
+	// fail closed for every pod until its certificate next renews.
+	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
+	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
+
 	// CDS generates its mesh CA in process at startup; the private key never
-	// touches a Kubernetes Secret.
-	mesh, err := issuer.NewCAWithCurve(cfg.caCommonName, cfg.caCertValidity, elliptic.P384())
+	// touches a Kubernetes Secret. In HA mode the replicas share one, minted
+	// by the Genesis replica and handed only to attested replicas, and every
+	// write is replicated through the Raft log.
+	haNode, err := haStart(ctx, cfg, haStores{allowlist: &allowlistStore, secrets: secretsMem, ledger: sandboxBindings})
 	if err != nil {
-		return fmt.Errorf("generate mesh CA: %w", err)
+		return fmt.Errorf("cds-ha: %w", err)
 	}
-	slog.Info("generated in-memory mesh CA",
+	var mesh *issuer.CA
+	if haNode != nil {
+		mesh, err = haNode.CA()
+	} else {
+		mesh, err = issuer.NewCAWithCurve(cfg.caCommonName, cfg.caCertValidity, elliptic.P384())
+	}
+	if err != nil {
+		return fmt.Errorf("mesh CA: %w", err)
+	}
+	slog.Info("in-memory mesh CA",
 		"fingerprint", certutil.CertFingerprint(mesh.Cert.Raw),
 		"not_after", mesh.Cert.NotAfter.Format(time.RFC3339),
 	)
@@ -177,6 +197,13 @@ func run(cfg config) error {
 	// A separate pool for /secrets: sharing one would make a nonce minted for
 	// issuance redeemable against a secret, and vice versa.
 	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
+	if haNode != nil {
+		// Any replica may answer the second request of a challenge exchange:
+		// challenges are MACed under a key every replica derives from the
+		// shared mesh CA key (a rotation invalidates outstanding ones).
+		challengeStore.SetSharedKey(haChallengeKey(haNode, "issuance"))
+		secretsChallenges.SetSharedKey(haChallengeKey(haNode, "secrets"))
+	}
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
 	// Seed before serving so the first GET /allowlist returns the bootstrap
@@ -204,13 +231,18 @@ func run(cfg config) error {
 	allowlistWriteAuthorizer := writeAuthorizer
 	if cfg.operatorKeys != "" {
 		var started time.Time
-		if !cfg.allowlistPersistent {
+		switch {
+		case haNode != nil:
+			// Spent tokens are replicated and outlive any replica; only tokens
+			// from before the cluster was born could have been spent unseen.
+			started = haGenesis(haNode)
+		case !cfg.allowlistPersistent:
 			started = time.Now()
 		}
 		allowlistWriteAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}
 
-	if !cfg.allowlistPersistent {
+	if !cfg.allowlistPersistent && haNode == nil {
 		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests, the allowlist history, spent operator tokens and the route manifest do not survive")
 	}
 
@@ -260,12 +292,6 @@ func run(cfg config) error {
 		}
 	}
 
-	// The ledger is written on every issuance, not only when secrets are on:
-	// enabling the feature later would otherwise start with an empty ledger and
-	// fail closed for every pod until its certificate next renews.
-	sandboxBindings := sandboxledger.New(issuer.CapTTL(cfg.certTTL, issuer.MaxLeafTTL), cfg.sandboxLedgerMax)
-	go sandboxBindings.EvictionLoop(ctx.Done(), cfg.rateLimiterEvictInterval)
-
 	var (
 		secretsHandler  *secrets.Handler
 		secretsOperator *secrets.OperatorHandler
@@ -274,7 +300,10 @@ func run(cfg config) error {
 	if enabled, why := secretsEnabled(cfg, sandboxDigests, inventoryHosts); enabled {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
-		store := newSecretsStore(cfg)
+		var store secrets.Store = secretsMem
+		if haNode != nil {
+			store = secrets.ReplicatedStore{MemoryStore: secretsMem, Repl: haNode}
+		}
 		policy := secrets.NewCachedPolicy(&allowlistStore)
 		secretsHandler = &secrets.Handler{
 			Store:          store,
@@ -351,7 +380,21 @@ func run(cfg config) error {
 	go rateLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 	go challengeLimiter.EvictionLoop(ctx, cfg.rateLimiterEvictInterval, cfg.rateLimiterIdleTimeout)
 
-	router := newRouter(deps)
+	var router http.Handler
+	if haNode != nil {
+		// Issuance follows the replica: it stops while the replica is not
+		// serving and switches key on rotation.
+		deps.AttestHandler.CASource = haNode.CA
+		deps.CACertSource = haCACertPEM(haNode)
+		deps.HAStatus = haStatus(haNode)
+		deps.ReadyFn = func() bool {
+			ca, err := haNode.CA()
+			return err == nil && readinessFn(checker.Ready, ca.Cert, cfg.minCAValidity)()
+		}
+		router = haGate(haNode.Serving, newRouter(deps))
+	} else {
+		router = newRouter(deps)
+	}
 
 	go checker.Run(ctx)
 
@@ -376,6 +419,9 @@ func run(cfg config) error {
 		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
+		}
+		if haNode != nil {
+			tlsCfg = followMeshCA(tlsCfg, haNode.CA)
 		}
 		srv.TLSConfig = tlsCfg
 

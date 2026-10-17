@@ -102,6 +102,13 @@ func (l *Ledger) recordAt(now time.Time, sandboxID, inventoryHost string) bool {
 // binding reports false, which callers must treat as fail-closed: without it
 // there is no inventory this process is willing to believe about the sandbox.
 func (l *Ledger) Lookup(sandboxID string) (string, bool) {
+	if l.repl != nil {
+		return l.lookupReplicated(sandboxID)
+	}
+	return l.lookupLocal(sandboxID)
+}
+
+func (l *Ledger) lookupLocal(sandboxID string) (string, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 

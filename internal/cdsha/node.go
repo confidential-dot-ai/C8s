@@ -210,13 +210,18 @@ func (n *Node) peerPins() []string {
 	return c.Measurements
 }
 
+// raftAddress is where peers reach this member's Raft, with its member ID.
+func (n *Node) raftAddress() raft.ServerAddress {
+	return raft.ServerAddress(n.cfg.Advertise + "#" + string(n.id))
+}
+
 // ID is this replica's Raft member ID.
 func (n *Node) ID() string { return string(n.id) }
 
 // Start opens the peer port and starts Raft. Run drives it.
 func (n *Node) Start() error {
 	v := peerVerifier{clusterID: n.cfg.ClusterID, att: n.cfg.Attestor, anchor: n.ownAnchor(), pins: n.peerPins}
-	m, err := newMux(n.cfg.Bind, n.cfg.Advertise, n.tls, v, n.handleControl, n.blocked)
+	m, err := newMux(n.cfg.Bind, n.cfg.Advertise, string(n.id), n.tls, v, n.handleControl, n.blocked)
 	if err != nil {
 		return err
 	}
@@ -353,10 +358,18 @@ func errorsOrNil(s string) error {
 // askJoin asks peer p to add this replica, following one redirect to the
 // leader.
 func (n *Node) askJoin(p string) (controlResponse, error) {
-	req := controlRequest{Op: ctlJoin, ID: string(n.id), Address: n.cfg.Advertise}
+	req := controlRequest{Op: ctlJoin, ID: string(n.id), Address: string(n.raftAddress())}
 	resp, err := n.call(p, 5*time.Second, req)
-	if err == nil && resp.Leader != "" && resp.Leader != p {
-		return n.call(resp.Leader, 5*time.Second, req)
+	if err != nil || resp.Leader == "" || resp.Leader == p || resp.Leader == n.cfg.Advertise {
+		return resp, err
+	}
+	// Whoever answers next, the first peer belongs to a cluster: that alone
+	// must keep this replica from starting another.
+	member := resp.Member
+	resp, err = n.call(resp.Leader, 5*time.Second, req)
+	resp.Member = resp.Member || member
+	if err != nil && member {
+		return controlResponse{Member: true, Err: err.Error()}, nil
 	}
 	return resp, err
 }
@@ -367,7 +380,7 @@ func (n *Node) call(addr string, timeout time.Duration, req controlRequest) (con
 	}
 	var local net.Addr
 	if n.mux != nil {
-		local = n.mux.advert
+		local = n.mux.advert.tcp
 	}
 	return callControl(addr, n.tls, timeout, req, local)
 }
@@ -393,7 +406,7 @@ func (n *Node) pendingGenesis(ctx context.Context) (PendingDecree, bool) {
 // bootstrap starts a one-voter group with this replica and applies Genesis.
 func (n *Node) bootstrap(ctx context.Context, g PendingDecree) {
 	n.log.Info("bootstrapping the CDS cluster", "decree", g.Name, "id", n.id)
-	cfg := raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: raft.ServerAddress(n.cfg.Advertise)}}}
+	cfg := raft.Configuration{Servers: []raft.Server{{Suffrage: raft.Voter, ID: n.id, Address: n.raftAddress()}}}
 	if err := n.raft.BootstrapCluster(cfg).Error(); err != nil {
 		n.log.Warn("bootstrap", "err", err)
 		return
@@ -421,7 +434,8 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 		if addr == "" {
 			return controlResponse{Member: member, Err: "no leader"}
 		}
-		return controlResponse{Member: member, Leader: string(addr), Err: "not the leader"}
+		hp, _ := splitRaftAddr(string(addr))
+		return controlResponse{Member: member, Leader: hp, Err: "not the leader"}
 	}
 	core := n.fsm.Core()
 	if !core.Joined() {
@@ -443,7 +457,8 @@ func (n *Node) handleControl(peer Claims, req controlRequest) controlResponse {
 
 func (n *Node) handleJoin(req controlRequest) controlResponse {
 	id := raft.ServerID(req.ID)
-	if nodeOf(id) == "" || req.Address == "" {
+	hostport, addrID := splitRaftAddr(req.Address)
+	if nodeOf(id) == "" || hostport == "" || addrID != req.ID {
 		return controlResponse{Member: true, Err: "bad join request"}
 	}
 	f := n.raft.GetConfiguration()
@@ -455,7 +470,7 @@ func (n *Node) handleJoin(req controlRequest) controlResponse {
 		if s.ID == id {
 			return controlResponse{Member: true}
 		}
-		if string(s.Address) == req.Address && s.ID != n.id {
+		if hp, _ := splitRaftAddr(string(s.Address)); hp == hostport && s.ID != n.id {
 			// Only one process listens on an address: the member there is a
 			// dead earlier incarnation, and its seat is the joiner's.
 			if err := n.raft.RemoveServer(s.ID, 0, n.cfg.Timing.Apply).Error(); err != nil {
@@ -707,7 +722,8 @@ func (n *Node) propose(e Entry) (json.RawMessage, error) {
 	if addr == "" {
 		return nil, errors.New("cds-ha: no leader (fewer than a majority of replicas reachable)")
 	}
-	resp, err := n.call(string(addr), n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
+	hp, _ := splitRaftAddr(string(addr))
+	resp, err := n.call(hp, n.cfg.Timing.Apply, controlRequest{Op: ctlApply, Entry: raw})
 	if err != nil {
 		return nil, err
 	}
@@ -752,6 +768,34 @@ func (n *Node) ReplicateBinding(cmd sandboxledger.Command) (bool, error) {
 		err = json.Unmarshal(raw, &held)
 	}
 	return held, err
+}
+
+// CatchUp implements sandboxledger.Replicator: it waits until this replica
+// has applied everything the leader had applied when asked.
+func (n *Node) CatchUp() error {
+	if n.raft.State() == raft.Leader {
+		return nil
+	}
+	addr, _ := n.raft.LeaderWithID()
+	if addr == "" {
+		return errors.New("cds-ha: no leader")
+	}
+	hp, _ := splitRaftAddr(string(addr))
+	resp, err := n.call(hp, 2*time.Second, controlRequest{Op: ctlStatus})
+	if err != nil {
+		return err
+	}
+	if resp.Status == nil {
+		return errors.New("cds-ha: leader sent no status")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for n.fsm.AppliedIndex() < resp.Status.AppliedIndex {
+		if time.Now().After(deadline) {
+			return errors.New("cds-ha: not caught up with the leader")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return nil
 }
 
 // Serving reports whether this replica may issue certificates and release
@@ -804,7 +848,7 @@ func (n *Node) Status() Status {
 	st.State = n.raft.State().String()
 	st.Serving = n.Serving()
 	addr, _ := n.raft.LeaderWithID()
-	st.Leader = string(addr)
+	st.Leader, _ = splitRaftAddr(string(addr))
 	if lc := n.raft.LastContact(); !lc.IsZero() {
 		st.LastContactMS = time.Since(lc).Milliseconds()
 	}

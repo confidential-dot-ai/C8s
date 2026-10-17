@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -81,7 +82,7 @@ type mux struct {
 	ln       net.Listener
 	tls      *tls.Config
 	verifier peerVerifier
-	advert   net.Addr
+	advert   raftAddr
 	raftConn chan net.Conn
 	control  controlHandler
 	blocked  func(addr string) bool
@@ -111,16 +112,36 @@ func (c *peerConn) Close() error {
 	return c.Conn.Close()
 }
 
-func newMux(bind string, advertise string, cfg *tls.Config, v peerVerifier, control controlHandler, blocked func(string) bool) (*mux, error) {
+// raftAddr is a member's Raft address: where it listens, and which member it
+// is. A Raft RPC names only its sender, so without the member ID a process
+// restarted on the same address would take messages meant for its earlier
+// incarnation, and could vote again under that identity with its votes
+// forgotten.
+type raftAddr struct {
+	tcp *net.TCPAddr
+	id  string
+}
+
+func (a raftAddr) Network() string { return "tcp" }
+func (a raftAddr) String() string  { return a.tcp.String() + "#" + a.id }
+
+// splitRaftAddr splits "ip:port#member-id".
+func splitRaftAddr(s string) (hostport, id string) {
+	hostport, id, _ = strings.Cut(s, "#")
+	return hostport, id
+}
+
+func newMux(bind string, advertise, id string, cfg *tls.Config, v peerVerifier, control controlHandler, blocked func(string) bool) (*mux, error) {
 	ln, err := net.Listen("tcp", bind)
 	if err != nil {
 		return nil, err
 	}
-	adv, err := net.ResolveTCPAddr("tcp", advertise)
+	tcp, err := net.ResolveTCPAddr("tcp", advertise)
 	if err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("advertise address %q: %w", advertise, err)
 	}
+	adv := raftAddr{tcp: tcp, id: id}
 	m := &mux{ln: ln, tls: cfg, verifier: v, advert: adv, control: control, blocked: blocked,
 		raftConn: make(chan net.Conn), done: make(chan struct{}), conns: map[*peerConn]struct{}{}}
 	go m.serve()
@@ -200,6 +221,17 @@ func (m *mux) route(raw net.Conn) {
 	}
 	switch kind[0] {
 	case muxRaft:
+		// The member this connection is for; anything else is refused.
+		var n [1]byte
+		if _, err := io.ReadFull(pc, n[:]); err != nil {
+			pc.Close()
+			return
+		}
+		target := make([]byte, n[0])
+		if _, err := io.ReadFull(pc, target); err != nil || string(target) != m.advert.id {
+			pc.Close()
+			return
+		}
 		select {
 		case m.raftConn <- pc:
 		case <-m.done:
@@ -241,11 +273,19 @@ func (m *mux) Addr() net.Addr { return m.advert }
 
 // Dial opens an attested Raft connection.
 func (m *mux) Dial(address raft.ServerAddress, timeout time.Duration) (net.Conn, error) {
-	if m.blocked != nil && m.blocked(string(address)) {
+	hostport, id := splitRaftAddr(string(address))
+	if m.blocked != nil && m.blocked(hostport) {
 		return nil, errors.New("partitioned")
 	}
-	c, err := dialKind(string(address), timeout, m.tls, muxRaft, m.advert)
+	if id == "" || len(id) > 255 {
+		return nil, fmt.Errorf("raft address %q names no member", address)
+	}
+	c, err := dialKind(hostport, timeout, m.tls, muxRaft, m.advert.tcp)
 	if err != nil {
+		return nil, err
+	}
+	if _, err := c.Write(append([]byte{byte(len(id))}, id...)); err != nil {
+		c.Close()
 		return nil, err
 	}
 	pc, err := m.track(c)
