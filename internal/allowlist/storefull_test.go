@@ -3,6 +3,7 @@ package allowlist
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,7 +34,13 @@ func TestWriteStoreErrorFullStore(t *testing.T) {
 			t.Fatalf("%v: %d %q", e, rec.Code, rec.Body.String())
 		}
 	}
+	// The token spend that authorizes a write fails the same way.
+	auth := WriteAuthorizer(func(*http.Request, []byte) error { return fmt.Errorf("spend token: %w", full) })
 	rec := httptest.NewRecorder()
+	if _, ok := auth.ReadAuthorized(rec, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")), 1<<10); ok || rec.Code != http.StatusInsufficientStorage {
+		t.Fatalf("token spend on a full store: %v %d", ok, rec.Code)
+	}
+	rec = httptest.NewRecorder()
 	writeStoreError(rec, errors.New("boom"))
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("other errors: %d", rec.Code)

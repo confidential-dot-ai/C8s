@@ -211,6 +211,11 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 			WriteUnavailable(w)
 			return nil, false
 		}
+		if storeFull(err) {
+			// Spending the token is a write too; a full store is not a bad key.
+			writeStoreError(w, err)
+			return nil, false
+		}
 		if errors.Is(err, ErrTokenBeforeStart) {
 			http.Error(w, ErrTokenBeforeStart.Error(), http.StatusUnauthorized)
 			return nil, false
