@@ -14,6 +14,9 @@ inputs:
   keep_cvm:
     description: 'Keep the CVM for staged-run debugging.'
     default: 'false'
+  front_door:
+    description: 'Front-door mode of the conf-inference e2e: cds, or acme against pebble on the runner.'
+    default: 'cds'
   suite_artifact:
     description: 'Optional extra suite: an artifact of the calling run, see ../extra-suite.'
     default: ''
@@ -75,6 +78,29 @@ runs:
         chmod +x bin/jq
       fi
 
+  - name: node, rust and wasm-pack for c8s-verify-js
+    # The conf-inference e2e builds c8s-verify-js from source.
+    uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+    with:
+      node-version: 22
+
+  - uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
+    with:
+      toolchain: "1.98.0"
+      target: wasm32-unknown-unknown
+      cache: false
+
+  - name: wasm-pack
+    shell: bash
+    run: |
+      set -euo pipefail
+      . bin/retry.sh
+      # cargo links build scripts for the host with cc.
+      command -v cc >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq gcc; }
+      retry curl -fsSL -o /tmp/wasm-pack.tgz https://github.com/rustwasm/wasm-pack/releases/download/v0.15.0/wasm-pack-v0.15.0-x86_64-unknown-linux-musl.tar.gz
+      echo "c09f971ecaed9a2efc80fdcea7a00ef6b53c7fadc8c57d1f61b53a6aa66b668a  /tmp/wasm-pack.tgz" | sha256sum -c -
+      tar -xzf /tmp/wasm-pack.tgz -C bin --strip-components 1 wasm-pack-v0.15.0-x86_64-unknown-linux-musl/wasm-pack
+
   # reap-before-provision: a killed run leaks a CVM (and its scratch PVC).
   # Fail SAFE: only reap on a positive "completed", or on age. An unknown
   # status (403/404/no token) KEEPS the CVM rather than killing a live run.
@@ -105,11 +131,11 @@ runs:
         if [ "$st" = "completed" ]; then
           echo "reaping $vm (run ${orepo:-${{ github.repository }}}#$rid completed)"
           kubectl -n "$NS" delete "$vm" --ignore-not-found --wait=false
-          kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" --ignore-not-found --wait=false
+          kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" "${vm#virtualmachine.kubevirt.io/}-gwstate" --ignore-not-found --wait=false
         elif [ -z "$st" ] && [ "$age" -gt 10800 ]; then
           echo "reaping $vm (status unknown, age ${age}s > 3h -> orphaned)"
           kubectl -n "$NS" delete "$vm" --ignore-not-found --wait=false
-          kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" --ignore-not-found --wait=false
+          kubectl -n "$NS" delete pvc "${vm#virtualmachine.kubevirt.io/}-scratch" "${vm#virtualmachine.kubevirt.io/}-gwstate" --ignore-not-found --wait=false
         else
           echo "keeping $vm (run ${orepo:-${{ github.repository }}}#$rid status=${st:-unknown} age=${age}s)"
         fi
@@ -363,6 +389,16 @@ runs:
         echo "no node read permission (expected: bm-e2e is namespace-scoped); relying on the scheduling gate below"
       fi
 
+  - name: build the confidential-inference allowlist and gwstate volume
+    # Before the launch is signed: the app entries go in as --workloads and
+    # the gateway's state volume must be attached at VM creation.
+    env:
+      CIE_DIR: /tmp/conf-inference
+      FRONT_DOOR: ${{ inputs.front_door }}
+      GH_TOKEN: ${{ github.token }}
+    shell: bash
+    run: bash "$GITHUB_WORKSPACE/test/e2e/conf-inference/prepare.sh"
+
   - name: sign the server launch and attach opkeydata
     # The same exact public PEM is signed into launch.yaml, bound by the
     # measured initrd into RTMR3, and pinned by the external clients.
@@ -370,8 +406,16 @@ runs:
     run: |
       set -euo pipefail
       # The published manifest pins the image before its launch is signed.
+      . /tmp/conf-inference/front-door.env
+      router_args=()
+      if [ "$FRONT_DOOR_MODE" = acme ]; then
+        router_args=(--router-hostname "$SERVER_NAME" --acme-directory-url "$ACME_DIRECTORY_URL"
+          --acme-ca-file /tmp/conf-inference/acme-ca.pem)
+      fi
       c8s launch-config new --out /tmp/launch-data --cluster-id "$VM" --server-name c8s-node \
-        --image-manifest /tmp/image-manifest.json
+        --image-manifest /tmp/image-manifest.json \
+        --workloads /tmp/conf-inference/allowlist/app.json \
+        --router-upstream c8s-gateway.confidential-inference.svc.cluster.local:9443 "${router_args[@]}"
       kubectl -n "$NS" create secret generic "$VM-opkey" \
         --from-file=pubkey=/tmp/launch-data/server/pubkey \
         --from-file=launch.yaml=/tmp/launch-data/server/launch.yaml \
@@ -451,6 +495,10 @@ runs:
                     serial: confai-scratch
                   - name: opkey
                     disk: {bus: virtio}
+                  # volumed opens c8s volumes by this serial.
+                  - name: gwstate
+                    disk: {bus: virtio}
+                    serial: c8s-vol-gwstate
                   - name: cloudinit
                     disk: {bus: virtio}
                 interfaces: [{name: default, masquerade: {}}]
@@ -469,6 +517,8 @@ runs:
                 persistentVolumeClaim: {claimName: $VM-scratch}
               - name: opkey
                 secret: {secretName: $VM-opkey, volumeLabel: opkeydata}
+              - name: gwstate
+                persistentVolumeClaim: {claimName: $VM-gwstate}
               - name: cloudinit
                 cloudInitNoCloud: {secretRef: {name: $VM-cloudinit}}
       EOF
@@ -591,6 +641,20 @@ runs:
       export KUBECONFIG=/tmp/guest.kubeconfig
       bash "$C8S_SOURCE_DIR/test/e2e/cw-label-policy.sh"
 
+  - name: assert confidential-inference runs and verifies from outside
+    # The gateway, a simulator worker and the router of the pinned
+    # confidential-inference release, checked as a customer: TEErminator
+    # attest-lb with the seeded router name, allowlist fetch --pin, and
+    # completions, by launch allowlist and again after an upload.
+    env:
+      KUBECONFIG: /tmp/guest.kubeconfig
+      CIE_DIR: /tmp/conf-inference
+      LAUNCH_DIR: /tmp/launch-data
+      IMAGE_MANIFEST: /tmp/image-manifest.json
+      GH_TOKEN: ${{ github.token }}
+    shell: bash
+    run: bash "$GITHUB_WORKSPACE/test/e2e/conf-inference/run.sh"
+
   - name: extra suite
     if: inputs.suite_run != ''
     uses: ./.github/actions/extra-suite
@@ -626,7 +690,9 @@ runs:
       cleanup_failed=0
       kubectl -n "$NS" delete vm "$VM" --ignore-not-found --wait=true --timeout=120s || cleanup_failed=1
       kubectl -n "$NS" delete secret "$VM-opkey" "$VM-cloudinit" --ignore-not-found || cleanup_failed=1
-      kubectl -n "$NS" delete pvc "$VM-scratch" --ignore-not-found --wait=false || cleanup_failed=1
+      kubectl -n "$NS" delete pod "$VM-gwstate-copy" --ignore-not-found --wait=false || cleanup_failed=1
+      kubectl -n "$NS" delete service "$VM-front" --ignore-not-found --wait=false || cleanup_failed=1
+      kubectl -n "$NS" delete pvc "$VM-scratch" "$VM-gwstate" --ignore-not-found --wait=false || cleanup_failed=1
       # The helper ignores absent disks and refuses anything not owned by
       # this run, including the shared staged root PVC.
       if [ "$EXACT_IMAGE" = true ]; then

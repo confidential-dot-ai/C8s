@@ -32,6 +32,12 @@ on:
         description: 'c8s ref for the CLI and tests, on the node image built from that exact commit (rke2-tdx-cdi-<sha> must be published). Empty = the checked-out HEAD.'
         required: false
         default: ''
+      front_door:
+        description: 'Front door of the conf-inference e2e: cds, or acme against pebble on the runner (needs a c8s_ref with --acme-ca-file).'
+        required: false
+        type: choice
+        options: [cds, acme]
+        default: cds
       keep_cvm:
         description: 'Skip teardown to debug a failure. The reaper still clears it after 3h.'
         required: false
@@ -41,6 +47,7 @@ on:
 permissions:
   contents: read
   actions: read # Safe orphan-run status checks.
+  packages: read # The org-internal confidential-inference images.
 
 concurrency:
   # One at a time: the lane boots a CVM off a shared RWO rootdisk PVC.
@@ -55,7 +62,7 @@ jobs:
   e2e:
     name: cvm (tdx-metal/rke2-node)
     runs-on: cvm-launcher-tdx
-    timeout-minutes: ${{ inputs.suite_run != '' && 85 || 65 }}
+    timeout-minutes: ${{ inputs.suite_run != '' && 115 || 95 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,5 +74,6 @@ jobs:
         with:
           c8s_ref: ${{ inputs.c8s_ref }}
           keep_cvm: ${{ inputs.keep_cvm }}
+          front_door: ${{ inputs.front_door || 'cds' }}
           suite_artifact: ${{ inputs.suite_artifact }}
           suite_run: ${{ inputs.suite_run }}
