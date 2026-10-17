@@ -49,7 +49,7 @@ func newHADecreeCmd() *cobra.Command {
 			d.Kind = cdsha.DecreeKind(kind)
 			if d.Kind == cdsha.Genesis {
 				if d.BootstrapNode == "" {
-					return errors.New("Genesis needs --bootstrap-node: the node whose replica starts the cluster")
+					return errors.New("a Genesis decree needs --bootstrap-node: the node whose replica starts the cluster")
 				}
 				if !cmd.Flags().Changed("expires-in") {
 					expiresIn = 10 * time.Minute
