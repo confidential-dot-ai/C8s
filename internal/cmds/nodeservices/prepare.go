@@ -393,10 +393,11 @@ const cdsHAFile = "cds-ha.json"
 
 // CDSHAConfig is the content of cds-ha.json.
 type CDSHAConfig struct {
-	ClusterID string             `json:"cluster_id"`
-	DecreeKey string             `json:"decree_key"`
-	Replicas  int                `json:"replicas"`
-	Image     launchconfig.Image `json:"image"`
+	ClusterID   string             `json:"cluster_id"`
+	DecreeKey   string             `json:"decree_key"`
+	Replicas    int                `json:"replicas"`
+	RecoveryKey string             `json:"recovery_key,omitempty"`
+	Image       launchconfig.Image `json:"image"`
 }
 
 // cdsOutputs publishes what a CDS replica on a cds-role node needs: the
@@ -414,7 +415,7 @@ func cdsOutputs(d *launchconfig.Document, bakedData []byte) (map[string][]byte, 
 	if err != nil {
 		return nil, err
 	}
-	ha, err := json.Marshal(CDSHAConfig{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, Replicas: d.CDSHA.Replicas, Image: d.Image})
+	ha, err := json.Marshal(CDSHAConfig{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, Replicas: d.CDSHA.Replicas, RecoveryKey: d.CDSHA.RecoveryKey, Image: d.Image})
 	if err != nil {
 		return nil, err
 	}

@@ -97,6 +97,11 @@ type CDSHA struct {
 	DecreeKey string `yaml:"decreeKey" json:"decree_key"`
 	// Replicas is the number of CDS pods; one per cds-role node.
 	Replicas int `yaml:"replicas" json:"replicas"`
+	// RecoveryKey, when set, is the PEM P-256 public key the replicas encrypt
+	// their state backups to. Its private half stays with the operator,
+	// offline: with it, the operator can restore a cluster that lost every
+	// replica, mesh CA and secrets included.
+	RecoveryKey string `yaml:"recoveryKey,omitempty" json:"recovery_key,omitempty"`
 }
 
 // Router selects the server's catch-all upstream and public hostnames. All
@@ -448,6 +453,11 @@ func (d *Document) validate() error {
 		return fmt.Errorf("cds role requires cdsHA")
 	}
 	if d.CDSHA != nil {
+		if k := d.CDSHA.RecoveryKey; k != "" {
+			if _, err := parseLaunchKey(k); err != nil {
+				return fmt.Errorf("cdsHA.recoveryKey: %w", err)
+			}
+		}
 		if _, err := parseLaunchKey(d.CDSHA.DecreeKey); err != nil {
 			return fmt.Errorf("cdsHA.decreeKey: %w", err)
 		}
