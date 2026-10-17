@@ -2,6 +2,7 @@ package cdsha
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/elliptic"
 	"crypto/tls"
@@ -380,8 +381,18 @@ func TestFSMEdges(t *testing.T) {
 	if err := f2.restore(snapshot{Core: Core{RootCert: []byte("x")}}); err == nil {
 		t.Fatal("snapshot with a CA and no key restored")
 	}
-	if err := (fsmSnapshot("x")).Persist(&memSink{fail: true}); err == nil {
+	if err := (&fsmSnapshot{}).Persist(&memSink{fail: true}); err == nil {
 		t.Fatal("failed sink reported success")
+	}
+	// A snapshot in the earlier single-object form (older backups) restores.
+	old, _ := json.Marshal(snapshot{Core: PreGenesis(testCluster, opPub)})
+	if err := f2.Restore(io.NopCloser(bytes.NewReader(old))); err != nil {
+		t.Fatalf("earlier snapshot form: %v", err)
+	}
+	for _, bad := range [][]byte{{0x1f, 0x8b, 0}, gzipped(t, "{"), gzipped(t, "{}\n{\"t\":")} {
+		if err := f2.Restore(io.NopCloser(bytes.NewReader(bad))); err == nil {
+			t.Fatalf("broken snapshot %q restored", bad)
+		}
 	}
 }
 
@@ -420,3 +431,52 @@ func TestCertHolderRenews(t *testing.T) {
 }
 
 var _ = os.Stat
+
+func gzipped(t *testing.T, s string) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	zw := gzip.NewWriter(&b)
+	_, _ = zw.Write([]byte(s))
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// A snapshot keeps the allowlist history byte for byte: the restored store
+// passes the history check CDS runs before serving.
+func TestSnapshotKeepsAllowlistHistory(t *testing.T) {
+	al, sec, led := testStores(t)
+	_, opPub := operatorKey(t)
+	f := NewFSM(PreGenesis(testCluster, opPub), al, sec, led)
+	if err := al.StartJournal(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		if err := al.PutWorkload(name, mkWorkload(t)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, err := f.Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	if err := s.Persist(&memSink{Buffer: &buf}); err != nil {
+		t.Fatal(err)
+	}
+	s.Release()
+	al2, sec2, led2 := testStores(t)
+	f2 := NewFSM(PreGenesis(testCluster, opPub), al2, sec2, led2)
+	if err := f2.Restore(io.NopCloser(&buf)); err != nil {
+		t.Fatal(err)
+	}
+	if err := al2.StartJournal(); err != nil {
+		t.Fatalf("restored history: %v", err)
+	}
+	h1, _ := al.History()
+	h2, _ := al2.History()
+	if len(h1) != 4 || len(h2) != len(h1) || h2[3].Digest != h1[3].Digest {
+		t.Fatalf("history %d vs %d entries", len(h1), len(h2))
+	}
+}
