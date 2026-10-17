@@ -75,7 +75,7 @@ func TestReplicatedBindingHoldsEverywhere(t *testing.T) {
 
 type failingCatchUp struct{ ledgerFanout }
 
-func (failingCatchUp) CatchUp() error { return errors.New("no leader") }
+func (*failingCatchUp) CatchUp() error { return errors.New("no leader") }
 
 // A miss catches up once; when that fails the lookup fails closed.
 func TestReplicatedLookupFailsClosed(t *testing.T) {
