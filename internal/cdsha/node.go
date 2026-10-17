@@ -104,6 +104,7 @@ type Node struct {
 	stable      *raft.InmemStore
 	snaps       *raft.InmemSnapshotStore
 	noLeader    time.Time // since when a member has seen no leader
+	joinLogged  bool
 	certs       *certHolder
 	tls         *tls.Config
 	measurement string
@@ -386,10 +387,14 @@ func (n *Node) Run(ctx context.Context) error {
 		case n.noLeader.IsZero():
 			n.noLeader = time.Now()
 		case time.Since(n.noLeader) > n.cfg.Timing.DeadAfter:
-			// No majority for a while: only an operator decree may help.
+			// No majority for a while: an operator Recover decree naming us
+			// makes us the only voter; otherwise the cluster may have been
+			// recovered around us, so ask to be added again.
 			if p, ok := n.pendingRecover(ctx); ok {
 				n.recover(ctx, p)
 				n.noLeader = time.Time{}
+			} else {
+				n.rejoin(ctx)
 			}
 		}
 	}
@@ -425,7 +430,10 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	for _, p := range peers {
 		resp, err := n.askJoin(p)
 		if err == nil && resp.Err == "" {
-			n.log.Info("joined the CDS cluster", "via", p, "id", n.id)
+			if !n.joinLogged {
+				n.log.Info("joined the CDS cluster", "via", p, "id", n.id)
+				n.joinLogged = true
+			}
 			return
 		}
 		if err == nil && resp.Member {
@@ -440,6 +448,17 @@ func (n *Node) joinOrBootstrap(ctx context.Context) {
 	}
 	if g, ok := n.pendingGenesis(ctx); ok {
 		n.bootstrap(ctx, g)
+	}
+}
+
+// rejoin asks reachable replicas to add this member, as a joiner would; a
+// leader that already has it answers without change.
+func (n *Node) rejoin(ctx context.Context) {
+	peers, _ := n.cfg.Peers(ctx)
+	for _, p := range peers {
+		if resp, err := n.askJoin(p); err == nil && resp.Err == "" {
+			return
+		}
 	}
 }
 
