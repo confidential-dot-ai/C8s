@@ -130,6 +130,8 @@ type Node struct {
 
 	jumpAt atomic.Int64 // Unix ms of the last clock jump not yet cleared by fresh contact
 
+	seatsOKAt atomic.Int64 // Unix ms the leader last reported every seat filled (non-voters)
+
 	// blocked, in tests only, refuses connections to and from addresses as a
 	// network partition would.
 	blocked func(addr string) bool
@@ -160,6 +162,9 @@ type Status struct {
 	NonVoters     []string `json:"non_voters,omitempty"`
 	AppliedIndex  uint64   `json:"applied_index"`
 	LastContactMS int64    `json:"last_contact_ms,omitempty"`
+	// SeatsFilled (leader only): every voter seat is held by a member whose
+	// heartbeats succeed.
+	SeatsFilled bool `json:"seats_filled,omitempty"`
 }
 
 // NewNode prepares a replica. Every start is a new Raft member: the log
@@ -421,6 +426,7 @@ func (n *Node) Run(ctx context.Context) error {
 			n.maybeBackup(ctx)
 		case addr != "":
 			n.noLeader = time.Time{}
+			n.refreshSeats()
 		case n.noLeader.IsZero():
 			n.noLeader = time.Now()
 		case time.Since(n.noLeader) > n.cfg.Timing.DeadAfter:
@@ -1190,7 +1196,83 @@ func (n *Node) Status() Status {
 			}
 		}
 	}
+	if n.r().State() == raft.Leader {
+		st.SeatsFilled = n.seatsFilled()
+	}
 	return st
+}
+
+// seatsFilled (leader): the configuration has Seats voters and none of them
+// is failing heartbeats.
+func (n *Node) seatsFilled() bool {
+	f := n.r().GetConfiguration()
+	if f.Error() != nil {
+		return false
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	voters := 0
+	for _, s := range f.Configuration().Servers {
+		if s.Suffrage != raft.Voter {
+			continue
+		}
+		if _, bad := n.failing[s.ID]; bad && s.ID != n.id {
+			return false
+		}
+		voters++
+	}
+	return voters >= n.cfg.Seats
+}
+
+// isVoter reports whether this member holds a voter seat.
+func (n *Node) isVoter() bool {
+	f := n.r().GetConfiguration()
+	if f.Error() != nil {
+		return false
+	}
+	for _, s := range f.Configuration().Servers {
+		if s.ID == n.id {
+			return s.Suffrage == raft.Voter
+		}
+	}
+	return false
+}
+
+// Ready is readiness for a rolling restart (a DaemonSet with
+// maxUnavailable 1 restarts the next replica once this one is Ready): the
+// replica serves, and either holds a voter seat or the leader reports every
+// seat held by a healthy voter. A restarted voter comes back as a new member
+// that serves as a non-voter until it is promoted; were it Ready then, the
+// next restart could take a second voter and the majority with it.
+func (n *Node) Ready() bool {
+	if !n.Serving() {
+		return false
+	}
+	if n.isVoter() {
+		return true
+	}
+	if n.r().State() == raft.Leader {
+		return n.seatsFilled()
+	}
+	at := n.seatsOKAt.Load()
+	return at != 0 && time.Since(time.UnixMilli(at)) < 3*n.cfg.Timing.Tick+time.Second
+}
+
+// refreshSeats asks the leader whether every seat is filled (non-voters
+// only; see Ready).
+func (n *Node) refreshSeats() {
+	if n.isVoter() {
+		return
+	}
+	addr, _ := n.r().LeaderWithID()
+	if addr == "" {
+		return
+	}
+	hp, _ := splitRaftAddr(string(addr))
+	resp, err := n.call(hp, time.Second, controlRequest{Op: ctlStatus})
+	if err == nil && resp.Status != nil && resp.Status.SeatsFilled {
+		n.seatsOKAt.Store(time.Now().UnixMilli())
+	}
 }
 
 // watchClock notices the wall clock moving apart from the monotonic one: a

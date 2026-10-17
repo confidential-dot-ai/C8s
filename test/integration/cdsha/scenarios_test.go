@@ -252,12 +252,13 @@ func TestProcessFaults(t *testing.T) {
 			}
 		}},
 		{name: "B3-rolling-restart-readiness-gated", run: func(t *testing.T, c *Cluster, _ *Checker) {
-			// What a DaemonSet with maxUnavailable 1 and readiness = serving
-			// does: the next replica restarts as soon as the previous one
-			// serves, not when the voter seats are full again.
+			// What a DaemonSet with maxUnavailable 1 does: the next replica
+			// restarts as soon as the previous one is Ready (GET /readyz).
+			// Ready must wait until the voter seats are full again, or the
+			// third restart takes the majority.
 			for i := range c.Replicas {
 				c.Restart(i, false)
-				c.Logf("%s serving after %s; voters now %v", c.Replicas[i].Node, c.WaitServing([]int{i}, 60*time.Second), c.Voters())
+				c.Logf("%s ready after %s; voters now %v", c.Replicas[i].Node, c.WaitReady(i, 60*time.Second), c.Voters())
 			}
 			c.WaitAllServing(60 * time.Second)
 			c.WaitVoters(3, 60*time.Second)
