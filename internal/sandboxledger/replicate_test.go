@@ -1,6 +1,7 @@
 package sandboxledger
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -69,5 +70,18 @@ func TestReplicatedBindingHoldsEverywhere(t *testing.T) {
 	c.Restore(a.Dump())
 	if h, ok := c.Lookup("sb1"); !ok || h != "10.0.0.1" {
 		t.Fatal("snapshot lost the binding")
+	}
+}
+
+type failingCatchUp struct{ ledgerFanout }
+
+func (failingCatchUp) CatchUp() error { return errors.New("no leader") }
+
+// A miss catches up once; when that fails the lookup fails closed.
+func TestReplicatedLookupFailsClosed(t *testing.T) {
+	l := New(time.Hour, 4)
+	l.SetReplicator(&failingCatchUp{})
+	if _, ok := l.Lookup("sb"); ok {
+		t.Fatal("a miss without catch-up reported a binding")
 	}
 }

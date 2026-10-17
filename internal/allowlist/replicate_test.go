@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 )
 
 // fanout is a Replicator that applies every command to each store in order,
@@ -133,5 +134,49 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	bad := Snapshot{"workload_entry": {{"name; DROP": "x"}}}
 	if err := fresh.Restore(bad); err == nil {
 		t.Fatal("restore accepted a bad column name")
+	}
+}
+
+// Whole-document writes, their operator signature and malformed commands
+// cross the replication boundary like local writes.
+func TestReplicatedWholeDocumentAndMalformed(t *testing.T) {
+	st := replicated(t, 2)
+	if err := st[0].StartJournal(); err != nil {
+		t.Fatal(err)
+	}
+	al := &pkgallowlist.Allowlist{Schema: pkgallowlist.Schema, Workloads: map[string]pkgallowlist.Workload{"web": oneContainerWorkload(mustParseDigest(t, digestA))}}
+	if err := st[1].ReplaceAll(al); err != nil {
+		t.Fatal(err)
+	}
+	body, err := al.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st[0].SignPolicy(body, "tok.en.sig"); err != nil {
+		t.Fatal(err)
+	}
+	if tok, ok, err := st[1].Signature(objectDigest(body)); err != nil || !ok || tok != "tok.en.sig" {
+		t.Fatalf("signature not replicated: %q %v %v", tok, ok, err)
+	}
+	if err := st[0].ReplaceAll(nil); err == nil {
+		t.Fatal("nil document replaced")
+	}
+	if err := st[0].ReplaceRoutes(routes.Envelope{Manifest: []byte("{")}, ""); err == nil {
+		t.Fatal("unparsable route manifest replicated")
+	}
+	if _, _, err := st[0].SeedWorkloads(nil); err != nil {
+		t.Fatal(err)
+	}
+	for name, cmd := range map[string]Command{
+		"unknown op":        {Op: "nope"},
+		"put without entry": {Op: OpPutWorkload, Name: "x"},
+		"routes without":    {Op: OpReplaceRoutes},
+	} {
+		if r := st[0].Apply(cmd); r.Error() == nil {
+			t.Errorf("%s applied", name)
+		}
+	}
+	if (Result{ErrKind: "token_reused", Err: ErrTokenReused.Error()}).Error() != ErrTokenReused {
+		t.Fatal("a bare sentinel must come back as itself")
 	}
 }
