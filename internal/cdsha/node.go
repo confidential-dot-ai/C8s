@@ -989,6 +989,44 @@ func (n *Node) applyDecrees(ctx context.Context) {
 	}
 }
 
+// checkPinsKeepMajority refuses a pin set that would unpin a majority of the
+// voters. Peers check each other's pins on every connection, so such a set
+// leaves no leader, and with no leader no later decree can undo it. A rolling
+// upgrade adds the new image's pin first and drops the old one once a
+// majority of voters run the new image.
+func (n *Node) checkPinsKeepMajority(pins []string) error {
+	f := n.r().GetConfiguration()
+	if err := f.Error(); err != nil {
+		return err
+	}
+	voters, pinned := 0, 0
+	for _, s := range f.Configuration().Servers {
+		if s.Suffrage != raft.Voter {
+			continue
+		}
+		voters++
+		m := n.measurement
+		if s.ID != n.id {
+			hp, _ := splitRaftAddr(string(s.Address))
+			resp, err := n.call(hp, 2*time.Second, controlRequest{Op: ctlStatus})
+			if err != nil || resp.Status == nil {
+				continue // unknown counts as unpinned
+			}
+			m = resp.Status.Measurement
+		}
+		if slices.Contains(pins, m) {
+			pinned++
+		}
+	}
+	if pinned*2 <= voters {
+		return fmt.Errorf("%w: %d of %d voters run a pinned image", ErrPinsLoseMajority, pinned, voters)
+	}
+	return nil
+}
+
+// ErrPinsLoseMajority refuses a pin set that a majority of voters fail.
+var ErrPinsLoseMajority = errors.New("refused: the new pin set leaves fewer than a majority of voters pinned, which would stop the cluster for good; pin the new image beside the running one first")
+
 // ErrRecoverWithQuorum refuses a Recover decree on a cluster that has a
 // leader, and so a majority of its voters.
 var ErrRecoverWithQuorum = errors.New("refused: the cluster has a leader with a majority of its voters; Recover is break-glass after losing the majority for good")
@@ -1009,6 +1047,9 @@ func (n *Node) applyDecree(ctx context.Context, p PendingDecree) {
 	d := p.Decree.Decree
 	if err == nil && d.Kind == RotateKey && len(d.Measurements) > 0 && !slices.Contains(d.Measurements, n.measurement) {
 		err = errors.New("bundled pin set excludes the leader; apply UpdateMeasurements first")
+	}
+	if err == nil && (d.Kind == UpdateMeasurements || d.Kind == RotateKey) && len(d.Measurements) > 0 {
+		err = n.checkPinsKeepMajority(d.Measurements)
 	}
 	if err != nil {
 		n.log.Info("decree rejected", "decree", p.Name, "why", err)
