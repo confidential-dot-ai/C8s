@@ -161,7 +161,22 @@ func writeStoreError(w http.ResponseWriter, err error) {
 		WriteUnavailable(w)
 		return
 	}
+	if storeFull(err) {
+		// The history keeps every document, so a store on a size-limited
+		// volume fills up; writes then fail until the operator acts.
+		slog.Error("allowlist write refused: the store is full", "err", err)
+		http.Error(w, "allowlist store is full: the allowlist history has filled its volume", http.StatusInsufficientStorage)
+		return
+	}
+	slog.Error("allowlist write failed", "err", err)
 	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// storeFull reports SQLite's SQLITE_FULL. In HA the error comes back from
+// the replicated state machine as text, hence the message match.
+func storeFull(err error) bool {
+	var coded interface{ Code() int }
+	return (errors.As(err, &coded) && coded.Code()&0xff == 13) || strings.Contains(err.Error(), "database or disk is full")
 }
 
 // authorize reads the body (capped) and runs the configured authorizer.
