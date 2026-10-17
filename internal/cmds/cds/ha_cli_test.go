@@ -274,7 +274,6 @@ func TestHAHandlersBeforeJoin(t *testing.T) {
 func TestHAStartWiring(t *testing.T) {
 	orig := newInClusterKubeClientset
 	t.Cleanup(func() { newInClusterKubeClientset = orig })
-	t.Setenv("POD_IP", "127.0.0.1")
 	pub := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: func() []byte {
 		k, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		der, _ := x509.MarshalPKIXPublicKey(&k.PublicKey)
@@ -284,7 +283,7 @@ func TestHAStartWiring(t *testing.T) {
 	defer al.Close()
 	st := haStores{allowlist: &al, secrets: secrets.NewMemoryStore(4, 2, 64), ledger: sandboxledger.New(time.Hour, 4)}
 	base := config{attestationApiURL: "http://127.0.0.1:1", requestTimeout: time.Second, ha: haConfig{
-		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", port: 0, nodeName: "n0", attestor: "node",
+		clusterID: "c1", decreeNS: "ns", peersDNS: "peers.invalid", advertiseIP: "127.0.0.1", port: 0, nodeName: "n0", attestor: "node",
 		pins: []string{"m1"}, operatorKeyPEM: pub, seats: 3, timing: cdsha.DefaultTiming}}
 	for name, mutate := range map[string]func(c *config){
 		"no peers dns":     func(c *config) { c.ha.peersDNS = "" },
