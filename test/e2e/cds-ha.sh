@@ -153,15 +153,23 @@ if [ -n "${E2E_HA_STOP_NODE:-}" ] && [ -n "${E2E_HA_START_NODE:-}" ]; then
   L=$(leader); [ -n "$L" ] || fail "no leader"
   echo "4. stop the leader's node $L"
   $E2E_HA_STOP_NODE "$L"
+  # Whatever happens next, start the node again.
+  trap '$E2E_HA_START_NODE "$L" >/dev/null 2>&1 || true; cleanup' EXIT
   start=$SECONDS
   deadline=$((SECONDS + TIMEOUT))
   while status | awk -v n="$L" '$1==n && $3=="true"' | grep -q .; do
     [ $SECONDS -lt $deadline ] || fail "$L still serving after the stop command"
     sleep 2
   done
+  # Followers keep serving for the lease after their last contact, so wait
+  # for the new leader itself, then for a serving majority under it.
+  L2=
+  while [ -z "$L2" ] || [ "$L2" = "$L" ]; do
+    [ $SECONDS -lt $deadline ] || fail "no new leader (had $L, now '$L2')"
+    sleep 2
+    L2=$(leader)
+  done
   converge $((expected - 1)) >/dev/null || fail "no serving majority after losing the leader"
-  L2=$(leader)
-  if [ -z "$L2" ] || [ "$L2" = "$L" ]; then fail "no new leader (had $L, now '$L2')"; fi
   echo "   new leader $L2 after $((SECONDS - start)) s"
   put_secret two || fail "secret write after leader loss"
   consume consumer-2 two || fail "secret not released after leader loss"
