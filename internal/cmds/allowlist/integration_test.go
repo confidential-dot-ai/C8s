@@ -289,11 +289,11 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 				if mode == "unpinned operator key" {
 					key, _ = newOperatorKeypair(t, dir, "untrusted.key")
 				}
-				provenance := `,"provenance":"node-root"`
+				kind := "nodeRootFile"
 				if mode == "path only" {
-					provenance = ""
+					kind = "host"
 				}
-				entries := `{"worker":{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}},"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true` + provenance + `}]}}]}}`
+				entries := `{"worker":{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}},"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"` + kind + `","source":"/usr/bin/nvidia-smi","readOnly":true}]}}]}}`
 				body := entries
 				if command == "upload" {
 					body = `{"schema":"c8s.allowlist/v1","workloads":` + entries + `}`
@@ -315,8 +315,8 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 					t.Fatalf("node-root %s: %v", command, err)
 				}
 				worker, ok := cds.workload("worker")
-				if !ok || worker.Containers[0].Mounts.Rules[0].Provenance != pkgallowlist.ProvenanceNodeRoot {
-					t.Fatal("lost provenance on the signed write path")
+				if !ok || worker.Containers[0].Mounts.Rules[0].Kind != pkgallowlist.MountNodeRootFile {
+					t.Fatal("lost the nodeRootFile kind on the signed write path")
 				}
 			})
 		}

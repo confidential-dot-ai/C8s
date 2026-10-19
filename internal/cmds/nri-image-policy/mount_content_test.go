@@ -44,7 +44,7 @@ func TestNodeRootProvenanceRequiresReadOnlyFileBind(t *testing.T) {
 func TestNodeRootProvenanceAdmitsBeforeCreation(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
 	al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: source, Kind: allowlist.MountHost, Source: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}}}
+	al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: source, Kind: allowlist.MountNodeRootFile, Source: source, ReadOnly: true}}}
 	if err := al.Normalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -88,6 +88,10 @@ func TestNodeRootMissingNamesCause(t *testing.T) {
 			t.Fatalf("nodeRootMissing(%s) = %q, want %q", tc.name, got, tc.want)
 		}
 	}
+	nodeRootUnavailableReason = func() (string, bool) { return "", true }
+	if got := nodeRootMissing([]allowlist.ObservedMount{unproven}); got != nodeRootBindIneligible {
+		t.Fatalf("nodeRootMissing(unproven bind on measured root) = %q, want %q", got, nodeRootBindIneligible)
+	}
 }
 
 func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
@@ -99,16 +103,16 @@ func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name       string
-		provenance string
-		want       bool
+		name string
+		kind allowlist.MountClass
+		want bool
 	}{
-		{"path-only rule", "", false},
-		{"node-root rule", allowlist.ProvenanceNodeRoot, true},
+		{"host rule", allowlist.MountHost, false},
+		{"nodeRootFile rule", allowlist.MountNodeRootFile, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/opt/tool", Kind: allowlist.MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: tc.provenance}}}
+			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/opt/tool", Kind: tc.kind, Source: "/usr/bin/tool", ReadOnly: true}}}
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
 			}

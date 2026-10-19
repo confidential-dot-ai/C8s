@@ -15,6 +15,7 @@ var (
 	_ mountRuleBehavior = emptyDirRule{}
 	_ mountRuleBehavior = dataRule{}
 	_ mountRuleBehavior = hostRule{}
+	_ mountRuleBehavior = nodeRootFileRule{}
 )
 
 func (r MountRule) behavior() mountRuleBehavior {
@@ -25,6 +26,8 @@ func (r MountRule) behavior() mountRuleBehavior {
 		return dataRule{emptyDirRule{r}}
 	case MountHost:
 		return hostRule{r}
+	case MountNodeRootFile:
+		return nodeRootFileRule{hostRule{r}}
 	default:
 		return nil
 	}
@@ -35,8 +38,8 @@ type emptyDirRule struct {
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly || r.Provenance != "" || r.VerityDigest != "" {
-		return fmt.Errorf("mount kind %q does not support source, readOnly or provenance", r.Kind)
+	if r.Source != "" || r.ReadOnly || r.VerityDigest != "" {
+		return fmt.Errorf("mount kind %q does not support source, readOnly or verityDigest", r.Kind)
 	}
 	return nil
 }
@@ -71,26 +74,40 @@ func (r hostRule) validate() error {
 	if r.VerityDigest != "" {
 		return fmt.Errorf("verityDigest is not supported")
 	}
-	switch r.Provenance {
-	case "":
-	case ProvenanceNodeRoot:
-		if !r.ReadOnly {
-			return fmt.Errorf("mount provenance requires readOnly: true")
-		}
-	default:
-		return fmt.Errorf("mount provenance %q is not supported", r.Provenance)
-	}
 	_, err := HostSourceDigest(r.Source)
 	return err
 }
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.Provenance == "" || m.Provenance == r.Provenance)
+	return err == nil && m.Class == MountHost && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly
 }
 
-// hostIndependent is false even with provenance: the rule still names a host
-// path, so secrets grants (PinnedForGrant) reject it.
 func (hostRule) hostIndependent() bool {
 	return false
+}
+
+// nodeRootFileRule is a read-only host rule that also requires node-root
+// evidence. It still names a host path, so secrets grants reject it.
+type nodeRootFileRule struct {
+	hostRule
+}
+
+func (r nodeRootFileRule) validate() error {
+	if !r.ReadOnly {
+		return fmt.Errorf("mount kind %q requires readOnly: true", r.Kind)
+	}
+	return r.hostRule.validate()
+}
+
+func (r nodeRootFileRule) admits(m ObservedMount) bool {
+	return m.Provenance == ProvenanceNodeRoot && r.hostRule.admits(m)
+}
+
+// observedClass is the ObservedMount class a rule of r's kind matches.
+func (r MountRule) observedClass() MountClass {
+	if r.Kind == MountNodeRootFile {
+		return MountHost
+	}
+	return r.Kind
 }

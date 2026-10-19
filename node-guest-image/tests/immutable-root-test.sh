@@ -70,7 +70,7 @@ run_test_case() {
         [ -e /verity-root-mounted ] || fail "/ is not mounted read-only from /dev/mapper/root"
         [ "$(sed -n '1p;3p' /veritysetup-args)" = "$(printf 'open\nroot')" ] \
             || fail "veritysetup does not open the root device"
-        [ "$(sed -n '$=' /veritysetup-args)" = 5 ] || fail "veritysetup open carries extra options"
+        [ "$(sed -n '$=' /veritysetup-args)" = 5 ] || fail "veritysetup ran more than once or open carries extra options"
         [ "$(sed -n '5p' /veritysetup-args)" = "$(printf '%064d' 0)" ] || fail "veritysetup root hash is not roothash="
         : > /expected
         cmp /expected /proc/sysrq-trigger || fail "successful init changed sysrq trigger"
@@ -189,7 +189,7 @@ cp "$test_script" "$fixture_root/tests.sh"
 
 cat > "$fixture_root/usr/sbin/veritysetup" <<'SHIM'
 #!/bin/bash
-printf '%s\n' "$@" > /veritysetup-args
+printf '%s\n' "$@" >> /veritysetup-args
 SHIM
 cat > "$fixture_root/usr/sbin/blkid" <<'SHIM'
 #!/bin/bash

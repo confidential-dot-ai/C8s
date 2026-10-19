@@ -7,8 +7,10 @@ if [[ $# -lt 1 || $# -gt 2 || $(id -u) != 0 ]]; then
   exit 1
 fi
 binary=$(realpath "$1")
-if [[ $(readlink /proc/self/ns/mnt) == $(readlink /proc/1/ns/mnt) ]]; then
-  exec unshare --mount bash "$0" "$@"
+# Comparing with PID 1's namespace misses a namespace shared with other
+# processes, so always enter a fresh one.
+if [[ -z ${C8S_VERITY_NS:-} ]]; then
+  C8S_VERITY_NS=1 exec unshare --mount bash "$0" "$@"
 fi
 dm_coverage=()
 if [[ $# == 2 ]]; then

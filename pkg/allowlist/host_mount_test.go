@@ -77,8 +77,8 @@ func TestHostSourceDigestRejectsInvalidPaths(t *testing.T) {
 	}
 }
 
-func TestNodeRootHostMount(t *testing.T) {
-	rule := MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}
+func TestNodeRootFileMount(t *testing.T) {
+	rule := MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}
 	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
 	if err := normalizeMounts(&policy); err != nil {
 		t.Fatal(err)
@@ -107,6 +107,7 @@ func TestNodeRootHostMount(t *testing.T) {
 		{"other provenance", func(m *ObservedMount) { m.Provenance = "dm-verity" }},
 		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }},
 		{"different source", func(m *ObservedMount) { m.HostSourceDigest = "other" }},
+		{"not a host bind", func(m *ObservedMount) { m.Class = MountData }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			observed := mount
@@ -116,27 +117,25 @@ func TestNodeRootHostMount(t *testing.T) {
 			}
 		})
 	}
-	// A rule without provenance stays path/mode-only when a node supplies evidence.
-	policy.Rules[0].Provenance = ""
+	// A host rule stays path/mode-only when a node supplies evidence.
+	policy.Rules[0].Kind = MountHost
 	if !policy.admits([]ObservedMount{mount}) {
 		t.Fatal("changed path-only host rule behavior")
 	}
 }
 
-func TestHostMountProvenanceValidation(t *testing.T) {
+func TestNodeRootFileValidation(t *testing.T) {
 	digest := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	for _, tc := range []struct {
 		name string
 		rule MountRule
 		want string
 	}{
-		{"unknown provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "dm-verity"}, `mount provenance "dm-verity" is not supported`},
-		{"fs-verity provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "fs-verity", VerityDigest: digest}, "verityDigest is not supported"},
-		{"fs-verity without digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "fs-verity"}, `mount provenance "fs-verity" is not supported`},
-		{"node-root with digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceNodeRoot, VerityDigest: digest}, "verityDigest is not supported"},
-		{"writable node-root", MountRule{Kind: MountHost, Source: "/usr/bin/tool", Provenance: ProvenanceNodeRoot}, "requires readOnly"},
-		{"emptyDir provenance", MountRule{Kind: MountEmptyDir, Provenance: ProvenanceNodeRoot}, "does not support"},
-		{"data digest", MountRule{Kind: MountData, VerityDigest: digest}, "does not support"},
+		{"host verityDigest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "verityDigest is not supported"},
+		{"nodeRootFile verityDigest", MountRule{Kind: MountNodeRootFile, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "verityDigest is not supported"},
+		{"writable nodeRootFile", MountRule{Kind: MountNodeRootFile, Source: "/usr/bin/tool"}, "requires readOnly"},
+		{"nodeRootFile without source", MountRule{Kind: MountNodeRootFile, ReadOnly: true}, "host source"},
+		{"data verityDigest", MountRule{Kind: MountData, VerityDigest: digest}, "does not support"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.rule.Destination = "/mnt/c8s-data/tools"
@@ -148,10 +147,26 @@ func TestHostMountProvenanceValidation(t *testing.T) {
 	}
 }
 
-func TestProvenanceHostRuleIsNotPinnedForGrant(t *testing.T) {
-	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}}}
+// An enforcer that predates a mount kind must refuse a served document that
+// uses it, never fall back to a weaker rule. ParseServedJSON ignores unknown
+// fields, so a node-root rule is a kind: an older parser reaches the same
+// unsupported-kind refusal this future kind does.
+func TestServedUnknownMountKindRefusesDocument(t *testing.T) {
+	doc := `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"` + dApp + `","mounts":{"policy":"exact","rules":[` +
+		`{"destination":"/usr/bin/tool","kind":"futureFile","source":"/usr/bin/tool","readOnly":true,"futureField":"x"}]}}]}}}`
+	if al, err := ParseServedJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), `unsupported kind "futureFile"`) {
+		t.Fatalf("ParseServedJSON(unknown kind) = %+v, %v, want unsupported kind error", al, err)
+	}
+	served := strings.Replace(doc, "futureFile", string(MountNodeRootFile), 1)
+	if _, err := ParseServedJSON([]byte(served)); err != nil {
+		t.Fatalf("ParseServedJSON(nodeRootFile) = %v", err)
+	}
+}
+
+func TestNodeRootFileRuleIsNotPinnedForGrant(t *testing.T) {
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}}}
 	if (mountConstraint{policy: &policy}).hostIndependent() {
-		t.Fatal("node-root host rule reported host-independent, so a secrets grant would accept it")
+		t.Fatal("nodeRootFile rule reported host-independent, so a secrets grant would accept it")
 	}
 }
 
@@ -165,18 +180,19 @@ func TestAdmitsNodeRoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	index := func(mounts MountPolicy) *Index {
+	index := func(command ArgvPolicy, mounts MountPolicy) *Index {
 		if err := normalizeMounts(&mounts); err != nil {
 			t.Fatal(err)
 		}
 		return (&Allowlist{Workloads: map[string]Workload{"c": {Containers: []Container{{
-			Digest: dig(t, dApp), Command: ArgvPolicy{Policy: PolicyAny}, Args: ArgvPolicy{Policy: PolicyAny},
+			Digest: dig(t, dApp), Command: command, Args: ArgvPolicy{Policy: PolicyAny},
 			Mounts: mounts, Env: EnvPolicy{Policy: PolicyAny},
 		}}}}}).BuildIndex()
 	}
-	rule := MountRule{Destination: source, Kind: MountHost, Source: source, ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	anyCommand := ArgvPolicy{Policy: PolicyAny}
+	rule := MountRule{Destination: source, Kind: MountNodeRootFile, Source: source, ReadOnly: true}
 	plain := rule
-	plain.Provenance = ""
+	plain.Kind = MountHost
 	exact := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
 	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
 	for _, tc := range []struct {
@@ -185,11 +201,12 @@ func TestAdmitsNodeRoot(t *testing.T) {
 		mutate func(*ObservedMount)
 		want   bool
 	}{
-		{"exact node-root rule", index(exact), nil, true},
-		{"mount policy any", index(MountPolicy{Policy: PolicyAny}), nil, false},
-		{"rule without provenance", index(MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, false},
-		{"other source", index(exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
-		{"no observed provenance", index(exact), func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"exact nodeRootFile rule", index(anyCommand, exact), nil, true},
+		{"mount policy any", index(anyCommand, MountPolicy{Policy: PolicyAny}), nil, false},
+		{"host rule", index(anyCommand, MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, false},
+		{"entry refuses argv", index(ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/app"}}, exact), nil, false},
+		{"other source", index(anyCommand, exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
+		{"no observed provenance", index(anyCommand, exact), func(m *ObservedMount) { m.Provenance = "" }, false},
 		{"no allowlist", nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -197,8 +214,8 @@ func TestAdmitsNodeRoot(t *testing.T) {
 			if tc.mutate != nil {
 				tc.mutate(&m)
 			}
-			got := tc.index.AdmitsNodeRoot(RunningContainer{Digest: dApp, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}, m)
-			if got != tc.want {
+			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/other"}, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}
+			if got := tc.index.AdmitsNodeRoot(r, m); got != tc.want {
 				t.Fatalf("AdmitsNodeRoot(%s) = %t, want %t", tc.name, got, tc.want)
 			}
 		})

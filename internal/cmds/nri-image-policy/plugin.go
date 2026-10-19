@@ -86,7 +86,7 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 }
 
 // admitsNodeRoot reports whether the base or applied allowlist admits r with
-// an exact node-root host rule for m (allowlist.Index.AdmitsNodeRoot).
+// an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
 func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
@@ -99,7 +99,7 @@ func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.O
 }
 
 // declaresNodeRoot reports whether the base or applied allowlist has a
-// node-root host rule for digest.
+// nodeRootFile rule for digest.
 func (s *policyStore) declaresNodeRoot(digest string) bool {
 	if s == nil {
 		return false
@@ -667,7 +667,7 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // docs/allowlist-and-capabilities.md.
 //
 // The second exempts a single bind, not the container: one whose mount
-// evidence carries node-root provenance and that an exact `node-root` rule of
+// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
 // the base or the served allowlist admits at that destination and source. A
 // served rule is safe here because it can only name read-only bytes of the
 // measured node image, and strict clients verify the served policy byte for

@@ -241,17 +241,24 @@ var nodeRootEvidence = nodeRootFile
 // nodeRootUnavailableReason is replaced in tests, as nodeRootEvidence is.
 var nodeRootUnavailableReason = nodeRootUnavailable
 
+// nodeRootBindIneligible is why a bind lacks provenance on a measured root:
+// observeHostMount withholds it from anything but a plain read-only bind of a
+// regular file reached without symlinks or crossing mounts.
+const nodeRootBindIneligible = "source is not a plain read-only bind of a regular file on the measured root"
+
 // nodeRootMissing explains why a read-only host bind in mounts carries no
-// node-root provenance, so a denial of a node-root rule names its cause. It
-// returns "" when there is no such bind or the root is the measured one.
+// node-root provenance, so a denial of a nodeRootFile rule names its cause. It
+// returns "" when there is no such bind.
 func nodeRootMissing(mounts []allowlist.ObservedMount) string {
 	if !slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool {
 		return m.Class == allowlist.MountHost && m.ReadOnly && m.HostSourceDigest != "" && m.Provenance == ""
 	}) {
 		return ""
 	}
-	reason, _ := nodeRootUnavailableReason()
-	return reason
+	if reason, _ := nodeRootUnavailableReason(); reason != "" {
+		return reason
+	}
+	return nodeRootBindIneligible
 }
 
 func observeHostMount(m *api.Mount) allowlist.ObservedMount {

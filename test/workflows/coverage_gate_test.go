@@ -152,7 +152,7 @@ func TestKernelCoverageMergesProfilesAndPropagatesFailure(t *testing.T) {
 	}
 	const header = "mode: set\n"
 	const blocks = "fixture/a.go:1.1,1.2 1 0\nfixture/a.go:2.1,2.2 1 1\nfixture/a.go:3.1,3.2 1 0\nfixture/untested.go:1.1,1.2 1 0\n"
-	for _, name := range []string{"older base without harness", "kernel failure", "merged profiles"} {
+	for _, name := range []string{"older base without harness", "kernel failure", "no profile", "merged profiles"} {
 		t.Run(name, func(t *testing.T) {
 			fixture := t.TempDir()
 			files := map[string]string{
@@ -171,6 +171,9 @@ exec "$@"
 				"head/scripts/coverage-gate.sh": string(body),
 				"head/node-guest-image/tests/mount-verity-test.sh": `cp dm.out "$2/dm-verity.out"
 `,
+			}
+			if name == "no profile" {
+				files["head/node-guest-image/tests/mount-verity-test.sh"] = "exit 0\n"
 			}
 			if name != "older base without harness" {
 				// The checked-out base revision's harness takes one argument.
@@ -203,6 +206,12 @@ exec "$@"
 				}
 				if string(raw) != header+blocks {
 					t.Fatal("failed kernel run changed coverage")
+				}
+				return
+			}
+			if name == "no profile" {
+				if err == nil || !strings.Contains(string(log), "kernel harness produced no profile") {
+					t.Fatalf("accepted a kernel run without a profile: %v\n%s", err, log)
 				}
 				return
 			}

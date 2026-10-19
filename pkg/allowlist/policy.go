@@ -161,9 +161,8 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 }
 
 // AdmitsNodeRoot reports whether some entry that admits r does so through an
-// exact host mount rule with node-root provenance at m's destination and host
-// source. Only such a mount carries bytes the allowlist pinned to the measured
-// node image; mounts admitted under `any` or without provenance do not.
+// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
+// node image; mounts admitted under `any` or by a host rule do not.
 func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
 		return false
@@ -178,7 +177,7 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 			continue
 		}
 		for _, rule := range c.Mounts.Rules {
-			if rule.Kind == MountHost && rule.Provenance == ProvenanceNodeRoot && rule.Destination == m.Destination && (hostRule{rule}).admits(m) {
+			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
 				return true
 			}
 		}
@@ -186,8 +185,8 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 	return false
 }
 
-// DeclaresNodeRoot reports whether some entry for digest has a host mount rule
-// with node-root provenance.
+// DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
+// mount rule.
 func (i *Index) DeclaresNodeRoot(digest string) bool {
 	if i == nil {
 		return false
@@ -198,7 +197,7 @@ func (i *Index) DeclaresNodeRoot(digest string) bool {
 	}
 	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
 		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
-			return rule.Kind == MountHost && rule.Provenance == ProvenanceNodeRoot
+			return rule.Kind == MountNodeRootFile
 		})
 	})
 }

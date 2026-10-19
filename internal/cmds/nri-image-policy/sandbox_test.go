@@ -556,7 +556,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 	}
 }
 
-// Only an exact node-root rule at the bind's destination exempts it: measured
+// Only an exact nodeRootFile rule at the bind's destination exempts it: measured
 // bytes the pod places anywhere else, such as over a pinned entrypoint, are a
 // host bind like any other.
 func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
@@ -564,20 +564,22 @@ func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
 	original := nodeRootEvidence
 	nodeRootEvidence = func(string) bool { return true }
 	t.Cleanup(func() { nodeRootEvidence = original })
-	rule := allowlist.MountRule{Destination: source, Kind: allowlist.MountHost, Source: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	rule := allowlist.MountRule{Destination: source, Kind: allowlist.MountNodeRootFile, Source: source, ReadOnly: true}
 	plain := rule
-	plain.Provenance = ""
+	plain.Kind = allowlist.MountHost
+	exact := allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}
 	for _, tc := range []struct {
 		name        string
 		mounts      allowlist.MountPolicy
 		destination string
-		pull        bool
+		pull, base  bool
 		want        imageVerdict
 	}{
-		{"exact node-root rule", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}, source, true, verdictAllow},
-		{"mount policy any, unlisted destination", allowlist.MountPolicy{Policy: allowlist.PolicyAny}, "/app/verify", true, verdictDeny},
-		{"rule without provenance", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{plain}}, source, true, verdictDeny},
-		{"allowlist disabled", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}, source, false, verdictDeny},
+		{"exact nodeRootFile rule", exact, source, true, false, verdictAllow},
+		{"exact nodeRootFile rule in the base allowlist", exact, source, false, true, verdictAllow},
+		{"mount policy any, unlisted destination", allowlist.MountPolicy{Policy: allowlist.PolicyAny}, "/app/verify", true, false, verdictDeny},
+		{"host rule", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{plain}}, source, true, false, verdictDeny},
+		{"allowlist disabled", exact, source, false, false, verdictDeny},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
@@ -586,10 +588,14 @@ func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
 				t.Fatal(err)
 			}
 			cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
+			served := al
 			if tc.pull {
 				cfg.Allowlist.Pull.URL = "https://cds"
 			}
-			p, _ := newCachedPlugin(cfg, al)
+			if tc.base {
+				cfg.Allowlist.Base, served = al, &allowlist.Allowlist{}
+			}
+			p, _ := newCachedPlugin(cfg, served)
 			pod, ctr := sandboxedPod(), sandboxedContainer()
 			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
 			ctr.Args = []string{"/bin/app"}

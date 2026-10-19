@@ -343,15 +343,15 @@ func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {
 	}
 }
 
-func TestDerivePreservesNodeRootProvenance(t *testing.T) {
-	file := writeFile(t, "mounts.json", `{"seed":{"policy":"deny"},"frontend":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"provenance":"node-root"}]},"worker":{"policy":"deny"}}`)
+func TestDerivePreservesNodeRootFile(t *testing.T) {
+	file := writeFile(t, "mounts.json", `{"seed":{"policy":"deny"},"frontend":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"nodeRootFile","source":"/usr/bin/nvidia-smi","readOnly":true}]},"worker":{"policy":"deny"}}`)
 	got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rule := got["dynamo"].Containers[0].Mounts.Rules[0]
-	if rule.Provenance != pkgallowlist.ProvenanceNodeRoot || rule.Source != "/usr/bin/nvidia-smi" || !rule.ReadOnly {
-		t.Fatalf("derived rule lost provenance: %+v", rule)
+	if rule.Kind != pkgallowlist.MountNodeRootFile || rule.Source != "/usr/bin/nvidia-smi" || !rule.ReadOnly {
+		t.Fatalf("derived rule lost its kind: %+v", rule)
 	}
 }
 

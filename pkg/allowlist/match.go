@@ -244,7 +244,7 @@ func (p MountPolicy) admits(mounts []ObservedMount) bool {
 
 func (p MountPolicy) admitsMount(mount ObservedMount) bool {
 	i := slices.IndexFunc(p.Rules, func(rule MountRule) bool {
-		return rule.Destination == mount.Destination && rule.Kind == mount.Class
+		return rule.Destination == mount.Destination && rule.observedClass() == mount.Class
 	})
 	if i < 0 {
 		return false

@@ -64,6 +64,7 @@ kernel)
   mkdir "$kernel_scratch/profiles"
   go test -c -coverpkg=./... -o "$kernel_scratch/nri-verity.test" ./internal/cmds/nri-image-policy
   sudo -n bash "$harness" "$kernel_scratch/nri-verity.test" "$kernel_scratch/profiles"
+  [ -s "$kernel_scratch/profiles/dm-verity.out" ] || { echo "kernel harness produced no profile" >&2; exit 1; }
   # percent() unions covered blocks from duplicate records; retain one header.
   for kernel_profile in "$kernel_scratch"/profiles/*.out; do
     tail -n +2 "$kernel_profile" >> "$profile"

@@ -614,17 +614,17 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 
 func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
 	for _, tc := range []struct {
-		name, provenance string
-		refused          bool
+		name, kind, extra string
+		refused           bool
 	}{
-		{"path alone", "", true},
-		{"measured node root", `,"provenance":"node-root"`, false},
-		{"untrusted verity device", `,"provenance":"dm-verity"`, true},
-		{"fs-verity not supported", `,"provenance":"fs-verity","verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},
+		{"path alone", "host", "", true},
+		{"measured node root", "nodeRootFile", "", false},
+		{"provenance field", "host", `,"provenance":"node-root"`, true},
+		{"fs-verity not supported", "nodeRootFile", `,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
-				`"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true` + tc.provenance + `}]},` +
+				`"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"` + tc.kind + `","source":"/usr/bin/nvidia-smi","readOnly":true` + tc.extra + `}]},` +
 				`"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}}}`
 			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"worker":{"containers":[`+container+`]}}}`)
 			out, _, err := runCmd("lint", "--strict", file)
