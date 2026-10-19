@@ -210,7 +210,10 @@ type Config struct {
 	AttestationAPIURL string
 	DocumentPath      string
 	SignaturePath     string
-	RootDir           string
+	// MeasuredPoliciesFile is the node's measured-policy journal, as
+	// cred-release's --measured-policies-file. Empty replays none.
+	MeasuredPoliciesFile string
+	RootDir              string
 }
 
 var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity
@@ -249,7 +252,7 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	}
 	// credrelease compares against the verified report's family ("sev-snp",
 	// "tdx"), not the launch tag ("snp", "tdx").
-	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api)
+	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return nil, fmt.Errorf("verify this boot's identity: %w", err)
 	}

@@ -172,6 +172,10 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
+	// MeasuredPoliciesFile is the node's journal of allowlist policies
+	// extended into RTMR[3] (armtls.NodeJournal). Both bundles carry it,
+	// read after the evidence; empty omits it.
+	MeasuredPoliciesFile string
 	// Routes gates attested sessions, routes the tunnel and serves the route
 	// publication. Required.
 	Routes Router
@@ -204,9 +208,10 @@ type establishedSession struct {
 
 // Server serves the c8s-verify endpoints.
 type Server struct {
-	cfg    Config
-	log    *slog.Logger
-	routes Router
+	cfg              Config
+	log              *slog.Logger
+	routes           Router
+	measuredPolicies *armtls.Journal
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -247,6 +252,7 @@ func NewServer(cfg Config) *Server {
 		cfg:              cfg,
 		log:              cfg.Logger,
 		routes:           cfg.Routes,
+		measuredPolicies: armtls.NewJournal(cfg.MeasuredPoliciesFile),
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -533,18 +539,19 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, types.AttestationBundle{
-		Version:       types.BindingAttestPQ,
-		Platform:      platform,
-		Generation:    generation,
-		Nonce:         req.Nonce,
-		Evidence:      evidence,
-		CDSCertPEM:    string(identity.bundlePEM),
-		FrontDoorMode: s.cfg.FrontDoorMode,
-		XWingEK:       req.XWingEK,
-		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
-		SessionID:     id,
-		IdentityProof: proof,
-		RouteDigest:   hex.EncodeToString(digest[:]),
+		Version:          types.BindingAttestPQ,
+		Platform:         platform,
+		Generation:       generation,
+		Nonce:            req.Nonce,
+		Evidence:         evidence,
+		CDSCertPEM:       string(identity.bundlePEM),
+		FrontDoorMode:    s.cfg.FrontDoorMode,
+		XWingEK:          req.XWingEK,
+		XWingCT:          base64.RawURLEncoding.EncodeToString(xwingCT),
+		SessionID:        id,
+		IdentityProof:    proof,
+		MeasuredPolicies: s.measuredPolicies.Policies(),
+		RouteDigest:      hex.EncodeToString(digest[:]),
 	})
 }
 
@@ -614,6 +621,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
 		RouteDigest:       hex.EncodeToString(digest[:]),
+		MeasuredPolicies:  s.measuredPolicies.Policies(),
 	})
 }
 

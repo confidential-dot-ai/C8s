@@ -2,7 +2,8 @@
 // obtains a kube credential from a measured CVM: it attests the node,
 // confirms the full measured identity — on TDX the image tuple (MRTD,
 // RTMR[1], RTMR[2]) plus the RTMR[3] chain seeded by the operator's key and
-// extended by the expected workload images; on SEV-SNP the pinned per-SMP
+// extended by the expected workload images, then the node's measured
+// allowlist policies; on SEV-SNP the pinned per-SMP
 // launch digest plus the operator-key HOSTDATA binding — then exchanges a CSR
 // for a short-lived kube client cert over the cred-release endpoint and
 // assembles a kubeconfig.
@@ -15,15 +16,19 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // verifyEnvelope verifies a self-describing evidence envelope in-process with
@@ -51,6 +56,32 @@ type measuredPolicy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
+	// policies are the allowlist policies the node measured after the
+	// workloads, as the runtime extensions of its last verified cred-release
+	// leaf; nil on SNP. checkIdentity accepts the list only as far as the
+	// quote's register replays it.
+	policies *policyList
+}
+
+// policyList holds the runtime extension list of the latest verified
+// cred-release leaf, or of the fresh /attest response. The leaf's
+// self-signature under its attested key covers the list, so the host cannot
+// rewrite it.
+type policyList struct {
+	mu   sync.Mutex
+	list []string
+}
+
+func (l *policyList) record(list []string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.list = list
+}
+
+func (l *policyList) current() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.list
 }
 
 // platform is the bare-metal tag of the manifest's family. Cloud overlays are
@@ -121,12 +152,42 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 // workloadDigests is empty on SNP — it has no runtime-extend register, and
 // workloadChain refuses --workload-image there — so the binding checked is the
 // launch-committed HOSTDATA alone.
+//
+// A node that measures allowlist policies extends them after the workloads,
+// and the list may run ahead of the quote, so any prefix that replays is
+// accepted, under the rule runtimemeasure.MatchBindingPrefix applies at every
+// c8s verifier. Policy and workload extends share one event encoding, so an
+// extend after the workload chain passes whenever the node lists it as a
+// policy: the workload chain itself stays exact.
 func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
 	}
-	return runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
+	err := runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
+	if err == nil || exp.policies == nil {
+		return err
+	}
+	policies := exp.policies.current()
+	if len(policies) > armtls.MaxRuntimeExtensions {
+		return fmt.Errorf("%w: %w: the node lists %d, over the per-boot cap of %d", err, errPoliciesDoNotReplay, len(policies), armtls.MaxRuntimeExtensions)
+	}
+	// One matcher for every c8s verifier: the workload chain then the
+	// policies, all canonical, of which the register must carry at least the
+	// whole workload chain.
+	claimed := append(slices.Clone(exp.workloadDigests), policies...)
+	k, perr := runtimemeasure.MatchBindingPrefix(res, exp.operatorPubPEM, claimed)
+	if perr == nil && k >= len(exp.workloadDigests) {
+		return nil
+	}
+	if perr == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w: %v", err, errPoliciesDoNotReplay, perr)
 }
+
+// errPoliciesDoNotReplay marks a binding the node's measured-policy list
+// does not account for.
+var errPoliciesDoNotReplay = errors.New("no prefix of the node's measured policies replays it")
 
 // verifyEvidence verifies an evidence envelope with attestation-go (HW chain +
 // report_data binding) and enforces the full measured-identity policy on the

@@ -1084,12 +1084,12 @@ verbatim bytes the guest initrd hashed, as written by `openssl ec -pubout`)
 and `verify` derives the bare operator-key seed,
 `SHA-384(0x00*48 ‖ SHA-384(pubkey))`, itself. The two are mutually exclusive
 — one register, one expected value — and `--operator-pkey` carries the same
-`--image-manifest` requirement. Note its scope: it pins the **bare** seed,
-i.e. a node with no per-workload RTMR[3] extends on top. That is what every
-node reports today; `c8s get-kubeconfig` is the command that also folds
-`--workload-image` extends into the expected register. Supplying any of these
-flags against SEV-SNP evidence is a policy error, not an ignored option: SNP
-has no runtime measurement registers.
+`--image-manifest` requirement. Note its scope: it pins the seed, optionally
+followed by the node's measured allowlist policies, but not per-workload
+extends; `c8s get-kubeconfig` is the command that folds `--workload-image`
+extends into the expected register. Supplying any of these flags against
+SEV-SNP evidence is a policy error, not an ignored option: SNP has no runtime
+measurement registers.
 
 A TDX verdict pinned on MRTD alone is **rejected**, not warned about, when no
 operator-pinned CA anchor (`--mesh-ca`) stands beside the measurements: the
@@ -1112,7 +1112,9 @@ still requires `--mesh-ca` (the document publishes `cds_tls.mesh_ca_url`).
 Exit codes are a CI contract: `0` verified, `1` usage error, `2`
 verification/policy failed (e.g. wrong measurement), `3` evidence unavailable
 (unreachable/unparseable), `4` partially verified — the evidence verified, but
-a property it presents is not proven. The three partial cases today: the
+a property it presents is not proven. The partial cases today: a non-empty
+policy history that neither `--pin-policy` nor `--trust-operator` checked (see
+[Check a node's policy history](#check-a-nodes-policy-history)), the
 front door's live TLS handshake presenting a serving certificate the discovery
 evidence does not attest (a WebPKI front door, whatever the document's
 `public_tls.mode` declares — the verdict keys on the handshake observed on the
@@ -1142,16 +1144,90 @@ Caveats the output surfaces:
   certificate key, not a per-request nonce, so it proves "this key was born in a
   TEE with this measurement" but not "freshly now" (`fresh: false`).
 
+### Check a node's policy history
+
+A node that measures its allowlist policies (Helm value
+`nriImagePolicy.measurePolicies`, see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
+reports RTMR[3] as the seed followed by each policy it enforced since boot.
+Its router's attest-pq and attest-lb bundles list those digests as
+`measured_policies`, and its TDX armTLS certificates and discovery document
+carry them as runtime extensions. With `--operator-pkey`, or an
+`--image-policy-file` whose matching image pins an `approver_key`, `verify`
+replays that list against RTMR[3] and reports the longest prefix that matches
+as `history:` (`measured_policies` in JSON). Only the anchor of an image the
+evidence matches on its own counts: another image's `approver_key` proves
+nothing about a guest that booted an unanchored one. Without such an anchor, a
+listed history is not replayed and the verdict warns. A non-empty replayed history leaves the verdict
+partial until `--pin-policy` or `--trust-operator` checks it: the replay proves
+which policies the node enforced, not that they are acceptable. Choose how to
+accept the history:
+
+| Flag | Accepts | Failure |
+|---|---|---|
+| `--pin-policy sha256:<hex>` (repeatable) | Only these digests, for every history entry and for the policy the leaf was issued under | `policy_history_not_pinned` |
+| `--trust-operator --trust-operator-keys <pem>` | Every history entry, and the policy the leaf was issued under, whose document carries a valid operator signature under these keys | `policy_history_unsigned` |
+
+Both flags require `--operator-pkey` or an `--image-policy-file` image pinning an
+`approver_key`, and exclude each other. Both fail with
+`policy_history_absent` when nothing replays: a node that does not measure
+proves nothing about the policies it enforced. Both also fail when the leaf's
+matched-workload stamp is unreadable; that stamp is CA-vouched, so without
+`--mesh-ca` the verdict stays partial. A leaf with no stamp, which CDS issues
+when the pod matches no single allowlist entry, leaves the verdict partial: it
+is indistinguishable from a leaf issued to a pod that presented no sandbox
+token, so the policy it was issued under is not checked (`leaf_stamped` is
+`false` in JSON for an absent or unreadable stamp, and absent when the evidence
+carries no leaf).
+
+The history runs from boot up to the evidence's quote. Evidence that this
+check's nonce does not bind (a certificate, a discovery document or a saved
+file) cannot show a policy the operator pushed since, so both flags leave such
+a verdict partial: use `--mode attest-pq` or `attest-lb` to check the node's
+current history. With `--operator-pkey`, a list of more than 256 entries, or
+one with an entry that is not a canonical `sha256:<hex>` digest, fails the
+verdict.
+
+`--trust-operator` fetches each document from
+`<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
+(`allowlist_digest_mismatch` otherwise), and checks its stored write token
+against `--trust-operator-keys` with `operatorauth.VerifyStored`.
+`--operator-keys` does not feed it, and `--trust-operator-keys` alone is
+rejected. Only a document uploaded whole with a signed `PUT /allowlist`
+carries a token: a per-workload edit yields an unsigned policy, which fails
+`--trust-operator` until a signed upload of the same document stores a token
+for its digest. The documents authenticate
+themselves against the replayed digests, so any router replica may serve
+them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`, and all of them together get four times
+`--timeout`; a fetch that times out or cannot
+connect exits 3, as for unavailable evidence.
+
+To review the documents before pinning them, add `--fetch-allowlists DIR`
+(also requires `--operator-pkey` or an anchored `--image-policy-file` image): `verify` saves each one as
+`DIR/<hex>.json`, and a failed fetch or write fails the verdict with
+`allowlist_fetch_failed`.
+
+```sh
+c8s verify https://app.example.com --mode attest-lb \
+  --image-manifest image.json --operator-pkey operator.pub \
+  --trust-operator --trust-operator-keys operator-keys.pem
+```
+
 ### Complete measured identity policies
 
 Image policy files preserve each image measurement, its TDX RTMR tuple and
 optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
-`remote.EnforceImages` checks the image and calls `runtimemeasure.VerifyBinding`
-for that same entry. An image cannot borrow another entry's authorized key.
+`remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
+binding for that same entry. On TDX the binding may be the key's seed followed
+by a prefix of the peer's measured policies that replays
+([Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
-entry, including its launch-key binding when present.
+entry, including its launch-key binding when present. The measured policies
+after the seed are accepted as far as they replay, not judged: see "What
+armTLS guarantees" in [armTLS](armtls.md).
 
 ### Image policy inputs
 
@@ -1200,7 +1276,16 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
 - **RTMR[3] chain (TDX)** — the register must equal the operator-key seed
   (`runtimemeasure.Seed` over the exact pubkey PEM bytes)
   extended, in order, by each digest-pinned `--workload-image` ref (tags are
-  rejected). With no `--workload-image` the register must equal the bare seed;
+  rejected). With no `--workload-image` the register must equal the bare seed.
+  A node that measures allowlist policies extends them after that chain and
+  sends their list with the fresh report, or in cred-release's armTLS
+  certificate; the register may then also carry the longest prefix of that
+  list that replays (see
+  [Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+  That trailing part is a prefix check, not an exact chain: policy and
+  workload extends share one event encoding, so `--workload-image` excludes
+  an unpinned workload only while the measured image journals policies
+  alone, which the image pin above enforces;
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator
@@ -1234,6 +1319,12 @@ stop the flow. An explicit `--attest-url` retains the separate nonce check
 for older images with a reachable attestation API. There is no automatic
 fallback: images without the authenticated `/attest` endpoint need a rebuild
 to use the default flow.
+
+With `--attest-url`, the measured-policy list comes from cred-release's
+certificate, which the node reissues only at half its armTLS lifetime. After
+the node measures a new policy, the gate fails until that reissue. To avoid
+the wait, omit `--attest-url`: the default flow takes the list from the
+`/attest` response, read after the quote.
 
 The released kubeconfig's client certificate is
 `CN=operator, O=c8s:node-operators`, with a one-hour default (and baked
@@ -1468,6 +1559,38 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 `front_door_mode`, and attest-lb — the transport binding to the exact serving
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
+
+When `cds-attest --measured-policies-file` names the node's measured-policy
+journal, both bundles also carry `measured_policies`: the policy digests the
+node extended into RTMR[3], read after the quote and outside any transcript.
+The chart passes the journal under `nriImagePolicy.hostPaths.runtimeDir`
+wherever the router mounts the attestation-api socket; an absent journal
+omits the list. With an operator-key anchor, `c8s verify` replays it against
+RTMR[3] (see
+[Check a node's policy history](#check-a-nodes-policy-history) and
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
+
+CDS, cred-release, the mesh, `launch-config stage` and get-cert take the
+journal from `--measured-policies-file`. It defaults to
+`/run/nri-image-policy/measured-policies`, except for get-cert, whose default
+is the sidecar mount, `/run/c8s/workload-claims/measured-policies`. An empty
+value lists none. The chart passes CDS and the mesh the journal under
+`nriImagePolicy.hostPaths.runtimeDir` wherever it mounts the attestation-api
+socket. A producer logs once, naming
+the path, when the journal is missing. The plugin's digests endpoint reads the
+journal in its runtime directory.
+
+To roll out policy measurement, upgrade in this order:
+
+1. CDS and every verifier: cred-release, the mesh, router discovery and
+   `c8s get-kubeconfig`. An older verifier rejects a node that measures
+   policies.
+2. The clients that send the list: get-cert and the CDS client. An older CDS
+   rejects an `/attest` request carrying `runtime_extensions` with 422 (`invalid_request`).
+3. The node's policy measurer.
+
+At boot the measurer and its readers start in any order: the journal records
+each policy before extending it, and every reader reads it after its report.
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode at boot. Mode `acme` applies when its

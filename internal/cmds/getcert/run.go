@@ -82,6 +82,7 @@ type config struct {
 	WorkloadClaimsTimeout           time.Duration
 	UnnamedRenewInterval            time.Duration
 	ExpectedWorkload                string
+	MeasuredPoliciesFile            string
 }
 
 // inventoryEndpoint returns the compiled admission-inventory endpoint. It is a
@@ -164,6 +165,8 @@ alongside a workload that uses the obtained certificate.`,
 	flags.DurationVar(&cfg.UnnamedRenewInterval, "unnamed-renew-interval", 30*time.Second, "With --workload-claims and --renew-interval, renew while the installed leaf carries no matched-workload stamp at most this far apart (plus jitter), starting at 2s and doubling, so a pod picks up its name at the first post-completion renewal instead of waiting a full interval; settles to --renew-interval once named, and backs off toward it for a pod that stays unnamed. Poll timing never changes the match decision. 0 disables the fast poll")
 	flags.StringVar(&cfg.ExpectedWorkload, "expected-workload", "", "The allowlist entry this pod should be stamped with; requires --workload-claims and --renew-interval. A leaf stamped with any other name stays on the --unnamed-renew-interval fast poll, logged once per name, instead of settling. Issuance never fails on a mismatch (empty = any stamp settles)")
 
+	flags.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", workloadclaims.MeasuredPoliciesJournal, "The node's journal of allowlist policies extended into TDX RTMR[3], as mounted into this sidecar; a TDX CSR and attest request list it. Empty lists none")
+
 	_ = cmd.MarkFlagRequired("cds-url")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
 	cmd.MarkFlagsOneRequired("san", "san-file")
@@ -188,7 +191,9 @@ func newCDSClient(cfg config) (attestclient.Client, allowlistclient.Client, erro
 	if err != nil {
 		return attestclient.Client{}, allowlistclient.Client{}, err
 	}
-	return attestclient.NewClientWithHTTP(cfg.CDSURL, httpClient), allowlistclient.NewClientWithHTTP(cfg.CDSURL, httpClient), nil
+	client := attestclient.NewClientWithHTTP(cfg.CDSURL, httpClient)
+	client.MeasuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
+	return client, allowlistclient.NewClientWithHTTP(cfg.CDSURL, httpClient), nil
 }
 
 func cdsHTTPClient(cfg config) (*http.Client, error) {
@@ -1212,9 +1217,10 @@ func buildDiscoveryDocument(cfg config, result attestclient.CertificateResult) (
 			MeshCAURL:         cfg.DiscoveryMeshCAURL,
 		},
 		Attestation: types.AttestationDiscovery{
-			Challenge: result.Challenge,
-			Platform:  string(result.Platform),
-			Evidence:  result.Evidence,
+			Challenge:         result.Challenge,
+			Platform:          string(result.Platform),
+			Evidence:          result.Evidence,
+			RuntimeExtensions: result.RuntimeExtensions,
 		},
 	}, nil
 }
