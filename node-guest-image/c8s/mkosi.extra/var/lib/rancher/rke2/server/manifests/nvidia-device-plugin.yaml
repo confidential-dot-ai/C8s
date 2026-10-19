@@ -80,8 +80,15 @@ spec:
               mountPath: /var/lib/kubelet/device-plugins
             - name: cdi-dir
               mountPath: /var/run/cdi
-            - name: driver-root
-              mountPath: /driver-root
+            # The driver root is /usr + /etc only, with no usrmerge /lib
+            # symlink. nvcdi mounts every firmware match across its search
+            # paths, and anything reached through /lib/firmware can never be
+            # a symlink-free node-root file for nri-image-policy.
+            - name: driver-root-usr
+              mountPath: /driver-root/usr
+              readOnly: true
+            - name: driver-root-etc
+              mountPath: /driver-root/etc
               readOnly: true
             - name: dev
               mountPath: /dev
@@ -93,9 +100,12 @@ spec:
           hostPath:
             path: /var/run/cdi
             type: DirectoryOrCreate
-        - name: driver-root
+        - name: driver-root-usr
           hostPath:
-            path: /
+            path: /usr
+        - name: driver-root-etc
+          hostPath:
+            path: /etc
         - name: dev
           hostPath:
             path: /dev
