@@ -395,13 +395,13 @@ pod_sandbox_id() { return "$UNSUPPORTED"; }
 # The operator's verifier on a saved leaf: 0 accepts, 2 rejects on a verdict;
 # anything else means it could not judge.
 relying_party() {
-    local leaf="$1" ca="$2" rc=0
+    local leaf="$1" ca="$2" rc=0 out
     shift 2
-    c8s verify --from-file "$leaf" --mesh-ca "$ca" "${measurement_args[@]}" "$@" >/dev/null 2>&1 || rc=$?
+    out="$(c8s verify --from-file "$leaf" --mesh-ca "$ca" "${measurement_args[@]}" "$@" 2>&1)" || rc=$?
     case "$rc" in
         0) echo accepts ;;
-        2) echo rejects ;;
-        *) echo "backend: c8s verify exited $rc" >&2; return 1 ;;
+        2) echo rejects; printf '%s\n' "$out" ;;
+        *) echo "backend: c8s verify exited $rc: $out" >&2; return 1 ;;
     esac
 }
 

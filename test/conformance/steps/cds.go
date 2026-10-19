@@ -325,11 +325,13 @@ func matchesHeldKeys(ctx context.Context) error {
 	return nil
 }
 
-// referenceValues parses the launch digests of the reference-value document.
+// referenceValues parses the launch digests of the reference-value document:
+// an SNP entry's measurement, a TDX entry's MRTD.
 func referenceValues(body []byte) ([]string, error) {
 	var doc struct {
 		Measurements []struct {
 			Measurement *string `json:"measurement"`
+			MRTD        *string `json:"mrtd"`
 		} `json:"measurements"`
 	}
 	if err := json.Unmarshal(body, &doc); err != nil {
@@ -340,8 +342,11 @@ func referenceValues(body []byte) ([]string, error) {
 	}
 	var digests []string
 	for _, m := range doc.Measurements {
-		if m.Measurement != nil {
+		switch {
+		case m.Measurement != nil:
 			digests = append(digests, strings.ToLower(*m.Measurement))
+		case m.MRTD != nil:
+			digests = append(digests, strings.ToLower(*m.MRTD))
 		}
 	}
 	return sortedUnique(digests), nil

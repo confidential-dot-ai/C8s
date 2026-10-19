@@ -730,6 +730,7 @@ type relyingParty struct {
 	allowlist string
 	expects   []string
 	verdict   string
+	reason    string // the verifier's output on a rejection
 }
 
 // workdir is a directory for the relying party's files, removed after the
@@ -813,11 +814,11 @@ func relyingPartyVerifies(ctx context.Context, name string) error {
 	if rp.allowlist != "" {
 		args = append(args, "--allowlist="+rp.allowlist)
 	}
-	verdict, err := w.be.call("relying_party", args...)
+	out, err := w.be.call("relying_party", args...)
 	if err != nil {
 		return err
 	}
-	rp.verdict = verdict
+	rp.verdict, rp.reason, _ = strings.Cut(out, "\n")
 	return nil
 }
 
@@ -827,7 +828,7 @@ func relyingPartyVerdict(ctx context.Context, want string) error {
 		return errors.New("the relying party has verified nothing")
 	}
 	if w.issuance.relying.verdict != want {
-		return fmt.Errorf("the relying party %s the leaf", w.issuance.relying.verdict)
+		return fmt.Errorf("the relying party %s the leaf: %s", w.issuance.relying.verdict, w.issuance.relying.reason)
 	}
 	return nil
 }
