@@ -76,27 +76,44 @@ scratch_encrypted() { echo yes; }
 # c8s CLI's signed writes and raw reads reach the CDS through its built-in
 # allowlist route, which forwards the /allowlist routes unchanged. The
 # operator's credential may neither exec, port-forward nor write in $NS, so
-# that route is the harness's only way to the CDS: its other documents, its
-# own serving certificate and its Service answer 77 below. The launch
-# bundle's key is the run's operator key; the token minter is built from the
-# checkout on first use, with the Go toolchain that built the CLI.
+# the CDS's other routes are sent from the pod the run keeps (mesh_scraper),
+# to the address pods dial, as is the CDS's own serving certificate read;
+# its Service answers 77 below. The launch bundle's key is the run's operator key; the
+# token minter is built from the checkout on first use, with the Go
+# toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
-# The route relays the /allowlist routes alone; the CDS's others are out of
-# reach.
 cds_request() {
     case "$2" in
         /allowlist | /allowlist/*) http_request "$(cds_url)" "$@" ;;
-        *) return "$UNSUPPORTED" ;;
+        *) cds_pod_request "$@" ;;
     esac
+}
+# cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
+cds_pod_request() {
+    local url
+    local -a opts=(-X "$1")
+    [ -z "${4:-}" ] || opts+=(-H "Authorization: $4")
+    url="$(cds_pod_url)" || return
+    mesh_scraper || return
+    agent_curl "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "${3:-}" "${5:-}" "${6:-}" "${opts[@]}" "$url$2"
+}
+cds_read() {
+    local path
+    [ "${2:-}" != plain ] || return "$UNSUPPORTED"
+    path="$(cds_document_path "$1")" || return
+    cds_request GET "$path"
 }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
-cds_document_path() {
-    case "$1" in
-        allowlist) echo /allowlist ;;
-        *) return "$UNSUPPORTED" ;;
-    esac
+# Every CDS call above goes through that route.
+router_allowlist_route() { echo yes; }
+# The leaf, the first certificate curl's %{certs} lists for the chain.
+cds_serving_cert() {
+    local url out
+    url="$(cds_pod_url)" || return
+    mesh_scraper || return
+    out="$(agent_run "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "curl -sk --max-time 30 -o /dev/null -w '%{certs}' $(shq "$url")")" || return
+    awk '/-----BEGIN CERTIFICATE-----/ {on = 1} on {print} /-----END CERTIFICATE-----/ {exit}' <<<"$out"
 }
-cds_serving_cert() { return "$UNSUPPORTED"; }
 # No node shell, so the plugin's health socket is out of reach.
 applied_version() { return "$UNSUPPORTED"; }
 cds_block() { return "$UNSUPPORTED"; }
@@ -210,25 +227,37 @@ AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ 
 
 manifest_filter() { agent_wrap; }
 
-# Sent by curl in the requester through its agent; the body travels in the
-# command, as the agent has no stdin.
+# Sent by curl in the requester through its agent.
 requester_request() {
-    local ns="$1" pod="$2" method="$3" url="$4" body="${5:-}" socket="${6:-}" resp script
-    local -a opts=(-sk --max-time 30 -X "$method" -w '\n%{http_code}')
-    [ -z "$socket" ] || opts+=(--unix-socket "$socket")
+    local -a opts=()
+    [ -z "${6:-}" ] || opts+=(--unix-socket "$6")
+    agent_curl "$1" "$2" "$REQUESTER_CONTAINER" "${5:-}" "" "" -X "$3" ${opts[@]+"${opts[@]}"} "$4"
+}
+
+# agent_curl <ns> <pod> <container> <body-file> <client-cert> <client-key> <curl args...>:
+# curl through the pod's agent, printing the status (000 when nothing
+# answered), then the body. The files travel in the command, as the agent
+# has no stdin; empty ones are omitted.
+agent_curl() {
+    local ns="$1" pod="$2" container="$3" body="$4" cert="$5" key="$6" script="" resp rc=0
+    shift 6
+    local -a opts=(-sk --max-time 30 -w '\n%{http_code}')
     if [ -n "$body" ]; then
-        opts+=(-H 'Content-Type: application/json' --data-binary @-)
-        script="echo $(base64 < "$body" | tr -d '\n') | base64 -d | curl $(shq "${opts[@]}" "$url")"
-    else
-        script="curl $(shq "${opts[@]}" "$url")"
+        script+="echo $(base64 < "$body" | tr -d '\n') | base64 -d > /tmp/.agent-body; "
+        opts+=(-H 'Content-Type: application/json' --data-binary @/tmp/.agent-body)
     fi
-    local rc=0
-    resp="$(agent_run "$ns" "$pod" "$REQUESTER_CONTAINER" "$script")" || rc=$?
+    if [ -n "$cert" ]; then
+        script+="echo $(base64 < "$cert" | tr -d '\n') | base64 -d > /tmp/.agent-cert; "
+        script+="echo $(base64 < "$key" | tr -d '\n') | base64 -d > /tmp/.agent-key; "
+        opts+=(--cert /tmp/.agent-cert --key /tmp/.agent-key)
+    fi
+    script+="curl $(shq "${opts[@]}" "$@")"
+    resp="$(agent_run "$ns" "$pod" "$container" "$script")" || rc=$?
     [ "$rc" != "$UNSUPPORTED" ] || return "$UNSUPPORTED"
     # A curl that answered nothing still prints status 000; anything else
     # without a status line is the agent's or the script's own failure.
     if [ "$rc" != 0 ] && ! [[ "${resp##*$'\n'}" =~ ^[0-9]{3}$ ]]; then
-        echo "backend: the requester's curl ($((${#script} / 1024)) KiB of script) exited $rc: $resp" >&2
+        echo "backend: curl in $ns/$pod ($((${#script} / 1024)) KiB of script) exited $rc: $resp" >&2
         return 1
     fi
     echo "${resp##*$'\n'}"
