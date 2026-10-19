@@ -139,6 +139,7 @@ func compareObservedMounts(a, b allowlist.ObservedMount) int {
 		cmp.Compare(a.Class, b.Class),
 		cmp.Compare(a.Storage, b.Storage),
 		cmp.Compare(a.HostSourceDigest, b.HostSourceDigest),
+		cmp.Compare(a.Provenance, b.Provenance),
 	)
 	if order != 0 || a.ReadOnly == b.ReadOnly {
 		return order

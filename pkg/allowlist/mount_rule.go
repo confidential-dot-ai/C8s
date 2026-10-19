@@ -35,8 +35,8 @@ type emptyDirRule struct {
 }
 
 func (r emptyDirRule) validate() error {
-	if r.Source != "" || r.ReadOnly {
-		return fmt.Errorf("mount kind %q does not support source or readOnly", r.Kind)
+	if r.Source != "" || r.ReadOnly || r.Provenance != "" || r.VerityDigest != "" {
+		return fmt.Errorf("mount kind %q does not support source, readOnly or provenance", r.Kind)
 	}
 	return nil
 }
@@ -68,15 +68,29 @@ type hostRule struct {
 }
 
 func (r hostRule) validate() error {
+	if r.VerityDigest != "" {
+		return fmt.Errorf("verityDigest is not supported")
+	}
+	switch r.Provenance {
+	case "":
+	case ProvenanceNodeRoot:
+		if !r.ReadOnly {
+			return fmt.Errorf("mount provenance requires readOnly: true")
+		}
+	default:
+		return fmt.Errorf("mount provenance %q is not supported", r.Provenance)
+	}
 	_, err := HostSourceDigest(r.Source)
 	return err
 }
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly
+	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.Provenance == "" || m.Provenance == r.Provenance)
 }
 
+// hostIndependent is false even with provenance: the rule still names a host
+// path, so secrets grants (PinnedForGrant) reject it.
 func (hostRule) hostIndependent() bool {
 	return false
 }

@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,83 @@ func TestHostSourceDigestRejectsInvalidPaths(t *testing.T) {
 				t.Fatalf("accepted invalid host source %q", source)
 			}
 		})
+	}
+}
+
+func TestNodeRootHostMount(t *testing.T) {
+	rule := MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	if err := normalizeMounts(&policy); err != nil {
+		t.Fatal(err)
+	}
+	digest, _ := HostSourceDigest(rule.Source)
+	mount := ObservedMount{Destination: rule.Destination, Class: MountHost, HostSourceDigest: digest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	if !policy.admits([]ObservedMount{mount}) {
+		t.Fatal("rejected measured-root evidence")
+	}
+	encoded, err := json.Marshal(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ObservedMount
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if !policy.admits([]ObservedMount{decoded}) {
+		t.Fatal("provenance lost during serialization")
+	}
+	for _, tc := range []struct {
+		name   string
+		change func(*ObservedMount)
+	}{
+		{"no evidence", func(m *ObservedMount) { m.Provenance = "" }},
+		{"other provenance", func(m *ObservedMount) { m.Provenance = "dm-verity" }},
+		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }},
+		{"different source", func(m *ObservedMount) { m.HostSourceDigest = "other" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := mount
+			tc.change(&observed)
+			if policy.admits([]ObservedMount{observed}) {
+				t.Fatalf("admits(%+v) = true, want false", observed)
+			}
+		})
+	}
+	// A rule without provenance stays path/mode-only when a node supplies evidence.
+	policy.Rules[0].Provenance = ""
+	if !policy.admits([]ObservedMount{mount}) {
+		t.Fatal("changed path-only host rule behavior")
+	}
+}
+
+func TestHostMountProvenanceValidation(t *testing.T) {
+	digest := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, tc := range []struct {
+		name string
+		rule MountRule
+		want string
+	}{
+		{"unknown provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "dm-verity"}, `mount provenance "dm-verity" is not supported`},
+		{"fs-verity provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "fs-verity", VerityDigest: digest}, "verityDigest is not supported"},
+		{"fs-verity without digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "fs-verity"}, `mount provenance "fs-verity" is not supported`},
+		{"node-root with digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceNodeRoot, VerityDigest: digest}, "verityDigest is not supported"},
+		{"writable node-root", MountRule{Kind: MountHost, Source: "/usr/bin/tool", Provenance: ProvenanceNodeRoot}, "requires readOnly"},
+		{"emptyDir provenance", MountRule{Kind: MountEmptyDir, Provenance: ProvenanceNodeRoot}, "does not support"},
+		{"data digest", MountRule{Kind: MountData, VerityDigest: digest}, "does not support"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tc.rule.Destination = "/mnt/c8s-data/tools"
+			policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{tc.rule}}
+			if err := normalizeMounts(&policy); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("normalizeMounts(%+v) = %v, want error containing %q", tc.rule, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestProvenanceHostRuleIsNotPinnedForGrant(t *testing.T) {
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}}}
+	if (mountConstraint{policy: &policy}).hostIndependent() {
+		t.Fatal("node-root host rule reported host-independent, so a secrets grant would accept it")
 	}
 }

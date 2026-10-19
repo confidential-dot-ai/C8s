@@ -27,6 +27,8 @@ type ObservedMount struct {
 	Storage          MountStorage `json:"storage"`
 	HostSourceDigest string       `json:"hostSourceDigest,omitempty"`
 	ReadOnly         bool         `json:"readOnly,omitempty"`
+	// Provenance is evidence supplied by the trusted node, never a declaration.
+	Provenance string `json:"provenance,omitempty"`
 }
 
 // confined reports whether a mount keeps what a container writes inside the
