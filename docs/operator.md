@@ -1142,9 +1142,8 @@ Caveats the output surfaces:
 
 ### Check a node's policy history
 
-A node that measures its allowlist policies (Helm value
-`nriImagePolicy.measurePolicies`, see
-[Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
+A node that measures its allowlist policies keeps them in its measured-policy
+journal (see [router public TLS modes](#router-public-tls-modes)) and
 reports RTMR[3] as the seed followed by each policy it enforced since boot.
 Its router's attest-pq and attest-lb bundles list those digests as
 `measured_policies`, and its TDX armTLS certificates and discovery document
@@ -1545,9 +1544,9 @@ journal, both bundles also carry `measured_policies`: the policy digests the
 node extended into RTMR[3], read after the quote and outside any transcript.
 The chart passes the journal under `nriImagePolicy.hostPaths.runtimeDir`
 wherever the router mounts the attestation-api socket; an absent journal
-omits the list. `c8s verify` does not replay the list against these bundles
-yet, so a bundle from a node that measures policies still fails an exact
-RTMR[3] pin.
+omits the list. With an operator-key anchor, `c8s verify` replays it against
+RTMR[3] (see
+[Check a node's policy history](#check-a-nodes-policy-history)).
 
 CDS, cred-release, the mesh, `launch-config stage` and get-cert take the
 journal from `--measured-policies-file`. It defaults to
