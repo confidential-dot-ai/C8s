@@ -70,13 +70,10 @@ image_alias() { return $UNSUPPORTED; }
 injected_image() { return $UNSUPPORTED; }
 
 # The reporter images (images/reporter, built by conformance-images.yml), in
-# place of the logical images they are built on; one not pinned yet stays
-# common's.
+# place of the logical images they are built on.
 REPORTER_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
 declare -A REPORTER_IMAGES=(
-    [model-server]=""
-    [tenant-app]=""
-    [job-runner]=""
+    [model-server]=sha256:a4f2d2cbfc58d3ce1305472844e9cda80bd13d01087571169cf0db7600c62f07
 )
 eval "common_$(declare -f image_ref)"
 image_ref() {
