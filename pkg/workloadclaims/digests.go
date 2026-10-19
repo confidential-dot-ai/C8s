@@ -166,16 +166,18 @@ func outboundHost(ctx context.Context, target string) (string, error) {
 // cdsPins set the caller must satisfy them (launch measurement, and TDX RTMRs
 // when pinned), so the endpoint discloses what a node runs only to a CDS on an
 // expected measurement; zero pins accept any TEE on the network. UNSAFE
-// outside development; callers warn.
-func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, certTTL time.Duration) (*tls.Config, *armtls.CertManager, error) {
+// outside development; callers warn. A TDX certificate lists the policies in
+// the measuredPolicies journal; empty lists none.
+func DigestsServerTLSConfig(platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, certTTL time.Duration, measuredPolicies string) (*tls.Config, *armtls.CertManager, error) {
 	if err := requireAttestationApi(attestationApiURL); err != nil {
 		return nil, nil, err
 	}
 	return armtls.NewServerTLSConfig(&armtls.ServerConfig{
-		Platform:     platform,
-		AttestFunc:   attestFunc,
-		CertTTL:      certTTL,
-		ClientPolicy: cdsPins.VerifyPolicy(attestationApiURL),
+		Platform:             platform,
+		AttestFunc:           attestFunc,
+		CertTTL:              certTTL,
+		ClientPolicy:         cdsPins.VerifyPolicy(attestationApiURL),
+		MeasuredPoliciesFile: measuredPolicies,
 	})
 }
 
@@ -198,8 +200,8 @@ func requireAttestationApi(url string) error {
 // rather than after the warm-up window. Warm-up failure is logged, not fatal:
 // the endpoint provisions on the first handshake instead, and taking the
 // inventory down would cost far more than a slow first callback.
-func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins) error {
-	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0)
+func StartDigestsEndpoint(ctx context.Context, logger *slog.Logger, resolver SandboxResolver, identity []byte, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, cdsPins armtls.Pins, measuredPolicies string) error {
+	tlsCfg, certMgr, err := DigestsServerTLSConfig(platform, attestFunc, attestationApiURL, cdsPins, 0, measuredPolicies)
 	if err != nil {
 		return err
 	}

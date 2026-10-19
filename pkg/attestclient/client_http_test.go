@@ -7,11 +7,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -331,7 +334,7 @@ func TestObtainCertificateForwardsSandboxToken(t *testing.T) {
 }
 
 // On TDX the node's runtime extensions, read after the evidence, go to CDS
-// with it and come back in the result; on SEV-SNP the journal is not read.
+// with it and come back in the result; SEV-SNP evidence lists none.
 func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 	const challenge = "dGVzdC1jaGFsbGVuZ2U="
 	list := []string{"sha256:" + strings.Repeat("1", 64)}
@@ -343,23 +346,16 @@ func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 		{platform: "snp"},
 	} {
 		t.Run(tc.platform, func(t *testing.T) {
-			evidenced := false
+			// The journal appears with the evidence: read any earlier, it is empty.
+			journal := filepath.Join(t.TempDir(), "measured-policies")
 			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				evidenced = true
+				if err := os.WriteFile(journal, []byte(list[0]+"\n"), 0o600); err != nil {
+					t.Error(err)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"platform":"` + tc.platform + `","evidence":{"q":1}}`))
 			}))
 			t.Cleanup(api.Close)
-			orig := runtimeExtensions
-			t.Cleanup(func() { runtimeExtensions = orig })
-			read := false
-			runtimeExtensions = func() []string {
-				if !evidenced {
-					t.Error("journal read before the evidence was obtained")
-				}
-				read = true
-				return list
-			}
 			var sent attestRequest
 			mux := http.NewServeMux()
 			mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
@@ -371,15 +367,14 @@ func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 			cds := httptest.NewServer(mux)
 			t.Cleanup(cds.Close)
 
-			got, err := NewClient(cds.URL).ObtainCertificateWithSandboxContext(context.Background(), api.URL, testCSRPEM(t), challenge, nil)
+			client := NewClient(cds.URL)
+			client.MeasuredPolicies = armtls.NewJournal(journal)
+			got, err := client.ObtainCertificateWithSandboxContext(context.Background(), api.URL, testCSRPEM(t), challenge, nil)
 			if err != nil {
 				t.Fatalf("ObtainCertificateWithSandboxContext: %v", err)
 			}
 			if !slices.Equal(sent.RuntimeExtensions, tc.want) || !slices.Equal(got.RuntimeExtensions, tc.want) {
 				t.Errorf("runtime extensions sent %v, returned %v, want %v", sent.RuntimeExtensions, got.RuntimeExtensions, tc.want)
-			}
-			if read != (tc.want != nil) {
-				t.Errorf("journal read = %v, want %v", read, tc.want != nil)
 			}
 		})
 	}

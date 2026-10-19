@@ -42,6 +42,11 @@ type Client struct {
 	// attestHTTP reaches the attestation-api. It never shares httpClient's
 	// TLS settings, which verify CDS, and never uses a proxy.
 	attestHTTP *http.Client
+
+	// MeasuredPolicies is the node's measured-policy journal that TDX
+	// evidence lists, in the /attest request and in AttestationExtension;
+	// nil lists none.
+	MeasuredPolicies *armtls.Journal
 }
 
 // CertificateResult is the complete CDS challenge/attest/certify result.
@@ -58,13 +63,9 @@ type CertificateResult struct {
 	Evidence    json.RawMessage
 
 	// RuntimeExtensions is the node's RTMR[3] runtime extension list sent
-	// with the evidence (armtls.RuntimeExtensions); nil off TDX.
+	// with the evidence (Client.MeasuredPolicies); nil off TDX.
 	RuntimeExtensions []string
 }
-
-// runtimeExtensions reads this node's measured-policy journal. Var so tests
-// can supply a list.
-var runtimeExtensions = armtls.RuntimeExtensions
 
 // NewClient creates a new attestation flow client.
 func NewClient(baseURL string) Client {
@@ -204,7 +205,7 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 	}
 	var extensions []string
 	if asResp.Platform.IsTDX() {
-		extensions = runtimeExtensions()
+		extensions = c.MeasuredPolicies.Policies()
 	}
 
 	// Submit evidence + CSR to CDS for verification and cert issuance.

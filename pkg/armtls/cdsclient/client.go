@@ -84,6 +84,11 @@ type Config struct {
 	// CDSImages additionally binds the CDS image to its authorized server key.
 	CDSImages []remote.ImagePin
 
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// (armtls.NodeJournal on the node) that a TDX CSR and /attest request
+	// list. Empty lists none.
+	MeasuredPoliciesFile string
+
 	// HTTPClient is an optional HTTP client. If nil, a default armTLS
 	// transport is built using the CDSMeasurements policy. Tests that
 	// need to bypass armTLS (e.g. against a plain HTTP fake) can supply a
@@ -129,10 +134,12 @@ func NewClient(cfg *Config) *Client {
 			},
 		}
 	}
+	attestClient := attestclient.NewClientWithHTTP(cfg.CDSURL, httpClient)
+	attestClient.MeasuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
 	return &Client{
 		cfg:             cfg,
 		httpClient:      httpClient,
-		cdsAttestClient: attestclient.NewClientWithHTTP(cfg.CDSURL, httpClient),
+		cdsAttestClient: attestClient,
 	}
 }
 
@@ -293,7 +300,7 @@ func (c *Client) attestationExtension(ctx context.Context, key *ecdsa.PrivateKey
 	return armtls.MarshalExtension(armtls.WithRuntimeExtensions(&armtls.Attestation{
 		Family: teeType,
 		Report: []byte(report),
-	}))
+	}, c.cdsAttestClient.MeasuredPolicies))
 }
 
 func (cfg *Config) teeType() (armtls.TEEType, error) {

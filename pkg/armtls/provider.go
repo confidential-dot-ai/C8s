@@ -33,6 +33,8 @@ type SelfSignedProvider struct {
 	Platform   string
 	AttestFunc func(ctx context.Context, customData string) (string, error)
 	Opts       *CertOptions
+	// MeasuredPolicies is the journal a TDX certificate lists; nil lists none.
+	MeasuredPolicies *Journal
 }
 
 var _ CertProvider = (*SelfSignedProvider)(nil)
@@ -61,7 +63,7 @@ func (p *SelfSignedProvider) Provision(ctx context.Context) (*tls.Certificate, t
 		return nil, 0, fmt.Errorf("armtls: get attestation: %w", err)
 	}
 
-	att := WithRuntimeExtensions(&Attestation{Family: teeType, Report: []byte(evidence)})
+	att := WithRuntimeExtensions(&Attestation{Family: teeType, Report: []byte(evidence)}, p.MeasuredPolicies)
 	certDER, err := CreateAttestedCert(key, att, p.Opts)
 	if err != nil {
 		return nil, 0, err

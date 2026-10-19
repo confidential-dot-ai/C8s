@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -213,7 +214,9 @@ type Config struct {
 	RootDir           string
 }
 
-var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity
+var loadMeasuredIdentity = func(ctx context.Context, platform, attestationAPIURL string) (credrelease.MeasuredIdentity, error) {
+	return credrelease.LoadMeasuredIdentity(ctx, platform, attestationAPIURL, armtls.NodeJournal)
+}
 
 // Verified is created only after signature, image and role authorization pass.
 // Its fields are private so staging cannot accidentally consume an unverified

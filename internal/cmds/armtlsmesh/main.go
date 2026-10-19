@@ -307,6 +307,8 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		DynamicCACert:   effectiveCAURL != "",
 		RotationTimeout: c.rotationTimeout,
 		Logger:          logger,
+
+		MeasuredPoliciesFile: armtls.NodeJournal,
 	}, logger, c.sessionCacheSize)
 	if err != nil {
 		return err
@@ -322,6 +324,8 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		CDSMeasurements:   cdsMeasurements,
 		CDSRTMRs:          cdsRTMRs,
 		CDSImages:         c.cdsPins.Images,
+
+		MeasuredPoliciesFile: armtls.NodeJournal,
 	}
 	if err := runtime.run(ctx, hostMesh{c: c, resolver: resolver, cds: cdsCfg}); err != nil {
 		return cmdsutil.NodeIPChanged(ctx, fmt.Errorf("proxy: %w", err))

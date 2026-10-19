@@ -7,7 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,14 +19,6 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 )
-
-// Test binaries, here and in every package that builds evidence through
-// WithRuntimeExtensions, never read the host's journal.
-func TestRuntimeJournalsUnsetUnderTest(t *testing.T) {
-	if got := defaultRuntimeJournals(); got != nil {
-		t.Fatalf("defaultRuntimeJournals() = %v, want nil in a test binary", got)
-	}
-}
 
 func TestReadRuntimeExtensions(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
@@ -76,21 +68,20 @@ func TestWithRuntimeExtensions(t *testing.T) {
 	own.RuntimeExtensions = []string{q}
 	snp := Attestation{Family: TEETypeSEVSNP, Report: fakeSNPReport([64]byte{})}
 
-	orig := runtimeJournals
-	t.Cleanup(func() { runtimeJournals = orig })
 	for _, tc := range []struct {
-		name     string
-		att      Attestation
-		journals []string
-		want     []string
+		name    string
+		att     Attestation
+		journal *Journal
+		want    []string
 	}{
-		{name: "TDX carries the first non-empty journal", att: tdx, journals: []string{missing, empty, journal}, want: []string{p, q}},
-		{name: "TDX without a journal", att: tdx, journals: []string{missing}},
-		{name: "TDX keeps its own list", att: own, journals: []string{journal}, want: []string{q}},
-		{name: "SEV-SNP never", att: snp, journals: []string{journal}},
+		{name: "TDX carries the journal", att: tdx, journal: NewJournal(journal), want: []string{p, q}},
+		{name: "TDX with an empty journal", att: tdx, journal: NewJournal(empty)},
+		{name: "TDX with a missing journal", att: tdx, journal: NewJournal(missing)},
+		{name: "TDX without a journal", att: tdx, journal: NewJournal("")},
+		{name: "TDX keeps its own list", att: own, journal: NewJournal(journal), want: []string{q}},
+		{name: "SEV-SNP never", att: snp, journal: NewJournal(journal)},
 	} {
-		runtimeJournals = tc.journals
-		ext, err := MarshalExtension(WithRuntimeExtensions(&tc.att))
+		ext, err := MarshalExtension(WithRuntimeExtensions(&tc.att, tc.journal))
 		if err != nil {
 			t.Fatalf("%s: MarshalExtension: %v", tc.name, err)
 		}
@@ -196,33 +187,50 @@ func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
 }
 
 // A journal that cannot be read, or that outgrew the per-boot cap, yields no
-// list rather than failing the producer: a verifier that needs the list still
-// fails closed.
-func TestRuntimeExtensionsOmitsUnusableJournal(t *testing.T) {
+// list rather than failing the producer, and each distinct failure is logged
+// once: a verifier that needs the list still fails closed.
+func TestJournalOmitsUnusableList(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
-	overCap := make([]string, MaxRuntimeExtensions+1)
-	for i := range overCap {
-		overCap[i] = p
-	}
-	origJournals, origRead := runtimeJournals, readJournal
-	t.Cleanup(func() { runtimeJournals, readJournal = origJournals, origRead })
-	runtimeJournals = []string{"measured-policies"}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "measured-policies")
+	var logs bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	j := NewJournal(path)
 	for _, tc := range []struct {
-		name string
-		list []string
-		err  error
-		want []string
+		name     string
+		contents string // "" makes path a directory, which cannot be read
+		want     []string
+		wantLogs int
 	}{
-		{name: "readable", list: []string{p}, want: []string{p}},
-		{name: "unreadable", err: fs.ErrPermission},
-		{name: "over the cap", list: overCap},
+		{name: "unreadable", wantLogs: 1},
+		{name: "still unreadable", wantLogs: 1},
+		{name: "readable", contents: p + "\n", want: []string{p}, wantLogs: 1},
+		{name: "over the cap", contents: distinctJournal(MaxRuntimeExtensions + 1), wantLogs: 2},
+		{name: "still over the cap", contents: distinctJournal(MaxRuntimeExtensions + 1), wantLogs: 2},
 	} {
-		readJournal = func(string) ([]string, error) { return tc.list, tc.err }
-		if got := RuntimeExtensions(); !slices.Equal(got, tc.want) {
-			t.Errorf("%s: RuntimeExtensions() = %d entries, want %v", tc.name, len(got), tc.want)
+		if err := os.RemoveAll(path); err != nil {
+			t.Fatal(err)
+		}
+		var err error
+		if tc.contents == "" {
+			err = os.Mkdir(path, 0o700)
+		} else {
+			err = os.WriteFile(path, []byte(tc.contents), 0o600)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := j.Policies(); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: Policies() = %d entries, want %v", tc.name, len(got), tc.want)
+		}
+		if got := strings.Count(logs.String(), "omits the measured policies"); got != tc.wantLogs {
+			t.Errorf("%s: %d warnings logged, want %d", tc.name, got, tc.wantLogs)
 		}
 		tdx := &Attestation{Family: TEETypeTDX, Report: []byte("{}")}
-		if _, err := MarshalExtension(WithRuntimeExtensions(tdx)); err != nil {
+		if _, err := MarshalExtension(WithRuntimeExtensions(tdx, j)); err != nil {
 			t.Errorf("%s: MarshalExtension(WithRuntimeExtensions) = %v, want nil", tc.name, err)
 		}
 	}

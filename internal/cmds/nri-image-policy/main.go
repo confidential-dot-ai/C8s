@@ -771,12 +771,16 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
+	var journal string
+	if cfg.WorkloadClaims.SocketDir != "" {
+		journal = filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
+	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, pins)
+		attestationApiURL, pins, journal)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).

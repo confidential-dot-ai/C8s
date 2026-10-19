@@ -310,8 +310,8 @@ func TestAttestCarriesMeasuredPolicies(t *testing.T) {
 		{name: "journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			setMeasuredPolicies(t, tc.journal)
 			h, signer := newAttestHandler(t)
+			h.measuredPolicies = armtls.NewJournal(writeJournal(t, tc.journal))
 			h.attester = evidenceGeneratorFunc(func(context.Context, []byte) (teetypes.AttestationEvidence, error) {
 				return teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{}`)}, nil
 			})

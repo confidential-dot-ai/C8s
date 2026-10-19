@@ -1488,13 +1488,19 @@ omits the list. `c8s verify` does not replay the list against these bundles
 yet, so a bundle from a node that measures policies still fails an exact
 RTMR[3] pin.
 
+cred-release and get-cert take the journal from `--measured-policies-file`,
+which defaults to `/run/nri-image-policy/measured-policies` for cred-release
+and to the sidecar mount, `/run/c8s/workload-claims/measured-policies`, for
+get-cert. The mesh reads the node path, and the plugin's digests endpoint
+reads the journal in its runtime directory.
+
 To roll out policy measurement, upgrade in this order:
 
 1. CDS and every verifier: cred-release, the mesh, router discovery and
    `c8s get-kubeconfig`. An older verifier rejects a node that measures
    policies.
 2. The clients that send the list: get-cert and the CDS client. An older CDS
-   rejects an `/attest` request carrying `runtime_extensions` with 400.
+   rejects an `/attest` request carrying `runtime_extensions` with 422 (`invalid_request`).
 3. The node's policy measurer.
 
 At boot the measurer and its readers start in any order: the journal records

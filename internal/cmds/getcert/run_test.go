@@ -1402,3 +1402,11 @@ func testIssuedChainPEM(t *testing.T) string {
 	ca := testCertificatePEM(t)
 	return leaf + ca
 }
+
+// The injected sidecar reads the node's journal where the plugin mounts it.
+func TestMeasuredPoliciesFileDefaultsToSidecarJournal(t *testing.T) {
+	flag := NewCmd().Flags().Lookup("measured-policies-file")
+	if flag == nil || flag.DefValue != workloadclaims.MeasuredPoliciesJournal {
+		t.Fatalf("--measured-policies-file = %v, want default %s", flag, workloadclaims.MeasuredPoliciesJournal)
+	}
+}

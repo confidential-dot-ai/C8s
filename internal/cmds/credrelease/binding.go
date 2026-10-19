@@ -33,10 +33,6 @@ import (
 // Var (not const) so tests can point it at a temp file.
 var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 
-// measuredPoliciesPath is the NRI plugin's journal of the allowlist policies
-// it extended into RTMR[3]. Var so tests can move it.
-var measuredPoliciesPath = armtls.NodeJournal
-
 // ErrNoOperatorKey is returned (wrapped) by the Load* functions when no
 // operator pubkey is staged at all: the VM was launched without an opkeydata
 // disk. It is deliberately distinct from fs.ErrNotExist so that no other
@@ -136,7 +132,7 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 //
 // Called once at service start: it accepts the policies the node had measured
 // by then, and does not see later extends.
-func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]byte, error) {
+func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL, journal string) ([]byte, error) {
 	pub, err := readOperatorPubkey()
 	if err != nil {
 		return nil, err
@@ -148,7 +144,7 @@ func LoadMeasuredOperatorKey(ctx context.Context, attestationAPIURL string) ([]b
 	if err != nil {
 		return nil, err
 	}
-	if err := verifyNodeBinding(report, pub); err != nil {
+	if err := verifyNodeBinding(report, pub, journal); err != nil {
 		return nil, err
 	}
 	return pub, nil
@@ -170,14 +166,14 @@ type MeasuredIdentity struct {
 // identity from one verified self-report. Image is always resolved, even if the
 // key is missing or its binding fails; OperatorKeyErr records that failure.
 // The returned error is reserved for self-report, image, or platform failures.
-func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL string) (MeasuredIdentity, error) {
+func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL, journal string) (MeasuredIdentity, error) {
 	pub, pubErr := readOperatorPubkey()
 	report, err := verifiedSelfReport(ctx, attestationAPIURL)
 	if err != nil {
 		return MeasuredIdentity{}, err
 	}
 	if pubErr == nil {
-		pubErr = verifyNodeBinding(report, pub)
+		pubErr = verifyNodeBinding(report, pub, journal)
 	}
 	if pubErr != nil {
 		pub = nil
@@ -193,19 +189,24 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 }
 
 // verifyNodeBinding checks that report binds anchor followed by a prefix of
-// the measured allowlist policies. The journal is read after the report, so it
-// may hold extends the report does not.
-func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error {
-	policies, err := armtls.ReadRuntimeExtensions(measuredPoliciesPath)
-	if err != nil {
-		return fmt.Errorf("read measured policies %s: %w", measuredPoliciesPath, err)
+// the allowlist policies in the measured-policy journal; an empty journal path
+// lists none. The journal is read after the report, so it may hold extends
+// the report does not. A journal over armtls.MaxRuntimeExtensions fails, as it
+// does at every verifier.
+func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte, journal string) error {
+	var policies []string
+	if journal != "" {
+		var err error
+		if policies, err = armtls.ReadRuntimeExtensions(journal); err != nil {
+			return fmt.Errorf("read measured policies: %w", err)
+		}
+		slog.Info("measured-policy journal", "path", journal, "policies", len(policies))
 	}
-	slog.Info("measured-policy journal", "path", measuredPoliciesPath, "policies", len(policies))
 	if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
 		if len(policies) == 0 {
 			return err
 		}
-		return fmt.Errorf("binding replays no prefix of the %d measured policies in %s: %w", len(policies), measuredPoliciesPath, err)
+		return fmt.Errorf("binding replays no prefix of the %d measured policies in %s: %w", len(policies), journal, err)
 	}
 	return nil
 }

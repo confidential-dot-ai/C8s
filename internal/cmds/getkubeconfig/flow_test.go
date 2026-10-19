@@ -52,6 +52,15 @@ func newPlatformAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, 
 // carries extensions as its runtime extension list.
 func newAttestedTLSServerWithExtensions(t *testing.T, platform teetypes.PlatformType, extensions []string, handler http.Handler) *httptest.Server {
 	t.Helper()
+	srv := unstartedAttestedTLSServer(t, platform, extensions, handler)
+	srv.StartTLS()
+	return srv
+}
+
+// unstartedAttestedTLSServer is newAttestedTLSServerWithExtensions before
+// StartTLS, so a test can choose its listener.
+func unstartedAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, extensions []string, handler http.Handler) *httptest.Server {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -72,7 +81,6 @@ func newAttestedTLSServerWithExtensions(t *testing.T, platform teetypes.Platform
 	}
 	srv := httptest.NewUnstartedServer(handler)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
-	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
 }

@@ -208,9 +208,10 @@ type establishedSession struct {
 
 // Server serves the c8s-verify endpoints.
 type Server struct {
-	cfg    Config
-	log    *slog.Logger
-	routes Router
+	cfg              Config
+	log              *slog.Logger
+	routes           Router
+	measuredPolicies *armtls.Journal
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -251,6 +252,7 @@ func NewServer(cfg Config) *Server {
 		cfg:              cfg,
 		log:              cfg.Logger,
 		routes:           cfg.Routes,
+		measuredPolicies: armtls.NewJournal(cfg.MeasuredPoliciesFile),
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -548,7 +550,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		XWingCT:          base64.RawURLEncoding.EncodeToString(xwingCT),
 		SessionID:        id,
 		IdentityProof:    proof,
-		MeasuredPolicies: s.measuredPolicies(),
+		MeasuredPolicies: s.measuredPolicies.Policies(),
 		RouteDigest:      hex.EncodeToString(digest[:]),
 	})
 }
@@ -619,7 +621,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
 		RouteDigest:       hex.EncodeToString(digest[:]),
-		MeasuredPolicies:  s.measuredPolicies(),
+		MeasuredPolicies:  s.measuredPolicies.Policies(),
 	})
 }
 
@@ -640,21 +642,6 @@ func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
 		return nil, false
 	}
 	return applied, true
-}
-
-// measuredPolicies reads the node's measured-policy journal. It is read after
-// the evidence, so it may run ahead of the quote; verifiers replay the longest
-// matching prefix. A verifier that needs the list fails closed without it, so
-// a read error only omits it.
-func (s *Server) measuredPolicies() []string {
-	if s.cfg.MeasuredPoliciesFile == "" {
-		return nil
-	}
-	policies, err := armtls.ReadRuntimeExtensions(s.cfg.MeasuredPoliciesFile)
-	if err != nil {
-		s.log.Warn("bundle omits the measured policies", "path", s.cfg.MeasuredPoliciesFile, "error", err)
-	}
-	return policies
 }
 
 // meshIdentity loads the mesh credential set from the three files.

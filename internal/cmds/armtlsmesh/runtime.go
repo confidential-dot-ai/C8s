@@ -50,6 +50,8 @@ func newMeshRuntime(cfg *armtls.ServerConfig, logger *slog.Logger, sessionCacheS
 		CertTTL:         cfg.CertTTL,
 		RotationTimeout: cfg.RotationTimeout,
 		Logger:          logger.With("cert_role", "client"),
+
+		MeasuredPoliciesFile: cfg.MeasuredPoliciesFile,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create client TLS config: %w", err)

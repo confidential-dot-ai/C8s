@@ -16,9 +16,11 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -80,26 +82,6 @@ func (l *policyList) current() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.list
-}
-
-// replaysPrefix reports whether got is reg extended by a prefix of policies.
-// A list ahead of the quote still replays; a list behind it, or over
-// armtls.MaxRuntimeExtensions, does not.
-func replaysPrefix(got []byte, reg [runtimemeasure.Size]byte, policies []string) bool {
-	if len(policies) > armtls.MaxRuntimeExtensions {
-		return false
-	}
-	for _, p := range policies {
-		d, err := runtimemeasure.CanonicalDigest(p)
-		if err != nil {
-			return false
-		}
-		reg = runtimemeasure.Extend(reg, runtimemeasure.Event(d))
-		if bytes.Equal(got, reg[:]) {
-			return true
-		}
-	}
-	return false
 }
 
 // platform is the bare-metal tag of the manifest's family. Cloud overlays are
@@ -173,7 +155,8 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 //
 // A node that measures allowlist policies extends them after the workloads,
 // and the list may run ahead of the quote, so any prefix that replays is
-// accepted. Policy and workload extends share one event encoding, so an
+// accepted, under the rule runtimemeasure.MatchBindingPrefix applies at every
+// c8s verifier. Policy and workload extends share one event encoding, so an
 // extend after the workload chain passes whenever the node lists it as a
 // policy: the workload chain itself stays exact.
 func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error {
@@ -184,16 +167,27 @@ func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error 
 	if err == nil || exp.policies == nil {
 		return err
 	}
-	got, berr := runtimemeasure.Binding(res)
-	if berr != nil {
-		return err
-	}
 	policies := exp.policies.current()
-	if replaysPrefix(got, runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests), policies) {
+	if len(policies) > armtls.MaxRuntimeExtensions {
+		return fmt.Errorf("%w: %w: the node lists %d, over the per-boot cap of %d", err, errPoliciesDoNotReplay, len(policies), armtls.MaxRuntimeExtensions)
+	}
+	// One matcher for every c8s verifier: the workload chain then the
+	// policies, all canonical, of which the register must carry at least the
+	// whole workload chain.
+	claimed := append(slices.Clone(exp.workloadDigests), policies...)
+	k, perr := runtimemeasure.MatchBindingPrefix(res, exp.operatorPubPEM, claimed)
+	if perr == nil && k >= len(exp.workloadDigests) {
 		return nil
 	}
-	return fmt.Errorf("%w: no prefix of the node's %d measured policies replays it; the list may predate the node's latest policy, so retry after cred-release reissues its certificate, or omit --attest-url", err, len(policies))
+	if perr == nil {
+		return err
+	}
+	return fmt.Errorf("%w: %w: %v", err, errPoliciesDoNotReplay, perr)
 }
+
+// errPoliciesDoNotReplay marks a binding the node's measured-policy list
+// does not account for.
+var errPoliciesDoNotReplay = errors.New("no prefix of the node's measured policies replays it")
 
 // verifyEvidence verifies an evidence envelope with attestation-go (HW chain +
 // report_data binding) and enforces the full measured-identity policy on the

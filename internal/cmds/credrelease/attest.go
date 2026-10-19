@@ -5,12 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -68,12 +66,7 @@ func (h *Handler) serveAttest(w http.ResponseWriter, r *http.Request, body []byt
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return
 	}
-	extensions, err := armtls.ReadRuntimeExtensions(measuredPoliciesPath)
-	if err != nil {
-		// The verifier falls back to the list in this server's certificate.
-		slog.Warn("attest response omits the measured policies", "path", measuredPoliciesPath, "error", err)
-	}
-	response, err := json.Marshal(AttestResponse{AttestationEvidence: evidence, RuntimeExtensions: extensions})
+	response, err := json.Marshal(AttestResponse{AttestationEvidence: evidence, RuntimeExtensions: h.measuredPolicies.Policies()})
 	if err != nil {
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return
