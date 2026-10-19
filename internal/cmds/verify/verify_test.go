@@ -422,6 +422,7 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 		"xwing_ek":        b64u(s.ek),
 		"xwing_ct":        b64u(s.ct),
 		"session_id":      b64u(s.sid),
+		"route_digest":    hex.EncodeToString(testRouteDigest),
 	}
 	if id != nil {
 		resp["cds_cert_pem"] = id.chainPEM
@@ -785,6 +786,7 @@ func TestEvidenceFromEndpointJSON_RealShape(t *testing.T) {
   "xwing_ek": %q,
   "xwing_ct": %q,
   "session_id": %q,
+  "route_digest": %q,
   "identity_proof": { "algorithm": "ecdsa-sha384", "leaf_sha256": %q, "mesh_ca_sha256": %q, "signature": %q }
 }`,
 		types.BindingAttestPQ,
@@ -793,6 +795,7 @@ func TestEvidenceFromEndpointJSON_RealShape(t *testing.T) {
 		base64.StdEncoding.EncodeToString([]byte("vcek-der")),
 		id.chainPEM,
 		b64u(sess.ek), b64u(sess.ct), b64u(sess.sid),
+		hex.EncodeToString(testRouteDigest),
 		b64u(leafHash[:]), b64u(caHash[:]), b64u(sig),
 	)
 

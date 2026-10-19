@@ -2380,7 +2380,10 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/tls/ca.pem")
 	// The public TLS mode changes only what nginx serves: application
 	// requests still go to the routing listener, which dials backends itself.
-	cfg.location(t, "prefix", "/").assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+	app := cfg.location(t, "prefix", "/")
+	app.assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+	// $host drops a trailing dot, which M1 keeps.
+	app.assertDirective(t, "proxy_set_header", "Host", "$http_host")
 	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
@@ -2958,6 +2961,8 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	tunnel.assertDirective(t, "client_body_timeout", "10s")
 	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "64")
 	tunnel.assertDirective(t, "limit_conn_status", "503")
+	tunnel.assertDirective(t, "error_page", "503", "@tunnel_busy")
+	cfg.location(t, "named", "@tunnel_busy").assertDirective(t, "default_type", "application/json")
 	if got := cfg.http.directives["limit_conn_zone"]; len(got) != 1 || !slices.Equal(got[0], []string{"$binary_remote_addr", "zone=c8s_tunnel_per_client:10m"}) {
 		t.Fatalf("limit_conn_zone = %v, want only the per-client tunnel zone", got)
 	}
@@ -3478,6 +3483,9 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 				key := nginxLocationKey{match: "prefix", path: fields[1]}
 				if len(fields) == 3 && fields[1] == "=" {
 					key = nginxLocationKey{match: "exact", path: fields[2]}
+				}
+				if strings.HasPrefix(fields[1], "@") {
+					key = nginxLocationKey{match: "named", path: fields[1]}
 				}
 				cfg.locations[key] = block
 			}
@@ -4375,7 +4383,7 @@ func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTime
 			t.Errorf("location / %s = %v, want exactly [%s]", name, got, want)
 		}
 	}
-	route.assertDirective(t, "proxy_set_header", "Host", "$host")
+	route.assertDirective(t, "proxy_set_header", "Host", "$http_host")
 	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
 	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
@@ -4420,6 +4428,28 @@ func TestChartRouterRoutingLocation(t *testing.T) {
 	}
 	renderedRouterNginxConfig(t, out).location(t, "prefix", "/").
 		assertDirective(t, "add_header", "Access-Control-Allow-Origin", "$cors_out_origin", "always")
+}
+
+// TestChartRouterTunnelBusyCORS checks that nginx's tunnel_busy answer carries
+// the tunnel's CORS headers, so a browser client can read it.
+func TestChartRouterTunnelBusyCORS(t *testing.T) {
+	for name, args := range map[string][]string{
+		"protocol cors": nil,
+		"global cors":   {"--set", "router.cors.enabled=true", "--set", "router.cors.allowOrigins={https://app.example}"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cfg := renderedRouterNginxConfig(t, out)
+			want := cfg.location(t, "exact", "/.well-known/c8s/tunnel").directives["add_header"]
+			got := cfg.location(t, "named", "@tunnel_busy").directives["add_header"]
+			if len(want) == 0 || !slices.EqualFunc(got, want, slices.Equal[[]string]) {
+				t.Fatalf("@tunnel_busy add_header = %v, want the tunnel's %v", got, want)
+			}
+		})
+	}
 }
 
 // TestChartRouterHealthzIsExact pins /healthz as an exact location: a prefix
@@ -5366,8 +5396,13 @@ func Example_routerConfig() {
 	//         # URI on proxy_pass, so the listener sees the request target as the
 	//         # client sent it, which path matching needs (M4).
 	//         location / {
+	//             # $host would drop a trailing dot and fall back to
+	//             # server_name; the listener matches the client's Host (M1).
+	//             if ($http_host = "") {
+	//                 return 400;
+	//             }
 	//             proxy_pass http://127.0.0.1:8802;
-	//             proxy_set_header Host $host;
+	//             proxy_set_header Host $http_host;
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
@@ -7645,7 +7680,7 @@ func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
 				t.Fatalf("found %d nginx locations, want the router's protocol endpoints", len(matches))
 			}
 			for _, m := range matches {
-				if p := m[1]; p != "/" && !covered(p) {
+				if p := m[1]; p != "/" && !strings.HasPrefix(p, "@") && !covered(p) {
 					t.Errorf("nginx serves location %s, which --reserved-paths %v does not cover", p, reserved)
 				}
 			}

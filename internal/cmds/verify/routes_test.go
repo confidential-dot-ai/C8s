@@ -144,12 +144,17 @@ func TestV1RouteDigestPin(t *testing.T) {
 			t.Fatalf("bound route digest %x, want %x", ev.route.digest, testRouteDigest)
 		}
 	})
-	t.Run("several pins and no served digest", func(t *testing.T) {
-		pins := &boundRoute{digest: other.digest, alternatives: [][]byte{testRouteDigest}}
-		if _, err := evidenceFromEndpointJSON(withServed(""), nonce, sess.ek, pins, "test"); err == nil || !strings.Contains(err.Error(), "no route_digest") {
-			t.Fatalf("err = %v, want a refusal naming the missing route_digest", err)
-		}
-	})
+	for name, served := range map[string]string{
+		"no served digest":         "",
+		"upper-case served digest": strings.ToUpper(hex.EncodeToString(testRouteDigest)),
+		"short served digest":      hex.EncodeToString(testRouteDigest[:31]),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := evidenceFromEndpointJSON(withServed(served), nonce, sess.ek, testRoute, "test"); err == nil || !strings.Contains(err.Error(), "route_digest") {
+				t.Fatalf("err = %v, want a refusal naming route_digest", err)
+			}
+		})
+	}
 	t.Run("pin differs and the served field agrees with it", func(t *testing.T) {
 		// The responder cannot talk a client into a digest by echoing its pin:
 		// report_data binds testRouteDigest, so the proof over other fails.
@@ -498,6 +503,7 @@ func TestTranscriptWithoutRouteDigestRejected(t *testing.T) {
 			"front_door_mode": "cds",
 			"cds_cert_pem":    id.chainPEM,
 			"identity_proof":  id.proofJSON(t, short),
+			"route_digest":    hex.EncodeToString(testRouteDigest),
 		})
 		if err != nil {
 			t.Fatal(err)

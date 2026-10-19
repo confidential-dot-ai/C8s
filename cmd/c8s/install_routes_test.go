@@ -25,6 +25,7 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -303,6 +304,7 @@ func TestWriteUpstreamRoutes(t *testing.T) {
 		{"write refused", stored, refused, 0, []string{add}, []string{"c8s routes put "}},
 		{"--routes-revision", nil, nil, 7, []string{addRevision, addRevision2}, nil},
 		{"--routes-revision refused", nil, storedManifestError{revisionError{refused}}, 7, []string{add}, []string{"--revision", "c8s routes put "}},
+		{"--routes-revision, token spent", nil, storedManifestError{&operatorauth.StatusError{Status: http.StatusConflict, Body: allowlist.ErrTokenReused.Error()}}, 7, []string{addRevision}, []string{"c8s routes put "}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			resetCLIState(t)

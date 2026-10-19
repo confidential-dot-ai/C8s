@@ -529,11 +529,12 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
        decrypted from the tunnel. */ -}}
 {{- $args = append $args (printf "--cds-url=%s" (include "c8s.cdsURL" $root)) -}}
 {{- $args = concat $args (include "router.cdsPinArgs" $root | fromJsonArray) -}}
-{{- /* Operator keys: the launch configuration on a baked node, else
-       cds.operatorKeys, else CDS's GET /operator-keys (route policy W6;
-       docs/operator.md, Route manifest). An unpinned CDS could be any
-       attested TEE, so cds-attest refuses that last source without the
-       opt-in. */ -}}
+{{- /* Operator keys: the launch configuration on a baked node, where
+       naming it makes a missing file fatal, else cds.operatorKeys, else
+       CDS's GET /operator-keys (route policy W6; docs/operator.md, Route
+       manifest). cds-attest prefers the launch configuration whenever it
+       finds it. An unpinned CDS could be any attested TEE, so cds-attest
+       refuses that last source without the opt-in. */ -}}
 {{- if $root.Values.node.baked -}}
 {{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
 {{- else if $root.Values.cds.operatorKeys -}}
@@ -788,13 +789,17 @@ router.wellKnownProxyDirectives renders the directives every
 buffering on and no temp-file spill, and the forwarded headers. Inputs: root
 (the chart context) and readTimeout.
 */}}
+{{- define "router.wellKnownCorsDirectives" -}}
+{{- if default false .Values.router.cors.enabled -}}
+{{ include "router.corsLocationDirectives" .Values.router.cors | trim }}
+{{ else if eq (include "router.protocolCorsEnabled" .) "true" -}}
+{{ include "router.protocolCorsLocationDirectives" . | trim }}
+{{ end -}}
+{{- end -}}
+
 {{- define "router.wellKnownProxyDirectives" -}}
 {{- $root := .root -}}
-{{- if default false $root.Values.router.cors.enabled -}}
-{{ include "router.corsLocationDirectives" $root.Values.router.cors | trim }}
-{{ else if eq (include "router.protocolCorsEnabled" $root) "true" -}}
-{{ include "router.protocolCorsLocationDirectives" $root | trim }}
-{{ end -}}
+{{ include "router.wellKnownCorsDirectives" $root -}}
 proxy_pass http://127.0.0.1:{{ $root.Values.router.attest.port }};
 proxy_buffering on;
 proxy_request_buffering on;

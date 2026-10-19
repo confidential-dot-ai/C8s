@@ -65,7 +65,6 @@ func NewCmd() *cobra.Command {
 		Short: "Run the router routing, attestation and over-encryption sidecar",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg.attestOff = !attestEndpoints
-			cfg.routing.operatorKeysFileSet = cmd.Flags().Changed("operator-keys-file")
 			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 			return run(ctx, cfg)

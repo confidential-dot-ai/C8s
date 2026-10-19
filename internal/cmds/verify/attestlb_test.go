@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -61,6 +62,7 @@ func routedLBServer(t *testing.T, id *endpointIdentity, bindLeaf, routeDigest, p
 			"front_door_mode": "cds",
 			"cds_cert_pem":    id.chainPEM,
 			"identity_proof":  id.proofJSON(t, transcript),
+			"route_digest":    hex.EncodeToString(routeDigest),
 		})
 	}))
 	return ts

@@ -24,8 +24,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
 )
 
 // fakeCDS mimics the CDS route API: token check (W1), Parse (D9), the
@@ -272,6 +274,26 @@ func TestPutStaleRevisionGuidance(t *testing.T) {
 	_, err := h.run(t, "put", file)
 	if err == nil || !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "raise the file's revision") {
 		t.Fatalf("put stale revision: error = %v", err)
+	}
+}
+
+type fixedToken struct{}
+
+func (fixedToken) Authorization(string, string, []byte) (string, error) { return "Bearer t", nil }
+
+// A 409 that refuses a spent token asks for a new token, not a new revision.
+func TestPutSpentTokenGuidance(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, allowlist.ErrTokenReused.Error(), http.StatusConflict)
+	}))
+	defer srv.Close()
+	c, err := routesclient.New(srv.URL, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = put(t.Context(), c, []byte("{}"), fixedToken{}, "", "raise the revision")
+	if err == nil || !strings.Contains(err.Error(), "sign a new token") || strings.Contains(err.Error(), "raise the revision") {
+		t.Fatalf("put() error = %v, want guidance to sign a new token only", err)
 	}
 }
 
