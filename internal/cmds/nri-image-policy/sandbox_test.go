@@ -305,7 +305,7 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			got := observeSandbox(pod, ctr, tt.ownSocket).violations()
+			got := observeSandbox(pod, ctr, tt.ownSocket, nil).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -507,5 +507,48 @@ func TestSandboxDenialIsNotNamespaceExempt(t *testing.T) {
 	verdict, reason := p.checkContainer(context.Background(), p.cfg, pod, privilegedContainer(), testFloorImage)
 	if verdict != verdictDeny || !strings.Contains(reason, "host path bind mount") {
 		t.Fatalf("checkContainer(exempt namespace, privileged) = %d %q, want deny naming the violation", verdict, reason)
+	}
+}
+
+func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
+	const source, destination = "/usr/bin/nvidia-smi", "/usr/bin/nvidia-smi"
+	verified := allowlist.ObservedMount{Source: source, Destination: destination, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	for _, tc := range []struct {
+		name      string
+		evidence  func(*allowlist.ObservedMount)
+		duplicate *api.Mount
+		hostBind  bool
+	}{
+		{"verified read-only file", nil, nil, false},
+		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, nil, true},
+		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, nil, true},
+		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, nil, true},
+		{"writable duplicate", nil, &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "rw"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			bind := &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "ro"}}
+			ctr.Mounts = append(ctr.Mounts, bind)
+			if tc.duplicate != nil {
+				ctr.Mounts = append(ctr.Mounts, tc.duplicate)
+			}
+			evidence := verified
+			if tc.evidence != nil {
+				tc.evidence(&evidence)
+			}
+			var mounts []allowlist.ObservedMount
+			for _, m := range ctr.Mounts {
+				switch {
+				case m == bind:
+					mounts = append(mounts, evidence)
+				case carriesHostBytes(m):
+					mounts = append(mounts, allowlist.ObservedMount{Source: m.Source, Destination: m.Destination})
+				}
+			}
+			got := observeSandbox(pod, ctr, "", mounts).HostBinds
+			if (len(got) > 0) != tc.hostBind {
+				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
+			}
+		})
 	}
 }

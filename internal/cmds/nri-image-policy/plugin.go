@@ -639,7 +639,7 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // The digest is resolved only when there is something to excuse, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir)
+	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
