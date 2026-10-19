@@ -204,9 +204,7 @@ func (c Client) ObtainCertificateWithSandboxContext(ctx context.Context, attesta
 	}
 	var extensions []string
 	if asResp.Platform.IsTDX() {
-		if extensions, err = runtimeExtensions(); err != nil {
-			return CertificateResult{}, err
-		}
+		extensions = runtimeExtensions()
 	}
 
 	// Submit evidence + CSR to CDS for verification and cert issuance.

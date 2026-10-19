@@ -36,6 +36,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"golang.org/x/time/rate"
 
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
@@ -173,7 +174,7 @@ type Config struct {
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
 	// MeasuredPoliciesFile is the node's journal of allowlist policies
-	// extended into RTMR[3] (internal/policymeasure). Both bundles carry it,
+	// extended into RTMR[3] (armtls.NodeJournal). Both bundles carry it,
 	// read after the evidence; empty omits it.
 	MeasuredPoliciesFile string
 	// Routes gates attested sessions, routes the tunnel and serves the route
@@ -650,7 +651,7 @@ func (s *Server) measuredPolicies() []string {
 	if s.cfg.MeasuredPoliciesFile == "" {
 		return nil
 	}
-	policies, err := armtls.ReadJournal(s.cfg.MeasuredPoliciesFile)
+	policies, err := runtimemeasure.ReadJournal(s.cfg.MeasuredPoliciesFile)
 	if err != nil {
 		s.log.Warn("read measured policies", "error", err)
 	}

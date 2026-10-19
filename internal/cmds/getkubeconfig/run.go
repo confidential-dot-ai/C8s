@@ -89,7 +89,9 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	if exp.identity.Family() == teetypes.FamilyTDX {
 		exp.policies = &policyList{}
-		exp.policies.refresh = func() { dialRelease(ctx, cfg, releaseURL, exp) }
+		// One attempt within --timeout: the release step already waited out a
+		// starting cred-release, or the attest step's pre-dial below did.
+		exp.policies.refresh = func() { dialRelease(ctx, cfg, 0, releaseURL, exp) }
 	}
 
 	// 1. Verify the channel and a fresh nonce-bound report before releasing
@@ -98,6 +100,10 @@ func Run(ctx context.Context, cfg Config) error {
 	httpClient := newARMTLSClient(cfg, exp)
 	defer httpClient.CloseIdleConnections()
 	if cfg.AttestURL != "" {
+		if exp.policies != nil {
+			// The report comes from elsewhere: record cred-release's list first.
+			dialRelease(ctx, cfg, cfg.ReleaseWait, releaseURL, exp)
+		}
 		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err = attestAndVerify(attestCtx, cfg.AttestURL, exp)
 		cancel()
@@ -182,16 +188,17 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 }
 
 // dialRelease completes one armTLS handshake with cred-release, so the
-// verified leaf records its runtime extensions. A failed dial is logged,
+// verified leaf records its runtime extensions. Each attempt is bounded by
+// cfg.Timeout; wait bounds retries of a refused dial. A failed dial is logged,
 // records nothing, and leaves the gate to fail on the list it has.
-func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platformVerifier) {
+func dialRelease(ctx context.Context, cfg Config, wait time.Duration, releaseURL *url.URL, exp platformVerifier) {
 	port := releaseURL.Port()
 	if port == "" {
 		port = "443"
 	}
-	dialer := tls.Dialer{Config: armTLSConfig(exp)}
-	err := httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
-		conn, err := dialer.DialContext(stepCtx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
+	dialer := &tls.Dialer{Config: armTLSConfig(exp)}
+	err := httputil.RetryConnectionRefused(ctx, cfg.Timeout, wait, func(stepCtx context.Context) error {
+		conn, err := dialTLS(stepCtx, dialer, net.JoinHostPort(releaseURL.Hostname(), port))
 		if err != nil {
 			// RetryConnectionRefused retries only a refused dial under a URL error.
 			return &url.Error{Op: "Dial", URL: releaseURL.String(), Err: err}
@@ -201,4 +208,9 @@ func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platf
 	if err != nil {
 		slog.Warn("refresh cred-release measured policies", "error", err)
 	}
+}
+
+// dialTLS dials addr. Var so tests can count attempts.
+var dialTLS = func(ctx context.Context, dialer *tls.Dialer, addr string) (net.Conn, error) {
+	return dialer.DialContext(ctx, "tcp", addr)
 }

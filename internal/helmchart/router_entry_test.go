@@ -532,7 +532,8 @@ func TestChartRouterExpectedWorkloadType(t *testing.T) {
 }
 
 // cds-attest reads the measured-policy journal from the runtime directory it
-// mounts beside the attestation-api socket, and nowhere else.
+// mounts beside the attestation-api socket, and only when it serves the
+// attestation bundles that carry the list.
 func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 	const dir = "/run/custom-nri"
 	for _, tc := range []struct {
@@ -543,6 +544,7 @@ func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
 		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
 		{name: "baked", args: bakedArgs, wantFlag: true},
+		{name: "attest endpoints off", args: []string{"--set", "attestationApi.enabled=true", "--set", "router.attest.enabled=false"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)

@@ -58,11 +58,7 @@ func TestWithRuntimeExtensions(t *testing.T) {
 		{name: "SEV-SNP never", att: snp, journals: []string{journal}},
 	} {
 		runtimeJournals = tc.journals
-		att, err := WithRuntimeExtensions(&tc.att)
-		if err != nil {
-			t.Fatalf("%s: WithRuntimeExtensions: %v", tc.name, err)
-		}
-		ext, err := MarshalExtension(att)
+		ext, err := MarshalExtension(WithRuntimeExtensions(&tc.att))
 		if err != nil {
 			t.Fatalf("%s: MarshalExtension: %v", tc.name, err)
 		}
@@ -167,35 +163,35 @@ func TestVerifyCertReplaysRuntimeExtensions(t *testing.T) {
 	}
 }
 
-// A journal briefly unreadable while the plugin rewrites it is read once its
-// mode is restored.
-func TestReadJournalRetriesPermissionError(t *testing.T) {
+// A journal that cannot be read, or that outgrew the per-boot cap, yields no
+// list rather than failing the producer: a verifier that needs the list still
+// fails closed.
+func TestRuntimeExtensionsOmitsUnusableJournal(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
-	orig := readJournalFile
-	t.Cleanup(func() { readJournalFile = orig })
+	overCap := make([]string, MaxRuntimeExtensions+1)
+	for i := range overCap {
+		overCap[i] = p
+	}
+	origJournals, origRead := runtimeJournals, readJournal
+	t.Cleanup(func() { runtimeJournals, readJournal = origJournals, origRead })
+	runtimeJournals = []string{"measured-policies"}
 	for _, tc := range []struct {
-		name     string
-		failures int
-		want     []string
-		wantErr  bool
+		name string
+		list []string
+		err  error
+		want []string
 	}{
-		{name: "restored", failures: journalReadAttempts - 1, want: []string{p}},
-		{name: "never restored", failures: journalReadAttempts, wantErr: true},
+		{name: "readable", list: []string{p}, want: []string{p}},
+		{name: "unreadable", err: fs.ErrPermission},
+		{name: "over the cap", list: overCap},
 	} {
-		calls := 0
-		readJournalFile = func(string) ([]string, error) {
-			calls++
-			if calls <= tc.failures {
-				return nil, fs.ErrPermission
-			}
-			return []string{p}, nil
+		readJournal = func(string) ([]string, error) { return tc.list, tc.err }
+		if got := RuntimeExtensions(); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: RuntimeExtensions() = %d entries, want %v", tc.name, len(got), tc.want)
 		}
-		got, err := ReadJournal("measured-policies")
-		if (err != nil) != tc.wantErr || !slices.Equal(got, tc.want) {
-			t.Errorf("%s: ReadJournal = %v, %v; want %v, error %v", tc.name, got, err, tc.want, tc.wantErr)
-		}
-		if calls != min(tc.failures+1, journalReadAttempts) {
-			t.Errorf("%s: %d reads, want %d", tc.name, calls, min(tc.failures+1, journalReadAttempts))
+		tdx := &Attestation{Family: TEETypeTDX, Report: []byte("{}")}
+		if _, err := MarshalExtension(WithRuntimeExtensions(tdx)); err != nil {
+			t.Errorf("%s: MarshalExtension(WithRuntimeExtensions) = %v, want nil", tc.name, err)
 		}
 	}
 }

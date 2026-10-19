@@ -1255,6 +1255,9 @@ router:
     # which the sidecar reads from the node-ip file the image policy plugin
     # writes; $(HOST_IP) comes from a variable the allowlist does not pin and
     # fails the render there. An unescaped reference fails the render.
+    # Wherever the chart mounts the attestation-api socket (attestationApi.enabled
+    # or node.baked) and attest.enabled is true, the sidecar also reads the
+    # node's measured-policy journal under nriImagePolicy.hostPaths.runtimeDir.
     attestationApiURL: ""
     # -- Workload-verified ingress gate: when set to an allowlist entry name,
     # the sidecar serves /readyz as 200 only while the installed mesh identity

@@ -4,9 +4,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
-	"errors"
-	"io/fs"
-	"time"
+	"log/slog"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -69,72 +67,69 @@ func MarshalExtension(att *Attestation) (pkix.Extension, error) {
 // when it is TDX evidence without a list of its own, so peers can replay
 // RTMR[3]; otherwise att itself. Producers call it after obtaining the
 // evidence.
-func WithRuntimeExtensions(att *Attestation) (*Attestation, error) {
+func WithRuntimeExtensions(att *Attestation) *Attestation {
 	if att.Family != TEETypeTDX || att.RuntimeExtensions != nil {
-		return att, nil
-	}
-	list, err := RuntimeExtensions()
-	if err != nil {
-		return nil, err
+		return att
 	}
 	withList := *att
-	withList.RuntimeExtensions = list
-	return &withList, nil
+	withList.RuntimeExtensions = RuntimeExtensions()
+	return &withList
 }
 
-// runtimeJournals are where this node's measured-policy journal may be; the
-// first that exists wins. Var so tests can move it.
-// MeasuredPoliciesJournal is the journal of the allowlist policies a TDX node
-// extends into RTMR[3], in the NRI plugin's runtime directory. NodeJournal is
-// its path on the node and in pods that mount the runtime directory at its
-// host path; SidecarJournal is its path in sidecars the plugin mounts the
-// directory into.
+// The measured-policy journal lists the allowlist policies a TDX node extends
+// into RTMR[3], in the NRI plugin's runtime directory. NodeJournal is its path
+// on the node and in pods that mount the runtime directory at its host path;
+// SidecarJournal is its path in sidecars the plugin mounts the directory into.
+//
+// Its one writer, the node's policy measurer, keeps this contract, which every
+// reader relies on:
+//   - one canonical digest per line, in extend order, recorded before it is
+//     extended, so the list may run ahead of a quote but never lags it;
+//   - each digest extended at most once per boot, so the list replays the
+//     register exactly;
+//   - owned by root with mode 0644 at all times, so non-root readers such as
+//     cds-attest and get-cert can read it;
+//   - on a tmpfs, so it lives exactly as long as the register;
+//   - at most [MaxRuntimeExtensions] entries per boot. Producers send no list
+//     beyond that, and verifiers reject the node until it reboots.
 const (
 	MeasuredPoliciesJournal = "measured-policies"
 	NodeJournal             = "/var/run/nri-image-policy/" + MeasuredPoliciesJournal
 	SidecarJournal          = "/run/c8s/workload-claims/" + MeasuredPoliciesJournal
 )
 
+// runtimeJournals are where this node's measured-policy journal may be; the
+// first that exists wins. Var so tests can move it.
 var runtimeJournals = []string{NodeJournal, SidecarJournal}
+
+// readJournal reads one journal. Var so tests can fail it.
+var readJournal = runtimemeasure.ReadJournal
 
 // RuntimeExtensions returns the RTMR[3] runtime extensions this node
 // journaled, nil when it journals none. Call it after obtaining the evidence:
 // the journal records before it extends, so it may run ahead of the quote,
 // which verifiers allow for, but must not lag it.
-func RuntimeExtensions() ([]string, error) {
+//
+// An unreadable journal, or one over [MaxRuntimeExtensions], is logged and
+// yields nil: a verifier that needs the list then fails closed, and one that
+// does not still accepts the evidence.
+func RuntimeExtensions() []string {
 	for _, path := range runtimeJournals {
-		if list, err := ReadJournal(path); err != nil || list != nil {
-			return list, err
+		list, err := readJournal(path)
+		switch {
+		case err != nil:
+			slog.Warn("armtls: evidence omits the measured policies", "path", path, "error", err)
+			return nil
+		case len(list) > MaxRuntimeExtensions:
+			slog.Warn("armtls: evidence omits the measured policies: journal over the per-boot cap", "path", path, "policies", len(list), "max", MaxRuntimeExtensions)
+			return nil
+		case list != nil:
+			slog.Info("armtls: evidence lists the measured policies", "path", path, "policies", len(list))
+			return list
 		}
 	}
-	return nil, nil
+	return nil
 }
-
-// ReadJournal is [runtimemeasure.ReadJournal] retrying a permission error:
-// after a failed extend the plugin rewrites the journal 0600 and restores 0644
-// right after. A missing journal is nil, nil.
-func ReadJournal(path string) ([]string, error) {
-	var err error
-	for attempt := range journalReadAttempts {
-		var list []string
-		if list, err = readJournalFile(path); !errors.Is(err, fs.ErrPermission) {
-			return list, err
-		}
-		if attempt < journalReadAttempts-1 {
-			time.Sleep(journalRetryDelay)
-		}
-	}
-	return nil, err
-}
-
-const (
-	journalReadAttempts = 5
-	journalRetryDelay   = 20 * time.Millisecond
-)
-
-// readJournalFile is the single read ReadJournal retries. Var so tests can
-// fail it.
-var readJournalFile = runtimemeasure.ReadJournal
 
 // ExtractAttestation parses the extension under OIDARMTLSAttestation out of a
 // certificate, failing with ErrNoAttestation when there is none.

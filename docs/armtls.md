@@ -100,7 +100,10 @@ proves possession of the corresponding private key in either path.
    the extension unchanged. On TDX it lists the allowlist policy digests the
    node extended into RTMR[3] after the operator-key seed, read after the
    quote; c8s's verifiers accept the seed followed by the longest prefix of
-   the list that replays.
+   the list that replays. They do not judge which digests the list names
+   (see "What armTLS guarantees"). The list holds at most 256 entries, and
+   the journal is never pruned within a boot: a node past the cap sends no
+   list, and verifiers reject it until it reboots.
 
 The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 
@@ -354,6 +357,18 @@ What it does **not** guarantee:
   good as the inventory's honesty about what it admitted. The gate is
   membership, not composition, so it does not say the pod runs one particular
   workload. Enforcing per-workload measurement at `/attest` is unimplemented.
+- **Which allowlist policies a TDX node measured.** c8s's verifiers (CDS
+  `/attest`, the armTLS mesh, router discovery, cred-release and
+  `c8s get-kubeconfig`) accept RTMR[3] as the seed followed by any prefix of
+  the node's list that replays. They do not check the digests against the
+  operator's policy history, and a workload-image digest replays as well as a
+  policy digest, since both use one event encoding. CDS does not copy the
+  list into the leaf it issues, so a CA-verified peer cannot see it. This is
+  a non-goal: only code inside the measured image can extend RTMR[3], so a
+  list naming a digest the operator never approved requires a compromised
+  image, which the image pin already excludes. Judging the list is the job of
+  an external verifier that replays it against the operator-signed policy
+  history; `c8s verify` does not do so yet.
 - **Post-boot integrity.** The launch digest covers boot state; runtime
   compromise inside a measured node is out of scope for launch attestation.
 - **Availability.** A hostile host can always refuse service; armTLS turns

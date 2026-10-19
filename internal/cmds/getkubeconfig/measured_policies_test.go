@@ -2,17 +2,17 @@ package getkubeconfig
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -94,8 +94,7 @@ func TestPolicyListRefreshesOnMiss(t *testing.T) {
 }
 
 // Run takes the node's list from the verified cred-release leaf and releases
-// only when a prefix of it replays the quote's RTMR[3]. A list the host serves
-// over HTTP is never consulted.
+// only when a prefix of it replays the quote's RTMR[3].
 func TestRunReplaysMeasuredPolicies(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
@@ -115,13 +114,8 @@ func TestRunReplaysMeasuredPolicies(t *testing.T) {
 			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 			stubVerify(t, res, nil)
 
-			var releaseHits, listHits atomic.Int32
+			var releaseHits atomic.Int32
 			release := newAttestedTLSServerWithExtensions(t, teetypes.PlatformTDX, tc.leaf, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/measured-policies" {
-					listHits.Add(1)
-					io.WriteString(w, `["`+p+`"]`) // would replay
-					return
-				}
 				releaseHits.Add(1)
 				releaseHandler(t, http.StatusOK, goodRelease, nil).ServeHTTP(w, r)
 			}))
@@ -134,9 +128,6 @@ func TestRunReplaysMeasuredPolicies(t *testing.T) {
 			}
 			if tc.wantErr && releaseHits.Load() != 0 {
 				t.Fatalf("cred-release hits = %d, want 0", releaseHits.Load())
-			}
-			if n := listHits.Load(); n != 0 {
-				t.Fatalf("host-served list fetched %d times, want 0", n)
 			}
 		})
 	}
@@ -184,45 +175,38 @@ func TestAttestResponseListSupersedesLeaf(t *testing.T) {
 	}
 }
 
-// The refresh dial waits out --release-wait for a cred-release that is still
-// starting, as the other cred-release steps do.
-func TestDialReleaseRetriesRefusedConnection(t *testing.T) {
-	t.Parallel()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-	accepted := make(chan struct{}, 1)
-	listening := make(chan net.Listener, 1)
-	t.Cleanup(func() {
-		if late := <-listening; late != nil {
-			_ = late.Close()
-		}
-	})
-	go func() {
-		time.Sleep(200 * time.Millisecond)
-		late, err := net.Listen("tcp", addr)
-		listening <- late
-		if err != nil {
-			return
-		}
-		conn, err := late.Accept()
-		if err != nil {
-			return
-		}
-		accepted <- struct{}{}
-		_ = conn.Close()
-	}()
+// With --attest-url, Run records cred-release's list before the gate, waiting
+// out --release-wait, and a refresh on a miss is one dial within --timeout.
+func TestRunBoundsPolicyRefresh(t *testing.T) {
+	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
+	res := verifiedResultFor(env.exp)
+	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.exp.operatorPubPEM), []string{"sha256:" + strings.Repeat("1", 64)})
+	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
+	stubVerify(t, res, nil)
 
-	cfg := Config{Timeout: 2 * time.Second, ReleaseWait: 10 * time.Second}
-	dialRelease(context.Background(), cfg, &url.URL{Scheme: "https", Host: addr}, testPolicy(t, operatorPub(t)))
-	select {
-	case <-accepted:
-	default:
-		t.Fatal("dialRelease gave up before cred-release listened")
+	orig := dialTLS
+	t.Cleanup(func() { dialTLS = orig })
+	dials := 0
+	dialTLS = func(context.Context, *tls.Dialer, string) (net.Conn, error) {
+		dials++
+		if dials == 1 { // the pre-dial reaches a server whose leaf lists nothing
+			client, server := net.Pipe()
+			t.Cleanup(func() { _ = server.Close() })
+			return client, nil
+		}
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
+	}
+	cfg := env.config()
+	cfg.ReleaseWait = time.Minute
+
+	start := time.Now()
+	if err := Run(context.Background(), cfg); err == nil {
+		t.Fatal("Run = nil, want the gate to fail on an unrecorded list")
+	}
+	if dials != 2 {
+		t.Errorf("dials = %d, want 2: the pre-dial and one refresh", dials)
+	}
+	if elapsed := time.Since(start); elapsed > 4*time.Second {
+		t.Errorf("Run took %v: the refresh retried a refused dial", elapsed)
 	}
 }

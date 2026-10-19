@@ -353,12 +353,12 @@ func TestObtainCertificateRuntimeExtensions(t *testing.T) {
 			orig := runtimeExtensions
 			t.Cleanup(func() { runtimeExtensions = orig })
 			read := false
-			runtimeExtensions = func() ([]string, error) {
+			runtimeExtensions = func() []string {
 				if !evidenced {
 					t.Error("journal read before the evidence was obtained")
 				}
 				read = true
-				return list, nil
+				return list
 			}
 			var sent attestRequest
 			mux := http.NewServeMux()

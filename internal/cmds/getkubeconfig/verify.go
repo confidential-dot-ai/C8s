@@ -67,7 +67,8 @@ type policyList struct {
 	mu   sync.Mutex
 	list []string
 	// refresh opens a new armTLS connection, whose verified leaf records its
-	// list; nil for a fixed list.
+	// list; nil for a fixed list. The node reissues its leaf only at half its
+	// armTLS TTL, so a leaf that predates an extend keeps failing until then.
 	refresh func()
 }
 
@@ -84,8 +85,9 @@ func (l *policyList) current() []string {
 }
 
 // replays reports whether got is start extended by a prefix of the node's
-// list. A miss refreshes the list once: no leaf may have been verified yet,
-// or the node may have reissued its leaf since.
+// list. A list ahead of the quote still replays; a list behind it does not.
+// A miss refreshes the list once: no leaf may have been verified yet, or the
+// node may have reissued its leaf since.
 func (l *policyList) replays(got []byte, start [runtimemeasure.Size]byte) bool {
 	if replaysPrefix(got, start, l.current()) {
 		return true

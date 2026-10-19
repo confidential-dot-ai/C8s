@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
 
@@ -68,7 +68,7 @@ func (h *Handler) serveAttest(w http.ResponseWriter, r *http.Request, body []byt
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return
 	}
-	extensions, err := armtls.ReadJournal(measuredPoliciesPath)
+	extensions, err := runtimemeasure.ReadJournal(measuredPoliciesPath)
 	if err != nil {
 		extensions = nil
 		// The verifier falls back to the list in this server's certificate.

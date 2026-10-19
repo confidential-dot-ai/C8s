@@ -60,10 +60,7 @@ func (c Client) AttestationExtension(ctx context.Context, attestationApiURL stri
 	if err != nil {
 		return pkix.Extension{}, err
 	}
-	if att, err = armtls.WithRuntimeExtensions(att); err != nil {
-		return pkix.Extension{}, err
-	}
-	return armtls.MarshalExtension(att)
+	return armtls.MarshalExtension(armtls.WithRuntimeExtensions(att))
 }
 
 // ARMTLSEvidence returns the payload to embed in an armTLS certificate

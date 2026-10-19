@@ -14,13 +14,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/policymeasure"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
@@ -35,7 +35,7 @@ var operatorPubkeyPath = "/etc/confai/operator-pubkey"
 
 // measuredPoliciesPath is the NRI plugin's journal of the allowlist policies
 // it extended into RTMR[3]. Var so tests can move it.
-var measuredPoliciesPath = policymeasure.NodeJournal
+var measuredPoliciesPath = armtls.NodeJournal
 
 // ErrNoOperatorKey is returned (wrapped) by the Load* functions when no
 // operator pubkey is staged at all: the VM was launched without an opkeydata
@@ -130,9 +130,9 @@ func verifiedSelfReport(ctx context.Context, attestationAPIURL string) (*teetype
 // Which field carries the binding, and how wide it is, is runtimemeasure's
 // problem: this reads the verified report and asks whether it names this key.
 // The node image runs no workload measurer, so the binding must equal the seed
-// followed by a prefix of the allowlist policies the NRI plugin journaled; any
-// other extension means an unexpected measurer ran, and the comparison fails
-// closed.
+// followed by a prefix of the allowlist policies in this node's own journal; an
+// extension the journal does not list fails closed. Remote verifiers cannot
+// read the journal and accept whatever list the node sends (docs/armtls.md).
 //
 // Called once at service start: it accepts the policies the node had measured
 // by then, and does not see later extends.
@@ -196,10 +196,11 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 // the measured allowlist policies. The journal is read after the report, so it
 // may hold extends the report does not.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error {
-	policies, err := armtls.ReadJournal(measuredPoliciesPath)
+	policies, err := runtimemeasure.ReadJournal(measuredPoliciesPath)
 	if err != nil {
 		return fmt.Errorf("read measured policies: %w", err)
 	}
+	slog.Info("measured-policy journal", "path", measuredPoliciesPath, "policies", len(policies))
 	if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {
 		if len(policies) == 0 {
 			return err

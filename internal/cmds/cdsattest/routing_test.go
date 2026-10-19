@@ -497,6 +497,12 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
 		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.cdsURL = "" }), "--publish-routes requires --cds-url"},
 		{"publish routes with attest off", routed(func(c *config) { c.routing.publish = true; c.attestOff = true; c.routing.port = 8802 }), "--publish-routes requires --attest-endpoints=true"},
+		{"measured policies", routed(func(c *config) { c.measuredPolicies = "/run/nri/measured-policies" }), ""},
+		{"measured policies with attest off", routed(func(c *config) {
+			c.measuredPolicies = "/run/nri/measured-policies"
+			c.attestOff = true
+			c.routing.port = 8802
+		}), "--measured-policies-file requires --attest-endpoints=true"},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},
 		{"reserved path /Foo%7e", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/Foo%7e"} }), "--reserved-paths"},

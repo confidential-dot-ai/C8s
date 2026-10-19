@@ -521,7 +521,7 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- end -}}
 {{- /* The NRI plugin's measured-policy journal, under the
        attestation-api-socket mount. An absent journal omits the list. */ -}}
-{{- if include "c8s.attestationApiSocketPresent" $root -}}
+{{- if and $v.attest.enabled (include "c8s.attestationApiSocketPresent" $root) -}}
 {{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}
 {{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the

@@ -1146,7 +1146,9 @@ by a prefix of the peer's measured allowlist policies that replays.
 An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
-entry, including its launch-key binding when present.
+entry, including its launch-key binding when present. The measured policies
+after the seed are accepted as far as they replay, not judged: see "What
+armTLS guarantees" in [armTLS](armtls.md).
 
 ### Image policy inputs
 
@@ -1475,6 +1477,15 @@ wherever the router mounts the attestation-api socket; an absent journal
 omits the list. `c8s verify` does not replay the list against these bundles
 yet, so a bundle from a node that measures policies still fails an exact
 RTMR[3] pin.
+
+To roll out policy measurement, upgrade in this order:
+
+1. CDS and every verifier: cred-release, the mesh, router discovery and
+   `c8s get-kubeconfig`. An older verifier rejects a node that measures
+   policies.
+2. The clients that send the list: get-cert and the CDS client. An older CDS
+   rejects an `/attest` request carrying `runtime_extensions` with 400.
+3. The node's policy measurer.
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode at boot. Mode `acme` applies when its

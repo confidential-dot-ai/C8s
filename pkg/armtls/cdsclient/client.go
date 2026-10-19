@@ -290,14 +290,10 @@ func (c *Client) attestationExtension(ctx context.Context, key *ecdsa.PrivateKey
 	if err != nil {
 		return pkix.Extension{}, err
 	}
-	att, err := armtls.WithRuntimeExtensions(&armtls.Attestation{
+	return armtls.MarshalExtension(armtls.WithRuntimeExtensions(&armtls.Attestation{
 		Family: teeType,
 		Report: []byte(report),
-	})
-	if err != nil {
-		return pkix.Extension{}, err
-	}
-	return armtls.MarshalExtension(att)
+	}))
 }
 
 func (cfg *Config) teeType() (armtls.TEEType, error) {
