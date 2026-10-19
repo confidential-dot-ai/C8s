@@ -358,18 +358,20 @@ grant says nothing about whether a workload may see the plaintext.
 
 Every container in the entry also needs a `mounts` policy admitting what the
 webhook injects, exactly as in
-[`secrets.md`](secrets.md#the-mount-policy) — for a volume consumer that is the
-cert volume plus each opened volume at `<volume-dir>/<NAME>`:
+[`secrets.md`](secrets.md#the-mount-policy). A grant requires `exact` (or
+`deny`), so for a volume consumer the rules name the cert volume plus each
+opened volume at `<volume-dir>/<NAME>`, which classes as a `data` mount:
 
 ```json
-"mounts": {"policy": "any"}
+"mounts": {"policy": "exact", "rules": [
+  {"destination": "/etc/c8s/certs", "kind": "emptyDir"},
+  {"destination": "/mnt/c8s-data/c8s-volumes/weights", "kind": "data"}
+]}
 ```
 
-An opened volume classes as a `data` mount, whose `exact` rules sit below
-`/mnt/c8s-data/`, so pinning one means putting the volume dir there with
-`confidential.ai/c8s-volume-dir`. Its rule,
-`{"destination": "/mnt/c8s-data/<NAME>", "kind": "data"}`, joins the cert
-volume's in the same `exact` policy.
+`create` prints this policy for the volume it built. Add one `data` rule per
+further volume, and `{"destination": "/run/c8s/secrets", "kind": "emptyDir"}`
+if the pod also requests secrets.
 
 ## Consuming a volume
 
@@ -379,17 +381,22 @@ A pod names its volumes in an annotation:
 annotations:
   confidential.ai/cw: llama-infer
   confidential.ai/c8s-volumes: "weights=/tenant-a/volumes/weights"
-  confidential.ai/c8s-volume-dir: "/models"    # optional; default /run/c8s/volumes
 ```
 
 Each entry is `NAME=/store/path`. `NAME` selects the node's device by its
 `c8s-vol-<NAME>` serial and names the directory the plaintext appears in under
-the volume dir — above, `/models/weights`. It must be a DNS-1123 label of at
-most 12 characters, because the serial holds no more. The annotation is the
+the volume dir, `/mnt/c8s-data/c8s-volumes` by default — above,
+`/mnt/c8s-data/c8s-volumes/weights`. `NAME` must be a DNS-1123 label of at most
+12 characters, because the serial holds no more. The annotation is the
 same for both modes; whether the plaintext is writable comes from the volume's
 key blob, not from the pod. Flipping the mode in a blob gets nothing: an
 immutable image is erofs and fails to mount as ext4, and a mutable image has
 no hash tree for verity to anchor.
+
+To mount elsewhere, set `confidential.ai/c8s-volume-dir` and change each
+volume's `data` rule destination to match. The webhook refuses a volume dir
+outside `/mnt/c8s-data/`, the only place a `data` rule can pin, and one inside
+`/mnt/c8s-data/c8s-reload-watch`.
 
 The webhook injects a `c8s-volume` sidecar and, per volume, an `emptyDir` with
 `mountPropagation: HostToContainer`. The sidecar fetches the key over the

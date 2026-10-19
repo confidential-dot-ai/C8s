@@ -2,11 +2,13 @@ package volume
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -277,9 +279,25 @@ func printResult(w io.Writer, cfg createConfig, path string, size uint64, v Veri
 	fmt.Fprintf(w, "  \"secrets\": {\"policy\": \"allow\", \"read\": [%q]}\n", path)
 	fmt.Fprintf(w, "\nA subtree grant would cover every volume beneath it, so this names one path.\n")
 
-	fmt.Fprintf(w, "\nAllowlist mount policy for every container in the entry:\n")
-	fmt.Fprintf(w, "  \"mounts\": {\"policy\": \"any\"}\n")
-	fmt.Fprintf(w, "\nThe webhook mounts this volume and the cert volume into every container, and the\nentry's mount policy has to admit them. docs/volumes.md — \"The mount policy\" —\nhas the exact form.\n")
+	fmt.Fprintf(w, "\nAllowlist mount policy for every container in the entry (a grant requires exact):\n")
+	fmt.Fprintf(w, "  \"mounts\": %s\n", grantMounts(cfg.name))
+	fmt.Fprintf(w, "\nThe webhook mounts the cert volume and this volume, under %s, into every\ncontainer. Add one data rule per further volume, and {\"destination\": \"/run/c8s/secrets\",\n\"kind\": \"emptyDir\"} if the pod also requests secrets. docs/volumes.md — \"The mount\npolicy\" — has the details.\n", DefaultDir)
+}
+
+// grantMounts is the exact mounts policy admitting what the webhook injects
+// into a workload container consuming volume name from DefaultDir.
+func grantMounts(name string) string {
+	raw, err := json.Marshal(pkgallowlist.MountPolicy{
+		Policy: pkgallowlist.PolicyExact,
+		Rules: []pkgallowlist.MountRule{
+			{Destination: "/etc/c8s/certs", Kind: pkgallowlist.MountEmptyDir},
+			{Destination: path.Join(DefaultDir, name), Kind: pkgallowlist.MountData},
+		},
+	})
+	if err != nil {
+		panic(err) // a fixed struct of strings always marshals
+	}
+	return string(raw)
 }
 
 func base64Std(b []byte) string { return base64.StdEncoding.EncodeToString(b) }
