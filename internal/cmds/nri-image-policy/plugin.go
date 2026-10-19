@@ -85,17 +85,16 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
-// admitsNodeRoot reports whether the base or applied allowlist admits r with
-// an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
-func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+// admitsHostMount checks explicit host rules in the base and applied allowlists.
+func (s *policyStore) admitsHostMount(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.AdmitsNodeRoot(r, m) {
+	if s.base.AdmitsHostMount(r, m) {
 		return true
 	}
 	snap := s.current()
-	return snap != nil && snap.index.AdmitsNodeRoot(r, m)
+	return snap != nil && snap.index.AdmitsHostMount(r, m)
 }
 
 // declaresNodeRoot reports whether the base or applied allowlist has a
@@ -769,12 +768,8 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // refuses it. An entry left at `any` exempts every launch of its digest; see
 // docs/allowlist-and-capabilities.md.
 //
-// The second exempts a single bind, not the container: one whose mount
-// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
-// the base or the served allowlist admits at that destination and source. A
-// served rule is safe here because it can only name read-only bytes of the
-// measured node image, and strict clients verify the served policy byte for
-// byte.
+// The second exempts binds explicitly authorized by an exact mount policy in
+// a base or served entry that admits the complete container launch.
 //
 // The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
@@ -789,7 +784,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		return verdictAllow, ""
 	}
 	digest := ""
-	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
+	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 {
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		obs = observeSandbox(pod, ctr, nodeMounts{
@@ -797,7 +792,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 			cdsPins:    p.cdsPins,
 			cdsAddress: p.cdsAddress,
 		}, mounts, func(m allowlist.ObservedMount) bool {
-			return p.policy.admitsNodeRoot(rc, m)
+			return p.policy.admitsHostMount(rc, m)
 		})
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""

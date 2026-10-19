@@ -612,12 +612,12 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 	}
 }
 
-func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
+func TestLintAllowsExplicitHostExecutables(t *testing.T) {
 	for _, tc := range []struct {
 		name, kind, extra string
 		refused           bool
 	}{
-		{"path alone", "host", "", true},
+		{"explicit host path", "host", "", false},
 		{"measured node root", "nodeRootFile", "", false},
 		{"provenance field", "host", `,"provenance":"node-root"`, true},
 		{"fs-verity not supported", "nodeRootFile", `,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},

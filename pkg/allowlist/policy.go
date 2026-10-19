@@ -208,11 +208,9 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 	return false
 }
 
-// AdmitsNodeRoot reports whether some entry that admits r does so through an
-// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
-// node image; mounts admitted under `any` or by a host rule do not.
-func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
-	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
+// AdmitsHostMount requires one entry to admit the complete launch and explicitly name m.
+func (i *Index) AdmitsHostMount(r RunningContainer, m ObservedMount) bool {
+	if i == nil || m.Class != MountHost {
 		return false
 	}
 	d, err := types.ParseDigest(r.Digest)
@@ -224,10 +222,8 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 		if c.Mounts.Policy != PolicyExact || !c.admits(r) {
 			continue
 		}
-		for _, rule := range c.Mounts.Rules {
-			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
-				return true
-			}
+		if c.Mounts.admitsMount(m) {
+			return true
 		}
 	}
 	return false

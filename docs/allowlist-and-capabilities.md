@@ -350,7 +350,10 @@ Host evidence carries a SHA-256 source commitment and the access mode through
 inventory and release matching. Host-backed workloads remain host-dependent;
 the path pin grants access to the contents at that node path. Read-only mode
 applies to the mount itself; nested mounts retain their own flags. Recursive
-read-only/write mount options leave the host source commitment unavailable.
+read-only/write mount options and unsupported bind options leave the host source
+commitment unavailable. Exact host rules can authorize files, directories and
+sockets, including for workloads with secret grants. Writable paths can affect
+other workloads or node services that use them.
 
 A read-only host **file** from the node image can use mount kind
 `nodeRootFile` instead of `host`, so it is not treated as operator-supplied
@@ -399,25 +402,25 @@ persisted launch is checked again. Provenance travels with the mount evidence
 through inventory, admission history and CDS workload matching, so `nodeRootFile`
 bytes are bound to the attested node image.
 
-Lint permits `nodeRootFile` rules on `PATH` and loader search paths. Host rules
-and data mounts retain search-path rejection. Source, destination and
+Lint permits explicit `host` and `nodeRootFile` rules on `PATH` and loader
+search paths. Data mounts retain search-path rejection. Source, destination and
 access-mode constraints still apply. Use `allowlist derive --mounts-file` to
 supply the rules. This covers the measured NVIDIA files in [issue #868](https://github.com/confidential-dot-ai/C8s/issues/868) without a
 blanket NVIDIA exemption or lint bypass.
 
-Provenance requires a plain bind mount (`bind` type or a `bind`/`rbind` option,
+Host source evidence requires a plain bind mount (`bind` type or a `bind`/`rbind` option,
 with only access and propagation flags). Any other mount type or option, such
 as an overlay naming the verified file with another `lowerdir`, gets no
-provenance. The sandbox policy (`policy.sandbox`) exempts a bind from the
+usable host source evidence. The sandbox policy (`policy.sandbox`) exempts a bind from the
 host-bind check only when an allowlist entry admits the container under an
-`exact` mount policy whose `nodeRootFile` rule names that destination and
-source. That entry can be CDS-served. Every other bind stays a host bind,
-including a measured file under mount policy `any`, under a `host` rule, or
-with the allowlist disabled. A read-only `nodeRootFile` rule does not stop an
-entry from carrying a secrets grant; a `host` rule does (see
-[Secrets](secrets.md)).
+`exact` mount policy whose `host` or `nodeRootFile` rule names that destination,
+source and access mode. That entry can be CDS-served. Mount policy `any` and
+disabled allowlist enforcement grant no host-bind exemption. Device, CDI,
+hook and namespace restrictions apply independently. Pod-spec `hostPath`
+volumes remain subject to Kubernetes Pod Security and the chart's admission
+policy.
 
-The reserved `verityDigest` field is rejected as not supported on every kind. This exception is scoped to read-only regular files.
+The reserved `verityDigest` field is rejected as not supported on every kind. `nodeRootFile` is scoped to read-only regular files.
 It does not implement whole-volume provenance, arbitrary dm-verity volume trust,
 directory mounts, IMA/IPE policy, dependency approval, or a general prohibition
 on interpreters reading executable scripts from data. Keep exact env/mount

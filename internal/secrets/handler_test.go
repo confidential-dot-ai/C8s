@@ -82,9 +82,9 @@ type fakeInventory struct {
 	keys       map[string]*ecdsa.PublicKey
 	containers []workloadclaims.SandboxContainer
 	// bySandbox overrides containers for the sandboxes it names.
-	bySandbox    map[string][]workloadclaims.SandboxContainer
-	err          error
-	legacyMounts bool
+	bySandbox                    map[string][]workloadclaims.SandboxContainer
+	err                          error
+	preserveMissingMountEvidence bool
 }
 
 func (f *fakeInventory) InventoryKey(_ context.Context, host string) (*ecdsa.PublicKey, error) {
@@ -103,7 +103,7 @@ func (f *fakeInventory) FetchSandbox(_ context.Context, _, sandboxID string) (wo
 		containers = f.containers
 	}
 	containers = slices.Clone(containers)
-	if !f.legacyMounts {
+	if !f.preserveMissingMountEvidence {
 		for i := range containers {
 			if containers[i].Mounts == nil {
 				containers[i].Mounts = []pkgallowlist.ObservedMount{}
@@ -1123,7 +1123,7 @@ func TestSecretReleaseEnforcesMountEvidence(t *testing.T) {
 			al := hn.h.Policy.(fakePolicy).al
 			al.Workloads["api"].Containers[0].Mounts = pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyExact, Rules: []pkgallowlist.MountRule{{Destination: "/mnt/c8s-data/config", Kind: pkgallowlist.MountData}}}
 			hn.inv.containers[0].Mounts = tc.mounts
-			hn.inv.legacyMounts = tc.mounts == nil
+			hn.inv.preserveMissingMountEvidence = tc.mounts == nil
 			w := do(hn.h, hn.request(t, http.MethodPost, "/api/db"))
 			if w.Code != tc.want {
 				t.Fatalf("status=%d body=%s", w.Code, w.Body)

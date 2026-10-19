@@ -645,10 +645,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 	}
 }
 
-// Only an exact nodeRootFile rule at the bind's destination exempts it: measured
-// bytes the pod places anywhere else, such as over a pinned entrypoint, are a
-// host bind like any other.
-func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
+func TestHostBindNeedsExactAllowlistRule(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
 	original := nodeRootEvidence
 	nodeRootEvidence = func(string) bool { return true }
@@ -667,7 +664,7 @@ func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
 		{"exact nodeRootFile rule", exact, source, true, false, verdictAllow},
 		{"exact nodeRootFile rule in the base allowlist", exact, source, false, true, verdictAllow},
 		{"mount policy any, unlisted destination", allowlist.MountPolicy{Policy: allowlist.PolicyAny}, "/app/verify", true, false, verdictDeny},
-		{"host rule", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{plain}}, source, true, false, verdictDeny},
+		{"host rule", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{plain}}, source, true, false, verdictAllow},
 		{"allowlist disabled", exact, source, false, false, verdictDeny},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -700,8 +697,8 @@ func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
 	}
 }
 
-func TestHostBindWithoutProvenanceSkipsDigestLookup(t *testing.T) {
-	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}
+func TestHostBindWithAllowlistDisabledSkipsDigestLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
 	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
 	pod, ctr := sandboxedPod(), sandboxedContainer()
 	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
@@ -709,6 +706,44 @@ func TestHostBindWithoutProvenanceSkipsDigestLookup(t *testing.T) {
 	// fakeContainerd panics on Resolve.
 	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, mounts); verdict != verdictDeny {
 		t.Fatalf("checkSandbox(host bind without provenance) = %d, want deny", verdict)
+	}
+}
+
+func TestAllowlistedHostBindDoesNotGrantOtherPrivileges(t *testing.T) {
+	const socket = "/run/nvidia-persistenced/socket"
+	for _, tc := range []struct {
+		name   string
+		change func(*api.Container)
+		want   imageVerdict
+	}{
+		{"writable socket", func(*api.Container) {}, verdictAllow},
+		{"unlisted source", func(c *api.Container) { c.Mounts[0].Source = "/run/other/socket" }, verdictDeny},
+		{"unlisted destination", func(c *api.Container) { c.Mounts[0].Destination = "/other" }, verdictDeny},
+		{"different access mode", func(c *api.Container) { c.Mounts[0].Options = []string{"ro"} }, verdictDeny},
+		{"missing mount", func(c *api.Container) { c.Mounts = nil }, verdictDeny},
+		{"extra mount", func(c *api.Container) {
+			c.Mounts = append(c.Mounts, &api.Mount{Type: "bind", Source: "/etc/config", Destination: "/config"})
+		}, verdictDeny},
+		{"device", func(c *api.Container) { c.Linux.Devices = []*api.LinuxDevice{{Path: "/dev/nvidia0"}} }, verdictDeny},
+		{"CDI device", func(c *api.Container) { c.CDIDevices = []*api.CDIDevice{{Name: "nvidia.com/gpu=0"}} }, verdictDeny},
+		{"host cgroup namespace", func(c *api.Container) { c.Linux.Namespaces = nil }, verdictDeny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{
+				{Destination: socket, Kind: allowlist.MountHost, Source: socket},
+			}}
+			cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}
+			p, _ := newCachedPlugin(cfg, al)
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			ctr.Args = []string{"/bin/app"}
+			ctr.Mounts = []*api.Mount{{Type: "bind", Source: socket, Destination: socket}}
+			tc.change(ctr)
+			verdict, reason := p.checkContainer(t.Context(), cfg, pod, ctr, "registry/repo@"+pushDigestB)
+			if verdict != tc.want {
+				t.Fatalf("verdict=%v reason=%s, want %v", verdict, reason, tc.want)
+			}
+		})
 	}
 }
 
