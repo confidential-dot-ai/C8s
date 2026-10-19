@@ -57,6 +57,16 @@ sidecar's image is the c8s image, with nothing else in it) is a hidden `c8s`
 subcommand; one that is a peer in a pod of its own is an image under
 [`tools/`](tools).
 
+Where a backend cannot exec into a pod whose argv and mounts a scenario pins,
+it reads the pod's files from the pod's log instead. The reporter image
+([`images/reporter`](images/reporter)) is `image_ref`'s model-server with the
+reporter as its `sleep`: it sleeps as asked and, while it does, prints each
+file of the certificate volume but the key, and of the secret client's output
+directory, as `c8s-report file <path> <base64>` when it appears or changes,
+and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
+[`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
+builds it on dispatch, and a backend pins its digest.
+
 ## Running
 
 [`run.sh`](run.sh) is what the suite's judge runs as its test command. It sets
