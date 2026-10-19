@@ -105,6 +105,7 @@ func TestNodeRootFileMount(t *testing.T) {
 	}{
 		{"no evidence", func(m *ObservedMount) { m.Provenance = "" }},
 		{"other provenance", func(m *ObservedMount) { m.Provenance = "dm-verity" }},
+		{"fs-verity evidence", func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, strings.Repeat("b", 64) }},
 		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }},
 		{"different source", func(m *ObservedMount) { m.HostSourceDigest = "other" }},
 		{"not a host bind", func(m *ObservedMount) { m.Class = MountData }},
@@ -124,18 +125,24 @@ func TestNodeRootFileMount(t *testing.T) {
 	}
 }
 
-func TestNodeRootFileValidation(t *testing.T) {
+func TestVerifiedFileValidation(t *testing.T) {
 	digest := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	for _, tc := range []struct {
 		name string
 		rule MountRule
 		want string
 	}{
-		{"host verityDigest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "verityDigest is not supported"},
-		{"nodeRootFile verityDigest", MountRule{Kind: MountNodeRootFile, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "verityDigest is not supported"},
+		{"host verityDigest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "does not support verityDigest"},
+		{"nodeRootFile verityDigest", MountRule{Kind: MountNodeRootFile, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "does not support verityDigest"},
 		{"writable nodeRootFile", MountRule{Kind: MountNodeRootFile, Source: "/usr/bin/tool"}, "requires readOnly"},
 		{"nodeRootFile without source", MountRule{Kind: MountNodeRootFile, ReadOnly: true}, "host source"},
 		{"data verityDigest", MountRule{Kind: MountData, VerityDigest: digest}, "does not support"},
+		{"fsVerityFile without digest", MountRule{Kind: MountFSVerityFile, Source: "/usr/bin/tool", ReadOnly: true}, "64 lowercase hexadecimal"},
+		{"short digest", MountRule{Kind: MountFSVerityFile, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: "abc"}, "64 lowercase hexadecimal"},
+		{"uppercase digest", MountRule{Kind: MountFSVerityFile, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: strings.ToUpper(digest)}, "64 lowercase hexadecimal"},
+		{"prefixed digest", MountRule{Kind: MountFSVerityFile, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: "sha256:" + digest}, "64 lowercase hexadecimal"},
+		{"writable fsVerityFile", MountRule{Kind: MountFSVerityFile, Source: "/usr/bin/tool", VerityDigest: digest}, "requires readOnly"},
+		{"fsVerityFile without source", MountRule{Kind: MountFSVerityFile, ReadOnly: true, VerityDigest: digest}, "host source"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.rule.Destination = "/mnt/c8s-data/tools"
@@ -149,17 +156,19 @@ func TestNodeRootFileValidation(t *testing.T) {
 
 // An enforcer that predates a mount kind must refuse a served document that
 // uses it, never fall back to a weaker rule. ParseServedJSON ignores unknown
-// fields, so a node-root rule is a kind: an older parser reaches the same
-// unsupported-kind refusal this future kind does.
+// fields, so node-root and fs-verity rules are kinds: an older parser reaches
+// the same unsupported-kind refusal this future kind does.
 func TestServedUnknownMountKindRefusesDocument(t *testing.T) {
 	doc := `{"schema":"c8s.allowlist/v1","workloads":{"w":{"containers":[{"digest":"` + dApp + `","mounts":{"policy":"exact","rules":[` +
 		`{"destination":"/usr/bin/tool","kind":"futureFile","source":"/usr/bin/tool","readOnly":true,"futureField":"x"}]}}]}}}`
 	if al, err := ParseServedJSON([]byte(doc)); err == nil || !strings.Contains(err.Error(), `unsupported kind "futureFile"`) {
 		t.Fatalf("ParseServedJSON(unknown kind) = %+v, %v, want unsupported kind error", al, err)
 	}
-	served := strings.Replace(doc, "futureFile", string(MountNodeRootFile), 1)
-	if _, err := ParseServedJSON([]byte(served)); err != nil {
-		t.Fatalf("ParseServedJSON(nodeRootFile) = %v", err)
+	for _, kind := range []string{`"` + string(MountNodeRootFile) + `"`, `"` + string(MountFSVerityFile) + `","verityDigest":"` + strings.Repeat("b", 64) + `"`} {
+		served := strings.Replace(doc, `"futureFile"`, kind, 1)
+		if _, err := ParseServedJSON([]byte(served)); err != nil {
+			t.Fatalf("ParseServedJSON(%s) = %v", kind, err)
+		}
 	}
 }
 
@@ -170,7 +179,7 @@ func TestNodeRootFileRuleIsNotPinnedForGrant(t *testing.T) {
 	}
 }
 
-func TestAdmitsNodeRoot(t *testing.T) {
+func TestAdmitsVerifiedFile(t *testing.T) {
 	const source = "/usr/bin/nvidia-smi"
 	sourceDigest, err := HostSourceDigest(source)
 	if err != nil {
@@ -194,6 +203,11 @@ func TestAdmitsNodeRoot(t *testing.T) {
 	plain := rule
 	plain.Kind = MountHost
 	exact := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	hash := strings.Repeat("b", 64)
+	fsVerity := rule
+	fsVerity.Kind, fsVerity.VerityDigest = MountFSVerityFile, hash
+	exactFSVerity := MountPolicy{Policy: PolicyExact, Rules: []MountRule{fsVerity}}
+	staged := func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, hash }
 	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
 	for _, tc := range []struct {
 		name   string
@@ -207,6 +221,10 @@ func TestAdmitsNodeRoot(t *testing.T) {
 		{"entry refuses argv", index(ArgvPolicy{Policy: PolicyExact, Argv: []string{"/bin/app"}}, exact), nil, false},
 		{"other source", index(anyCommand, exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
 		{"no observed provenance", index(anyCommand, exact), func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"exact fsVerityFile rule", index(anyCommand, exactFSVerity), staged, true},
+		{"fsVerityFile rule, other digest", index(anyCommand, exactFSVerity), func(m *ObservedMount) { staged(m); m.VerityDigest = strings.Repeat("a", 64) }, false},
+		{"fsVerityFile rule, node-root evidence", index(anyCommand, exactFSVerity), nil, false},
+		{"nodeRootFile rule, fs-verity evidence", index(anyCommand, exact), staged, false},
 		{"no allowlist", nil, nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -215,9 +233,78 @@ func TestAdmitsNodeRoot(t *testing.T) {
 				tc.mutate(&m)
 			}
 			r := RunningContainer{Digest: dApp, Argv: []string{"/bin/other"}, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}
-			if got := tc.index.AdmitsNodeRoot(r, m); got != tc.want {
-				t.Fatalf("AdmitsNodeRoot(%s) = %t, want %t", tc.name, got, tc.want)
+			if got := tc.index.AdmitsVerifiedFile(r, m); got != tc.want {
+				t.Fatalf("AdmitsVerifiedFile(%s) = %t, want %t", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestFSVerityFileMount(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/tool", Kind: MountFSVerityFile, Source: "/opt/tools/tool", ReadOnly: true, VerityDigest: hash}}}
+	if err := normalizeMounts(&policy); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := HostSourceDigest("/opt/tools/tool")
+	mount := ObservedMount{Destination: "/usr/bin/tool", Class: MountHost, HostSourceDigest: source, ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: hash}
+	for _, tc := range []struct {
+		name   string
+		change func(*ObservedMount)
+		want   bool
+	}{
+		{"pinned digest", func(*ObservedMount) {}, true},
+		{"no evidence", func(m *ObservedMount) { m.Provenance, m.VerityDigest = "", "" }, false},
+		{"digest without provenance", func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"node-root evidence", func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceNodeRoot, "" }, false},
+		{"other digest", func(m *ObservedMount) { m.VerityDigest = strings.Repeat("a", 64) }, false},
+		{"other source", func(m *ObservedMount) { m.HostSourceDigest = "other" }, false},
+		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }, false},
+		{"not a host bind", func(m *ObservedMount) { m.Class = MountData }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := mount
+			tc.change(&observed)
+			if got := policy.admits([]ObservedMount{observed}); got != tc.want {
+				t.Fatalf("admits(%+v) = %t, want %t", observed, got, tc.want)
+			}
+		})
+	}
+	encoded, err := json.Marshal(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ObservedMount
+	if err := json.Unmarshal(encoded, &decoded); err != nil || decoded != mount {
+		t.Fatalf("round trip = %+v, %v, want %+v", decoded, err, mount)
+	}
+}
+
+func TestFSVerityFileRuleIsNotPinnedForGrant(t *testing.T) {
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/tool", Kind: MountFSVerityFile, Source: "/opt/tools/tool", ReadOnly: true, VerityDigest: strings.Repeat("b", 64)}}}
+	if (mountConstraint{policy: &policy}).hostIndependent() {
+		t.Fatal("fsVerityFile rule reported host-independent, so a secrets grant would accept it")
+	}
+}
+
+func TestIndexFSVerityMountRules(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	pinned := MountRule{Destination: "/usr/bin/tool", Kind: MountFSVerityFile, Source: "/opt/tools/tool", ReadOnly: true, VerityDigest: hash}
+	plain := MountRule{Destination: "/usr/bin/other", Kind: MountHost, Source: "/opt/tools/other", ReadOnly: true}
+	digest := mustDigest(t, "sha256:"+strings.Repeat("a", 64))
+	al := &Allowlist{Workloads: map[string]Workload{"w": {Containers: []Container{{Digest: digest, Mounts: MountPolicy{Policy: PolicyExact, Rules: []MountRule{pinned, plain}}}}}}}
+	idx := al.BuildIndex()
+	if !idx.HasFSVerityMountRules() {
+		t.Fatal("HasFSVerityMountRules() = false, want true")
+	}
+	if got := idx.FSVerityMountRules(digest.String()); len(got) != 1 || got[0] != pinned {
+		t.Fatalf("FSVerityMountRules() = %+v, want [%+v]", got, pinned)
+	}
+	if got := idx.FSVerityMountRules("sha256:" + strings.Repeat("c", 64)); got != nil {
+		t.Fatalf("FSVerityMountRules(other image) = %+v, want none", got)
+	}
+	var none *Index
+	if none.HasFSVerityMountRules() || none.FSVerityMountRules(digest.String()) != nil {
+		t.Fatal("nil index reported fs-verity rules")
 	}
 }

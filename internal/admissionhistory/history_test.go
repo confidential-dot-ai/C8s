@@ -152,11 +152,16 @@ func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 
 func TestHistoryRetainsDistinctProvenance(t *testing.T) {
 	var h History
-	for _, provenance := range []string{"", allowlist.ProvenanceNodeRoot} {
-		h.Record("same-id", "sha256:a", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: provenance})
+	for _, evidence := range []struct{ provenance, digest string }{
+		{"", ""},
+		{allowlist.ProvenanceNodeRoot, ""},
+		{allowlist.ProvenanceFSVerity, strings.Repeat("a", 64)},
+		{allowlist.ProvenanceFSVerity, strings.Repeat("b", 64)},
+	} {
+		h.Record("same-id", "sha256:a", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: evidence.provenance, VerityDigest: evidence.digest})
 	}
 	_, containers, err := h.Snapshot(nil)
-	if err != nil || len(containers) != 2 {
+	if err != nil || len(containers) != 4 {
 		t.Fatalf("lost distinct provenance admissions: %v, %v", containers, err)
 	}
 }

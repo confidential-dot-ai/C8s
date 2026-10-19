@@ -85,17 +85,18 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
-// admitsNodeRoot reports whether the base or applied allowlist admits r with
-// an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
-func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+// admitsVerifiedFile reports whether the base or applied allowlist admits r
+// with an exact nodeRootFile or fsVerityFile rule for m
+// (allowlist.Index.AdmitsVerifiedFile).
+func (s *policyStore) admitsVerifiedFile(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.AdmitsNodeRoot(r, m) {
+	if s.base.AdmitsVerifiedFile(r, m) {
 		return true
 	}
 	snap := s.current()
-	return snap != nil && snap.index.AdmitsNodeRoot(r, m)
+	return snap != nil && snap.index.AdmitsVerifiedFile(r, m)
 }
 
 // declaresNodeRoot reports whether the base or applied allowlist has a
@@ -686,7 +687,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		obs = observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, func(m allowlist.ObservedMount) bool {
-			return p.policy.admitsNodeRoot(rc, m)
+			return p.policy.admitsVerifiedFile(rc, m)
 		})
 		if violations = obs.violations(); len(violations) == 0 {
 			return verdictAllow, ""

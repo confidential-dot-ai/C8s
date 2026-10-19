@@ -343,15 +343,30 @@ func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {
 	}
 }
 
-func TestDerivePreservesNodeRootFile(t *testing.T) {
-	file := writeFile(t, "mounts.json", `{"seed":{"policy":"deny"},"frontend":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"nodeRootFile","source":"/usr/bin/nvidia-smi","readOnly":true}]},"worker":{"policy":"deny"}}`)
-	got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rule := got["dynamo"].Containers[0].Mounts.Rules[0]
-	if rule.Kind != pkgallowlist.MountNodeRootFile || rule.Source != "/usr/bin/nvidia-smi" || !rule.ReadOnly {
-		t.Fatalf("derived rule lost its kind: %+v", rule)
+func TestDerivePreservesVerifiedFileKinds(t *testing.T) {
+	digest := strings.Repeat("b", 64)
+	for _, tc := range []struct {
+		kind   pkgallowlist.MountClass
+		digest string
+	}{
+		{pkgallowlist.MountNodeRootFile, ""},
+		{pkgallowlist.MountFSVerityFile, digest},
+	} {
+		t.Run(string(tc.kind), func(t *testing.T) {
+			extra := ""
+			if tc.digest != "" {
+				extra = `,"verityDigest":"` + tc.digest + `"`
+			}
+			file := writeFile(t, "mounts.json", `{"seed":{"policy":"deny"},"frontend":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"`+string(tc.kind)+`","source":"/usr/bin/nvidia-smi","readOnly":true`+extra+`}]},"worker":{"policy":"deny"}}`)
+			got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rule := got["dynamo"].Containers[0].Mounts.Rules[0]
+			if rule.Kind != tc.kind || rule.VerityDigest != tc.digest || rule.Source != "/usr/bin/nvidia-smi" || !rule.ReadOnly {
+				t.Fatalf("derived rule lost its kind: %+v", rule)
+			}
+		})
 	}
 }
 
