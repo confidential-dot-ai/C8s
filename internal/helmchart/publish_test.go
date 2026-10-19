@@ -96,7 +96,25 @@ func (n *node) pull(t *testing.T) {
 // previously served shape admitted, while the new launch is admitted.
 func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct{ name, repository string }{
+		{"short image name", ""},
+		{"image name longer than a shape's image segment", "ghcr.io/example/" + strings.Repeat("o", 48)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			publishOverride(t, tc.repository)
+		})
+	}
+}
+
+// publishOverride runs the publication procedure for the operator image
+// under repository, or the chart default when empty.
+func publishOverride(t *testing.T, repository string) {
+	t.Helper()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
+	if repository != "" {
+		args = append(args, "--set", "image.repository="+repository)
+	}
 	for valuePath, digest := range componentTestDigests {
 		args = append(args, "--set", valuePath+".digest="+digest)
 	}
@@ -182,8 +200,10 @@ func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	base, digest := override[:len(override)-13], override[len(override)-12:]
+	shape := base[:min(len(base), 41)] + "-" + digest + "-"
 	for name := range doc.Workloads {
-		if strings.HasPrefix(name, override+"-") {
+		if strings.HasPrefix(name, shape) {
 			delete(doc.Workloads, name)
 		}
 	}

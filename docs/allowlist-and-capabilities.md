@@ -880,12 +880,14 @@ write that retires them, in place of step 3:
 ```sh
 c8s allowlist export live.json
 jq --slurpfile seed seed.json --arg override OVERRIDE \
-  '.workloads |= (with_entries(select(.key | startswith($override + "-") | not)) + $seed[0].workloads)' \
+  '($override | capture("^(?<base>.+)-(?<digest>[0-9a-f]{12})$") | .base[:41] + "-" + .digest + "-") as $shape
+   | .workloads |= (with_entries(select(.key | startswith($shape) | not)) + $seed[0].workloads)' \
   live.json > next.json
 c8s allowlist upload next.json
 ```
 
-`OVERRIDE` is the override's entry name. Pods that still run the narrowed-away
+`OVERRIDE` is the override's entry name. The filter cuts its image segment to
+the 41 characters a generated shape keeps. Pods that still run the narrowed-away
 launch keep running, but cannot restart under it. A CDS that seeds the
 override, at start or while following its seed, retires those entries itself.
 

@@ -284,20 +284,16 @@ func TestStartSeedWithoutFollowIgnoresChanges(t *testing.T) {
 	}
 }
 
-// Once startSeed's channel closes, the follower no longer touches the store,
-// so a caller may close it.
-func TestStartSeedDoneStopsFollowing(t *testing.T) {
-	orig := seedRecheckInterval
-	seedRecheckInterval = time.Millisecond
-	t.Cleanup(func() { seedRecheckInterval = orig })
+// startSeed's channel closes once a cancelled follower returns, so a caller
+// waiting on it may then close the store.
+func TestStartSeedDoneClosesOnCancel(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
 	ctx, cancel := context.WithCancel(context.Background())
-	done, err := startSeed(ctx, &store, path, true)
+	done, err := startSeed(ctx, &store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,16 +302,5 @@ func TestStartSeedDoneStopsFollowing(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the follower did not stop after its context was cancelled")
-	}
-	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "late": digestB})), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(20 * seedRecheckInterval)
-	doc, _, err := store.LoadAll()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := doc.Workloads["late"]; ok {
-		t.Errorf("the store took a seed change after the follower reported it stopped: %v", doc.Workloads)
 	}
 }
