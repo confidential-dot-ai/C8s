@@ -1173,6 +1173,14 @@ is indistinguishable from a leaf issued to a pod that presented no sandbox
 token, so the policy it was issued under is not checked (`leaf_stamped` is
 `false` in JSON, and absent when the evidence carries no leaf).
 
+The history runs from boot up to the evidence's quote. Evidence that this
+check's nonce does not bind (a certificate, a discovery document or a saved
+file) cannot show a policy the operator pushed since, so both flags leave such
+a verdict partial: use `--mode attest-pq` or `attest-lb` to check the node's
+current history. With `--operator-pkey`, a list of more than 256 entries, or
+one with an entry that is not a canonical `sha256:<hex>` digest, fails the
+verdict.
+
 `--trust-operator` fetches each document from
 `<target>/allowlist/objects/sha256/<hex>`, checks it hashes to its digest
 (`allowlist_digest_mismatch` otherwise), and checks its stored write token
@@ -1183,7 +1191,8 @@ carries a token: a per-workload edit yields an unsigned policy, which fails
 `--trust-operator` until a signed upload of the same document stores a token
 for its digest. The documents authenticate
 themselves against the replayed digests, so any router replica may serve
-them.
+them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`; a fetch that times out or cannot
+connect exits 3, as for unavailable evidence.
 
 To review the documents before pinning them, add `--fetch-allowlists DIR`
 (also requires `--operator-pkey` or an anchored `--image-policy-file` image): `verify` saves each one as

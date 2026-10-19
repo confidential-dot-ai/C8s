@@ -404,12 +404,13 @@ func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorK
 // KDS fetch) is bounded by --timeout; an unobtainable-collateral failure is
 // exit 3, not a verification verdict.
 func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evidence, held *heldAllowlist, opKeys operatorKeysReport, servedMeasurements measurementsReport, out, errOut io.Writer) int {
+	verifyCtx := ctx
 	if cfg.timeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, cfg.timeout)
+		verifyCtx, cancel = context.WithTimeout(ctx, cfg.timeout)
 		defer cancel()
 	}
-	result, verr := verifyInProcess(ctx, ev, plan.policy, plan.initDataHash, minTCBFromCfg(cfg))
+	result, verr := verifyInProcess(verifyCtx, ev, plan.policy, plan.initDataHash, minTCBFromCfg(cfg))
 	if isConnectError(verr) {
 		fmt.Fprintf(errOut, "error: could not fetch verification collateral: %v\n", verr)
 		return exitNoEvidence
@@ -418,6 +419,9 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
+	// Each history fetch has its own --timeout, not what the verification
+	// left of it.
+	unreachable := checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
 	// The route note describes a check that passed, so a failed verdict
 	// carries none.
 	if ev.route != nil && oc.Error == "" {
@@ -425,9 +429,11 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 		oc.RouteRevision = ev.route.revision
 		oc.RouteNote = ev.route.note
 	}
-	checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
 	applyInitDataNote(&oc, result, plan)
 	render(cfg, oc, out)
+	if unreachable {
+		return exitNoEvidence
+	}
 	return verdictExitCode(oc)
 }
 
@@ -1210,9 +1216,10 @@ type Outcome struct {
 	RouteRevision uint64 `json:"route_revision,omitempty"`
 	RouteNote     string `json:"route_note,omitempty"`
 
-	// MeasuredPolicies is the node's allowlist policy history since boot:
-	// the prefix of the bundle's measured list that replays against RTMR[3]
-	// after the --operator-pkey seed. --pin-policy and --trust-operator
+	// MeasuredPolicies is the node's allowlist policy history from boot up to
+	// the evidence's quote: the prefix of the evidence's measured list that
+	// replays against RTMR[3] after the operator-key seed (--operator-pkey or
+	// an anchored --image-policy-file image). --pin-policy and --trust-operator
 	// failures land in Error (policy_history_absent,
 	// policy_history_not_pinned, policy_history_unsigned).
 	MeasuredPolicies []string `json:"measured_policies,omitempty"`
@@ -1538,6 +1545,21 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	return oc
 }
 
+// checkMeasuredList bounds the evidence's measured list, which replaying costs
+// one hash per entry, and requires each entry canonical, as the node extends
+// nothing else.
+func checkMeasuredList(measured []string) error {
+	if len(measured) > armtls.MaxRuntimeExtensions {
+		return fmt.Errorf("the evidence lists %d measured policies, at most %d allowed", len(measured), armtls.MaxRuntimeExtensions)
+	}
+	for i, d := range measured {
+		if c, err := runtimemeasure.CanonicalDigest(d); err != nil || c != d {
+			return fmt.Errorf("the evidence's measured policy %d (%q) is not a canonical sha256 digest", i, d)
+		}
+	}
+	return nil
+}
+
 // anchored reports whether img pins a launch anchor.
 func anchored(img remote.ImagePin) bool { return img.Anchor != nil }
 
@@ -1654,14 +1676,19 @@ func applyRTMRPins(oc *Outcome, pins rtmrPins, measured []string, result *teetyp
 	}
 	if pins.rtmr3 != nil {
 		want := pins.rtmr3
-		if pins.anchor != nil {
+		replay := pins.anchor != nil && len(measured) > 0
+		if replay {
+			if err := checkMeasuredList(measured); err != nil {
+				oc.Error = err.Error()
+				return false
+			}
 			if k, err := runtimemeasure.MatchBindingPrefix(result, pins.anchor, measured); err == nil && k > 0 {
 				reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pins.anchor), measured[:k])
 				want, oc.MeasuredPolicies = reg[:], slices.Clone(measured[:k])
 			}
 		}
 		if !check(3, "runtime operator-key/workload chain", want) {
-			if pins.anchor != nil && len(measured) > 0 {
+			if _, err := result.Claims.RTMR(3); replay && err == nil {
 				oc.Error += fmt.Sprintf("; no prefix of the %d measured policies the evidence lists replays to it", len(measured))
 			}
 			return false
@@ -1808,7 +1835,7 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 		fmt.Fprintf(out, "  RTMR[%s]:      %s (matched)\n", idx, hexVal)
 	}
 	if len(oc.MeasuredPolicies) > 0 {
-		fmt.Fprintf(out, "  history:      %s (enforced on this node since boot, RTMR[3])\n", strings.Join(oc.MeasuredPolicies, ", "))
+		fmt.Fprintf(out, "  history:      %s (enforced on this node from boot up to the evidence's quote, RTMR[3])\n", strings.Join(oc.MeasuredPolicies, ", "))
 	}
 	if oc.InitDataNote != "" {
 		if oc.InitData != "" {

@@ -100,6 +100,17 @@ func applyPinPolicy(oc *Outcome, cfg config, ev *evidence) {
 	case d != "":
 		demoteUnvouchedStamp(oc, cfg, "pinned")
 	}
+	demoteStaleHistory(oc, ev, "pinned")
+}
+
+// demoteStaleHistory leaves a verdict whose judged history comes from evidence
+// not bound to this check's nonce partial at best: the operator may have
+// pushed another policy since the quote, which that evidence cannot show.
+func demoteStaleHistory(oc *Outcome, ev *evidence, judged string) {
+	if ev.fresh {
+		return
+	}
+	demoteNaming(oc, fmt.Sprintf("the node's current policy history: the history is %s up to the evidence's quote, which this check's nonce does not bind, so a policy enforced since is not shown (use --mode attest-pq or attest-lb)", judged))
 }
 
 // applyUncheckedHistoryPolicy demotes a verdict whose RTMR[3] replayed a
@@ -122,6 +133,8 @@ var errLeafUnstamped = errors.New("the leaf carries no matched-workload stamp")
 // without a stamp.
 func leafPolicy(ev *evidence) (string, error) {
 	switch {
+	case ev.workload != nil && len(ev.workload.AllowlistDigest) != sha256.Size:
+		return "", fmt.Errorf("the leaf's matched-workload stamp carries a %d-byte policy digest, want %d", len(ev.workload.AllowlistDigest), sha256.Size)
 	case ev.workload != nil:
 		return "sha256:" + hex.EncodeToString(ev.workload.AllowlistDigest), nil
 	case ev.workloadErr != nil:
@@ -170,10 +183,11 @@ const noHistory = "no measured policy replayed against RTMR[3]; target a node th
 // (--trust-operator), which also covers the policy the leaf was issued under.
 // The bytes authenticate themselves against the replayed digest and the token
 // against keys, so the fetch needs no attested channel: binding it to one
-// serving leaf would only fail on a different replica.
-func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) {
+// serving leaf would only fail on a different replica. It reports whether the
+// verdict failed because the target could not be reached.
+func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *evidence, keys []*ecdsa.PublicKey) (unreachable bool) {
 	if (!cfg.trustOperator && cfg.fetchAllowlists == "") || (!oc.Verified && !oc.Partial) {
-		return
+		return false
 	}
 	fail := func(format string, args ...any) {
 		oc.Verified, oc.Partial = false, false
@@ -186,10 +200,10 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	if len(oc.MeasuredPolicies) == 0 {
 		if cfg.trustOperator {
 			fail("policy_history_absent: %s", noHistory)
-			return
+			return false
 		}
 		oc.Warnings = append(oc.Warnings, "--fetch-allowlists saved nothing: "+noHistory)
-		return
+		return false
 	}
 	digests := oc.MeasuredPolicies
 	unstamped, stamped := false, false
@@ -198,7 +212,7 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		unstamped, stamped = errors.Is(err, errLeafUnstamped), d != ""
 		if err != nil && !unstamped {
 			fail("policy_history_unsigned: %v", err)
-			return
+			return false
 		}
 		if d != "" && !slices.Contains(digests, d) {
 			digests = append(slices.Clone(digests), d)
@@ -206,39 +220,39 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	}
 	if cfg.url == "" {
 		fail("%s: fetching the policy history needs a target URL", code)
-		return
+		return false
 	}
 	_, baseURL, err := normalizeTarget(cfg.url, defaultPort(cfg))
 	if err != nil {
 		fail("%s: %v", code, err)
-		return
+		return false
 	}
 	if cfg.fetchAllowlists != "" {
 		if err := os.MkdirAll(cfg.fetchAllowlists, 0o755); err != nil {
 			fail("allowlist_fetch_failed: %v", err)
-			return
+			return false
 		}
 	}
 	for _, digest := range digests {
 		hexDigest, ok := strings.CutPrefix(digest, "sha256:")
 		if !ok || !policyDigestRE.MatchString(digest) {
 			fail("%s: malformed digest %q in the node's policy history", code, digest)
-			return
+			return false
 		}
 		object := baseURL + "/allowlist/objects/sha256/" + hexDigest
 		body, err := fetchPolicy(ctx, object, cfg.server, cfg.timeout)
 		if err != nil {
 			fail("%s: fetch %s: %v", code, digest, err)
-			return
+			return isConnectError(err)
 		}
 		if sum := sha256.Sum256(body); hex.EncodeToString(sum[:]) != hexDigest {
 			fail("allowlist_digest_mismatch: the target served bytes for %s that hash to sha256:%x", digest, sum)
-			return
+			return false
 		}
 		if cfg.fetchAllowlists != "" {
 			if err := os.WriteFile(filepath.Join(cfg.fetchAllowlists, hexDigest+".json"), body, 0o644); err != nil {
 				fail("allowlist_fetch_failed: %v", err)
-				return
+				return false
 			}
 		}
 		if !cfg.trustOperator {
@@ -247,15 +261,15 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)
 		if errors.Is(err, errNotFound) {
 			fail("policy_history_unsigned: policy %s carries no operator signature; upload the whole document to sign it (c8s allowlist upload)", digest)
-			return
+			return false
 		}
 		if err != nil {
 			fail("policy_history_unsigned: fetch the signature of %s: %v", digest, err)
-			return
+			return isConnectError(err)
 		}
 		if err := operatorauth.VerifyStored(keys, strings.TrimSpace(string(token)), http.MethodPut, "/allowlist", body); err != nil {
 			fail("policy_history_unsigned: policy %s: %v", digest, err)
-			return
+			return false
 		}
 	}
 	switch {
@@ -264,4 +278,8 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	case stamped:
 		demoteUnvouchedStamp(oc, cfg, "signed")
 	}
+	if cfg.trustOperator {
+		demoteStaleHistory(oc, ev, "signed")
+	}
+	return false
 }

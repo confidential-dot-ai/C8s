@@ -163,10 +163,11 @@ func TestPinPolicy(t *testing.T) {
 		{"leaf without stamp", []string{testPolicyP}, nil, true, nil, "", true},
 		{"leaf without stamp, history not pinned", []string{testPolicyR}, nil, true, nil, "policy_history_not_pinned: the node enforced policy " + testPolicyR, false},
 		{"unreadable stamp", []string{testPolicyP}, nil, true, errors.New("bad extension"), "policy_history_not_pinned: the leaf's issuing policy cannot be read: bad extension", false},
+		{"malformed stamp", []string{testPolicyP}, []byte{1, 2, 3}, true, nil, "policy_history_not_pinned: " + malformedStamp, false},
 		{"no history", nil, nil, false, nil, "policy_history_absent", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ev := &evidence{workloadErr: tc.workloadErr}
+			ev := &evidence{workloadErr: tc.workloadErr, fresh: true}
 			if tc.leaf || tc.stamp != nil {
 				ev.leaf = &x509.Certificate{}
 			}
@@ -196,6 +197,9 @@ func TestPinPolicy(t *testing.T) {
 		})
 	}
 }
+
+// malformedStamp is the error for a stamp whose digest is not 32 bytes.
+const malformedStamp = "the leaf's matched-workload stamp carries a 3-byte policy digest, want 32"
 
 // notesUnproven reports whether oc names the leaf's issuing policy as
 // unchecked: an unstamped leaf, or a stamp no --mesh-ca chain authenticated.
@@ -502,12 +506,13 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 		wantErr     string
 		wantPartial bool
 	}{
-		{"signed stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "mesh-ca.pem", "", false},
-		{"signed stamp, unvouched", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", "", true},
-		{"unsigned stamp", &evidence{leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
-		{"no stamp", &evidence{leaf: leaf}, signed, "", "", true},
-		{"no stamp, unsigned history", &evidence{leaf: leaf}, unsigned, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
-		{"unreadable stamp", &evidence{leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "", "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false},
+		{"signed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "mesh-ca.pem", "", false},
+		{"signed stamp, unvouched", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", "", true},
+		{"unsigned stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
+		{"no stamp", &evidence{fresh: true, leaf: leaf}, signed, "", "", true},
+		{"no stamp, unsigned history", &evidence{fresh: true, leaf: leaf}, unsigned, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
+		{"unreadable stamp", &evidence{fresh: true, leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "", "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false},
+		{"malformed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: []byte{1, 2, 3}}}, signed, "", "policy_history_unsigned: " + malformedStamp, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
@@ -606,7 +611,7 @@ func TestUncheckedHistoryIsPartial(t *testing.T) {
 			if tc.history {
 				reg = runtimemeasure.FromDigestsSeeded(seed, measured)
 			}
-			ev := &evidence{platform: "tdx", measured: measured}
+			ev := &evidence{platform: "tdx", measured: measured, fresh: true}
 			oc := newOutcome(tc.cfg, ev, tdxResult(testMRTD, rtmr3Claims(reg)), nil, plan)
 			applyVerdictPolicies(&oc, tc.cfg, ev, nil, operatorKeysReport{}, plan, measurementsReport{})
 			if oc.Partial != tc.wantPartial || oc.Verified == tc.wantPartial || oc.Error != "" {
@@ -617,6 +622,93 @@ func TestUncheckedHistoryIsPartial(t *testing.T) {
 			})
 			if named != tc.wantPartial {
 				t.Errorf("NotProven = %v; want a note naming both flags: %v", oc.NotProven, tc.wantPartial)
+			}
+		})
+	}
+}
+
+// A judged history read from evidence this check's nonce does not bind is as
+// of the quote: the node may have enforced an unjudged policy since.
+func TestStaleHistoryIsPartial(t *testing.T) {
+	v := loadSignatureVector(t)
+	sum := sha256.Sum256(v.Policy)
+	digest := "sha256:" + hex.EncodeToString(sum[:])
+	srv := httptest.NewServer(objectServer(digest, v.Policy, v.Token))
+	defer srv.Close()
+	keysPath := filepath.Join(t.TempDir(), "keys.pem")
+	if err := os.WriteFile(keysPath, []byte(v.KeysPEM), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	trustCfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
+	plan, _ := historyPlan(t, trustCfg)
+	judges := map[string]func(*Outcome, *evidence){
+		"pin": func(oc *Outcome, ev *evidence) { applyPinPolicy(oc, config{pinPolicies: []string{digest}}, ev) },
+		"trust": func(oc *Outcome, ev *evidence) {
+			checkPolicyHistory(context.Background(), oc, trustCfg, ev, plan.trustKeys)
+		},
+	}
+	for name, judge := range judges {
+		for _, fresh := range []bool{false, true} {
+			oc := Outcome{Verified: true, MeasuredPolicies: []string{digest}}
+			judge(&oc, &evidence{fresh: fresh})
+			stale := slices.ContainsFunc(oc.NotProven, func(n string) bool { return strings.Contains(n, "up to the evidence's quote") })
+			if oc.Error != "" || oc.Verified != fresh || stale == fresh {
+				t.Errorf("%s(fresh %v) = verified %v, error %q, NotProven %v; want verified only when fresh", name, fresh, oc.Verified, oc.Error, oc.NotProven)
+			}
+		}
+	}
+}
+
+// The --operator-pkey replay bounds the list as --image-policy-file does, and
+// a register failure keeps its own cause.
+func TestOperatorPkeyReplayErrors(t *testing.T) {
+	plan, seed := historyPlan(t, config{})
+	over := make([]string, armtls.MaxRuntimeExtensions+1)
+	for i := range over {
+		over[i] = testPolicyP
+	}
+	claims := rtmr3Claims(seed)
+	noRTMR3 := map[string]any{"rtmr_1": claims["rtmr_1"], "rtmr_2": claims["rtmr_2"]}
+	for _, tc := range []struct {
+		name     string
+		measured []string
+		claims   map[string]any
+		want     string
+	}{
+		{"over cap", over, claims, fmt.Sprintf("lists %d measured policies, at most %d", len(over), armtls.MaxRuntimeExtensions)},
+		{"non-canonical entry", []string{testPolicyP, "sha256:ABC"}, claims, `measured policy 1 ("sha256:ABC") is not a canonical sha256 digest`},
+		{"absent register", []string{testPolicyP}, noRTMR3, "register claim absent or malformed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := &evidence{platform: "tdx", measured: tc.measured}
+			oc := newOutcome(config{}, ev, tdxResult(testMRTD, tc.claims), nil, plan)
+			if oc.Verified || !strings.Contains(oc.Error, tc.want) || strings.Contains(oc.Error, "no prefix of the") {
+				t.Errorf("newOutcome = verified %v, error %q; want a failure containing %q only", oc.Verified, oc.Error, tc.want)
+			}
+		})
+	}
+}
+
+// A history fetch that times out is the target being unreachable (exit 3),
+// not a policy failure; an answered error is.
+func TestPolicyHistoryUnreachable(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		handler http.HandlerFunc
+		want    bool
+	}{
+		{"timeout", func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() }, true},
+		{"status 502", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusBadGateway) }, false},
+		{"not found", http.NotFound, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(tc.handler)
+			defer srv.Close()
+			cfg := config{url: srv.URL, fetchAllowlists: t.TempDir(), timeout: 100 * time.Millisecond}
+			oc := Outcome{Verified: true, MeasuredPolicies: []string{testPolicyP}}
+			got := checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, nil)
+			if got != tc.want || oc.Verified || !strings.Contains(oc.Error, "allowlist_fetch_failed") {
+				t.Errorf("checkPolicyHistory = unreachable %v, verified %v, error %q; want unreachable %v and a failed verdict", got, oc.Verified, oc.Error, tc.want)
 			}
 		})
 	}
