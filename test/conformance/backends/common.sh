@@ -128,6 +128,8 @@
 #                                    where pod_exec is agent: the sh script's
 #                                    combined output, its status as the
 #                                    function's
+#   agent_exec <ns> <pod> <container> <argv...>
+#                                    agent_run of the argv
 #   pod_cert_file <ns> <pod> <file> [container]
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
@@ -191,9 +193,6 @@
 #                                    address, PEM
 #   router_nginx_conf                the router's rendered nginx configuration;
 #                                    77 where the node image holds it
-#   router_allowlist_route           where router_nginx_conf answers 77: yes
-#                                    when the built-in allowlist route is
-#                                    known enabled, else 77
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
 #   cds_relay_block / cds_relay_unblock
@@ -656,8 +655,6 @@ router_nginx_conf() {
     fi
     kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
 }
-
-router_allowlist_route() { return "$UNSUPPORTED"; }
 
 # The attest container is started with --front-door-mode, or, where a launch
 # configuration drives the router, with the file that holds it. get-cert, an

@@ -119,8 +119,6 @@ cds_read() {
     cds_request GET "$path"
 }
 router_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
-# Every CDS call above goes through that route.
-router_allowlist_route() { echo yes; }
 # The leaf, the first certificate curl's %{certs} lists for the chain.
 cds_serving_cert() {
     local url out
@@ -238,7 +236,7 @@ pod_exec() { echo agent; }
 AGENT=c8s-conformance/agent
 AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
-AGENT_SCRIPT='export C8S_CONFORMANCE_AGENT=1; last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
+AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; /bin/sleep 1; done'
 
 manifest_filter() { agent_wrap; }
 
@@ -258,12 +256,11 @@ agent_curl() {
     shift 6
     local -a opts=(-sk --max-time 30 -w '\n%{http_code}')
     if [ -n "$body" ]; then
-        script+="echo $(base64 < "$body" | tr -d '\n') | base64 -d > /tmp/.agent-body; "
+        script+="$(embed "$body" /tmp/.agent-body)"
         opts+=(-H 'Content-Type: application/json' --data-binary @/tmp/.agent-body)
     fi
     if [ -n "$cert" ]; then
-        script+="echo $(base64 < "$cert" | tr -d '\n') | base64 -d > /tmp/.agent-cert; "
-        script+="echo $(base64 < "$key" | tr -d '\n') | base64 -d > /tmp/.agent-key; "
+        script+="$(embed "$cert" /tmp/.agent-cert)$(embed "$key" /tmp/.agent-key)"
         opts+=(--cert /tmp/.agent-cert --key /tmp/.agent-key)
     fi
     script+="curl $(shq "${opts[@]}" "$@")"
@@ -278,6 +275,9 @@ agent_curl() {
     echo "${resp##*$'\n'}"
     printf '%s\n' "${resp%$'\n'*}"
 }
+
+# embed <file> <path>: a command writing the file's bytes at path in the pod.
+embed() { echo "echo $(base64 < "$1" | tr -d '\n') | base64 -d > $2; "; }
 
 # shq <word...>: each word single-quoted for a POSIX sh.
 shq() { local w; for w in "$@"; do printf "'%s' " "${w//\'/\'\\\'\'}"; done; }
@@ -327,64 +327,44 @@ agent_run() {
     return "$rc"
 }
 
-# A pod without the agent whose first container runs a reporter image
-# (REPORTER_IMAGES) prints its files to its log instead; any other answers
-# 77. reporter_line <ns> <pod> <file|fstype> <path>: the last value the
-# reporter printed for the path, failing while it has printed none.
-reporter_line() {
-    local image container line
-    image="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].image}')" || return "$UNSUPPORTED"
-    [[ "$image" == "$REPORTER_REPO"* ]] || return "$UNSUPPORTED"
-    container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
-    line="$(kubectl -n "$1" logs "$2" -c "$container" 2>/dev/null | grep -F "c8s-report $3 $4 " | tail -1)"
-    [ -n "$line" ] || { echo "backend: the reporter in $1/$2 has printed no $3 for $4" >&2; return 1; }
+# pod_read <ns> <pod> <container> <file|fstype> <path>: the file as base64,
+# or the directory's filesystem type, failing while absent. A pod with the
+# agent runs the read; one whose first container runs a reporter image
+# (REPORTER_IMAGES) printed it to its log, the key never; any other pod 77.
+pod_read() {
+    local ns="$1" pod="$2" container="$3" kind="$4" path="$5" spec line
+    spec="$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null)" || return "$UNSUPPORTED"
+    if [ "$(jq -r --arg a "$AGENT" '.metadata.annotations[$a] // empty' <<<"$spec")" = yes ]; then
+        case "$kind" in
+            file) agent_run "$ns" "$pod" "$container" "[ -f $(shq "$path") ] && base64 < $(shq "$path") | tr -d '\n'" ;;
+            fstype) agent_run "$ns" "$pod" "$container" "stat -f -c %T $(shq "$path")" ;;
+        esac
+        return
+    fi
+    read -r image container < <(jq -r '.spec.containers[0] | "\(.image) \(.name)"' <<<"$spec")
+    [[ "$image" == "$REPORTER_REPO"* ]] && [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
+    line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep -F "c8s-report $kind $path " | tail -1)"
+    [ -n "$line" ] || { echo "backend: the reporter in $ns/$pod has printed no $kind for $path" >&2; return 1; }
     echo "${line##* }"
 }
+pod_file() { pod_read "$1" "$2" "$3" file "$4"; }
+pod_fstype() { pod_read "$1" "$2" "$3" fstype "$4"; }
 
-# Nothing while the file is absent or the agent does not answer yet, as
-# pod_cert_file answers elsewhere; the reporter never prints the key.
+# Nothing while the file is absent, as pod_cert_file answers elsewhere.
 pod_cert_file() {
     local out rc=0
-    out="$(agent_run "$1" "$2" "" "cat '$CERT_VOLUME_PATH/$3'" 2>/dev/null)" || rc=$?
-    case "$rc" in
-        0) printf '%s\n' "$out"; return ;;
-        "$UNSUPPORTED") ;;
-        *) return 0 ;;
-    esac
-    [ "$3" != tls.key ] || return "$UNSUPPORTED"
-    rc=0
-    out="$(reporter_line "$1" "$2" file "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    out="$(pod_file "$1" "$2" "" "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
     case "$rc" in
         0) base64 -d <<<"$out" ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
 }
 
-pod_file() {
-    local tmp rc=0
-    tmp="$(mktemp)"
-    agent_run "$1" "$2" "$3" "cat $(shq "$4")" > "$tmp" || rc=$?
-    case "$rc" in
-        0) base64 < "$tmp" | tr -d '\n' ;;
-        "$UNSUPPORTED") reporter_line "$1" "$2" file "$4" || rc=$? ;;
-    esac
-    rm -f "$tmp"
-    [ "$rc" = 0 ] || [ "$rc" = "$UNSUPPORTED" ] && return "$rc"
-    return 1
-}
-
-pod_fstype() {
-    local rc=0
-    agent_run "$1" "$2" "$3" "stat -f -c %T $(shq "$4")" || rc=$?
-    [ "$rc" = "$UNSUPPORTED" ] || return "$rc"
-    reporter_line "$1" "$2" fstype "$4"
-}
-# No exec into mesh-sync: its log names the members each set write added
-# and removed, from everything on its first write, so replaying the current
-# container's log gives the set. A mesh that logs no change at all predates
-# that log, so 77.
+# No exec into mesh-sync: it logs a set's whole membership whenever a write
+# changes it, and every set on its first write, so the last line for the set
+# is the set. A mesh that logs none predates that log, so 77.
 mesh_member() {
-    local pod set log
+    local pod set member
     pod="$(mesh_pod_on "$1")"
     [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
     case "$2" in
@@ -393,16 +373,22 @@ mesh_member() {
         *) echo "backend: mesh_member: no membership '$2'" >&2; return 2 ;;
     esac
     case "$3" in *:*) set+="6" ;; esac
-    log="$(kubectl -n "$NS" logs "$pod" -c "$MESH_SYNC_CONTAINER" | jq -Rc 'fromjson? | select(.msg == "ipset membership changed")')" || true
-    [ -n "$log" ] || return "$UNSUPPORTED"
-    jq -rs --arg set "$set" --arg ip "$3" '
-        reduce (.[] | select(.set == $set)) as $e (false;
-            if any($e.added[]; . == $ip) then true elif any($e.removed[]; . == $ip) then false else . end)
-        | if . then "yes" else "no" end' <<<"$log"
+    member="$(kubectl -n "$NS" logs "$pod" -c "$MESH_SYNC_CONTAINER" |
+        jq -Rr --arg set "$set" --arg ip "$3" '
+            fromjson? | select(.msg == "ipset membership changed" and .set == $set)
+            | if any(.members[]; . == $ip) then "yes" else "no" end' | tail -1)" || return
+    [ -n "$member" ] || return "$UNSUPPORTED"
+    echo "$member"
 }
 
+# agent_exec <ns> <pod> <container> <argv...>: agent_run of the argv.
+agent_exec() { local ns="$1" pod="$2" container="$3"; shift 3; agent_run "$ns" "$pod" "$container" "$(shq "$@")"; }
+
 # The kept scraper runs the agent (manifest_filter).
-mesh_scrape() { agent_run "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$(shq "$@")"; }
+mesh_scrape() { agent_exec "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$@"; }
+
+# The dialer is copied into the pod, which the agent cannot stand in for.
+dialer_bin() { return "$UNSUPPORTED"; }
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 

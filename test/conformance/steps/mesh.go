@@ -1192,17 +1192,9 @@ const dialerPath = "/tmp/armtls-dial"
 
 // ensureDialer copies the binary the backend built into the pod's first
 // container, once per pod, so a dial's counter window holds only the dial.
-// The copy is an exec, which a pod agent cannot stand in for.
 func (w *world) ensureDialer(p *pod) error {
 	if p.dialer {
 		return nil
-	}
-	mode, err := w.be.call("pod_exec")
-	if err != nil {
-		return err
-	}
-	if mode == "agent" {
-		return godog.ErrSkip
 	}
 	bin, err := w.be.call("dialer_bin")
 	if err != nil {

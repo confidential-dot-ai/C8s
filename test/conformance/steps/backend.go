@@ -82,18 +82,14 @@ func (b backend) call(fn string, args ...string) (string, error) {
 // podExec runs cmd in a container of the pod, kubectl's default one when
 // container is empty: through kubectl exec, or where the backend's cluster
 // closes pod exec, through the agent the backend runs in the pod (pod_exec,
-// agent_run), which skips what it cannot reach.
+// agent_exec), which skips what it cannot reach.
 func (w *world) podExec(p *pod, container string, cmd ...string) (string, error) {
 	mode, err := w.be.call("pod_exec")
 	if err != nil {
 		return "", err
 	}
 	if mode == "agent" {
-		quoted := make([]string, len(cmd))
-		for i, word := range cmd {
-			quoted[i] = "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
-		}
-		return w.be.call("agent_run", p.namespace, p.name, container, strings.Join(quoted, " "))
+		return w.be.call("agent_exec", append([]string{p.namespace, p.name, container}, cmd...)...)
 	}
 	args := []string{"-n", p.namespace, "exec", p.name}
 	if container != "" {
