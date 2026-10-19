@@ -136,7 +136,7 @@ alongside a workload that uses the obtained certificate.`,
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.MeasurementsConfig, &cfg.MeasurementsConfigJSON, "", "pins the CDS endpoint; excludes --cds-measurements and --cds-rtmrs")
 	flags.StringVar(&cfg.CDSURL, "cds-url", "", "URL of the CDS service (e.g. https://cds:8443)")
 	flags.StringVar(&cfg.CDSMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements for CDS armTLS verification (empty = accept any attested CDS)")
-	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; ignored when CDS presents SNP evidence (empty = launch-digest pinning only)")
+	flags.StringVar(&cfg.CDSRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> CDS's armTLS cert must additionally satisfy; register pins reject SNP evidence (empty = launch-digest pinning only)")
 	flags.StringVar(&cfg.AttestationApiURL, "attestation-api-url", "", "URL of the node-local attestation-api (http://localhost:8400, or unix:// plus the on-node socket path the chart wires)"+cmdsutil.NodeAddressHelp)
 	flags.StringVarP(&cfg.OutPath, "out", "o", "", "Path to write the signed certificate chain PEM (prints to stdout if omitted)")
 	flags.StringVar(&cfg.CAOutPath, "ca-out", "", "Path to write just the mesh CA bundle PEM (the issuer certs trailing the leaf in the CDS chain), e.g. for nginx to serve at a discovery endpoint without a separate ConfigMap")

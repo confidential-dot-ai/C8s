@@ -119,6 +119,7 @@
         "resources": {},
         "sanValidation": {},
         "rtmrs": {},
+        "admitAzureSnp": {},
         "sandboxInventoryCIDRs": {},
         "secretsMaxPaths": {},
         "secretsMaxPathsPerWorkload": {},

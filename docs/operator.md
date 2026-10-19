@@ -1842,13 +1842,14 @@ component, so only image tags are required (no digests). Disabling it renders
 only because the chart's default `attestationApi.cvmMode=bare-metal` bakes its own
 policy plugin and so is exempt from the `require_host_image_policy` guard; other
 modes (gke/aks) must keep nri-image-policy enabled and digest-pinned, as in the
-full-shape render below. Both renders pin neither CDS nor the operator keys,
-so they set `router.routing.allowUnpinnedCDS`; a real install pins one instead.
+full-shape render below. Both renders carry a placeholder CDS launch digest:
+the chart refuses a release that names no CDS guest, and a real install passes
+the node image's own value.
 
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
-  --set router.routing.allowUnpinnedCDS=true \
+  --set cds.measurements[0]=abababababababababababababababababababababababababababababababababababababababababababababababab \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
@@ -1865,7 +1866,7 @@ different label. `c8s install` fills these digests from the registry by default
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
-  --set router.routing.allowUnpinnedCDS=true \
+  --set cds.measurements[0]=abababababababababababababababababababababababababababababababababababababababababababababababab \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \

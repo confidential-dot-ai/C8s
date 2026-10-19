@@ -2892,6 +2892,7 @@ func TestChartRouterServiceRejectsInvalidTrafficPolicy(t *testing.T) {
 // every shape at the chart defaults.
 var routerRoutingArgs = []string{
 	"--cds-url=https://c8s-cds.c8s-system.svc:8443",
+	"--cds-measurements=" + chartDigestA,
 	"--routing-host=127.0.0.1",
 	"--routing-port=8802",
 	"--routes-poll-interval=30s",
@@ -2926,7 +2927,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		"--mesh-identity-ca-file=/tls/ca.pem",
 	}, routerRoutingArgs...)...)
 	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
-	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes"} {
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-rtmrs", "--publish-routes"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
@@ -3077,21 +3078,20 @@ func TestChartRouterCDSPins(t *testing.T) {
 }
 
 // TestChartRouterUnpinnedCDS pins the router's operator-key source off a baked
-// node: cds.operatorKeys when set, else CDS, which needs a CDS pin or
-// router.routing.allowUnpinnedCDS. The test helpers set the opt-in.
+// node: cds.operatorKeys when set, else the pinned CDS. A release that pins no
+// CDS is refused before the router's own source check, so cds-attest never
+// takes its keys from an unpinned peer.
 func TestChartRouterUnpinnedCDS(t *testing.T) {
 	t.Parallel()
 	optOut := []string{"--set", "router.routing.allowUnpinnedCDS=false"}
-	pinned := append([]string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}, optOut...)
 	keys := append([]string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}, optOut...)
 	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
 	for _, tc := range []struct {
-		name               string
-		args               []string
-		wantFlag, wantKeys bool
+		name     string
+		args     []string
+		wantKeys bool
 	}{
-		{name: "opt-in", wantFlag: true},
-		{name: "pinned CDS", args: pinned},
+		{name: "pinned CDS", args: optOut},
 		{name: "pinned keys", args: keys, wantKeys: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -3100,8 +3100,8 @@ func TestChartRouterUnpinnedCDS(t *testing.T) {
 				t.Fatalf("helm template: %v\n%s", err, out)
 			}
 			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-			if got := slices.Contains(c.Args, "--allow-unpinned-cds"); got != tc.wantFlag {
-				t.Errorf("cds-attest has --allow-unpinned-cds = %v, want %v", got, tc.wantFlag)
+			if slices.Contains(c.Args, "--allow-unpinned-cds") {
+				t.Error("cds-attest carries --allow-unpinned-cds against a pinned release")
 			}
 			if got := slices.Contains(c.Args, keysArg); got != tc.wantKeys {
 				t.Errorf("cds-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
@@ -3111,12 +3111,12 @@ func TestChartRouterUnpinnedCDS(t *testing.T) {
 			}
 		})
 	}
-	out, err := helmTemplate(t, optOut...)
+	out, err := helmTemplate(t, append(optOut, "--set", "cds.measurements=null")...)
 	if err == nil {
-		t.Fatalf("helm template accepted an unpinned CDS without the opt-in\n%s", out)
+		t.Fatalf("helm template accepted a release that pins no CDS\n%s", out)
 	}
-	if got := parseValidationErrorKind(out); got != "unpinned_route_source" {
-		t.Fatalf("validation kind = %q, want unpinned_route_source\n%s", got, out)
+	if got := parseValidationErrorKind(out); got != "cds_pins_required" {
+		t.Fatalf("validation kind = %q, want cds_pins_required\n%s", got, out)
 	}
 }
 
@@ -4349,6 +4349,11 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		// different, deliberately-uncovered component digest.
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
+		// A render with no CDS pin is refused (cds_pins_required), so every
+		// test carries one unless it sets its own. --set, not --set-string:
+		// helm applies every --set-string after every --set, so a string base
+		// here would shadow the per-test value.
+		"--set", "cds.measurements[0]=" + chartDigestA,
 	}
 	cmd := exec.Command("helm", append(base, args...)...)
 	cmd.Dir = dir
@@ -4778,6 +4783,60 @@ func TestChartCDSServesARMTLS(t *testing.T) {
 	assertContainerHasArg(t, "cds", args, "--armtls-platform=snp")
 }
 
+// Azure SEV-SNP evidence names the provider's firmware rather than a guest
+// image, so the operator admits it by name and a baked node image is refused
+// it outright.
+func TestChartCDSAdmitsAzureSNP(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+	assertContainerNoArgPrefix(t, "cds", args, "--admit-azure-snp")
+
+	out, err = helmTemplate(t, "--set", "cds.admitAzureSnp=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	args = renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+	assertContainerHasArg(t, "cds", args, "--admit-azure-snp")
+
+	out, err = helmTemplate(t,
+		"--set", "cds.admitAzureSnp=true",
+		"--set", "node.baked=true",
+		"--set", "attestationApi.cvmMode=bare-metal",
+		"--set", "attestationApi.enabled=false",
+		"--set", "nriImagePolicy.enabled=false",
+	)
+	if err == nil {
+		t.Fatalf("baked release admitted Azure SEV-SNP:\n%s", out)
+	}
+	if !strings.Contains(out, "kind=cds_azure_snp_on_baked_node") {
+		t.Fatalf("render error does not name the admission:\n%s", out)
+	}
+}
+
+// On TDX the launch measurement is the MRTD and covers firmware alone, so a
+// release whose pins carry no register renders nothing: CDS would refuse to
+// start on it.
+func TestChartRefusesTDXPinsWithoutRegisters(t *testing.T) {
+	out, err := helmTemplate(t, "--set-string", "cds.armtlsPlatform=tdx")
+	if err == nil {
+		t.Fatalf("TDX release with no register pin rendered:\n%s", out)
+	}
+	if !strings.Contains(out, "kind=cds_tdx_registers_required") {
+		t.Fatalf("render error does not name the missing register pins:\n%s", out)
+	}
+
+	out, err = helmTemplate(t,
+		"--set-string", "cds.armtlsPlatform=tdx",
+		"--set", "cds.rtmrs[0]=1="+chartDigestA,
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+}
+
 // TestChartCDSDnsSanPatternAcceptsAnyNamespace pins the always-present
 // in-cluster --dns-san-pattern and the identities it admits: CDS full-matches
 // the regex (issuer.fullRegexMatch), so it must sign any
@@ -5180,6 +5239,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
+		"--set", "cds.measurements[0]=" + chartDigestA,
 		"--set", "router.nginx.image.tag=dev",
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
@@ -6386,6 +6446,7 @@ func renderExampleRouterNginxConf() string {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
+		"--set", "cds.measurements[0]="+chartDigestA,
 		// discovery and the attestation endpoints default to enabled; their
 		// locations are covered by dedicated tests, so this example shows the
 		// allowlist route and application routing.
@@ -6663,17 +6724,47 @@ func TestChartOperatorCarriesCDSMeasurementsForSecretFetcher(t *testing.T) {
 	}
 }
 
-// With no measurements configured the flag is absent rather than empty, so the
-// fetcher falls back to its own unpinned warning instead of parsing "".
-func TestChartOperatorOmitsCDSMeasurementsWhenUnset(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
+// A release that pins no CDS guest identity renders nothing: CDS would refuse
+// every issuance request and its clients would refuse to start, so the install
+// fails where the operator can still read the reason.
+func TestChartRefusesARelaseWithNoCDSPins(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "cds.measurements=null")
+	if err == nil {
+		t.Fatalf("unpinned release rendered:\n%s", out)
 	}
-	args := strings.Join(renderedDeploymentContainer(t, out, "c8s-operator", "operator").Args, " ")
-	if strings.Contains(args, "--cds-measurements") {
-		t.Errorf("operator carries --cds-measurements with none configured: %s", args)
+	if !strings.Contains(out, "kind=cds_pins_required") {
+		t.Fatalf("render error does not name the missing pins:\n%s", out)
+	}
+}
+
+// A complete image policy pins the guest on its own, and a baked node image
+// carries its pins in the measured launch config the chart cannot see.
+func TestChartAcceptsPinsFromAPolicyFileOrTheNodeImage(t *testing.T) {
+	policy := writeChartImagePolicy(t, chartTDXPolicy(chartTDXImage("node", chartDigestA, "[]")))
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"image policy file", []string{
+			"--set", "cds.measurements=null",
+			"--set-file", "cds.measurementsConfig=" + policy,
+			"--set", "nriImagePolicy.enabled=false",
+			"--set", "attestationApi.cvmMode=bare-metal",
+		}},
+		{"baked node image", []string{
+			"--set", "cds.measurements=null",
+			"--set", "node.baked=true",
+			"--set", "attestationApi.cvmMode=bare-metal",
+			"--set", "attestationApi.enabled=false",
+			"--set", "nriImagePolicy.enabled=false",
+			"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if out, err := helmTemplate(t, tc.args...); err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+		})
 	}
 }
 

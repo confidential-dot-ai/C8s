@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -141,6 +142,42 @@ func TestEnforceImagesRuntimeExtensions(t *testing.T) {
 	}
 	if pins[0].AcceptExtension != nil {
 		t.Error("EnforceImages set AcceptExtension on the caller's pin")
+	}
+}
+
+func TestPinsEnforceWithRuntimeLogPreservesExtensionDenial(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	mrtd := bytes.Repeat([]byte{0x42}, sha512.Size384)
+	anchor := []byte("operator key")
+	denied := errors.New("runtime extension denied")
+	pins := Pins{
+		Images: []remote.ImagePin{
+			{
+				Name:   "node",
+				Digest: mrtd,
+				Anchor: anchor,
+				AcceptExtension: func(string) error {
+					return denied
+				},
+			},
+		},
+	}
+	resp := remote.VerifyResponse{
+		Result: teetypes.VerificationResult{
+			SignatureValid: true,
+			Platform:       teetypes.PlatformTDX,
+			Claims:         tdxClaims(mrtd, anchor, p),
+		},
+	}
+	evidence := teetypes.AttestationEvidence{
+		Platform: teetypes.PlatformTDX,
+		Evidence: json.RawMessage(`{"quote":"fake"}`),
+	}
+	if err := pins.EnforceWithRuntimeLog(resp, evidence, []string{p}); !errors.Is(err, denied) {
+		t.Fatalf("EnforceWithRuntimeLog = %v, want extension denial", err)
+	}
+	if err := EnforceImages(resp, pins.Images, evidence.Platform, []string{p}); !errors.Is(err, denied) {
+		t.Fatalf("EnforceImages = %v, want extension denial", err)
 	}
 }
 

@@ -52,7 +52,12 @@ func TestOperatorChangePolicyWorkflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv := httptest.NewServer(newRouter(dependencies{
-		AttestHandler: AttestHandler{CA: ca, CertTTL: time.Hour},
+		AttestHandler: AttestHandler{
+			CA:        ca,
+			CertTTL:   time.Hour,
+			Pins:      pinsForDigests(t, testLaunchDigest),
+			Platforms: guestMeasuredOnly{},
+		},
 		AllowlistHandler: allowlist.Handler{
 			Store:           &store,
 			WriteAuthorizer: singleUse(operatorauth.Verifier{Keys: keys, ClockSkew: time.Second}.AuthorizeIssuedAt, &store, time.Time{}, 0),

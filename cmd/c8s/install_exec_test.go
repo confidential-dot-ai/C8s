@@ -706,27 +706,22 @@ esac`)
 }
 
 func TestPrintAttestVerifyHint(t *testing.T) {
-	prev := installMeasurements
-	defer func() { installMeasurements = prev }()
-
 	var buf bytes.Buffer
-	installMeasurements = nil
-	printAttestVerifyHint(&buf, false)
+	printAttestVerifyHint(&buf, false, nil)
 	if buf.Len() != 0 {
 		t.Errorf("--attest=false must print nothing, got %q", buf.String())
 	}
 
 	buf.Reset()
-	printAttestVerifyHint(&buf, true)
-	if !strings.Contains(buf.String(), "UNPINNED") {
-		t.Errorf("no measurements: want the UNPINNED warning, got %q", buf.String())
+	printAttestVerifyHint(&buf, true, nil)
+	if !strings.Contains(buf.String(), "refuses issuance") {
+		t.Errorf("no measurements: want the refusal warning, got %q", buf.String())
 	}
 
 	buf.Reset()
-	installMeasurements = []string{strings.Repeat("aa", 48)}
-	printAttestVerifyHint(&buf, true)
+	printAttestVerifyHint(&buf, true, []string{strings.Repeat("aa", 48)})
 	out := buf.String()
-	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "UNPINNED") {
+	if !strings.Contains(out, "pinned to --measurements") || strings.Contains(out, "refuses issuance") {
 		t.Errorf("with measurements: want the pinned hint only, got %q", out)
 	}
 }
@@ -1253,6 +1248,18 @@ func TestInstallValidatesHardwarePlatformBeforeTheCluster(t *testing.T) {
 			t.Errorf("validation must precede every exec, logged: %v", got)
 		}
 	})
+}
+
+func TestInstallRequiresTDXRegistersBeforeTheCluster(t *testing.T) {
+	f := newFakeBin(t)
+	err := runC8s(t, "install", "--cvm-mode=gke", "--hardware-platform=tdx",
+		"--measurements="+strings.Repeat("ab", 48), "--force")
+	if err == nil || !strings.Contains(err.Error(), "cds.rtmrs is empty on TDX") {
+		t.Fatalf("want the missing-registers error, got %v", err)
+	}
+	if got := f.calls(t); len(got) != 0 {
+		t.Errorf("register validation must precede every exec, logged: %v", got)
+	}
 }
 
 // The hosted lanes must render the exempt-namespace default themselves: a

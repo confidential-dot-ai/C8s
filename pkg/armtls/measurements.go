@@ -11,6 +11,13 @@ import (
 // Pins carries the shared evidence policy to C8s peer verifiers.
 type Pins remote.Policy
 
+// ConstrainsGuestIdentity reports whether these pins name a guest. Registers,
+// vTPM PCRs and a TCB floor only narrow a guest an image or launch digest
+// already names.
+func (p Pins) ConstrainsGuestIdentity() bool {
+	return len(p.Images) > 0 || len(p.Measurements) > 0
+}
+
 // VerifyPolicy adds the local attestation service to the shared policy.
 func (p Pins) VerifyPolicy(url string) *VerifyPolicy {
 	return &VerifyPolicy{
@@ -30,6 +37,16 @@ func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platfor
 		return fmt.Errorf("%w: %d runtime extensions, at most %d allowed", remote.ErrAnchorNotAllowed, len(claimed), MaxRuntimeExtensions)
 	}
 	return remote.EnforceImagesWithRuntimeLog(resp, acceptReplayed(images), platform, claimed)
+}
+
+// EnforceWithRuntimeLog checks verified guest evidence and replays its claimed runtime extensions.
+func (p Pins) EnforceWithRuntimeLog(resp remote.VerifyResponse, evidence teetypes.AttestationEvidence, claimed []string) error {
+	if len(claimed) > MaxRuntimeExtensions {
+		return fmt.Errorf("%w: %d runtime extensions, at most %d allowed", remote.ErrAnchorNotAllowed, len(claimed), MaxRuntimeExtensions)
+	}
+	pins := remote.Policy(p)
+	pins.Images = acceptReplayed(pins.Images)
+	return remote.EnforcePinsWithRuntimeLog(resp, pins, evidence, claimed)
 }
 
 // acceptReplayed returns a copy of images whose anchored pins without an

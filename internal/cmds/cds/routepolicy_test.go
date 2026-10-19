@@ -71,6 +71,10 @@ func newRouteFixture(t *testing.T, store *allowlist.Store) *routeFixture {
 	authorize := operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize
 	return &routeFixture{
 		router: newRouter(dependencies{
+			AttestHandler: AttestHandler{
+				Pins:      pinsForDigests(t, testLaunchDigest),
+				Platforms: guestMeasuredOnly{},
+			},
 			Routes:           routeHandler{Store: store, Authorize: authorize, MeshCA: mesh.Cert},
 			ReadyFn:          func() bool { return true },
 			RateLimiter:      newTestRateLimiter(t),

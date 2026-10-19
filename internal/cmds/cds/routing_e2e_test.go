@@ -43,6 +43,10 @@ func startE2ECDS(t *testing.T, stub *mockapi.Stub, pin []byte, mesh *issuer.CA, 
 		t.Fatal(err)
 	}
 	router := newRouter(dependencies{
+		AttestHandler: AttestHandler{
+			Pins:      pinsForDigests(t, testLaunchDigest),
+			Platforms: guestMeasuredOnly{},
+		},
 		Routes: routeHandler{
 			Store:     inMemoryStore(t),
 			Authorize: operatorauth.Verifier{Keys: []*ecdsa.PublicKey{key}, ClockSkew: 30 * time.Second}.Authorize,

@@ -39,6 +39,8 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set", "nriImagePolicy.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
+		// The chart refuses a release that pins no CDS guest identity.
+		"--set", "cds.measurements[0]="+strings.Repeat("ab", 48),
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+chartRuntimeDir,
 	).CombinedOutput()
 	if err != nil {

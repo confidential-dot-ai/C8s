@@ -221,9 +221,10 @@ attestation-bound certificate from CDS and renews it. Certificates land in
 
 ### Production notes
 
-- **Pin measurements.** The chart's armTLS handshakes accept any TEE-attested
-  peer until you pin `cds.measurements` and `armtlsMesh.measurements` to the
-  expected launch digests. Leave them empty only on a trusted network.
+- **Pin measurements.** `cds.measurements` is required: the chart refuses to
+  render without it, and CDS refuses to start without it. `armtlsMesh.measurements`
+  pins mesh peers to each other and is still accepted empty, which accepts any
+  TEE-attested peer.
 
 - **Pin operator keys.** Pass `--operator-keys` at install time or allowlist
   writes stay disabled. Leaving writes disabled and re-deploying CDS on every
@@ -471,9 +472,11 @@ evidence verification service, which is built and published from
 C8s is built around a strong threat model, and we would rather list the holes
 than let you discover them:
 
-- **Measurements are not pinned by default.** Until `cds.measurements` and
-  `armtlsMesh.measurements` are set, the mesh accepts any attested peer. Fine
-  for demos, mandatory homework for production.
+- **Mesh peer measurements are not pinned by default.** Until
+  `armtlsMesh.measurements` is set, mesh peers accept any attested peer. Fine
+  for demos, mandatory homework for production. CDS pins (`cds.measurements`)
+  have no such state: the chart does not render without them, and CDS does not
+  start without them.
 
 - **CDS is a singleton.** The mesh CA key lives only in CDS process
   memory; a restart mints a new CA and workloads re-bootstrap.

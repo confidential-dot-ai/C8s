@@ -1303,6 +1303,9 @@ func TestAppendCvmModeInstallArgsSetsAttestationApiValue(t *testing.T) {
 			"--set", "attestationApi.teeDevices.tdxGuest=" + tdxGuest,
 			"--set", "attestationApi.teeDevices.tpm=" + tpm,
 		}
+		if mode == "aks" {
+			out = append(out, "--set", "cds.admitAzureSnp=true")
+		}
 		// Any TDX shape — native (/dev/tdx-guest) or Azure vTPM (az-tdx) —
 		// propagates the CPU TEE to the components that name their armTLS
 		// platform, or CDS parses the TDX quote as an SNP report.
@@ -2280,39 +2283,135 @@ func TestAppendCvmModeInstallArgsRTMRs(t *testing.T) {
 	}
 }
 
-// A TDX install without RTMR pins warns that the measurement pin covers TDVF
-// firmware only; SNP, pinned TDX, and values-file-pinned TDX stay quiet.
-func TestTDXRTMRPinWarning(t *testing.T) {
+func TestTDXRTMRPinPreflight(t *testing.T) {
+	file := func(name, content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
 	r1 := "1=" + strings.Repeat("11", 48)
-
-	if warn, err := tdxRTMRPinWarning("sev-snp", nil, nil); err != nil || warn != "" {
-		t.Fatalf("sev-snp: warn=%q err=%v, want quiet", warn, err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", []string{r1}, nil); err != nil || warn != "" {
-		t.Fatalf("pinned tdx: warn=%q err=%v, want quiet", warn, err)
-	}
-	warn, err := tdxRTMRPinWarning("tdx", nil, nil)
-	if err != nil || warn == "" {
-		t.Fatalf("unpinned tdx: warn=%q err=%v, want a warning", warn, err)
-	}
-
-	pinned := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(pinned, []byte("cds:\n  rtmrs:\n    - \""+r1+"\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{pinned}); err != nil || warn != "" {
-		t.Fatalf("values-file pinned tdx: warn=%q err=%v, want quiet", warn, err)
-	}
-
-	empty := filepath.Join(t.TempDir(), "values.yaml")
-	if err := os.WriteFile(empty, []byte("cds:\n  rtmrs: []\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if warn, err := tdxRTMRPinWarning("tdx", nil, []string{empty}); err != nil || warn == "" {
-		t.Fatalf("empty-list values file: warn=%q err=%v, want a warning", warn, err)
-	}
-
-	if _, err := tdxRTMRPinWarning("tdx", nil, []string{filepath.Join(t.TempDir(), "absent.yaml")}); err == nil {
-		t.Fatal("an unreadable values file was silently treated as unpinned")
+	pins := file("pins.yaml", "cds:\n  rtmrs: [\""+r1+"\"]\n")
+	empty := file("empty.yaml", "cds:\n  rtmrs: []\n  measurementsConfig: ''\nnode:\n  baked: false\n")
+	policy := file("policy.yaml", "cds:\n  measurementsConfig: '{policy}'\n")
+	baked := file("baked.yaml", "node:\n  baked: true\n")
+	tdx := file("tdx.yaml", "cds:\n  armtlsPlatform: az-tdx\n")
+	snp := file("snp.yaml", "cds:\n  armtlsPlatform: snp\n")
+	for _, tc := range []struct {
+		name     string
+		platform string
+		policy   string
+		rtmrs    []string
+		files    []string
+		wantErr  bool
+	}{
+		{
+			name:     "SNP defaults",
+			platform: "sev-snp",
+		},
+		{
+			name:     "TDX requires registers",
+			platform: "tdx",
+			wantErr:  true,
+		},
+		{
+			name:     "CLI registers",
+			platform: "tdx",
+			rtmrs:    []string{r1},
+		},
+		{
+			name:     "values registers",
+			platform: "tdx",
+			files:    []string{pins},
+		},
+		{
+			name:     "later file clears registers",
+			platform: "tdx",
+			files:    []string{pins, empty},
+			wantErr:  true,
+		},
+		{
+			name:     "later file restores registers",
+			platform: "tdx",
+			files:    []string{empty, pins},
+		},
+		{
+			name:     "CLI policy",
+			platform: "tdx",
+			policy:   "policy.json",
+		},
+		{
+			name:     "CLI policy overrides cleared values",
+			platform: "tdx",
+			policy:   "policy.json",
+			files:    []string{policy, empty},
+		},
+		{
+			name:     "CLI registers override cleared values",
+			platform: "tdx",
+			rtmrs:    []string{r1},
+			files:    []string{pins, empty},
+		},
+		{
+			name:     "values policy",
+			platform: "tdx",
+			files:    []string{policy},
+		},
+		{
+			name:     "later file clears policy",
+			platform: "tdx",
+			files:    []string{policy, empty},
+			wantErr:  true,
+		},
+		{
+			name:     "baked node",
+			platform: "tdx",
+			files:    []string{baked},
+		},
+		{
+			name:     "later file clears baked",
+			platform: "tdx",
+			files:    []string{baked, empty},
+			wantErr:  true,
+		},
+		{
+			name:     "SNP CLI preserves values TDX platform",
+			platform: "sev-snp",
+			files:    []string{tdx},
+			wantErr:  true,
+		},
+		{
+			name:     "TDX CLI overrides values SNP platform",
+			platform: "tdx",
+			files:    []string{snp},
+			wantErr:  true,
+		},
+		{
+			name:     "later file changes platform",
+			platform: "sev-snp",
+			files:    []string{tdx, snp},
+		},
+		{
+			name:     "CLI registers still read all values files",
+			platform: "tdx",
+			rtmrs:    []string{r1},
+			files:    []string{filepath.Join(t.TempDir(), "absent.yaml")},
+			wantErr:  true,
+		},
+		{
+			name:     "unreadable values",
+			platform: "tdx",
+			files:    []string{filepath.Join(t.TempDir(), "absent.yaml")},
+			wantErr:  true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tdxRTMRPinPreflight(tc.platform, tc.policy, tc.rtmrs, tc.files)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tc.wantErr)
+			}
+		})
 	}
 }

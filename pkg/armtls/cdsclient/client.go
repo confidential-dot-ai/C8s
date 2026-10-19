@@ -70,15 +70,14 @@ type Config struct {
 	// CDSMeasurements, when non-empty, restricts the CDS server's
 	// accepted launch digests during the armTLS handshake to this set.
 	// Each entry is a 48-byte SEV-SNP measurement. Empty means "any
-	// measurement" — UNSAFE outside development; the chart should always
-	// populate this from `cds.measurements` in values.yaml.
+	// measurement".
 	CDSMeasurements [][]byte
 
 	// CDSRTMRs, when non-empty, additionally pins CDS's TDX runtime
 	// measurement registers by index during the armTLS handshake. On TDX the
 	// launch digest covers TDVF firmware alone, so without these the
-	// handshake trusts a CDS whose kernel and rootfs the host chose. Ignored
-	// when CDS presents SNP evidence. Populate from `cds.rtmrs`.
+	// handshake trusts a CDS whose kernel and rootfs the host chose. Register
+	// pins reject SNP evidence. Populate from `cds.rtmrs`.
 	CDSRTMRs map[int][]byte
 
 	// CDSImages additionally binds the CDS image to its authorized server key.

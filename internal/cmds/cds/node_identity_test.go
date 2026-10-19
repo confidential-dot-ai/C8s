@@ -15,6 +15,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -23,8 +24,9 @@ func TestAttestKeepsNodeOperatorBoundToImage(t *testing.T) {
 	digest[0] = 0xaa
 	server, agent := []byte("server key"), []byte("agent key")
 	stub := newStubAttestationApi(t, hex.EncodeToString(digest))
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Images = []remote.ImagePin{{Name: "server", Digest: digest, Anchor: server}}
+	h := newPinnedAttestHandler(t, stub.URL(), armtls.Pins{
+		Images: []remote.ImagePin{{Name: "server", Digest: digest, Anchor: server}},
+	})
 	csr, _ := generateCSR(t)
 	for _, tc := range []struct {
 		name   string
@@ -77,8 +79,15 @@ func TestAttestReplaysRuntimeExtensions(t *testing.T) {
 	p := "sha256:" + strings.Repeat("1", 64)
 	q := "sha256:" + strings.Repeat("2", 64)
 	stub := newStubAttestationApi(t, testMRTD)
-	h := newTestAttestHandler(t, stub.URL(), nil)
-	h.Images = []remote.ImagePin{{Name: "server", Digest: digest, Anchor: anchor}}
+	h := newPinnedAttestHandler(t, stub.URL(), armtls.Pins{
+		Images: []remote.ImagePin{
+			{
+				Name:   "server",
+				Digest: digest,
+				Anchor: anchor,
+			},
+		},
+	})
 	csr, _ := generateCSR(t)
 	for _, tc := range []struct {
 		name     string

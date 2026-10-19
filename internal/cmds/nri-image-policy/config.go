@@ -93,7 +93,7 @@ type pullConfig struct {
 	Timeout               time.Duration `yaml:"timeout"`                 // per-request timeout; > 0 required when URL is set
 	AttestationApiURL     string        `yaml:"attestation_api_url"`     // required for https pull
 	CDSMeasurements       []string      `yaml:"cds_measurements"`        // SHA-384 hex launch digests
-	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; ignored for SNP evidence
+	CDSRTMRs              []string      `yaml:"cds_rtmrs"`               // TDX RTMR pins <index>=<sha384-hex>; reject SNP evidence
 	CDSMeasurementsConfig string        `yaml:"cds_measurements_config"` // complete CDS image and operator identity policy
 	// MeasurePolicies extends RTMR[3] (TDX) with each pulled policy before
 	// applying it. Off by default: verifiers on attestation-go predating
