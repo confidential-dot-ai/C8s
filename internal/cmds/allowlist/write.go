@@ -86,9 +86,9 @@ canonical JSON 'export' writes). CDS assigns the new version.
 
 If any required core c8s component is missing from the file's image labels (` + fmt.Sprintf("%v", defaultRequiredComponents) + `),
 upload refuses unless --force, since a cluster missing them cannot pull its own
-control plane. --cvm-mode bare-metal omits attestation-api from this set because
-the measured node image supplies it. With gke, aks, or no mode, the full set is
-required. Override the required set with --require. The file is lint-checked
+control plane. --cvm-mode bare-metal omits attestation-api and nri-image-policy
+from this set because the measured node image supplies them. With gke, aks, or
+no mode, the full set is required. Override the required set with --require. The file is lint-checked
 before upload; --strict makes lint warnings fatal.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -181,7 +181,7 @@ func requiredComponentsForMode(mode string) ([]string, error) {
 	}
 	if baked {
 		return slices.DeleteFunc(slices.Clone(defaultRequiredComponents), func(component string) bool {
-			return component == "attestation-api"
+			return component == "attestation-api" || component == "nri-image-policy"
 		}), nil
 	}
 	return slices.Clone(defaultRequiredComponents), nil

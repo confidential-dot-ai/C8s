@@ -18,7 +18,7 @@ import (
 
 const (
 	chartOperatorDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	chartRuntimeDir     = "/var/run/nri-image-policy"
+	chartRuntimeDir     = "/run/nri-image-policy"
 )
 
 // chartSeed renders the chart with the operator image derived and returns the
@@ -119,7 +119,8 @@ func sidecarEnv(t *testing.T, pod *corev1.Pod, c corev1.Container, imageEnv map[
 // observedSidecarMounts classifies an injected sidecar's mounts the way the
 // node does: the webhook's volumes and the pod's discovery volume are memory
 // emptyDirs, the reload-watch volume is a Secret, and on a node with the
-// inventory the NRI plugin adds its socket directory read-only.
+// inventory the NRI plugin adds its socket directory read-only, which it
+// observes as a platform mount.
 func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, inventory bool) []allowlist.ObservedMount {
 	t.Helper()
 	volumes := map[string]corev1.Volume{}
@@ -139,11 +140,7 @@ func observedSidecarMounts(t *testing.T, pod *corev1.Pod, c corev1.Container, in
 		mounts = append(mounts, mount)
 	}
 	if inventory && workloadclaims.IsSocketConsumer(c.Name) {
-		digest, err := allowlist.HostSourceDigest(chartRuntimeDir)
-		if err != nil {
-			t.Fatal(err)
-		}
-		mounts = append(mounts, allowlist.ObservedMount{Destination: workloadclaims.SidecarSocketDir, Class: allowlist.MountHost, ReadOnly: true, HostSourceDigest: digest})
+		mounts = append(mounts, allowlist.ObservedMount{Destination: workloadclaims.SidecarSocketDir, Class: allowlist.MountPlatform, ReadOnly: true})
 	}
 	return mounts
 }
@@ -225,6 +222,45 @@ func TestChartSeedAdmitsInjectedSidecars(t *testing.T) {
 				t.Errorf("the drop set keeps injected containers: %+v", left)
 			}
 		})
+	}
+}
+
+// A socket directory observed as a host mount is a pod-spec hostPath, not the
+// NRI plugin's own bind, so the seed refuses the sidecar and keeps it in
+// workload matching.
+func TestChartSeedRefusesHostSocketMount(t *testing.T) {
+	seed := chartSeed(t)
+	index := seed.BuildIndex()
+	imageEnv := chartImageEnv(t)
+	pod := podWithApp()
+	pod.Annotations = map[string]string{AnnotationWorkload: "api"}
+	inj, err := parseAnnotations(pod)
+	if err != nil {
+		t.Fatalf("parseAnnotations: %v", err)
+	}
+	mutatePod(pod, inj, secretsConfig())
+	i := slices.IndexFunc(pod.Spec.InitContainers, func(c corev1.Container) bool { return c.Name == workloadclaims.CertContainerName })
+	if i < 0 {
+		t.Fatal("no cert sidecar injected")
+	}
+	c := pod.Spec.InitContainers[i]
+	digest, err := allowlist.HostSourceDigest(chartRuntimeDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mounts := append(observedSidecarMounts(t, pod, c, false),
+		allowlist.ObservedMount{Destination: workloadclaims.SidecarSocketDir, Class: allowlist.MountHost, ReadOnly: true, HostSourceDigest: digest})
+	argv := c.Command
+	if len(argv) == 0 {
+		argv = append([]string{secrets.InjectedBinary}, c.Args...)
+	}
+	env := sidecarEnv(t, pod, c, imageEnv)
+	if index.AdmitsContainer(allowlist.RunningContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}) {
+		t.Errorf("chart seed admits %s with a host socket mount %+v", c.Name, mounts)
+	}
+	ctr := workloadclaims.SandboxContainer{Digest: chartOperatorDigest, Argv: argv, Mounts: mounts, Env: env}
+	if left := secrets.WorkloadContainers(seed, []workloadclaims.SandboxContainer{ctr}); len(left) != 1 {
+		t.Errorf("WorkloadContainers dropped %s with a host socket mount, want it kept", c.Name)
 	}
 }
 

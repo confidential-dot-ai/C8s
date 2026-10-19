@@ -241,9 +241,9 @@ openssl ec -in "$WORKDIR/operator.key" -pubout -out "$WORKDIR/operator-pub.pem" 
 # fail-closed policy with no attestation-api socket mount this file (type
 # File) and read $(NODE_IP) from it, so without it they never leave
 # ContainerCreating. Same path, content and mode the plugin writes.
-node_exec sh -c "install -d -m 0711 /var/run/nri-image-policy \
-    && printf '%s\n' '$NODE_IP' > /var/run/nri-image-policy/node-ip \
-    && chmod 0644 /var/run/nri-image-policy/node-ip" \
+node_exec sh -c "install -d -m 0711 /run/nri-image-policy \
+    && printf '%s\n' '$NODE_IP' > /run/nri-image-policy/node-ip \
+    && chmod 0644 /run/nri-image-policy/node-ip" \
     || fail "could not publish the node-ip file"
 
 log "c8s install"
@@ -266,7 +266,7 @@ kubectl apply -f "$WORKDIR/nri-installer.yaml"
 # DaemonSet reports Ready once the plugin answers its health socket.
 kubectl -n "$NS" rollout status ds/c8s-nri-image-policy-worker --timeout=300s \
     || fail "NRI plugin did not become healthy"
-node_exec test -S /var/run/nri-image-policy/workload-claims.sock \
+node_exec test -S /run/nri-image-policy/workload-claims.sock \
     || fail "admission inventory socket missing on the node"
 pass "NRI plugin registered with containerd and serves the admission inventory"
 

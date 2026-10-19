@@ -15,7 +15,7 @@ import (
 // is refused.
 func TestInjectedContainersAreTheSecretsDropSet(t *testing.T) {
 	cfg := secretsConfig()
-	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
+	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
 	pod := podWithApp()
 	mutatePod(pod, &injection{
 		WorkloadID: "api",

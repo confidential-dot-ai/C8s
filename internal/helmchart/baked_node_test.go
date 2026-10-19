@@ -316,7 +316,7 @@ func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
 	}
 	foundVolume := false
 	for _, volume := range pod.Volumes {
-		if volume.Name == "workload-claims" && volume.HostPath != nil && volume.HostPath.Path == "/var/run/nri-image-policy" && volume.HostPath.Type != nil && *volume.HostPath.Type == corev1.HostPathDirectory {
+		if volume.Name == "workload-claims" && volume.HostPath != nil && volume.HostPath.Path == "/run/nri-image-policy" && volume.HostPath.Type != nil && *volume.HostPath.Type == corev1.HostPathDirectory {
 			foundVolume = true
 		}
 	}

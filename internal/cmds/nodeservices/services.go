@@ -13,7 +13,7 @@ import (
 
 const (
 	launchDir  = launchconfig.Dir + "/"
-	nodeIPPath = "/var/run/nri-image-policy/node-ip"
+	nodeIPPath = "/run/nri-image-policy/node-ip"
 
 	// PublicDir contains only authenticated, nonsecret workload inputs. Core
 	// pods mount it read-only; the token-bearing launch directory stays private.

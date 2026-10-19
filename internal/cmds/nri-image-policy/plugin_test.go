@@ -335,7 +335,7 @@ func TestCreateContainer_Ready_PassesThrough(t *testing.T) {
 // a sidecar name gets the RO mount, by design — the sockets behind it bind
 // callers by kernel peer credentials, not by who holds the mount.
 func TestCreateContainer_MountsSocketDirIntoInjectedSidecars(t *testing.T) {
-	const socketDir = "/var/run/nri-image-policy"
+	const socketDir = "/run/nri-image-policy"
 	for name, ready := range map[string]bool{"ready": true, "initializing": false} {
 		t.Run(name, func(t *testing.T) {
 			p := newTestPlugin(&config{
@@ -399,7 +399,7 @@ func TestCreateContainer_NoSocketDirMountOutsideInjectedSidecars(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			cfg := &config{Policy: policyConfig{Mode: ModeAudit}}
 			if tc.inventory {
-				cfg.WorkloadClaims = workloadClaimsConfig{SocketDir: "/var/run/nri-image-policy"}
+				cfg.WorkloadClaims = workloadClaimsConfig{SocketDir: "/run/nri-image-policy"}
 			}
 			p := newTestPlugin(cfg)
 			if tc.inventory {
@@ -427,7 +427,7 @@ func TestCreateContainer_DeniedContainerGetsNoAdjustment(t *testing.T) {
 			p := newTestPlugin(&config{
 				Allowlist:      allowlistConfig{Pull: pullConfig{URL: "http://wl.local:8080", Timeout: 30}},
 				Policy:         policyConfig{Mode: ModeFailClosed, DenyMissingAnnotation: true},
-				WorkloadClaims: workloadClaimsConfig{SocketDir: "/var/run/nri-image-policy"},
+				WorkloadClaims: workloadClaimsConfig{SocketDir: "/run/nri-image-policy"},
 			})
 			p.inventory = newAdmissionInventory(t.TempDir())
 			if ready {
