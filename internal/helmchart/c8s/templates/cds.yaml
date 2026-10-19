@@ -255,7 +255,8 @@ spec:
 ---
 {{- end }}
 {{- $cdsShape := include "c8s.cdsShapeName" . }}
-{{- include "c8s.cdsShapeCheck" (dict "root" . "want" $cdsShape "entry" (include "c8s.cdsEntryName" .)) }}
+{{- $liveCDS := lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) | default dict }}
+{{- include "c8s.cdsShapeGuard" (dict "live" (dig "metadata" "annotations" "confidential.ai/cds-shape" "" $liveCDS) "want" $cdsShape "entry" (include "c8s.cdsEntryName" .) "published" (default "" .Values.cds.publishedShape)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

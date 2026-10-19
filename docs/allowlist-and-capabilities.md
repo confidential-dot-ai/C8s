@@ -777,8 +777,7 @@ operator key, before you upgrade:
 
 1. Run the upgrade's values through `helm template` and save the
    `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap as
-   `seed.json`. `helm template` cannot read the running CDS, so add the
-   `--set cds.publishedShape=NAME` its error names.
+   `seed.json`.
 2. Note the highest `allowlist_version` any node's image policy plugin
    reports on `GET /healthz`.
 3. Publish the seed: `c8s allowlist apply seed.json`. Each entry replaces the
@@ -851,15 +850,6 @@ CDS, and the `cds.publishedShape` value. To publish it:
 3. Wait until every node has taken the write, as in step 5 of that
    procedure.
 4. Rerun the upgrade with `--set cds.publishedShape=NAME`.
-
-The guard reads the running CDS's entry name from the live Deployment. When
-it cannot, it fails the render too: under `helm template` or a GitOps
-controller, where `lookup` answers nothing, and against a Deployment from a
-release before the annotation. Then either publish the entry and set
-`cds.publishedShape` as above, or, when no CDS runs yet, set
-`cds.liveShape=none`. A GitOps controller that renders every sync can set
-`cds.liveShape` to the running shape's annotation instead, which the guard then
-compares as it would the annotation.
 
 When it seeds, CDS deletes a stored entry the seed replaces if it pins a
 component executable with `args` or `mounts` `any`: an entry under a generated

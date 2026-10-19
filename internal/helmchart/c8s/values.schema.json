@@ -61,9 +61,6 @@
         "followSeed": {
           "type": "boolean"
         },
-        "liveShape": {
-          "type": "string"
-        },
         "node": {
           "type": [
             "object",

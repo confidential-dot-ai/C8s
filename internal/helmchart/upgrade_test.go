@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -128,8 +129,7 @@ func cdsShapeAnnotation(t *testing.T, out string) string {
 }
 
 // A changed CDS command line fails the upgrade until its entry is published:
-// otherwise the old CDS stops and the enforcers refuse the new one. So does a
-// running CDS the render cannot see.
+// otherwise the old CDS stops and the enforcers refuse the new one.
 func TestCDSShapeGuard(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -143,7 +143,7 @@ func TestCDSShapeGuard(t *testing.T) {
 	files := map[string]string{
 		"Chart.yaml":             "apiVersion: v2\nname: guard\nversion: 0.0.1\n",
 		"templates/_upgrade.tpl": string(tpl),
-		"templates/guard.yaml":   `{{ include "c8s.cdsShapeGuard" (dict "live" .Values.live "want" .Values.want "published" .Values.published) }}`,
+		"templates/guard.yaml":   `{{ include "c8s.cdsShapeGuard" (dict "live" .Values.live "want" .Values.want "entry" .Values.entry "published" .Values.published) }}`,
 	}
 	for name, body := range files {
 		path := filepath.Join(dir, name)
@@ -155,21 +155,20 @@ func TestCDSShapeGuard(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name, live, want, published string
-		fails                       bool
+		name, live, want, entry, published string
+		fails                              bool
 	}{
-		{name: "first install", live: "none", want: "cds-new"},
+		{name: "first install", want: "cds-new"},
 		{name: "unchanged", live: "cds-old", want: "cds-old"},
 		{name: "not digest-pinned", live: "cds-old"},
 		{name: "changed and unpublished", live: "cds-old", want: "cds-new", fails: true},
 		{name: "changed and another shape published", live: "cds-old", want: "cds-new", published: "cds-old", fails: true},
 		{name: "changed and published", live: "cds-old", want: "cds-new", published: "cds-new"},
-		{name: "unknown", want: "cds-new", fails: true},
-		{name: "unknown and published", want: "cds-new", published: "cds-new"},
+		{name: "changed under an override", live: "cds-old", want: "cds-new", entry: "cds-override", fails: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := exec.Command("helm", "template", "g", dir,
-				"--set-string", "live="+tc.live, "--set-string", "want="+tc.want, "--set-string", "published="+tc.published).CombinedOutput()
+				"--set-string", "live="+tc.live, "--set-string", "want="+tc.want, "--set-string", "entry="+tc.entry, "--set-string", "published="+tc.published).CombinedOutput()
 			if (err != nil) != tc.fails {
 				t.Fatalf("render error = %v, want failure %t\n%s", err, tc.fails, out)
 			}
@@ -181,34 +180,28 @@ func TestCDSShapeGuard(t *testing.T) {
 			if tc.fails && !strings.Contains(string(out), "above every allowlist_version the nodes' image policy plugins reported") {
 				t.Errorf("failure does not require publication past the nodes' versions:\n%s", out)
 			}
-			if tc.fails && tc.live == "" && !strings.Contains(string(out), "cds.liveShape=none") {
-				t.Errorf("failure on an unknown CDS does not name cds.liveShape:\n%s", out)
+			if tc.fails && !strings.Contains(string(out), "publish entry "+cmp.Or(tc.entry, tc.want)+" ") {
+				t.Errorf("failure does not name entry %s:\n%s", cmp.Or(tc.entry, tc.want), out)
 			}
 		})
 	}
 }
 
-// A digest bump alone changes the CDS shape, so it trips the guard against
-// the shape a live Deployment records. helm template cannot look one up, so
-// cds.liveShape stands in for the annotation.
-func TestChartCDSDigestBumpTripsShapeGuard(t *testing.T) {
+// A digest bump alone changes the shape the Deployment records, so the guard
+// trips on it.
+func TestChartCDSDigestBumpChangesShape(t *testing.T) {
 	t.Parallel()
 	before, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, before)
 	}
-	live := cdsShapeAnnotation(t, before)
 	const bumped = "sha256:c100000000000000000000000000000000000000000000000000000000000000"
-	out, err := helmTemplate(t, "--set-string", "cds.liveShape="+live, "--set", "cds.image.digest="+bumped)
-	if err == nil {
-		t.Fatalf("a CDS digest bump rendered without its shape published")
+	after, err := helmTemplate(t, "--set", "cds.image.digest="+bumped)
+	if err != nil {
+		t.Fatalf("helm template with a bumped CDS digest: %v\n%s", err, after)
 	}
-	msg := helmFailMessage(t, out)
-	if !strings.Contains(msg, "CDS image, command line or mounts") || !strings.Contains(msg, "cds.publishedShape=cds-c10000000000-") {
-		t.Fatalf("guard failure = %q, want the image named as a cause and the bumped entry to publish", msg)
-	}
-	if out, err := helmTemplate(t, "--set-string", "cds.liveShape="+live); err != nil {
-		t.Fatalf("an unchanged CDS against its live shape: %v\n%s", err, out)
+	if got, old := cdsShapeAnnotation(t, after), cdsShapeAnnotation(t, before); got == old || !strings.HasPrefix(got, "cds-c10000000000-") {
+		t.Errorf("CDS shape after a digest bump = %q, want a cds-c10000000000- shape other than %q", got, old)
 	}
 }
 

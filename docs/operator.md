@@ -1606,9 +1606,7 @@ To render the full default shape (image policy enabled), the chart requires the
 nri-image-policy installer image and the CDS image to be digest-pinned. The CDS
 node selector defaults to `role: cds`; override it if your CDS node uses a
 different label. `c8s install` fills these digests from the registry by default
-(via `crane`); for a manual render the values below are placeholders.
-`cds.liveShape=none` tells the CDS upgrade guard that no CDS runs yet, since
-`helm template` cannot look one up:
+(via `crane`); for a manual render the values below are placeholders:
 
 ```bash
 helm template c8s internal/helmchart/c8s \
@@ -1619,8 +1617,7 @@ helm template c8s internal/helmchart/c8s \
   --set armtlsMesh.image.tag=main \
   --set nriImagePolicy.image.tag=main \
   --set nriImagePolicy.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
-  --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
-  --set-string cds.liveShape=none >/dev/null && echo OK
+  --set cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 >/dev/null && echo OK
 ```
 
 Append `--set-file cds.operatorKeys=operator.pub` to either command to render

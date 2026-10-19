@@ -195,7 +195,6 @@ helm template c8s internal/helmchart/c8s -n "$NS" \
     --set-string nriImagePolicy.image.tag="$IMAGE_TAG" \
     --set-string nriImagePolicy.image.digest="$NRI_STORE_DIGEST" \
     --set-string cds.image.digest="$CDS_STORE_DIGEST" \
-    --set-string cds.liveShape=none \
     --set-string "cds.measurements[0]=$MOCK_MEASUREMENT" \
     --set router.enabled=false \
     --set volumed.enabled=false \

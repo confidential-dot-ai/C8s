@@ -114,10 +114,8 @@ func TestChartOverrideReplacesArgvPinnedEntry(t *testing.T) {
 	}
 }
 
-// With an override admitting CDS, the guard names the override as the entry
-// to publish, since the seed holds no generated CDS entry, and still trips on
-// a change to CDS's launch that keeps the override's name.
-func TestChartCDSShapeGuardNamesOverride(t *testing.T) {
+// An override admitting CDS replaces its generated entry in the seed.
+func TestChartCDSOverrideReplacesGeneratedEntry(t *testing.T) {
 	t.Parallel()
 	base, err := helmTemplate(t)
 	if err != nil {
@@ -135,29 +133,11 @@ func TestChartCDSShapeGuardNamesOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []string{
-		"--set-json", "nriImagePolicy.bootstrapAllowlist.workloads." + override + "=" + string(raw),
-		"--set-string", "cds.liveShape=" + live,
-		"--set", "cds.logLevel=warn",
-	}
-	out, err := helmTemplate(t, args...)
-	if err == nil {
-		t.Fatal("a changed CDS command line under an override rendered without publication")
-	}
-	msg := helmFailMessage(t, out)
-	if !strings.Contains(msg, "publish entry "+override+" ") {
-		t.Errorf("guard failure = %q, want it to name the override %s", msg, override)
-	}
-	_, shape, ok := strings.Cut(msg, "cds.publishedShape=")
-	if !ok {
-		t.Fatalf("guard failure = %q, want a cds.publishedShape value", msg)
-	}
-	shape = strings.TrimSpace(shape)
-	published, err := helmTemplate(t, append(args, "--set-string", "cds.publishedShape="+shape)...)
+	out, err := helmTemplate(t, "--set-json", "nriImagePolicy.bootstrapAllowlist.workloads."+override+"="+string(raw))
 	if err != nil {
-		t.Fatalf("helm template with the named shape published: %v\n%s", err, published)
+		t.Fatalf("helm template with the override: %v\n%s", err, out)
 	}
-	if got := entriesFor(renderedSeed(t, published), digest.String()); !slices.Equal(got, []string{override}) {
+	if got := entriesFor(renderedSeed(t, out), digest.String()); !slices.Equal(got, []string{override}) {
 		t.Errorf("seed entries for the CDS digest = %v, want only the override %s", got, override)
 	}
 }

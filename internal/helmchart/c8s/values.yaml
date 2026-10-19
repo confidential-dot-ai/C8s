@@ -217,12 +217,6 @@ cds:
   ## seed entry: publish it with `c8s allowlist apply`, wait for every node to
   ## pull it, and set this to its name (docs/allowlist-and-capabilities.md).
   publishedShape: ""
-  ## The running CDS's shape, for a render that cannot read it from the live
-  ## Deployment's confidential.ai/cds-shape annotation: helm template, a
-  ## GitOps controller, or a Deployment from a release before the annotation.
-  ## "none" when no CDS runs yet. Unset, such a render fails unless
-  ## publishedShape names the rendered shape.
-  liveShape: ""
   ## Reread the seed ConfigMap while CDS runs and publish its changes. Off by
   ## default: anyone who can edit that ConfigMap could then publish allowlist
   ## entries without an operator token. Off, a configuration-only upgrade
