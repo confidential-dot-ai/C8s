@@ -90,9 +90,27 @@ proves possession of the corresponding private key in either path.
    TEEAttestation ::= SEQUENCE {
        teeType     INTEGER,      -- 1 = SEV-SNP, 2 = TDX
        report      OCTET STRING, -- evidence, two shapes (below)
-       certChain   OCTET STRING  -- optional inline VCEK chain
+       certChain   OCTET STRING, -- optional inline VCEK chain
+       runtimeExtensions [0] EXPLICIT SEQUENCE OF PrintableString OPTIONAL
+                                 -- TDX: the node's measured policies
    }
    ```
+
+   `runtimeExtensions` is omitted when empty, so verifiers predating it decode
+   the extension unchanged. On TDX it lists the allowlist policy digests the
+   node extended into RTMR[3] after the operator-key seed, read after the
+   quote; c8s's verifiers accept the seed followed by the longest prefix of
+   the list that replays. They do not judge which digests the list names
+   (see "What armTLS guarantees"). The list holds at most 256 entries, and
+   the journal is never pruned within a boot: a node past the cap sends no
+   list, and verifiers reject it until it reboots. cred-release also refuses
+   to start over the cap, since its operator-key check replays the journal.
+   Each distinct policy a node measures counts once per boot, so nodes that
+   booted together and follow the same rollouts reach the cap together: on
+   the 257th distinct policy since boot, every such node is rejected at once.
+   The only signal is one warning per producer, `evidence omits the measured
+   policies`. Reboot nodes, a few at a time, before their boot has seen 256
+   distinct policies.
 
 The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 
@@ -346,6 +364,24 @@ What it does **not** guarantee:
   good as the inventory's honesty about what it admitted. The gate is
   membership, not composition, so it does not say the pod runs one particular
   workload. Enforcing per-workload measurement at `/attest` is unimplemented.
+- **Which allowlist policies a TDX node measured.** c8s's verifiers (CDS
+  `/attest`, the armTLS mesh, router discovery, cred-release and
+  `c8s get-kubeconfig`) accept RTMR[3] as the seed followed by any prefix of
+  the node's list that replays. They do not check the digests against the
+  operator's policy history, and a workload-image digest replays as well as a
+  policy digest, since both use one event encoding. CDS copies the CSR's
+  armTLS extension, list included, into the leaf it issues, so armTLS-mode
+  verifiers of a CA-issued leaf replay the list too. CDS deliberately does
+  not compare the CSR's list with the request's `runtime_extensions`: it
+  replays the request's list against the fresh evidence, and every verifier
+  of the leaf replays the leaf's list against the leaf's own quote. The
+  journal may grow between the CSR and the request, so requiring the two
+  lists to agree would reject healthy nodes. This is
+  a non-goal: only code inside the measured image can extend RTMR[3], so a
+  list naming a digest the operator never approved requires a compromised
+  image, which the image pin already excludes. Judging the list is the job of
+  an external verifier that replays it against the operator-signed policy
+  history; `c8s verify` does not do so yet.
 - **Post-boot integrity.** The launch digest covers boot state; runtime
   compromise inside a measured node is out of scope for launch attestation.
 - **Availability.** A hostile host can always refuse service; armTLS turns

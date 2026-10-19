@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // SandboxPath is the token route on the local Unix socket; SandboxDigestsPrefix
@@ -66,6 +67,11 @@ const (
 	SocketName       = "workload-claims.sock"
 	SidecarSocketDir = "/run/c8s/workload-claims"
 )
+
+// MeasuredPoliciesJournal is the node's measured-policy journal
+// (armtls.NodeJournal), which the plugin keeps in its socket directory, as the
+// sidecars see it.
+const MeasuredPoliciesJournal = SidecarSocketDir + "/" + armtls.MeasuredPoliciesJournal
 
 // AnnotationInjected is stamped on a pod by the mutating webhook after
 // injection; the inventory's NRI plugin mounts its socket directory only under

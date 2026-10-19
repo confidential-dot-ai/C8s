@@ -78,6 +78,8 @@ func checkRoutingFlags(cfg config) error {
 		return errors.New("--publish-routes requires --cds-url: it publishes the manifest polled from CDS")
 	case r.publish && cfg.attestOff:
 		return errors.New("--publish-routes requires --attest-endpoints=true: the route publication is served beside the attestation endpoints")
+	case cfg.measuredPolicies != "" && cfg.attestOff:
+		return errors.New("--measured-policies-file requires --attest-endpoints=true: only the attestation bundles carry the list")
 	}
 	if r.cdsURL == "" {
 		return errors.New("--cds-url is required: the router routes only by the route manifest it polls from CDS")

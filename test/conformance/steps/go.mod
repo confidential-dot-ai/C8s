@@ -3,7 +3,7 @@ module github.com/confidential-dot-ai/c8s/test/conformance/steps
 go 1.27.0
 
 require (
-	github.com/confidential-dot-ai/attestation-go v0.8.0
+	github.com/confidential-dot-ai/attestation-go v0.8.1
 	github.com/cucumber/godog v0.16.0
 	github.com/google/go-tdx-guest v0.3.2-0.20261003001058-b0a2dd8100a0
 )

@@ -59,6 +59,11 @@ type ServerConfig struct {
 	// The certificate is rotated automatically at 50% of TTL.
 	CertTTL time.Duration
 
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// ([NodeJournal] on the node) a self-signed TDX certificate lists. Empty
+	// lists none.
+	MeasuredPoliciesFile string
+
 	// ClientPolicy, when set, enables mTLS: the server requires client
 	// certificates and verifies their armTLS attestation against this policy.
 	// When nil, the server does not request client certificates.
@@ -123,6 +128,11 @@ type ClientConfig struct {
 	// CertTTL is the client certificate lifetime. Default: 24h.
 	// Only used when Platform and AttestFunc are set.
 	CertTTL time.Duration
+
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// ([NodeJournal] on the node) a self-signed TDX certificate lists. Empty
+	// lists none.
+	MeasuredPoliciesFile string
 
 	// RotationTimeout is the maximum time allowed for background certificate
 	// rotation. Default: 30s.
@@ -700,8 +710,9 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 			return nil, nil, fmt.Errorf("armtls: AttestFunc is required")
 		}
 		provider = &SelfSignedProvider{
-			Platform:   cfg.Platform,
-			AttestFunc: cfg.AttestFunc,
+			Platform:         cfg.Platform,
+			AttestFunc:       cfg.AttestFunc,
+			MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
 			Opts: &CertOptions{
 				Subject:  cfg.Subject,
 				TTL:      cfg.CertTTL,
@@ -812,9 +823,10 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 			provider = cfg.CertProvider
 		} else {
 			provider = &SelfSignedProvider{
-				Platform:   cfg.Platform,
-				AttestFunc: cfg.AttestFunc,
-				Opts:       &CertOptions{TTL: cfg.CertTTL},
+				Platform:         cfg.Platform,
+				AttestFunc:       cfg.AttestFunc,
+				MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
+				Opts:             &CertOptions{TTL: cfg.CertTTL},
 			}
 		}
 

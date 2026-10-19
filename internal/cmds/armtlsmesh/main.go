@@ -120,6 +120,7 @@ type proxyConfig struct {
 	caPollInterval            time.Duration
 	cdsMeasurements           string
 	cdsRTMRs                  string
+	measuredPolicies          string
 	sessionCacheSize          int
 	accessLog                 bool
 	certPipelineProbeURL      string
@@ -167,6 +168,7 @@ func bindProxyFlags(fs *pflag.FlagSet, c *proxyConfig) {
 	fs.DurationVar(&c.caPollInterval, "ca-poll-interval", 5*time.Minute, "interval to poll CDS /ca for CA bundle updates")
 	fs.StringVar(&c.cdsMeasurements, "cds-measurements", "", "comma-separated SHA-384 hex launch measurements that CDS's armTLS peer cert must match. Empty = accept any (UNSAFE outside development).")
 	fs.StringVar(&c.cdsRTMRs, "cds-rtmrs", "", "comma-separated TDX RTMR pins <index>=<sha384-hex> that CDS's armTLS peer cert must additionally satisfy. Ignored when CDS presents SNP evidence. Empty = launch-digest pinning only")
+	fs.StringVar(&c.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; mesh certificates and CDS CSRs list it. Empty lists none")
 	fs.IntVar(&c.sessionCacheSize, "session-cache-size", 64, "TLS session cache size per node (0 disables session resumption)")
 	fs.BoolVar(&c.accessLog, "access-log", true, "emit per-connection structured access log")
 	fs.StringVar(&c.certPipelineProbeURL, "cert-pipeline-probe-url", "", "CDS /readyz URL for pipeline health probing (empty = disabled)")
@@ -307,6 +309,8 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		DynamicCACert:   effectiveCAURL != "",
 		RotationTimeout: c.rotationTimeout,
 		Logger:          logger,
+
+		MeasuredPoliciesFile: c.measuredPolicies,
 	}, logger, c.sessionCacheSize)
 	if err != nil {
 		return err
@@ -322,6 +326,8 @@ func runProxy(ctx context.Context, c *proxyConfig) error {
 		CDSMeasurements:   cdsMeasurements,
 		CDSRTMRs:          cdsRTMRs,
 		CDSImages:         c.cdsPins.Images,
+
+		MeasuredPoliciesFile: c.measuredPolicies,
 	}
 	if err := runtime.run(ctx, hostMesh{c: c, resolver: resolver, cds: cdsCfg}); err != nil {
 		return cmdsutil.NodeIPChanged(ctx, fmt.Errorf("proxy: %w", err))

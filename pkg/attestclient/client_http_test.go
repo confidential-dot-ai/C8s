@@ -7,10 +7,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -326,6 +330,53 @@ func TestObtainCertificateForwardsSandboxToken(t *testing.T) {
 	}
 	if _, present := sawBody["sandbox_token"]; present {
 		t.Fatal("empty sandbox token serialized into the attest request")
+	}
+}
+
+// On TDX the node's runtime extensions, read after the evidence, go to CDS
+// with it and come back in the result; SEV-SNP evidence lists none.
+func TestObtainCertificateRuntimeExtensions(t *testing.T) {
+	const challenge = "dGVzdC1jaGFsbGVuZ2U="
+	list := []string{"sha256:" + strings.Repeat("1", 64)}
+	for _, tc := range []struct {
+		platform string
+		want     []string
+	}{
+		{platform: "tdx", want: list},
+		{platform: "snp"},
+	} {
+		t.Run(tc.platform, func(t *testing.T) {
+			// The journal appears with the evidence: read any earlier, it is empty.
+			journal := filepath.Join(t.TempDir(), "measured-policies")
+			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := os.WriteFile(journal, []byte(list[0]+"\n"), 0o600); err != nil {
+					t.Error(err)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"platform":"` + tc.platform + `","evidence":{"q":1}}`))
+			}))
+			t.Cleanup(api.Close)
+			var sent attestRequest
+			mux := http.NewServeMux()
+			mux.HandleFunc("/attest", func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+					t.Errorf("decode attest body: %v", err)
+				}
+				_, _ = w.Write([]byte("cert"))
+			})
+			cds := httptest.NewServer(mux)
+			t.Cleanup(cds.Close)
+
+			client := NewClient(cds.URL)
+			client.MeasuredPolicies = armtls.NewJournal(journal)
+			got, err := client.ObtainCertificateWithSandboxContext(context.Background(), api.URL, testCSRPEM(t), challenge, nil)
+			if err != nil {
+				t.Fatalf("ObtainCertificateWithSandboxContext: %v", err)
+			}
+			if !slices.Equal(sent.RuntimeExtensions, tc.want) || !slices.Equal(got.RuntimeExtensions, tc.want) {
+				t.Errorf("runtime extensions sent %v, returned %v, want %v", sent.RuntimeExtensions, got.RuntimeExtensions, tc.want)
+			}
+		})
 	}
 }
 

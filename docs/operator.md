@@ -1143,11 +1143,15 @@ Caveats the output surfaces:
 Image policy files preserve each image measurement, its TDX RTMR tuple and
 optional `approver_key` as one policy entry. The key is the exact PEM string;
 attestation-go's `refvalues` package maps it to `remote.ImagePin.Anchor`.
-`remote.EnforceImages` checks the image and calls `runtimemeasure.VerifyBinding`
-for that same entry. An image cannot borrow another entry's authorized key.
+`remote.EnforceImagesWithRuntimeLog` checks the image and its launch-key
+binding for that same entry. On TDX the binding may be the key's seed followed
+by a prefix of the peer's measured allowlist policies that replays.
+An image cannot borrow another entry's authorized key.
 C8s passes these entries through `remote.Policy.Images` to its attestation
 clients and injected workload helpers. Each verifier enforces the complete
-entry, including its launch-key binding when present.
+entry, including its launch-key binding when present. The measured policies
+after the seed are accepted as far as they replay, not judged: see "What
+armTLS guarantees" in [armTLS](armtls.md).
 
 ### Image policy inputs
 
@@ -1196,7 +1200,14 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
 - **RTMR[3] chain (TDX)** — the register must equal the operator-key seed
   (`runtimemeasure.Seed` over the exact pubkey PEM bytes)
   extended, in order, by each digest-pinned `--workload-image` ref (tags are
-  rejected). With no `--workload-image` the register must equal the bare seed;
+  rejected). With no `--workload-image` the register must equal the bare seed.
+  A node that measures allowlist policies extends them after that chain and
+  sends their list with the fresh report, or in cred-release's armTLS
+  certificate; the register may then also carry the longest prefix of that
+  list that replays. That trailing part is a prefix check, not an exact
+  chain: policy and workload extends share one event encoding, so
+  `--workload-image` excludes an unpinned workload only while the measured
+  image journals policies alone, which the image pin above enforces;
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator
@@ -1230,6 +1241,12 @@ stop the flow. An explicit `--attest-url` retains the separate nonce check
 for older images with a reachable attestation API. There is no automatic
 fallback: images without the authenticated `/attest` endpoint need a rebuild
 to use the default flow.
+
+With `--attest-url`, the measured-policy list comes from cred-release's
+certificate, which the node reissues only at half its armTLS lifetime. After
+the node measures a new policy, the gate fails until that reissue. To avoid
+the wait, omit `--attest-url`: the default flow takes the list from the
+`/attest` response, read after the quote.
 
 The released kubeconfig's client certificate is
 `CN=operator, O=c8s:node-operators`, with a one-hour default (and baked
@@ -1464,6 +1481,37 @@ it into the attest-pq and attest-lb report_data transcripts and echoes it as
 `front_door_mode`, and attest-lb — the transport binding to the exact serving
 leaf — is served only for the TEE-held-key modes, `cds` and `acme`; `webpki`
 is attest-pq-only.
+
+When `cds-attest --measured-policies-file` names the node's measured-policy
+journal, both bundles also carry `measured_policies`: the policy digests the
+node extended into RTMR[3], read after the quote and outside any transcript.
+The chart passes the journal under `nriImagePolicy.hostPaths.runtimeDir`
+wherever the router mounts the attestation-api socket; an absent journal
+omits the list. `c8s verify` does not replay the list against these bundles
+yet, so a bundle from a node that measures policies still fails an exact
+RTMR[3] pin.
+
+CDS, cred-release, the mesh, `launch-config stage` and get-cert take the
+journal from `--measured-policies-file`. It defaults to
+`/run/nri-image-policy/measured-policies`, except for get-cert, whose default
+is the sidecar mount, `/run/c8s/workload-claims/measured-policies`. An empty
+value lists none. The chart passes CDS and the mesh the journal under
+`nriImagePolicy.hostPaths.runtimeDir` wherever it mounts the attestation-api
+socket. A producer logs once, naming
+the path, when the journal is missing. The plugin's digests endpoint reads the
+journal in its runtime directory.
+
+To roll out policy measurement, upgrade in this order:
+
+1. CDS and every verifier: cred-release, the mesh, router discovery and
+   `c8s get-kubeconfig`. An older verifier rejects a node that measures
+   policies.
+2. The clients that send the list: get-cert and the CDS client. An older CDS
+   rejects an `/attest` request carrying `runtime_extensions` with 422 (`invalid_request`).
+3. The node's policy measurer.
+
+At boot the measurer and its readers start in any order: the journal records
+each policy before extending it, and every reader reads it after its report.
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode at boot. Mode `acme` applies when its
