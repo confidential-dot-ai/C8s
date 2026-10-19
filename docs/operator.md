@@ -753,6 +753,8 @@ digest. CDS stores the bytes and the write token verbatim. CDS answers:
 | `PUT`, the body exceeds 1 MiB | 400 |
 | `PUT`, the manifest fails validation, or a `ca` holds the CDS mesh CA | 422 |
 | `PUT`, the revision is not greater than the stored one | 409 |
+| `PUT`, the write token was already spent | 409, plain text `operator token already used` |
+| `PUT`, CDS verifies the write token but cannot record it as spent; nothing is stored, so retry with a fresh token | 503 |
 | `PUT`, `If-Match` differs from the stored manifest's route digest, or no manifest is stored | 412 |
 
 The `c8s routes` CLI takes the `c8s allowlist` connection and credential
@@ -804,9 +806,10 @@ highest revision it accepted, applied or staged, even across a CDS reset. The
 default revision, the current Unix time, outranks it unless a router accepted a
 revision ahead of your clock; then pass `--revision` above that revision.
 
-`GET /routes` serves the write token, so any reader can replay it as a
-`PUT /routes` until its `exp` plus the CDS `--jwt-clock-skew` allowance
-(`cds.jwtClockSkew`, 30 seconds by default). `c8s routes` mints 60-second
+`GET /routes` serves the write token. The CDS that spent it answers a replay
+with 409, but any reader can replay it as a `PUT /routes` on another CDS that
+trusts the same operator key, until its `exp` plus the CDS `--jwt-clock-skew`
+allowance (`cds.jwtClockSkew`, 30 seconds by default). `c8s routes` mints 60-second
 tokens; CDS accepts at most 5 minutes between `iat` and `exp` from any tool.
 The token names no CDS: a replay succeeds on any CDS that trusts the same
 operator key and stores a lower revision, or none. Use a separate operator key

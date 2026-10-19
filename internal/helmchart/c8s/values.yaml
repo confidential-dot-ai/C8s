@@ -327,8 +327,9 @@ cds:
   ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
   ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
-  ## token authorizes one write, and CDS publishes the token of a
-  ## whole-document upload as that document's signature.
+  ## token authorizes one request (allowlist, routes, secrets, including secrets
+  ## explain), and CDS publishes the token of a whole-document upload as that
+  ## document's signature.
   ## Empty = allowlist writes are rejected (reads are still served), so an
   ## upgrade that changes a component's shape cannot be published and needs a
   ## reinstall; adding the keys later is such an upgrade

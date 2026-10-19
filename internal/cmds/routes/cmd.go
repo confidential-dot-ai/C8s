@@ -125,16 +125,21 @@ func (o *options) trustedKeys() ([]*ecdsa.PublicKey, error) {
 	return keys, nil
 }
 
-// put signs and writes manifest, sending ifMatch when not empty. On a 409 or
-// 412 it appends rebase, the recovery step for the calling command.
+// put signs and writes manifest, sending ifMatch when not empty. On a
+// revision 409 or a 412 it appends rebase, the recovery step for the calling
+// command.
 func put(ctx context.Context, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
 	err := c.Put(ctx, manifest, signer, ifMatch)
 	var se *operatorauth.StatusError
 	if errors.As(err, &se) {
-		switch se.Status {
-		case http.StatusConflict, http.StatusPreconditionFailed:
+		switch {
+		case se.Status == http.StatusConflict && se.Body == operatorauth.ErrTokenReused.Error():
+			return fmt.Errorf("%w; re-run the command to mint a fresh token", err)
+		case se.Status == http.StatusServiceUnavailable && se.Body == operatorauth.ErrTokenNotRecorded.Error():
+			return fmt.Errorf("%w; nothing was stored, so re-running the command with a fresh token is safe", err)
+		case se.Status == http.StatusConflict, se.Status == http.StatusPreconditionFailed:
 			return fmt.Errorf("%w; %s", err, rebase)
-		case http.StatusUnauthorized:
+		case se.Status == http.StatusUnauthorized:
 			return fmt.Errorf("%w; check that the public key of --operator-key is in cds.operatorKeys", err)
 		}
 	}
