@@ -469,44 +469,32 @@ func TestIptablesMetricsSnapshot_CarriesIPSetMembership(t *testing.T) {
 	}
 }
 
-func TestDiffSortedMembers(t *testing.T) {
-	added, removed := diffSortedMembers([]string{"10.0.0.1", "10.0.0.3"}, []string{"10.0.0.2", "10.0.0.3", "10.0.0.4"})
-	if !slices.Equal(added, []string{"10.0.0.2", "10.0.0.4"}) || !slices.Equal(removed, []string{"10.0.0.1"}) {
-		t.Fatalf("added %v, removed %v", added, removed)
-	}
-	added, removed = diffSortedMembers(nil, nil)
-	if len(added) != 0 || len(removed) != 0 {
-		t.Fatalf("empty diff: added %v, removed %v", added, removed)
-	}
-}
-
-// Only a change is logged, the first write of a set logs every member, and
-// the all-pods sets stay at Debug.
-func TestLogIPSetChanges(t *testing.T) {
+// Only a change is logged, with the whole set, and the all-pods sets not at
+// all.
+func TestLogIPSetMembership(t *testing.T) {
 	var buf bytes.Buffer
-	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	spec := ipSetSpec{name: "TEST-LOG-SET", members: []string{"10.0.0.1"}}
-	logIPSetChanges(logger, spec)
-	logIPSetChanges(logger, spec)
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logged := map[string][]string{}
+	spec := ipSetSpec{name: cwPodIPSetName4, members: []string{"10.0.0.1", "10.0.0.2"}}
+	logIPSetMembership(logger, logged, spec)
+	logIPSetMembership(logger, logged, spec)
 	spec.members = nil
-	logIPSetChanges(logger, spec)
-	logIPSetChanges(logger, ipSetSpec{name: "TEST-LOG-QUIET", members: []string{"10.0.0.9"}, quiet: true})
+	logIPSetMembership(logger, logged, spec)
+	logIPSetMembership(logger, logged, ipSetSpec{name: podIPSetName4, members: []string{"10.0.0.9"}})
 
-	var got []map[string]any
+	var got []string
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
-		var rec map[string]any
+		var rec struct {
+			Set     string   `json:"set"`
+			Members []string `json:"members"`
+		}
 		if err := json.Unmarshal([]byte(line), &rec); err != nil {
 			t.Fatalf("log line %q: %v", line, err)
 		}
-		got = append(got, rec)
+		got = append(got, fmt.Sprint(rec.Set, rec.Members))
 	}
-	if len(got) != 2 {
-		t.Fatalf("logged %d lines, want 2: %s", len(got), buf.String())
-	}
-	if fmt.Sprint(got[0]["added"], got[0]["removed"]) != "[10.0.0.1] []" {
-		t.Errorf("first write: %v", got[0])
-	}
-	if fmt.Sprint(got[1]["added"], got[1]["removed"]) != "[] [10.0.0.1]" {
-		t.Errorf("removal: %v", got[1])
+	want := []string{cwPodIPSetName4 + "[10.0.0.1 10.0.0.2]", cwPodIPSetName4 + "[]"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("logged %q, want %q", got, want)
 	}
 }

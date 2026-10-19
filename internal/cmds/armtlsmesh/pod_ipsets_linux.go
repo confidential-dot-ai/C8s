@@ -16,10 +16,10 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -181,7 +181,8 @@ func runIptablesSync(ctx context.Context, cfg *iptablesSyncConfig) error {
 	if err := reconcileLiveSetMaxElem(logger, cfg.ipsetMaxElem); err != nil {
 		return err
 	}
-	cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, logger)
+	loggedMembers := map[string][]string{}
+	cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, loggedMembers, logger)
 	if err != nil {
 		return err
 	}
@@ -235,7 +236,7 @@ func runIptablesSync(ctx context.Context, cfg *iptablesSyncConfig) error {
 			resync = true
 		case <-syncCh:
 		}
-		cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, logger)
+		cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, loggedMembers, logger)
 		if err != nil {
 			logger.Warn("pod ipset sync failed", "error", err)
 			continue
@@ -336,66 +337,38 @@ type ipSetSpec struct {
 	family  string
 	members []string
 	label   string
-	// quiet sets log their changes at Debug: the all-pods sets change with
-	// every pod in the cluster, on every node.
-	quiet bool
 }
 
-// writtenIPSetMembers is each set's membership as last written, so a reconcile
-// logs only what changed. A process starts from empty, so its first
-// reconcile logs every member as added.
-var (
-	writtenIPSetMu      sync.Mutex
-	writtenIPSetMembers = map[string][]string{}
-)
+// membershipLoggedSets are the node's own sets. The all-pods sets change with
+// every pod in the cluster, on every node, so they are not logged.
+var membershipLoggedSets = map[string]bool{
+	localPodIPSetName4: true, localPodIPSetName6: true,
+	cwPodIPSetName4: true, cwPodIPSetName6: true,
+}
 
-// logIPSetChanges logs the members a successful write added to and removed
-// from the set. Which pod IPs gained or lost interception or the cw guard is
-// otherwise visible only by reading the set on the node.
-func logIPSetChanges(logger *slog.Logger, spec ipSetSpec) {
-	writtenIPSetMu.Lock()
-	prev := writtenIPSetMembers[spec.name]
-	writtenIPSetMembers[spec.name] = spec.members
-	writtenIPSetMu.Unlock()
-	added, removed := diffSortedMembers(prev, spec.members)
-	if len(added) == 0 && len(removed) == 0 {
+// logIPSetMembership logs the set's whole membership when a successful write
+// changed it from what logged holds, so the last line per set is the set; a
+// process's first write logs every set. Which pod IPs have interception or
+// the cw guard is otherwise visible only by reading the set on the node.
+func logIPSetMembership(logger *slog.Logger, logged map[string][]string, spec ipSetSpec) {
+	if logged == nil || !membershipLoggedSets[spec.name] {
 		return
 	}
-	level := slog.LevelInfo
-	if spec.quiet {
-		level = slog.LevelDebug
+	prev, seen := logged[spec.name]
+	if seen && slices.Equal(prev, spec.members) {
+		return
 	}
-	logger.Log(context.Background(), level, "ipset membership changed",
-		"set", spec.name, "added", added, "removed", removed)
-}
-
-// diffSortedMembers returns what is in next but not prev, and in prev but not
-// next; both inputs are sorted.
-func diffSortedMembers(prev, next []string) (added, removed []string) {
-	added, removed = []string{}, []string{}
-	i, j := 0, 0
-	for i < len(prev) || j < len(next) {
-		switch {
-		case j == len(next) || (i < len(prev) && prev[i] < next[j]):
-			removed = append(removed, prev[i])
-			i++
-		case i == len(prev) || next[j] < prev[i]:
-			added = append(added, next[j])
-			j++
-		default:
-			i++
-			j++
-		}
-	}
-	return added, removed
+	logged[spec.name] = spec.members
+	logger.Info("ipset membership changed", "set", spec.name, "members", append([]string{}, spec.members...))
 }
 
 // reconcilePodIPSets rewrites the managed ipsets from the pod cache. The cw
 // guard is always installed, so the cw sets are always computed and written.
 // reconcilePodIPSets returns the cw pod IPs it wrote so the caller can flush
 // their conntrack entries and keep the guard fail-closed across membership
-// changes.
-func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNamespaces map[string]struct{}, ipsetMaxElem int, logger *slog.Logger) ([]string, error) {
+// changes. logged is the membership last logged per set (logIPSetMembership);
+// nil logs none.
+func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNamespaces map[string]struct{}, ipsetMaxElem int, logged map[string][]string, logger *slog.Logger) ([]string, error) {
 	sets := collectPodIPSetMembers(store.List(), nodeIPs, excludedSourceNamespaces)
 	if sets.exceeds(ipsetMaxElem) {
 		ipsetOverflows.Add(1)
@@ -408,12 +381,12 @@ func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNames
 	// only signal is a warning. Ordering puts the cw sets, which the guard
 	// keys on, ahead of the sets that only decide interception.
 	specs := []ipSetSpec{
-		{cwPodIPSetName4, "inet", sets.cwIPv4, "IPv4 cw pod ipset", false},
-		{cwPodIPSetName6, "inet6", sets.cwIPv6, "IPv6 cw pod ipset", false},
-		{podIPSetName4, "inet", sets.allIPv4, "IPv4 pod ipset", true},
-		{podIPSetName6, "inet6", sets.allIPv6, "IPv6 pod ipset", true},
-		{localPodIPSetName4, "inet", sets.localIPv4, "local IPv4 pod ipset", false},
-		{localPodIPSetName6, "inet6", sets.localIPv6, "local IPv6 pod ipset", false},
+		{cwPodIPSetName4, "inet", sets.cwIPv4, "IPv4 cw pod ipset"},
+		{cwPodIPSetName6, "inet6", sets.cwIPv6, "IPv6 cw pod ipset"},
+		{podIPSetName4, "inet", sets.allIPv4, "IPv4 pod ipset"},
+		{podIPSetName6, "inet6", sets.allIPv6, "IPv6 pod ipset"},
+		{localPodIPSetName4, "inet", sets.localIPv4, "local IPv4 pod ipset"},
+		{localPodIPSetName6, "inet6", sets.localIPv6, "local IPv6 pod ipset"},
 	}
 	var errs []error
 	for _, spec := range specs {
@@ -422,7 +395,7 @@ func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNames
 			errs = append(errs, fmt.Errorf("sync %s: %w", spec.label, err))
 			continue
 		}
-		logIPSetChanges(logger, spec)
+		logIPSetMembership(logger, logged, spec)
 	}
 	if len(errs) > 0 {
 		publishIptablesMetrics(logger)
