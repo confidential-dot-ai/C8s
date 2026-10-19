@@ -85,6 +85,17 @@ a port-forward).
   kube-proxy and the mesh is not stable). Mirrors
   `test/e2e/mesh-cw-enforcement.sh`.
 - router front door: HTTPS verified against the CDS mesh CA.
+- Route publication: `/.well-known/c8s/routes` through the front door is 404
+  at the chart default. The adoption install sets
+  `router.routePublication.enabled`; the path then serves the CDS `GET /routes`
+  envelope of the applied revision byte for byte, with
+  `Cache-Control: no-store`. No lane verifies the transcripts that bind the
+  route digest. Instead, `TestProductionRouterAgainstVerifier` in
+  `internal/cmds/verify` runs the production `cds-attest` handler against the
+  verifier's gather path in both attested modes with both route checks,
+  including a route update between publication and admission. Other
+  implementations interoperate through the `pkg/overenc/testdata` vectors
+  ([Upgrade from the earlier layout](routes-evidence.md#upgrade-from-the-earlier-layout)).
 - Workload adoption: `c8s install --workload-ref` patches a running
   deployment, its rollout goes through injection, and the status mirror
   reports `kubectl get cwl`.

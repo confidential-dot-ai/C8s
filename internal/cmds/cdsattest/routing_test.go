@@ -126,12 +126,11 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		Routes:               rs.state,
 	}
 	for _, opt := range opts {
 		opt(&proxyCfg, &srvCfg)
 	}
-	srvCfg.Backend = routing.NewProxy(proxyCfg)
+	srvCfg.Routes = routing.NewProxy(proxyCfg)
 	rs.ts = httptest.NewServer(NewServer(srvCfg).Handler())
 	t.Cleanup(rs.ts.Close)
 	return rs
@@ -446,7 +445,7 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 }
 
 func TestAttestEndpointsDisabled(t *testing.T) {
-	srv := NewServer(Config{DisableAttestEndpoints: true})
+	srv := NewServer(Config{Routes: testRoutes(t), DisableAttestEndpoints: true})
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	for _, path := range []string{"/.well-known/c8s/attest-lb", "/.well-known/c8s/tunnel"} {
@@ -495,6 +494,9 @@ func TestCheckRoutingFlags(t *testing.T) {
 		{"zero backend timeout", routed(func(c *config) { c.routing.backendTimeout = 0 }), "--backend-timeout"},
 		{"negative backend timeout", routed(func(c *config) { c.routing.backendTimeout = -time.Second }), "--backend-timeout"},
 		{"attest off without routing port", routed(func(c *config) { c.attestOff = true }), "--routing-port"},
+		{"publish routes", routed(func(c *config) { c.routing.publish = true }), ""},
+		{"publish routes without cds", routed(func(c *config) { c.routing.publish = true; c.routing.cdsURL = "" }), "--publish-routes requires --cds-url"},
+		{"publish routes with attest off", routed(func(c *config) { c.routing.publish = true; c.attestOff = true; c.routing.port = 8802 }), "--publish-routes requires --attest-endpoints=true"},
 		{"default reserved paths", routed(func(c *config) { c.routing.reservedPaths = defaultReservedPaths }), ""},
 		{"reserved path /a//b", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/a//b"} }), "--reserved-paths"},
 		{"reserved path /Foo%7e", routed(func(c *config) { c.routing.reservedPaths = []string{"/ok", "/Foo%7e"} }), "--reserved-paths"},

@@ -1048,6 +1048,17 @@ router:
     # false fails the render.
     allowUnpinnedCDS: false
 
+  # -- Route publication. When enabled, cds-attest serves the applied signed
+  # route manifest at /.well-known/c8s/routes (the CDS GET /routes envelope,
+  # Cache-Control: no-store). A client then verifies the manifest under pinned
+  # operator keys and checks that the attest-pq or attest-lb evidence binds its
+  # route digest (`c8s verify --operator-keys`). Off by default, and the path
+  # answers 404: the manifest names hosts, backend addresses and workload
+  # names. `c8s node-image render` turns it on for baked nodes. Requires
+  # attest.enabled. See docs/routes-evidence.md.
+  routePublication:
+    enabled: false
+
   # -- Publish CDS's complete /allowlist API through the router front door.
   # The built-in route uses an in-pod loopback proxy that verifies the
   # chart-managed CDS Service's armTLS evidence; nginx forwards the original

@@ -2931,7 +2931,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		"--mesh-identity-ca-file=/tls/ca.pem",
 	}, routerRoutingArgs...)...)
 	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
-	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-measurements", "--cds-rtmrs"} {
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
@@ -3014,6 +3014,28 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	}
 	offCfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
 	offCfg.location(t, "prefix", "/").assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+}
+
+// TestChartRouterRoutePublication pins router.routePublication.enabled to
+// cds-attest --publish-routes, which needs the attestation endpoints.
+func TestChartRouterRoutePublication(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "router.routePublication.enabled=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--publish-routes")
+
+	out, err = helmTemplate(t, "--set", "router.routePublication.enabled=true", "--set", "router.attest.enabled=false")
+	if err == nil {
+		t.Fatalf("expected render to fail with publication on and attest off; got success\n%s", out)
+	}
+	assertHelmFailMessage(t, out, "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false.")
+
+	// A string "false" is truthy in a template; the schema refuses it.
+	out, err = helmTemplate(t, "--set-string", "router.routePublication.enabled=false")
+	if err == nil || !strings.Contains(out, "routePublication") {
+		t.Fatalf("expected a schema refusal of a string routePublication.enabled; err %v\n%s", err, out)
+	}
 }
 
 // TestChartRouterCDSPins pins that cds-attest and allowlist-proxy verify the
