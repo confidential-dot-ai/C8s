@@ -29,7 +29,7 @@ func NewCmd() *cobra.Command {
 
 // newCmd is the injectable constructor behind NewCmd.
 func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &options{Options: cdsconn.Options{Verifier: verifier}}
+	o := &options{Options: cdsconn.Options{Verifier: verifier, DirectCDS: true}}
 	cmd := &cobra.Command{
 		Use:   "secrets",
 		Short: "Manage the CDS secret store",
