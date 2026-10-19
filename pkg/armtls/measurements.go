@@ -21,9 +21,10 @@ func (p Pins) VerifyPolicy(url string) *VerifyPolicy {
 
 // EnforceImages is [remote.EnforceImagesWithRuntimeLog] with every anchored
 // pin accepting any runtime extension that replays. It does not judge which
-// digests the peer measured; docs/armtls.md says why that is a non-goal.
-// claimed is the peer's list, nil for none, and is refused beyond
-// [MaxRuntimeExtensions] entries since each costs a hash.
+// digests the peer measured: that is an external verifier's job (c8s verify
+// --pin-policy, --trust-operator), and docs/armtls.md says why it is a
+// non-goal here. claimed is the peer's list, nil for none, and is refused
+// beyond [MaxRuntimeExtensions] entries since each costs a hash.
 func EnforceImages(resp remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, claimed []string) error {
 	if len(claimed) > MaxRuntimeExtensions {
 		return fmt.Errorf("%w: %d runtime extensions, at most %d allowed", remote.ErrAnchorNotAllowed, len(claimed), MaxRuntimeExtensions)

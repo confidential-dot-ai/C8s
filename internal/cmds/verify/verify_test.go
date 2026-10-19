@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -414,14 +415,15 @@ func buildEndpointJSONWithEvidence(t *testing.T, id *endpointIdentity, nonce []b
 	t.Helper()
 	b64u := func(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 	resp := map[string]any{
-		"version":         types.BindingAttestPQ,
-		"platform":        "snp",
-		"nonce":           b64u(nonce),
-		"evidence":        evidence,
-		"front_door_mode": "cds",
-		"xwing_ek":        b64u(s.ek),
-		"xwing_ct":        b64u(s.ct),
-		"session_id":      b64u(s.sid),
+		"version":           types.BindingAttestPQ,
+		"platform":          "snp",
+		"nonce":             b64u(nonce),
+		"evidence":          evidence,
+		"front_door_mode":   "cds",
+		"xwing_ek":          b64u(s.ek),
+		"xwing_ct":          b64u(s.ct),
+		"session_id":        b64u(s.sid),
+		"measured_policies": []string{testPolicyP},
 	}
 	if id != nil {
 		resp["cds_cert_pem"] = id.chainPEM
@@ -492,6 +494,9 @@ func TestEvidenceFromEndpointJSON(t *testing.T) {
 		}
 		if !ev.fresh {
 			t.Error("expected fresh=true when challenge echoes")
+		}
+		if !slices.Equal(ev.measured, []string{testPolicyP}) {
+			t.Errorf("evidence.measured = %v, want the bundle's measured_policies", ev.measured)
 		}
 		if !bytes.Equal(ev.erd, id.transcript(t, nonce, sess)) {
 			t.Error("erd does not match the identity transcript over keys, nonce, leaf, and CA")
