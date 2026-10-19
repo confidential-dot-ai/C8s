@@ -19,6 +19,7 @@ fi
 work=$(mktemp -d /tmp/c8s-verity-kernel.XXXXXX)
 mapper="c8s-test-verity-$$"
 cleanup() {
+ umount "$work/verity/mnt" 2>/dev/null || true
  umount "$work/verity" 2>/dev/null || true
  veritysetup close "$mapper" 2>/dev/null || true
  umount "$work/fs" 2>/dev/null || true
@@ -31,10 +32,13 @@ mkfs.ext4 -q -F "$work/image"
 mkdir "$work/fs" "$work/verity"
 mount -o loop "$work/image" "$work/fs"
 printf 'approved executable' > "$work/fs/binary"
+mkdir "$work/fs/mnt"
 umount "$work/fs"
 truncate -s 8M "$work/hash"
 veritysetup format "$work/image" "$work/hash" > "$work/format"
 root_hash=$(awk '/Root hash:/ {print $3}' "$work/format")
 veritysetup open "$work/image" "$mapper" "$work/hash" "$root_hash"
 mount -o ro /dev/mapper/"$mapper" "$work/verity"
+mount -t tmpfs tmpfs "$work/verity/mnt"
+printf 'unmeasured' > "$work/verity/mnt/binary"
 C8S_TEST_DM_VERITY_ROOT="$work/verity" C8S_TEST_DM_VERITY_HASH="$root_hash" "$binary" -test.run '^TestDMVerityMountedRootIntegration$' -test.v "${dm_coverage[@]}"

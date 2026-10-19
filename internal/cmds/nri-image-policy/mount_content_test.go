@@ -1,6 +1,9 @@
 package nriimagepolicy
 
 import (
+	"bytes"
+	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,6 +28,7 @@ func TestNodeRootProvenanceRequiresReadOnlyFileBind(t *testing.T) {
 		want  string
 	}{
 		{"read-only bind", &api.Mount{Type: "bind", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"rbind", "rprivate", "ro"}}, allowlist.ProvenanceNodeRoot},
+		{"OCI bind form", &api.Mount{Type: "none", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"rbind", "ro"}}, allowlist.ProvenanceNodeRoot},
 		{"writable bind", &api.Mount{Type: "bind", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"rbind", "rw"}}, ""},
 		{"overlay naming the file", &api.Mount{Type: "overlay", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"bind", "ro", "lowerdir=/untrusted"}}, ""},
 		{"bind with data option", &api.Mount{Type: "bind", Source: file, Destination: "/usr/bin/nvidia-smi", Options: []string{"bind", "ro", "upperdir=/untrusted"}}, ""},
@@ -83,5 +87,46 @@ func TestNodeRootMissingNamesCause(t *testing.T) {
 		if got := nodeRootMissing(tc.mounts); got != tc.want {
 			t.Fatalf("nodeRootMissing(%s) = %q, want %q", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
+	original := nodeRootUnavailableReason
+	nodeRootUnavailableReason = func() (string, bool) { return "root filesystem is not read-only", false }
+	t.Cleanup(func() { nodeRootUnavailableReason = original })
+	file := filepath.Join(t.TempDir(), "tool")
+	if err := os.WriteFile(file, []byte("bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name       string
+		provenance string
+		want       bool
+	}{
+		{"path-only rule", "", false},
+		{"node-root rule", allowlist.ProvenanceNodeRoot, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/opt/tool", Kind: allowlist.MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: tc.provenance}}}
+			if err := al.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			p, _ := newCachedPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}, al)
+			var logs bytes.Buffer
+			p.logger = slog.New(slog.NewTextHandler(&logs, nil))
+			digest, err := allowlist.HostSourceDigest(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			mounts := []allowlist.ObservedMount{{Source: file, Destination: "/opt/tool", Class: allowlist.MountHost, ReadOnly: true, HostSourceDigest: digest}}
+			verdict, _ := p.checkImagePhase(context.Background(), p.cfg, imageCheck{Namespace: "default", PodName: "pod", Container: "app", ImageRef: "registry/repo@" + pushDigestB, Argv: []string{"/bin/app"}, Mounts: mounts}, launchFinal)
+			if verdict != verdictDeny {
+				t.Fatalf("checkImagePhase(%s) = %d, want deny", tc.name, verdict)
+			}
+			if got := strings.Contains(logs.String(), "node_root_unavailable"); got != tc.want {
+				t.Fatalf("checkImagePhase(%s) logged node_root_unavailable = %t, want %t: %s", tc.name, got, tc.want, logs.String())
+			}
+		})
 	}
 }

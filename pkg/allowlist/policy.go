@@ -1,6 +1,10 @@
 package allowlist
 
-import "github.com/confidential-dot-ai/c8s/pkg/types"
+import (
+	"slices"
+
+	"github.com/confidential-dot-ai/c8s/pkg/types"
+)
 
 // Index answers admission queries for enforcers in O(1). Build it once from a
 // normalized Allowlist (BuildIndex). A nil *Index admits nothing, so an
@@ -180,4 +184,21 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 		}
 	}
 	return false
+}
+
+// DeclaresNodeRoot reports whether some entry for digest has a host mount rule
+// with node-root provenance.
+func (i *Index) DeclaresNodeRoot(digest string) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(digest)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
+		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
+			return rule.Kind == MountHost && rule.Provenance == ProvenanceNodeRoot
+		})
+	})
 }

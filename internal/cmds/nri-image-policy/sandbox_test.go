@@ -604,3 +604,31 @@ func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
 		})
 	}
 }
+
+func TestHostBindWithoutProvenanceSkipsDigestLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}
+	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
+	mounts := []allowlist.ObservedMount{{Source: "/etc/passwd", Destination: "/etc/passwd", Class: allowlist.MountHost, ReadOnly: true}}
+	// fakeContainerd panics on Resolve.
+	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, mounts); verdict != verdictDeny {
+		t.Fatalf("checkSandbox(host bind without provenance) = %d, want deny", verdict)
+	}
+}
+
+func TestNodeRootBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
+	const source = "/usr/bin/nvidia-smi"
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: source, Destination: source, Options: []string{"rbind", "ro"}})
+	verified := allowlist.ObservedMount{Source: source, Destination: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	// Evidence order differs from the container's mount order.
+	mounts := []allowlist.ObservedMount{verified, {Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Destination: "/etc/hosts"}}
+	admitted := func(m allowlist.ObservedMount) bool { return m.Provenance == allowlist.ProvenanceNodeRoot }
+	if got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds; len(got) != 0 {
+		t.Fatalf("observeSandbox(reordered evidence).HostBinds = %v, want none", got)
+	}
+	if got := observeSandbox(pod, ctr, "", mounts[1:], admitted).HostBinds; len(got) != 1 {
+		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
+	}
+}

@@ -192,15 +192,8 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mou
 			owned = append(owned, root+"/io.containerd.grpc.v1.cri/sandboxes/"+id+"/")
 		}
 	}
-	// mounts holds one observation per mount that carries host bytes, in
-	// order. Any other shape exempts no mount.
-	paired := len(slices.DeleteFunc(slices.Clone(ctr.GetMounts()), func(m *api.Mount) bool { return !carriesHostBytes(m) })) == len(mounts)
 	var out []string
-	index := -1
 	for _, m := range ctr.GetMounts() {
-		if carriesHostBytes(m) {
-			index++
-		}
 		src := m.GetSource()
 		if !strings.HasPrefix(src, "/") {
 			continue
@@ -211,12 +204,29 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mou
 		if ownSocketDir != "" && src == ownSocketDir && isInjectedSocketMount(pod, ctr, m) {
 			continue
 		}
-		if nodeRoot != nil && paired && mounts[index].Source == src && mounts[index].Destination == m.GetDestination() && nodeRoot(mounts[index]) {
+		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
 			continue
 		}
 		out = append(out, src)
 	}
 	return out
+}
+
+// nodeRootBind reports whether mounts holds evidence for source at destination
+// and nodeRoot accepts all of it. Keying on the pair, not on the position, keeps
+// a duplicate bind with weaker evidence from riding on an accepted one.
+func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) bool {
+	found := false
+	for _, m := range mounts {
+		if m.Source != source || m.Destination != destination {
+			continue
+		}
+		if !nodeRoot(m) {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // isInjectedSocketMount reports whether m is the mount socketDirAdjustment

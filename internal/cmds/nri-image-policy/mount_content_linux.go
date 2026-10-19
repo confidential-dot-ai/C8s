@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -146,14 +147,22 @@ func rootDeviceVerityMismatch(device uint64, cmdline string) (string, bool) {
 	}
 	actual, err := deviceVerityRootHash(device)
 	if err != nil {
-		// A root that is no device-mapper device never becomes one, and its
-		// table is fixed for the boot.
-		return err.Error(), !errors.Is(err, unix.ENXIO) && !errors.Is(err, errNotStrictVerity)
+		return err.Error(), transientDMError(err)
 	}
 	if actual != expected {
 		return "root device verity hash does not match the boot roothash", false
 	}
 	return "", false
+}
+
+// transientDMError reports whether a later device-mapper query may succeed.
+// Running out of descriptors or an interrupted call may; a missing or
+// forbidden control device, a root that is no device-mapper device, and its
+// table are fixed for the boot.
+func transientDMError(err error) bool {
+	return slices.ContainsFunc([]error{unix.EMFILE, unix.ENFILE, unix.EINTR, unix.ENOMEM, unix.EAGAIN}, func(target error) bool {
+		return errors.Is(err, target)
+	})
 }
 
 // errNotStrictVerity marks a device-mapper table that is no single, read-only

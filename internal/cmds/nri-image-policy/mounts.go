@@ -92,7 +92,7 @@ var bindOptions = []string{"bind", "rbind", "ro", "rw", "nosuid", "nodev", "noex
 // fileBind reports whether m binds its source unchanged, the only mount whose
 // bytes provenance evidence about the source describes.
 func fileBind(m *api.Mount) bool {
-	if m == nil || m.GetType() != "bind" && m.GetType() != "" || !isBindMount(m) {
+	if m == nil || !slices.Contains([]string{"bind", "none", ""}, m.GetType()) || !isBindMount(m) {
 		return false
 	}
 	for _, option := range m.GetOptions() {

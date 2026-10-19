@@ -345,8 +345,26 @@ read-only dm-verity root. The enforcer opens the source without symlinks or
 intervening mounts, checks the active kernel table for a single strict read-only
 dm-verity target, and compares its SHA-256 root hash with `roothash=` in the
 measured boot command line. Writable overlays, foreign verity devices, bind
-aliases, directories, missing evidence, and permissive corruption handling do
-not qualify. The approved node launch measurement authenticates the image,
+aliases, directories and missing evidence do not qualify.
+
+The node image must meet this precondition:
+
+- `/` is mounted read-only directly from one dm-verity device, with no overlay
+  over it. State overlays on other directories are fine.
+- The kernel command line carries exactly one `roothash=` for that device.
+  `usrhash=` and a verity `/usr` alone do not count.
+- The verity table is a single `verity` target over the whole device, hashed
+  with SHA-256. Its optional parameters are limited to
+  `restart_on_corruption`, `panic_on_corruption`, `restart_on_error`,
+  `panic_on_error`, `ignore_zero_blocks` and `try_verify_in_tasklet`. Forward
+  error correction (`veritysetup --fec-device`), `ignore_corruption`,
+  `check_at_most_once` and any other option leave provenance unavailable.
+
+A node that fails the precondition denies every `node-root` rule. With the
+allowlist enabled, the enforcer logs `node-root provenance unavailable` at
+startup, as a warning when the command line declares `roothash=`. The C8s node
+image meets the precondition, and `make test-node-guest-image-immutable-root`
+checks that its initrd opens the root device without extra verity options. The approved node launch measurement authenticates the image,
 including its kernel command line and root hash; no separate file hash is needed.
 Customer verification must approve that measurement. A dev image or an unchecked
 measurement does not become trustworthy merely because it uses dm-verity.
@@ -365,10 +383,10 @@ blanket NVIDIA exemption or lint bypass.
 Provenance requires a plain bind mount (`bind` type or a `bind`/`rbind` option,
 with only access and propagation flags). Any other mount type or option, such
 as an overlay naming the verified file with another `lowerdir`, gets no
-provenance. The sandbox policy (`policy.sandbox`) does not count a bind as a
-host bind only when an allowlist entry admits the container under an `exact`
-mount policy whose `node-root` rule names that destination and source, so a
-CDS-served entry can admit it. Every other bind stays a host bind, including a
+provenance. The sandbox policy (`policy.sandbox`) exempts a bind from the
+host-bind check only when an allowlist entry admits the container under an
+`exact` mount policy whose `node-root` rule names that destination and source.
+That entry can be CDS-served. Every other bind stays a host bind, including a
 measured file under mount policy `any`, under a rule without provenance, or
 with the allowlist disabled. A provenance rule is still a host rule, so an
 entry with one cannot carry a secrets grant.

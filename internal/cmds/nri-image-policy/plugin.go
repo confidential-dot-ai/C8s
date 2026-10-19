@@ -98,6 +98,19 @@ func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.O
 	return snap != nil && snap.index.AdmitsNodeRoot(r, m)
 }
 
+// declaresNodeRoot reports whether the base or applied allowlist has a
+// node-root host rule for digest.
+func (s *policyStore) declaresNodeRoot(digest string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.DeclaresNodeRoot(digest) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.DeclaresNodeRoot(digest)
+}
+
 // needsVariableEvidence reports whether the base or applied allowlist has a
 // match env policy for digest.
 func (s *policyStore) needsVariableEvidence(digest string) bool {
@@ -517,7 +530,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
 		}
 		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
-		if missing := nodeRootMissing(check.Mounts); missing != "" {
+		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
 			attrs = append(attrs, "node_root_unavailable", missing)
 		}
 		log.Warn("image not admitted by allowlist", attrs...)
@@ -643,17 +656,24 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // hook or the marks of a privileged container. The allowlist bounds which bytes
 // run; this bounds what those bytes are handed.
 //
-// Only the MEASURED base allowlist is exempt, and only when the node config
-// claims it as the node TCB (allowlist.node_tcb). A CDS-served entry never is: the
-// document is authored by the cluster admin this policy defends against.
+// Two exemptions apply. The first is a node-TCB entry: only the MEASURED base
+// allowlist, and only when the node config claims it as the node TCB
+// (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
+// this policy defends against authors that document. The exemption is the
+// whole base entry — digest, argv, env and mounts — not the digest alone: the
+// control plane picks the image a pod runs, so a TCB image restaged with
+// another entrypoint is a tenant container, and an entry with a pinned argv
+// refuses it. An entry left at `any` exempts every launch of its digest; see
+// docs/allowlist-and-capabilities.md.
 //
-// The exemption is the whole base entry — digest, argv, env and mounts — not
-// the digest alone: the control plane picks the image a pod runs, so a TCB
-// image restaged with another entrypoint is a tenant container, and an entry
-// with a pinned argv refuses it. An entry left at `any` exempts every launch of
-// its digest; see docs/allowlist-and-capabilities.md.
+// The second exempts a single bind, not the container: one whose mount
+// evidence carries node-root provenance and that an exact `node-root` rule of
+// the base or the served allowlist admits at that destination and source. A
+// served rule is safe here because it can only name read-only bytes of the
+// measured node image, and strict clients verify the served policy byte for
+// byte.
 //
-// The digest is resolved only when there is something to excuse, so an ordinary
+// The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
 	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, nil)
@@ -662,7 +682,7 @@ func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSand
 		return verdictAllow, ""
 	}
 	digest := ""
-	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 {
+	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
 		digest = p.resolveDigest(ctx, imageRef)
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		obs = observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, func(m allowlist.ObservedMount) bool {

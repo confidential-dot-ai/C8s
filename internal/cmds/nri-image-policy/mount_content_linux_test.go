@@ -4,6 +4,7 @@ package nriimagepolicy
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,14 +14,51 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func TestHostContentRequiresImmutableRoot(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "nvidia-smi")
-	if err := os.WriteFile(path, []byte("reviewed executable bytes"), 0600); err != nil {
+func TestHostContentRequiresMeasuredRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "nvidia-smi"), []byte("reviewed executable bytes"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	for _, source := range []string{path, "/dev/null", "/proc/self/cmdline", "relative", "/usr/../usr/bin/nvidia-smi"} {
-		if got := nodeRootFile(source); got {
-			t.Fatalf("reported node-root authority for %s: %v", source, got)
+	if err := os.Mkdir(filepath.Join(root, "dir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(root, &st); err != nil {
+		t.Fatal(err)
+	}
+	unmeasured := &rootCache{probe: func() rootProbe { return rootProbe{reason: "root filesystem is not read-only"} }}
+	if unmeasured.file(root, "/nvidia-smi") {
+		t.Fatal("file(/nvidia-smi) = true on an unmeasured root, want false")
+	}
+	otherDevice := &rootCache{probe: func() rootProbe { return rootProbe{device: uint64(st.Dev) + 1} }}
+	if otherDevice.file(root, "/nvidia-smi") {
+		t.Fatal("file(/nvidia-smi) = true on another device, want false")
+	}
+	measured := &rootCache{probe: func() rootProbe { return rootProbe{device: uint64(st.Dev)} }}
+	for _, source := range []string{"/dir", "/missing", "relative", "/dir/../nvidia-smi"} {
+		if measured.file(root, source) {
+			t.Fatalf("file(%s) = true, want false", source)
+		}
+	}
+}
+
+func TestTransientDMError(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want bool
+	}{
+		{unix.EMFILE, true},
+		{unix.ENFILE, true},
+		{unix.EINTR, true},
+		{unix.ENOENT, false},
+		{unix.EACCES, false},
+		{unix.EPERM, false},
+		{unix.ENXIO, false},
+		{unix.EINVAL, false},
+		{errNotStrictVerity, false},
+	} {
+		if got := transientDMError(fmt.Errorf("open /dev/mapper/control: %w", tc.err)); got != tc.want {
+			t.Errorf("transientDMError(%v) = %t, want %t", tc.err, got, tc.want)
 		}
 	}
 }
@@ -125,7 +163,7 @@ func TestVerityTableProof(t *testing.T) {
 	}
 }
 
-func TestRootFileCannotTraverseSymlinksOrMounts(t *testing.T) {
+func TestRootFileCannotTraverseSymlinks(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "binary"), []byte("approved bytes"), 0600); err != nil {
 		t.Fatal(err)
@@ -148,15 +186,6 @@ func TestRootFileCannotTraverseSymlinksOrMounts(t *testing.T) {
 		if _, err := statRootFile(fd, source); err == nil {
 			t.Fatalf("accepted unsafe source %s", source)
 		}
-	}
-	actualRoot, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer unix.Close(actualRoot)
-	// /proc is a separate filesystem on the supported Linux nodes.
-	if _, err := statRootFile(actualRoot, "/proc/version"); err == nil {
-		t.Fatal("crossed a mount boundary")
 	}
 }
 
@@ -230,6 +259,13 @@ func TestDMVerityMountedRootIntegration(t *testing.T) {
 	}
 	if got, err := deviceVerityRootHash(uint64(st.Dev)); err != nil || got != expected {
 		t.Fatalf("kernel root hash=%q, %v, expected %q", got, err, expected)
+	}
+	if _, err := statRootFile(fd, "/binary"); err != nil {
+		t.Fatalf("statRootFile(/binary) = %v", err)
+	}
+	// The harness mounts a tmpfs over /mnt, which must never pass as the root.
+	if _, err := statRootFile(fd, "/mnt/binary"); err == nil {
+		t.Fatal("statRootFile(/mnt/binary) crossed a mount boundary")
 	}
 	content, err := os.ReadFile(filepath.Join(root, "binary"))
 	if err != nil || string(content) != "approved executable" {
