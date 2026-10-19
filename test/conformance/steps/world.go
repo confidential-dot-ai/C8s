@@ -95,6 +95,9 @@ type container struct {
 	ref     string // reference the manifest uses
 	command []string
 	env     []string // NAME=VALUE the pod spec sets, beside what the image and the node add
+	// stated: the scenario gave the argv; otherwise the harness chose it (a
+	// placeholder sleep, a hello server, a datagram listener).
+	stated bool
 }
 
 type worldKey struct{}

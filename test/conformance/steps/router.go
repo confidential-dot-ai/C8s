@@ -117,8 +117,22 @@ func (c *nginxConf) published(contentType, file string) string {
 	return ""
 }
 
+// allowlistRouteEnabled reads the route off the router's configuration, or,
+// where the backend cannot read it, from the router serving the allowlist
+// there.
 func allowlistRouteEnabled(ctx context.Context) error {
-	c, err := getWorld(ctx).routerConf()
+	w := getWorld(ctx)
+	c, err := w.routerConf()
+	if errors.Is(err, godog.ErrSkip) {
+		a, err := w.httpRequest("router_request", http.MethodGet, allowlistRoute, nil, "", "", "")
+		if err != nil {
+			return err
+		}
+		if a.status != http.StatusOK {
+			return godog.ErrSkip
+		}
+		return nil
+	}
 	if err != nil {
 		return err
 	}
