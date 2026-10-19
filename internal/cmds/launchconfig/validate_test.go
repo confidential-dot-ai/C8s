@@ -19,6 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestValidateRejectsEachMalformedField(t *testing.T) {
@@ -234,13 +235,13 @@ func TestVerifyRejectsBadConfigBeforeReadingFiles(t *testing.T) {
 
 	old := loadMeasuredIdentity
 	t.Cleanup(func() { loadMeasuredIdentity = old })
-	loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
 		return credrelease.MeasuredIdentity{}, errors.New("attestation-api unreachable")
 	}
 	if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "verify this boot's identity") {
 		t.Fatalf("self-report failure: %v", err)
 	}
-	loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
 		return testMeasuredIdentity(t, doc, "not a key"), nil
 	}
 	if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "measured launch key") {
@@ -355,6 +356,36 @@ func TestStageCommandFailsClosed(t *testing.T) {
 	}
 }
 
+// The binding check replays the journal the operator names, like cred-release,
+// so the two checks of one node read the same file.
+func TestVerifyReplaysTheConfiguredJournal(t *testing.T) {
+	for _, tc := range []struct {
+		name, journal, want string
+	}{
+		{name: "default", want: armtls.NodeJournal},
+		{name: "moved", journal: "/run/custom-nri/measured-policies", want: "/run/custom-nri/measured-policies"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc, key, pub := testDocument(t, "tdx", Server)
+			testLoader(t, doc, pub)
+			inner := loadMeasuredIdentity
+			var got string
+			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (credrelease.MeasuredIdentity, error) {
+				got = journal
+				return inner(ctx, platform, api, journal)
+			}
+			cfg := testConfig(t, doc, key)
+			cfg.MeasuredPoliciesFile = tc.journal
+			if _, err := Verify(context.Background(), cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("self-report replayed %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // The self-report loader compares against the verified family name, which for
 // SNP ("sev-snp") differs from the launch platform tag ("snp").
 func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
@@ -364,9 +395,9 @@ func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
 			testLoader(t, doc, pub)
 			inner := loadMeasuredIdentity
 			var got string
-			loadMeasuredIdentity = func(ctx context.Context, platform, api string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(ctx context.Context, platform, api, journal string) (credrelease.MeasuredIdentity, error) {
 				got = platform
-				return inner(ctx, platform, api)
+				return inner(ctx, platform, api, journal)
 			}
 			if _, err := Verify(context.Background(), testConfig(t, doc, key)); err != nil {
 				t.Fatal(err)

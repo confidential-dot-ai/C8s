@@ -1488,11 +1488,14 @@ omits the list. `c8s verify` does not replay the list against these bundles
 yet, so a bundle from a node that measures policies still fails an exact
 RTMR[3] pin.
 
-cred-release and get-cert take the journal from `--measured-policies-file`,
-which defaults to `/run/nri-image-policy/measured-policies` for cred-release
-and to the sidecar mount, `/run/c8s/workload-claims/measured-policies`, for
-get-cert. The mesh reads the node path, and the plugin's digests endpoint
-reads the journal in its runtime directory.
+cred-release, the mesh, `launch-config stage` and get-cert take the journal
+from `--measured-policies-file`. It defaults to
+`/run/nri-image-policy/measured-policies`, except for get-cert, whose default
+is the sidecar mount, `/run/c8s/workload-claims/measured-policies`. The chart
+passes the mesh the journal under `nriImagePolicy.hostPaths.runtimeDir`
+wherever it mounts the attestation-api socket. A producer logs once, naming
+the path, when the journal is missing. The plugin's digests endpoint reads the
+journal in its runtime directory.
 
 To roll out policy measurement, upgrade in this order:
 

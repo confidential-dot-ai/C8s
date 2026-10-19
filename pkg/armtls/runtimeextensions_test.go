@@ -236,6 +236,28 @@ func TestJournalOmitsUnusableList(t *testing.T) {
 	}
 }
 
+// A missing journal is logged once, naming the path, so a wrong mount shows.
+func TestJournalLogsMissingOnce(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "measured-policies")
+	var logs bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	j := NewJournal(path)
+	for range 2 {
+		if got := j.Policies(); got != nil {
+			t.Fatalf("Policies() = %v, want nil", got)
+		}
+	}
+	if got := strings.Count(logs.String(), "no measured-policy journal"); got != 1 {
+		t.Errorf("%d missing-journal lines logged, want 1:\n%s", got, logs.String())
+	}
+	if !strings.Contains(logs.String(), path) {
+		t.Errorf("log does not name %s:\n%s", path, logs.String())
+	}
+}
+
 // distinctJournal is a journal of n distinct digests.
 func distinctJournal(n int) string {
 	var b strings.Builder

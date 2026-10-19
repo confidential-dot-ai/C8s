@@ -121,7 +121,7 @@ func Run(ctx context.Context, cfg Config) error {
 			err = fmt.Errorf("%w (the list from cred-release's certificate may predate the node's latest policy: retry after cred-release reissues its certificate, or omit --attest-url)", err)
 		}
 	} else {
-		err = httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+		err = retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
 			return attestCredentialRelease(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, exp)
 		})
 	}
@@ -148,7 +148,7 @@ func Run(ctx context.Context, cfg Config) error {
 		releaseWait = max(0, time.Until(releaseDeadline))
 	}
 	var resp *credrelease.ReleaseResponse
-	err = httputil.RetryConnectionRefused(ctx, cfg.Timeout, releaseWait, func(stepCtx context.Context) error {
+	err = retryRefused(ctx, cfg.Timeout, releaseWait, func(stepCtx context.Context) error {
 		var requestErr error
 		resp, requestErr = requestCredential(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, csrPEM, role)
 		return requestErr
@@ -203,6 +203,9 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
 }
 
+// retryRefused retries each cred-release step; tests replace it.
+var retryRefused = httputil.RetryConnectionRefused
+
 // dialRelease completes one armTLS handshake with cred-release, so the
 // verified leaf records its runtime extensions. Each attempt is bounded by
 // cfg.Timeout; cfg.ReleaseWait bounds retries of a refused dial. A failed dial
@@ -213,7 +216,7 @@ func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platf
 		port = "443"
 	}
 	dialer := &tls.Dialer{Config: armTLSConfig(exp)}
-	return httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+	return retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
 		conn, err := dialer.DialContext(stepCtx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
 		if err != nil {
 			// RetryConnectionRefused retries only a refused dial under a URL error.

@@ -211,12 +211,13 @@ type Config struct {
 	AttestationAPIURL string
 	DocumentPath      string
 	SignaturePath     string
-	RootDir           string
+	// MeasuredPoliciesFile is the node's measured-policy journal, as
+	// cred-release's --measured-policies-file. Empty means armtls.NodeJournal.
+	MeasuredPoliciesFile string
+	RootDir              string
 }
 
-var loadMeasuredIdentity = func(ctx context.Context, platform, attestationAPIURL string) (credrelease.MeasuredIdentity, error) {
-	return credrelease.LoadMeasuredIdentity(ctx, platform, attestationAPIURL, armtls.NodeJournal)
-}
+var loadMeasuredIdentity = credrelease.LoadMeasuredIdentity
 
 // Verified is created only after signature, image and role authorization pass.
 // Its fields are private so staging cannot accidentally consume an unverified
@@ -252,7 +253,11 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	}
 	// credrelease compares against the verified report's family ("sev-snp",
 	// "tdx"), not the launch tag ("snp", "tdx").
-	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api)
+	journal := cfg.MeasuredPoliciesFile
+	if journal == "" {
+		journal = armtls.NodeJournal
+	}
+	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api, journal)
 	if err != nil {
 		return nil, fmt.Errorf("verify this boot's identity: %w", err)
 	}

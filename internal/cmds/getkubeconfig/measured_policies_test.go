@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -190,35 +191,31 @@ func TestDialReleaseRetriesRefusal(t *testing.T) {
 	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 	stubVerify(t, res, nil)
 
-	reserved, err := net.Listen("tcp", "127.0.0.1:0")
+	release := newAttestedTLSServerWithExtensions(t, teetypes.PlatformTDX, []string{p}, http.NotFoundHandler())
+	releaseURL, err := url.Parse(release.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	addr := reserved.Addr().String()
-	reserved.Close()
-	release := unstartedAttestedTLSServer(t, teetypes.PlatformTDX, []string{p}, http.NotFoundHandler())
-	const delay = 300 * time.Millisecond
-	started := make(chan error, 1)
-	go func() {
-		time.Sleep(delay) // the first dial, at once, is refused
-		ln, err := net.Listen("tcp", addr)
-		if err == nil {
-			release.Listener = ln
-			release.StartTLS()
-		}
-		started <- err
-	}()
-	t.Cleanup(func() { <-started })
+	attempts := 0
+	next := retryRefused
+	t.Cleanup(func() { retryRefused = next })
+	retryRefused = func(ctx context.Context, timeout, wait time.Duration, operation func(context.Context) error) error {
+		return next(ctx, timeout, wait, func(stepCtx context.Context) error {
+			attempts++
+			if attempts == 1 { // cred-release is not listening yet
+				return refusedDial(releaseURL)
+			}
+			return operation(stepCtx)
+		})
+	}
 
 	exp := env.exp
 	exp.policies = &policyList{}
-	begin := time.Now()
-	err = dialRelease(context.Background(), Config{Timeout: 5 * time.Second, ReleaseWait: 10 * time.Second}, &url.URL{Scheme: "https", Host: addr}, exp)
-	if err != nil {
+	if err := dialRelease(context.Background(), Config{Timeout: 5 * time.Second, ReleaseWait: 10 * time.Second}, releaseURL, exp); err != nil {
 		t.Fatalf("dialRelease = %v, want nil", err)
 	}
-	if elapsed := time.Since(begin); elapsed < delay {
-		t.Errorf("dialRelease returned after %v, before cred-release started at %v", elapsed, delay)
+	if attempts != 2 {
+		t.Errorf("dialRelease made %d attempts, want 2", attempts)
 	}
 	if got := exp.policies.current(); !slices.Equal(got, []string{p}) {
 		t.Errorf("recorded list = %v, want %v", got, []string{p})
@@ -231,18 +228,32 @@ func TestDialReleaseRetriesRefusal(t *testing.T) {
 func TestRunAttestURLSharesReleaseWait(t *testing.T) {
 	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
 	stubVerify(t, verifiedResultFor(env.exp), nil)
-	closed := newAttestedTLSServer(t, http.NotFoundHandler())
-	closed.Close()
 	cfg := env.config()
-	cfg.ReleaseBaseURL = closed.URL
-	cfg.ReleaseWait = 6 * time.Second // past one 5s retry interval
+	cfg.ReleaseWait = 100 * time.Millisecond
+	releaseURL, err := url.Parse(cfg.ReleaseBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var waits []time.Duration
+	next := retryRefused
+	t.Cleanup(func() { retryRefused = next })
+	retryRefused = func(ctx context.Context, timeout, wait time.Duration, _ func(context.Context) error) error {
+		waits = append(waits, wait)
+		return next(ctx, timeout, wait, func(context.Context) error { return refusedDial(releaseURL) })
+	}
 
-	begin := time.Now()
-	err := Run(context.Background(), cfg)
+	err = Run(context.Background(), cfg)
 	if err == nil || !strings.Contains(err.Error(), "credential release") {
 		t.Fatalf("Run = %v, want the credential release to fail", err)
 	}
-	if elapsed := time.Since(begin); elapsed > cfg.ReleaseWait+2*time.Second {
-		t.Errorf("Run took %v, want about one --release-wait of %v", elapsed, cfg.ReleaseWait)
+	// The pre-dial spends the whole wait, so the release step gets none.
+	if want := []time.Duration{cfg.ReleaseWait, 0}; !slices.Equal(waits, want) {
+		t.Errorf("cred-release retry budgets = %v, want %v", waits, want)
 	}
+}
+
+// refusedDial is the error a dial to a cred-release that is not listening
+// returns.
+func refusedDial(u *url.URL) error {
+	return &url.Error{Op: "Dial", URL: u.String(), Err: &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}}
 }

@@ -4,8 +4,11 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"sync"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
@@ -125,6 +128,7 @@ type Journal struct {
 
 	mu       sync.Mutex
 	reported string // the last read error logged
+	absent   bool   // the missing journal was logged
 }
 
 // NewJournal returns the journal at path, or nil when path is empty.
@@ -143,6 +147,8 @@ func NewJournal(path string) *Journal {
 // An unusable journal yields nil: a verifier that needs the list then fails
 // closed, and one that does not still accepts the evidence. Such a journal
 // usually stays unusable until reboot, so each distinct error is logged once.
+// A missing journal is normal before the node's first measure but also means
+// a wrong path or mount, so it is logged once at Info.
 func (j *Journal) Policies() []string {
 	if j == nil {
 		return nil
@@ -152,6 +158,12 @@ func (j *Journal) Policies() []string {
 	defer j.mu.Unlock()
 	if err == nil {
 		j.reported = ""
+		if list == nil && !j.absent {
+			if _, statErr := os.Stat(j.path); errors.Is(statErr, fs.ErrNotExist) {
+				j.absent = true
+				slog.Info("armtls: no measured-policy journal; evidence lists no measured policies until it appears", "path", j.path)
+			}
+		}
 		return list
 	}
 	if msg := err.Error(); msg != j.reported {
