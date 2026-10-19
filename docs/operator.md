@@ -571,8 +571,11 @@ launch configuration.
 For chart-managed CDS:
 
 Pod recreation also resets the **served allowlist**. CDS seeds its store
-from the install seed at startup and when the seed changes, then serves whatever an operator writes
-with `c8s allowlist add` or `apply`. With `cds.persistence.enabled=false`
+from the install seed once, at startup, then serves whatever an operator writes
+with `c8s allowlist add` or `apply`. Without `cds.operatorKeys` nothing can
+write, so an upgrade that changes a component's shape needs a reinstall; set
+the keys when you install (see "Known limitations" in
+[`allowlist-and-capabilities.md`](allowlist-and-capabilities.md)). With `cds.persistence.enabled=false`
 (the default), that store is a memory-backed `emptyDir` capped by
 `cds.persistence.memorySizeLimit` (64Mi) and counted toward
 `cds.resources.limits.memory`: it survives a container restart,
@@ -1713,11 +1716,13 @@ component, so only image tags are required (no digests). Disabling it renders
 only because the chart's default `attestationApi.cvmMode=bare-metal` bakes its own
 policy plugin and so is exempt from the `require_host_image_policy` guard; other
 modes (gke/aks) must keep nri-image-policy enabled and digest-pinned, as in the
-full-shape render below.
+full-shape render below. Both renders pin neither CDS nor the operator keys,
+so they set `router.routing.allowUnpinnedCDS`; a real install pins one instead.
 
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
+  --set router.routing.allowUnpinnedCDS=true \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \
@@ -1734,6 +1739,7 @@ different label. `c8s install` fills these digests from the registry by default
 ```bash
 helm template c8s internal/helmchart/c8s \
   --namespace c8s-system \
+  --set router.routing.allowUnpinnedCDS=true \
   --set image.tag=main \
   --set attestationApi.image.tag=main \
   --set cds.image.tag=main \

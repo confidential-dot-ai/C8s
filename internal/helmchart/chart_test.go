@@ -128,18 +128,13 @@ func parseDurationFormatFailure(t *testing.T, out string) durationFormatFailure 
 	return durationFormatFailure{}
 }
 
-// containerArgs returns the args of the named container, searching main and
-// init containers. Fails the test if no such container exists.
+// containerArgs returns the args of the named container, main or init, after
+// kubelet expansion. Fails the test if no such container exists.
 func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
 	t.Helper()
-	for _, c := range ds.Spec.Template.Spec.Containers {
+	for _, c := range slices.Concat(ds.Spec.Template.Spec.Containers, ds.Spec.Template.Spec.InitContainers) {
 		if c.Name == name {
-			return c.Args
-		}
-	}
-	for _, c := range ds.Spec.Template.Spec.InitContainers {
-		if c.Name == name {
-			return c.Args
+			return runtimeArgv(corev1.Container{Args: c.Args, Env: c.Env}, nil)
 		}
 	}
 	t.Fatalf("container %q not found in DaemonSet", name)

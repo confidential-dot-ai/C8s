@@ -184,11 +184,17 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
+		seedCtx, stopSeed := context.WithCancel(ctx)
+		following, err := startSeed(seedCtx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed)
 		if err != nil {
+			stopSeed()
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
-		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
+		// Runs before the store's deferred Close.
+		defer func() {
+			stopSeed()
+			<-following
+		}()
 	}
 
 	// C6: there is no route seed; an empty store waits for an operator write.
@@ -528,6 +534,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
+	}
+	if cfg.followSeed && cfg.allowlistSeed == "" {
+		return fmt.Errorf("--follow-seed needs --allowlist-seed")
 	}
 	if err := validateSecretsConfig(cfg); err != nil {
 		return err

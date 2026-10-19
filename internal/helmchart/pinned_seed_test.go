@@ -46,9 +46,9 @@ func renderedSeed(t *testing.T, manifest string) *pkgallowlist.Allowlist {
 }
 
 // effectiveArgv is the OCI process.args an enforcer observes: the pod spec's
-// command and args concatenated.
+// command and args after kubelet expansion.
 func effectiveArgv(c corev1.Container) []string {
-	return append(append([]string{}, c.Command...), c.Args...)
+	return runtimeArgv(c, nil)
 }
 
 // admitArgvs fails unless the seed admits (digest, argv) via some entry.
@@ -107,6 +107,27 @@ func TestChartPinnedSeedAdmitsNriInstallerArgv(t *testing.T) {
 	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "-c", "rm -rf /"})
 	denyArgvs(t, seed, baseNRIDigest, []string{"/bin/sh", "/tmp/x"})
 	denyArgvs(t, seed, baseNRIDigest, []string{"sleep", "infinity"}) // argv[0] must be /bin/sh
+}
+
+// The install script embeds the component entries' argv, where an operator
+// argument escaped as $$(NAME) is pinned as $(NAME). The kubelet expands the
+// installer's own args too, so they must reach the runtime as the seed pins
+// them.
+func TestChartPinnedSeedAdmitsInstallerUnderKubeletExpansion(t *testing.T) {
+	t.Parallel()
+	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true", "--set-json", `operator.extraArgs=["$$(KUBERNETES_SERVICE_HOST)"]`}
+	for valuePath, digest := range componentTestDigests {
+		args = append(args, "--set", valuePath+".digest="+digest)
+	}
+	out, err := helmTemplate(t, args...)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	seed := renderedSeed(t, out)
+	worker := renderedDaemonSet(t, out, "c8s-nri-image-policy-worker")
+	for _, c := range allContainers(&worker) {
+		admitPlatformContainer(t, seed, baseNRIDigest, c)
+	}
 }
 
 // The node-as-CVM (baked) installer runs the pins script instead of the

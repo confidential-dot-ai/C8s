@@ -480,7 +480,7 @@
 {{- end -}}
 
 {{/* The plugin boot base, as allowlist workloads keyed by entry name: the
-     chart's component shapes (c8s.componentShapes) under
+     chart's component shapes (c8s.generatedShapes) under
      c8s.shapeWorkloadName, and, under c8s.digestWorkloadName, every digest an
      operator entry admits with open args (c8s.openArgsEntries) under the
      command that entry pins or under any, with the operator's own entries for
@@ -491,14 +491,11 @@
      argv-pinned images, which are admitted by the served seed. */ -}}
 {{- define "c8s.baseWorkloads" -}}
 {{- $workloads := dict -}}
-{{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
 {{- $excluded := list -}}
-{{- range $d := $pinnedDigests -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
-{{- range $digest, $entry := (include "c8s.componentShapes" . | fromJson) -}}
-{{- if not (has (lower $digest) $excluded) -}}
+{{- range $d := (include "c8s.argvPinnedDigests" . | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
+{{- range $digest, $entry := (include "c8s.generatedShapes" . | fromJson) -}}
 {{- $name := include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get $entry "image") "containers" (get $entry "containers")) -}}
 {{- $_ := set $workloads $name (dict "label" (get $entry "image") "initContainers" list "containers" (get $entry "containers")) -}}
-{{- end -}}
 {{- end -}}
 {{- /* Keyed by the lowercased digest, as the entry name is: two spellings of
        one digest are one entry. */ -}}
@@ -545,7 +542,7 @@
      characters at most. A configuration change that alters
      an argv, env or mount table names a new entry, which CDS's seeding adds
      beside the old one (it retires an old one only when it left a
-     component's args, mounts or env open). See
+     component's args, mounts or env open, or an override replaces it). See
      ../helpers/allowlist/README.md#entry-names. */ -}}
 {{- define "c8s.shapeWorkloadName" -}}
 {{- $matched := list -}}
@@ -553,13 +550,28 @@
 {{- printf "%s-%s" (include "c8s.digestWorkloadName" (dict "digest" .digest "image" .image "baseMax" 41)) ($matched | toJson | sha256sum | trunc 8) -}}
 {{- end -}}
 
-{{/* The seed entry name of CDS's own shape, or "" when CDS is not
-     digest-pinned. */ -}}
+{{/* CDS's own launch shape, named as its generated entry, or "" when CDS
+     is not digest-pinned. The upgrade guard compares it across releases, so
+     it changes with CDS's argv and mounts even when an override admits CDS. */ -}}
 {{- define "c8s.cdsShapeName" -}}
 {{- $digest := .Values.cds.image.digest -}}
 {{- with get (include "c8s.componentShapes" . | fromJson) (default "" $digest) -}}
 {{- include "c8s.shapeWorkloadName" (dict "digest" $digest "image" (get . "image") "containers" (get . "containers")) -}}
 {{- end -}}
+{{- end -}}
+
+{{/* The seed entry that admits CDS: the operator's override for CDS's
+     digest, else c8s.cdsShapeName. */ -}}
+{{- define "c8s.cdsEntryName" -}}
+{{- $name := include "c8s.cdsShapeName" . -}}
+{{- $digest := .Values.cds.image.digest -}}
+{{- with get (include "c8s.componentShapes" . | fromJson) (default "" $digest) -}}
+{{- $override := include "c8s.digestWorkloadName" (dict "digest" $digest "image" (get . "image")) -}}
+{{- if hasKey ($.Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict) $override -}}
+{{- $name = $override -}}
+{{- end -}}
+{{- end -}}
+{{- $name -}}
 {{- end -}}
 
 {{/* See ../helpers/allowlist/README.md#argv-pinned-entries for the seed contract. */}}
@@ -708,21 +720,38 @@
 {{- end -}}
 {{- end -}}
 
-{{- define "c8s.allowlistSeedJSON" -}}
-{{- $workloads := dict -}}
-{{- $pinnedDigests := include "c8s.argvPinnedDigests" . | fromJsonArray -}}
+{{/* The component shapes the chart generates entries for:
+     c8s.componentShapes less the argv-pinned images and those an operator
+     entry named c8s.digestWorkloadName replaces. The seed and the boot base
+     both build from it, so an override replaces the generated entry in
+     both. */ -}}
+{{- define "c8s.generatedShapes" -}}
+{{- $shapes := dict -}}
+{{- $excluded := list -}}
+{{- range $d := (include "c8s.argvPinnedDigests" . | fromJsonArray) -}}{{- $excluded = append $excluded (lower $d) -}}{{- end -}}
 {{- $overrides := .Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
 {{- range $digest, $entry := (include "c8s.componentShapes" . | fromJson) -}}
-{{- if not (has $digest $pinnedDigests) -}}
+{{- if not (or (has (lower $digest) $excluded) (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" (get $entry "image"))))) -}}
+{{- $_ := set $shapes $digest $entry -}}
+{{- end -}}
+{{- end -}}
+{{ $shapes | toJson }}
+{{- end -}}
+
+{{- define "c8s.allowlistSeedJSON" -}}
+{{- $workloads := dict -}}
+{{- $overrides := .Values.nriImagePolicy.bootstrapAllowlist.workloads | default dict -}}
+{{- range $digest, $entry := (include "c8s.generatedShapes" . | fromJson) -}}
 {{- $image := get $entry "image" -}}
 {{- $containers := get $entry "containers" -}}
-{{- if not (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" $image))) -}}
 {{- $_ := set $workloads (include "c8s.shapeWorkloadName" (dict "digest" $digest "image" $image "containers" $containers)) (dict "label" $image "initContainers" list "containers" $containers) -}}
 {{- end -}}
-{{- end -}}
-{{- end -}}
+{{- /* An argv-pinned entry yields to an override like a component shape. */}}
 {{- range $name, $entry := (include "c8s.argvPinnedEntries" . | fromJson) -}}
+{{- $digest := get (first (get $entry "containers")) "digest" -}}
+{{- if not (hasKey $overrides (include "c8s.digestWorkloadName" (dict "digest" $digest "image" (get $entry "label")))) -}}
 {{- $_ := set $workloads $name $entry -}}
+{{- end -}}
 {{- end -}}
 {{- if eq (include "c8s.routerWorkloadSeeded" .) "true" -}}
 {{- $_ := set $workloads (include "c8s.routerWorkloadName" .) (include "c8s.routerEntry" . | fromJson) -}}
