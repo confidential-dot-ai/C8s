@@ -395,9 +395,12 @@ pod_sandbox_id() { return "$UNSUPPORTED"; }
 # The operator's verifier on a saved leaf: 0 accepts, 2 rejects on a verdict;
 # anything else means it could not judge.
 relying_party() {
-    local leaf="$1" ca="$2" rc=0 out
+    local leaf="$1" ca="$2" rc=0 out pins
     shift 2
-    out="$(c8s verify --from-file "$leaf" --mesh-ca "$ca" "${measurement_args[@]}" "$@" 2>&1)" || rc=$?
+    # The lane's launch digests, pinned directly: --image-policy-file also
+    # cross-checks a live CDS's served set, which a saved leaf has not.
+    pins="$(cds_pins | paste -sd, -)" || return
+    out="$(c8s verify --from-file "$leaf" --mesh-ca "$ca" --measurements "$pins" "$@" 2>&1)" || rc=$?
     case "$rc" in
         0) echo accepts ;;
         2) echo rejects; printf '%s\n' "$out" ;;
