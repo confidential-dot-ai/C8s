@@ -105,6 +105,7 @@ func TestNodeRootHostMount(t *testing.T) {
 	}{
 		{"no evidence", func(m *ObservedMount) { m.Provenance = "" }},
 		{"other provenance", func(m *ObservedMount) { m.Provenance = "dm-verity" }},
+		{"fs-verity evidence", func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceFSVerity, strings.Repeat("b", 64) }},
 		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }},
 		{"different source", func(m *ObservedMount) { m.HostSourceDigest = "other" }},
 	} {
@@ -131,9 +132,13 @@ func TestHostMountProvenanceValidation(t *testing.T) {
 		want string
 	}{
 		{"unknown provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "dm-verity"}, `mount provenance "dm-verity" is not supported`},
-		{"fs-verity provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "fs-verity", VerityDigest: digest}, "verityDigest is not supported"},
-		{"fs-verity without digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: "fs-verity"}, `mount provenance "fs-verity" is not supported`},
-		{"node-root with digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceNodeRoot, VerityDigest: digest}, "verityDigest is not supported"},
+		{"fs-verity without digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceFSVerity}, "64 lowercase hexadecimal"},
+		{"short digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: "abc"}, "64 lowercase hexadecimal"},
+		{"uppercase digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: strings.ToUpper(digest)}, "64 lowercase hexadecimal"},
+		{"prefixed digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: "sha256:" + digest}, "64 lowercase hexadecimal"},
+		{"writable fs-verity", MountRule{Kind: MountHost, Source: "/usr/bin/tool", Provenance: ProvenanceFSVerity, VerityDigest: digest}, "requires readOnly"},
+		{"digest without provenance", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, VerityDigest: digest}, "requires fs-verity provenance"},
+		{"node-root with digest", MountRule{Kind: MountHost, Source: "/usr/bin/tool", ReadOnly: true, Provenance: ProvenanceNodeRoot, VerityDigest: digest}, "requires fs-verity provenance"},
 		{"writable node-root", MountRule{Kind: MountHost, Source: "/usr/bin/tool", Provenance: ProvenanceNodeRoot}, "requires readOnly"},
 		{"emptyDir provenance", MountRule{Kind: MountEmptyDir, Provenance: ProvenanceNodeRoot}, "does not support"},
 		{"data digest", MountRule{Kind: MountData, VerityDigest: digest}, "does not support"},
@@ -152,5 +157,66 @@ func TestProvenanceHostRuleIsNotPinnedForGrant(t *testing.T) {
 	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true, Provenance: ProvenanceNodeRoot}}}
 	if (mountConstraint{policy: &policy}).hostIndependent() {
 		t.Fatal("node-root host rule reported host-independent, so a secrets grant would accept it")
+	}
+}
+
+func TestFSVerityHostMount(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/tool", Kind: MountHost, Source: "/opt/tools/tool", ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: hash}}}
+	if err := normalizeMounts(&policy); err != nil {
+		t.Fatal(err)
+	}
+	source, _ := HostSourceDigest("/opt/tools/tool")
+	mount := ObservedMount{Destination: "/usr/bin/tool", Class: MountHost, HostSourceDigest: source, ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: hash}
+	for _, tc := range []struct {
+		name   string
+		change func(*ObservedMount)
+		want   bool
+	}{
+		{"pinned digest", func(*ObservedMount) {}, true},
+		{"no evidence", func(m *ObservedMount) { m.Provenance, m.VerityDigest = "", "" }, false},
+		{"digest without provenance", func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"node-root evidence", func(m *ObservedMount) { m.Provenance, m.VerityDigest = ProvenanceNodeRoot, "" }, false},
+		{"other digest", func(m *ObservedMount) { m.VerityDigest = strings.Repeat("a", 64) }, false},
+		{"other source", func(m *ObservedMount) { m.HostSourceDigest = "other" }, false},
+		{"writable bind", func(m *ObservedMount) { m.ReadOnly = false }, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			observed := mount
+			tc.change(&observed)
+			if got := policy.admits([]ObservedMount{observed}); got != tc.want {
+				t.Fatalf("admits(%+v) = %t, want %t", observed, got, tc.want)
+			}
+		})
+	}
+	encoded, err := json.Marshal(mount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded ObservedMount
+	if err := json.Unmarshal(encoded, &decoded); err != nil || decoded != mount {
+		t.Fatalf("round trip = %+v, %v, want %+v", decoded, err, mount)
+	}
+}
+
+func TestIndexFSVerityMountRules(t *testing.T) {
+	hash := strings.Repeat("b", 64)
+	pinned := MountRule{Destination: "/usr/bin/tool", Kind: MountHost, Source: "/opt/tools/tool", ReadOnly: true, Provenance: ProvenanceFSVerity, VerityDigest: hash}
+	plain := MountRule{Destination: "/usr/bin/other", Kind: MountHost, Source: "/opt/tools/other", ReadOnly: true}
+	digest := mustDigest(t, "sha256:"+strings.Repeat("a", 64))
+	al := &Allowlist{Workloads: map[string]Workload{"w": {Containers: []Container{{Digest: digest, Mounts: MountPolicy{Policy: PolicyExact, Rules: []MountRule{pinned, plain}}}}}}}
+	idx := al.BuildIndex()
+	if !idx.HasFSVerityMountRules() {
+		t.Fatal("HasFSVerityMountRules() = false, want true")
+	}
+	if got := idx.FSVerityMountRules(digest.String()); len(got) != 1 || got[0] != pinned {
+		t.Fatalf("FSVerityMountRules() = %+v, want [%+v]", got, pinned)
+	}
+	if got := idx.FSVerityMountRules("sha256:" + strings.Repeat("c", 64)); got != nil {
+		t.Fatalf("FSVerityMountRules(other image) = %+v, want none", got)
+	}
+	var none *Index
+	if none.HasFSVerityMountRules() || none.FSVerityMountRules(digest.String()) != nil {
+		t.Fatal("nil index reported fs-verity rules")
 	}
 }

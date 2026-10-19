@@ -1,6 +1,8 @@
 package allowlist
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 )
@@ -68,17 +70,20 @@ type hostRule struct {
 }
 
 func (r hostRule) validate() error {
-	if r.VerityDigest != "" {
-		return fmt.Errorf("verityDigest is not supported")
-	}
 	switch r.Provenance {
-	case "":
-	case ProvenanceNodeRoot:
-		if !r.ReadOnly {
-			return fmt.Errorf("mount provenance requires readOnly: true")
+	case "", ProvenanceNodeRoot:
+		if r.VerityDigest != "" {
+			return fmt.Errorf("verityDigest requires fs-verity provenance")
+		}
+	case ProvenanceFSVerity:
+		if !CanonicalVerityDigest(r.VerityDigest) {
+			return fmt.Errorf("verityDigest must be 64 lowercase hexadecimal digits")
 		}
 	default:
 		return fmt.Errorf("mount provenance %q is not supported", r.Provenance)
+	}
+	if r.Provenance != "" && !r.ReadOnly {
+		return fmt.Errorf("mount provenance requires readOnly: true")
 	}
 	_, err := HostSourceDigest(r.Source)
 	return err
@@ -86,7 +91,15 @@ func (r hostRule) validate() error {
 
 func (r hostRule) admits(m ObservedMount) bool {
 	digest, err := HostSourceDigest(r.Source)
-	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly && (r.Provenance == "" || m.Provenance == r.Provenance)
+	return err == nil && m.HostSourceDigest == digest && m.ReadOnly == r.ReadOnly &&
+		(r.Provenance == "" || m.Provenance == r.Provenance && m.VerityDigest == r.VerityDigest)
+}
+
+// CanonicalVerityDigest reports whether value is a SHA-256 digest in the one
+// encoding policy accepts: 64 lowercase hexadecimal digits.
+func CanonicalVerityDigest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && hex.EncodeToString(decoded) == value
 }
 
 // hostIndependent is false even with provenance: the rule still names a host

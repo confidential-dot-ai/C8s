@@ -102,10 +102,11 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
-	// Provenance requires node evidence for a host file's bytes; only
-	// ProvenanceNodeRoot is supported.
+	// Provenance requires node evidence for a host file's bytes:
+	// ProvenanceNodeRoot or ProvenanceFSVerity.
 	Provenance string `json:"provenance,omitempty" yaml:"provenance,omitempty"`
-	// VerityDigest is reserved for fs-verity provenance and rejected for now.
+	// VerityDigest pins the kernel fs-verity SHA-256 digest, not a SHA-256 of
+	// the file bytes. It is required by, and only valid with, ProvenanceFSVerity.
 	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
@@ -119,9 +120,14 @@ const (
 	MountHost     MountClass = "host"
 )
 
-// ProvenanceNodeRoot marks a regular file reached through the node's measured,
-// read-only dm-verity root.
-const ProvenanceNodeRoot = "node-root"
+const (
+	// ProvenanceNodeRoot marks a regular file reached through the node's
+	// measured, read-only dm-verity root.
+	ProvenanceNodeRoot = "node-root"
+	// ProvenanceFSVerity marks a file whose kernel-enforced fs-verity digest
+	// the node staged and matched against a policy-pinned VerityDigest.
+	ProvenanceFSVerity = "fs-verity"
+)
 
 // MountStorage records the storage guarantee established by the node.
 type MountStorage string

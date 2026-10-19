@@ -279,9 +279,9 @@ func TestWorkloadDeleteRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
+func TestProvenanceExecutableWritesRemainAuthorized(t *testing.T) {
 	for _, command := range []string{"upload", "apply"} {
-		for _, mode := range []string{"node-root", "path only", "unpinned operator key"} {
+		for _, mode := range []string{"node-root", "fs-verity", "path only", "unpinned operator key"} {
 			t.Run(command+"/"+mode, func(t *testing.T) {
 				dir := t.TempDir()
 				key, pub := newOperatorKeypair(t, dir, "operator.key")
@@ -289,8 +289,12 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 				if mode == "unpinned operator key" {
 					key, _ = newOperatorKeypair(t, dir, "untrusted.key")
 				}
+				digest := strings.Repeat("b", 64)
 				provenance := `,"provenance":"node-root"`
-				if mode == "path only" {
+				switch mode {
+				case "fs-verity":
+					provenance = `,"provenance":"fs-verity","verityDigest":"` + digest + `"`
+				case "path only":
 					provenance = ""
 				}
 				entries := `{"worker":{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}},"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true` + provenance + `}]}}]}}`
@@ -305,7 +309,7 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 					args = append(args, "--force")
 				}
 				_, _, err := runCmd(args...)
-				if mode != "node-root" {
+				if mode != "node-root" && mode != "fs-verity" {
 					if err == nil || cds.count() != 0 {
 						t.Fatalf("unsafe or unauthorized policy written: %v", err)
 					}
@@ -315,7 +319,10 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 					t.Fatalf("node-root %s: %v", command, err)
 				}
 				worker, ok := cds.workload("worker")
-				if !ok || worker.Containers[0].Mounts.Rules[0].Provenance != pkgallowlist.ProvenanceNodeRoot {
+				if !ok {
+					t.Fatal("worker not written")
+				}
+				if rule := worker.Containers[0].Mounts.Rules[0]; rule.Provenance != mode || mode == "fs-verity" && rule.VerityDigest != digest {
 					t.Fatal("lost provenance on the signed write path")
 				}
 			})

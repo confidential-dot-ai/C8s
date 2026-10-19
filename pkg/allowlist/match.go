@@ -29,6 +29,9 @@ type ObservedMount struct {
 	ReadOnly         bool         `json:"readOnly,omitempty"`
 	// Provenance is evidence supplied by the trusted node, never a declaration.
 	Provenance string `json:"provenance,omitempty"`
+	// VerityDigest is the fs-verity digest of the staged inode; it is set only
+	// with ProvenanceFSVerity.
+	VerityDigest string `json:"verityDigest,omitempty"`
 }
 
 // confined reports whether a mount keeps what a container writes inside the

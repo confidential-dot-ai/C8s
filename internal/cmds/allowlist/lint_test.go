@@ -612,7 +612,7 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 	}
 }
 
-func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
+func TestLintAllowsProvenanceHostExecutables(t *testing.T) {
 	for _, tc := range []struct {
 		name, provenance string
 		refused          bool
@@ -620,7 +620,9 @@ func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
 		{"path alone", "", true},
 		{"measured node root", `,"provenance":"node-root"`, false},
 		{"untrusted verity device", `,"provenance":"dm-verity"`, true},
-		{"fs-verity not supported", `,"provenance":"fs-verity","verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},
+		{"pinned fs-verity digest", `,"provenance":"fs-verity","verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, false},
+		{"fs-verity without digest", `,"provenance":"fs-verity"`, true},
+		{"invalid fs-verity digest", `,"provenance":"fs-verity","verityDigest":"not-a-hash"`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
