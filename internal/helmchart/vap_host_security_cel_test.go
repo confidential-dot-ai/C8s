@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	testClaimsHostDir   = "/var/run/nri-image-policy"
+	testClaimsHostDir   = "/run/nri-image-policy"
 	testClaimsMountPath = "/run/c8s/workload-claims"
 	testC8sImage        = "ghcr.io/confidential-dot-ai/c8s-operator:dev"
 )
