@@ -343,6 +343,18 @@ func TestDeriveRejectsEnvPolicyForUnknownContainer(t *testing.T) {
 	}
 }
 
+func TestDerivePreservesNodeRootProvenance(t *testing.T) {
+	file := writeFile(t, "mounts.json", `{"seed":{"policy":"deny"},"frontend":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"provenance":"node-root"}]},"worker":{"policy":"deny"}}`)
+	got, err := runDerive(t, deployJSON(), "dynamo", "-", "--env=any", "--mounts-file", file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := got["dynamo"].Containers[0].Mounts.Rules[0]
+	if rule.Provenance != pkgallowlist.ProvenanceNodeRoot || rule.Source != "/usr/bin/nvidia-smi" || !rule.ReadOnly {
+		t.Fatalf("derived rule lost provenance: %+v", rule)
+	}
+}
+
 func TestDeriveContainersResolvesImageArgv(t *testing.T) {
 	resolve := func(string) ([]string, []string, error) {
 		return []string{"/docker-entrypoint.sh"}, []string{"nginx", "-g", "daemon off;"}, nil
