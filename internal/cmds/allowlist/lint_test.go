@@ -612,6 +612,29 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 	}
 }
 
+func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
+	for _, tc := range []struct {
+		name, kind, extra string
+		refused           bool
+	}{
+		{"path alone", "host", "", true},
+		{"measured node root", "nodeRootFile", "", false},
+		{"provenance field", "host", `,"provenance":"node-root"`, true},
+		{"fs-verity not supported", "nodeRootFile", `,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +
+				`"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"` + tc.kind + `","source":"/usr/bin/nvidia-smi","readOnly":true` + tc.extra + `}]},` +
+				`"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}}}`
+			file := writeFile(t, "al.json", `{"schema":"c8s.allowlist/v1","workloads":{"worker":{"containers":[`+container+`]}}}`)
+			out, _, err := runCmd("lint", "--strict", file)
+			if (err != nil) != tc.refused {
+				t.Fatalf("lint error = %v, want refusal %v: %s", err, tc.refused, out)
+			}
+		})
+	}
+}
+
 // A container pinned to a component executable must pin its args and mounts
 // and match its env too: any left open lets a pod point the component at code
 // of its choosing. The injected sidecar shapes keep their per-pod args, not
