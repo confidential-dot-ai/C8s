@@ -2,7 +2,6 @@ package steps
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"os"
@@ -94,15 +93,7 @@ func (w *world) podExec(p *pod, container string, cmd ...string) (string, error)
 		for i, word := range cmd {
 			quoted[i] = "'" + strings.ReplaceAll(word, "'", `'\''`) + "'"
 		}
-		out, err := w.be.call("agent_run", p.namespace, p.name, container, strings.Join(quoted, " "))
-		if err != nil {
-			return "", err
-		}
-		raw, err := base64.StdEncoding.DecodeString(out)
-		if err != nil {
-			return "", fmt.Errorf("the agent in %q answered no base64: %w", p.name, err)
-		}
-		return string(raw), nil
+		return w.be.call("agent_run", p.namespace, p.name, container, strings.Join(quoted, " "))
 	}
 	args := []string{"-n", p.namespace, "exec", p.name}
 	if container != "" {

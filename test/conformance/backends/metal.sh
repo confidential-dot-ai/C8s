@@ -206,17 +206,9 @@ pod_exec() { echo agent; }
 AGENT=c8s-conformance/agent
 AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
-AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; base64 -d '"$AGENT_DIR"'/cmd > /tmp/.agent-cmd 2>/dev/null; sh /tmp/.agent-cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
+AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
 
-pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@" | agent_wrap; }
-
-requester_manifest() {
-    local image
-    image="$(image_ref requester)" || return
-    render_pod --annotation confidential.ai/c8s-injected=true --annotation c8s-conformance/harness-argv=yes \
-        --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
-        -- "$1" "$2" "$3" "$image" sleep 3600 | agent_wrap
-}
+manifest_filter() { agent_wrap; }
 
 # Sent by curl in the requester through its agent; the body travels in the
 # command, as the agent has no stdin.
@@ -233,9 +225,9 @@ requester_request() {
     local rc=0
     resp="$(agent_run "$ns" "$pod" "$REQUESTER_CONTAINER" "$script")" || rc=$?
     [ "$rc" != "$UNSUPPORTED" ] || return "$UNSUPPORTED"
-    resp="$(printf '%s' "$resp" | base64 -d)"
-    # curl exits non-zero only when no response came back.
-    if [ "$rc" != 0 ]; then
+    # A curl that answered nothing still prints status 000; anything else
+    # without a status line is the agent's or the script's own failure.
+    if [ "$rc" != 0 ] && ! [[ "${resp##*$'\n'}" =~ ^[0-9]{3}$ ]]; then
         echo "backend: the requester's curl ($((${#script} / 1024)) KiB of script) exited $rc: $resp" >&2
         return 1
     fi
@@ -259,10 +251,11 @@ agent_wrap() {
         else . end'
 }
 
-# agent_run <ns> <pod> <container> <script>: the sh script's combined output
-# as base64, and its status as ours. The agent runs in the first
-# container alone, so another named container answers 77, as does a pod
-# without the agent; 1 when the agent has not answered in a minute.
+# agent_run <ns> <pod> <container> <script>: the sh script's combined output,
+# and its status as ours. The agent runs in the first container alone, so
+# another named container answers 77, as does a pod without the agent; 1 when
+# the agent has not answered in 90s, longer than the kubelet's resync of the
+# volume should it miss a patch.
 agent_run() {
     local ns="$1" pod="$2" want="$3" script="$4" pod_json seq line container rc out deadline patch
     pod_json="$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null)" || return "$UNSUPPORTED"
@@ -273,28 +266,20 @@ agent_run() {
     # Through a patch file: a request body makes the script larger than one
     # command-line argument may be (128 KiB on Linux).
     patch="$(mktemp)"
-    printf '%s' "$script" | base64 | tr -d '\n' |
+    printf '%s' "$script" |
         jq -Rs --arg a "$AGENT" --arg seq "$seq" '{metadata: {annotations: {($a + "-cmd"): ., ($a + "-seq"): $seq}}}' > "$patch"
     rc=0
     kubectl -n "$ns" patch pod "$pod" --type merge --patch-file "$patch" >/dev/null || rc=$?
     rm -f "$patch"
     [ "$rc" = 0 ] || return "$rc"
-    deadline=$(($(date +%s) + 60))
-    until line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep "^agent $seq " | tail -1)" && [ -n "$line" ]; do
-        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the agent in $ns/$pod did not answer within 60s" >&2; return 1; }
+    deadline=$(($(date +%s) + 90))
+    # The log only grows; read no further back than the deadline reaches.
+    until line="$(kubectl -n "$ns" logs "$pod" -c "$container" --since=100s 2>/dev/null | grep "^agent $seq " | tail -1)" && [ -n "$line" ]; do
+        [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the agent in $ns/$pod did not answer within 90s" >&2; return 1; }
         sleep 1
     done
     read -r _ _ rc out <<<"$line"
-    printf '%s' "${out:-}"
-    return "$rc"
-}
-
-# agent_exec <ns> <pod> <script>: agent_run in the first container, its
-# output decoded.
-agent_exec() {
-    local out rc=0
-    out="$(agent_run "$1" "$2" "" "$3")" || rc=$?
-    printf '%s' "$out" | base64 -d
+    printf '%s' "${out:-}" | base64 -d
     return "$rc"
 }
 
@@ -302,7 +287,7 @@ agent_exec() {
 # pod_cert_file answers elsewhere; 77 for a pod without the agent.
 pod_cert_file() {
     local out rc=0
-    out="$(agent_exec "$1" "$2" "cat '$CERT_VOLUME_PATH/$3'" 2>/dev/null)" || rc=$?
+    out="$(agent_run "$1" "$2" "" "cat '$CERT_VOLUME_PATH/$3'" 2>/dev/null)" || rc=$?
     case "$rc" in
         0) printf '%s\n' "$out" ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
@@ -310,35 +295,8 @@ pod_cert_file() {
 }
 mesh_member() { return "$UNSUPPORTED"; }
 
-# No exec into a kept scraper: each scrape is a pod of its own whose log is
-# the scrape, admitted by the scraper's entry, which teardown deletes.
-mesh_metrics() {
-    local addr port image digest entry name phase body _
-    addr="$(cached "node-ipv4-$1" node_address "$1" ipv4)" || return
-    port="$(cached mesh-health-port mesh_arg health-port)"
-    port="${port:-15021}"
-    image="$(image_ref requester)" || return
-    entry="$(scratch)/cache-mesh-scrape-entry"
-    if [ ! -e "$entry" ]; then
-        kubectl create namespace "$MESH_SCRAPER_NS" >/dev/null 2>&1 || true
-        digest="$(image_digest "$image")" || return
-        any_workload "$digest" "$image" > "$entry.json"
-        allowlist_put "$MESH_SCRAPER" "$entry.json" || return
-        touch "$entry"
-    fi
-    name="mesh-scrape-$(date +%s%N | tail -c 10)"
-    render_pod -- "$name" "$MESH_SCRAPER_NS" "$(node_name one)" "$image" \
-        curl -sf --max-time 10 "http://$addr:$port/metrics" | kubectl apply -f - >/dev/null || return
-    for _ in $(seq 90); do
-        phase="$(kubectl -n "$MESH_SCRAPER_NS" get pod "$name" -o jsonpath='{.status.phase}' 2>/dev/null)"
-        case "$phase" in Succeeded | Failed) break ;; esac
-        sleep 1
-    done
-    body="$(kubectl -n "$MESH_SCRAPER_NS" logs "$name" 2>/dev/null)"
-    kubectl -n "$MESH_SCRAPER_NS" delete pod "$name" --wait=false >/dev/null 2>&1
-    [ "$phase" = Succeeded ] || { echo "backend: no scrape of $addr:$port (pod $name: ${phase:-no phase})" >&2; return 1; }
-    printf '%s\n' "$body"
-}
+# The kept scraper runs the agent (manifest_filter).
+mesh_scrape() { agent_run "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$(shq "$@")"; }
 
 pod_sandbox_id() { return "$UNSUPPORTED"; }
 

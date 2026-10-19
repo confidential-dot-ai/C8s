@@ -126,8 +126,8 @@
 #                                    (exec), or agent (agent_run)
 #   agent_run <ns> <pod> <container> <script>
 #                                    where pod_exec is agent: the sh script's
-#                                    combined output as base64, its status as
-#                                    the function's
+#                                    combined output, its status as the
+#                                    function's
 #   pod_cert_file <ns> <pod> <file> [container]
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
@@ -278,7 +278,9 @@ pull_interval() { echo 5s; }
 # net.* sysctl). The tenant-app image is Alpine's python, whose ping uses that
 # socket; the library busybox image's cannot.
 PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
-pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@"; }
+pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@" | manifest_filter; }
+# A backend's last word on every pod the harness renders for its own argv.
+manifest_filter() { cat; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
@@ -288,8 +290,9 @@ REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
     image="$(image_ref requester)" || return
-    render_pod --annotation confidential.ai/c8s-injected=true --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
-        -- "$1" "$2" "$3" "$image" sleep 3600
+    render_pod --annotation confidential.ai/c8s-injected=true --annotation c8s-conformance/harness-argv=yes \
+        --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
+        -- "$1" "$2" "$3" "$image" sleep 3600 | manifest_filter
 }
 
 # render_pod [fixture flags...] -- <name> <ns> <node> <image> <command...> [+ ...]
@@ -322,7 +325,6 @@ render_pod() {
 # carrying a workload ID; read through one of them, once it runs.
 CERT_VOLUME_PATH=/etc/c8s/certs
 pod_exec() { echo kubectl; }
-agent_run() { return "$UNSUPPORTED"; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is
@@ -791,7 +793,8 @@ mesh_scraper() {
         entry="$(scratch)/mesh-scraper.json"
         any_workload "$digest" "$image" > "$entry"
         allowlist_put "$MESH_SCRAPER" "$entry" || return
-        render_pod -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 | kubectl apply -f - >/dev/null
+        render_pod --annotation c8s-conformance/harness-argv=yes -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 |
+            manifest_filter | kubectl apply -f - >/dev/null
     fi
     kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=180s >/dev/null || return
     touch "$ready"
@@ -816,7 +819,7 @@ mesh_metrics() {
     port="${port:-15021}"
     for _ in 1 2; do
         mesh_scraper || return
-        if body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
+        if body="$(mesh_scrape curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
             printf '%s\n' "$body"
             return 0
         fi
@@ -825,6 +828,8 @@ mesh_metrics() {
     echo "backend: no scrape of $addr:$port" >&2
     return 1
 }
+
+mesh_scrape() { kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- "$@"; }
 
 # The sum of the series matching the pattern in a scrape on stdin.
 metric_sum() { awk -v pat="$1" '$0 ~ pat {sum += $NF} END {printf "%d\n", sum + 0}'; }
