@@ -264,14 +264,21 @@ agent_wrap() {
 # container alone, so another named container answers 77, as does a pod
 # without the agent; 1 when the agent has not answered in a minute.
 agent_run() {
-    local ns="$1" pod="$2" want="$3" script="$4" pod_json seq line container rc out deadline
+    local ns="$1" pod="$2" want="$3" script="$4" pod_json seq line container rc out deadline patch
     pod_json="$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null)" || return "$UNSUPPORTED"
     [ "$(jq -r --arg a "$AGENT" '.metadata.annotations[$a] // empty' <<<"$pod_json")" = yes ] || return "$UNSUPPORTED"
     container="$(jq -r '.spec.containers[0].name' <<<"$pod_json")"
     [ -z "$want" ] || [ "$want" = "$container" ] || return "$UNSUPPORTED"
     seq="$(date +%s%N)"
-    kubectl -n "$ns" annotate pod "$pod" --overwrite \
-        "$AGENT-cmd=$(printf '%s' "$script" | base64 | tr -d '\n')" "$AGENT-seq=$seq" >/dev/null || return
+    # Through a patch file: a request body makes the script larger than one
+    # command-line argument may be (128 KiB on Linux).
+    patch="$(mktemp)"
+    printf '%s' "$script" | base64 | tr -d '\n' |
+        jq -Rs --arg a "$AGENT" --arg seq "$seq" '{metadata: {annotations: {($a + "-cmd"): ., ($a + "-seq"): $seq}}}' > "$patch"
+    rc=0
+    kubectl -n "$ns" patch pod "$pod" --type merge --patch-file "$patch" >/dev/null || rc=$?
+    rm -f "$patch"
+    [ "$rc" = 0 ] || return "$rc"
     deadline=$(($(date +%s) + 60))
     until line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep "^agent $seq " | tail -1)" && [ -n "$line" ]; do
         [ "$(date +%s)" -lt "$deadline" ] || { echo "backend: the agent in $ns/$pod did not answer within 60s" >&2; return 1; }
