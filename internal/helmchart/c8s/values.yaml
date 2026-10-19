@@ -819,6 +819,19 @@ nriImagePolicy:
     # equal value measured into the node image, which an override cannot reach.
     interval: 5s
 
+  # Extend TDX RTMR[3] with each pulled allowlist's digest before applying it,
+  # so the register records every policy the node enforced since boot
+  # (docs/allowlist-and-capabilities.md, "Measured policy history"). External
+  # armTLS verifiers on attestation-go predating runtime extensions, flat
+  # RTMR[3] pins and c8s verify --image-policy-file with an approver_key
+  # still require the bare operator-key seed. Needs the default
+  # hostPaths.runtimeDir and attestationApi.enabled, so certificate producers
+  # mount the journal; node.baked is refused, since its image owns the plugin
+  # config. With nriImagePolicy.baked the pins installer patches it into the
+  # node image's config, which a node image predating the key ignores. After
+  # 256 policies the node applies no new one until it reboots.
+  measurePolicies: false
+
   # containerd's NRI plugin_request_timeout: how long containerd waits on one
   # plugin callback. A callback that overruns it makes NRI drop the plugin,
   # which then exits and is not respawned until containerd restarts; the

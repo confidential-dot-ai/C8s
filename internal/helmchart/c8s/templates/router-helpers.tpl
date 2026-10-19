@@ -520,7 +520,9 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $args = append $args (printf "--expected-workload=%s" .) -}}
 {{- end -}}
 {{- /* The NRI plugin's measured-policy journal, under the
-       attestation-api-socket mount. An absent journal omits the list. */ -}}
+       attestation-api-socket mount. Passed whatever measurePolicies says:
+       RTMR[3] keeps its extends until reboot after measuring is turned off,
+       and an absent journal omits the list. */ -}}
 {{- if and $v.attest.enabled (include "c8s.attestationApiSocketPresent" $root) -}}
 {{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
 {{- end -}}

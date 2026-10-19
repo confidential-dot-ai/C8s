@@ -247,6 +247,7 @@
         },
         "imagePullSecrets": {},
         "logLevel": {},
+        "measurePolicies": { "type": "boolean" },
         "nodeAffinity": {
           "type": [
             "object",
