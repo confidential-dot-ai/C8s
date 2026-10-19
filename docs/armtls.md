@@ -569,9 +569,13 @@ The node inventory is wired through NRI.
   logs the source of each address it publishes. It retries until an address
   exists and rewrites the file in place when it changes, so a running pod's
   read-only mount of the file sees the new address. It publishes a change
-  only once two rechecks a minute apart agree, and a failed lookup or write
-  leaves the file as it is; only an `advertiseHost` that is no dialable
-  address empties it. Until the file holds an address, the
+  only once two rechecks a minute apart agree, so an address that alternates
+  between two values is never published. A restarted plugin replaces the file
+  on its first recheck when the kubelet or `advertiseHost` supplies the
+  address, and waits for the second when only the default route does. A
+  failed lookup or write leaves the file as it is, as does a default-route
+  address other pods cannot dial, such as a link-local one; only an
+  `advertiseHost` that is no dialable address empties it. Until the file holds an address, the
   token socket answers 503 and enforcement runs regardless. Once issuing, the
   plugin rechecks the file every minute and signs later tokens with the new
   address, under the key `/identity` already serves. Components that dial the

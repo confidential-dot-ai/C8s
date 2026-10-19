@@ -176,9 +176,13 @@ func TestCDSShapeGuard(t *testing.T) {
 				t.Errorf("failure does not name the entry to publish:\n%s", out)
 			}
 			// A CDS recreated since the nodes last pulled counts from a lower
-			// version, which the nodes ignore until it passes theirs.
+			// version, which the nodes ignore until it passes theirs or their
+			// plugins restart; each apply raises it by one only.
 			if tc.fails && !strings.Contains(string(out), "above every allowlist_version the nodes' image policy plugins reported") {
 				t.Errorf("failure does not require publication past the nodes' versions:\n%s", out)
+			}
+			if tc.fails && !strings.Contains(string(out), "restart the image policy plugin (containerd) on each node that reports more") {
+				t.Errorf("failure does not offer a plugin restart for a large version gap:\n%s", out)
 			}
 			if tc.fails && !strings.Contains(string(out), "publish entry "+cmp.Or(tc.entry, tc.want)+" ") {
 				t.Errorf("failure does not name entry %s:\n%s", cmp.Or(tc.entry, tc.want), out)

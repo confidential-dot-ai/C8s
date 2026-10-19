@@ -621,3 +621,41 @@ func TestSeedWorkloadsOverrideRetiresGeneratedShapes(t *testing.T) {
 		t.Error("the overridden launch is still admitted")
 	}
 }
+
+// A store from before per-shape names holds an open-args <image>-<12 hex>
+// entry under the name an override takes; the override replaces it.
+func TestSeedWorkloadsOverrideReplacesPreShapeEntry(t *testing.T) {
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+
+	digest := mustParseDigest(t, digestA)
+	name := "cds-" + digest.Hex()[:12]
+	container := func(args pkgallowlist.ArgvPolicy) pkgallowlist.Workload {
+		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
+			Digest:  digest,
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
+			Args:    args,
+			Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyDeny},
+			Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: map[string]pkgallowlist.EnvMatcher{}},
+		}}}
+	}
+	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{name: container(pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyAny})}); err != nil {
+		t.Fatalf("seed previous release: %v", err)
+	}
+
+	override := map[string]pkgallowlist.Workload{name: container(pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact})}
+	added, retired, err := store.SeedWorkloads(override)
+	if err != nil || added != 1 || retired != 1 {
+		t.Fatalf("seed: added=%d retired=%d err=%v; want 1, 1, nil", added, retired, err)
+	}
+	doc, _, _ := store.LoadAll()
+	if doc.BuildIndex().AdmitsProcess(pkgallowlist.RunningContainer{Digest: digestA, Argv: []string{"/c8s", "cds", "--debug"}}) {
+		t.Error("the pre-shape entry's open args are still admitted")
+	}
+	if added, retired, err := store.SeedWorkloads(override); err != nil || added != 0 || retired != 0 {
+		t.Fatalf("reseed: added=%d retired=%d err=%v; want 0, 0, nil", added, retired, err)
+	}
+}

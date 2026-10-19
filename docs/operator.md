@@ -572,7 +572,10 @@ For chart-managed CDS:
 
 Pod recreation also resets the **served allowlist**. CDS seeds its store
 from the install seed once, at startup, then serves whatever an operator writes
-with `c8s allowlist add` or `apply`. With `cds.persistence.enabled=false`
+with `c8s allowlist add` or `apply`. Without `cds.operatorKeys` nothing can
+write, so an upgrade that changes a component's shape needs a reinstall; set
+the keys when you install (see "Known limitations" in
+[`allowlist-and-capabilities.md`](allowlist-and-capabilities.md)). With `cds.persistence.enabled=false`
 (the default), that store is a memory-backed `emptyDir` capped by
 `cds.persistence.memorySizeLimit` (64Mi) and counted toward
 `cds.resources.limits.memory`: it survives a container restart,

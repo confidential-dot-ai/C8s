@@ -169,6 +169,83 @@ func TestNodeIPPublisherLogsEmptiedFile(t *testing.T) {
 	}
 }
 
+// The file survives plugin restarts. A restarted plugin publishes an address
+// its kubelet or advertise_host supplies at once, but waits for a second
+// recheck before the default route replaces the file: the kubelet may still
+// be restarting with it.
+func TestNodeIPPublisherFirstResolution(t *testing.T) {
+	const stale = "203.0.113.66\n"
+	for _, tc := range []struct {
+		name          string
+		advertiseHost string
+		kubeletArgs   []string
+		hostIP        net.IP
+		want          string
+	}{
+		{name: "kubelet", kubeletArgs: []string{"--node-ip=192.0.2.30"}, hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.30\n"},
+		{name: "advertise host", advertiseHost: "192.0.2.20", hostIP: net.ParseIP("192.0.2.10"), want: "192.0.2.20\n"},
+		{name: "default route", hostIP: net.ParseIP("192.0.2.10"), want: stale},
+		{name: "link-local default route", hostIP: net.ParseIP("169.254.0.7"), want: stale},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fakeHostInterface(t, tc.hostIP, nil)
+			cfg := &config{}
+			cfg.WorkloadClaims.SocketDir = t.TempDir()
+			cfg.WorkloadClaims.AdvertiseHost = tc.advertiseHost
+			cfg.WorkloadClaims.ProcRoot = kubeletProc(t, tc.kubeletArgs, nil)
+			path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+			if err := os.WriteFile(path, []byte(stale), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			p := &nodeIPPublisher{cfg: cfg, logger: slog.New(slog.DiscardHandler)}
+			p.publish()
+			if got, err := os.ReadFile(path); err != nil || string(got) != tc.want {
+				t.Errorf("node-ip after the first publish() = %q, %v; want %q", got, err, tc.want)
+			}
+		})
+	}
+}
+
+// A link-local default route, as before DHCP completes, is retried rather
+// than emptying the file.
+func TestNodeIPPublisherRetriesUnusableDefaultRoute(t *testing.T) {
+	shrinkRetries(t)
+	fakeHostInterface(t, net.ParseIP("192.0.2.10"), nil)
+	cfg := &config{}
+	cfg.WorkloadClaims.SocketDir = t.TempDir()
+	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, nil, nil)
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	p := &nodeIPPublisher{cfg: cfg, logger: slog.New(slog.DiscardHandler)}
+	p.publish()
+
+	fakeHostInterface(t, net.ParseIP("fe80::1"), nil)
+	if wait := p.publish(); wait != nodeRetryMinDelay {
+		t.Fatalf("publish() of a link-local address waits %v, want the retry delay %v", wait, nodeRetryMinDelay)
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "192.0.2.10\n" {
+		t.Fatalf("node-ip after a link-local default route = %q, %v; want 192.0.2.10", got, err)
+	}
+}
+
+// A resolver that alternates between two addresses never agrees with itself
+// across two rechecks, so the published address stays.
+func TestNodeIPPublisherIgnoresAlternatingAddress(t *testing.T) {
+	fakeHostInterface(t, net.ParseIP("192.0.2.10"), nil)
+	cfg := &config{}
+	cfg.WorkloadClaims.SocketDir = t.TempDir()
+	cfg.WorkloadClaims.ProcRoot = kubeletProc(t, nil, nil)
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	p := &nodeIPPublisher{cfg: cfg, logger: slog.New(slog.DiscardHandler)}
+	p.publish()
+	for i := range 6 {
+		fakeHostInterface(t, net.ParseIP([]string{"192.0.2.11", "192.0.2.12"}[i%2]), nil)
+		p.publish()
+	}
+	if got, err := os.ReadFile(path); err != nil || string(got) != "192.0.2.10\n" {
+		t.Fatalf("node-ip after alternating addresses = %q, %v; want 192.0.2.10", got, err)
+	}
+}
+
 func fakeHostInterface(t *testing.T, ip net.IP, err error) {
 	t.Helper()
 	orig := chooseHostInterface

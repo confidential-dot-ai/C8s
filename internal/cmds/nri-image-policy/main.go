@@ -147,7 +147,9 @@ func Run(args []string) error {
 	if cfg.WorkloadClaims.PublishNodeIP {
 		// Fail-soft: exiting would block container creation node-wide, while
 		// a missing file only fails closed the components that read it. The
-		// first attempt runs here so the signer below never reads a stale file.
+		// first attempt runs here so the signer below reads a file this
+		// process resolved, unless only the default route named another
+		// address (see nodeIPPublisher.write).
 		publisher := &nodeIPPublisher{cfg: cfg, logger: logger}
 		go publisher.run(ctx, publisher.publish())
 	}
@@ -476,7 +478,8 @@ var (
 // route when containerd starts, and its address may change later. Components
 // restart when the file names another address, and a restarted CDS that
 // reads it regenerates the mesh CA, so a transient failure never touches the
-// file and a change is published only once it held for two rechecks.
+// file and a change is published only once it held for two rechecks. A
+// resolver that alternates between two addresses therefore never publishes.
 type nodeIPPublisher struct {
 	cfg    *config
 	logger *slog.Logger
@@ -484,6 +487,7 @@ type nodeIPPublisher struct {
 
 	kubelet string // the last address a host kubelet's --node-ip supplied
 	pending string // a changed address seen once, published if it holds
+	settled bool   // the file holds an address this process resolved
 }
 
 // publish makes one attempt and returns the wait before the next: the recheck
@@ -492,7 +496,7 @@ func (p *nodeIPPublisher) publish() time.Duration {
 	path := filepath.Join(p.cfg.WorkloadClaims.SocketDir, NodeIPFile)
 	host, source, err := p.resolve()
 	if err == nil && !usableNodeIP(net.ParseIP(host)) {
-		// Not transient: the configuration names an address no pod can dial.
+		// Not transient: advertise_host names an address no pod can dial.
 		p.pending = ""
 		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
 		p.logger.Error("node-ip emptied: the node address is not a unicast address other pods can dial; running components keep the address they read, and components that start will not until an address is published",
@@ -512,7 +516,10 @@ func (p *nodeIPPublisher) publish() time.Duration {
 }
 
 // write publishes host unless the file holds it already. A file naming
-// another address keeps it until a second recheck resolves host again.
+// another address keeps it until a second recheck resolves host again. The
+// first write of a process skips that wait unless host came from the default
+// route: the file then predates this process, while a default route seen
+// before the kubelet is back from a node restart may name another interface.
 func (p *nodeIPPublisher) write(path, host, source string) error {
 	current := ""
 	if b, err := os.ReadFile(path); err == nil {
@@ -520,9 +527,11 @@ func (p *nodeIPPublisher) write(path, host, source string) error {
 	}
 	if current == host {
 		p.pending = ""
+		p.settled = true
 		return nil
 	}
-	if current != "" && p.pending != host {
+	debounce := p.settled || source == "default_route"
+	if current != "" && debounce && p.pending != host {
 		p.pending = host
 		p.logger.Warn("node address changed; publishing it if the next recheck agrees", "address", host, "source", source, "published", current, "recheck_in", nodeIPRecheckInterval)
 		return nil
@@ -531,6 +540,7 @@ func (p *nodeIPPublisher) write(path, host, source string) error {
 		return err
 	}
 	p.pending = ""
+	p.settled = true
 	p.logger.Info("node-ip published", "address", host, "source", source)
 	return nil
 }
@@ -564,6 +574,10 @@ func (p *nodeIPPublisher) resolve() (host, source string, err error) {
 	ip, err := chooseHostInterface()
 	if err != nil {
 		return "", "", fmt.Errorf("resolve node address: %w", err)
+	}
+	if !usableNodeIP(ip) {
+		// Likely a link-local address before DHCP completes: retry.
+		return "", "", fmt.Errorf("resolve node address: default route address %s is not one other pods can dial", ip)
 	}
 	return ip.String(), "default_route", nil
 }

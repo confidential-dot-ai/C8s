@@ -864,9 +864,14 @@ upgrade:
 4. Check that `c8s allowlist list` reports a version above the one you noted.
    If it does not, CDS restarted since the nodes last pulled, and they ignore
    its versions up to the one they hold ([Refresh and
-   anti-rollback](#refresh-and-anti-rollback)): run the `apply` again until it
-   does. A node at or above an older version may hold a policy the restarted
-   CDS never served.
+   anti-rollback](#refresh-and-anti-rollback)). Each `apply` raises the
+   version by one, so for a small gap, run it again until the version passes.
+   For a larger gap, restart the image policy plugin on each node that
+   reports a version at or above it: restart containerd there (on RKE2, the
+   `rke2-server` or `rke2-agent` unit), one node at a time. A restarted
+   plugin applies the version CDS serves, whatever it held before. A node at
+   or above an older version may hold a policy the restarted CDS never
+   served.
 5. Wait until every node has taken the write: its plugin reports an
    `allowlist_version` at or above the one `c8s allowlist list` reports.
 6. Run the upgrade.
@@ -893,15 +898,25 @@ override, at start or while following its seed, retires those entries itself.
 
 On a measured node image (`node.baked`), the seed is a file the image holds,
 so CDS follows it: it rereads the file every 30 seconds and seeds it again
-when it changed. The chart sets `--follow-seed` only there. Without
-`cds.operatorKeys`, a chart-managed CDS accepts no write, so a new release's
-entries reach it only when CDS restarts and seeds again. Known limitation: the
-chart-managed store has no durable backing or version handoff yet, so a
-recreated CDS loses operator writes and counts from a version below the one
-the nodes hold.
+when it changed. The chart sets `--follow-seed` only there.
+
+Known limitations:
+
+- The chart-managed store has no durable backing or version handoff yet, so
+  a recreated CDS loses operator writes and counts from a version below the
+  one the nodes hold.
+- Without `cds.operatorKeys`, a chart-managed CDS accepts no write, so
+  nothing can publish a new release's entries. An upgrade that changes a
+  shape, a `cds.image.digest` bump included, fails the CDS shape guard below
+  or leaves the new pods refused, and restarting CDS does not help, since its
+  version starts below the nodes'. Adding the keys later changes CDS's mounts,
+  which is such an upgrade. To upgrade in place, set `cds.operatorKeys` when
+  you install; otherwise uninstall the release and install the new one.
 
 A rollback that keeps CDS running needs no publication: the store still holds
-the previous release's entries. A rollback across an upgrade that recreated
+the previous release's entries, unless an override retired them (see above).
+A rollback to a release without that override needs its generated entries
+back: publish its seed as described next. A rollback across an upgrade that recreated
 CDS does need one. The new store and the updated boot bases need not admit
 the previous CDS or installer, and `helm rollback` reapplies the stored
 manifests without the upgrade guard below. Before you roll back, save the
@@ -924,7 +939,7 @@ CDS, and the `cds.publishedShape` value. To publish it:
 2. Copy the entry the error names into a file and publish it as in steps 2
    to 4 of the configuration-only procedure above, with
    `c8s allowlist apply ENTRY_FILE`. Without operator keys, nothing can
-   publish it to the running CDS.
+   publish it to the running CDS (see the known limitations above).
 3. Wait until every node has taken the write, as in step 5 of that
    procedure.
 4. Rerun the upgrade with `--set cds.publishedShape=NAME`.

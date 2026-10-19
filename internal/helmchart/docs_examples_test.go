@@ -9,9 +9,13 @@ import (
 	"testing"
 )
 
+const helmCommand = "helm template c8s internal/helmchart/c8s"
+
 // helmExample matches a `helm template` command of the chart in a docs code
-// block, through its last continuation line.
-var helmExample = regexp.MustCompile(`(?m)^helm template c8s internal/helmchart/c8s(?:.* \\\n)*.*$`)
+// block, through its last continuation line. A backslash followed by trailing
+// blanks counts as one, so the shell fails on it rather than the match
+// ending early.
+var helmExample = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(helmCommand) + `(?:.*\\[ \t]*\n)*.*$`)
 
 // The operator guide's helm template examples render as written.
 func TestOperatorDocHelmTemplateExamples(t *testing.T) {
@@ -31,14 +35,12 @@ func TestOperatorDocHelmTemplateExamples(t *testing.T) {
 		t.Fatal("docs/operator.md has no helm template example")
 	}
 	for _, example := range examples {
-		command, _, _ := strings.Cut(strings.ReplaceAll(example, "\\\n", " "), ">")
-		args := strings.Fields(command)[1:]
 		// The helm client's simulated cluster may predate the chart's kubeVersion.
-		args = append(args, "--kube-version", "1.30.0")
-		cmd := exec.Command("helm", args...)
+		script := "set -e\n" + strings.Replace(example, helmCommand, helmCommand+" --kube-version 1.30.0", 1)
+		cmd := exec.Command("sh", "-c", script)
 		cmd.Dir = root
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Errorf("%s: %v\n%s", command, err, tail(out))
+			t.Errorf("%s: %v\n%s", example, err, tail(out))
 		}
 	}
 }

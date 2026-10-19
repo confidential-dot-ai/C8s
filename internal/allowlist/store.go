@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -281,7 +282,12 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 	}
 	var retired int
 	for name, w := range stored {
-		if _, ok := seed[name]; ok || !retiredBySeed(name, w, seedKeys, overrideKeys) {
+		// An override takes its name from the <image>-<12 hex> entry releases
+		// before per-shape names generated, which the store may still hold.
+		if entry, ok := seed[name]; ok && (overrideKey(name) == "" || sameWorkload(entry, w)) {
+			continue
+		}
+		if !retiredBySeed(name, w, seedKeys, overrideKeys) {
 			continue
 		}
 		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {
@@ -294,6 +300,12 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 		retired++
 	}
 	return retired, nil
+}
+
+func sameWorkload(a, b pkgallowlist.Workload) bool {
+	x, errX := json.Marshal(a)
+	y, errY := json.Marshal(b)
+	return errX == nil && errY == nil && bytes.Equal(x, y)
 }
 
 // seedWorkloadsTx inserts every entry whose name is free and returns how many

@@ -6,6 +6,6 @@
      admitting it) and published (cds.publishedShape). */ -}}
 {{- define "c8s.cdsShapeGuard" -}}
 {{- if and .live .want (ne .live .want) (ne .published .want) -}}
-{{- fail (printf "this upgrade changes the CDS image, command line or mounts, and the running enforcers do not admit the new CDS yet. To proceed, publish entry %s from the new release's seed through the running CDS (c8s allowlist apply, repeated until c8s allowlist list reports a version above every allowlist_version the nodes' image policy plugins reported on /healthz before), wait until every plugin reports a version at or above it, then rerun with --set cds.publishedShape=%s" (default .want .entry) .want) -}}
+{{- fail (printf "this upgrade changes the CDS image, command line or mounts, and the running enforcers do not admit the new CDS yet. To proceed, publish entry %s from the new release's seed through the running CDS with c8s allowlist apply, signed with an operator key. Repeat the apply until c8s allowlist list reports a version above every allowlist_version the nodes' image policy plugins reported on /healthz before, or restart the image policy plugin (containerd) on each node that reports more. Wait until every plugin reports a version at or above it, then rerun with --set cds.publishedShape=%s (docs/allowlist-and-capabilities.md)" (default .want .entry) .want) -}}
 {{- end -}}
 {{- end -}}
