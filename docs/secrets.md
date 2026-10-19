@@ -433,8 +433,8 @@ actually released.
   host chooses neither what the container reads nor where it writes. This is
   how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
   node image.
-- A writable host path stays refused, including
-  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set. A socket has no
+- A `host` rule stays refused, read-only or writable. This includes
+  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
   content to prove, and it is a channel to whatever process the host runs
   behind it. Drop it from the worker's mounts to hold a grant.
 - The write path refuses an entry that breaks either rule, and release refuses
