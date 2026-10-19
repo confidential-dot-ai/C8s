@@ -157,6 +157,7 @@ func TestKernelCoverageMergesProfilesAndPropagatesFailure(t *testing.T) {
 			fixture := t.TempDir()
 			files := map[string]string{
 				"head.out": header + blocks,
+				"fs.out":   header + "fixture/a.go:1.1,1.2 1 1\nfixture/a.go:2.1,2.2 1 0\n",
 				"dm.out":   header + "fixture/a.go:1.1,1.2 1 0\nfixture/a.go:3.1,3.2 1 1\nfixture/untested.go:1.1,1.2 1 0\n",
 				"bin/go":   "#!/bin/sh\nprintf '%s\\n' \"$@\" > build.args\n",
 				"bin/sudo": `#!/bin/sh
@@ -169,7 +170,8 @@ exec "$@"
 `,
 				// The script's own harness takes the coverage directory.
 				"head/scripts/coverage-gate.sh": string(body),
-				"head/node-guest-image/tests/mount-verity-test.sh": `cp dm.out "$2/dm-verity.out"
+				"head/node-guest-image/tests/mount-verity-test.sh": `cp fs.out "$2/fs-verity.out"
+cp dm.out "$2/dm-verity.out"
 `,
 			}
 			if name != "older base without harness" {
@@ -228,9 +230,9 @@ exec "$@"
 			cmd = exec.CommandContext(t.Context(), "bash", "-c", string(body), script, "total", "head.out")
 			cmd.Dir = fixture
 			total, err := cmd.CombinedOutput()
-			// Two of four distinct statements ran. Duplicate uncovered records must
+			// Three of four distinct statements ran. Duplicate uncovered records must
 			// not erase ordinary coverage, and untested production stays in the total.
-			if err != nil || strings.TrimSpace(string(total)) != "50.00" {
+			if err != nil || strings.TrimSpace(string(total)) != "75.00" {
 				t.Fatalf("wrong profile union: %q %v", total, err)
 			}
 		})

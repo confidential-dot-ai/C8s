@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/coverage-gate.sh run [profile]        run tests, write coverage profile
-#   scripts/coverage-gate.sh kernel <profile>     add real kernel dm-verity coverage
+#   scripts/coverage-gate.sh kernel <profile>     add real kernel verity coverage
 #   scripts/coverage-gate.sh total <profile>      print total coverage (e.g. "67.94")
 #
 # The profile is produced with -coverpkg=./... so packages without their own
