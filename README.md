@@ -180,11 +180,12 @@ kubectl label node <cds-node> role=cds
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator.pub
 
-# Install the platform (node-as-CVM) and point the bundled router
-# at your workload
+# Install the platform (node-as-CVM) and route the bundled router to your
+# workload, which serves TLS on 8443 with its injected certificate; install
+# prints the `c8s routes add` commands that store the route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
   --operator-keys operator.pub \
-  --workload-ref vllm=vllm/deployment/serving:8000 \
+  --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
 
@@ -394,8 +395,9 @@ openssl ec -in operator.key -pubout -out operator.pub
 c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
-Installing without `--operator-keys` leaves allowlist writes disabled, and
-`c8s install` refuses that on the default path unless you pass `--force` to
+Installing without `--operator-keys` leaves allowlist writes disabled and
+CDS unable to store a route manifest, so the router routes nothing. `c8s
+install` refuses that on the default path unless you pass `--force` to
 acknowledge. Supply the private key to the CLI by flag (`--operator-key`) or
 environment (`C8S_OPERATOR_KEY`). Write tokens are short-lived and bound to
 the request body, so a captured token cannot be replayed against a different

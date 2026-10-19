@@ -125,11 +125,15 @@ var (
 	errStoreFull    = errors.New("the server is at capacity; retry shortly")
 )
 
-// Backend handles a decrypted application request and returns the response. The
-// sidecar seals the response back to the client. Implementations forward the
-// reconstructed request to the real backend (see backend.go).
+// Backend forwards a request decrypted from the tunnel and returns the response
+// the sidecar seals back to the client. outer is the tunnel request itself,
+// whose Host routes a sealed request that carries none (route policy M1). An
+// error means the backend failed and is sealed as 502. Acquire reserves tunnel
+// budget for a record of recordBytes from client, as routing.Proxy.Acquire
+// does. *routing.Proxy implements it.
 type Backend interface {
-	Forward(ctx context.Context, req types.TunnelRequest) (types.TunnelResponse, error)
+	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
+	Acquire(client string, recordBytes int64) (release func(), ok bool)
 }
 
 // Config configures the sidecar server.
@@ -160,10 +164,12 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
-	Backend          Backend // over-encrypted application backend (nil => EchoBackend)
-	// Routing, when set, routes tunnel requests by the applied route manifest
-	// in place of Backend (A7) and gates new attested sessions on it (A2, F2).
-	Routing *routing.Proxy
+	// Backend routes tunnel requests by the applied route manifest (A7). Nil
+	// answers each with a sealed 503.
+	Backend Backend
+	// Routes, when set, gates new attested sessions on an applied, fresh route
+	// manifest (A2, F2). run always sets it; nil serves the channel alone.
+	Routes *routing.State
 	// DisableAttestEndpoints leaves attest-pq, attest-lb and the tunnel
 	// unregistered, for a router that runs only the routing listener.
 	DisableAttestEndpoints bool
@@ -189,9 +195,8 @@ type establishedSession struct {
 
 // Server serves the c8s-verify endpoints.
 type Server struct {
-	cfg     Config
-	log     *slog.Logger
-	backend Backend
+	cfg Config
+	log *slog.Logger
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -228,14 +233,9 @@ func NewServer(cfg Config) *Server {
 	if cfg.TunnelIOTimeout <= 0 {
 		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
-	backend := cfg.Backend
-	if backend == nil && cfg.Routing == nil {
-		backend = EchoBackend{}
-	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
-		backend:          backend,
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -604,10 +604,10 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 // the evidence (E1, E2) and publishing the manifest land with the verifier
 // changes.
 func (s *Server) routesAdmit(w http.ResponseWriter) bool {
-	if s.cfg.Routing == nil {
+	if s.cfg.Routes == nil {
 		return true
 	}
-	_, err := s.cfg.Routing.State().Session()
+	_, err := s.cfg.Routes.Session()
 	switch {
 	case errors.Is(err, routing.ErrNotApplied):
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "no route manifest is applied yet")
@@ -729,9 +729,8 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 }
 
 // handleTunnel terminates the over-encryption: it opens the sealed request
-// envelope, forwards the reconstructed request by the applied route manifest
-// (or, with routing off, to Backend), and seals the response back to the
-// client.
+// envelope, forwards the reconstructed request by the applied route manifest,
+// and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	// A refusal before the body is read closes the connection, so net/http
 	// does not wait on the unread body.
@@ -748,14 +747,14 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
 		return
 	}
-	if s.cfg.Routing != nil {
+	if s.cfg.Backend != nil {
 		// Budget goes only to a request naming a live session. Anyone can
 		// open one, so the per-client share is what bounds a single client.
 		recordBytes := r.ContentLength
 		if recordBytes < 0 {
 			recordBytes = tunnelBodyLimit
 		}
-		release, ok := s.cfg.Routing.Acquire(clientBucket(r), recordBytes)
+		release, ok := s.cfg.Backend.Acquire(clientBucket(r), recordBytes)
 		if !ok {
 			refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
 			return
@@ -816,11 +815,9 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	var resp types.TunnelResponse
-	if s.cfg.Routing != nil {
-		resp, err = s.cfg.Routing.Forward(r, env)
-	} else {
-		resp, err = s.backend.Forward(r.Context(), env)
+	resp := types.TunnelResponse{Status: http.StatusServiceUnavailable, Body: []byte("routes not applied")}
+	if s.cfg.Backend != nil {
+		resp, err = s.cfg.Backend.Forward(r, env)
 	}
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)

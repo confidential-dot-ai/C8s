@@ -186,10 +186,13 @@ func TestNodeImageRender(t *testing.T) {
 					t.Errorf("router-nginx/%s = %q, %v; want a certificate snippet", file, body, err)
 				}
 			}
-			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "location /healthz", "include /run/c8s-node/router/upstream.conf;", "include /run/c8s-node/router/tls.conf;", "proxy_pass http://$c8s_upstream;", "listen 8080;"} {
+			for _, directive := range []string{"listen 8443 ssl;", "server_name _;", "location = /allowlist", "limit_req zone=allowlist_write", "127.0.0.1:8801", "127.0.0.1:8800", "127.0.0.1:8802", "location = /healthz", "include /run/c8s-node/router/tls.conf;", "listen 8080;"} {
 				if !strings.Contains(string(nginxConf), directive) {
 					t.Errorf("nginx missing %q", directive)
 				}
+			}
+			if strings.Contains(string(nginxConf), "c8s_upstream") {
+				t.Error("baked nginx still proxies to the launch-file upstream")
 			}
 			if _, err := os.Stat(filepath.Join(out, "nginx.conf.in")); !os.IsNotExist(err) {
 				t.Fatalf("unexpected standalone nginx configuration: %v", err)

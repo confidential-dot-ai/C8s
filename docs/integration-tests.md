@@ -32,7 +32,8 @@ containerd's image store, because `policy.enforceExisting` checks
 already-running containers against them.
 
 Tenant fixtures satisfy the Restricted controls: workload and adoption
-Deployments use digest-pinned `nginxinc/nginx-unprivileged` on port 8080;
+Deployments use digest-pinned `nginxinc/nginx-unprivileged` on port 8080, and
+the adopted one serves TLS on 8443 with its get-cert leaf once adopted;
 curl Pods run as UID 1000. All use non-root execution, RuntimeDefault seccomp,
 no privilege escalation, and dropped ALL capabilities. `pod-fixture.py` is the
 shared JSON renderer used by the shell harness and Go admission regression tests,
@@ -42,7 +43,7 @@ adoption routing use the same image and backend-port settings.
 
 Two operator-facing commands verify evidence **in-process** with real hardware
 cryptography, which synthetic evidence cannot pass: `c8s verify` and the `c8s
-allowlist` CLI. Those stay on the metal lanes. The harness still exercises the
+allowlist` and `c8s routes` CLIs. Those stay on the metal lanes. The harness still exercises the
 allowlist write path server-side: writes are signed with the production
 `pkg/operatorauth` signer (`optoken/`) and CDS performs its full token
 verification — only the client-side evidence check is skipped (curl `-k` over
@@ -58,7 +59,8 @@ a port-forward).
   restarts it, registers, serves the admission inventory socket.
 - Allowlist authorization: unsigned writes and wrong-key writes are 401; a
   write signed by the pinned operator key lands, is served, and deletes.
-- Route API: unsigned and wrong-key `PUT /routes` are 401, a manifest
+- Route API: before any manifest is stored the front door answers 503;
+  unsigned and wrong-key `PUT /routes` are 401, a manifest
   anchored on the mesh CA is 422, a signed write is 204 and the same revision
   again 409; `GET /routes` serves the PUT bytes with a token whose `pbh` is
   their digest.
@@ -84,8 +86,26 @@ a port-forward).
   `test/e2e/mesh-cw-enforcement.sh`.
 - router front door: HTTPS verified against the CDS mesh CA.
 - Workload adoption: `c8s install --workload-ref` patches a running
-  deployment, its rollout goes through injection, the status mirror reports
-  `kubectl get cwl`, and router routes the front door to it over the mesh.
+  deployment, its rollout goes through injection, and the status mirror
+  reports `kubectl get cwl`.
+- Routing by the route manifest: `c8s install --upstream` writes a new
+  manifest to `--routes-out`, which the harness stores with `optoken`, naming
+  the floor entry that describes the adopted pod (`--resolve-digests=false`
+  writes no `web` entry). The adopted nginx reloads on each `get-cert`
+  renewal, and the harness waits until the leaf it serves carries that entry's
+  name. Through a router port-forward with `Host` set to the manifest
+  host, `/` reaches the workload over TLS (200); an unknown host and a path
+  with an empty segment get 404; a revision naming a workload name the
+  backend's leaf does not carry gets 502, and an unrouted path 404. CDS
+  refuses an address backend anchored on the mesh CA (422). The harness sets
+  `router.routing.pollInterval=2s` so each write applies within seconds.
+  The harness never runs the default adoption path, so unit tests cover its
+  model instead: the entry install writes for the fixture
+  (`test/integration/cluster/testdata/adopt-me-entry.json`) must match what
+  the webhook injects (`internal/webhook`) and what the NRI plugin observes of
+  the injected container (`internal/cmds/nri-image-policy`). Install's signed
+  delivery (`--operator-key`, which reads the served allowlist) verifies CDS
+  in-process, so only a metal lane can cover it.
 - `c8s uninstall`: release, webhook, and admission policies are removed.
 
 ## Deliberately out of scope
