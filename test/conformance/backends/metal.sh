@@ -327,7 +327,8 @@ agent_run() {
 # pod_read <ns> <pod> <container> <file|fstype> <path>: the file as base64,
 # or the directory's filesystem type, failing while absent. A pod with the
 # agent runs the read; one whose first container runs a reporter image
-# (REPORTER_IMAGES) printed it to its log, the key never; any other pod 77.
+# (REPORTER_IMAGES) as sleep, with no init container of the scenario's to
+# hold it back, printed it to its log, the key never; any other pod 77.
 pod_read() {
     local ns="$1" pod="$2" container="$3" kind="$4" path="$5" spec line
     spec="$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null)" || return "$UNSUPPORTED"
@@ -338,8 +339,12 @@ pod_read() {
         esac
         return
     fi
-    read -r image container < <(jq -r '.spec.containers[0] | "\(.image) \(.name)"' <<<"$spec")
-    [[ "$image" == "$REPORTER_REPO"* ]] && [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
+    read -r image container argv0 blocked < <(jq -r '
+        (.spec.containers[0] | "\(.image) \(.name) \(((.command // []) + (.args // []))[0] // "-")"),
+        ([.spec.initContainers[]? | select(.restartPolicy != "Always" and (.name | startswith("c8s-") | not))] | length)
+    ' <<<"$spec" | paste -sd' ' -)
+    [[ "$image" == "$REPORTER_REPO"* ]] && [ "${argv0##*/}" = sleep ] && [ "$blocked" = 0 ] &&
+        [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
     line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep -F "c8s-report $kind $path " | tail -1)"
     [ -n "$line" ] || { echo "backend: the reporter in $ns/$pod has printed no $kind for $path" >&2; return 1; }
     echo "${line##* }"
