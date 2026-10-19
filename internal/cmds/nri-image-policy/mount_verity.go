@@ -230,7 +230,7 @@ func stageVerityMount(logger *slog.Logger, pod *api.PodSandbox, ctr *api.Contain
 	verifiedMountRegistry.Unlock()
 	if full {
 		// Stale pins otherwise wait for another container's removal.
-		releaseVerifiedPaths(logger, func(entry verifiedMount) bool { return entry.stale })
+		releaseVerifiedPaths(logger, func(_ string, entry verifiedMount) bool { return entry.stale })
 	}
 
 	verifiedMountRegistry.Lock()
@@ -287,17 +287,25 @@ func verifiedHostMount(ctx MountContext, mount *api.Mount) (allowlist.ObservedMo
 // releaseVerifiedMounts unpins the container's staging mounts and retries
 // stale pins left by earlier failed unmounts.
 func releaseVerifiedMounts(logger *slog.Logger, containerID string) {
-	releaseVerifiedPaths(logger, func(entry verifiedMount) bool { return entry.containerID == containerID || entry.stale })
+	releaseVerifiedPaths(logger, func(_ string, entry verifiedMount) bool { return entry.containerID == containerID || entry.stale })
+}
+
+// releaseUnlistedMounts unpins every committed pin that no listed container
+// uses, and retries stale pins. A container removed while the runtime
+// connection was down never reports its removal.
+func releaseUnlistedMounts(logger *slog.Logger, pods []*api.PodSandbox, ctrs []*api.Container) {
+	listed := newListing(pods, ctrs)
+	releaseVerifiedPaths(logger, func(path string, entry verifiedMount) bool { return entry.stale || !listed.uses(path, entry) })
 }
 
 // releaseVerifiedPaths unpins every committed pin that match selects. An entry
 // stays registered, and counted against maxVerifiedMounts, until its unmount
 // succeeds; one whose unmount fails becomes stale until a retry succeeds.
-func releaseVerifiedPaths(logger *slog.Logger, match func(verifiedMount) bool) {
+func releaseVerifiedPaths(logger *slog.Logger, match func(string, verifiedMount) bool) {
 	verifiedMountRegistry.Lock()
 	release := map[string]verifiedMount{}
 	for path, entry := range verifiedMountRegistry.mounts {
-		if !entry.releasing && match(entry) {
+		if !entry.releasing && match(path, entry) {
 			entry.releasing = true
 			verifiedMountRegistry.mounts[path] = entry
 			release[path] = entry
@@ -371,61 +379,107 @@ func removeStaging(path string) error {
 	return os.Remove(filepath.Dir(path))
 }
 
+// restoreBudget bounds how long Synchronize waits for restoreVerifiedMounts,
+// inside containerd's plugin registration timeout. Measuring an inode on a
+// hung filesystem cannot be cancelled, so a restore that overruns finishes in
+// the background.
+var restoreBudget = 5 * time.Second
+
 // restoreVerifiedMounts rebuilds the registry from the staging that an earlier
 // enforcer process left under verifiedMountRoot. A pin is registered again only when its
 // inode still has the recorded digest on a filesystem that enforces fs-verity,
 // and the container its record names is listed with that mount; every other
-// staging directory is released. Call it once per process, before any staging
-// or check of existing containers. It assumes a single enforcer per node: a
-// second instance would release the pins the first is still staging.
+// staging directory is released. It trusts no record under a root that fails
+// the check staging runs before pinning. Call it once per process, before any
+// staging or check of existing containers. It assumes a single enforcer per
+// node: a second instance would release the pins the first is still staging.
 func restoreVerifiedMounts(logger *slog.Logger, pods []*api.PodSandbox, ctrs []*api.Container) {
+	if err := checkStagingRoot(); err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn("fs-verity staging not restored", "path", verifiedMountRoot, "error", err)
+		}
+		return
+	}
 	dirs, err := filepath.Glob(filepath.Join(verifiedMountRoot, "file-*"))
 	if err != nil {
 		logger.Warn("cannot list fs-verity staging", "error", err)
 		return
 	}
-	podUIDs := make(map[string]string, len(pods))
-	for _, pod := range pods {
-		podUIDs[pod.GetId()] = pod.GetUid()
-	}
-	for _, dir := range dirs {
-		path := filepath.Join(dir, "inode")
-		entry, err := restoredEntry(path, podUIDs, ctrs)
-		if err == nil {
-			verifiedMountRegistry.Lock()
-			verifiedMountRegistry.mounts[path] = entry
-			verifiedMountRegistry.Unlock()
-			logger.Info("fs-verity staging restored", "container", entry.containerID, "path", path)
-			continue
+	listed := newListing(pods, ctrs)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for _, dir := range dirs {
+			restoreStaging(logger, filepath.Join(dir, "inode"), listed)
 		}
-		logger.Info("releasing fs-verity staging", "path", path, "reason", err)
-		err = unpinFSVerity(path)
-		if errors.Is(err, errStillMounted) {
-			entry.stale = true
-			verifiedMountRegistry.Lock()
-			verifiedMountRegistry.mounts[path] = entry
-			verifiedMountRegistry.Unlock()
-		}
-		if err != nil && !errors.Is(err, fs.ErrNotExist) {
-			logger.Warn("cannot release fs-verity staging mount", "path", path, "error", err)
-		}
+	}()
+	timer := time.NewTimer(restoreBudget)
+	defer timer.Stop()
+	select {
+	case <-done:
+	case <-timer.C:
+		logger.Warn("fs-verity staging restore continues in the background", "budget", restoreBudget)
 	}
 }
 
-func restoredEntry(path string, podUIDs map[string]string, ctrs []*api.Container) (verifiedMount, error) {
+func restoreStaging(logger *slog.Logger, path string, listed listing) {
+	entry, err := restoredEntry(path, listed)
+	if err == nil {
+		verifiedMountRegistry.Lock()
+		verifiedMountRegistry.mounts[path] = entry
+		verifiedMountRegistry.Unlock()
+		logger.Info("fs-verity staging restored", "container", entry.containerID, "path", path)
+		return
+	}
+	logger.Info("releasing fs-verity staging", "path", path, "reason", err)
+	err = unpinFSVerity(path)
+	if errors.Is(err, errStillMounted) {
+		entry.stale = true
+		verifiedMountRegistry.Lock()
+		verifiedMountRegistry.mounts[path] = entry
+		verifiedMountRegistry.Unlock()
+	}
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		logger.Warn("cannot release fs-verity staging mount", "path", path, "error", err)
+	}
+}
+
+func restoredEntry(path string, listed listing) (verifiedMount, error) {
 	entry, err := readStagingRecord(path)
 	if err != nil {
 		return entry, err
 	}
-	used := slices.ContainsFunc(ctrs, func(ctr *api.Container) bool {
-		return ctr.GetId() == entry.containerID && ctr.GetPodSandboxId() == entry.sandboxID && podUIDs[entry.sandboxID] == entry.podUID &&
-			slices.ContainsFunc(ctr.GetMounts(), func(m *api.Mount) bool { return m.GetSource() == path && m.GetDestination() == entry.destination })
-	})
-	if !used {
+	if !listed.uses(path, entry) {
 		return entry, errStagingOrphaned
 	}
 	if !pinnedFSVerity(path, entry.digest) {
 		return entry, errVerityMismatch
 	}
 	return entry, nil
+}
+
+// listing is the pods and containers that the runtime lists at Synchronize.
+type listing struct {
+	podUIDs map[string]string
+	ctrs    []*api.Container
+}
+
+func newListing(pods []*api.PodSandbox, ctrs []*api.Container) listing {
+	podUIDs := make(map[string]string, len(pods))
+	for _, pod := range pods {
+		podUIDs[pod.GetId()] = pod.GetUid()
+	}
+	return listing{podUIDs: podUIDs, ctrs: ctrs}
+}
+
+// uses reports whether the container that entry names is listed in its pod and
+// mounts path at entry's destination.
+func (l listing) uses(path string, entry verifiedMount) bool {
+	if uid, ok := l.podUIDs[entry.sandboxID]; !ok || uid != entry.podUID {
+		return false
+	}
+	return slices.ContainsFunc(l.ctrs, func(ctr *api.Container) bool {
+		return ctr.GetId() == entry.containerID && ctr.GetPodSandboxId() == entry.sandboxID &&
+			slices.ContainsFunc(ctr.GetMounts(), func(m *api.Mount) bool { return m.GetSource() == path && m.GetDestination() == entry.destination })
+	})
 }

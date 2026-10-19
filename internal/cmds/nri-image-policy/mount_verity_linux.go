@@ -125,11 +125,26 @@ func prepareStagingRoot() error {
 	if err := os.MkdirAll(verifiedMountRoot, 0700); err != nil {
 		return err
 	}
-	var st unix.Stat_t
-	if err := unix.Lstat(verifiedMountRoot, &st); err != nil || st.Uid != 0 || st.Mode&0077 != 0 || st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return fmt.Errorf("unsafe verified mount directory")
+	if err := checkStagingRoot(); err != nil {
+		return err
 	}
 	return isolateStagingRoot()
+}
+
+// stagingRootUID owns verifiedMountRoot. Tests run unprivileged.
+var stagingRootUID uint32
+
+// checkStagingRoot reports whether verifiedMountRoot is a directory, not a
+// symlink, that only stagingRootUID can access.
+func checkStagingRoot() error {
+	var st unix.Stat_t
+	if err := unix.Lstat(verifiedMountRoot, &st); err != nil {
+		return err
+	}
+	if st.Uid != stagingRootUID || st.Mode&0077 != 0 || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return errors.New("unsafe verified mount directory")
+	}
+	return nil
 }
 
 // isolateStagingRoot makes verifiedMountRoot a private mount point once per

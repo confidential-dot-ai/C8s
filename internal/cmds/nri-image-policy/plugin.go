@@ -187,7 +187,8 @@ type plugin struct {
 	deferredCtrs []*api.Container
 
 	// restoreStaging rebuilds the fs-verity staging registry at the first
-	// Synchronize, the first time the running containers are known.
+	// Synchronize, the first time the running containers are known. Every
+	// Synchronize then releases pins that no listed container uses.
 	restoreStaging sync.Once
 }
 
@@ -838,6 +839,7 @@ func (p *plugin) captureExempt(ctx context.Context, pods []*api.PodSandbox, ctrs
 func (p *plugin) Synchronize(ctx context.Context, pods []*api.PodSandbox, ctrs []*api.Container) ([]*api.ContainerUpdate, error) {
 	cfg := p.cfg
 	p.restoreStaging.Do(func() { restoreVerifiedMounts(p.logger, pods, ctrs) })
+	releaseUnlistedMounts(p.logger, pods, ctrs)
 
 	// Seed the inventory's sandbox set now, even when the container check is
 	// deferred: sandbox existence needs no allowlist.

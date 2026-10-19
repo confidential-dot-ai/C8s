@@ -408,7 +408,9 @@ private mount point, so staging never propagates into other mount namespaces.
 The staging mount is private and read-only, and the container's mount source becomes that staging
 path. Renaming or replacing the original file cannot substitute new bytes.
 Validation re-measures the staging inode and checks its filesystem again.
-Staging requires a native node enforcer with mount privileges.
+Staging requires a native node enforcer with mount privileges. A container
+whose pod has no UID or sandbox ID, or whose sandbox ID differs from its pod's,
+is not staged.
 
 Staging is bounded:
 
@@ -420,6 +422,9 @@ Staging is bounded:
 - The node keeps at most 1024 staging mounts. Container removal, or a denied
   validation or start, releases the container's mounts. In audit mode a
   denial does not block the container, so its mounts stay until removal.
+  Each reconnect to the runtime also releases the mounts of containers it no
+  longer lists, since a container removed while disconnected reports no
+  removal.
 
 A mount that is not staged keeps its path-only evidence. An `fsVerityFile` rule
 then rejects it, and final matching decides whether another entry admits it.
@@ -441,6 +446,12 @@ recorded digest and the container that the record names still mounts it at the
 recorded destination. It releases every other staging mount. The startup check
 of existing containers then sees the same fs-verity evidence as before the
 restart, in every `enforce_existing`, `fatal_existing` and audit setting.
+The enforcer restores nothing, and releases nothing, unless
+`/run/c8s/verity-mounts` is a root-owned directory with mode `0700`, not a
+symlink. Restore waits at most five seconds, inside the runtime's plugin
+registration timeout. If a hung source filesystem holds it longer, restore
+finishes in the background, and the startup check sees no fs-verity evidence
+for staging not yet restored.
 The enforcer assumes it is the only instance on the node: a second instance
 releases staging that the first is still creating.
 

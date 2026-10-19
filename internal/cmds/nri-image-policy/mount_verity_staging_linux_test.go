@@ -349,9 +349,12 @@ func TestReleaseRetriesFailedUnmount(t *testing.T) {
 
 func setStagingRoot(t *testing.T) {
 	t.Helper()
-	original := verifiedMountRoot
-	verifiedMountRoot = t.TempDir()
-	t.Cleanup(func() { verifiedMountRoot = original })
+	original, originalUID := verifiedMountRoot, stagingRootUID
+	verifiedMountRoot, stagingRootUID = t.TempDir(), uint32(os.Getuid())
+	t.Cleanup(func() { verifiedMountRoot, stagingRootUID = original, originalUID })
+	if err := os.Chmod(verifiedMountRoot, 0700); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func setMeasuredDigest(t *testing.T, digest string) {
@@ -427,24 +430,40 @@ func TestRestoreReleasesUnverifiedStaging(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		measured string
-		owner    string
+		// list changes the listing after f.ctr mounts the staging, and returns
+		// the listed pods.
+		list func(f verityFixture) []*api.PodSandbox
+		// podUID replaces the recorded pod UID.
+		podUID *string
 	}{
-		{"digest changed", strings.Repeat("cd", 32), ""},
-		{"not a verity mount", "", ""},
-		{"another container mounts the path", testVerityDigest, "another-container"},
+		{name: "digest changed", measured: strings.Repeat("cd", 32)},
+		{name: "not a verity mount"},
+		{name: "listed container mounts the path elsewhere", measured: testVerityDigest, list: func(f verityFixture) []*api.PodSandbox {
+			f.ctr.Mounts[0].Destination = "/srv/elsewhere"
+			return []*api.PodSandbox{f.pod}
+		}},
+		{name: "listed container mounts another source", measured: testVerityDigest, list: func(f verityFixture) []*api.PodSandbox {
+			f.ctr.Mounts[0].Source = "/opt/tools/tool"
+			return []*api.PodSandbox{f.pod}
+		}},
+		{name: "pod not listed", measured: testVerityDigest, podUID: new(""), list: func(verityFixture) []*api.PodSandbox { return nil }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newVerityFixture(t, ModeFailClosed, false, nil)
 			setStagingRoot(t)
 			setMeasuredDigest(t, tc.measured)
-			owner := f.ctr.Id
-			if tc.owner != "" {
-				owner = tc.owner
+			entry := f.stagedEntry(f.ctr.Id)
+			if tc.podUID != nil {
+				entry.podUID = *tc.podUID
 			}
-			path := stageOnDisk(t, f.stagedEntry(owner))
+			path := stageOnDisk(t, entry)
 			f.useStaging(path)
-			restoreVerifiedMounts(discardLogger(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr})
-			if got := registeredMounts(owner); len(got) != 0 {
+			pods := []*api.PodSandbox{f.pod}
+			if tc.list != nil {
+				pods = tc.list(f)
+			}
+			restoreVerifiedMounts(discardLogger(), pods, []*api.Container{f.ctr})
+			if got := registeredMounts(f.ctr.Id); len(got) != 0 {
 				t.Fatalf("restored %v, want the staging refused", got)
 			}
 			if fileExists(filepath.Dir(path)) {
@@ -1053,5 +1072,164 @@ func TestNewPluginLeavesStagingAlone(t *testing.T) {
 	}
 	if !fileExists(staged) {
 		t.Fatal("newPlugin removed staging; only Synchronize may release it")
+	}
+}
+
+func TestSynchronizeReleasesUnlistedPins(t *testing.T) {
+	f := newVerityFixture(t, ModeFailClosed, false, nil)
+	setStagingRoot(t)
+	if _, err := f.p.Synchronize(t.Context(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr}); err != nil {
+		t.Fatal(err)
+	}
+	used := fakeStaging(t)
+	f.useStaging(used)
+	gone := fakeStaging(t)
+	verifiedMountRegistry.Lock()
+	verifiedMountRegistry.mounts[used] = f.stagedEntry(f.ctr.Id)
+	verifiedMountRegistry.mounts[gone] = f.stagedEntry("gone")
+	verifiedMountRegistry.Unlock()
+	t.Cleanup(func() { releaseVerifiedMounts(discardLogger(), "gone") })
+	// A reconnect lists the containers again; "gone" was removed meanwhile.
+	if _, err := f.p.Synchronize(t.Context(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr}); err != nil {
+		t.Fatal(err)
+	}
+	if got := registeredMounts("gone"); len(got) != 0 {
+		t.Fatalf("pins of a container removed while disconnected = %v, want none", got)
+	}
+	if got := registeredMounts(f.ctr.Id); !slices.Equal(got, []string{used}) {
+		t.Fatalf("pins of a listed container = %v, want [%s]", got, used)
+	}
+}
+
+func TestRestoreReturnsWithinBudget(t *testing.T) {
+	f := newVerityFixture(t, ModeFailClosed, false, nil)
+	setStagingRoot(t)
+	original := restoreBudget
+	restoreBudget = 10 * time.Millisecond
+	t.Cleanup(func() { restoreBudget = original })
+	hung := make(chan struct{})
+	var unhang sync.Once
+	t.Cleanup(func() { unhang.Do(func() { close(hung) }) })
+	originalMeasure := measureStaged
+	measureStaged = func(string) string {
+		<-hung
+		return testVerityDigest
+	}
+	t.Cleanup(func() { measureStaged = originalMeasure })
+	path := stageOnDisk(t, f.stagedEntry(f.ctr.Id))
+	f.useStaging(path)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		restoreVerifiedMounts(discardLogger(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr})
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("restore on a hung filesystem blocked Synchronize")
+	}
+	unhang.Do(func() { close(hung) })
+	waitFor(t, "background restore", func() bool { return slices.Equal(registeredMounts(f.ctr.Id), []string{path}) })
+}
+
+func TestRestoreRefusesUntrustedRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, trusted string)
+	}{
+		{"group accessible", func(t *testing.T, trusted string) {
+			if err := os.Chmod(trusted, 0750); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"another owner", func(*testing.T, string) { stagingRootUID++ }},
+		{"symlink", func(t *testing.T, trusted string) {
+			verifiedMountRoot = filepath.Join(t.TempDir(), "link")
+			if err := os.Symlink(trusted, verifiedMountRoot); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newVerityFixture(t, ModeFailClosed, false, nil)
+			setStagingRoot(t)
+			setMeasuredDigest(t, testVerityDigest)
+			trusted := verifiedMountRoot
+			orphan := stageOnDisk(t, verifiedMount{containerID: "gone", digest: testVerityDigest})
+			tc.setup(t, trusted)
+			restoreVerifiedMounts(discardLogger(), nil, nil)
+			if !fileExists(orphan) {
+				t.Fatalf("restore released %s under an untrusted root", orphan)
+			}
+			if got := registeredMounts("gone"); len(got) != 0 {
+				t.Fatalf("restore registered %v under an untrusted root", got)
+			}
+		})
+	}
+}
+
+func TestRestoreKeepsUndetachedOrphanStale(t *testing.T) {
+	newVerityFixture(t, ModeFailClosed, false, nil)
+	setStagingRoot(t)
+	setMeasuredDigest(t, testVerityDigest)
+	orphan := stageOnDisk(t, verifiedMount{containerID: "gone", digest: testVerityDigest})
+	crashed, err := newStagingPath(verifiedMountRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unpinFSVerity = func(string) error { return fmt.Errorf("%w: device busy", errStillMounted) }
+	restoreVerifiedMounts(discardLogger(), nil, nil)
+	verifiedMountRegistry.Lock()
+	staleOrphan, staleCrashed := verifiedMountRegistry.mounts[orphan], verifiedMountRegistry.mounts[crashed]
+	verifiedMountRegistry.Unlock()
+	if !staleOrphan.stale || staleOrphan.containerID != "gone" || !staleCrashed.stale || staleCrashed.containerID != "" {
+		t.Fatalf("undetached orphans registered as %+v and %+v, want both stale", staleOrphan, staleCrashed)
+	}
+	unpinFSVerity = removeStaging
+	releaseVerifiedMounts(discardLogger(), "another-container")
+	verifiedMountRegistry.Lock()
+	_, orphanLeft := verifiedMountRegistry.mounts[orphan]
+	_, crashedLeft := verifiedMountRegistry.mounts[crashed]
+	verifiedMountRegistry.Unlock()
+	if orphanLeft || crashedLeft || fileExists(filepath.Dir(orphan)) || fileExists(filepath.Dir(crashed)) {
+		t.Fatal("stale orphans not released by the next release")
+	}
+}
+
+func TestStagingRecordFailureReleasesReservation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		unpin error
+		stale bool
+	}{
+		{"unpinned", nil, false},
+		{"still mounted", fmt.Errorf("%w: device busy", errStillMounted), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The record goes next to the inode, in a directory that does not exist.
+			path := filepath.Join(t.TempDir(), "missing", "inode")
+			f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) { return path, testVerityDigest, nil })
+			var unpinned []string
+			unpinFSVerity = func(path string) error {
+				unpinned = append(unpinned, path)
+				return tc.unpin
+			}
+			_, err := stageVerityMount(discardLogger(), f.pod, f.ctr, f.ctr.Mounts[0], []string{testVerityDigest})
+			if err == nil {
+				t.Fatal("stageVerityMount staged a mount without a record")
+			}
+			verifiedMountRegistry.Lock()
+			entry, registered := verifiedMountRegistry.mounts[path]
+			reserved := verifiedMountRegistry.reserved
+			verifiedMountRegistry.Unlock()
+			if reserved != 0 || !slices.Equal(unpinned, []string{path}) {
+				t.Fatalf("after a failed record: reserved %d, unpinned %v; want 0 and [%s]", reserved, unpinned, path)
+			}
+			if registered != tc.stale || entry.stale != tc.stale {
+				t.Fatalf("after a failed record: registered %t as %+v, want registered and stale %t", registered, entry, tc.stale)
+			}
+			unpinFSVerity = func(string) error { return nil }
+		})
 	}
 }
