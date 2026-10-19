@@ -104,6 +104,9 @@ func fileBind(m *api.Mount) bool {
 }
 
 func (o mountObserver) observeMount(ctx MountContext, m *api.Mount) allowlist.ObservedMount {
+	if mount, ok := verifiedHostMount(ctx, m); ok {
+		return mount
+	}
 	for _, handler := range o.handlers {
 		if mount, ok := handler.Observe(ctx, m); ok {
 			return mount

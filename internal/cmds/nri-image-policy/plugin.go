@@ -274,15 +274,16 @@ func (p *plugin) Configure(ctx context.Context, config, runtime, version string)
 	)
 
 	var mask api.EventMask
+	// Removal releases fs-verity staging; the inventory needs it too.
+	mask.Set(api.Event_REMOVE_CONTAINER)
 	mask.Set(api.Event_CREATE_CONTAINER)
 	mask.Set(api.Event_START_CONTAINER)
 	mask.Set(api.Event_VALIDATE_CONTAINER_ADJUSTMENT)
 	if p.inventory != nil {
-		// The inventory needs stop and removal to stay correct across pod
-		// churn, and the pod-sandbox lifecycle to keep its sandbox set (the
-		// /sandbox and /digests routes) live.
+		// The inventory needs stop to stay correct across pod churn, and the
+		// pod-sandbox lifecycle to keep its sandbox set (the /sandbox and
+		// /digests routes) live.
 		mask.Set(api.Event_STOP_CONTAINER)
-		mask.Set(api.Event_REMOVE_CONTAINER)
 		mask.Set(api.Event_RUN_POD_SANDBOX)
 		mask.Set(api.Event_REMOVE_POD_SANDBOX)
 	}
@@ -300,9 +301,10 @@ func (p *plugin) StopContainer(ctx context.Context, pod *api.PodSandbox, ctr *ap
 }
 
 // RemoveContainer evicts a removed container from caller resolution; the
-// sandbox's record keeps it (inventory.remove). Only subscribed when the
-// inventory is enabled (see Configure).
+// sandbox's record keeps it (inventory.remove). It also releases the
+// container's fs-verity staging, so it is subscribed without the inventory.
 func (p *plugin) RemoveContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	releaseVerifiedMounts(p.logger, ctr.GetId())
 	if p.inventory != nil {
 		p.inventory.remove(ctr.GetId())
 	}
@@ -668,10 +670,11 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // docs/allowlist-and-capabilities.md.
 //
 // The second exempts a single bind, not the container: one whose mount
-// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
-// the base or the served allowlist admits at that destination and source. A
-// served rule is safe here because it can only name read-only bytes of the
-// measured node image, and strict clients verify the served policy byte for
+// evidence carries node-root or fs-verity provenance and that an exact
+// `nodeRootFile` or `fsVerityFile` rule of the base or the served allowlist
+// admits at that destination and source. A served rule is safe here because it
+// can only name read-only bytes of the measured node image or bytes pinned by
+// their fs-verity digest, and strict clients verify the served policy byte for
 // byte.
 //
 // The digest is resolved only when an exemption could apply, so an ordinary
@@ -996,7 +999,26 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 		}
 		return nil, nil, fmt.Errorf("%s", reason)
 	}
-	return p.socketDirAdjustment(pod, ctr), nil, nil
+	return stageVerityMounts(ctx, p.logger, pod, ctr, p.socketDirAdjustment(pod, ctr), p.fsVerityMountRules(ctx, ctr)), nil, nil
+}
+
+// fsVerityMountRules returns the staging candidates for ctr. It resolves the
+// image digest only when a read-only file bind could match an fs-verity rule,
+// so an ordinary container costs no containerd round trip.
+func (p *plugin) fsVerityMountRules(ctx context.Context, ctr *api.Container) []allowlist.MountRule {
+	if p.policy == nil || !slices.ContainsFunc(ctr.GetMounts(), func(m *api.Mount) bool { return fileBind(m) && slices.Contains(m.GetOptions(), "ro") }) {
+		return nil
+	}
+	snap := p.policy.current()
+	if !p.policy.base.HasFSVerityMountRules() && (snap == nil || !snap.index.HasFSVerityMountRules()) {
+		return nil
+	}
+	digest := p.resolveDigest(ctx, ctr.GetAnnotations()[annotationImageName])
+	rules := p.policy.base.FSVerityMountRules(digest)
+	if snap != nil {
+		rules = append(rules, snap.index.FSVerityMountRules(digest)...)
+	}
+	return rules
 }
 
 // StartContainer runs before task.Start/execve. Its environment is the final
@@ -1008,6 +1030,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	imageRef := ctr.GetAnnotations()[annotationImageName]
 	if !p.Ready() {
 		if err := p.admitWhileInitializing(ctx, cfg, pod, ctr, imageRef); err != nil {
+			releaseVerifiedMounts(p.logger, ctr.GetId())
 			return err
 		}
 		p.recordUncheckedForInventory(pod, ctr, imageRef)
@@ -1015,6 +1038,7 @@ func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *a
 	}
 	verdict, reason := p.checkContainer(ctx, cfg, pod, ctr, imageRef)
 	if verdict == verdictDeny && cfg.Policy.Mode != ModeAudit {
+		releaseVerifiedMounts(p.logger, ctr.GetId())
 		return fmt.Errorf("%s", reason)
 	}
 	p.recordForInventory(ctx, pod, ctr, imageRef)
