@@ -264,8 +264,9 @@ cds:
   logLevel: info
   allowlistDB: /mnt/c8s-data/cds/allowlist.db
   # -- Operator token clock skew tolerance in seconds. Without
-  # `persistence.enabled`, CDS also refuses allowlist writes for this long
-  # after it starts, since it forgets spent tokens at restart.
+  # `persistence.enabled`, CDS also refuses operator-token requests
+  # (allowlist, routes, secrets) for this long after it starts, since it
+  # forgets spent tokens at restart.
   jwtClockSkew: 30
   certTTL: 24h
   # -- Upper bound on the TTL of a leaf carrying a matched-workload stamp
@@ -326,8 +327,9 @@ cds:
   ## When set, CDS accepts PUT/DELETE /allowlist from a client presenting a
   ## short-lived token signed by one of the matching operator private keys (see
   ## `c8s allowlist` and the README "Operator allowlist credentials"). Each
-  ## token authorizes one write, and CDS publishes the token of a
-  ## whole-document upload as that document's signature.
+  ## token authorizes one request (allowlist, routes, secrets, including secrets
+  ## explain), and CDS publishes the token of a whole-document upload as that
+  ## document's signature.
   ## Empty = allowlist writes are rejected (reads are still served), so an
   ## upgrade that changes a component's shape cannot be published and needs a
   ## reinstall; adding the keys later is such an upgrade

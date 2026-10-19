@@ -236,6 +236,20 @@ token binds the method, path, and body, so a captured one cannot be replayed
 against a different path or a different value. `overwrite` travels in the body
 for that reason: a query parameter is outside what the token covers.
 
+CDS spends each token once, as for allowlist writes, including on
+`GET /secrets-explain`. A token is spent once it verifies, before CDS checks the
+request it carries, so a retry mints a fresh token. Reusing a spent token
+answers `409` with a plain-text error. CDS answers `503` when it verifies a token
+but cannot record it as spent; nothing ran, so retry with a fresh token. Each
+CDS keeps its own record of spent tokens and never prunes it: every request adds
+a row, explain reads included, and without persistence that record counts
+toward `cds.persistence.memorySizeLimit`. Writes count too: when the path
+already holds a value, `c8s secrets put --overwrite` spends two tokens, one for
+the create attempt and one for the overwrite. Do not poll explain.
+Without `cds.persistence.enabled`, CDS also refuses every token issued before
+its start plus `--jwt-clock-skew` (`cds.jwtClockSkew`, 30 seconds by default)
+with `401`; wait that long after a restart.
+
 ### Replacing a value
 
 A path that already holds a value answers `409` and names what put it there —

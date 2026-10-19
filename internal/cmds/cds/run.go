@@ -207,13 +207,13 @@ func run(cfg config) error {
 	if err := allowlistStore.StartJournal(); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
-	allowlistWriteAuthorizer := writeAuthorizer
+	operatorAuthorizer := writeAuthorizer
 	if cfg.operatorKeys != "" {
 		var started time.Time
 		if !cfg.allowlistPersistent {
 			started = time.Now()
 		}
-		allowlistWriteAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
+		operatorAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}
 
 	if !cfg.allowlistPersistent {
@@ -293,7 +293,7 @@ func run(cfg config) error {
 		}
 		secretsOperator = &secrets.OperatorHandler{
 			Store:        store,
-			Authorize:    writeAuthorizer,
+			Authorize:    operatorAuthorizer,
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Logger:       slog.Default(),
 		}
@@ -304,7 +304,7 @@ func run(cfg config) error {
 			Bindings:       sandboxBindings,
 			Policy:         policy,
 			InventoryHosts: inventoryHosts,
-			Authorize:      writeAuthorizer,
+			Authorize:      operatorAuthorizer,
 			Logger:         slog.Default(),
 		}
 		slog.Info("serving /secrets; release is gated on an allowlist entry carrying a secrets grant")
@@ -334,12 +334,12 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   allowlistWriteAuthorizer,
+			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,
-			Authorize: allowlistWriteAuthorizer,
+			Authorize: operatorAuthorizer,
 			MeshCA:    mesh.Cert,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
