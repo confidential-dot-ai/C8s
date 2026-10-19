@@ -3,13 +3,17 @@
 package armtlsmesh
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -462,5 +466,47 @@ func TestIptablesMetricsSnapshot_CarriesIPSetMembership(t *testing.T) {
 	}
 	if snap.CWIPSetShrinks != 4 {
 		t.Errorf("CWIPSetShrinks = %d, want 4", snap.CWIPSetShrinks)
+	}
+}
+
+func TestDiffSortedMembers(t *testing.T) {
+	added, removed := diffSortedMembers([]string{"10.0.0.1", "10.0.0.3"}, []string{"10.0.0.2", "10.0.0.3", "10.0.0.4"})
+	if !slices.Equal(added, []string{"10.0.0.2", "10.0.0.4"}) || !slices.Equal(removed, []string{"10.0.0.1"}) {
+		t.Fatalf("added %v, removed %v", added, removed)
+	}
+	added, removed = diffSortedMembers(nil, nil)
+	if len(added) != 0 || len(removed) != 0 {
+		t.Fatalf("empty diff: added %v, removed %v", added, removed)
+	}
+}
+
+// Only a change is logged, the first write of a set logs every member, and
+// the all-pods sets stay at Debug.
+func TestLogIPSetChanges(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	spec := ipSetSpec{name: "TEST-LOG-SET", members: []string{"10.0.0.1"}}
+	logIPSetChanges(logger, spec)
+	logIPSetChanges(logger, spec)
+	spec.members = nil
+	logIPSetChanges(logger, spec)
+	logIPSetChanges(logger, ipSetSpec{name: "TEST-LOG-QUIET", members: []string{"10.0.0.9"}, quiet: true})
+
+	var got []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		got = append(got, rec)
+	}
+	if len(got) != 2 {
+		t.Fatalf("logged %d lines, want 2: %s", len(got), buf.String())
+	}
+	if fmt.Sprint(got[0]["added"], got[0]["removed"]) != "[10.0.0.1] []" {
+		t.Errorf("first write: %v", got[0])
+	}
+	if fmt.Sprint(got[1]["added"], got[1]["removed"]) != "[] [10.0.0.1]" {
+		t.Errorf("removal: %v", got[1])
 	}
 }
