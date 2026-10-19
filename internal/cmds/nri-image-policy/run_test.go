@@ -815,3 +815,11 @@ func stalledListener(t *testing.T, done <-chan struct{}) string {
 	}()
 	return ln.Addr().String()
 }
+
+func TestLogNodeRootIsNotAWarning(t *testing.T) {
+	var buf bytes.Buffer
+	logNodeRoot(slog.New(slog.NewTextHandler(&buf, nil)), "no single roothash= on the boot command line")
+	if got := buf.String(); !strings.Contains(got, "level=INFO") {
+		t.Fatalf("logNodeRoot logged %q, want level=INFO", got)
+	}
+}

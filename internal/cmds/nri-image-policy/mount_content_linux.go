@@ -20,38 +20,36 @@ import (
 // measured read-only root, without traversing symlinks or any intervening
 // mount. Bind mounts of arbitrary verity devices and writable overlays are not
 // node-image evidence.
-func nodeRootFile(source string) bool {
+func nodeRootFile(source string) bool { return measuredRoot.file("/", source) }
+
+func (c *rootCache) file(rootPath, source string) bool {
 	if !cleanAbsolute(source) {
 		return false
 	}
-	root, err := unix.Open("/", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	root, err := unix.Open(rootPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
 	if err != nil {
 		return false
 	}
 	defer unix.Close(root) //nolint:errcheck // No writes to flush.
 	var st unix.Stat_t
-	device, ok := measuredRootDevice()
-	if !ok || unix.Fstat(root, &st) != nil || uint64(st.Dev) != device {
+	device, reason := c.device()
+	if reason != "" || unix.Fstat(root, &st) != nil || uint64(st.Dev) != device {
 		return false
 	}
-	file, err := openRootFile(root, source)
-	if err != nil {
-		return false
-	}
-	defer file.Close() //nolint:errcheck // No writes to flush.
-	info, err := file.Stat()
-	return err == nil && info.Mode().IsRegular()
+	st, err = statRootFile(root, source)
+	return err == nil && st.Mode&unix.S_IFMT == unix.S_IFREG
 }
 
 // measuredRoot caches whether the root filesystem is the measured dm-verity
 // root. Both facts are fixed for the boot, so a definitive answer is kept;
 // an I/O failure is retried on the next lookup.
-var measuredRoot = &rootCache{probe: probeMeasuredRoot}
-
-func measuredRootDevice() (uint64, bool) {
-	device, reason := measuredRoot.device()
-	return device, reason == ""
-}
+var measuredRoot = &rootCache{probe: func() rootProbe {
+	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return rootProbe{reason: "cannot read /proc/cmdline", transient: true}
+	}
+	return probeMeasuredRoot("/", string(cmdline))
+}}
 
 // nodeRootUnavailable explains why node-root provenance is unavailable, or
 // returns "" when the root is the measured one.
@@ -90,48 +88,49 @@ func (c *rootCache) device() (uint64, string) {
 	return result.device, result.reason
 }
 
-func probeMeasuredRoot() rootProbe {
+func probeMeasuredRoot(rootPath, cmdline string) rootProbe {
 	var fs unix.Statfs_t
-	if err := unix.Statfs("/", &fs); err != nil {
+	if err := unix.Statfs(rootPath, &fs); err != nil {
 		return rootProbe{reason: "cannot statfs root filesystem", transient: true}
 	}
 	if fs.Flags&unix.ST_RDONLY == 0 {
 		return rootProbe{reason: "root filesystem is not read-only"}
 	}
 	var st unix.Stat_t
-	if err := unix.Stat("/", &st); err != nil {
+	if err := unix.Stat(rootPath, &st); err != nil {
 		return rootProbe{reason: "cannot stat root filesystem", transient: true}
 	}
-	if reason, transient := rootDeviceVerityMismatch(uint64(st.Dev)); reason != "" {
+	if reason, transient := rootDeviceVerityMismatch(uint64(st.Dev), cmdline); reason != "" {
 		return rootProbe{reason: reason, transient: transient}
 	}
 	return rootProbe{device: uint64(st.Dev)}
 }
 
-func openRootFile(root int, source string) (*os.File, error) {
+// statRootFile stats source beneath root through an O_PATH descriptor, so a
+// pod-chosen device node or FIFO is never opened.
+func statRootFile(root int, source string) (unix.Stat_t, error) {
+	var st unix.Stat_t
 	if !cleanAbsolute(source) {
-		return nil, fmt.Errorf("source is not a clean absolute path")
+		return st, fmt.Errorf("source is not a clean absolute path")
 	}
 	fd, err := unix.Openat2(root, strings.TrimPrefix(source, "/"), &unix.OpenHow{
-		Flags:   unix.O_RDONLY | unix.O_NONBLOCK | unix.O_NOCTTY | unix.O_CLOEXEC,
+		Flags:   unix.O_PATH | unix.O_CLOEXEC,
 		Resolve: unix.RESOLVE_BENEATH | unix.RESOLVE_NO_SYMLINKS | unix.RESOLVE_NO_XDEV,
 	})
 	if err != nil {
-		return nil, err
+		return st, err
 	}
-	return os.NewFile(uintptr(fd), source), nil
+	defer unix.Close(fd) //nolint:errcheck // O_PATH descriptor.
+	err = unix.Fstat(fd, &st)
+	return st, err
 }
 
 // rootDeviceVerityMismatch explains why device is not the measured root, or
 // returns "" when it is, and whether that reason may be transient. The active
 // root device must match roothash in the measured boot command line, which the
 // approved node-image launch measurement authenticates.
-func rootDeviceVerityMismatch(device uint64) (string, bool) {
-	cmdline, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return "cannot read /proc/cmdline", true
-	}
-	expected := bootRootHash(string(cmdline))
+func rootDeviceVerityMismatch(device uint64, cmdline string) (string, bool) {
+	expected := bootRootHash(cmdline)
 	if expected == "" {
 		return "no single roothash= on the boot command line", false
 	}
@@ -199,7 +198,7 @@ func verityTableRootHash(data []byte, device uint64) string {
 	// check_at_most_once cannot guarantee that later reads retain verified bytes.
 	for _, option := range fields[11:] {
 		switch option {
-		case "restart_on_corruption", "panic_on_corruption", "error_as_corruption", "ignore_zero_blocks", "try_verify_in_tasklet", "use_tasklet":
+		case "restart_on_corruption", "panic_on_corruption", "restart_on_error", "panic_on_error", "ignore_zero_blocks", "try_verify_in_tasklet":
 		default:
 			return ""
 		}

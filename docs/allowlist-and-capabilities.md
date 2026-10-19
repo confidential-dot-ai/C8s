@@ -992,8 +992,9 @@ go test -c -o /tmp/nri-verity.test ./internal/cmds/nri-image-policy
 sudo bash node-guest-image/tests/mount-verity-test.sh /tmp/nri-verity.test
 ```
 
-The script creates a private mount namespace and a disposable verity image, and
-confirms that the image's device does not pass as the host's measured boot root.
+The script creates a private mount namespace and a disposable verity image. The
+test confirms that the device passes as the measured root only when the boot
+command line carries its `roothash`, and fails with any other hash.
 CI also runs this test and merges its instrumented coverage into the coverage
 gate. To collect its profile, build the test binary with `-coverpkg=./...` and
 pass an existing coverage directory as the script's second argument. It does not

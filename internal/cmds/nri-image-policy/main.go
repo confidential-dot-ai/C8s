@@ -125,9 +125,7 @@ func Run(args []string) error {
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
 	}
 
-	if reason := nodeRootUnavailable(); reason != "" {
-		logger.Warn("node-root provenance unavailable", "reason", reason)
-	}
+	logNodeRoot(logger, nodeRootUnavailable())
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
@@ -825,4 +823,12 @@ func healthListener(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen tcp %s: %w", addr, err)
 	}
 	return l, nil
+}
+
+// logNodeRoot reports a missing measured root at Info: most nodes have none and
+// only policies that require node-root provenance depend on it.
+func logNodeRoot(logger *slog.Logger, reason string) {
+	if reason != "" {
+		logger.Info("node-root provenance unavailable", "reason", reason)
+	}
 }

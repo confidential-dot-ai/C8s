@@ -49,7 +49,13 @@ func TestVerityTableProof(t *testing.T) {
 	}{
 		{"strict default", "", true},
 		{"restart on corruption", " 1 restart_on_corruption", true},
+		{"panic on corruption", " 1 panic_on_corruption", true},
+		{"restart on error", " 1 restart_on_error", true},
+		{"panic on error", " 1 panic_on_error", true},
 		{"zero blocks read as zero", " 1 ignore_zero_blocks", true},
+		{"verify in tasklet", " 1 try_verify_in_tasklet", true},
+		{"invalid error_as_corruption", " 1 error_as_corruption", false},
+		{"invalid use_tasklet", " 1 use_tasklet", false},
 		{"ignore corruption", " 1 ignore_corruption", false},
 		{"verify only first read", " 1 check_at_most_once", false},
 		{"unknown option", " 1 future_option", false},
@@ -108,15 +114,11 @@ func TestRootFileCannotTraverseSymlinksOrMounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	file, err := openRootFile(fd, "/binary")
-	if err != nil {
+	if _, err := statRootFile(fd, "/binary"); err != nil {
 		t.Fatalf("canonical file: %v", err)
 	}
-	file.Close()
 	for _, source := range []string{"/alias", "/escape/passwd", "/../binary", "binary"} {
-		file, err := openRootFile(fd, source)
-		if err == nil {
-			file.Close()
+		if _, err := statRootFile(fd, source); err == nil {
 			t.Fatalf("accepted unsafe source %s", source)
 		}
 	}
@@ -126,10 +128,41 @@ func TestRootFileCannotTraverseSymlinksOrMounts(t *testing.T) {
 	}
 	defer unix.Close(actualRoot)
 	// /proc is a separate filesystem on the supported Linux nodes.
-	file, err = openRootFile(actualRoot, "/proc/version")
-	if err == nil {
-		file.Close()
+	if _, err := statRootFile(actualRoot, "/proc/version"); err == nil {
 		t.Fatal("crossed a mount boundary")
+	}
+}
+
+func TestRootFileNeverOpensSpecialFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "binary"), []byte("approved bytes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fifo := filepath.Join(root, "fifo")
+	if err := unix.Mkfifo(fifo, 0600); err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(root, &st); err != nil {
+		t.Fatal(err)
+	}
+	cache := &rootCache{probe: func() rootProbe { return rootProbe{device: uint64(st.Dev)} }}
+	if !cache.file(root, "/binary") {
+		t.Fatal("file(/binary) = false, want true on the measured root")
+	}
+	notify, err := unix.InotifyInit1(unix.IN_NONBLOCK | unix.IN_CLOEXEC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(notify)
+	if _, err := unix.InotifyAddWatch(notify, fifo, unix.IN_OPEN); err != nil {
+		t.Fatal(err)
+	}
+	if cache.file(root, "/fifo") {
+		t.Fatal("file(/fifo) = true, want false")
+	}
+	if n, _ := unix.Read(notify, make([]byte, 4096)); n > 0 {
+		t.Fatal("opened the FIFO while checking its type")
 	}
 }
 
@@ -171,18 +204,29 @@ func TestDMVerityMountedRootIntegration(t *testing.T) {
 	if got, err := deviceVerityRootHash(uint64(st.Dev)); err != nil || got != expected {
 		t.Fatalf("kernel root hash=%q, %v, expected %q", got, err, expected)
 	}
-	file, err := openRootFile(fd, "/binary")
-	if err != nil {
-		t.Fatal(err)
+	content, err := os.ReadFile(filepath.Join(root, "binary"))
+	if err != nil || string(content) != "approved executable" {
+		t.Fatalf("verity file=%q, %v", content, err)
 	}
-	defer file.Close()
-	buffer := make([]byte, 32)
-	count, err := file.Read(buffer)
-	if err != nil || string(buffer[:count]) != "approved executable" {
-		t.Fatalf("verity file=%q, %v", buffer[:count], err)
+	if reason, _ := rootDeviceVerityMismatch(uint64(st.Dev), "ro roothash="+expected); reason != "" {
+		t.Fatalf("matching roothash rejected: %s", reason)
 	}
-	if reason, _ := rootDeviceVerityMismatch(uint64(st.Dev)); reason == "" {
-		t.Fatal("operator-created verity device matched host measured boot root")
+	other := strings.Repeat("0", 64)
+	if reason, _ := rootDeviceVerityMismatch(uint64(st.Dev), "ro roothash="+other); reason == "" {
+		t.Fatal("verity device matched a different boot roothash")
+	}
+	for _, tc := range []struct {
+		cmdline string
+		want    bool
+	}{
+		{"ro roothash=" + expected, true},
+		{"ro roothash=" + other, false},
+		{"ro", false},
+	} {
+		cache := &rootCache{probe: func() rootProbe { return probeMeasuredRoot(root, tc.cmdline) }}
+		if got := cache.file(root, "/binary"); got != tc.want {
+			t.Fatalf("file(/binary) with cmdline %q = %v, want %v", tc.cmdline, got, tc.want)
+		}
 	}
 }
 
