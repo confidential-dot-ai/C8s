@@ -771,9 +771,11 @@ the store already holds, so an edit made with `workload apply` survives a
 restart, while a deleted entry returns on the next CDS start for as long as
 the chart still renders it — to remove an image, roll the chart with it gone.
 
-CDS reads its seed once, at start. A configuration-only upgrade keeps CDS
-running, so publish the new release's entries through it, signed with your
-operator key, before you upgrade:
+On a chart-managed install, CDS reads its seed once, at start: anyone with
+write access to the seed ConfigMap could otherwise publish entries without an
+operator token. A configuration-only upgrade keeps CDS running, so publish the
+new release's entries through it, signed with your operator key, before you
+upgrade:
 
 1. Run the upgrade's values through `helm template` and save the
    `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap as
@@ -810,15 +812,14 @@ c8s allowlist upload next.json
 launch keep running, but cannot restart under it. A CDS that seeds the
 override, at start or while following its seed, retires those entries itself.
 
-With `cds.followSeed` on, a running CDS rereads its mounted seed every 30
-seconds and seeds it again when it changed, so a configuration-only upgrade
-publishes its own entries. Whoever can edit the seed ConfigMap then publishes
-allowlist entries without an operator token, so it is off by default. Without
-`cds.operatorKeys`, CDS accepts no operator write, so it follows its seed
-whatever `cds.followSeed` says: the seed is then the only way to publish.
-Adding operator keys later changes CDS's command line, which the following
-CDS publishes from the seed as described below; once they are set, publish
-with `c8s allowlist apply`.
+On a measured node image (`node.baked`), the seed is a file the image holds,
+so CDS follows it: it rereads the file every 30 seconds and seeds it again
+when it changed. The chart sets `--follow-seed` only there. Without
+`cds.operatorKeys`, a chart-managed CDS accepts no write, so a new release's
+entries reach it only when CDS restarts and seeds again. Known limitation: the
+chart-managed store has no durable backing or version handoff yet, so a
+recreated CDS loses operator writes and counts from a version below the one
+the nodes hold.
 
 A rollback that keeps CDS running needs no publication: the store still holds
 the previous release's entries. A rollback across an upgrade that recreated
@@ -843,10 +844,8 @@ CDS, and the `cds.publishedShape` value. To publish it:
    `<release>-cds-allowlist-seed` ConfigMap.
 2. Copy the entry the error names into a file and publish it as in steps 2
    to 4 of the configuration-only procedure above, with
-   `c8s allowlist apply ENTRY_FILE`. Without operator keys, a CDS that follows
-   its seed publishes it instead: first run a configuration-only upgrade that
-   keeps CDS's shape and adds the entry under
-   `nriImagePolicy.bootstrapAllowlist.workloads`.
+   `c8s allowlist apply ENTRY_FILE`. Without operator keys, nothing can
+   publish it to the running CDS.
 3. Wait until every node has taken the write, as in step 5 of that
    procedure.
 4. Rerun the upgrade with `--set cds.publishedShape=NAME`.

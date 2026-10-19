@@ -17,8 +17,8 @@ import (
 var seedRecheckInterval = 30 * time.Second
 
 // startSeed seeds store from path and, when follow is set, starts following
-// it until ctx is done. Following is off by default: anyone who can edit the
-// seed's ConfigMap could otherwise publish entries without an operator token.
+// it until ctx is done. Only a seed no one can change may be followed:
+// whoever can write it publishes entries without an operator token.
 // The returned channel closes once the follower has stopped; close store only
 // after it does.
 func startSeed(ctx context.Context, store *allowlist.Store, path string, follow bool) (<-chan struct{}, error) {
@@ -31,7 +31,7 @@ func startSeed(ctx context.Context, store *allowlist.Store, path string, follow 
 		close(done)
 		return done, nil
 	}
-	slog.Warn("--follow-seed: a change to the mounted seed is published without an operator token", "path", path, "interval", seedRecheckInterval)
+	slog.Info("following the allowlist seed", "path", path, "interval", seedRecheckInterval)
 	t := time.NewTicker(seedRecheckInterval)
 	go func() {
 		defer close(done)
@@ -69,9 +69,8 @@ func seedStore(store *allowlist.Store, path string) ([]byte, error) {
 }
 
 // followSeed seeds store again on each tick at which the content at path
-// differs from applied, until ctx is done. A chart upgrade rewrites the
-// mounted seed in place, so the running CDS publishes the new release's
-// entries without a restart that would reset a memory-backed store.
+// differs from applied, until ctx is done, so a changed seed is published
+// without a restart that would reset a memory-backed store.
 // Unchanged content is not reseeded, so an entry deleted since stays deleted
 // until the seed changes.
 func followSeed(ctx context.Context, store *allowlist.Store, path string, applied []byte, tick <-chan time.Time) {

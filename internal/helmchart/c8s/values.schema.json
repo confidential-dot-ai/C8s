@@ -58,9 +58,6 @@
         "publishedShape": {
           "type": "string"
         },
-        "followSeed": {
-          "type": "boolean"
-        },
         "node": {
           "type": [
             "object",

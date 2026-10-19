@@ -63,7 +63,8 @@
 #   seed_add <name> <file>           add the entry in file to the seed the CDS
 #                                    follows, under name; 77 where the seed is
 #                                    not the cluster's to change or the CDS
-#                                    does not follow it (cds.followSeed)
+#                                    does not follow it (only a measured
+#                                    node image's CDS follows its seed)
 #   seed_restore                     put back the seed seed_add changed, if any
 #   cds_instance                     the CDS pod's uid and restart count, one
 #                                    line, so a later read tells a restart
@@ -446,8 +447,9 @@ seed_declares() {
 
 # The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
 # in the image instead, and renders no ConfigMap, so there it is not the
-# cluster's to change. A CDS rereads it only with --follow-seed. The first
-# change keeps the original for seed_restore.
+# cluster's to change. A CDS rereads it only with --follow-seed, which the
+# chart sets only on a baked node, so on a chart-managed install seed_add
+# answers 77. The first change keeps the original for seed_restore.
 seed_configmap() {
     kubectl -n "$NS" get configmaps -o json |
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1

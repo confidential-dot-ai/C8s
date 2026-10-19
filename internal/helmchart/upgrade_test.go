@@ -19,8 +19,8 @@ import (
 // operator's argv and so the installer's boot config. The store starts with
 // the previous release's policies only, which admit neither new launch. CDS
 // keeps its shape, so the old boot base still admits it and it is not
-// recreated. Once the new seed is published (c8s allowlist apply, or
-// cds.followSeed), the old and the new launches are all admitted.
+// recreated. Once the new seed is published (c8s allowlist apply), the old
+// and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
@@ -299,25 +299,23 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 	}
 }
 
-// Following the seed lets whoever edits its ConfigMap publish entries, so CDS
-// with operator keys follows it only when cds.followSeed asks. Without keys
-// the seed is the only way to publish, so CDS follows it.
-func TestChartCDSFollowsSeedOnlyWhenAsked(t *testing.T) {
+// Following the seed lets whoever edits it publish entries, so CDS follows
+// only the measured node image's seed and reads the seed ConfigMap once,
+// with or without operator keys.
+func TestChartCDSFollowsOnlyBakedSeed(t *testing.T) {
 	t.Parallel()
 	keys := filepath.Join(t.TempDir(), "operator.pub")
 	if err := os.WriteFile(keys, []byte("-----BEGIN PUBLIC KEY-----\nMFkwfakefakefake\n-----END PUBLIC KEY-----\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	withKeys := []string{"--set-file", "cds.operatorKeys=" + keys}
 	for _, tc := range []struct {
 		name   string
 		args   []string
 		follow bool
 	}{
-		{name: "default", args: withKeys},
-		{name: "off", args: append(slices.Clone(withKeys), "--set", "cds.followSeed=false")},
-		{name: "on", args: append(slices.Clone(withKeys), "--set", "cds.followSeed=true"), follow: true},
-		{name: "no operator keys", args: []string{"--set", "cds.followSeed=false"}, follow: true},
+		{name: "chart-managed"},
+		{name: "chart-managed with operator keys", args: []string{"--set-file", "cds.operatorKeys=" + keys}},
+		{name: "baked node", args: bakedArgs, follow: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
