@@ -450,7 +450,10 @@ actually released.
 - A `host` rule stays refused, read-only or writable. This includes
   `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
   content to prove, and it is a channel to whatever process the host runs
-  behind it. Drop it from the worker's mounts to hold a grant.
+  behind it. The c8s node image's device plugin does not inject it (it runs
+  with `CDI_FEATURE_FLAGS=disable-ipc-discoverer`), and it serves the driver
+  files and GSP firmware from their canonical `/usr` paths, so a GPU worker's
+  CDI mounts are all `nodeRootFile` rules.
 - The write path refuses an entry that breaks either rule, and release refuses
   one stored before it did. `env` is not required yet: `exact` fingerprints
   the whole environment, including the pod's `HOSTNAME`, so no policy pins it
