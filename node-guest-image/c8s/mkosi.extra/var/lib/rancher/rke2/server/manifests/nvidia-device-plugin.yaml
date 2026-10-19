@@ -18,6 +18,11 @@
 #
 # DEVICE_LIST_STRATEGY=cdi-annotations (v0.19.3 does NOT accept cdi-cri).
 # FAIL_ON_INIT_ERROR=false keeps GPU-less boots degraded-nothing.
+#
+# The GSP firmware mounts follow /sys/module/firmware_class/parameters/path,
+# which nvcdi searches first. The c8s profile sets
+# firmware_class.path=/usr/lib/firmware on the measured cmdline, so those mounts
+# avoid the usrmerge /lib symlink that the node-root proof refuses.
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -62,6 +67,12 @@ spec:
               value: /driver-root
             - name: NVIDIA_VISIBLE_DEVICES
               value: all
+            # Same CDI shape as nvidia-cdi-generate's c8s-grant drop-in: no
+            # IPC discoverer, so no writable persistenced/fabric-manager
+            # socket or /tmp/nvidia-mps mount. A secrets grant admits only
+            # read-only files on the measured root (c8s #873, #935).
+            - name: CDI_FEATURE_FLAGS
+              value: disable-ipc-discoverer
           securityContext:
             privileged: true
           volumeMounts:
