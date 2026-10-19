@@ -13,7 +13,23 @@
   settings (hostPort opt-out, upstream) without a trace. Fail loud instead.
 */ -}}
 {{- if hasKey .Values "teeProxy" -}}
-{{- fail "VALIDATION_ERROR kind=removed_component: teeProxy.* values are set, but the tee-proxy component was removed; router dials the workload directly. Migrate teeProxy.hostPort to router.hostPort and teeProxy.upstream to router.upstream.address, then drop the teeProxy block." -}}
+{{- fail "VALIDATION_ERROR kind=removed_component: teeProxy.* values are set, but the tee-proxy component was removed; router dials the workload directly. Migrate teeProxy.hostPort to router.hostPort and write teeProxy.upstream as a route manifest with `c8s routes add`, then drop the teeProxy block." -}}
+{{- end -}}
+{{- /*
+  The same for the router's own backend configuration: the operator-signed
+  route manifest replaced it, and a carried-over value would otherwise leave
+  the front door answering 503 with no hint why.
+*/ -}}
+{{- $removedRouterKeys := list -}}
+{{- range $key := list "upstream" "routes" -}}
+{{- if hasKey $router $key -}}{{- $removedRouterKeys = append $removedRouterKeys (printf "router.%s" $key) -}}{{- end -}}
+{{- end -}}
+{{- if hasKey (default dict $router.nginx) "resolver" -}}{{- $removedRouterKeys = append $removedRouterKeys "router.nginx.resolver" -}}{{- end -}}
+{{- if $removedRouterKeys -}}
+{{- fail (printf "VALIDATION_ERROR kind=removed_router_routes: the router no longer reads backends from Helm values (%s): it routes only by the operator-signed route manifest on CDS. Write the routes with `c8s routes add --host <host> --path / --address <host:port> --workload <allowlist name>` (or `c8s routes put <file>`), move router.upstream.readTimeout to router.routing.readTimeout, and drop these keys. Backends must serve TLS; see docs/operator.md, \"Route manifest\"." (join ", " $removedRouterKeys)) -}}
+{{- end -}}
+{{- if and $router.enabled (dig "routePublication" "enabled" false $router) (not $router.attest.enabled) -}}
+{{- fail "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false." -}}
 {{- end -}}
 
 {{- /*
@@ -180,31 +196,6 @@
 */ -}}
 {{- if and (not .Values.attestationApi.enabled) (ne .Values.attestationApi.cvmMode "bare-metal") -}}
 {{- fail "VALIDATION_ERROR kind=require_attestation_api: attestationApi.enabled=false requires attestationApi.cvmMode=bare-metal. On a non-bare-metal cluster the host attestation-api DaemonSet is the only evidence source for get-cert/armtls-mesh/CDS (`c8s install --cvm-mode=bare-metal` sets attestationApi.enabled=false for you)." -}}
-{{- end -}}
-{{- /*
-  Catch-all upstream check. No upstream is a legal state: router installs and
-  serves with no catch-all until a backend is wired (install-then-attach). When
-  an upstream IS set, it must be either:
-   - an operator-managed headless Service (c8s-<id>.<ns>.svc.cluster.local:<port>,
-     which `c8s install --upstream` derives): the app-layer hop is plaintext
-     http, the node mesh intercepts the pod-IP hop and wraps it in attested mTLS.
-     The shape match below is ADVISORY — it can't prove the Service is headless
-     (a ClusterIP Service of the same name would be a VIP the mesh skips), so the
-     real boundary is armtlsMesh.cwInboundEnforcement, which drops VIP/FORWARD-path
-     hops to cw pods at runtime. This guard only catches accidental plaintext.
-     An https protocol on this shape can only fail at runtime, so reject it.
-   - a manual address that terminates and verifies TLS itself (app-TLS): must
-     be https with tls.verify=true. A silently plaintext manual address would
-     leave the hop unprotected. There is no plaintext-to-unattested escape hatch.
-*/ -}}
-{{- if and $router.enabled $router.upstream.address -}}
-{{- if eq (include "router.meshWrappedUpstream" $router.upstream.address) "true" -}}
-{{- if eq $router.upstream.protocol "https" -}}
-{{- fail "VALIDATION_ERROR kind=workload_https_upstream: a c8s-<id> headless-Service upstream is plaintext http at the app layer (the mesh wraps the hop in attested mTLS), but router.upstream.protocol=https; use protocol http for a mesh-wrapped upstream" -}}
-{{- end -}}
-{{- else -}}
-{{- include "router.requireSecuredBackend" (dict "protocol" $router.upstream.protocol "tls" $router.upstream.tls "address" $router.upstream.address "label" "router.upstream" "kind" "router_unsecured_upstream" "suggest" "To reach a confidential workload adopt it with --workload-ref <id>=<ns>/<kind>/<name>:<port> and pass --upstream <id> (the mesh wraps that plaintext hop in attested mTLS); ") -}}
-{{- end -}}
 {{- end -}}
 {{- /*
   Rate budget for the built-in /allowlist route. CDS rate-limits per source

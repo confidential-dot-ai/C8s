@@ -5,9 +5,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,10 +27,36 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
+// backendFunc adapts a function to Router's Forward and Acquire.
+type backendFunc func(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
+
+func (f backendFunc) Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
+	return f(outer, req)
+}
+
+func (backendFunc) Acquire(string, int64) (func(), bool) { return func() {}, true }
+
+// echoBackend reflects the request, for tests of the channel rather than of
+// routing.
+var echoBackend = backendFunc(func(_ *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
+	return types.TunnelResponse{
+		Status: http.StatusOK,
+		Body:   fmt.Appendf(nil, "%s %s: %s", req.Method, req.Path, req.Body),
+	}, nil
+})
+
+// testRouter gates sessions by a real State and forwards tunnel requests to
+// backendFunc, for tests of the channel rather than of routing.
+type testRouter struct {
+	*routing.State
+	backendFunc
+}
+
 func newTestServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes: testRoutes(t),
 		Evidence: FixtureEvidenceProvider{
 			Raw:        json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`),
 			Platform:   "snp",
@@ -98,7 +126,13 @@ func clientChannelFromBundle(t *testing.T, bundle types.AttestationBundle, ck *o
 	if len(certs) != 2 {
 		t.Fatalf("bundle chain has %d certs, want leaf + issuing CA", len(certs))
 	}
-	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw)
+	// The served field stands in for a client's pin here; the handshake tests
+	// assert report_data against the digest they applied.
+	routeDigest, err := hex.DecodeString(bundle.RouteDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transcript, err := overenc.IdentityTranscriptHash(bundle.FrontDoorMode, ck.EncapsulationKey(), ct, sessionID, nonce, certs[0].Raw, certs[1].Raw, routeDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,33 +262,39 @@ func postSealedTunnel(t *testing.T, base string, ch *overenc.Channel, sessionID 
 	return httpResp
 }
 
-func TestTunnelForwardsToUpstream(t *testing.T) {
-	// A real backend the sidecar forwards decrypted traffic to.
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		w.Header().Set("X-Echo-Method", r.Method)
-		w.Header().Set("X-Echo-Auth", r.Header.Get("Authorization"))
-		w.Header().Set("X-Echo-Exporter", r.Header.Get(routing.ExporterHeader))
-		w.WriteHeader(http.StatusCreated)
-		w.Write([]byte("upstream saw: " + r.URL.Path + " / " + string(body)))
-	}))
-	defer backend.Close()
-
-	hb, err := NewHTTPBackend(backend.URL, HTTPBackendOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
+// newBackendTestServer serves the channel in front of backend.
+func newBackendTestServer(t *testing.T, backend backendFunc) *httptest.Server {
+	t.Helper()
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRouter{State: testRoutes(t).State, backendFunc: backend},
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
 		MeshIdentityKeyFile:  identity.keyFile,
 		MeshIdentityCAFile:   identity.caFile,
-		Backend:              hb,
 	})
 	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// TestTunnelForwardsTheOpenedRequest: the backend receives the sealed request
+// as sent, with the outer Host and the channel's exporter in place of any
+// client-supplied one, and its response is sealed back verbatim.
+func TestTunnelForwardsTheOpenedRequest(t *testing.T) {
+	var (
+		gotHost string
+		gotReq  types.TunnelRequest
+	)
+	ts := newBackendTestServer(t, backendFunc(func(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error) {
+		gotHost, gotReq = outer.Host, req
+		return types.TunnelResponse{
+			Status:  http.StatusCreated,
+			Headers: []types.HeaderField{{Name: "Set-Cookie", Value: "a=1"}, {Name: "Set-Cookie", Value: "b=2"}},
+			Body:    []byte("created"),
+		}, nil
+	}))
 
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
@@ -265,75 +305,33 @@ func TestTunnelForwardsToUpstream(t *testing.T) {
 		Path:   "/v1/data",
 		Headers: []types.HeaderField{
 			{Name: "Authorization", Value: "Bearer sekret"},
+			{Name: "X-Multi", Value: "one"},
+			{Name: "X-Multi", Value: "two"},
 			// A client-supplied exporter header must be stripped, never trusted.
 			{Name: routing.ExporterHeader, Value: "spoofed"},
 		},
 		Body: []byte("payload"),
 	})
-	if resp.Status != http.StatusCreated {
-		t.Fatalf("status = %d, want 201", resp.Status)
-	}
-	if !strings.Contains(string(resp.Body), "upstream saw: /v1/data / payload") {
-		t.Fatalf("unexpected upstream body: %q", resp.Body)
-	}
-	if got := headerValues(resp.Headers, "X-Echo-Method"); len(got) != 1 || got[0] != "PUT" {
-		t.Fatalf("method not forwarded: %q", got)
-	}
-	if got := headerValues(resp.Headers, "X-Echo-Auth"); len(got) != 1 || got[0] != "Bearer sekret" {
-		t.Fatalf("Authorization not forwarded confidentially: %q", got)
-	}
-	if got := headerValues(resp.Headers, "X-Echo-Exporter"); len(got) != 1 || got[0] != b64url(channel.Exporter()) {
-		t.Fatalf("exporter header = %q, want the channel exporter (spoofed value stripped)", got)
-	}
-}
-
-// TestTunnelPreservesDuplicateHeaders: repeated fields ride the pair-based
-// envelope intact in both directions, through the sealed tunnel and the
-// backend hop — the header map that collapsed Set-Cookie is gone.
-func TestTunnelPreservesDuplicateHeaders(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Values("X-Multi"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
-			t.Errorf("duplicate request header not forwarded intact: %v", got)
-		}
-		w.Header().Add("Set-Cookie", "a=1")
-		w.Header().Add("Set-Cookie", "b=2")
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-
-	hb, err := NewHTTPBackend(backend.URL, HTTPBackendOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	identity := writeTestMeshIdentity(t)
-	srv := NewServer(Config{
-		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA"}`), Platform: "snp", Generation: "genoa"},
-		FrontDoorMode:        types.FrontDoorModeCDS,
-		MeshIdentityCertFile: identity.certFile,
-		MeshIdentityKeyFile:  identity.keyFile,
-		MeshIdentityCAFile:   identity.caFile,
-		Backend:              hb,
-	})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
-
-	nonce := make([]byte, 32)
-	rand.Read(nonce)
-	channel, sessionID := establishSession(t, ts.URL, nonce)
-
-	resp := tunnel(t, ts.URL, channel, sessionID, types.TunnelRequest{
-		Method: "GET",
-		Path:   "/",
-		Headers: []types.HeaderField{
-			{Name: "X-Multi", Value: "one"},
-			{Name: "X-Multi", Value: "two"},
-		},
-	})
-	if resp.Status != http.StatusOK {
-		t.Fatalf("tunnel response status %d", resp.Status)
+	if resp.Status != http.StatusCreated || string(resp.Body) != "created" {
+		t.Fatalf("sealed response = %d %q, want 201 \"created\"", resp.Status, resp.Body)
 	}
 	if got := headerValues(resp.Headers, "Set-Cookie"); len(got) != 2 || got[0] != "a=1" || got[1] != "b=2" {
-		t.Fatalf("duplicate response header collapsed: %v", got)
+		t.Fatalf("sealed Set-Cookie = %v, want [a=1 b=2]", got)
+	}
+	if want := strings.TrimPrefix(ts.URL, "http://"); gotHost != want {
+		t.Fatalf("backend host = %q, want the tunnel request's Host %q", gotHost, want)
+	}
+	if gotReq.Method != "PUT" || gotReq.Path != "/v1/data" || string(gotReq.Body) != "payload" {
+		t.Fatalf("backend request = %s %s %q, want PUT /v1/data \"payload\"", gotReq.Method, gotReq.Path, gotReq.Body)
+	}
+	if got := headerValues(gotReq.Headers, "Authorization"); len(got) != 1 || got[0] != "Bearer sekret" {
+		t.Fatalf("backend Authorization = %q, want [Bearer sekret]", got)
+	}
+	if got := headerValues(gotReq.Headers, "X-Multi"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Fatalf("backend X-Multi = %v, want [one two]", got)
+	}
+	if got := headerValues(gotReq.Headers, routing.ExporterHeader); len(got) != 1 || got[0] != b64url(channel.Exporter()) {
+		t.Fatalf("backend exporter header = %q, want the channel exporter (spoofed value stripped)", got)
 	}
 }
 
@@ -357,6 +355,7 @@ func TestAttestPQGetReturns400(t *testing.T) {
 func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -384,6 +383,7 @@ func TestTunnelRejectsIdleExpiredSession(t *testing.T) {
 func TestTunnelRejectsOverAgeSession(t *testing.T) {
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA","cert_chain":{"vcek":"BBBB"}}`), Platform: "snp", Generation: "genoa"},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		MeshIdentityCertFile: identity.certFile,
@@ -430,21 +430,6 @@ func TestAppRequiresSession(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("expected 401 without session, got %d", resp.StatusCode)
-	}
-}
-
-func TestHTTPBackendRejectsOversizedUpstreamResponse(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Write(bytes.Repeat([]byte("a"), maxUpstreamResponseBytes+1))
-	}))
-	defer backend.Close()
-
-	hb, err := NewHTTPBackend(backend.URL, HTTPBackendOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := hb.Forward(context.Background(), types.TunnelRequest{Method: "GET", Path: "/"}); err == nil {
-		t.Fatal("expected oversized upstream response error")
 	}
 }
 
@@ -501,7 +486,7 @@ func TestAttestPQRejectsBadRequests(t *testing.T) {
 // TestCDSCertRouteAbsentWithoutCert: the optional cds-cert endpoint must not be
 // mounted when no cert was supplied.
 func TestCDSCertRouteAbsentWithoutCert(t *testing.T) {
-	srv := NewServer(Config{Evidence: failingProvider{}})
+	srv := NewServer(Config{Routes: testRoutes(t), Evidence: failingProvider{}})
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
 	resp, err := http.Get(ts.URL + "/.well-known/c8s/cds-cert.pem")
@@ -520,6 +505,7 @@ func TestAttestationEvidenceUnavailable(t *testing.T) {
 	certPath, _ := writeTestServingLeaf(t)
 	identity := writeTestMeshIdentity(t)
 	srv := NewServer(Config{
+		Routes:               testRoutes(t),
 		Evidence:             failingProvider{},
 		FrontDoorMode:        types.FrontDoorModeCDS,
 		ServingCertFile:      certPath,
@@ -648,27 +634,11 @@ func TestTunnelRejectsMalformedRecords(t *testing.T) {
 }
 
 func TestTunnelSealsBackendErrorAs502(t *testing.T) {
-	// An upstream that is already gone: Forward errors, and the sidecar must
-	// seal a 502 back rather than fail the tunnel HTTP exchange.
-	dead := httptest.NewServer(http.NotFoundHandler())
-	deadURL := dead.URL
-	dead.Close()
-	hb, err := NewHTTPBackend(deadURL, HTTPBackendOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	identity := writeTestMeshIdentity(t)
-	srv := NewServer(Config{
-		Evidence:             FixtureEvidenceProvider{Raw: json.RawMessage(`{"attestation_report":"AAAA"}`), Platform: "snp", Generation: "genoa"},
-		FrontDoorMode:        types.FrontDoorModeCDS,
-		Backend:              hb,
-		MeshIdentityCertFile: identity.certFile,
-		MeshIdentityKeyFile:  identity.keyFile,
-		MeshIdentityCAFile:   identity.caFile,
-	})
-	ts := httptest.NewServer(srv.Handler())
-	defer ts.Close()
+	// Forward errors, and the sidecar must seal a 502 back rather than fail
+	// the tunnel HTTP exchange.
+	ts := newBackendTestServer(t, backendFunc(func(*http.Request, types.TunnelRequest) (types.TunnelResponse, error) {
+		return types.TunnelResponse{}, errors.New("dial backend: connection refused")
+	}))
 
 	nonce := make([]byte, 32)
 	rand.Read(nonce)
@@ -703,7 +673,7 @@ func TestServingLeafErrors(t *testing.T) {
 	rand.Read(nonce)
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := NewServer(Config{Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
+			srv := NewServer(Config{Routes: testRoutes(t), Evidence: &capturingProvider{}, FrontDoorMode: types.FrontDoorModeCDS, ServingCertFile: tc.file})
 			ts := httptest.NewServer(srv.Handler())
 			defer ts.Close()
 			resp, err := http.Get(ts.URL + "/.well-known/c8s/attest-lb?nonce=" + b64url(nonce))
@@ -718,4 +688,14 @@ func TestServingLeafErrors(t *testing.T) {
 			}
 		})
 	}
+}
+
+func headerValues(fields []types.HeaderField, name string) []string {
+	var values []string
+	for _, f := range fields {
+		if f.Name == name {
+			values = append(values, f.Value)
+		}
+	}
+	return values
 }

@@ -277,7 +277,6 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle")
 	err := runBundleCmd(t, "new", "--out", dir, "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
 		"--server-address", "10.0.0.10", "--agent", "worker-1",
-		"--router-upstream", "c8s-gateway.confidential-inference.svc.cluster.local:9443",
 		"--router-hostname", "candidate.api.confidential.ai", "--router-hostname", "api.confidential.ai",
 		"--acme-email", "ops@confidential.ai",
 		"--acme-directory-url", "https://acme-staging-v02.api.letsencrypt.org/directory")
@@ -286,7 +285,6 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 	}
 	server, data := readBundleDocument(t, dir, serverDir)
 	want := Router{
-		Upstream:         "c8s-gateway.confidential-inference.svc.cluster.local:9443",
 		Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 		ACMEEmail:        "ops@confidential.ai",
 		ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -305,10 +303,4 @@ func TestNewBundleCarriesASignedServerRouter(t *testing.T) {
 		t.Fatalf("agent inherited the server-only router block: %+v", agent.Router)
 	}
 	stageBundleNode(t, dir, "worker-1")
-
-	err = runBundleCmd(t, "new", "--out", filepath.Join(t.TempDir(), "bad"), "--cluster-id", "demo", "--image-manifest", writeManifest(t, "tdx"),
-		"--router-upstream", "gateway.confidential-inference.svc.cluster.local:8080")
-	if err == nil || !strings.Contains(err.Error(), "router.upstream") {
-		t.Fatalf("unmeshed upstream: %v", err)
-	}
 }

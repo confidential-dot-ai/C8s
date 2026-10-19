@@ -19,7 +19,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -78,34 +77,13 @@ type Document struct {
 	serverTokenPresent bool
 }
 
-// Router selects the router's catch-all upstream and public hostnames. All
-// fields are optional; non-empty Hostnames switches the front door to ACME.
+// Router selects the router's public hostnames. All fields are optional;
+// non-empty Hostnames switches the front door to ACME. The route manifest, not
+// this block, names every backend.
 type Router struct {
-	Upstream         string   `yaml:"upstream,omitempty" json:"upstream,omitempty"`
 	Hostnames        []string `yaml:"hostnames,omitempty" json:"hostnames,omitempty"`
 	ACMEEmail        string   `yaml:"acmeEmail,omitempty" json:"acme_email,omitempty"`
 	ACMEDirectoryURL string   `yaml:"acmeDirectoryURL,omitempty" json:"acme_directory_url,omitempty"`
-}
-
-// meshWrappedUpstreamRE is the chart's router.meshWrappedUpstream rule: the
-// operator-managed headless Service c8s-<id>.<ns>.svc.cluster.local:<port>.
-// It is the only plaintext http upstream the chart accepts, because the node
-// mesh wraps that hop in attested mTLS. Keep the two in lockstep.
-const meshWrappedUpstreamPattern = `^c8s-[a-z]([-a-z0-9]*[a-z0-9])?\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\.svc\.cluster\.local:[0-9]+$`
-
-var meshWrappedUpstreamRE = regexp.MustCompile(meshWrappedUpstreamPattern)
-
-// ValidateRouterUpstream accepts only a mesh-wrapped upstream address with a
-// port in 1..65535, so the value is also safe inside an nginx directive.
-func ValidateRouterUpstream(address string) error {
-	if !meshWrappedUpstreamRE.MatchString(address) {
-		return fmt.Errorf("must be a mesh-wrapped c8s-<id>.<namespace>.svc.cluster.local:<port> address")
-	}
-	_, port, _ := strings.Cut(address, ":")
-	if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
-		return fmt.Errorf("port must be between 1 and 65535")
-	}
-	return nil
 }
 
 // ValidateHostname accepts a lowercase DNS hostname: no IP, no wildcard.
@@ -127,11 +105,6 @@ func ValidateHostname(name string) error {
 const maxRouterHostnames = 100 // the ACME CA's SAN limit per certificate
 
 func (r *Router) validate() error {
-	if r.Upstream != "" {
-		if err := ValidateRouterUpstream(r.Upstream); err != nil {
-			return fmt.Errorf("router.upstream: %w", err)
-		}
-	}
 	if len(r.Hostnames) > maxRouterHostnames {
 		return fmt.Errorf("router.hostnames lists more than %d names", maxRouterHostnames)
 	}

@@ -3,7 +3,6 @@ package cdsattest
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -18,25 +17,12 @@ func TestLoadFiles(t *testing.T) {
 		}
 		return path
 	}
-	cfg := config{
-		frontDoorModeFile: write("front-door-mode", "acme\n"),
-		upstreamFile:      write("upstream", "c8s-gateway.confidential-inference.svc.cluster.local:9443\n"),
-	}
+	cfg := config{frontDoorModeFile: write("front-door-mode", "acme\n")}
 	if err := loadFiles(&cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.frontDoorMode != types.FrontDoorModeACME || cfg.upstream != "http://c8s-gateway.confidential-inference.svc.cluster.local:9443" {
-		t.Fatalf("loaded %q %q", cfg.frontDoorMode, cfg.upstream)
-	}
-
-	cfg = config{upstreamFile: write("empty", "")}
-	if err := loadFiles(&cfg); err != nil || cfg.upstream != "" {
-		t.Fatalf("empty upstream file = %q, %v; want the echo backend", cfg.upstream, err)
-	}
-
-	cfg = config{upstreamFile: write("unmeshed", "vllm.default.svc:8000\n")}
-	if err := loadFiles(&cfg); err == nil || !strings.Contains(err.Error(), "mesh-wrapped") {
-		t.Fatalf("unmeshed upstream: %v", err)
+	if cfg.frontDoorMode != types.FrontDoorModeACME {
+		t.Fatalf("loaded front-door mode %q, want acme", cfg.frontDoorMode)
 	}
 
 	cfg = config{frontDoorMode: types.FrontDoorModeCDS, frontDoorModeFile: write("mode", "cds")}

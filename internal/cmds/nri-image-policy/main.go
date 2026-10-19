@@ -125,6 +125,7 @@ func Run(args []string) error {
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
 	}
 
+	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
@@ -866,4 +867,23 @@ func healthListener(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen tcp %s: %w", addr, err)
 	}
 	return l, nil
+}
+
+// logNodeRoot reports a missing measured root at Info: most nodes have none and
+// only policies that require node-root provenance depend on it. A node whose
+// boot command line declares a roothash= yet fails the proof is misbuilt, so
+// that is a warning. Without an allowlist no rule can require it, so nothing
+// is probed.
+func logNodeRoot(logger *slog.Logger, allowlistEnabled bool, unavailable func() (reason string, declared bool)) {
+	if !allowlistEnabled {
+		return
+	}
+	reason, declared := unavailable()
+	switch {
+	case reason == "":
+	case declared:
+		logger.Warn("node-root provenance unavailable on a node declaring a measured root", "reason", reason)
+	default:
+		logger.Info("node-root provenance unavailable", "reason", reason)
+	}
 }

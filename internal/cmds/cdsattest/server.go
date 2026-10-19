@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -41,6 +42,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -125,11 +127,21 @@ var (
 	errStoreFull    = errors.New("the server is at capacity; retry shortly")
 )
 
-// Backend handles a decrypted application request and returns the response. The
-// sidecar seals the response back to the client. Implementations forward the
-// reconstructed request to the real backend (see backend.go).
-type Backend interface {
-	Forward(ctx context.Context, req types.TunnelRequest) (types.TunnelResponse, error)
+// Router is the one route state the attested endpoints share, so the digest
+// a handshake binds is that of the manifest its tunnel routes by (A5, E2).
+// *routing.Proxy implements it.
+//
+// Session gates a new attested session (A2, F2) and returns the manifest whose
+// digest it binds (E1). Current is the applied manifest the publication serves.
+// Acquire reserves tunnel budget for a record of recordBytes from client.
+// Forward routes a request decrypted from the tunnel; outer is the tunnel
+// request itself, whose Host routes a sealed request that carries none (M1),
+// and an error is sealed as 502.
+type Router interface {
+	Session() (*routing.Applied, error)
+	Current() *routing.Applied
+	Acquire(client string, recordBytes int64) (release func(), ok bool)
+	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 }
 
 // Config configures the sidecar server.
@@ -160,10 +172,13 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
-	Backend          Backend // over-encrypted application backend (nil => EchoBackend)
-	// Routing, when set, routes tunnel requests by the applied route manifest
-	// in place of Backend (A7) and gates new attested sessions on it (A2, F2).
-	Routing *routing.Proxy
+	// Routes gates attested sessions, routes the tunnel and serves the route
+	// publication. Required.
+	Routes Router
+	// PublishRoutes serves the applied signed manifest at
+	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
+	// names hosts and backends a private deployment may not want public.
+	PublishRoutes bool
 	// DisableAttestEndpoints leaves attest-pq, attest-lb and the tunnel
 	// unregistered, for a router that runs only the routing listener.
 	DisableAttestEndpoints bool
@@ -189,9 +204,9 @@ type establishedSession struct {
 
 // Server serves the c8s-verify endpoints.
 type Server struct {
-	cfg     Config
-	log     *slog.Logger
-	backend Backend
+	cfg    Config
+	log    *slog.Logger
+	routes Router
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -228,14 +243,10 @@ func NewServer(cfg Config) *Server {
 	if cfg.TunnelIOTimeout <= 0 {
 		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
-	backend := cfg.Backend
-	if backend == nil && cfg.Routing == nil {
-		backend = EchoBackend{}
-	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
-		backend:          backend,
+		routes:           cfg.Routes,
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -312,6 +323,9 @@ func (s *Server) Handler() http.Handler {
 	// only needs to route this one fixed path to the sidecar.
 	r.Method(http.MethodPost, wellKnownPrefix+"/tunnel",
 		s.perClient(issuer.RateLimitBy(s.sessionLimiter, s.tunnelKey, http.HandlerFunc(s.handleTunnel))))
+	if s.cfg.PublishRoutes {
+		r.Method(http.MethodGet, routes.PublicationPath, s.perClient(http.HandlerFunc(s.handleRoutePublication)))
+	}
 	return r
 }
 
@@ -443,18 +457,20 @@ func attestNonce(w http.ResponseWriter, r *http.Request) (nonceB64 string, nonce
 // first: the client POSTs its nonce and X-Wing encapsulation key, the server
 // encapsulates once, and report_data commits the front-door mode and the
 // complete key exchange — the client's key, the server's ciphertext, the
-// session id, and the nonce — plus the exact mesh leaf and issuing mesh CA to
-// one domain-separated transcript. The leaf signs that transcript to prove
-// possession of its private key, and the session is live when the response
-// leaves; there is no second round trip.
+// session id, and the nonce — plus the exact mesh leaf, issuing mesh CA and
+// applied route digest to one domain-separated transcript. The leaf signs that
+// transcript to prove possession of its private key, and the session is live
+// when the response leaves; there is no second round trip.
 func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	req, nonce, xwingEK := parseAttestPQRequest(w, r)
 	if nonce == nil {
 		return
 	}
-	if !s.routesAdmit(w) {
+	applied, ok := s.routesAdmit(w)
+	if !ok {
 		return
 	}
+	digest := applied.Signed.Digest()
 	// Ahead of the report this request would mint: a request the store will
 	// not take costs no attestation.
 	client := clientBucket(r)
@@ -489,7 +505,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce)
+	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind mesh identity", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "mesh identity binding failed")
@@ -528,24 +544,27 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
 		SessionID:     id,
 		IdentityProof: proof,
+		RouteDigest:   hex.EncodeToString(digest[:]),
 	})
 }
 
 // handleAttestLB serves the ordinary-TLS binding: report_data commits the
 // front-door mode, nonce, the exact serving leaf nginx presents, the exact
-// mesh leaf, and the issuing mesh CA (overenc.LBTranscriptHash), and the mesh
-// leaf signs that transcript. No over-encryption key exchange happens and no
-// session is
-// stored — the client recomputes the transcript from the leaf it observed on
-// its own TLS connection and then rides that TLS.
+// mesh leaf, the issuing mesh CA and the applied route digest
+// (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
+// over-encryption key exchange happens and no session is stored — the client
+// recomputes the transcript from the leaf it observed on its own TLS
+// connection and then rides that TLS.
 func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	nonceB64, nonce := attestNonce(w, r)
 	if nonce == nil {
 		return
 	}
-	if !s.routesAdmit(w) {
+	applied, ok := s.routesAdmit(w)
+	if !ok {
 		return
 	}
+	digest := applied.Signed.Digest()
 	// The exact-DER binding detects leaf substitution, not key sharing: a
 	// WebPKI Secret's serving key is host-visible, so the host could terminate
 	// the client's TLS with the same leaf and proxy this request. Only a
@@ -569,7 +588,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce)
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -594,29 +613,27 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		FrontDoorMode:     s.cfg.FrontDoorMode,
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
+		RouteDigest:       hex.EncodeToString(digest[:]),
 	})
 }
 
 // routesAdmit refuses an attested handshake while no route manifest is applied
 // (A2) or the applied one is stale (F2), each with its own code so a client
-// can tell an unconfigured router from one cut off from the CDS. It gates
-// admission only, on a fresh applied manifest; binding the route digest into
-// the evidence (E1, E2) and publishing the manifest land with the verifier
-// changes.
-func (s *Server) routesAdmit(w http.ResponseWriter) bool {
-	if s.cfg.Routing == nil {
-		return true
-	}
-	_, err := s.cfg.Routing.State().Session()
+// can tell an unconfigured router from one cut off from the CDS. It returns
+// the manifest it loaded, whose digest the handshake's evidence binds (E1);
+// the handshake loads no other (E2). Later requests in the session route by
+// whatever manifest is then applied (E3).
+func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
+	applied, err := s.routes.Session()
 	switch {
-	case errors.Is(err, routing.ErrNotApplied):
-		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "no route manifest is applied yet")
-		return false
 	case errors.Is(err, routing.ErrStale):
 		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesStale, "the applied route manifest is stale")
-		return false
+		return nil, false
+	case err != nil || applied == nil:
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "no route manifest is applied yet")
+		return nil, false
 	}
-	return true
+	return applied, true
 }
 
 // meshIdentity loads the mesh credential set from the three files.
@@ -729,9 +746,8 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 }
 
 // handleTunnel terminates the over-encryption: it opens the sealed request
-// envelope, forwards the reconstructed request by the applied route manifest
-// (or, with routing off, to Backend), and seals the response back to the
-// client.
+// envelope, forwards the reconstructed request by the applied route manifest,
+// and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	// A refusal before the body is read closes the connection, so net/http
 	// does not wait on the unread body.
@@ -748,20 +764,18 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
 		return
 	}
-	if s.cfg.Routing != nil {
-		// Budget goes only to a request naming a live session. Anyone can
-		// open one, so the per-client share is what bounds a single client.
-		recordBytes := r.ContentLength
-		if recordBytes < 0 {
-			recordBytes = tunnelBodyLimit
-		}
-		release, ok := s.cfg.Routing.Acquire(clientBucket(r), recordBytes)
-		if !ok {
-			refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
-			return
-		}
-		defer release()
+	// Budget goes only to a request naming a live session. Anyone can open
+	// one, so the per-client share is what bounds a single client.
+	recordBytes := r.ContentLength
+	if recordBytes < 0 {
+		recordBytes = tunnelBodyLimit
 	}
+	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
+	if !ok {
+		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
+		return
+	}
+	defer release()
 	rc := http.NewResponseController(w)
 	ioDeadline := func() time.Time { return time.Now().Add(s.cfg.TunnelIOTimeout) }
 	if err := errors.Join(rc.SetReadDeadline(ioDeadline()), rc.SetWriteDeadline(ioDeadline())); err != nil {
@@ -816,12 +830,7 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	var resp types.TunnelResponse
-	if s.cfg.Routing != nil {
-		resp, err = s.cfg.Routing.Forward(r, env)
-	} else {
-		resp, err = s.backend.Forward(r.Context(), env)
-	}
+	resp, err := s.routes.Forward(r, env)
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}

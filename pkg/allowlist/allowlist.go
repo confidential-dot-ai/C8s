@@ -102,6 +102,8 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	// VerityDigest is reserved for fs-verity and rejected for now.
+	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
 // MountClass identifies who controls the content behind a bind mount.
@@ -112,7 +114,16 @@ const (
 	MountEmptyDir MountClass = "emptyDir"
 	MountData     MountClass = "data"
 	MountHost     MountClass = "host"
+	// MountNodeRootFile is a rule kind only: it admits a read-only host file
+	// bind that carries ProvenanceNodeRoot evidence. It is a kind rather than a
+	// field on a host rule so that an enforcer predating it refuses the served
+	// document instead of applying the rule as a plain host rule.
+	MountNodeRootFile MountClass = "nodeRootFile"
 )
+
+// ProvenanceNodeRoot is mount evidence for a regular file reached through the
+// node's measured, read-only dm-verity root.
+const ProvenanceNodeRoot = "node-root"
 
 // MountStorage records the storage guarantee established by the node.
 type MountStorage string
