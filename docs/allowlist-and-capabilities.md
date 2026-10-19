@@ -432,11 +432,17 @@ can be staged: a file that a later plugin adds cannot satisfy an `fsVerityFile`
 rule. Other policy entries and audit mode keep their documented behavior for
 such files.
 
-The staging registry lives in the enforcer process. An enforcer restart loses
-it, which fails closed for running containers that rely on fs-verity
-evidence: recreate them. At startup, before it registers with the runtime, the
-enforcer detaches staging left by the earlier process; running containers keep
-their own binds.
+Each staging mount has a record next to it with its container, pod, source,
+destination and digest. An enforcer restart re-verifies staging rather than
+re-staging it. When the runtime first lists the existing containers, and
+before it checks them, the enforcer re-measures each staging inode and checks
+its filesystem again. It keeps the staging only when the inode still has the
+recorded digest and the container that the record names still mounts it at the
+recorded destination. It releases every other staging mount. The startup check
+of existing containers then sees the same fs-verity evidence as before the
+restart, in every `enforce_existing`, `fatal_existing` and audit setting.
+The enforcer assumes it is the only instance on the node: a second instance
+releases staging that the first is still creating.
 
 The fs-verity digest travels with the mount evidence as node-root provenance
 does, so `fsVerityFile` bytes are bound to the attested policy. An operator can

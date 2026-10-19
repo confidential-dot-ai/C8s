@@ -97,8 +97,8 @@ func TestOrdinaryFileHasNoVerityDigest(t *testing.T) {
 	if path, digest, err := pinFSVerityFile(source, []string{testVerityDigest}); err == nil || path != "" || digest != "" {
 		t.Fatalf("pinFSVerityFile(mutable file) = %q, %q, %v, want refusal", path, digest, err)
 	}
-	if pinnedFSVerityFile(source, "") {
-		t.Fatal("pinnedFSVerityFile accepted a writable file without fs-verity")
+	if pinnedFSVerity(source, "") {
+		t.Fatal("pinnedFSVerity accepted a writable file without fs-verity")
 	}
 }
 
@@ -206,6 +206,14 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	running := allowlist.RunningContainer{Digest: containers[0].Digest, Argv: containers[0].Argv, Env: containers[0].Env, Mounts: containers[0].Mounts}
 	if name, _, err := al.MatchWorkload([]allowlist.RunningContainer{running}); err != nil || name != "w" {
 		t.Fatalf("MatchWorkload(recorded launch) = %q, %v, want w", name, err)
+	}
+	// A restarted enforcer re-measures the staging rather than staging again.
+	verifiedMountRegistry.Lock()
+	clear(verifiedMountRegistry.mounts)
+	verifiedMountRegistry.Unlock()
+	restoreVerifiedMounts(discardLogger(), []*api.PodSandbox{pod}, []*api.Container{ctr})
+	if got := registeredMounts(ctr.Id); len(got) != 1 || got[0] != snapshot {
+		t.Fatalf("restart restored %v, want [%s]", got, snapshot)
 	}
 	// Provenance checks run while the pin is registered: the rejected
 	// validation below releases it.

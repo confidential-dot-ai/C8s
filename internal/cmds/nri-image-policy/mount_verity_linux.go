@@ -6,18 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
-
-var verifiedMountRoot = "/run/c8s/verity-mounts"
 
 // enforcesFSVerity reports whether the kernel driver for a filesystem of this
 // type verifies every read against the fs-verity Merkle tree. FUSE forwards
@@ -98,15 +95,8 @@ func pinFSVerityFile(source string, accepted []string) (string, string, error) {
 	if !slices.Contains(accepted, digest) {
 		return "", "", errVerityNotPinned
 	}
-	if err := os.MkdirAll(verifiedMountRoot, 0700); err != nil {
+	if err := prepareStagingRoot(); err != nil {
 		return "", "", err
-	}
-	var st unix.Stat_t
-	if err := unix.Lstat(verifiedMountRoot, &st); err != nil || st.Uid != 0 || st.Mode&0077 != 0 || st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return "", "", fmt.Errorf("unsafe verified mount directory")
-	}
-	if err := privateMountRoot(verifiedMountRoot); err != nil {
-		return "", "", fmt.Errorf("isolate verified mount directory: %w", err)
 	}
 	path, err := bindStaging(file)
 	if err != nil {
@@ -121,6 +111,42 @@ var (
 	unmountSyscall = unix.Unmount
 )
 
+// stagingRoot records which root is already a private mount point. Its lock
+// serializes the first pins: each would otherwise self-bind the root, and the
+// second bind would hide the first one's staging mount.
+var stagingRoot struct {
+	sync.Mutex
+	isolated string
+}
+
+// prepareStagingRoot checks that verifiedMountRoot is a root-only directory and
+// isolates it.
+func prepareStagingRoot() error {
+	if err := os.MkdirAll(verifiedMountRoot, 0700); err != nil {
+		return err
+	}
+	var st unix.Stat_t
+	if err := unix.Lstat(verifiedMountRoot, &st); err != nil || st.Uid != 0 || st.Mode&0077 != 0 || st.Mode&unix.S_IFMT != unix.S_IFDIR {
+		return fmt.Errorf("unsafe verified mount directory")
+	}
+	return isolateStagingRoot()
+}
+
+// isolateStagingRoot makes verifiedMountRoot a private mount point once per
+// process.
+func isolateStagingRoot() error {
+	stagingRoot.Lock()
+	defer stagingRoot.Unlock()
+	if stagingRoot.isolated == verifiedMountRoot {
+		return nil
+	}
+	if err := privateMountRoot(verifiedMountRoot); err != nil {
+		return fmt.Errorf("isolate verified mount directory: %w", err)
+	}
+	stagingRoot.isolated = verifiedMountRoot
+	return nil
+}
+
 // privateMountRoot makes dir a private mount point. /run is usually shared, so
 // a staging bind created under it would first propagate into every service
 // namespace that is a slave of it, where a later detach never reaches.
@@ -128,6 +154,9 @@ func privateMountRoot(dir string) error {
 	var stx unix.Statx_t
 	if err := unix.Statx(unix.AT_FDCWD, dir, unix.AT_SYMLINK_NOFOLLOW, 0, &stx); err != nil {
 		return err
+	}
+	if stx.Attributes_mask&unix.STATX_ATTR_MOUNT_ROOT == 0 {
+		return errors.New("kernel does not report mount points")
 	}
 	if stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT == 0 {
 		if err := mountSyscall(dir, dir, "", unix.MS_BIND, ""); err != nil {
@@ -148,14 +177,14 @@ func bindStaging(file *os.File) (string, error) {
 	target := filepath.Join(staging, "inode")
 	targetFile, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_RDONLY, 0600)
 	if err != nil {
-		os.Remove(staging) //nolint:errcheck // Best effort; the startup sweep retries.
+		os.Remove(staging) //nolint:errcheck // Best effort; a restart releases it.
 		return "", err
 	}
 	targetFile.Close() //nolint:errcheck // No writes to flush.
 	// Mount the opened inode, never reopen the operator-controlled path.
 	if err := mountSyscall("/proc/self/fd/"+strconv.Itoa(int(file.Fd())), target, "", unix.MS_BIND, ""); err != nil {
-		os.Remove(target)  //nolint:errcheck // Best effort; the startup sweep retries.
-		os.Remove(staging) //nolint:errcheck // Best effort; the startup sweep retries.
+		os.Remove(target)  //nolint:errcheck // Best effort; a restart releases it.
+		os.Remove(staging) //nolint:errcheck // Best effort; a restart releases it.
 		return "", err
 	}
 	err = mountSyscall("", target, "", unix.MS_BIND|unix.MS_REMOUNT|unix.MS_RDONLY|unix.MS_NOSUID|unix.MS_NODEV, "")
@@ -171,41 +200,25 @@ func bindStaging(file *os.File) (string, error) {
 	return "", err
 }
 
-// pinnedFSVerityFile reports whether the staging mount at path is read-only,
-// on a filesystem that enforces fs-verity, and still has digest.
-func pinnedFSVerityFile(path, digest string) bool {
+// stagedDigest measures the staging mount at path. It returns "" unless the
+// mount is read-only on a filesystem that enforces fs-verity.
+func stagedDigest(path string) string {
 	file, st, err := openVerityFile(path)
 	if err != nil {
-		return false
+		return ""
 	}
 	defer file.Close() //nolint:errcheck // No writes to flush.
-	return st.Flags&unix.ST_RDONLY != 0 && fsVerityDigest(file) == digest
+	if st.Flags&unix.ST_RDONLY == 0 {
+		return ""
+	}
+	return fsVerityDigest(file)
 }
 
+// unpinFSVerityFile detaches and removes the staging at path. EINVAL and
+// ENOENT mean nothing is mounted there.
 func unpinFSVerityFile(path string) error {
-	if err := unmountSyscall(path, unix.MNT_DETACH); err != nil && err != unix.EINVAL {
+	if err := unmountSyscall(path, unix.MNT_DETACH); err != nil && err != unix.EINVAL && err != unix.ENOENT {
 		return fmt.Errorf("%w: %w", errStillMounted, err)
 	}
-	if err := os.Remove(path); err != nil {
-		return err
-	}
-	return os.Remove(filepath.Dir(path))
-}
-
-// sweepVerifiedMounts detaches staging left by an earlier process, whose
-// registry died with it. Running containers keep their own bind of each inode.
-// Call it before registering with the runtime, while the registry is empty.
-func sweepVerifiedMounts(logger *slog.Logger) {
-	stale, err := filepath.Glob(filepath.Join(verifiedMountRoot, "file-*"))
-	if err != nil {
-		logger.Warn("cannot list stale fs-verity staging", "error", err)
-		return
-	}
-	for _, dir := range stale {
-		if err := unpinFSVerity(filepath.Join(dir, "inode")); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			logger.Warn("cannot remove stale fs-verity staging", "path", dir, "error", err)
-		}
-		// Also clears a directory a crash left before its inode file existed.
-		os.Remove(dir) //nolint:errcheck // Already gone after a successful unpin.
-	}
+	return removeStaging(path)
 }

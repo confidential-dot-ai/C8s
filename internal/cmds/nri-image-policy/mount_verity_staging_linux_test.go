@@ -39,12 +39,7 @@ func newVerityFixture(t *testing.T, mode string, withPathOnly bool, pin func(str
 	t.Helper()
 	originalPin, originalUnpin := pinFSVerity, unpinFSVerity
 	pinFSVerity = pin
-	unpinFSVerity = func(path string) error {
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-		return os.Remove(filepath.Dir(path))
-	}
+	unpinFSVerity = removeStaging
 	t.Cleanup(func() { pinFSVerity, unpinFSVerity = originalPin, originalUnpin })
 
 	file := filepath.Join(t.TempDir(), "tool")
@@ -277,10 +272,12 @@ func TestStagingFailureLeavesFinalMatchingToDecide(t *testing.T) {
 }
 
 func TestNonBindMountIsNeverStaged(t *testing.T) {
-	pinned := 0
+	root := t.TempDir()
+	var pinned atomic.Int32
 	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
-		pinned++
-		return fakeStaging(t), testVerityDigest, nil
+		pinned.Add(1)
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
 	})
 	file := f.ctr.Mounts[0].Source
 	for _, mount := range []*api.Mount{
@@ -292,8 +289,8 @@ func TestNonBindMountIsNeverStaged(t *testing.T) {
 			t.Fatalf("CreateContainer(%s %v) = %v, %v, want no staging", mount.Type, mount.Options, adjust, err)
 		}
 	}
-	if pinned != 0 {
-		t.Fatalf("pinned %d non-bind mounts", pinned)
+	if got := pinned.Load(); got != 0 {
+		t.Fatalf("pinned %d non-bind mounts", got)
 	}
 	staged := registerStaging(t, f.ctr.Id)
 	ctx := MountContext{PodUID: f.pod.Uid, SandboxID: f.pod.Id, Container: f.ctr}
@@ -350,25 +347,210 @@ func TestReleaseRetriesFailedUnmount(t *testing.T) {
 	}
 }
 
-func TestSweepRemovesStaleStaging(t *testing.T) {
-	newVerityFixture(t, ModeFailClosed, false, pinFSVerityFile)
-	originalRoot := verifiedMountRoot
+func setStagingRoot(t *testing.T) {
+	t.Helper()
+	original := verifiedMountRoot
 	verifiedMountRoot = t.TempDir()
-	t.Cleanup(func() { verifiedMountRoot = originalRoot })
-	stale := filepath.Join(verifiedMountRoot, "file-stale")
-	empty := filepath.Join(verifiedMountRoot, "file-empty")
-	for _, dir := range []string{stale, empty} {
-		if err := os.Mkdir(dir, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.WriteFile(filepath.Join(stale, "inode"), nil, 0600); err != nil {
+	t.Cleanup(func() { verifiedMountRoot = original })
+}
+
+func setMeasuredDigest(t *testing.T, digest string) {
+	t.Helper()
+	original := measureStaged
+	measureStaged = func(string) string { return digest }
+	t.Cleanup(func() { measureStaged = original })
+}
+
+// stageOnDisk leaves the staging directory of a committed pin, as an earlier
+// enforcer process does.
+func stageOnDisk(t *testing.T, entry verifiedMount) string {
+	t.Helper()
+	path, err := newStagingPath(verifiedMountRoot)
+	if err != nil {
 		t.Fatal(err)
 	}
-	sweepVerifiedMounts(discardLogger())
-	entries, err := os.ReadDir(verifiedMountRoot)
-	if err != nil || len(entries) != 0 {
-		t.Fatalf("staging left after sweep: %v %v", entries, err)
+	if err := writeStagingRecord(path, entry); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func (f verityFixture) stagedEntry(containerID string) verifiedMount {
+	mount := f.ctr.Mounts[0]
+	return verifiedMount{source: mount.Source, digest: testVerityDigest, containerID: containerID, sandboxID: f.pod.Id, podUID: f.pod.Uid, destination: mount.Destination}
+}
+
+// useStaging makes f.ctr mount path, as containerd lists a staged container.
+func (f verityFixture) useStaging(path string) {
+	mount := f.ctr.Mounts[0]
+	f.ctr.Mounts[0] = &api.Mount{Type: mount.Type, Source: path, Destination: mount.Destination, Options: mount.Options}
+}
+
+func TestRestartRestoresStaging(t *testing.T) {
+	f := newVerityFixture(t, ModeFailClosed, false, nil)
+	setStagingRoot(t)
+	setMeasuredDigest(t, testVerityDigest)
+	path := stageOnDisk(t, f.stagedEntry(f.ctr.Id))
+	removed := stageOnDisk(t, f.stagedEntry("removed-container"))
+	crashed := filepath.Join(verifiedMountRoot, "file-crashed")
+	if err := os.Mkdir(crashed, 0700); err != nil {
+		t.Fatal(err)
+	}
+	f.useStaging(path)
+	f.p.cfg.Policy.EnforceExisting = true
+	var stopped []string
+	f.p.containerd = &fakeContainerd{stop: func(_ context.Context, id string) error {
+		stopped = append(stopped, id)
+		return nil
+	}}
+	if _, err := f.p.Synchronize(t.Context(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr}); err != nil {
+		t.Fatal(err)
+	}
+	if len(stopped) != 0 {
+		t.Fatalf("restart stopped %v, want the staged container left running", stopped)
+	}
+	if got := registeredMounts(f.ctr.Id); !slices.Equal(got, []string{path}) {
+		t.Fatalf("restored %v, want [%s]", got, path)
+	}
+	observed := newMountObserver(nil, "").Observe(f.pod, f.ctr)
+	if len(observed) != 1 || observed[0].Provenance != allowlist.ProvenanceFSVerity || observed[0].VerityDigest != testVerityDigest {
+		t.Fatalf("observed %+v after restart, want fs-verity evidence", observed)
+	}
+	for _, dir := range []string{filepath.Dir(removed), crashed} {
+		if fileExists(dir) {
+			t.Fatalf("staging %s of no listed container not released", dir)
+		}
+	}
+}
+
+func TestRestoreReleasesUnverifiedStaging(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		measured string
+		owner    string
+	}{
+		{"digest changed", strings.Repeat("cd", 32), ""},
+		{"not a verity mount", "", ""},
+		{"another container mounts the path", testVerityDigest, "another-container"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newVerityFixture(t, ModeFailClosed, false, nil)
+			setStagingRoot(t)
+			setMeasuredDigest(t, tc.measured)
+			owner := f.ctr.Id
+			if tc.owner != "" {
+				owner = tc.owner
+			}
+			path := stageOnDisk(t, f.stagedEntry(owner))
+			f.useStaging(path)
+			restoreVerifiedMounts(discardLogger(), []*api.PodSandbox{f.pod}, []*api.Container{f.ctr})
+			if got := registeredMounts(owner); len(got) != 0 {
+				t.Fatalf("restored %v, want the staging refused", got)
+			}
+			if fileExists(filepath.Dir(path)) {
+				t.Fatalf("refused staging %s not released", path)
+			}
+		})
+	}
+}
+
+func TestUnpinWithoutMountRemovesStaging(t *testing.T) {
+	newVerityFixture(t, ModeFailClosed, false, nil)
+	originalUnmount := unmountSyscall
+	t.Cleanup(func() { unmountSyscall = originalUnmount })
+	unmountSyscall = func(string, int) error { return unix.ENOENT }
+	unpinFSVerity = unpinFSVerityFile
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "file-gone"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "file-gone", "inode")
+	verifiedMountRegistry.Lock()
+	verifiedMountRegistry.mounts[path] = verifiedMount{containerID: "gone"}
+	verifiedMountRegistry.Unlock()
+	releaseVerifiedMounts(discardLogger(), "gone")
+	if got := registeredMounts("gone"); len(got) != 0 {
+		t.Fatalf("staging without a placeholder still registered: %v", got)
+	}
+	if fileExists(filepath.Dir(path)) {
+		t.Fatalf("staging directory %s left behind", filepath.Dir(path))
+	}
+}
+
+func TestReusedPinIsKeptAcrossRetries(t *testing.T) {
+	root := t.TempDir()
+	var pins atomic.Int32
+	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
+		pins.Add(1)
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
+	})
+	unpinned := recordUnpins()
+	first := stageVerityMounts(t.Context(), discardLogger(), f.pod, f.ctr, nil, f.rules())
+	if first == nil || len(first.Mounts) != 1 || pins.Load() != 1 {
+		t.Fatalf("first staging = %v after %d pins, want one staged mount", first, pins.Load())
+	}
+	staged := first.Mounts[0].Source
+	second := stageVerityMounts(t.Context(), discardLogger(), f.pod, f.ctr, nil, f.rules())
+	if second == nil || len(second.Mounts) != 1 || second.Mounts[0].Source != staged || pins.Load() != 1 {
+		t.Fatalf("retry = %v after %d pins, want %s reused", second, pins.Load(), staged)
+	}
+
+	// A retry that discards its own new pins keeps the reused one.
+	tool := f.ctr.Mounts[0]
+	f.ctr.Mounts = append(f.ctr.Mounts, &api.Mount{Type: tool.Type, Source: tool.Source, Destination: "/srv/other", Options: tool.Options})
+	ctx, cancel := context.WithCancel(t.Context())
+	pinFSVerity = func(string, []string) (string, string, error) {
+		cancel()
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
+	}
+	if adjust := stageVerityMounts(ctx, discardLogger(), f.pod, f.ctr, nil, f.rules()); adjust != nil {
+		t.Fatalf("expired retry = %v, want no staging", adjust)
+	}
+	waitForIdleStaging(t)
+	if unpinned.contains(staged) || !slices.Equal(registeredMounts(f.ctr.Id), []string{staged}) {
+		t.Fatalf("discarded retry released the reused pin %s", staged)
+	}
+
+	releaseVerifiedMounts(discardLogger(), f.ctr.Id)
+	f.ctr.Mounts = f.ctr.Mounts[:1]
+	pinFSVerity = func(string, []string) (string, string, error) {
+		pins.Add(1)
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
+	}
+	third := stageVerityMounts(t.Context(), discardLogger(), f.pod, f.ctr, nil, f.rules())
+	if third == nil || len(third.Mounts) != 1 || third.Mounts[0].Source == staged || pins.Load() != 2 {
+		t.Fatalf("staging after release = %v after %d pins, want a fresh pin", third, pins.Load())
+	}
+}
+
+func TestFirstPinsIsolateRootOnce(t *testing.T) {
+	setStagingRoot(t)
+	originalMount := mountSyscall
+	t.Cleanup(func() {
+		mountSyscall = originalMount
+		stagingRoot.isolated = ""
+	})
+	var binds atomic.Int32
+	mountSyscall = func(_, _, _ string, flags uintptr, _ string) error {
+		if flags == unix.MS_BIND {
+			binds.Add(1)
+		}
+		return nil
+	}
+	var wg sync.WaitGroup
+	for range 16 {
+		wg.Go(func() {
+			if err := isolateStagingRoot(); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := binds.Load(); got != 1 {
+		t.Fatalf("concurrent first pins bound the staging root %d times, want once", got)
 	}
 }
 
@@ -410,12 +592,14 @@ func TestRefusedCommitLogsItsCause(t *testing.T) {
 	verifiedMountRegistry.Lock()
 	verifiedMountRegistry.mounts[reused] = verifiedMount{source: tool.Source, digest: testVerityDigest, containerID: f.ctr.Id, sandboxID: f.pod.Id, podUID: f.pod.Uid, destination: tool.Destination}
 	verifiedMountRegistry.Unlock()
+	root := t.TempDir()
 	pinFSVerity = func(string, []string) (string, string, error) {
 		// A concurrent release removes the reused pin while this call stages.
 		verifiedMountRegistry.Lock()
 		delete(verifiedMountRegistry.mounts, reused)
 		verifiedMountRegistry.Unlock()
-		return fakeStaging(t), testVerityDigest, nil
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
 	}
 	var logs bytes.Buffer
 	if adjust := stageVerityMounts(t.Context(), slog.New(slog.NewTextHandler(&logs, nil)), f.pod, f.ctr, nil, f.rules()); adjust != nil {
@@ -515,9 +699,8 @@ func TestBindStagingRollback(t *testing.T) {
 }
 
 func TestUndetachedStagingIsTrackedAsStale(t *testing.T) {
-	var leaked string
+	leaked := fakeStaging(t)
 	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
-		leaked = fakeStaging(t)
 		return leaked, "", unix.EPERM
 	})
 	adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
@@ -540,14 +723,16 @@ func TestNodeRootFileIsNeverStaged(t *testing.T) {
 	original := nodeRootEvidence
 	nodeRootEvidence = func(string) bool { return true }
 	t.Cleanup(func() { nodeRootEvidence = original })
-	pinned := 0
+	root := t.TempDir()
+	var pinned atomic.Int32
 	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
-		pinned++
-		return fakeStaging(t), testVerityDigest, nil
+		pinned.Add(1)
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
 	})
 	adjust, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr)
-	if err != nil || adjust != nil || pinned != 0 {
-		t.Fatalf("CreateContainer = %v, %v after %d pins, want no staging", adjust, err, pinned)
+	if err != nil || adjust != nil || pinned.Load() != 0 {
+		t.Fatalf("CreateContainer = %v, %v after %d pins, want no staging", adjust, err, pinned.Load())
 	}
 	mounts := adjustedMounts(&api.ValidateContainerAdjustmentRequest{Pod: f.pod, Container: f.ctr}, f.ctr, "")
 	if len(mounts) != 1 || mounts[0].Provenance != allowlist.ProvenanceNodeRoot || mounts[0].VerityDigest != "" {
@@ -606,9 +791,9 @@ func fileExists(path string) bool {
 }
 
 func TestFullRegistryRetriesStalePins(t *testing.T) {
-	pinned := false
+	var pinned atomic.Bool
 	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
-		pinned = true
+		pinned.Store(true)
 		return "", "", errVerityNotPinned
 	})
 	unpinFSVerity = func(string) error { return nil }
@@ -621,15 +806,15 @@ func TestFullRegistryRetriesStalePins(t *testing.T) {
 	if _, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
-	if !pinned {
+	if !pinned.Load() {
 		t.Fatal("staging reported no capacity while stale pins were reclaimable")
 	}
 }
 
 func TestFullRegistryRefusesBeforePinning(t *testing.T) {
-	pinned := false
+	var pinned atomic.Bool
 	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
-		pinned = true
+		pinned.Store(true)
 		return "", "", errVerityNotPinned
 	})
 	verifiedMountRegistry.Lock()
@@ -641,7 +826,7 @@ func TestFullRegistryRefusesBeforePinning(t *testing.T) {
 	if _, _, err := f.p.CreateContainer(t.Context(), f.pod, f.ctr); err != nil {
 		t.Fatalf("CreateContainer: %v", err)
 	}
-	if pinned {
+	if pinned.Load() {
 		t.Fatal("full registry still opened the source")
 	}
 }
@@ -671,10 +856,12 @@ func TestHungStagingIsBounded(t *testing.T) {
 }
 
 func TestReleasingPinStaysCounted(t *testing.T) {
-	pinned := false
+	root := t.TempDir()
+	var pinned atomic.Bool
 	f := newVerityFixture(t, ModeFailClosed, false, func(string, []string) (string, string, error) {
-		pinned = true
-		return fakeStaging(t), testVerityDigest, nil
+		pinned.Store(true)
+		path, err := newStagingPath(root)
+		return path, testVerityDigest, err
 	})
 	path := fakeStaging(t)
 	mount := f.ctr.Mounts[0]
@@ -700,8 +887,8 @@ func TestReleasingPinStaysCounted(t *testing.T) {
 	if !counted {
 		t.Fatal("pin being released no longer counts against the limit")
 	}
-	if err != nil || adjust != nil || pinned {
-		t.Fatalf("CreateContainer during release = %v, %v, pinned %t, want no staging", adjust, err, pinned)
+	if err != nil || adjust != nil || pinned.Load() {
+		t.Fatalf("CreateContainer during release = %v, %v, pinned %t, want no staging", adjust, err, pinned.Load())
 	}
 	if got := registeredMounts(f.ctr.Id); len(got) != 0 {
 		t.Fatalf("pins left after release: %v", got)
@@ -865,6 +1052,6 @@ func TestNewPluginLeavesStagingAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !fileExists(staged) {
-		t.Fatal("newPlugin removed staging; only Run may sweep it")
+		t.Fatal("newPlugin removed staging; only Synchronize may release it")
 	}
 }

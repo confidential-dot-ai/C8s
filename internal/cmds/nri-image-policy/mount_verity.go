@@ -2,8 +2,13 @@ package nriimagepolicy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -15,6 +20,8 @@ import (
 
 const maxVerifiedMounts = 1024
 
+var verifiedMountRoot = "/run/c8s/verity-mounts"
+
 // A mount that is not staged keeps its path-only evidence, so final matching
 // denies it unless an entry admits it without provenance. Staging failures
 // never deny by themselves: another entry may admit the unstaged mount.
@@ -24,6 +31,8 @@ var (
 	errVerityUnavailable = errors.New("source has no fs-verity digest")
 	errVerityCapacity    = errors.New("verified mount limit reached")
 	errVerityReleasing   = errors.New("container's staging mount is being released")
+	errVerityMismatch    = errors.New("staging mount no longer has its recorded fs-verity digest")
+	errStagingOrphaned   = errors.New("no listed container uses this staging mount")
 	// errStillMounted marks an unpin that left the staging mount attached.
 	errStillMounted = errors.New("staging mount still attached")
 )
@@ -33,6 +42,7 @@ var (
 var (
 	pinFSVerity   = pinFSVerityFile
 	unpinFSVerity = unpinFSVerityFile
+	measureStaged = stagedDigest
 )
 
 type verifiedMount struct {
@@ -47,8 +57,8 @@ type verifiedMount struct {
 // verifiedMountRegistry holds committed pins only. A staging call keeps its
 // new pins private, covered by a reservation, until it commits or discards
 // them all at once; so no validation can see a pin from an abandoned call.
-// The registry is boot-process-local: losing it on restart fails closed for
-// existing staged mounts. The lock is never held across filesystem or mount
+// Each committed pin also has a record on disk, from which a restarted
+// enforcer rebuilds the registry (restoreVerifiedMounts). The lock is never held across filesystem or mount
 // syscalls, so a hung source filesystem cannot stall every NRI callback.
 var verifiedMountRegistry = struct {
 	sync.Mutex
@@ -234,7 +244,12 @@ func stageVerityMount(logger *slog.Logger, pod *api.PodSandbox, ctr *api.Contain
 	path, digest, err := pinFSVerity(mount.GetSource(), accepted)
 	if err == nil && path != "" {
 		want.digest = digest
-		return stagedMount{mount: mount, path: path, entry: want}, nil
+		if err = writeStagingRecord(path, want); err == nil {
+			return stagedMount{mount: mount, path: path, entry: want}, nil
+		}
+		if !errors.Is(unpinFSVerity(path), errStillMounted) {
+			path = ""
+		}
 	}
 	verifiedMountRegistry.Lock()
 	defer verifiedMountRegistry.Unlock()
@@ -260,7 +275,7 @@ func verifiedHostMount(ctx MountContext, mount *api.Mount) (allowlist.ObservedMo
 	}
 	observed := observeHostMount(mount)
 	// Requery the inode that runc will bind, including the staging mount's mode.
-	if !observed.ReadOnly || observed.HostSourceDigest == "" || !pinnedFSVerityFile(mount.GetSource(), entry.digest) {
+	if !observed.ReadOnly || observed.HostSourceDigest == "" || !pinnedFSVerity(mount.GetSource(), entry.digest) {
 		return allowlist.ObservedMount{}, false
 	}
 	observed.HostSourceDigest, _ = allowlist.HostSourceDigest(entry.source)
@@ -304,4 +319,113 @@ func releaseVerifiedPaths(logger *slog.Logger, match func(verifiedMount) bool) {
 			logger.Warn("cannot release fs-verity staging mount", "container", entry.containerID, "path", path, "error", err)
 		}
 	}
+}
+
+// pinnedFSVerity reports whether the staging mount at path still has digest.
+func pinnedFSVerity(path, digest string) bool {
+	return digest != "" && measureStaged(path) == digest
+}
+
+// stagingRecord is the on-disk form of a committed pin, next to its inode.
+type stagingRecord struct {
+	Source      string `json:"source"`
+	Digest      string `json:"digest"`
+	ContainerID string `json:"containerID"`
+	SandboxID   string `json:"sandboxID"`
+	PodUID      string `json:"podUID"`
+	Destination string `json:"destination"`
+}
+
+func stagingRecordPath(path string) string {
+	return filepath.Join(filepath.Dir(path), "record.json")
+}
+
+func writeStagingRecord(path string, entry verifiedMount) error {
+	data, err := json.Marshal(stagingRecord{Source: entry.source, Digest: entry.digest, ContainerID: entry.containerID, SandboxID: entry.sandboxID, PodUID: entry.podUID, Destination: entry.destination})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(stagingRecordPath(path), data, 0600)
+}
+
+func readStagingRecord(path string) (verifiedMount, error) {
+	data, err := os.ReadFile(stagingRecordPath(path))
+	if err != nil {
+		return verifiedMount{}, err
+	}
+	var record stagingRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return verifiedMount{}, err
+	}
+	return verifiedMount{source: record.Source, digest: record.Digest, containerID: record.ContainerID, sandboxID: record.SandboxID, podUID: record.PodUID, destination: record.Destination}, nil
+}
+
+// removeStaging deletes the directory of a detached staging mount. Parts that
+// a crash never created are skipped.
+func removeStaging(path string) error {
+	for _, file := range []string{stagingRecordPath(path), path} {
+		if err := os.Remove(file); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+	}
+	return os.Remove(filepath.Dir(path))
+}
+
+// restoreVerifiedMounts rebuilds the registry from the staging that an earlier
+// enforcer process left under verifiedMountRoot. A pin is registered again only when its
+// inode still has the recorded digest on a filesystem that enforces fs-verity,
+// and the container its record names is listed with that mount; every other
+// staging directory is released. Call it once per process, before any staging
+// or check of existing containers. It assumes a single enforcer per node: a
+// second instance would release the pins the first is still staging.
+func restoreVerifiedMounts(logger *slog.Logger, pods []*api.PodSandbox, ctrs []*api.Container) {
+	dirs, err := filepath.Glob(filepath.Join(verifiedMountRoot, "file-*"))
+	if err != nil {
+		logger.Warn("cannot list fs-verity staging", "error", err)
+		return
+	}
+	podUIDs := make(map[string]string, len(pods))
+	for _, pod := range pods {
+		podUIDs[pod.GetId()] = pod.GetUid()
+	}
+	for _, dir := range dirs {
+		path := filepath.Join(dir, "inode")
+		entry, err := restoredEntry(path, podUIDs, ctrs)
+		if err == nil {
+			verifiedMountRegistry.Lock()
+			verifiedMountRegistry.mounts[path] = entry
+			verifiedMountRegistry.Unlock()
+			logger.Info("fs-verity staging restored", "container", entry.containerID, "path", path)
+			continue
+		}
+		logger.Info("releasing fs-verity staging", "path", path, "reason", err)
+		err = unpinFSVerity(path)
+		if errors.Is(err, errStillMounted) {
+			entry.stale = true
+			verifiedMountRegistry.Lock()
+			verifiedMountRegistry.mounts[path] = entry
+			verifiedMountRegistry.Unlock()
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			logger.Warn("cannot release fs-verity staging mount", "path", path, "error", err)
+		}
+	}
+}
+
+func restoredEntry(path string, podUIDs map[string]string, ctrs []*api.Container) (verifiedMount, error) {
+	entry, err := readStagingRecord(path)
+	if err != nil {
+		return entry, err
+	}
+	used := slices.ContainsFunc(ctrs, func(ctr *api.Container) bool {
+		return ctr.GetId() == entry.containerID && ctr.GetPodSandboxId() == entry.sandboxID && podUIDs[entry.sandboxID] == entry.podUID &&
+			slices.ContainsFunc(ctr.GetMounts(), func(m *api.Mount) bool { return m.GetSource() == path && m.GetDestination() == entry.destination })
+	})
+	if !used {
+		return entry, errStagingOrphaned
+	}
+	if !pinnedFSVerity(path, entry.digest) {
+		return entry, errVerityMismatch
+	}
+	return entry, nil
 }
