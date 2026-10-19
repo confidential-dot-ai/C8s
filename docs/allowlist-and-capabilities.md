@@ -333,6 +333,55 @@ the path pin grants access to the contents at that node path. Read-only mode
 applies to the mount itself; nested mounts retain their own flags. Recursive
 read-only/write mount options leave the host source commitment unavailable.
 
+A read-only host **file** can declare node-root provenance instead of being
+treated as operator-supplied executable content:
+
+```json
+{"destination":"/usr/bin/nvidia-smi","kind":"host","source":"/usr/bin/nvidia-smi","readOnly":true,"provenance":"node-root"}
+```
+
+`node-root` requires a regular file reached directly through the node's
+read-only dm-verity root. The enforcer opens the source without symlinks or
+intervening mounts, checks the active kernel table for a single strict read-only
+dm-verity target, and compares its SHA-256 root hash with `roothash=` in the
+measured boot command line. Writable overlays, foreign verity devices, bind
+aliases, directories, missing evidence, and permissive corruption handling do
+not qualify. The approved node launch measurement authenticates the image,
+including its kernel command line and root hash; no separate file hash is needed.
+Customer verification must approve that measurement. A dev image or an unchecked
+measurement does not become trustworthy merely because it uses dm-verity.
+
+Blocking adjustment validation checks provenance before creation, and the
+persisted launch is checked again. Provenance travels with the mount evidence
+through inventory, admission history and CDS workload matching, so `node-root`
+bytes are bound to the attested node image.
+
+Lint permits `node-root` rules on `PATH` and loader search paths. Path-only host
+rules and data mounts retain search-path rejection. Source, destination and
+access-mode constraints still apply. Use `allowlist derive --mounts-file` to
+supply the rules. This covers the measured NVIDIA files in #868 without a
+blanket NVIDIA exemption or lint bypass.
+
+Provenance requires a plain bind mount (`bind` type or a `bind`/`rbind` option,
+with only access and propagation flags). Any other mount type or option, such
+as an overlay naming the verified file with another `lowerdir`, gets no
+provenance. A read-only file bind with provenance is not a host bind for the
+sandbox policy (`policy.sandbox`), so a CDS-served entry can admit it. A
+provenance rule is still a host rule, so an entry with one cannot carry a
+secrets grant.
+
+Any other `provenance` value, and the reserved `verityDigest` field, are
+rejected as not supported. This exception is scoped to read-only regular files.
+It does not implement whole-volume provenance, arbitrary dm-verity volume trust,
+directory mounts, IMA/IPE policy, dependency approval, or a general prohibition
+on interpreters reading executable scripts from data. Keep exact env/mount
+policies and review arguments and dependencies. Existing permissive policies
+retain their behavior.
+
+Upgrade CDS/CLI consumers, then the node enforcer, before publishing
+`provenance`. Old parsers reject the field and missing evidence denies
+admission. Baked enforcers require a node-image rebuild.
+
 The pod UID embedded in a kubelet source must equal the pod being admitted, and
 containerd sandbox sources must name its exact sandbox. These runtime IDs prove
 local ownership only and are not serialized into the stable allowlist.
@@ -934,3 +983,18 @@ README and [`operator.md`](operator.md). Rotating the pinned set rolls CDS, and
 a verifier detects a changed write policy by comparing the served
 `/operator-keys` list against its own bundle. Secret grants (`secrets`) are
 managed with the same `edit`/`apply` flow.
+
+To check node-root provenance against a real dm-verity table on a disposable
+Linux build host with root, `mkfs.ext4`, `veritysetup` and loop devices:
+
+```sh
+go test -c -o /tmp/nri-verity.test ./internal/cmds/nri-image-policy
+sudo bash node-guest-image/tests/mount-verity-test.sh /tmp/nri-verity.test
+```
+
+The script creates a private mount namespace and a disposable verity image, and
+confirms that the image's device does not pass as the host's measured boot root.
+CI also runs this test and merges its instrumented coverage into the coverage
+gate. To collect its profile, build the test binary with `-coverpkg=./...` and
+pass an existing coverage directory as the script's second argument. It does not
+boot an attested node or deploy a GPU workload.
