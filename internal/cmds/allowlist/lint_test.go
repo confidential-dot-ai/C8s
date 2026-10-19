@@ -612,7 +612,7 @@ func TestLintAmbiguityIncludesMountPolicies(t *testing.T) {
 	}
 }
 
-func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
+func TestLintAllowsVerifiedHostExecutables(t *testing.T) {
 	for _, tc := range []struct {
 		name, kind, extra string
 		refused           bool
@@ -620,7 +620,10 @@ func TestLintAllowsNodeRootHostExecutables(t *testing.T) {
 		{"path alone", "host", "", true},
 		{"measured node root", "nodeRootFile", "", false},
 		{"provenance field", "host", `,"provenance":"node-root"`, true},
-		{"fs-verity not supported", "nodeRootFile", `,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},
+		{"nodeRootFile with verityDigest", "nodeRootFile", `,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, true},
+		{"pinned fs-verity digest", "fsVerityFile", `,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`, false},
+		{"fsVerityFile without digest", "fsVerityFile", "", true},
+		{"invalid fs-verity digest", "fsVerityFile", `,"verityDigest":"not-a-hash"`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			container := `{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},` +

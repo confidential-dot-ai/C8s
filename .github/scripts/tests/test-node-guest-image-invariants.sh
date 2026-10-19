@@ -97,7 +97,7 @@ tests=$((tests + 1))
 cp "$confos_dir/mkosi/initrd/mkosi.extra/init" "$fixture_init"
 kernel_dir="$fixture_dir/node-guest-image/kernel"
 cp -a "$kernel_dir" "$fixture_dir/kernel.orig"
-rejects_hotplug() {
+rejects_kernel_config() {
   local name=$1 expected=$2 edit=$3 config
   shift 3
   for config in "$@"; do
@@ -116,14 +116,19 @@ rejects_hotplug() {
 off='s/^# CONFIG_HOTPLUG_PCI is not set$/CONFIG_HOTPLUG_PCI=y/'
 # shellcheck disable=SC2016 # sed's last-line address, not a shell expansion.
 append='$a '
-rejects_hotplug "fragments enabling HOTPLUG_PCI" \
+rejects_kernel_config "fragments enabling HOTPLUG_PCI" \
   "c8s.config must keep '# CONFIG_HOTPLUG_PCI is not set'" "$off" c8s.config c8s-dev.config
-rejects_hotplug "fragments enabling pciehp" \
+rejects_kernel_config "fragments enabling pciehp" \
   'c8s.config enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI_PCIE=y" c8s.config c8s-dev.config
-rejects_hotplug "dev fragment enabling HOTPLUG_PCI" \
+rejects_kernel_config "dev fragment enabling HOTPLUG_PCI" \
   'c8s-dev.config enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI=y" c8s-dev.config
-rejects_hotplug "snapshot resolving HOTPLUG_PCI on" \
+rejects_kernel_config "snapshot resolving HOTPLUG_PCI on" \
   "c8s.snapshot must keep '# CONFIG_HOTPLUG_PCI is not set'" "$off" config-x86_64-c8s.snapshot
-rejects_hotplug "snapshot resolving acpiphp on" \
+rejects_kernel_config "snapshot resolving acpiphp on" \
   'c8s.snapshot enables the PCI hotplug symbols' "${append}CONFIG_HOTPLUG_PCI_ACPI=y" config-x86_64-c8s.snapshot
+verity_off='s/^CONFIG_FS_VERITY=y$/# CONFIG_FS_VERITY is not set/'
+rejects_kernel_config "fragments disabling FS_VERITY" \
+  'c8s.config must set CONFIG_FS_VERITY=y' "$verity_off" c8s.config c8s-dev.config
+rejects_kernel_config "snapshot resolving FS_VERITY off" \
+  'c8s.snapshot must set CONFIG_FS_VERITY=y' "$verity_off" config-x86_64-c8s.snapshot
 echo "$tests node-image invariant assertions passed"

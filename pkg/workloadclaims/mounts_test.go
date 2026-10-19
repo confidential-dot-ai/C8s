@@ -151,6 +151,29 @@ func TestProvenanceSurvivesInventoryAndChangesIdentity(t *testing.T) {
 	}
 }
 
+func TestVerityDigestSurvivesInventoryAndChangesIdentity(t *testing.T) {
+	mount := allowlist.ObservedMount{Destination: "/usr/bin/tool", Class: allowlist.MountHost, ReadOnly: true, Provenance: allowlist.ProvenanceFSVerity, VerityDigest: strings.Repeat("b", 64)}
+	c := SandboxContainer{Mounts: []allowlist.ObservedMount{mount}}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded SandboxContainer
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Mounts[0] != mount || decoded.Key() != c.Key() {
+		t.Fatalf("inventory round trip = %+v, want %+v", decoded.Mounts[0], mount)
+	}
+	for _, digest := range []string{"", strings.Repeat("a", 64)} {
+		changed := mount
+		changed.VerityDigest = digest
+		if (SandboxContainer{Mounts: []allowlist.ObservedMount{changed}}).Key() == c.Key() {
+			t.Fatalf("verity digest %q collapsed in history key", digest)
+		}
+	}
+}
+
 func TestVariableEvidenceRoundTrip(t *testing.T) {
 	observation, err := allowlist.ObserveEnv([]string{"MODE=production", "GPU_SERIAL=device-1"})
 	if err != nil {

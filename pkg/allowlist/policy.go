@@ -11,17 +11,16 @@ import (
 // enforcer with no policy yet can query it without a guard.
 type Index struct {
 	byDigest map[string][]Container
+	fsVerity bool
 }
 
 // BuildIndex projects an Allowlist into an admission index.
 func (a *Allowlist) BuildIndex() *Index {
 	idx := &Index{byDigest: map[string][]Container{}}
 	for _, w := range a.Workloads {
-		for _, c := range w.InitContainers {
+		for _, c := range w.containers() {
 			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
-		}
-		for _, c := range w.Containers {
-			idx.byDigest[c.Digest.String()] = append(idx.byDigest[c.Digest.String()], c)
+			idx.fsVerity = idx.fsVerity || len(fsVerityMountRules(c)) > 0
 		}
 	}
 	return idx
@@ -160,11 +159,12 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 	return false
 }
 
-// AdmitsNodeRoot reports whether some entry that admits r does so through an
-// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
-// node image; mounts admitted under `any` or by a host rule do not.
-func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
-	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
+// AdmitsVerifiedFile reports whether some entry that admits r does so through
+// an exact nodeRootFile or fsVerityFile mount rule at m's destination and host
+// source. Only such a mount carries bytes the allowlist pinned; mounts
+// admitted under `any` or by a host rule do not.
+func (i *Index) AdmitsVerifiedFile(r RunningContainer, m ObservedMount) bool {
+	if i == nil || m.Class != MountHost || m.Provenance == "" || !m.ReadOnly {
 		return false
 	}
 	d, err := types.ParseDigest(r.Digest)
@@ -177,7 +177,8 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 			continue
 		}
 		for _, rule := range c.Mounts.Rules {
-			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
+			verified := rule.Kind == MountNodeRootFile || rule.Kind == MountFSVerityFile
+			if verified && rule.Destination == m.Destination && rule.behavior().admits(m) {
 				return true
 			}
 		}
@@ -185,9 +186,9 @@ func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
 	return false
 }
 
-// DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
-// mount rule.
-func (i *Index) DeclaresNodeRoot(digest string) bool {
+// DeclaresMountKind reports whether some entry for digest has a mount rule of
+// kind, such as MountNodeRootFile.
+func (i *Index) DeclaresMountKind(digest string, kind MountClass) bool {
 	if i == nil {
 		return false
 	}
@@ -197,7 +198,40 @@ func (i *Index) DeclaresNodeRoot(digest string) bool {
 	}
 	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
 		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
-			return rule.Kind == MountNodeRootFile
+			return rule.Kind == kind
 		})
 	})
+}
+
+// HasFSVerityMountRules reports whether any entry has an fsVerityFile mount
+// rule, so an enforcer can skip resolving an image digest for staging.
+func (i *Index) HasFSVerityMountRules() bool {
+	return i != nil && i.fsVerity
+}
+
+// FSVerityMountRules returns the fsVerityFile mount rules of every entry for
+// digest. They are staging candidates, not an admission decision: the enforcer
+// still matches the finalized container against the whole policy.
+func (i *Index) FSVerityMountRules(digest string) []MountRule {
+	if i == nil {
+		return nil
+	}
+	var rules []MountRule
+	for _, c := range i.byDigest[digest] {
+		rules = append(rules, fsVerityMountRules(c)...)
+	}
+	return rules
+}
+
+func fsVerityMountRules(c Container) []MountRule {
+	if c.Mounts.Policy != PolicyExact {
+		return nil
+	}
+	var rules []MountRule
+	for _, rule := range c.Mounts.Rules {
+		if rule.Kind == MountFSVerityFile {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
 }

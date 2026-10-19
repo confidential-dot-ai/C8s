@@ -520,6 +520,9 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 		hostBind  bool
 	}{
 		{"verified read-only file", nil, nil, false},
+		{"fs-verity staged file", func(m *allowlist.ObservedMount) {
+			m.Provenance, m.VerityDigest = allowlist.ProvenanceFSVerity, strings.Repeat("b", 64)
+		}, nil, false},
 		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, nil, true},
 		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, nil, true},
 		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, nil, true},
@@ -546,7 +549,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 				}
 			}
 			admitted := func(m allowlist.ObservedMount) bool {
-				return m.Provenance == allowlist.ProvenanceNodeRoot && m.ReadOnly
+				return m.Provenance != "" && m.ReadOnly
 			}
 			got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds
 			if (len(got) > 0) != tc.hostBind {

@@ -23,6 +23,7 @@ func (p *plugin) ValidateContainerAdjustment(ctx context.Context, req *api.Valid
 	ctr, env := adjustedLaunchContainer(req)
 	verdict, reason := p.checkContainerObserved(ctx, p.cfg, req.GetPod(), ctr, ctr.GetAnnotations()[annotationImageName], launchFinal, env, adjustedMounts(req, ctr, p.cfg.WorkloadClaims.SocketDir))
 	if verdict == verdictDeny && p.cfg.Policy.Mode != ModeAudit {
+		releaseVerifiedMounts(p.logger, ctr.GetId())
 		return fmt.Errorf("%s", reason)
 	}
 	// No inventory record here: later validators can still reject creation, and

@@ -279,9 +279,9 @@ func TestWorkloadDeleteRoundTrip(t *testing.T) {
 	}
 }
 
-func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
+func TestVerifiedExecutableWritesRemainAuthorized(t *testing.T) {
 	for _, command := range []string{"upload", "apply"} {
-		for _, mode := range []string{"node-root", "path only", "unpinned operator key"} {
+		for _, mode := range []string{"node-root", "fs-verity", "path only", "unpinned operator key"} {
 			t.Run(command+"/"+mode, func(t *testing.T) {
 				dir := t.TempDir()
 				key, pub := newOperatorKeypair(t, dir, "operator.key")
@@ -289,11 +289,16 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 				if mode == "unpinned operator key" {
 					key, _ = newOperatorKeypair(t, dir, "untrusted.key")
 				}
-				kind := "nodeRootFile"
-				if mode == "path only" {
-					kind = "host"
+				digest := strings.Repeat("b", 64)
+				kind := pkgallowlist.MountNodeRootFile
+				extra := ""
+				switch mode {
+				case "fs-verity":
+					kind, extra = pkgallowlist.MountFSVerityFile, `,"verityDigest":"`+digest+`"`
+				case "path only":
+					kind = pkgallowlist.MountHost
 				}
-				entries := `{"worker":{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}},"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"` + kind + `","source":"/usr/bin/nvidia-smi","readOnly":true}]}}]}}`
+				entries := `{"worker":{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}},"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"` + string(kind) + `","source":"/usr/bin/nvidia-smi","readOnly":true` + extra + `}]}}]}}`
 				body := entries
 				if command == "upload" {
 					body = `{"schema":"c8s.allowlist/v1","workloads":` + entries + `}`
@@ -305,18 +310,21 @@ func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
 					args = append(args, "--force")
 				}
 				_, _, err := runCmd(args...)
-				if mode != "node-root" {
+				if mode != "node-root" && mode != "fs-verity" {
 					if err == nil || cds.count() != 0 {
 						t.Fatalf("unsafe or unauthorized policy written: %v", err)
 					}
 					return
 				}
 				if err != nil {
-					t.Fatalf("node-root %s: %v", command, err)
+					t.Fatalf("%s %s: %v", mode, command, err)
 				}
 				worker, ok := cds.workload("worker")
-				if !ok || worker.Containers[0].Mounts.Rules[0].Kind != pkgallowlist.MountNodeRootFile {
-					t.Fatal("lost the nodeRootFile kind on the signed write path")
+				if !ok {
+					t.Fatal("worker not written")
+				}
+				if rule := worker.Containers[0].Mounts.Rules[0]; rule.Kind != kind || mode == "fs-verity" && rule.VerityDigest != digest {
+					t.Fatalf("lost the %s rule on the signed write path: %+v", kind, rule)
 				}
 			})
 		}

@@ -212,9 +212,9 @@ jobs:
       - name: Measure coverage
         run: ./scripts/coverage-gate.sh run head.out
 
-      # Node-root provenance depends on a real kernel dm-verity table. Include
-      # that test in the measured profile rather than skipping its successful
-      # path on the runner's ordinary writable root filesystem.
+      # Verity provenance depends on real kernel ioctls, dm-verity tables and
+      # inode bind mounts. Include these tests in the measured profile rather
+      # than skipping their successful paths on the runner's writable root.
       - name: Install kernel verity test tools
         run: |
           sudo apt-get update
@@ -234,7 +234,7 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: base-total.txt
-          # v4 includes real kernel dm-verity execution as well as ordinary Go
+          # v4 includes real kernel verity execution as well as ordinary Go
           # execution, with the same head-script procedure used for the base.
           key: coverage-total-v4-${{ github.sha }}
 

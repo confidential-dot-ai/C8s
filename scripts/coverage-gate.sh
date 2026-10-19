@@ -3,7 +3,7 @@
 #
 # Usage:
 #   scripts/coverage-gate.sh run [profile]        run tests, write coverage profile
-#   scripts/coverage-gate.sh kernel <profile>     add real kernel dm-verity coverage
+#   scripts/coverage-gate.sh kernel <profile>     add real kernel verity coverage
 #   scripts/coverage-gate.sh total <profile>      print total coverage (e.g. "67.94")
 #
 # The profile is produced with -coverpkg=./... so packages without their own
@@ -64,7 +64,9 @@ kernel)
   mkdir "$kernel_scratch/profiles"
   go test -c -coverpkg=./... -o "$kernel_scratch/nri-verity.test" ./internal/cmds/nri-image-policy
   sudo -n bash "$harness" "$kernel_scratch/nri-verity.test" "$kernel_scratch/profiles"
-  [ -s "$kernel_scratch/profiles/dm-verity.out" ] || { echo "kernel harness produced no profile" >&2; exit 1; }
+  for kernel_profile in fs-verity dm-verity; do
+    [ -s "$kernel_scratch/profiles/$kernel_profile.out" ] || { echo "kernel harness produced no $kernel_profile profile" >&2; exit 1; }
+  done
   # percent() unions covered blocks from duplicate records; retain one header.
   for kernel_profile in "$kernel_scratch"/profiles/*.out; do
     tail -n +2 "$kernel_profile" >> "$profile"
