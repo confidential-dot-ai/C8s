@@ -103,6 +103,12 @@ containers:
       - --rate-limiter-idle-timeout={{ .Values.cds.rateLimiterIdleTimeout }}
       - --armtls-platform={{ .Values.cds.armtlsPlatform }}
       - --armtls-cert-ttl={{ .Values.cds.armtlsCertTTL }}
+      {{- /* The measured-policy journal, under the attestation-api-socket
+             mount. Without that mount the default node path is absent and
+             CDS logs it. */}}
+      {{- if include "c8s.attestationApiSocketPresent" . }}
+      - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+      {{- end }}
     {{- with (include "c8s.attestationApiHostIPEnv" .) }}
     # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
     # IP so this pod-netns pod reaches the node-baked host attestation-api.

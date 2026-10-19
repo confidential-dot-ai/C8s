@@ -357,12 +357,12 @@ func TestStageCommandFailsClosed(t *testing.T) {
 }
 
 // The binding check replays the journal the operator names, like cred-release,
-// so the two checks of one node read the same file.
+// so the two checks of one node read the same file. Empty names none.
 func TestVerifyReplaysTheConfiguredJournal(t *testing.T) {
 	for _, tc := range []struct {
 		name, journal, want string
 	}{
-		{name: "default", want: armtls.NodeJournal},
+		{name: "none"},
 		{name: "moved", journal: "/run/custom-nri/measured-policies", want: "/run/custom-nri/measured-policies"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -406,5 +406,13 @@ func TestVerifyPassesTheFamilyNameToTheSelfReport(t *testing.T) {
 				t.Fatalf("self-report asked for platform %q, want family %q", got, family)
 			}
 		})
+	}
+}
+
+// stage reads the node's journal where cred-release does unless told otherwise.
+func TestStageMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
+	flag := newStageCmd().Flags().Lookup("measured-policies-file")
+	if flag == nil || flag.DefValue != armtls.NodeJournal {
+		t.Fatalf("--measured-policies-file = %v, want default %s", flag, armtls.NodeJournal)
 	}
 }

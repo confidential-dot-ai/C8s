@@ -233,25 +233,44 @@ type DigestsClient struct {
 	http *http.Client
 }
 
-// NewDigestsClient builds the client. pins hold the launch digests (and any
-// TDX RTMR pins) an inventory may present — the same allowlist CDS pins for
-// the inventory's armTLS certificate, so a sandbox token and the callback that
-// follows it are held to one standard. Zero pins accept any armTLS-attested
-// inventory, matching what an empty allowlist already means for the certificate:
-// UNSAFE outside development; callers warn.
+// DigestsClientConfig configures [NewDigestsClient].
+type DigestsClientConfig struct {
+	Platform          string
+	AttestFunc        func(ctx context.Context, customData string) (string, error)
+	AttestationAPIURL string
+	// Pins hold the launch digests (and any TDX RTMR pins) an inventory may
+	// present — the same allowlist CDS pins for the inventory's armTLS
+	// certificate, so a sandbox token and the callback that follows it are
+	// held to one standard. Zero pins accept any armTLS-attested inventory,
+	// matching what an empty allowlist already means for the certificate:
+	// UNSAFE outside development; callers warn.
+	Pins armtls.Pins
+	// Timeout bounds one callback. Zero or negative means 10s.
+	Timeout time.Duration
+	// MeasuredPoliciesFile is the node's measured-policy journal its TDX client
+	// certificate lists. Empty lists none.
+	MeasuredPoliciesFile string
+}
+
+func (c DigestsClientConfig) tlsConfig() *armtls.ClientConfig {
+	return &armtls.ClientConfig{
+		Policy:               c.Pins.VerifyPolicy(c.AttestationAPIURL),
+		Platform:             c.Platform,
+		AttestFunc:           c.AttestFunc,
+		MeasuredPoliciesFile: c.MeasuredPoliciesFile,
+	}
+}
+
+// NewDigestsClient builds the client.
 //
 // It warms its own armTLS certificate before returning: provisioning costs an
 // attestation round-trip, and paying it lazily would put it inside the first
 // pod's issuance deadline.
-func NewDigestsClient(ctx context.Context, platform string, attestFunc func(ctx context.Context, customData string) (string, error), attestationApiURL string, pins armtls.Pins, timeout time.Duration) (*DigestsClient, error) {
-	if err := requireAttestationApi(attestationApiURL); err != nil {
+func NewDigestsClient(ctx context.Context, cfg DigestsClientConfig) (*DigestsClient, error) {
+	if err := requireAttestationApi(cfg.AttestationAPIURL); err != nil {
 		return nil, err
 	}
-	tlsCfg, certMgr, err := armtls.NewClientTLSConfig(&armtls.ClientConfig{
-		Policy:     pins.VerifyPolicy(attestationApiURL),
-		Platform:   platform,
-		AttestFunc: attestFunc,
-	})
+	tlsCfg, certMgr, err := armtls.NewClientTLSConfig(cfg.tlsConfig())
 	if err != nil {
 		return nil, fmt.Errorf("workloadclaims: build sandbox-digests client: %w", err)
 	}
@@ -260,6 +279,7 @@ func NewDigestsClient(ctx context.Context, platform string, attestFunc func(ctx 
 	if err := warmUpCert(warmupCtx, certMgr); err != nil {
 		return nil, fmt.Errorf("workloadclaims: warm up sandbox-digests client cert: %w", err)
 	}
+	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}

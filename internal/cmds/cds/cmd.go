@@ -15,6 +15,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 const (
@@ -90,6 +91,7 @@ func NewCmd() *cobra.Command {
 
 	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
+	flags.StringVar(&cfg.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the armTLS serving and sandbox-digests client certificates list it. Empty lists none")
 
 	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
@@ -150,6 +152,7 @@ type config struct {
 	operatorKeys        string
 	armtlsPlatform      string
 	armtlsCertTTL       time.Duration
+	measuredPolicies    string
 
 	rateLimit                float64
 	rateBurst                int

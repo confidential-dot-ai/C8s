@@ -30,7 +30,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -212,7 +211,7 @@ type Config struct {
 	DocumentPath      string
 	SignaturePath     string
 	// MeasuredPoliciesFile is the node's measured-policy journal, as
-	// cred-release's --measured-policies-file. Empty means armtls.NodeJournal.
+	// cred-release's --measured-policies-file. Empty replays none.
 	MeasuredPoliciesFile string
 	RootDir              string
 }
@@ -253,11 +252,7 @@ func Verify(ctx context.Context, cfg Config) (*Verified, error) {
 	}
 	// credrelease compares against the verified report's family ("sev-snp",
 	// "tdx"), not the launch tag ("snp", "tdx").
-	journal := cfg.MeasuredPoliciesFile
-	if journal == "" {
-		journal = armtls.NodeJournal
-	}
-	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api, journal)
+	measured, err := loadMeasuredIdentity(ctx, string(platform.Family()), api, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return nil, fmt.Errorf("verify this boot's identity: %w", err)
 	}

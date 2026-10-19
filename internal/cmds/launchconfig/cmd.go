@@ -120,7 +120,7 @@ func newStageCmd() *cobra.Command {
 	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", DefaultAttestationAPIURL, "trusted node-local attestation API")
 	f.StringVar(&cfg.DocumentPath, "config", "", "required signed launch.yaml")
 	f.StringVar(&cfg.SignaturePath, "signature", "", "required detached launch.yaml.sig")
-	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the operator-key binding check replays it, as cred-release's flag of the same name")
+	f.StringVar(&cfg.MeasuredPoliciesFile, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the operator-key binding check replays it, as cred-release's flag of the same name. Empty replays none")
 	for _, name := range []string{"platform", "config", "signature"} {
 		_ = stage.MarkFlagRequired(name)
 	}

@@ -253,14 +253,7 @@ func run(cfg config) error {
 		if mErr != nil {
 			return mErr
 		}
-		sandboxDigests, err = workloadclaims.NewDigestsClient(
-			ctx,
-			cfg.armtlsPlatform,
-			attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL),
-			cfg.attestationApiURL,
-			armtls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images},
-			cfg.requestTimeout,
-		)
+		sandboxDigests, err = workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, armtls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images}))
 		if err != nil {
 			return err
 		}
@@ -365,21 +358,7 @@ func run(cfg config) error {
 	srv := newHTTPServer(addr, router, cfg)
 
 	if cfg.armtlsPlatform != "" {
-		attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
-		serverCfg := &armtls.ServerConfig{
-			Platform:   cfg.armtlsPlatform,
-			AttestFunc: attestFunc,
-			CertTTL:    cfg.armtlsCertTTL,
-			Logger:     slog.Default(),
-		}
-		// /secrets reads a CDS-stamped field out of the caller's leaf, so the
-		// chain has to be verified by crypto/tls against the mesh CA: the
-		// armTLS path would admit a self-signed peer whose sandbox-ID extension
-		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
-		// reachable by a caller with no certificate.
-		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
-		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
-		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
+		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Cert))
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
 		}
@@ -441,6 +420,40 @@ func (serverLogFilter) Write(p []byte) (int, error) {
 		slog.Info(msg)
 	}
 	return len(p), nil
+}
+
+func armtlsAttestFunc(cfg config) func(context.Context, string) (string, error) {
+	return attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
+}
+
+// servingConfig is CDS's armTLS serving certificate. /secrets reads a
+// CDS-stamped field out of the caller's leaf, so the chain has to be verified
+// by crypto/tls against the mesh CA: the armTLS path would admit a self-signed
+// peer whose sandbox-ID extension is whatever it chose. VerifyClientCertIfGiven
+// keeps every other route reachable by a caller with no certificate.
+func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
+	return &armtls.ServerConfig{
+		Platform:             cfg.armtlsPlatform,
+		AttestFunc:           armtlsAttestFunc(cfg),
+		CertTTL:              cfg.armtlsCertTTL,
+		Logger:               slog.Default(),
+		ClientCAs:            []*x509.Certificate{meshCA},
+		ClientAuth:           tls.VerifyClientCertIfGiven,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
+	}
+}
+
+// digestsClientConfig is the client CDS calls node inventories back with for
+// a sandbox's container digests.
+func digestsClientConfig(cfg config, pins armtls.Pins) workloadclaims.DigestsClientConfig {
+	return workloadclaims.DigestsClientConfig{
+		Platform:             cfg.armtlsPlatform,
+		AttestFunc:           armtlsAttestFunc(cfg),
+		AttestationAPIURL:    cfg.attestationApiURL,
+		Pins:                 pins,
+		Timeout:              cfg.requestTimeout,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
+	}
 }
 
 func normalizeHTTPServerConfig(cfg config) config {
