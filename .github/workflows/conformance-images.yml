@@ -1,0 +1,56 @@
+name: Conformance images
+
+# The conformance suite's reporter images (test/conformance/images/reporter):
+# each base image with the reporter as its sleep. Dispatched by hand when the
+# reporter or a base changes; test/conformance/backends/metal.sh pins the
+# digests the summary prints.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # The logical image names and bases of test/conformance/backends/common.sh's image_ref.
+          - name: model-server
+            base: docker.io/library/debian:bookworm-slim
+          - name: tenant-app
+            base: docker.io/library/python:3.12-alpine
+          - name: job-runner
+            base: docker.io/library/alpine:3.20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@594f3bf4285d9ea8dc53c9a0c9c4092420091003 # v4.4.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: test/conformance/images/reporter
+          build-args: BASE=${{ matrix.base }}
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          tags: ghcr.io/confidential-dot-ai/c8s-conformance-${{ matrix.name }}:${{ github.sha }}
+
+      - name: Summary
+        env:
+          NAME: ${{ matrix.name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          echo "$NAME: ghcr.io/confidential-dot-ai/c8s-conformance-$NAME@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
