@@ -844,7 +844,12 @@ a component's argv, environment policy or mounts (`operator.extraArgs`,
 beside the old one, which pods still running the old shape keep matching
 while they recycle, and which a rollback matches again. The argv-pinned
 installer entries are named the same way. The seed never overwrites an entry
-the store already holds, so an edit made with `workload apply` survives a
+the store already holds, with two exceptions for an override (see below): it
+deletes every generated shape of the overridden digest, edited ones included,
+and it replaces an entry with open args, mounts or env stored under the
+override's name. When a different entry with exact args, mounts and env
+already holds the override's name, the seed keeps it, skips the override, and
+CDS logs a warning. Otherwise an edit made with `workload apply` survives a
 restart, while a deleted entry returns on the next CDS start for as long as
 the chart still renders it — to remove an image, roll the chart with it gone.
 
@@ -859,13 +864,24 @@ upgrade:
    `seed.json`.
 2. Note the highest `allowlist_version` any node's image policy plugin
    reports on `GET /healthz`.
-3. Publish the seed: `c8s allowlist apply seed.json`. Each entry replaces the
-   live entry of that name whole.
+3. Publish the seed in one write. Each entry replaces the live entry of that
+   name whole:
+
+   ```sh
+   c8s allowlist export live.json
+   jq --slurpfile seed seed.json '.workloads += $seed[0].workloads' live.json > next.json
+   c8s allowlist upload next.json
+   ```
+
+   `c8s allowlist apply seed.json` writes once per entry instead, which
+   raises the version once per entry and lets nodes pull a half-published
+   seed.
 4. Check that `c8s allowlist list` reports a version above the one you noted.
    If it does not, CDS restarted since the nodes last pulled, and they ignore
    its versions up to the one they hold ([Refresh and
-   anti-rollback](#refresh-and-anti-rollback)). Each `apply` raises the
-   version by one, so for a small gap, run it again until the version passes.
+   anti-rollback](#refresh-and-anti-rollback)). Each `upload`, like an `apply`
+   of one entry, raises the version by one, so for a small gap, run it again
+   until the version passes.
    For a larger gap, restart the image policy plugin on each node that
    reports a version at or above it: restart containerd there (on RKE2, the
    `rke2-server` or `rke2-agent` unit), one node at a time. A restarted
@@ -912,6 +928,10 @@ Known limitations:
   version starts below the nodes'. Adding the keys later changes CDS's mounts,
   which is such an upgrade. To upgrade in place, set `cds.operatorKeys` when
   you install; otherwise uninstall the release and install the new one.
+- On a `node.baked` install, this release adds `--follow-seed` to CDS's
+  command line, so the first upgrade to it fails the CDS shape guard until
+  you publish the new CDS entry and set `cds.publishedShape`, as described
+  below.
 
 A rollback that keeps CDS running needs no publication: the store still holds
 the previous release's entries, unless an override retired them (see above).
@@ -921,8 +941,8 @@ CDS does need one. The new store and the updated boot bases need not admit
 the previous CDS or installer, and `helm rollback` reapplies the stored
 manifests without the upgrade guard below. Before you roll back, save the
 `allowlist-seed.json` of the seed ConfigMap in
-`helm get manifest <release> --revision <previous>`, publish it with
-`c8s allowlist apply`, and wait for every node as in steps 2 to 5.
+`helm get manifest <release> --revision <previous>`, then publish it and wait
+for every node as in steps 2 to 5.
 
 CDS itself is recreated, not rolled, so it cannot publish its own new shape:
 the old CDS stops before the new one starts. The chart records CDS's shape,
@@ -938,7 +958,9 @@ CDS, and the `cds.publishedShape` value. To publish it:
    `<release>-cds-allowlist-seed` ConfigMap.
 2. Copy the entry the error names into a file and publish it as in steps 2
    to 4 of the configuration-only procedure above, with
-   `c8s allowlist apply ENTRY_FILE`. Without operator keys, nothing can
+   `c8s allowlist apply ENTRY_FILE`. When the entry is your override, `apply`
+   refuses it while the generated CDS shapes are served: publish it with the
+   override's single `upload` instead. Without operator keys, nothing can
    publish it to the running CDS (see the known limitations above).
 3. Wait until every node has taken the write, as in step 5 of that
    procedure.

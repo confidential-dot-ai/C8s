@@ -288,6 +288,9 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 			continue
 		}
 		if !retiredBySeed(name, w, seedKeys, overrideKeys) {
+			if _, ok := seed[name]; ok {
+				slog.Warn("allowlist seed skipped an override: the store holds a different entry under its name", "workload", name)
+			}
 			continue
 		}
 		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {

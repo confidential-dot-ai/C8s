@@ -177,12 +177,21 @@ func TestCDSShapeGuard(t *testing.T) {
 			}
 			// A CDS recreated since the nodes last pulled counts from a lower
 			// version, which the nodes ignore until it passes theirs or their
-			// plugins restart; each apply raises it by one only.
+			// plugins restart; each write of the single entry raises it by one.
 			if tc.fails && !strings.Contains(string(out), "above every allowlist_version the nodes' image policy plugins reported") {
 				t.Errorf("failure does not require publication past the nodes' versions:\n%s", out)
 			}
 			if tc.fails && !strings.Contains(string(out), "restart the image policy plugin (containerd) on each node that reports more") {
 				t.Errorf("failure does not offer a plugin restart for a large version gap:\n%s", out)
+			}
+			// apply refuses an override that still-served generated shapes
+			// shadow, so only an upload publishes it.
+			publish := "running CDS with c8s allowlist apply"
+			if tc.entry != "" {
+				publish = "running CDS in one c8s allowlist upload"
+			}
+			if tc.fails && !strings.Contains(string(out), publish) {
+				t.Errorf("failure does not say %q:\n%s", publish, out)
 			}
 			if tc.fails && !strings.Contains(string(out), "publish entry "+cmp.Or(tc.entry, tc.want)+" ") {
 				t.Errorf("failure does not name entry %s:\n%s", cmp.Or(tc.entry, tc.want), out)

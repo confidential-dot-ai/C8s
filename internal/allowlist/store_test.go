@@ -1,9 +1,12 @@
 package allowlist
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
@@ -657,5 +660,40 @@ func TestSeedWorkloadsOverrideReplacesPreShapeEntry(t *testing.T) {
 	}
 	if added, retired, err := store.SeedWorkloads(override); err != nil || added != 0 || retired != 0 {
 		t.Fatalf("reseed: added=%d retired=%d err=%v; want 0, 0, nil", added, retired, err)
+	}
+}
+
+// A differing exact entry stored under an override's name keeps the override
+// from seeding, so the seed says why it has no effect.
+func TestSeedWorkloadsWarnsOnSkippedOverride(t *testing.T) {
+	var logs bytes.Buffer
+	defer slog.SetDefault(slog.Default())
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+
+	store, err := OpenInMemory()
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer store.Close()
+
+	digest := mustParseDigest(t, digestA)
+	name := "cds-" + digest.Hex()[:12]
+	exact := func(args ...string) pkgallowlist.Workload {
+		return pkgallowlist.Workload{Containers: []pkgallowlist.Container{{
+			Digest:  digest,
+			Command: pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: []string{"/c8s", "cds"}},
+			Args:    pkgallowlist.ArgvPolicy{Policy: pkgallowlist.PolicyExact, Argv: args},
+			Mounts:  pkgallowlist.MountPolicy{Policy: pkgallowlist.PolicyDeny},
+			Env:     pkgallowlist.EnvPolicy{Policy: pkgallowlist.PolicyMatch, Variables: map[string]pkgallowlist.EnvMatcher{}},
+		}}}
+	}
+	if _, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{name: exact("--earlier")}); err != nil {
+		t.Fatalf("seed earlier override: %v", err)
+	}
+	if added, _, err := store.SeedWorkloads(map[string]pkgallowlist.Workload{name: exact()}); err != nil || added != 0 {
+		t.Fatalf("seed: added=%d err=%v; want 0, nil", added, err)
+	}
+	if !strings.Contains(logs.String(), "level=WARN") || !strings.Contains(logs.String(), name) {
+		t.Errorf("seed skipped override %s without a warning; logs:\n%s", name, logs.String())
 	}
 }

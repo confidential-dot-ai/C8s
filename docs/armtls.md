@@ -573,7 +573,10 @@ The node inventory is wired through NRI.
   between two values is never published. A restarted plugin replaces the file
   on its first recheck when the kubelet or `advertiseHost` supplies the
   address, and waits for the second when only the default route does. A
-  failed lookup or write leaves the file as it is, as does a default-route
+  failed lookup leaves the file as it is. So does a failed write, which the
+  plugin undoes by writing the previous content back; when that restore
+  fails too, the file can keep a truncated address that is still valid, such
+  as `192.0.2.1` from `192.0.2.11`, and readers restart on it. So does a default-route
   address other pods cannot dial, such as a link-local one; only an
   `advertiseHost` that is no dialable address empties it. Until the file holds an address, the
   token socket answers 503 and enforcement runs regardless. Once issuing, the
@@ -581,7 +584,10 @@ The node inventory is wired through NRI.
   address, under the key `/identity` already serves. Components that dial the
   attestation-api through `node-ip` reread it every 15 seconds and restart when
   it names another address; an empty or unreadable file keeps them on theirs.
-  A CDS restarted this way regenerates the mesh CA, as any CDS restart does. On a node whose kubelet registers an address
+  A CDS restarted this way regenerates the mesh CA, as any CDS restart does.
+  After a reboot of a node whose kubelet sets `--node-ip`, the plugin can
+  publish the default route's address while the kubelet still starts, then the
+  kubelet's: readers restart twice, and CDS regenerates the mesh CA twice. On a node whose kubelet registers an address
   neither source finds, such as one a hostname resolves to, set
   `nriImagePolicy.sandboxDigests.advertiseHost`, which overrides both. Route
   inference is the last resort and is wrong under the chart's own default,
