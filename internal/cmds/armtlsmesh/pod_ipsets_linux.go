@@ -342,8 +342,10 @@ type ipSetSpec struct {
 // membershipLoggedSets are the node's own sets. The all-pods sets change with
 // every pod in the cluster, on every node, so they are not logged.
 var membershipLoggedSets = map[string]bool{
-	localPodIPSetName4: true, localPodIPSetName6: true,
-	cwPodIPSetName4: true, cwPodIPSetName6: true,
+	localPodIPSetName4: true,
+	localPodIPSetName6: true,
+	cwPodIPSetName4:    true,
+	cwPodIPSetName6:    true,
 }
 
 // logIPSetMembership logs the set's whole membership when a successful write
