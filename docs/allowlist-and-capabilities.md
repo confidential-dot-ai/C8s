@@ -394,8 +394,9 @@ host-bind check only when an allowlist entry admits the container under an
 `exact` mount policy whose `nodeRootFile` rule names that destination and
 source. That entry can be CDS-served. Every other bind stays a host bind,
 including a measured file under mount policy `any`, under a `host` rule, or
-with the allowlist disabled. A `nodeRootFile` rule still names a host path, so
-an entry with one cannot carry a secrets grant.
+with the allowlist disabled. A read-only `nodeRootFile` rule does not stop an
+entry from carrying a secrets grant; a `host` rule does (see
+[Secrets](secrets.md)).
 
 The reserved `verityDigest` field is rejected as not supported on every kind. This exception is scoped to read-only regular files.
 It does not implement whole-volume provenance, arbitrary dm-verity volume trust,
