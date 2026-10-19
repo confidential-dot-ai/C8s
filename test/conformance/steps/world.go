@@ -147,6 +147,14 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 			}
 			return ctx, nil
 		})
+		// godog records a skip without its error; the attachment keeps the
+		// reason in the report.
+		sc.StepContext().After(func(ctx context.Context, _ *godog.Step, status godog.StepResultStatus, err error) (context.Context, error) {
+			if status == godog.StepSkipped && err != nil && err.Error() != godog.ErrSkip.Error() {
+				ctx = godog.Attach(ctx, godog.Attachment{FileName: "skip-reason", MediaType: "text/plain", Body: []byte(err.Error())})
+			}
+			return ctx, err
+		})
 		registerAdmission(sc)
 		registerAllowlist(sc)
 		registerCDSAPI(sc)

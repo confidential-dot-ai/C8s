@@ -53,8 +53,9 @@ func newBackend(name string) (backend, error) {
 	return b, nil
 }
 
-// call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip;
-// any other failure is a harness error carrying the function's stderr.
+// call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip,
+// wrapped to name the function; any other failure is a harness error
+// carrying the function's stderr.
 func (b backend) call(fn string, args ...string) (string, error) {
 	key := fn + "\x00" + strings.Join(args, "\x00")
 	if out, ok := b.memo[key]; ok && constant[fn] {
@@ -73,7 +74,7 @@ func (b backend) call(fn string, args ...string) (string, error) {
 		}
 		return out, nil
 	case errors.As(err, &exit) && exit.ExitCode() == exitUnsupported:
-		return "", godog.ErrSkip
+		return "", fmt.Errorf("%w: the backend cannot answer %s", godog.ErrSkip, fn)
 	default:
 		return "", fmt.Errorf("backend %s %s: %w\n%s", fn, strings.Join(args, " "), err, stderr.String())
 	}
