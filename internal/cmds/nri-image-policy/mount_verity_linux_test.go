@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -161,6 +162,9 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 		t.Fatal("missing inode pin")
 	}
 	snapshot := adjust.Mounts[0].Source
+	if shared, mounted := mountPropagation(t, verifiedMountRoot); !mounted || shared {
+		t.Fatalf("staging root %s: mount point %t, shared %t; want a private mount point", verifiedMountRoot, mounted, shared)
+	}
 	if err := os.Rename(source, source+"-approved"); err != nil {
 		t.Fatal(err)
 	}
@@ -227,4 +231,33 @@ func TestFSVerityPinnedInodeIntegration(t *testing.T) {
 	if err := p.ValidateContainerAdjustment(t.Context(), req); err == nil {
 		t.Fatal("substituted unverified source admitted")
 	}
+	// A staging bind left under the root makes this unmount fail with EBUSY.
+	if err := unix.Unmount(verifiedMountRoot, 0); err != nil {
+		t.Fatalf("staging root still holds mounts after release: %v", err)
+	}
+}
+
+// mountPropagation reports whether path is a mount point in this namespace and
+// whether that mount is in a shared peer group.
+func mountPropagation(t *testing.T, path string) (shared, mounted bool) {
+	t.Helper()
+	info, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for line := range strings.Lines(string(info)) {
+		fields := strings.Fields(line)
+		if len(fields) < 7 || fields[4] != path {
+			continue
+		}
+		// The last entry for a mount point is the one on top.
+		mounted, shared = true, false
+		for _, optional := range fields[6:] {
+			if optional == "-" {
+				break
+			}
+			shared = shared || strings.HasPrefix(optional, "shared:")
+		}
+	}
+	return shared, mounted
 }

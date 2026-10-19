@@ -209,8 +209,16 @@ func TestUnstagedVerityMountIsDeniedAtValidation(t *testing.T) {
 			if got := registeredMounts("other-container"); len(got) != 1 || got[0] != other {
 				t.Fatalf("other container's pins = %v, want [%s]", got, other)
 			}
+			// A pin from an earlier create attempt must not outlive the denial.
+			earlier := registerStaging(t, f.ctr.Id)
 			if err := f.validate(t, adjust); err == nil {
 				t.Fatal("ValidateContainerAdjustment admitted an fs-verity rule without staged evidence")
+			}
+			if got := registeredMounts(f.ctr.Id); len(got) != 0 {
+				t.Fatalf("pins left after a denied validation: %v", got)
+			}
+			if _, err := os.Stat(earlier); !os.IsNotExist(err) {
+				t.Fatalf("staged file %s not released: %v", earlier, err)
 			}
 		})
 	}
@@ -376,6 +384,85 @@ func TestStartContainerDenyReleasesPins(t *testing.T) {
 	}
 	if _, err := os.Stat(staged); !os.IsNotExist(err) {
 		t.Fatalf("staged file %s not released: %v", staged, err)
+	}
+}
+
+func TestRemoveContainerReleasesPins(t *testing.T) {
+	f := newVerityFixture(t, ModeFailClosed, false, pinFSVerityFile)
+	staged := registerStaging(t, f.ctr.Id)
+	if err := f.p.RemoveContainer(t.Context(), f.pod, f.ctr); err != nil {
+		t.Fatalf("RemoveContainer: %v", err)
+	}
+	if got := registeredMounts(f.ctr.Id); len(got) != 0 {
+		t.Fatalf("pins left after removal: %v", got)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("staged file %s not released: %v", staged, err)
+	}
+}
+
+func TestRefusedCommitLogsItsCause(t *testing.T) {
+	f := newVerityFixture(t, ModeFailClosed, false, nil)
+	tool := f.ctr.Mounts[0]
+	second := &api.Mount{Type: tool.Type, Source: tool.Source, Destination: "/srv/other", Options: tool.Options}
+	f.ctr.Mounts = append(f.ctr.Mounts, second)
+	reused := fakeStaging(t)
+	verifiedMountRegistry.Lock()
+	verifiedMountRegistry.mounts[reused] = verifiedMount{source: tool.Source, digest: testVerityDigest, containerID: f.ctr.Id, sandboxID: f.pod.Id, podUID: f.pod.Uid, destination: tool.Destination}
+	verifiedMountRegistry.Unlock()
+	pinFSVerity = func(string, []string) (string, string, error) {
+		// A concurrent release removes the reused pin while this call stages.
+		verifiedMountRegistry.Lock()
+		delete(verifiedMountRegistry.mounts, reused)
+		verifiedMountRegistry.Unlock()
+		return fakeStaging(t), testVerityDigest, nil
+	}
+	var logs bytes.Buffer
+	if adjust := stageVerityMounts(t.Context(), slog.New(slog.NewTextHandler(&logs, nil)), f.pod, f.ctr, nil, f.rules()); adjust != nil {
+		t.Fatalf("stageVerityMounts = %v, want no staging after the reused pin was released", adjust)
+	}
+	if got := logs.String(); !strings.Contains(got, "not committed") || !strings.Contains(got, errVerityReleasing.Error()) || strings.Contains(got, "<nil>") {
+		t.Fatalf("refused commit logged %q, want its release cause", got)
+	}
+}
+
+func TestPrivateMountRoot(t *testing.T) {
+	originalMount := mountSyscall
+	t.Cleanup(func() { mountSyscall = originalMount })
+	for _, tc := range []struct {
+		name string
+		dir  string
+		want []string
+	}{
+		{"plain directory", t.TempDir(), []string{"bind", "private"}},
+		{"existing mount point", "/", []string{"private"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			mountSyscall = func(source, target, _ string, flags uintptr, _ string) error {
+				if target != tc.dir {
+					t.Errorf("mount target %s, want %s", target, tc.dir)
+				}
+				switch flags {
+				case unix.MS_BIND:
+					if source != tc.dir {
+						t.Errorf("bind source %s, want %s", source, tc.dir)
+					}
+					calls = append(calls, "bind")
+				case unix.MS_PRIVATE:
+					calls = append(calls, "private")
+				default:
+					t.Errorf("unexpected mount flags %#x", flags)
+				}
+				return nil
+			}
+			if err := privateMountRoot(tc.dir); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(calls, tc.want) {
+				t.Fatalf("privateMountRoot(%s) mounted %v, want %v", tc.dir, calls, tc.want)
+			}
+		})
 	}
 }
 
@@ -710,7 +797,7 @@ func TestExpiredStagingNeverCommits(t *testing.T) {
 	verifiedMountRegistry.reserved++
 	verifiedMountRegistry.Unlock()
 	staged := []stagedMount{{mount: f.ctr.Mounts[0], path: path, entry: verifiedMount{containerID: f.ctr.Id}}}
-	if commitStaged(expired, staged) {
+	if commitStaged(expired, staged) == nil {
 		t.Fatal("commitStaged committed after the deadline")
 	}
 	discardStaged(discardLogger(), staged)

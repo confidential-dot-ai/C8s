@@ -186,9 +186,9 @@ func (i *Index) AdmitsVerifiedFile(r RunningContainer, m ObservedMount) bool {
 	return false
 }
 
-// DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
-// mount rule.
-func (i *Index) DeclaresNodeRoot(digest string) bool {
+// DeclaresMountKind reports whether some entry for digest has a mount rule of
+// kind, such as MountNodeRootFile.
+func (i *Index) DeclaresMountKind(digest string, kind MountClass) bool {
 	if i == nil {
 		return false
 	}
@@ -198,7 +198,7 @@ func (i *Index) DeclaresNodeRoot(digest string) bool {
 	}
 	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
 		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
-			return rule.Kind == MountNodeRootFile
+			return rule.Kind == kind
 		})
 	})
 }

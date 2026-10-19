@@ -105,6 +105,9 @@ func pinFSVerityFile(source string, accepted []string) (string, string, error) {
 	if err := unix.Lstat(verifiedMountRoot, &st); err != nil || st.Uid != 0 || st.Mode&0077 != 0 || st.Mode&unix.S_IFMT != unix.S_IFDIR {
 		return "", "", fmt.Errorf("unsafe verified mount directory")
 	}
+	if err := privateMountRoot(verifiedMountRoot); err != nil {
+		return "", "", fmt.Errorf("isolate verified mount directory: %w", err)
+	}
 	path, err := bindStaging(file)
 	if err != nil {
 		return path, "", err
@@ -117,6 +120,22 @@ var (
 	mountSyscall   = unix.Mount
 	unmountSyscall = unix.Unmount
 )
+
+// privateMountRoot makes dir a private mount point. /run is usually shared, so
+// a staging bind created under it would first propagate into every service
+// namespace that is a slave of it, where a later detach never reaches.
+func privateMountRoot(dir string) error {
+	var stx unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, dir, unix.AT_SYMLINK_NOFOLLOW, 0, &stx); err != nil {
+		return err
+	}
+	if stx.Attributes&unix.STATX_ATTR_MOUNT_ROOT == 0 {
+		if err := mountSyscall(dir, dir, "", unix.MS_BIND, ""); err != nil {
+			return err
+		}
+	}
+	return mountSyscall("", dir, "", unix.MS_PRIVATE, "")
+}
 
 // bindStaging bind-mounts the opened file into a new staging directory. On
 // failure it returns a non-empty path only when a mount stays attached there;

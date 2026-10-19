@@ -390,7 +390,8 @@ An `fsVerityFile` rule takes the same `source`, requires `readOnly: true`, and
 requires `verityDigest`: the kernel's SHA-256 **fs-verity digest**, as 64
 lowercase hexadecimal digits. This is a Merkle tree descriptor digest, not the
 `sha256sum` of the file. To get it, enable fs-verity on the reviewed artifact
-and run `fsverity measure`. Enabling fs-verity on arbitrary bytes does not
+and run `fsverity measure`. Use only the hex digest: drop the `sha256:` prefix
+and the path that `fsverity measure` prints. Enabling fs-verity on arbitrary bytes does not
 authorize them: the digest must match a rule in the active policy.
 
 The source must be on ext4, f2fs or btrfs, whose kernel drivers verify every
@@ -402,8 +403,9 @@ support.
 
 At NRI create time the enforcer opens the source without symlinks, measures it
 with `FS_IOC_MEASURE_VERITY`, and bind-mounts the **opened inode** into
-node-owned staging under `/run/c8s/verity-mounts`. The staging mount is
-private and read-only, and the container's mount source becomes that staging
+node-owned staging under `/run/c8s/verity-mounts`. That directory is a
+private mount point, so staging never propagates into other mount namespaces.
+The staging mount is private and read-only, and the container's mount source becomes that staging
 path. Renaming or replacing the original file cannot substitute new bytes.
 Validation re-measures the staging inode and checks its filesystem again.
 Staging requires a native node enforcer with mount privileges.
@@ -416,10 +418,14 @@ Staging is bounded:
 - At most 16 staging calls run at once, abandoned ones included. While all 16
   are busy, further creates are not staged until a slot frees.
 - The node keeps at most 1024 staging mounts. Container removal, or a denied
-  validation or start, releases the container's mounts.
+  validation or start, releases the container's mounts. In audit mode a
+  denial does not block the container, so its mounts stay until removal.
 
 A mount that is not staged keeps its path-only evidence. An `fsVerityFile` rule
 then rejects it, and final matching decides whether another entry admits it.
+A denied launch of an image with an `fsVerityFile` rule logs
+`fs_verity_unavailable`; the create-time staging warnings for that container
+name the cause.
 A node-root file is never staged, so it matches a `nodeRootFile` rule but not
 an `fsVerityFile` rule. Only files the container already mounts at create time
 can be staged: a file that a later plugin adds cannot satisfy an `fsVerityFile`

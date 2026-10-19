@@ -94,7 +94,8 @@ func stageVerityMounts(ctx context.Context, logger *slog.Logger, pod *api.PodSan
 	}()
 	select {
 	case staged := <-result:
-		if commitStaged(ctx, staged) {
+		err := commitStaged(ctx, staged)
+		if err == nil {
 			for _, mount := range staged {
 				if adjust == nil {
 					adjust = &api.ContainerAdjustment{}
@@ -106,27 +107,28 @@ func stageVerityMounts(ctx context.Context, logger *slog.Logger, pod *api.PodSan
 			return adjust
 		}
 		discardStaged(logger, staged)
+		logger.Warn("fs-verity staging not committed", "container", ctr.GetId(), "reason", err)
 	case <-ctx.Done():
 		go func() { discardStaged(logger, <-result) }()
+		logger.Warn("fs-verity staging abandoned", "container", ctr.GetId(), "reason", ctx.Err())
 	}
-	logger.Warn("fs-verity staging abandoned", "container", ctr.GetId(), "reason", ctx.Err())
 	return adjust
 }
 
 // commitStaged registers every new pin of a staging call that finished within
-// its budget, and reports whether it did. The deadline is checked under the
-// registry lock, so an expired call never commits, even when its result and
-// its deadline arrive together.
-func commitStaged(ctx context.Context, staged []stagedMount) bool {
+// its budget, or returns why it registered none. The deadline is checked under
+// the registry lock, so an expired call never commits, even when its result
+// and its deadline arrive together.
+func commitStaged(ctx context.Context, staged []stagedMount) error {
 	verifiedMountRegistry.Lock()
 	defer verifiedMountRegistry.Unlock()
-	if ctx.Err() != nil {
-		return false
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	for _, mount := range staged {
 		entry, ok := verifiedMountRegistry.mounts[mount.path]
 		if mount.reused && (!ok || entry.releasing || entry.stale) {
-			return false
+			return errVerityReleasing
 		}
 	}
 	for _, mount := range staged {
@@ -135,7 +137,7 @@ func commitStaged(ctx context.Context, staged []stagedMount) bool {
 			verifiedMountRegistry.mounts[mount.path] = mount.entry
 		}
 	}
-	return true
+	return nil
 }
 
 // discardStaged unpins the new pins of a staging call that will not commit.

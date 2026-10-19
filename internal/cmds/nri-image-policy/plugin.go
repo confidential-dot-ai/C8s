@@ -99,17 +99,17 @@ func (s *policyStore) admitsVerifiedFile(r allowlist.RunningContainer, m allowli
 	return snap != nil && snap.index.AdmitsVerifiedFile(r, m)
 }
 
-// declaresNodeRoot reports whether the base or applied allowlist has a
-// nodeRootFile rule for digest.
-func (s *policyStore) declaresNodeRoot(digest string) bool {
+// declaresMountKind reports whether the base or applied allowlist has a mount
+// rule of kind for digest.
+func (s *policyStore) declaresMountKind(digest string, kind allowlist.MountClass) bool {
 	if s == nil {
 		return false
 	}
-	if s.base.DeclaresNodeRoot(digest) {
+	if s.base.DeclaresMountKind(digest, kind) {
 		return true
 	}
 	snap := s.current()
-	return snap != nil && snap.index.DeclaresNodeRoot(digest)
+	return snap != nil && snap.index.DeclaresMountKind(digest, kind)
 }
 
 // needsVariableEvidence reports whether the base or applied allowlist has a
@@ -533,8 +533,11 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
 		}
 		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
-		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
+		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresMountKind(digest, allowlist.MountNodeRootFile) {
 			attrs = append(attrs, "node_root_unavailable", missing)
+		}
+		if slices.ContainsFunc(check.Mounts, unprovenFileBind) && p.policy.declaresMountKind(digest, allowlist.MountFSVerityFile) {
+			attrs = append(attrs, "fs_verity_unavailable", fsVerityNotStaged)
 		}
 		log.Warn("image not admitted by allowlist", attrs...)
 		p.audit.Log(audit.Event{

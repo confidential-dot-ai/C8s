@@ -27,15 +27,25 @@ cleanup() {
  umount "$work/verity" 2>/dev/null || true
  veritysetup close "$mapper" 2>/dev/null || true
  umount "$work/fs" 2>/dev/null || true
+ umount -R "$work/fsv" 2>/dev/null || true
  rm -rf "$work"
 }
 trap cleanup EXIT
 mount --make-rprivate /
+# The fs-verity leg gets its own filesystem, shared like systemd's /run, so the
+# staging root must make itself private. A leaked staging bind fails this
+# leg's unmount, not the dm-verity leg's.
+truncate -s 32M "$work/fsv-image"
+mkfs.ext4 -q -F -O verity "$work/fsv-image"
+mkdir "$work/fsv"
+mount -o loop "$work/fsv-image" "$work/fsv"
+mount --make-shared "$work/fsv"
+C8S_TEST_FS_VERITY_DIR="$work/fsv" "$binary" -test.run '^TestFSVerityPinnedInodeIntegration$' -test.v "${fs_coverage[@]}"
+umount "$work/fsv" || { echo "fs-verity staging left mounts on its test filesystem" >&2; exit 1; }
 truncate -s 128M "$work/image"
-mkfs.ext4 -q -F -O verity "$work/image"
+mkfs.ext4 -q -F "$work/image"
 mkdir "$work/fs" "$work/verity"
 mount -o loop "$work/image" "$work/fs"
-C8S_TEST_FS_VERITY_DIR="$work/fs" "$binary" -test.run '^TestFSVerityPinnedInodeIntegration$' -test.v "${fs_coverage[@]}"
 printf 'approved executable' > "$work/fs/binary"
 mkdir "$work/fs/mnt"
 umount "$work/fs"

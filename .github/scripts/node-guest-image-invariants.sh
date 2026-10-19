@@ -420,6 +420,14 @@ for config in c8s.config c8s-dev.config config-x86_64-c8s.snapshot; do
     exit 1
   fi
 done
+# fsVerityFile provenance needs FS_IOC_MEASURE_VERITY and read-time
+# verification; without fs-verity every such rule fails closed.
+for config in c8s.config c8s-dev.config config-x86_64-c8s.snapshot; do
+  if ! grep -qFx 'CONFIG_FS_VERITY=y' "$ngi/kernel/$config"; then
+    echo "::error::$ngi/kernel/$config must set CONFIG_FS_VERITY=y: fsVerityFile mount rules need it"
+    exit 1
+  fi
+done
 grep -qE '^\s*apparmor\s*$' "$ngi/c8s/mkosi.conf" \
   || { echo "::error::$ngi/c8s/mkosi.conf must ship the apparmor package (apparmor_parser)"; exit 1; }
 grep -qFx 'disable apparmor.service' "$ngi/c8s/mkosi.extra/usr/lib/systemd/system-preset/50-rke2.preset" \

@@ -94,7 +94,7 @@ func TestNodeRootMissingNamesCause(t *testing.T) {
 	}
 }
 
-func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
+func TestMissingProvenanceCauseOnlyForItsRuleKind(t *testing.T) {
 	original := nodeRootUnavailableReason
 	nodeRootUnavailableReason = func() (string, bool) { return "root filesystem is not read-only", false }
 	t.Cleanup(func() { nodeRootUnavailableReason = original })
@@ -103,16 +103,21 @@ func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name string
-		kind allowlist.MountClass
-		want bool
+		name  string
+		kind  allowlist.MountClass
+		cause string
 	}{
-		{"host rule", allowlist.MountHost, false},
-		{"nodeRootFile rule", allowlist.MountNodeRootFile, true},
+		{"host rule", allowlist.MountHost, ""},
+		{"nodeRootFile rule", allowlist.MountNodeRootFile, "node_root_unavailable"},
+		{"fsVerityFile rule", allowlist.MountFSVerityFile, "fs_verity_unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			rule := allowlist.MountRule{Destination: "/opt/tool", Kind: tc.kind, Source: "/usr/bin/tool", ReadOnly: true}
+			if tc.kind == allowlist.MountFSVerityFile {
+				rule.VerityDigest = strings.Repeat("ab", 32)
+			}
 			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
-			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{{Destination: "/opt/tool", Kind: tc.kind, Source: "/usr/bin/tool", ReadOnly: true}}}
+			al.Workloads["w"].Containers[0].Mounts = allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}
 			if err := al.Normalize(); err != nil {
 				t.Fatal(err)
 			}
@@ -128,8 +133,10 @@ func TestNodeRootMissingOnlyForNodeRootEntries(t *testing.T) {
 			if verdict != verdictDeny {
 				t.Fatalf("checkImagePhase(%s) = %d, want deny", tc.name, verdict)
 			}
-			if got := strings.Contains(logs.String(), "node_root_unavailable"); got != tc.want {
-				t.Fatalf("checkImagePhase(%s) logged node_root_unavailable = %t, want %t: %s", tc.name, got, tc.want, logs.String())
+			for _, cause := range []string{"node_root_unavailable", "fs_verity_unavailable"} {
+				if got, want := strings.Contains(logs.String(), cause), cause == tc.cause; got != want {
+					t.Fatalf("checkImagePhase(%s) logged %s = %t, want %t: %s", tc.name, cause, got, want, logs.String())
+				}
 			}
 		})
 	}
