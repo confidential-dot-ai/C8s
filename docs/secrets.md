@@ -428,6 +428,15 @@ actually released.
   whose content the host chooses. A `data` rule is allowed: its content
   (a ConfigMap, a PVC) is still the cluster's, but only at a destination
   under `/mnt/c8s-data/` the entry declares.
+- A read-only `nodeRootFile` rule is allowed. The node proves the file is on
+  its measured dm-verity root, and read-only removes the write channel, so the
+  host chooses neither what the container reads nor where it writes. This is
+  how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
+  node image.
+- A writable host path stays refused, including
+  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set. A socket has no
+  content to prove, and it is a channel to whatever process the host runs
+  behind it. Drop it from the worker's mounts to hold a grant.
 - The write path refuses an entry that breaks either rule, and release refuses
   one stored before it did. `env` is not required yet: `exact` fingerprints
   the whole environment, including the pod's `HOSTNAME`, so no policy pins it
