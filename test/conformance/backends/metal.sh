@@ -322,7 +322,27 @@ pod_cert_file() {
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
 }
-mesh_member() { return "$UNSUPPORTED"; }
+# No exec into mesh-sync: its log names the members each set write added
+# and removed, from everything on its first write, so replaying the current
+# container's log gives the set. A mesh that logs no change at all predates
+# that log, so 77.
+mesh_member() {
+    local pod set log
+    pod="$(mesh_pod_on "$1")"
+    [ -n "$pod" ] || { echo "backend: no mesh pod on $1" >&2; return 1; }
+    case "$2" in
+        interception) set="$MESH_SET_LOCAL" ;;
+        guard) set="$MESH_SET_GUARDED" ;;
+        *) echo "backend: mesh_member: no membership '$2'" >&2; return 2 ;;
+    esac
+    case "$3" in *:*) set+=6 ;; esac
+    log="$(kubectl -n "$NS" logs "$pod" -c "$MESH_SYNC_CONTAINER" | jq -Rc 'fromjson? | select(.msg == "ipset membership changed")')" || true
+    [ -n "$log" ] || return "$UNSUPPORTED"
+    jq -rs --arg set "$set" --arg ip "$3" '
+        reduce (.[] | select(.set == $set)) as $e (false;
+            if any($e.added[]; . == $ip) then true elif any($e.removed[]; . == $ip) then false else . end)
+        | if . then "yes" else "no" end' <<<"$log"
+}
 
 # The kept scraper runs the agent (manifest_filter).
 mesh_scrape() { agent_run "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$(shq "$@")"; }
