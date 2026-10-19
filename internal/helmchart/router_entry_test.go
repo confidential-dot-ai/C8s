@@ -530,3 +530,36 @@ func TestChartRouterExpectedWorkloadType(t *testing.T) {
 		t.Fatalf("boolean expectedWorkload without schema validation: err = %v, want the template's type error\n%s", err, out)
 	}
 }
+
+// cds-attest reads the measured-policy journal from the runtime directory it
+// mounts beside the attestation-api socket, and nowhere else.
+func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
+	const dir = "/run/custom-nri"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
+		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
+		{name: "baked", args: bakedArgs, wantFlag: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(attest.Args, flag); got != tc.wantFlag {
+				t.Fatalf("cds-attest carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, attest.Args)
+			}
+			mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
+			}
+		})
+	}
+}

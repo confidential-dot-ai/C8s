@@ -1470,8 +1470,11 @@ is attest-pq-only.
 When `cds-attest --measured-policies-file` names the node's measured-policy
 journal, both bundles also carry `measured_policies`: the policy digests the
 node extended into RTMR[3], read after the quote and outside any transcript.
-The chart does not set the flag. A verifier trusts the longest
-prefix that replays against the quote's RTMR[3].
+The chart passes the journal under `nriImagePolicy.hostPaths.runtimeDir`
+wherever the router mounts the attestation-api socket; an absent journal
+omits the list. `c8s verify` does not replay the list against these bundles
+yet, so a bundle from a node that measures policies still fails an exact
+RTMR[3] pin.
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode at boot. Mode `acme` applies when its
