@@ -178,10 +178,12 @@ the same PR.
 
 ### The metal backend
 
-The harness host has no node shell and no TEE, the operator's credential may
-neither exec, port-forward nor write in the c8s namespace, and the node image
-holds the seed and the router's configuration; what needs any of those
-answers 77. Pod exec is closed too, so `pod_exec` answers agent: a pod the
+On a metal lane the harness host has no node shell and no TEE, the
+operator's credential may neither exec, port-forward nor write in the c8s
+namespace, and the node image holds the seed and the router's configuration.
+A function the backend cannot answer some other way under those limits
+answers 77, so the scenarios that need it are reported as not run on metal,
+never as passed. Pod exec is closed too, so `pod_exec` answers agent: a pod the
 steps mark `c8s-conformance/harness-argv`, because they chose its first
 container's argv, runs an agent there in place of that argv, and `agent_exec`
 reaches it. Pods whose argv a scenario pins are read from a reporter image's
