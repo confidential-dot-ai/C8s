@@ -143,7 +143,8 @@
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
-#                                    prints accepts or rejects
+#                                    prints accepts or rejects, then on a
+#                                    rejection the verifier's reason
 #   mesh_ready <node>                wait until the node's mesh proxy runs; 77
 #                                    where the mesh is not installed
 #   mesh_member <node> <interception|guard> <ip>
