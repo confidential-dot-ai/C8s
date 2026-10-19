@@ -7688,7 +7688,7 @@ func TestChartMeasurePolicies(t *testing.T) {
 		}
 	}
 
-	const custom, defaultDir = "/run/custom-nri", "/var/run/nri-image-policy"
+	const custom, defaultDir = "/run/custom-nri", "/run/nri-image-policy"
 	for _, tc := range []struct {
 		name     string
 		args     []string

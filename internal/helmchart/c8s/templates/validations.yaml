@@ -253,8 +253,8 @@
   runtime directory (armtls.NodeJournal). Elsewhere they send no
   list and CDS refuses the node's identity.
 */ -}}
-{{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/var/run/nri-image-policy") -}}
-{{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /var/run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
+{{- if and $nri.measurePolicies (ne $nri.hostPaths.runtimeDir "/run/nri-image-policy") -}}
+{{- fail (printf "VALIDATION_ERROR kind=measure_policies_runtime_dir: nriImagePolicy.measurePolicies=true requires the default nriImagePolicy.hostPaths.runtimeDir /run/nri-image-policy (got %q): certificate producers read the measured-policy journal there" $nri.hostPaths.runtimeDir) -}}
 {{- end -}}
 {{- /*
   Producers mount the runtime directory only beside the attestation-api

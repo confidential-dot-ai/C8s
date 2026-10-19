@@ -847,7 +847,7 @@ with the register. These readers carry the list outside any transcript; a
 verifier trusts it only as far as it replays against a quote's RTMR[3]:
 
 - **armTLS evidence.** A TDX process that attests itself reads the journal
-  after obtaining its quote, at `/var/run/nri-image-policy/measured-policies`
+  after obtaining its quote, at `/run/nri-image-policy/measured-policies`
   or, in an injected sidecar, `/run/c8s/workload-claims/measured-policies`.
   It sends the list with the evidence: in the armTLS certificate extension,
   in the CDS `/attest` request as `runtime_extensions`, and in the router's
