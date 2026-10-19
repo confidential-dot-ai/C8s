@@ -520,6 +520,9 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 		hostBind  bool
 	}{
 		{"verified read-only file", nil, nil, false},
+		{"fs-verity staged file", func(m *allowlist.ObservedMount) {
+			m.Provenance, m.VerityDigest = allowlist.ProvenanceFSVerity, strings.Repeat("b", 64)
+		}, nil, false},
 		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, nil, true},
 		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, nil, true},
 		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, nil, true},
