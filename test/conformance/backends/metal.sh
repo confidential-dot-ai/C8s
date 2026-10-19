@@ -449,6 +449,22 @@ plugin_ready() {
 
 node_containers() { return $UNSUPPORTED; }
 
+# The node image's confos-operator-scope policy denies the operator every
+# write in kube-system, local-path-storage and c8s-system, and every Node
+# write. Those namespaces are the ones that admit host-network and root
+# pods and hold the seed, so all of that is out of reach.
+PRIVILEGED_NAMESPACES="kube-system local-path-storage c8s-system"
+host_namespace_ns() { return "$UNSUPPORTED"; }
+node_writes() { return "$UNSUPPORTED"; }
+seed_add() { return "$UNSUPPORTED"; }
+excluded_namespace() {
+    local ns
+    for ns in $(mesh_arg exclude-source-namespaces | tr ',' ' '); do
+        [[ " $PRIVILEGED_NAMESPACES " == *" $ns "* ]] || { echo "$ns"; return; }
+    done
+    return "$UNSUPPORTED"
+}
+
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted
 # CDS serves (its versions start over), so the CDS stays up too.

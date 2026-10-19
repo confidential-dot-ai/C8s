@@ -170,9 +170,11 @@
 #                                    sev-snp or tdx
 #   node_address <node> <ipv4|ipv6>  the node's address of that family; 77
 #                                    when it has none
-#   excluded_namespace               a namespace the mesh excludes
+#   excluded_namespace               a namespace the mesh excludes, or 77
 #   host_namespace_ns                a namespace admitting pods in the node's
-#                                    network namespace and root pods
+#                                    network namespace and root pods, or 77
+#   node_writes                      yes, or 77 where the harness may not
+#                                    write Node objects
 #   external_endpoint                <address>:<port> of a hello API outside
 #                                    the cluster, or 77
 #   attestation_endpoint             the URL a pod obtains evidence from, or 77
@@ -970,6 +972,7 @@ excluded_namespace() {
     echo "${ns:-kube-system}" | cut -d, -f1
 }
 host_namespace_ns() { echo kube-system; }
+node_writes() { echo yes; }
 
 cert_paths() { printf '%s/tls.crt\n%s/tls.key\n' "$CERT_VOLUME_PATH" "$CERT_VOLUME_PATH"; }
 
