@@ -1142,8 +1142,9 @@ Caveats the output surfaces:
 
 ### Check a node's policy history
 
-A node that measures its allowlist policies keeps them in its measured-policy
-journal (see [router public TLS modes](#router-public-tls-modes)) and
+A node that measures its allowlist policies (Helm value
+`nriImagePolicy.measurePolicies`, see
+[Measured policy history](allowlist-and-capabilities.md#measured-policy-history))
 reports RTMR[3] as the seed followed by each policy it enforced since boot.
 Its router's attest-pq and attest-lb bundles list those digests as
 `measured_policies`, and its TDX armTLS certificates and discovery document
