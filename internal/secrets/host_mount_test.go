@@ -24,7 +24,10 @@ func TestSecretReleaseRequiresAllowlistedHostMounts(t *testing.T) {
 			return append(m, allowlist.ObservedMount{Destination: "/etc/config", Class: allowlist.MountHost})
 		}, false},
 		{"duplicate mount", func(m []allowlist.ObservedMount) []allowlist.ObservedMount { return append(m, m[0]) }, false},
-		{"changed source", func(m []allowlist.ObservedMount) []allowlist.ObservedMount { m[0].HostSourceDigest = otherSourceDigest; return m }, false},
+		{"changed source", func(m []allowlist.ObservedMount) []allowlist.ObservedMount {
+			m[0].HostSourceDigest = otherSourceDigest
+			return m
+		}, false},
 		{"changed destination", func(m []allowlist.ObservedMount) []allowlist.ObservedMount { m[0].Destination = "/other"; return m }, false},
 		{"writable driver", func(m []allowlist.ObservedMount) []allowlist.ObservedMount { m[0].ReadOnly = false; return m }, false},
 		{"unknown kind", func(m []allowlist.ObservedMount) []allowlist.ObservedMount { m[0].Class = "unknown"; return m }, false},
