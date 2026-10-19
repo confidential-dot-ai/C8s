@@ -419,6 +419,7 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			// Advance past the refused version so later ticks get 304
 			// instead of downloading it again.
 			etag = newETag
+			failing = "" // a later failure is news again
 			if served.Digest != refused {
 				refused = served.Digest
 				args.logger.Error("pull loop: allowlist refused; keeping current policy",
@@ -970,8 +971,10 @@ var (
 // before the node applies it, so the register records every policy the node
 // enforced since boot. It returns nil, measuring nothing, unless
 // allowlist.pull.measure_policies is set on a platform with a runtime
-// register. When measuring is on but cannot work, the hook fails every call,
-// so the node keeps its current policy rather than enforce unmeasured ones.
+// register. The hook fails every call while measuring cannot work, so the node
+// keeps its current policy rather than enforce unmeasured ones. A missing
+// operator key refuses for good; any other open failure is retried on the next
+// call.
 func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error {
 	if !cfg.Allowlist.Pull.MeasurePolicies {
 		return nil
@@ -981,28 +984,43 @@ func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error 
 		logger.Info("allowlist policies are not measured: no runtime register", "platform", platform)
 		return nil
 	}
-	anchor, err := readOperatorKey()
-	var journal *runtimemeasure.Journal
-	if err == nil {
-		journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
-	}
-	if journal == nil {
-		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", err)
-		return func(string) error {
-			return fmt.Errorf("%w: allowlist policy measurement unavailable: %w", errPolicyRefused, err)
-		}
-	}
-	if err != nil {
-		// A diverged journal refuses every extend, so policy updates stop.
-		logger.Error("allowlist policy measurement journal", "error", err)
-	}
 	path := filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
-	// Created readable up front: the journal's first append would create it
-	// 0600, and certificate producers would fail to read it until the chmod.
-	if err := createReadable(path); err != nil {
-		logger.Error("measured-policy journal stays unreadable to the router", "error", err)
+	var journal *runtimemeasure.Journal
+	open := func() error {
+		anchor, err := readOperatorKey()
+		if err == nil {
+			journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
+		}
+		if journal == nil {
+			if errors.Is(err, credrelease.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
+				err = fmt.Errorf("%w: %w", errPolicyRefused, err)
+			}
+			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
+		}
+		if err != nil {
+			// A diverged journal refuses every extend, so policy updates stop.
+			logger.Error("allowlist policy measurement journal", "error", err)
+		}
+		// Created readable up front: the journal's first append would create it
+		// 0600, and certificate producers would fail to read it until the chmod.
+		if err := createReadable(path); err != nil {
+			logger.Error("measured-policy journal stays unreadable to the router", "error", err)
+		}
+		return nil
+	}
+	openErr := open()
+	if openErr != nil {
+		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", openErr)
 	}
 	return func(digest string) error {
+		if journal == nil {
+			if errors.Is(openErr, errPolicyRefused) {
+				return openErr
+			}
+			if openErr = open(); openErr != nil {
+				return openErr
+			}
+		}
 		if err := checkJournalRoom(journal, digest); err != nil {
 			return err
 		}
@@ -1051,13 +1069,9 @@ func createReadable(path string) error {
 }
 
 // openJournal opens the measured-policy journal in dir over this node's
-// RTMR[3], whose launch seeded it from anchor. It returns nil, nil on a
-// platform without a runtime register.
+// RTMR[3], whose launch seeded it from anchor.
 func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
 	reg, err := runtimemeasure.Open(platform)
-	if errors.Is(err, runtimemeasure.ErrNoRegister) {
-		return nil, nil
-	}
 	if err != nil {
 		return nil, err
 	}

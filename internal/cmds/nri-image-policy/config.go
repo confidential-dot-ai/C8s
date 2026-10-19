@@ -388,6 +388,9 @@ func (c *config) Validate() error {
 	}
 	// Certificate producers read the journal only from the default runtime directory.
 	journalDir := filepath.Dir(armtls.NodeJournal)
+	if c.Allowlist.Pull.MeasurePolicies && !c.PullEnabled() {
+		return fmt.Errorf("allowlist.pull.measure_policies requires allowlist.pull.url: only pulled policies are measured")
+	}
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
 	}

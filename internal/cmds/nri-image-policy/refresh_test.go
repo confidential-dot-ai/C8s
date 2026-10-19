@@ -22,6 +22,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
@@ -720,7 +721,7 @@ func TestPullLoopAppliesOnlyMeasuredPolicies(t *testing.T) {
 func TestPolicyMeasurer(t *testing.T) {
 	orig := readOperatorKey
 	t.Cleanup(func() { readOperatorKey = orig })
-	readOperatorKey = func() ([]byte, error) { return nil, errors.New("no operator key staged") }
+	readOperatorKey = func() ([]byte, error) { return nil, fmt.Errorf("%w: test", credrelease.ErrNoOperatorKey) }
 
 	for _, tc := range []struct {
 		name     string
@@ -865,18 +866,23 @@ func TestPolicyMeasurerStopsAtTheCap(t *testing.T) {
 func TestValidateMeasurePoliciesNeedsSocketDir(t *testing.T) {
 	for _, tc := range []struct {
 		socketDir string
+		noPull    bool
 		wantErr   bool
 	}{
 		{socketDir: "", wantErr: true},
 		{socketDir: "/run/custom-nri", wantErr: true},
 		{socketDir: filepath.Dir(armtls.NodeJournal)},
 		{socketDir: filepath.Dir(armtls.NodeJournal) + "/"},
+		{socketDir: filepath.Dir(armtls.NodeJournal), noPull: true, wantErr: true},
 	} {
 		cfg := validConfig()
 		cfg.Allowlist.Pull.MeasurePolicies = true
 		cfg.WorkloadClaims.SocketDir = tc.socketDir
+		if tc.noPull {
+			cfg.Allowlist.Pull.URL = ""
+		}
 		if err := cfg.Validate(); (err != nil) != tc.wantErr {
-			t.Errorf("Validate() with socket_dir %q = %v, want error %v", tc.socketDir, err, tc.wantErr)
+			t.Errorf("Validate() with socket_dir %q, pull %v = %v, want error %v", tc.socketDir, !tc.noPull, err, tc.wantErr)
 		}
 	}
 }
@@ -952,6 +958,90 @@ func TestPullLoopLogsMeasureFailureOnce(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), "could not measure"); n != 1 {
 		t.Errorf("measure failure logged %d times at Error, want 1:\n%s", n, logs.String())
+	}
+}
+
+// A transient open failure is not a refusal: the next call opens the
+// journal again and measures.
+func TestPolicyMeasurerRetriesOpen(t *testing.T) {
+	anchor := []byte("operator key")
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return anchor, nil }
+	reg := &memRegister{val: runtimemeasure.Seed(anchor)}
+	opens := 0
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+		if opens++; opens <= 2 {
+			return nil, errors.New("register not ready")
+		}
+		return runtimemeasure.OpenJournalSeeded(filepath.Join(runtimeDir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
+	}
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	hook := policyMeasurer(cfg, discardLogger())
+	digest := "sha256:" + strings.Repeat("1", 64)
+	if err := hook(digest); err == nil || errors.Is(err, errPolicyRefused) {
+		t.Fatalf("hook(%s) = %v, want a retryable error", digest, err)
+	}
+	if err := hook(digest); err != nil {
+		t.Fatalf("hook(%s) after the register came up = %v, want nil", digest, err)
+	}
+	if reg.extends != 1 {
+		t.Errorf("register extended %d times, want 1", reg.extends)
+	}
+}
+
+// A platform without a runtime register is a refusal that names the cause.
+func TestPolicyMeasurerNoRegister(t *testing.T) {
+	origKey, origOpen := readOperatorKey, openPolicyJournal
+	t.Cleanup(func() { readOperatorKey, openPolicyJournal = origKey, origOpen })
+	readOperatorKey = func() ([]byte, error) { return []byte("operator key"), nil }
+	openPolicyJournal = func(runtimeDir string, _ teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+		return openJournal(runtimeDir, teetypes.PlatformType("snp"), anchor)
+	}
+	cfg := &config{
+		Platform:       "tdx",
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+		Allowlist:      allowlistConfig{Pull: pullConfig{MeasurePolicies: true}},
+	}
+	err := policyMeasurer(cfg, discardLogger())("sha256:" + strings.Repeat("1", 64))
+	if !errors.Is(err, errPolicyRefused) || !errors.Is(err, runtimemeasure.ErrNoRegister) {
+		t.Errorf("hook = %v, want errPolicyRefused wrapping ErrNoRegister", err)
+	}
+}
+
+// A measure failure after a refusal of another digest is logged at Error
+// again, even for the digest that failed before.
+func TestPullLoopLogsMeasureFailureAfterRefusal(t *testing.T) {
+	bodyA := canonicalBody(t, anyAllowlist(map[string]string{pushDigestA: "image-1"}))
+	bodyB := canonicalBody(t, anyAllowlist(map[string]string{pushDigestB: "image-2"}))
+	srv := httptest.NewServer(&flippingHandler{versions: []string{"1", "2", "3"}, bodyByV: map[string][]byte{"1": bodyA, "2": bodyB, "3": bodyA}})
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(t.Context())
+	measures := 0
+	var logs bytes.Buffer
+	runPullLoop(ctx, pullLoopArgs{
+		client: allowlistclient.NewClientWithHTTP(srv.URL, &http.Client{Timeout: 2 * time.Second}),
+		store:  newPolicyStore(anyAllowlist(map[string]string{pushDigestC: "image-3"})),
+		measure: func(digest string) error {
+			if measures++; measures == 3 {
+				cancel()
+			}
+			if digest == servedDigest(bodyB) {
+				return fmt.Errorf("%w: cap reached", errPolicyRefused)
+			}
+			return errors.New("register write failed")
+		},
+		interval: time.Millisecond,
+		timeout:  time.Second,
+		logger:   slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+
+	if n := strings.Count(logs.String(), "could not measure"); n != 2 {
+		t.Errorf("measure failure logged %d times at Error, want 2:\n%s", n, logs.String())
 	}
 }
 

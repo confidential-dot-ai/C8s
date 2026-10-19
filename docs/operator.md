@@ -1207,9 +1207,10 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
   certificate; the register may then also carry the longest prefix of that
   list that replays (see
   [Measured policy history](allowlist-and-capabilities.md#measured-policy-history)).
-  That trailing part is a prefix check, not an exact chain: policy and workload extends share one event encoding, so
-  `--workload-image` excludes an unpinned workload only while the measured
-  image journals policies alone, which the image pin above enforces;
+  That trailing part is a prefix check, not an exact chain: policy and
+  workload extends share one event encoding, so `--workload-image` excludes
+  an unpinned workload only while the measured image journals policies
+  alone, which the image pin above enforces;
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator

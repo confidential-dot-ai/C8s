@@ -822,11 +822,13 @@ it as `allowlist.pull.measure_policies` in the plugin's boot config, and with
 `nriImagePolicy.baked` patches it into the node image's config through
 `set-cds-pins`; a plugin from a node image that predates the key ignores it.
 Under `node.baked` the image owns the plugin config, so the
-chart refuses the value. The key requires `workload_claims.socket_dir` to be
-the default runtime directory, and is a no-op on SEV-SNP, which has no runtime
-register. On TDX without the launch operator key, or with a journal that no
-longer matches the register, the plugin applies no pulled allowlist and keeps
-enforcing the one it holds: at startup, the base allowlist alone.
+chart refuses the value. The key requires `allowlist.pull.url` and
+`workload_claims.socket_dir` set to the default runtime directory, and is a
+no-op on SEV-SNP, which has no runtime register. On TDX without the launch
+operator key, or with a journal that no longer matches the register, the
+plugin applies no pulled allowlist and keeps enforcing the one it holds: at
+startup, the base allowlist alone. Other failures to open the register are
+retried on each pull.
 
 > [!WARNING]
 > Measuring is off by default. Three kinds of check still require the bare
