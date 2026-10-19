@@ -184,14 +184,15 @@ func TestCDSShapeGuard(t *testing.T) {
 			if tc.fails && !strings.Contains(string(out), "restart the image policy plugin (containerd) on each node that reports more") {
 				t.Errorf("failure does not offer a plugin restart for a large version gap:\n%s", out)
 			}
-			// apply refuses an override that still-served generated shapes
-			// shadow, so only an upload publishes it.
-			publish := "running CDS with c8s allowlist apply"
-			if tc.entry != "" {
-				publish = "running CDS in one c8s allowlist upload"
+			// An exact generated shape does not shadow an exact override with
+			// other args, so apply publishes an override too, and the
+			// retiring upload is only the fallback for a shadowed one.
+			if tc.fails && !strings.Contains(string(out), "running CDS with c8s allowlist apply") {
+				t.Errorf("failure does not publish with apply:\n%s", out)
 			}
-			if tc.fails && !strings.Contains(string(out), publish) {
-				t.Errorf("failure does not say %q:\n%s", publish, out)
+			const shadowed = "when a served entry shadows the override, apply refuses it, so publish it in one c8s allowlist upload"
+			if got, want := strings.Contains(string(out), shadowed), tc.fails && tc.entry != ""; got != want {
+				t.Errorf("failure offers the retiring upload = %t, want %t:\n%s", got, want, out)
 			}
 			if tc.fails && !strings.Contains(string(out), "publish entry "+cmp.Or(tc.entry, tc.want)+" ") {
 				t.Errorf("failure does not name entry %s:\n%s", cmp.Or(tc.entry, tc.want), out)

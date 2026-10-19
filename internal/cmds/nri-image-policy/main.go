@@ -495,6 +495,9 @@ type nodeIPPublisher struct {
 func (p *nodeIPPublisher) publish() time.Duration {
 	path := filepath.Join(p.cfg.WorkloadClaims.SocketDir, NodeIPFile)
 	host, source, err := p.resolve()
+	if err != nil {
+		p.pending = ""
+	}
 	if err == nil && !usableNodeIP(net.ParseIP(host)) {
 		// Not transient: advertise_host names an address no pod can dial.
 		p.pending = ""

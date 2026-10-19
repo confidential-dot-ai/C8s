@@ -855,7 +855,10 @@ the chart still renders it — to remove an image, roll the chart with it gone.
 
 On a chart-managed install, CDS reads its seed once, at start: anyone with
 write access to the seed ConfigMap could otherwise publish entries without an
-operator token. A configuration-only upgrade keeps CDS running, so publish the
+operator token. Whoever can also delete the CDS pod still publishes the
+edited ConfigMap on the restart, since the store reseeds from it, so grant
+`delete` on pods in the release namespace only to those who may publish.
+A configuration-only upgrade keeps CDS running, so publish the
 new release's entries through it, signed with your operator key, before you
 upgrade:
 
@@ -893,10 +896,12 @@ upgrade:
 6. Run the upgrade.
 
 An override that narrows a component (an entry named `<image>-<first 12 hex
-of the digest>`, see above) needs one more change: the store still serves the
-generated entries it replaces, which admit what the override forbids, and
-`apply` refuses an override that such an entry shadows. Publish it in one
-write that retires them, in place of step 3:
+of the digest>`, see above) publishes like any entry, and the next CDS start
+retires the generated entries it replaces, which admit what the override
+forbids. `apply` refuses an override only when a served entry shadows it; an
+exact generated shape does not shadow an exact override with other args. When
+one does, publish the override in one write that retires them, in place of
+step 3:
 
 ```sh
 c8s allowlist export live.json
@@ -908,9 +913,9 @@ c8s allowlist upload next.json
 ```
 
 `OVERRIDE` is the override's entry name. The filter cuts its image segment to
-the 41 characters a generated shape keeps. Pods that still run the narrowed-away
-launch keep running, but cannot restart under it. A CDS that seeds the
-override, at start or while following its seed, retires those entries itself.
+the 41 characters a generated shape keeps. From that write until the upgrade
+replaces them, pods that run a retired shape keep running but cannot restart,
+the running CDS included when the override names its digest.
 
 On a measured node image (`node.baked`), the seed is a file the image holds,
 so CDS follows it: it rereads the file every 30 seconds and seeds it again
@@ -925,9 +930,15 @@ Known limitations:
   nothing can publish a new release's entries. An upgrade that changes a
   shape, a `cds.image.digest` bump included, fails the CDS shape guard below
   or leaves the new pods refused, and restarting CDS does not help, since its
-  version starts below the nodes'. Adding the keys later changes CDS's mounts,
-  which is such an upgrade. To upgrade in place, set `cds.operatorKeys` when
-  you install; otherwise uninstall the release and install the new one.
+  version starts below the nodes'. Set `cds.operatorKeys` when you install.
+- A CDS of the previous release follows its seed ConfigMap, so you can
+  publish this release's CDS entry through it, keys or not:
+  1. Run the new values, with `--set cds.publishedShape=NAME` for the
+     `NAME` the guard reports, through `helm template` and copy the entry
+     the guard names from its `allowlist-seed.json` into the `workloads` of
+     the live `<release>-cds-allowlist-seed` ConfigMap.
+  2. Wait until every node has pulled it, as in step 5 above.
+  3. Run the upgrade with `--set cds.publishedShape=NAME`.
 - On a `node.baked` install, this release adds `--follow-seed` to CDS's
   command line, so the first upgrade to it fails the CDS shape guard until
   you publish the new CDS entry and set `cds.publishedShape`, as described
@@ -958,10 +969,10 @@ CDS, and the `cds.publishedShape` value. To publish it:
    `<release>-cds-allowlist-seed` ConfigMap.
 2. Copy the entry the error names into a file and publish it as in steps 2
    to 4 of the configuration-only procedure above, with
-   `c8s allowlist apply ENTRY_FILE`. When the entry is your override, `apply`
-   refuses it while the generated CDS shapes are served: publish it with the
-   override's single `upload` instead. Without operator keys, nothing can
-   publish it to the running CDS (see the known limitations above).
+   `c8s allowlist apply ENTRY_FILE`. When the entry is your override and a
+   served entry shadows it, `apply` refuses it: publish it with the
+   override's single `upload` instead. Without operator keys, see the known
+   limitations above.
 3. Wait until every node has taken the write, as in step 5 of that
    procedure.
 4. Rerun the upgrade with `--set cds.publishedShape=NAME`.

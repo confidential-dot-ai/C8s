@@ -705,6 +705,16 @@ func waitPodsGone(ctx context.Context, namespace, selector string) error {
 	}
 }
 
+// kubeletEscape doubles every $ so the kubelet's $(NAME) expansion hands the
+// runtime argv as pinned, as the chart does for its scripts.
+func kubeletEscape(argv []string) []string {
+	out := make([]string, len(argv))
+	for i, arg := range argv {
+		out[i] = strings.ReplaceAll(arg, "$", "$$")
+	}
+	return out
+}
+
 // hostSweepDaemonSet renders the sweep DaemonSet: every linux node (the
 // NRI installer and mesh DaemonSets land on all of them, and a node can carry a
 // previous shape's leftovers), tolerating all taints, with host-sweep.sh as
@@ -745,7 +755,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 						Name:            "sweep",
 						Image:           cfg.SweepImage,
 						ImagePullPolicy: corev1.PullIfNotPresent,
-						Command:         cfg.SweepArgv,
+						Command:         kubeletEscape(cfg.SweepArgv),
 						Env: []corev1.EnvVar{
 							{Name: "HOST_CONTAINERD_DIR", Value: cfg.ContainerdConfigDir},
 							{Name: "RKE2_PREP", Value: strconv.FormatBool(cfg.Distro == "rke2")},
@@ -777,7 +787,7 @@ func hostSweepDaemonSet(release, namespace string, cfg hostUninstallConfig) *app
 						ImagePullPolicy: corev1.PullIfNotPresent,
 						// The pod lives only until the CLI's rollout-status
 						// wait returns anyway.
-						Command: cfg.PauseArgv,
+						Command: kubeletEscape(cfg.PauseArgv),
 						Resources: corev1.ResourceRequirements{
 							Requests: corev1.ResourceList{
 								corev1.ResourceCPU:    resource.MustParse("10m"),

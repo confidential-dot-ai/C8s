@@ -349,13 +349,13 @@ func TestHostSweepDaemonSetShape(t *testing.T) {
 	if sweep.Image != cfg.SweepImage {
 		t.Errorf("sweep image = %q, want %q", sweep.Image, cfg.SweepImage)
 	}
-	if !reflect.DeepEqual(sweep.Command, []string{"/bin/sh", "-c", hostSweepScript}) || len(sweep.Args) != 0 {
-		t.Errorf("sweep argv = %v + %v, want [/bin/sh -c host-sweep.sh]", sweep.Command, sweep.Args)
+	if !reflect.DeepEqual(runtimeCommand(sweep), []string{"/bin/sh", "-c", hostSweepScript}) || len(sweep.Args) != 0 {
+		t.Errorf("sweep argv = %v + %v, want [/bin/sh -c host-sweep.sh]", runtimeCommand(sweep), sweep.Args)
 	}
 	pause := pod.Containers[0]
 	// The pin's other copy of this literal lives in c8s.argvPinnedEntries.
-	if !reflect.DeepEqual(pause.Command, []string{"/bin/sleep", "2147483647"}) || len(pause.Args) != 0 {
-		t.Errorf("pause argv = %v + %v, want [/bin/sleep 2147483647]", pause.Command, pause.Args)
+	if !reflect.DeepEqual(runtimeCommand(pause), []string{"/bin/sleep", "2147483647"}) || len(pause.Args) != 0 {
+		t.Errorf("pause argv = %v + %v, want [/bin/sleep 2147483647]", runtimeCommand(pause), pause.Args)
 	}
 	// The script's env contract (see host-sweep.sh header) — every value the
 	// release config carries must be plumbed.

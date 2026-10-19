@@ -233,7 +233,7 @@ func bumpVersionTx(tx *sql.Tx) error {
 // SeedWorkloads adds every workload entry whose name is not already present
 // and retires each stored entry the seed replaces (retiredBySeed), in a single
 // transaction, and returns the numbers added and retired. Additive for
-// everything else and idempotent: an existing entry is left untouched and the
+// everything else and idempotent: any other existing entry is kept and the
 // version is bumped at most once, only when the set changed, so a re-seed that
 // changes nothing does not force every worker to re-pull.
 func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {

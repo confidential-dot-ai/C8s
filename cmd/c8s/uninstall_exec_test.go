@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
@@ -540,13 +542,14 @@ func seedCMStub(cmFile string) string {
 `
 }
 
-// The sweep replays the argv the release's allowlist seed pins, verbatim: an
-// older install's pinned bytes win over this CLI's embedded spec, so the
-// sweep stays admissible across CLI/chart version skew.
+// The sweep replays the argv the release's allowlist seed pins, verbatim
+// after kubelet expansion: an older install's pinned bytes win over this
+// CLI's embedded spec, so the sweep stays admissible across CLI/chart version
+// skew.
 func TestUninstallSweepReplaysPinnedArgv(t *testing.T) {
 	imageRef := "ghcr.io/confidential-dot-ai/nri-image-policy@" + testDigest
 	values := hostReleaseValuesNRIFile(t, imageRef)
-	oldScript := "# older sweep bytes\necho '==> c8s host sweep starting (old)'\n"
+	oldScript := "# older sweep bytes\necho \"$$ $(NRI_PLUGIN_DIR)\" '==> c8s host sweep starting (old)'\n"
 	cm := seedCMFile(t, imageRef, [][]string{
 		{"/bin/sh", "-c", "install script"},
 		{"/bin/sh", "-c", "sleep infinity"},
@@ -566,12 +569,12 @@ func TestUninstallSweepReplaysPinnedArgv(t *testing.T) {
 	}
 	ds := appliedDaemonSet(t, s.applied)
 	init := ds.Spec.Template.Spec.InitContainers[0]
-	if want := []string{"/bin/sh", "-c", oldScript}; !reflect.DeepEqual(init.Command, want) || len(init.Args) != 0 {
-		t.Errorf("sweep argv = %v + %v, want the pinned %v", init.Command, init.Args, want)
+	if want := []string{"/bin/sh", "-c", oldScript}; !reflect.DeepEqual(runtimeCommand(init), want) || len(init.Args) != 0 {
+		t.Errorf("sweep argv = %v + %v, want the pinned %v", runtimeCommand(init), init.Args, want)
 	}
 	pause := ds.Spec.Template.Spec.Containers[0]
-	if want := []string{"/bin/sleep", "2147483646"}; !reflect.DeepEqual(pause.Command, want) || len(pause.Args) != 0 {
-		t.Errorf("pause argv = %v + %v, want the pinned %v", pause.Command, pause.Args, want)
+	if want := []string{"/bin/sleep", "2147483646"}; !reflect.DeepEqual(runtimeCommand(pause), want) || len(pause.Args) != 0 {
+		t.Errorf("pause argv = %v + %v, want the pinned %v", runtimeCommand(pause), pause.Args, want)
 	}
 }
 
@@ -591,8 +594,8 @@ func TestUninstallSweepReplayIsPositionIndependent(t *testing.T) {
 		t.Fatalf("uninstall: %v", err)
 	}
 	ds := appliedDaemonSet(t, s.applied)
-	if want := []string{"/bin/sh", "-c", oldScript}; !reflect.DeepEqual(ds.Spec.Template.Spec.InitContainers[0].Command, want) {
-		t.Errorf("sweep argv = %v, want the pinned %v", ds.Spec.Template.Spec.InitContainers[0].Command, want)
+	if want := []string{"/bin/sh", "-c", oldScript}; !reflect.DeepEqual(runtimeCommand(ds.Spec.Template.Spec.InitContainers[0]), want) {
+		t.Errorf("sweep argv = %v, want the pinned %v", runtimeCommand(ds.Spec.Template.Spec.InitContainers[0]), want)
 	}
 }
 
@@ -654,15 +657,61 @@ func TestUninstallSweepFallsBackToEmbeddedArgv(t *testing.T) {
 	})
 }
 
+// runtimeCommand is c's command after the kubelet's $(NAME) expansion over
+// its env and the kubelet's service variables: the argv admission matches.
+func runtimeCommand(c corev1.Container) []string {
+	env := maps.Clone(kubeletVariables)
+	for _, e := range c.Env {
+		env[e.Name] = e.Value
+	}
+	out := make([]string, len(c.Command))
+	for i, arg := range c.Command {
+		out[i] = kubeletExpand(arg, env)
+	}
+	return out
+}
+
+// kubeletExpand is the kubelet's expansion of one argv token: $$ is a literal
+// $, $(NAME) of a defined variable becomes its value, and anything else stays.
+func kubeletExpand(token string, env map[string]string) string {
+	var b strings.Builder
+	for i := 0; i < len(token); i++ {
+		if token[i] != '$' || i+1 == len(token) {
+			b.WriteByte(token[i])
+			continue
+		}
+		switch token[i+1] {
+		case '$':
+			b.WriteByte('$')
+			i++
+		case '(':
+			end := strings.IndexByte(token[i:], ')')
+			if end < 0 {
+				b.WriteByte('$')
+				continue
+			}
+			if value, ok := env[token[i+2:i+end]]; ok {
+				b.WriteString(value)
+			} else {
+				b.WriteString(token[i : i+end+1])
+			}
+			i += end
+		default:
+			b.WriteByte('$')
+		}
+	}
+	return b.String()
+}
+
 func assertEmbeddedSweepArgv(t *testing.T, ds *appsv1.DaemonSet) {
 	t.Helper()
 	init := ds.Spec.Template.Spec.InitContainers[0]
-	if want := []string{"/bin/sh", "-c", hostSweepScript}; !reflect.DeepEqual(init.Command, want) || len(init.Args) != 0 {
-		t.Errorf("sweep argv = %v + %v, want the embedded spec", init.Command, init.Args)
+	if want := []string{"/bin/sh", "-c", hostSweepScript}; !reflect.DeepEqual(runtimeCommand(init), want) || len(init.Args) != 0 {
+		t.Errorf("sweep argv = %v + %v, want the embedded spec", runtimeCommand(init), init.Args)
 	}
 	pause := ds.Spec.Template.Spec.Containers[0]
-	if want := []string{"/bin/sleep", "2147483647"}; !reflect.DeepEqual(pause.Command, want) || len(pause.Args) != 0 {
-		t.Errorf("pause argv = %v + %v, want the embedded spec", pause.Command, pause.Args)
+	if want := []string{"/bin/sleep", "2147483647"}; !reflect.DeepEqual(runtimeCommand(pause), want) || len(pause.Args) != 0 {
+		t.Errorf("pause argv = %v + %v, want the embedded spec", runtimeCommand(pause), pause.Args)
 	}
 }
 
@@ -695,7 +744,7 @@ func TestUninstallSweepReplayNamesAMissingLIOStep(t *testing.T) {
 				t.Errorf("detach notice printed = %t, want %t; output:\n%s", got, tc.notice, out)
 			}
 			ds := appliedDaemonSet(t, s.applied)
-			if want := []string{"/bin/sh", "-c", tc.script}; !reflect.DeepEqual(ds.Spec.Template.Spec.InitContainers[0].Command, want) {
+			if want := []string{"/bin/sh", "-c", tc.script}; !reflect.DeepEqual(runtimeCommand(ds.Spec.Template.Spec.InitContainers[0]), want) {
 				t.Error("sweep argv is not the pinned script")
 			}
 		})

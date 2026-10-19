@@ -399,15 +399,25 @@ func TestNodeIPPublisherRetriesAndFollowsChanges(t *testing.T) {
 	if wait := p.publish(); wait != 2*nodeRetryMinDelay {
 		t.Fatalf("second failed publish() waits %v, want %v", wait, 2*nodeRetryMinDelay)
 	}
-	// The first address is published at once; a change waits one recheck.
+	// The first address is published at once; a change waits one recheck,
+	// and a resolve error between the two resets the wait.
 	for _, step := range []struct{ answer, want string }{
 		{"192.0.2.10", "192.0.2.10"},
 		{"192.0.2.11", "192.0.2.10"},
 		{"192.0.2.12", "192.0.2.10"},
 		{"192.0.2.12", "192.0.2.12"},
+		{"192.0.2.13", "192.0.2.12"},
+		{"", "192.0.2.12"},
+		{"192.0.2.13", "192.0.2.12"},
+		{"192.0.2.13", "192.0.2.13"},
 	} {
 		answer = net.ParseIP(step.answer)
-		if wait := p.publish(); wait != nodeIPRecheckInterval {
+		wait := p.publish()
+		if answer == nil {
+			if wait != nodeRetryMinDelay {
+				t.Fatalf("failed publish() after a success waits %v, want %v", wait, nodeRetryMinDelay)
+			}
+		} else if wait != nodeIPRecheckInterval {
 			t.Fatalf("publish() of %s waits %v, want the recheck interval %v", step.answer, wait, nodeIPRecheckInterval)
 		}
 		if got, err := os.ReadFile(path); err != nil || string(got) != step.want+"\n" {

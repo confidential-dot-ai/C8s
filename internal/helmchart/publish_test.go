@@ -9,7 +9,6 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -18,6 +17,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	allowlistcmd "github.com/confidential-dot-ai/c8s/internal/cmds/allowlist"
@@ -47,10 +48,11 @@ func operatorCDS(t *testing.T, store *allowlist.Store, dir string) (url, keyPath
 		WriteAuthorizer:   operatorauth.Verifier{Keys: []*ecdsa.PublicKey{&key.PublicKey}, ClockSkew: 30 * time.Second}.Authorize,
 		MaxWriteBodyBytes: 1 << 20,
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /allowlist", h.HandleList)
-	mux.HandleFunc("PUT /allowlist", h.HandleReplaceAll)
-	srv := httptest.NewServer(mux)
+	r := chi.NewRouter()
+	r.Get("/allowlist", h.HandleList)
+	r.Put("/allowlist", h.HandleReplaceAll)
+	r.Put("/allowlist/workloads/{name}", h.HandlePutWorkload)
+	srv := httptest.NewServer(r)
 	t.Cleanup(srv.Close)
 	return srv.URL, keyPath
 }
@@ -93,23 +95,31 @@ func (n *node) pull(t *testing.T) {
 
 // An override that narrows a component, published as the operator guide
 // says through the CLI, reaches the nodes and stops admitting the launch the
-// previously served shape admitted, while the new launch is admitted.
+// previously served shape admitted, while the new launch is admitted: at
+// once with the retiring upload, at the next seeding after an apply, which
+// the served exact shape does not refuse.
 func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct{ name, repository string }{
-		{"short image name", ""},
-		{"image name longer than a shape's image segment", "ghcr.io/example/" + strings.Repeat("o", 48)},
+	for _, tc := range []struct {
+		name, repository string
+		retire           bool
+	}{
+		{"apply", "", false},
+		{"retiring upload", "", true},
+		{"retiring upload, image name longer than a shape's image segment", "ghcr.io/example/" + strings.Repeat("o", 48), true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			publishOverride(t, tc.repository)
+			publishOverride(t, tc.repository, tc.retire)
 		})
 	}
 }
 
 // publishOverride runs the publication procedure for the operator image
-// under repository, or the chart default when empty.
-func publishOverride(t *testing.T, repository string) {
+// under repository, or the chart default when empty: the retiring upload when
+// retire is set, else an apply of the override followed by a seeding of the
+// new release's seed, as the next CDS start does.
+func publishOverride(t *testing.T, repository string, retire bool) {
 	t.Helper()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
 	if repository != "" {
@@ -186,6 +196,29 @@ func publishOverride(t *testing.T, repository string) {
 	served := n.version
 	if !admitsOperator(n.doc, before, args) {
 		t.Fatal("the served policy refuses the previous operator launch")
+	}
+
+	if !retire {
+		file := filepath.Join(dir, "override.json")
+		if err := os.WriteFile(file, []byte(`{"`+override+`":`+string(raw)+`}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		allowlistCLI(t, url, keyPath, "apply", file)
+		n.pull(t)
+		if n.version <= served {
+			t.Fatalf("node version %d after the apply, want above the %d it held", n.version, served)
+		}
+		if !admitsOperator(n.doc, after, changed) {
+			t.Error("the node refuses the launch the applied override admits")
+		}
+		if _, retired, err := store.SeedWorkloads(renderedSeed(t, after).Workloads); err != nil || retired == 0 {
+			t.Fatalf("seeding the new release retired %d entries, %v; want the shapes the override replaces", retired, err)
+		}
+		n.pull(t)
+		if admitsOperator(n.doc, before, args) {
+			t.Error("the node still admits the launch the override narrowed away after the seeding")
+		}
+		return
 	}
 
 	// docs/allowlist-and-capabilities.md: export, drop the shapes the
