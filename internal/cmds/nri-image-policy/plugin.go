@@ -85,6 +85,32 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// admitsNodeRoot reports whether the base or applied allowlist admits r with
+// an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
+func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.AdmitsNodeRoot(r, m) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.AdmitsNodeRoot(r, m)
+}
+
+// declaresNodeRoot reports whether the base or applied allowlist has a
+// nodeRootFile rule for digest.
+func (s *policyStore) declaresNodeRoot(digest string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.DeclaresNodeRoot(digest) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.DeclaresNodeRoot(digest)
+}
+
 // needsVariableEvidence reports whether the base or applied allowlist has a
 // match env policy for digest.
 func (s *policyStore) needsVariableEvidence(digest string) bool {
@@ -503,7 +529,11 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 			reason = "launch_not_admitted"
 			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
 		}
-		log.Warn("image not admitted by allowlist", "digest", digest, "argv", check.Argv, "reason", reason)
+		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
+		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
+			attrs = append(attrs, "node_root_unavailable", missing)
+		}
+		log.Warn("image not admitted by allowlist", attrs...)
 		p.audit.Log(audit.Event{
 			Action:    "deny",
 			Reason:    reason,
@@ -626,27 +656,46 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // hook or the marks of a privileged container. The allowlist bounds which bytes
 // run; this bounds what those bytes are handed.
 //
-// Only the MEASURED base allowlist is exempt, and only when the node config
-// claims it as the node TCB (allowlist.node_tcb). A CDS-served entry never is: the
-// document is authored by the cluster admin this policy defends against.
+// Two exemptions apply. The first is a node-TCB entry: only the MEASURED base
+// allowlist, and only when the node config claims it as the node TCB
+// (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
+// this policy defends against authors that document. The exemption is the
+// whole base entry — digest, argv, env and mounts — not the digest alone: the
+// control plane picks the image a pod runs, so a TCB image restaged with
+// another entrypoint is a tenant container, and an entry with a pinned argv
+// refuses it. An entry left at `any` exempts every launch of its digest; see
+// docs/allowlist-and-capabilities.md.
 //
-// The exemption is the whole base entry — digest, argv, env and mounts — not
-// the digest alone: the control plane picks the image a pod runs, so a TCB
-// image restaged with another entrypoint is a tenant container, and an entry
-// with a pinned argv refuses it. An entry left at `any` exempts every launch of
-// its digest; see docs/allowlist-and-capabilities.md.
+// The second exempts a single bind, not the container: one whose mount
+// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
+// the base or the served allowlist admits at that destination and source. A
+// served rule is safe here because it can only name read-only bytes of the
+// measured node image, and strict clients verify the served policy byte for
+// byte.
 //
-// The digest is resolved only when there is something to excuse, so an ordinary
+// The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir)
+	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, nil)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
 	}
 	digest := ""
-	if cfg.Allowlist.NodeTCB {
+	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
 		digest = p.resolveDigest(ctx, imageRef)
+		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
+		obs = observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, func(m allowlist.ObservedMount) bool {
+			return p.policy.admitsNodeRoot(rc, m)
+		})
+		if violations = obs.violations(); len(violations) == 0 {
+			return verdictAllow, ""
+		}
+	}
+	if cfg.Allowlist.NodeTCB {
+		if digest == "" {
+			digest = p.resolveDigest(ctx, imageRef)
+		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		if p.policy.baseAdmits(rc, launchFinal) {
 			return verdictAllow, ""

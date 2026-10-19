@@ -18,7 +18,7 @@ import (
 
 const (
 	chartOperatorDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	chartRuntimeDir     = "/var/run/nri-image-policy"
+	chartRuntimeDir     = "/run/nri-image-policy"
 )
 
 // chartSeed renders the chart with the operator image derived and returns the
@@ -33,12 +33,12 @@ func chartSeed(t *testing.T) *allowlist.Allowlist {
 		"--namespace", "c8s-system",
 		"--show-only", "templates/cds.yaml",
 		"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true",
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "image.digest="+chartOperatorDigest,
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
 		"--set", "nriImagePolicy.image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
-		"--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000",
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+chartRuntimeDir,
 	).CombinedOutput()
 	if err != nil {

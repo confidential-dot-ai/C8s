@@ -94,13 +94,13 @@ func TestFetchOperatorKeysRejectsCertMismatch(t *testing.T) {
 	}
 }
 
-// A response of exactly maxOperatorKeysBytes is within the cap and must parse.
+// A response of exactly operatorauth.MaxPublishedKeysBytes is within the cap and must parse.
 func TestFetchOperatorKeysExactCapAccepted(t *testing.T) {
 	pubPEM, wantFP := operatorPubPEM(t)
-	if len(pubPEM) > maxOperatorKeysBytes {
+	if len(pubPEM) > operatorauth.MaxPublishedKeysBytes {
 		t.Fatalf("fixture PEM larger than the cap (%d bytes)", len(pubPEM))
 	}
-	body := append(append([]byte{}, pubPEM...), bytes.Repeat([]byte{'\n'}, maxOperatorKeysBytes-len(pubPEM))...)
+	body := append(append([]byte{}, pubPEM...), bytes.Repeat([]byte{'\n'}, operatorauth.MaxPublishedKeysBytes-len(pubPEM))...)
 	base, certSHA := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Write(body)
 	})
@@ -142,6 +142,17 @@ func TestGatherOperatorKeys(t *testing.T) {
 		}
 		if got := gatherOperatorKeys(ctx, config{kind: "cds"}, &evidence{}); got.note != "" {
 			t.Errorf("no url should be a no-op, got %+v", got)
+		}
+	})
+
+	t.Run("silent in the attested modes", func(t *testing.T) {
+		// --operator-keys there checks the route manifest; a "use --kind cds"
+		// note would point at a combination parseRouteCheck refuses.
+		for _, mode := range []string{"attest-pq", "attest-lb"} {
+			got := gatherOperatorKeys(ctx, config{mode: mode, url: "x", operatorKeys: "operator.pub"}, &evidence{})
+			if got.note != "" || got.fingerprints != nil || got.fetchErr != nil {
+				t.Errorf("gatherOperatorKeys(--mode %s) = %+v, want an empty report", mode, got)
+			}
 		}
 	})
 
@@ -208,7 +219,7 @@ func TestFetchOperatorKeyFingerprints_Errors(t *testing.T) {
 
 	t.Run("oversized response", func(t *testing.T) {
 		base, certSHA := startKeysTLSServer(t, func(w http.ResponseWriter, r *http.Request) {
-			w.Write(bytes.Repeat([]byte("A"), maxOperatorKeysBytes+2))
+			w.Write(bytes.Repeat([]byte("A"), operatorauth.MaxPublishedKeysBytes+2))
 		})
 		if _, _, _, err := fetchOperatorKeyFingerprints(ctx, base, "", certSHA, 5*time.Second); err == nil || !strings.Contains(err.Error(), "exceeds") {
 			t.Errorf("expected an oversize rejection, got %v", err)

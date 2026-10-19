@@ -18,11 +18,13 @@ import (
 // afterwards.
 func registerAllowlist(sc *godog.ScenarioContext) {
 	sc.Step(`^the allowlist has a workload entry named "([^"]*)"$`, entryNamed)
+	sc.Step(`^the allowlist has a workload entry named "([^"]*)" under the generated name for image "([^"]*)"$`, entryNamedGenerated)
 	sc.Step(`^"([^"]*)" declares image "([^"]*)"$`, entryDeclares)
 	sc.Step(`^"([^"]*)" declares image "([^"]*)" as an init container$`, entryDeclaresInit)
 	sc.Step(`^"([^"]*)" pins the argv of "([^"]*)" to "([^"]*)"$`, entryPinsArgv)
 	sc.Step(`^"([^"]*)" admits any argv for "([^"]*)"$`, entryAdmitsAnyArgv)
 	sc.Step(`^"([^"]*)" pins the command of "([^"]*)" to "([^"]*)"$`, entryPinsCommand)
+	sc.Step(`^"([^"]*)" pins the command of "([^"]*)" to a platform component executable$`, entryPinsComponent)
 	sc.Step(`^"([^"]*)" pins the args of "([^"]*)" to "([^"]*)"$`, entryPinsArgs)
 	sc.Step(`^"([^"]*)" admits any command for "([^"]*)"$`, entryAdmitsAnyCommand)
 	sc.Step(`^"([^"]*)" admits any args for "([^"]*)"$`, entryAdmitsAnyArgs)
@@ -48,10 +50,34 @@ func registerAllowlist(sc *godog.ScenarioContext) {
 var lastMutation time.Time
 
 // writtenName is the entry's allowlist workload name at CDS: the scenario's
-// name, suffixed so that two scenarios naming "web" never meet.
+// name, or the base an entry was given instead of it, suffixed so that two
+// scenarios naming "web" never meet.
 func (w *world) writtenName(name string) string {
+	if base, ok := w.bases[name]; ok {
+		name = base
+	}
 	return name + "-" + w.suffix()
 }
+
+// generatedBase is the name the chart generates for an entry of image: the
+// image name, a hyphen and the first twelve hex digits of its digest. The
+// suffix writtenName adds keeps a written entry in that form, so a seed
+// entry under the bare base replaces it (allowlist specification B2).
+func (w *world) generatedBase(image string) (string, error) {
+	digest, err := w.digestOf(image)
+	if err != nil {
+		return "", err
+	}
+	hex := strings.TrimPrefix(digest, "sha256:")
+	if len(hex) < 12 {
+		return "", fmt.Errorf("digest of %s is too short for a generated name: %q", image, digest)
+	}
+	return image + "-" + hex[:12], nil
+}
+
+// componentExecutable is a platform component executable in the sense of
+// B2: the c8s binary, which the chart's component entries pin.
+const componentExecutable = "/c8s"
 
 func (w *world) entry(name string) (*entry, error) {
 	e, ok := w.entries[name]
@@ -85,6 +111,21 @@ func entryNamed(ctx context.Context, name string) error {
 		return fmt.Errorf("the scenario already describes an entry %q", name)
 	}
 	w.entries[name] = &entry{Label: name, InitContainers: []entryContainer{}, Containers: []entryContainer{}}
+	return nil
+}
+
+// entryNamedGenerated describes an entry the scenario calls name and the
+// CDS stores under the generated name for image.
+func entryNamedGenerated(ctx context.Context, name, image string) error {
+	w := getWorld(ctx)
+	base, err := w.generatedBase(image)
+	if err != nil {
+		return err
+	}
+	if err := entryNamed(ctx, name); err != nil {
+		return err
+	}
+	w.bases[name] = base
 	return nil
 }
 
@@ -147,6 +188,10 @@ func entryPinsArgv(ctx context.Context, name, image, line string) error {
 
 func entryAdmitsAnyArgv(ctx context.Context, name, image string) error {
 	return getWorld(ctx).setPolicy(name, image, func(c *entryContainer) { c.Command, c.Args = anyArgv(), anyArgv() })
+}
+
+func entryPinsComponent(ctx context.Context, name, image string) error {
+	return entryPinsCommand(ctx, name, image, componentExecutable)
 }
 
 func entryPinsCommand(ctx context.Context, name, image, line string) error {

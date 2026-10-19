@@ -96,6 +96,7 @@ func TestParseJSON_SecretsRequirePinnedMounts(t *testing.T) {
 		"absent":         ``,
 		"deny":           `,"mounts":{"policy":"deny"}`,
 		"exact emptyDir": `,"mounts":{"policy":"exact","rules":[{"destination":"/run/c8s/secrets","kind":"emptyDir"}]}`,
+		"nodeRootFile":   `,"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"nodeRootFile","source":"/usr/bin/nvidia-smi","readOnly":true}]}`,
 	} {
 		entry := `{"containers":[{"digest":"` + digestA + `",` + argv + mounts + `}],` + grant + `}`
 		if _, err := ParseWorkloadJSON([]byte(entry)); err != nil {

@@ -78,7 +78,7 @@ func injectedSocketMount(c *api.Container) {
 	c.Mounts = append(c.Mounts, &api.Mount{
 		Destination: workloadclaims.SidecarSocketDir,
 		Type:        "bind",
-		Source:      "/var/run/nri-image-policy",
+		Source:      "/run/nri-image-policy",
 		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
 	})
 }
@@ -98,7 +98,7 @@ func TestSandboxViolations(t *testing.T) {
 			name:      "the plugin's own inventory socket mount",
 			pod:       injectedPod,
 			ctr:       injectedSocketMount,
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 		},
 		{
 			name: "a writable mount of the socket directory",
@@ -107,7 +107,7 @@ func TestSandboxViolations(t *testing.T) {
 				injectedSocketMount(c)
 				c.Mounts[len(c.Mounts)-1].Options = []string{"rbind", "rw"}
 			},
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
@@ -117,13 +117,13 @@ func TestSandboxViolations(t *testing.T) {
 				injectedSocketMount(c)
 				c.Name = "app"
 			},
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
 			name:      "the socket mount in a pod without the injection annotation",
 			ctr:       injectedSocketMount,
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
@@ -132,10 +132,10 @@ func TestSandboxViolations(t *testing.T) {
 				c.Mounts = append(c.Mounts, &api.Mount{
 					Destination: "/elsewhere",
 					Type:        "bind",
-					Source:      "/var/run/nri-image-policy",
+					Source:      "/run/nri-image-policy",
 				})
 			},
-			ownSocket: "/var/run/nri-image-policy",
+			ownSocket: "/run/nri-image-policy",
 			want:      "host path bind mount",
 		},
 		{
@@ -305,7 +305,7 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			got := observeSandbox(pod, ctr, tt.ownSocket).violations()
+			got := observeSandbox(pod, ctr, tt.ownSocket, nil, nil).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -507,5 +507,134 @@ func TestSandboxDenialIsNotNamespaceExempt(t *testing.T) {
 	verdict, reason := p.checkContainer(context.Background(), p.cfg, pod, privilegedContainer(), testFloorImage)
 	if verdict != verdictDeny || !strings.Contains(reason, "host path bind mount") {
 		t.Fatalf("checkContainer(exempt namespace, privileged) = %d %q, want deny naming the violation", verdict, reason)
+	}
+}
+
+func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
+	const source, destination = "/usr/bin/nvidia-smi", "/usr/bin/nvidia-smi"
+	verified := allowlist.ObservedMount{Source: source, Destination: destination, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	for _, tc := range []struct {
+		name      string
+		evidence  func(*allowlist.ObservedMount)
+		duplicate *api.Mount
+		hostBind  bool
+	}{
+		{"verified read-only file", nil, nil, false},
+		{"no provenance", func(m *allowlist.ObservedMount) { m.Provenance = "" }, nil, true},
+		{"writable", func(m *allowlist.ObservedMount) { m.ReadOnly = false }, nil, true},
+		{"other destination", func(m *allowlist.ObservedMount) { m.Destination = "/usr/bin/other" }, nil, true},
+		{"writable duplicate", nil, &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "rw"}}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			bind := &api.Mount{Type: "bind", Source: source, Destination: destination, Options: []string{"rbind", "ro"}}
+			ctr.Mounts = append(ctr.Mounts, bind)
+			if tc.duplicate != nil {
+				ctr.Mounts = append(ctr.Mounts, tc.duplicate)
+			}
+			evidence := verified
+			if tc.evidence != nil {
+				tc.evidence(&evidence)
+			}
+			var mounts []allowlist.ObservedMount
+			for _, m := range ctr.Mounts {
+				switch {
+				case m == bind:
+					mounts = append(mounts, evidence)
+				case carriesHostBytes(m):
+					mounts = append(mounts, allowlist.ObservedMount{Source: m.Source, Destination: m.Destination})
+				}
+			}
+			admitted := func(m allowlist.ObservedMount) bool {
+				return m.Provenance == allowlist.ProvenanceNodeRoot && m.ReadOnly
+			}
+			got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds
+			if (len(got) > 0) != tc.hostBind {
+				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
+			}
+		})
+	}
+}
+
+// Only an exact nodeRootFile rule at the bind's destination exempts it: measured
+// bytes the pod places anywhere else, such as over a pinned entrypoint, are a
+// host bind like any other.
+func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
+	const source = "/usr/bin/nvidia-smi"
+	original := nodeRootEvidence
+	nodeRootEvidence = func(string) bool { return true }
+	t.Cleanup(func() { nodeRootEvidence = original })
+	rule := allowlist.MountRule{Destination: source, Kind: allowlist.MountNodeRootFile, Source: source, ReadOnly: true}
+	plain := rule
+	plain.Kind = allowlist.MountHost
+	exact := allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}
+	for _, tc := range []struct {
+		name        string
+		mounts      allowlist.MountPolicy
+		destination string
+		pull, base  bool
+		want        imageVerdict
+	}{
+		{"exact nodeRootFile rule", exact, source, true, false, verdictAllow},
+		{"exact nodeRootFile rule in the base allowlist", exact, source, false, true, verdictAllow},
+		{"mount policy any, unlisted destination", allowlist.MountPolicy{Policy: allowlist.PolicyAny}, "/app/verify", true, false, verdictDeny},
+		{"host rule", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{plain}}, source, true, false, verdictDeny},
+		{"allowlist disabled", exact, source, false, false, verdictDeny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			al.Workloads["w"].Containers[0].Mounts = tc.mounts
+			if err := al.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
+			served := al
+			if tc.pull {
+				cfg.Allowlist.Pull.URL = "https://cds"
+			}
+			if tc.base {
+				cfg.Allowlist.Base, served = al, &allowlist.Allowlist{}
+			}
+			p, _ := newCachedPlugin(cfg, served)
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
+			ctr.Args = []string{"/bin/app"}
+			ctr.Mounts = append(ctr.Mounts[:3:3], &api.Mount{Type: "bind", Source: source, Destination: tc.destination, Options: []string{"rbind", "ro"}})
+			verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, "registry/repo@"+pushDigestB)
+			if verdict != tc.want {
+				t.Fatalf("checkContainer(%s) = %d %q, want %d", tc.name, verdict, reason, tc.want)
+			}
+			if tc.want == verdictDeny && !strings.Contains(reason, "host path bind mount") {
+				t.Fatalf("checkContainer(%s) reason = %q, want a sandbox violation", tc.name, reason)
+			}
+		})
+	}
+}
+
+func TestHostBindWithoutProvenanceSkipsDigestLookup(t *testing.T) {
+	cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}, Allowlist: allowlistConfig{Pull: pullConfig{URL: "https://cds"}}}
+	p, _ := newCachedPlugin(cfg, workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"}))
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: "/etc/passwd", Destination: "/etc/passwd", Options: []string{"rbind", "ro"}})
+	mounts := []allowlist.ObservedMount{{Source: "/etc/passwd", Destination: "/etc/passwd", Class: allowlist.MountHost, ReadOnly: true}}
+	// fakeContainerd panics on Resolve.
+	if verdict, _ := p.checkSandbox(context.Background(), cfg, pod, ctr, "registry/repo:tag", nil, mounts); verdict != verdictDeny {
+		t.Fatalf("checkSandbox(host bind without provenance) = %d, want deny", verdict)
+	}
+}
+
+func TestNodeRootBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
+	const source = "/usr/bin/nvidia-smi"
+	pod, ctr := sandboxedPod(), sandboxedContainer()
+	ctr.Mounts = append(ctr.Mounts, &api.Mount{Type: "bind", Source: source, Destination: source, Options: []string{"rbind", "ro"}})
+	verified := allowlist.ObservedMount{Source: source, Destination: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	// Evidence order differs from the container's mount order.
+	mounts := []allowlist.ObservedMount{verified, {Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Destination: "/etc/hosts"}}
+	admitted := func(m allowlist.ObservedMount) bool { return m.Provenance == allowlist.ProvenanceNodeRoot }
+	if got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds; len(got) != 0 {
+		t.Fatalf("observeSandbox(reordered evidence).HostBinds = %v, want none", got)
+	}
+	if got := observeSandbox(pod, ctr, "", mounts[1:], admitted).HostBinds; len(got) != 1 {
+		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
 	}
 }

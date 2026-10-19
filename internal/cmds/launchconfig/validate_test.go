@@ -61,14 +61,8 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 		{"tls san label", Server, func(d *Document) { d.TLSSAN = "C8S.Local" }, "lowercase DNS hostname"},
 		{"workloads json", Server, func(d *Document) { d.Workloads = "{" }, "valid JSON"},
 		{"workloads schema", Server, func(d *Document) { d.Workloads = `{"schema":"other/v1","workloads":{}}` }, "workloads:"},
-		{"router on agent", Agent, func(d *Document) { d.Router = &Router{Upstream: testUpstream} }, "router is server-only"},
+		{"router on agent", Agent, func(d *Document) { d.Router = &Router{Hostnames: []string{"a.example.com"}} }, "router is server-only"},
 		{"empty router on agent", Agent, func(d *Document) { d.Router = &Router{} }, "router is server-only"},
-		{"router upstream unmeshed", Server, func(d *Document) {
-			d.Router = &Router{Upstream: "gateway.confidential-inference.svc.cluster.local:8080"}
-		}, "router.upstream"},
-		{"router upstream scheme", Server, func(d *Document) { d.Router = &Router{Upstream: "http://" + testUpstream} }, "router.upstream"},
-		{"router upstream injection", Server, func(d *Document) { d.Router = &Router{Upstream: testUpstream + `"; return 200 "x`} }, "router.upstream"},
-		{"router upstream port", Server, func(d *Document) { d.Router = &Router{Upstream: "c8s-gateway.ns.svc.cluster.local:70000"} }, "port"},
 		{"router hostname ip", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"10.0.0.1"}} }, "router.hostnames"},
 		{"router hostname wildcard", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"*.example.com"}} }, "router.hostnames"},
 		{"router hostname case", Server, func(d *Document) { d.Router = &Router{Hostnames: []string{"API.example.com"}} }, "router.hostnames"},
@@ -98,12 +92,9 @@ func TestValidateRejectsEachMalformedField(t *testing.T) {
 	}
 }
 
-const testUpstream = "c8s-gateway.confidential-inference.svc.cluster.local:9443"
-
 func TestParseAcceptsServerRouter(t *testing.T) {
 	doc, _, _ := testDocument(t, "snp", Server)
 	doc.Router = &Router{
-		Upstream:         testUpstream,
 		Hostnames:        []string{"candidate.api.confidential.ai", "api.confidential.ai"},
 		ACMEEmail:        "ops@confidential.ai",
 		ACMEDirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory",
@@ -116,20 +107,16 @@ func TestParseAcceptsServerRouter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed.Router == nil || parsed.Router.Upstream != testUpstream || len(parsed.Router.Hostnames) != 2 {
+	if parsed.Router == nil || len(parsed.Router.Hostnames) != 2 {
 		t.Fatalf("router = %+v", parsed.Router)
 	}
-}
-
-// The Go rule must stay the chart's router.meshWrappedUpstream rule.
-func TestRouterUpstreamRuleMatchesChart(t *testing.T) {
-	data, err := os.ReadFile("../../helmchart/c8s/templates/router-helpers.tpl")
-	if err != nil {
-		t.Fatal(err)
+	// The removed router.upstream key is refused as unknown.
+	withUpstream := bytes.Replace(data, []byte("    hostnames:"), []byte("    upstream: gw.ns.svc:9443\n    hostnames:"), 1)
+	if bytes.Equal(withUpstream, data) {
+		t.Fatal("router.hostnames not found in the marshalled document")
 	}
-	chartRule := strings.ReplaceAll(meshWrappedUpstreamPattern, `\`, `\\`)
-	if !strings.Contains(string(data), `regexMatch "`+chartRule+`"`) {
-		t.Fatalf("router-helpers.tpl no longer carries %s", chartRule)
+	if _, err := Parse(withUpstream); err == nil {
+		t.Fatal("Parse accepted router.upstream")
 	}
 }
 

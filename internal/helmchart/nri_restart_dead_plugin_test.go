@@ -37,7 +37,7 @@ func newDeadPluginFixture(t *testing.T) *deadPluginFixture {
 		root:   filepath.Join(dir, "host"),
 		log:    filepath.Join(dir, "calls.log"),
 	}
-	f.runtimeDir = filepath.Join(f.root, "var/run/nri-image-policy")
+	f.runtimeDir = filepath.Join(f.root, "run/nri-image-policy")
 	if err := os.MkdirAll(f.runtimeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func TestChartNriInstallerTrustsHealthSocketOverProcessCheck(t *testing.T) {
 	if calledWith(calls, "nsenter") {
 		t.Errorf("restarted containerd while the health socket answered; calls %q", calls)
 	}
-	if !calledWith(calls, "curl --unix-socket "+f.root+"/var/run/nri-image-policy/health.sock") {
+	if !calledWith(calls, "curl --unix-socket "+f.root+"/run/nri-image-policy/health.sock") {
 		t.Errorf("did not probe the health socket before restarting; calls %q", calls)
 	}
 	if !strings.Contains(out, "not restarting") {

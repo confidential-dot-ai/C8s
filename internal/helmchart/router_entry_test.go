@@ -44,9 +44,8 @@ var (
 // command replaces the entrypoint, which is /c8s for the c8s image, the
 // image's own for nginx, and the one the seed pins for the other component
 // images. The argv is the kubelet's expansion, the env the launch
-// environment (launchEnv), and the mounts are what the node observes, where
-// /var/run is /run when resolveVarRun is set.
-func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec, resolveVarRun bool) []workloadclaims.SandboxContainer {
+// environment (launchEnv), and the mounts are what the node observes.
+func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec) []workloadclaims.SandboxContainer {
 	t.Helper()
 	envs := componentImageEnvValues(t)
 	var out []workloadclaims.SandboxContainer
@@ -73,7 +72,7 @@ func running(t *testing.T, seed *pkgallowlist.Allowlist, pod corev1.PodSpec, res
 		out = append(out, workloadclaims.SandboxContainer{
 			Digest: digest,
 			Argv:   runtimeArgv(c, nil),
-			Mounts: observedMounts(t, pod, c, resolveVarRun),
+			Mounts: observedMounts(t, pod, c),
 			Env:    launchEnv(t, pod, c, imageEnv),
 		})
 	}
@@ -133,7 +132,7 @@ func assertRouterMatches(t *testing.T, out string) {
 	if routerEntry == "" {
 		t.Fatalf("seed has no router entry: %v", slices.Sorted(maps.Keys(seed.Workloads)))
 	}
-	reported := running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec, true)
+	reported := running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec)
 	got, err := match(seed, reported)
 	if err != nil || got != routerEntry {
 		diff := seed.Workloads[routerEntry].Diff(secrets.WorkloadContainers(seed, reported))
@@ -166,17 +165,11 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 		}
 	}
 	slices.Sort(inits)
-	if want := []string{"acme", "allowlist-proxy", "cds-attest", "get-cert", "probe-file"}; !slices.Equal(inits, want) {
+	if want := []string{"acme", "get-cert", "probe-file"}; !slices.Equal(inits, want) {
 		t.Errorf("entry init modes = %v, want %v", inits, want)
 	}
 
-	// Where /var/run is its own directory the sidecars' socket mount has the
-	// other layout, so the required mains are missing.
-	if got, err := match(seed, running(t, seed, pod, false)); !errors.Is(err, pkgallowlist.ErrNoMatch) {
-		t.Errorf("MatchWorkload(unresolved /var/run) = %q, %v, want ErrNoMatch", got, err)
-	}
-
-	reported := running(t, seed, pod, true)
+	reported := running(t, seed, pod)
 	for _, tc := range []struct {
 		name   string
 		want   string // "" wants ErrNoMatch
@@ -229,6 +222,26 @@ func TestChartBakedRouterMatchesSeededEntry(t *testing.T) {
 			},
 		},
 		{
+			name: "allowlist-proxy socket from another host source",
+			mutate: func(cs []workloadclaims.SandboxContainer) []workloadclaims.SandboxContainer {
+				other, err := pkgallowlist.HostSourceDigest("/var/run/nri-image-policy")
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i, c := range cs {
+					if len(c.Argv) > 1 && c.Argv[1] == "allowlist-proxy" {
+						cs[i].Mounts = slices.Clone(c.Mounts)
+						for j, m := range cs[i].Mounts {
+							if m.Class == pkgallowlist.MountHost {
+								cs[i].Mounts[j].HostSourceDigest = other
+							}
+						}
+					}
+				}
+				return cs
+			},
+		},
+		{
 			// A declared init is not required.
 			name: "acme exited",
 			want: routerEntry,
@@ -266,7 +279,8 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		{name: "components not derived", args: []string{"--set", "image.digest=" + c8sDigest, "--set", "nriImagePolicy.policy.mode=audit"}, want: false},
 		{name: "router disabled", args: append(slices.Clone(digestArgs), "--set", "router.enabled=false"), want: false},
 		{name: "nginx by tag", args: append(slices.Clone(digestArgs), nginxByTag...), want: false},
-		{name: "no c8s-image main", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: false},
+		// cds-attest runs for application routing even with its attestation endpoints off.
+		{name: "attest and allowlist disabled", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: true},
 		{
 			// The argv carries $(HOST_IP) literally; the binary expands it.
 			name: "attestation api by host IP",
@@ -303,7 +317,7 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
 		{name: "nginx by tag", args: slices.Concat(digestArgs, noHostPort, nginxByTag)},
-		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"})},
+		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}), want: defaultGate},
 		// No inventory could stamp the leaf; the chart refuses the shape.
 		{name: "no inventory", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "nriImagePolicy.enabled=false", "--set", "attestationApi.cvmMode=gke"}), wantErr: "kind=require_host_image_policy"},
 		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: defaultGate},
@@ -428,7 +442,6 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 		{name: "nginx by tag", args: nginxByTag, cause: "router.nginx.image.digest is unset"},
 		{name: "c8s image by tag", args: []string{"--set-string", "image.digest="}, cause: "image.digest is unset"},
 		{name: "components not derived", args: []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=false", "--set", "nriImagePolicy.policy.mode=audit"}, cause: "nriImagePolicy.bootstrapAllowlist.deriveComponents is false"},
-		{name: "no c8s-image router container", args: []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}, cause: "no router container runs the c8s image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, slices.Concat(gateArgs, tc.args, []string{"--set-string", "router.attest.expectedWorkload=" + derived})...)
@@ -454,7 +467,7 @@ func TestChartRouterOperatorGate(t *testing.T) {
 	}
 	routerMatch := func(out string) (string, error) {
 		seed := renderedSeed(t, out)
-		return match(seed, running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec, true))
+		return match(seed, running(t, seed, renderedDeployment(t, out, "c8s-router").Spec.Template.Spec))
 	}
 
 	// Ungated, the entry sits beside the seeded one and the router leaf goes unnamed.

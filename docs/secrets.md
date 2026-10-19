@@ -169,8 +169,13 @@ confirm which one was sent.
 serves at `GET /ca` over the attested connection and refuses unless it is one
 you pinned.
 
-The write goes to the peer whose CA was read. Through a router front door the
-CLI uses one connection for both. On a direct URL, a connection the CLI has to
+`$CDS` is CDS itself: its NodePort (`https://<node>:30808`,
+`cds.service.nodePort`) or a port-forward to `svc/c8s-cds`, pinned with the CDS
+launch digest. A router front door relays `/allowlist` but not `/ca` or
+`/secrets`, so `c8s secrets put`, `c8s volume create` and `c8s cds ca` refuse
+it before requesting `/ca` or sending a value.
+
+The write goes to the peer whose CA was read. A connection the CLI has to
 reopen must present the same serving certificate as the first one, or the write
 is refused before anything is sent: a fresh handshake proves only an attested
 build at `$M`, which another CDS can match.
@@ -199,8 +204,8 @@ c8s cds ca --url "$CDS" --measurements "$M" --out mesh-ca.pem
 ```
 
 Endpoint pins are required: use `--image-policy-file` for a complete image
-policy, or `--measurements` / `--measurements-file` for launch digests. Pin CDS
-for a direct URL or the router for a front door. The SHA-256 of each certificate
+policy, or `--measurements` / `--measurements-file` for launch digests, and pin
+CDS: `--url` is CDS itself, as for the write. The SHA-256 of each certificate
 goes to stderr.
 Record it. The read proves an attested build at `$M` served these bytes, which
 is the bound the gate has too: comparing that digest against an earlier read, or
@@ -432,6 +437,15 @@ actually released.
   whose content the host chooses. A `data` rule is allowed: its content
   (a ConfigMap, a PVC) is still the cluster's, but only at a destination
   under `/mnt/c8s-data/` the entry declares.
+- A read-only `nodeRootFile` rule is allowed. The node proves the file is on
+  its measured dm-verity root, and read-only removes the write channel, so the
+  host chooses neither what the container reads nor where it writes. This is
+  how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
+  node image.
+- A `host` rule stays refused, read-only or writable. This includes
+  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
+  content to prove, and it is a channel to whatever process the host runs
+  behind it. Drop it from the worker's mounts to hold a grant.
 - The write path refuses an entry that breaks either rule, and release refuses
   one stored before it did. `env` is not required yet: `exact` fingerprints
   the whole environment, including the pod's `HOSTNAME`, so no policy pins it

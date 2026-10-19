@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -26,6 +27,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -36,9 +38,11 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/internal/server"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
+	"github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -98,6 +102,16 @@ const (
 	// The idle TTL alone would let whoever keeps records flowing keep one key
 	// alive indefinitely.
 	defaultSessionMaxAge = 5 * time.Hour
+	// defaultTunnelIOTimeout is how long a tunnel upload or download may
+	// make no progress.
+	defaultTunnelIOTimeout = 30 * time.Second
+	// tunnelWriteChunk is the piece of a sealed response written under one
+	// write deadline. nginx reads the next piece only once the client has
+	// drained one of its 16k proxy_buffers, so a smaller piece moves no
+	// sooner.
+	tunnelWriteChunk = 16 << 10
+	// tunnelBodyLimit bounds one sealed tunnel request record.
+	tunnelBodyLimit = routing.MaxTunnelRecordBytes
 	// attestBodyLimit bounds the attest-pq request body: a nonce and an X-Wing
 	// encapsulation key in JSON is well under 8 KiB.
 	attestBodyLimit = 8 << 10
@@ -113,17 +127,21 @@ var (
 	errStoreFull    = errors.New("the server is at capacity; retry shortly")
 )
 
-// exporterHeader carries the channel-binding exporter to the backend on every
-// forwarded tunnel request. The sidecar strips any client-supplied value
-// first, so the backend can trust the header names the channel the request
-// arrived on.
-const exporterHeader = "X-C8s-Exporter"
-
-// Backend handles a decrypted application request and returns the response. The
-// sidecar seals the response back to the client. Implementations forward the
-// reconstructed request to the real backend (see backend.go).
-type Backend interface {
-	Forward(ctx context.Context, req types.TunnelRequest) (types.TunnelResponse, error)
+// Router is the one route state the attested endpoints share, so the digest
+// a handshake binds is that of the manifest its tunnel routes by (A5, E2).
+// *routing.Proxy implements it.
+//
+// Session gates a new attested session (A2, F2) and returns the manifest whose
+// digest it binds (E1). Current is the applied manifest the publication serves.
+// Acquire reserves tunnel budget for a record of recordBytes from client.
+// Forward routes a request decrypted from the tunnel; outer is the tunnel
+// request itself, whose Host routes a sealed request that carries none (M1),
+// and an error is sealed as 502.
+type Router interface {
+	Session() (*routing.Applied, error)
+	Current() *routing.Applied
+	Acquire(client string, recordBytes int64) (release func(), ok bool)
+	Forward(outer *http.Request, req types.TunnelRequest) (types.TunnelResponse, error)
 }
 
 // Config configures the sidecar server.
@@ -154,12 +172,27 @@ type Config struct {
 	// carrying a matched-workload stamp with this exact name. Empty keeps
 	// /readyz unconditionally 200.
 	ExpectedWorkload string
-	Backend          Backend // over-encrypted application backend (nil => EchoBackend)
+	// Routes gates attested sessions, routes the tunnel and serves the route
+	// publication. Required.
+	Routes Router
+	// PublishRoutes serves the applied signed manifest at
+	// /.well-known/c8s/routes (E4). Off, that path answers 404: the manifest
+	// names hosts and backends a private deployment may not want public.
+	PublishRoutes bool
+	// DisableAttestEndpoints leaves attest-pq, attest-lb and the tunnel
+	// unregistered, for a router that runs only the routing listener.
+	DisableAttestEndpoints bool
 	// SessionTTL is the idle TTL: a session unused for this long is dropped.
 	SessionTTL time.Duration
 	// SessionMaxAge is the absolute session lifetime from establishment,
 	// enforced regardless of activity. Defaults to defaultSessionMaxAge.
 	SessionMaxAge time.Duration
+	// TunnelIOTimeout is how long reading a tunnel request body, or writing
+	// its sealed response, may make no progress before the handler gives up.
+	// It restarts after every read and every written chunk, so a slow client
+	// is never cut off and a stalled one cannot hold tunnel budget. Defaults
+	// to defaultTunnelIOTimeout.
+	TunnelIOTimeout time.Duration
 }
 
 type establishedSession struct {
@@ -171,9 +204,9 @@ type establishedSession struct {
 
 // Server serves the c8s-verify endpoints.
 type Server struct {
-	cfg     Config
-	log     *slog.Logger
-	backend Backend
+	cfg    Config
+	log    *slog.Logger
+	routes Router
 	// establishLimiter meters attest-pq and attest-lb per client;
 	// sessionLimiter meters one session's tunnel traffic; and clientLimiter
 	// is the per-client aggregate over every session a client holds, plus
@@ -207,14 +240,13 @@ func NewServer(cfg Config) *Server {
 	if cfg.SessionMaxAge <= 0 {
 		cfg.SessionMaxAge = defaultSessionMaxAge
 	}
-	backend := cfg.Backend
-	if backend == nil {
-		backend = EchoBackend{}
+	if cfg.TunnelIOTimeout <= 0 {
+		cfg.TunnelIOTimeout = defaultTunnelIOTimeout
 	}
 	return &Server{
 		cfg:              cfg,
 		log:              cfg.Logger,
-		backend:          backend,
+		routes:           cfg.Routes,
 		establishLimiter: newLimiter(establishRateLimit, establishRateBurst, clientBuckets),
 		sessionLimiter:   newLimiter(sessionRateLimit, sessionRateBurst, sessionBuckets),
 		clientLimiter:    newLimiter(clientRateLimit, clientRateBurst, clientBuckets),
@@ -274,6 +306,9 @@ func (s *Server) Handler() http.Handler {
 	// throttle the probe under externalTrafficPolicy: Cluster, which SNATs
 	// every client onto the node. The cache below is what bounds a flood.
 	r.Get("/readyz", s.handleReadyz)
+	if s.cfg.DisableAttestEndpoints {
+		return r
+	}
 	r.Method(http.MethodPost, wellKnownPrefix+"/attest-pq", s.establishing(http.HandlerFunc(s.handleAttestPQ)))
 	// The pre-client-first shape. Kept registered so a stale client gets the
 	// explicit 400 — never a 404 it might treat as transient, and never an
@@ -288,6 +323,9 @@ func (s *Server) Handler() http.Handler {
 	// only needs to route this one fixed path to the sidecar.
 	r.Method(http.MethodPost, wellKnownPrefix+"/tunnel",
 		s.perClient(issuer.RateLimitBy(s.sessionLimiter, s.tunnelKey, http.HandlerFunc(s.handleTunnel))))
+	if s.cfg.PublishRoutes {
+		r.Method(http.MethodGet, routes.PublicationPath, s.perClient(http.HandlerFunc(s.handleRoutePublication)))
+	}
 	return r
 }
 
@@ -419,15 +457,20 @@ func attestNonce(w http.ResponseWriter, r *http.Request) (nonceB64 string, nonce
 // first: the client POSTs its nonce and X-Wing encapsulation key, the server
 // encapsulates once, and report_data commits the front-door mode and the
 // complete key exchange — the client's key, the server's ciphertext, the
-// session id, and the nonce — plus the exact mesh leaf and issuing mesh CA to
-// one domain-separated transcript. The leaf signs that transcript to prove
-// possession of its private key, and the session is live when the response
-// leaves; there is no second round trip.
+// session id, and the nonce — plus the exact mesh leaf, issuing mesh CA and
+// applied route digest to one domain-separated transcript. The leaf signs that
+// transcript to prove possession of its private key, and the session is live
+// when the response leaves; there is no second round trip.
 func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 	req, nonce, xwingEK := parseAttestPQRequest(w, r)
 	if nonce == nil {
 		return
 	}
+	applied, ok := s.routesAdmit(w)
+	if !ok {
+		return
+	}
+	digest := applied.Signed.Digest()
 	// Ahead of the report this request would mint: a request the store will
 	// not take costs no attestation.
 	client := clientBucket(r)
@@ -462,7 +505,7 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce)
+	reportData, proof, err := identity.bind(s.cfg.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind mesh identity", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "mesh identity binding failed")
@@ -501,21 +544,27 @@ func (s *Server) handleAttestPQ(w http.ResponseWriter, r *http.Request) {
 		XWingCT:       base64.RawURLEncoding.EncodeToString(xwingCT),
 		SessionID:     id,
 		IdentityProof: proof,
+		RouteDigest:   hex.EncodeToString(digest[:]),
 	})
 }
 
 // handleAttestLB serves the ordinary-TLS binding: report_data commits the
 // front-door mode, nonce, the exact serving leaf nginx presents, the exact
-// mesh leaf, and the issuing mesh CA (overenc.LBTranscriptHash), and the mesh
-// leaf signs that transcript. No over-encryption key exchange happens and no
-// session is
-// stored — the client recomputes the transcript from the leaf it observed on
-// its own TLS connection and then rides that TLS.
+// mesh leaf, the issuing mesh CA and the applied route digest
+// (overenc.LBTranscriptHash), and the mesh leaf signs that transcript. No
+// over-encryption key exchange happens and no session is stored — the client
+// recomputes the transcript from the leaf it observed on its own TLS
+// connection and then rides that TLS.
 func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 	nonceB64, nonce := attestNonce(w, r)
 	if nonce == nil {
 		return
 	}
+	applied, ok := s.routesAdmit(w)
+	if !ok {
+		return
+	}
+	digest := applied.Signed.Digest()
 	// The exact-DER binding detects leaf substitution, not key sharing: a
 	// WebPKI Secret's serving key is host-visible, so the host could terminate
 	// the client's TLS with the same leaf and proxy this request. Only a
@@ -539,7 +588,7 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce)
+	reportData, proof, err := identity.bindServingLeaf(s.cfg.FrontDoorMode, servingLeafDER, nonce, digest[:])
 	if err != nil {
 		s.log.Error("bind serving leaf", "error", err)
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "serving-leaf binding failed")
@@ -564,7 +613,27 @@ func (s *Server) handleAttestLB(w http.ResponseWriter, r *http.Request) {
 		FrontDoorMode:     s.cfg.FrontDoorMode,
 		IdentityProof:     proof,
 		ServingLeafSHA256: base64.RawURLEncoding.EncodeToString(servingLeafHash[:]),
+		RouteDigest:       hex.EncodeToString(digest[:]),
 	})
+}
+
+// routesAdmit refuses an attested handshake while no route manifest is applied
+// (A2) or the applied one is stale (F2), each with its own code so a client
+// can tell an unconfigured router from one cut off from the CDS. It returns
+// the manifest it loaded, whose digest the handshake's evidence binds (E1);
+// the handshake loads no other (E2). Later requests in the session route by
+// whatever manifest is then applied (E3).
+func (s *Server) routesAdmit(w http.ResponseWriter) (*routing.Applied, bool) {
+	applied, err := s.routes.Session()
+	switch {
+	case errors.Is(err, routing.ErrStale):
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesStale, "the applied route manifest is stale")
+		return nil, false
+	case err != nil || applied == nil:
+		writeErr(w, http.StatusServiceUnavailable, types.ErrorCodeRoutesUnavailable, "no route manifest is applied yet")
+		return nil, false
+	}
+	return applied, true
 }
 
 // meshIdentity loads the mesh credential set from the three files.
@@ -677,20 +746,69 @@ func (s *Server) refuseSession(w http.ResponseWriter, err error) {
 }
 
 // handleTunnel terminates the over-encryption: it opens the sealed request
-// envelope, forwards the reconstructed request to the backend (plaintext; the
-// cluster armTLS mesh wraps that hop), and seals the response back to the client.
+// envelope, forwards the reconstructed request by the applied route manifest,
+// and seals the response back to the client.
 func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
+	// A refusal before the body is read closes the connection, so net/http
+	// does not wait on the unread body.
+	refuse := func(status int, code, msg string) {
+		w.Header().Set("Connection", "close")
+		writeErr(w, status, code, msg)
+	}
 	channel := s.useSession(r.Header.Get(sessionHeader))
 	if channel == nil {
-		writeErr(w, http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
+		refuse(http.StatusUnauthorized, types.ErrorCodeChannelError, "no over-encryption session")
 		return
 	}
+	if r.ContentLength > tunnelBodyLimit {
+		refuse(http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
+		return
+	}
+	// Budget goes only to a request naming a live session. Anyone can open
+	// one, so the per-client share is what bounds a single client.
+	recordBytes := r.ContentLength
+	if recordBytes < 0 {
+		recordBytes = tunnelBodyLimit
+	}
+	release, ok := s.routes.Acquire(clientBucket(r), recordBytes)
+	if !ok {
+		refuse(http.StatusServiceUnavailable, types.ErrorCodeTunnelBusy, "too many tunnelled requests in flight")
+		return
+	}
+	defer release()
+	rc := http.NewResponseController(w)
+	ioDeadline := func() time.Time { return time.Now().Add(s.cfg.TunnelIOTimeout) }
+	if err := errors.Join(rc.SetReadDeadline(ioDeadline()), rc.SetWriteDeadline(ioDeadline())); err != nil {
+		s.log.Error("tunnel deadlines unsupported", "error", err)
+		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "tunnel deadlines unsupported")
+		return
+	}
+	// Runs before release: the budget stays held until the response is on the
+	// wire. The write deadline would otherwise outlive this request on a
+	// kept-alive connection; net/http resets the read deadline itself.
+	defer func() {
+		// A failed flush has no one left to tell.
+		_ = rc.Flush()
+		_ = rc.SetWriteDeadline(time.Time{})
+	}()
 
-	recBytes, err := io.ReadAll(io.LimitReader(r.Body, 8<<20))
-	if err != nil {
+	// MaxBytesReader, unlike a LimitReader, fails an oversized body and makes
+	// net/http close the connection rather than drain the rest with no
+	// deadline while the budget is held.
+	body := deadlineReader{ReadCloser: r.Body, extend: func() error { return rc.SetReadDeadline(ioDeadline()) }}
+	recBytes, err := io.ReadAll(http.MaxBytesReader(w, body, tunnelBodyLimit))
+	var tooLarge *http.MaxBytesError
+	switch {
+	case errors.As(err, &tooLarge):
+		writeErr(w, http.StatusRequestEntityTooLarge, types.ErrorCodeChannelError, "tunnel record exceeds 8 MiB; send a smaller request")
+		return
+	case err != nil:
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "read record")
 		return
 	}
+	// The body reached EOF. An expired read deadline would cancel r's context
+	// mid-forward.
+	_ = rc.SetReadDeadline(time.Time{})
 	var rec overenc.Record
 	if err := cbor.Unmarshal(recBytes, &rec); err != nil {
 		writeErr(w, http.StatusBadRequest, types.ErrorCodeChannelError, "invalid record")
@@ -709,10 +827,10 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	// The backend trusts this header to name the channel the request arrived
 	// on, so a client-supplied value is dropped, never forwarded.
-	env.Headers = setHeaderField(env.Headers, exporterHeader,
+	env.Headers = setHeaderField(env.Headers, routing.ExporterHeader,
 		base64.RawURLEncoding.EncodeToString(channel.Exporter()))
 
-	resp, err := s.backend.Forward(r.Context(), env)
+	resp, err := s.routes.Forward(r, env)
 	if err != nil {
 		s.log.Warn("backend forward failed", "method", env.Method, "path", env.Path, "error", err)
 		resp = types.TunnelResponse{Status: http.StatusBadGateway, Body: []byte("backend error")}
@@ -728,7 +846,37 @@ func (s *Server) handleTunnel(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "seal failed")
 		return
 	}
-	writeCBOR(w, http.StatusOK, out)
+	outCBOR, err := cbor.Marshal(out)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
+		return
+	}
+	w.Header().Set("Content-Type", "application/cbor")
+	w.Header().Set("Content-Length", strconv.Itoa(len(outCBOR)))
+	w.WriteHeader(http.StatusOK)
+	for len(outCBOR) > 0 {
+		n := min(len(outCBOR), tunnelWriteChunk)
+		_ = rc.SetWriteDeadline(ioDeadline())
+		// A failed write has no one left to tell.
+		if _, err := w.Write(outCBOR[:n]); err != nil || rc.Flush() != nil {
+			return
+		}
+		outCBOR = outCBOR[n:]
+	}
+}
+
+// deadlineReader calls extend before every Read, so a read deadline it pushes
+// forward expires only when no data arrives for its whole window.
+type deadlineReader struct {
+	io.ReadCloser
+	extend func() error
+}
+
+func (d deadlineReader) Read(p []byte) (int, error) {
+	if err := d.extend(); err != nil {
+		return 0, err
+	}
+	return d.ReadCloser.Read(p)
 }
 
 // setHeaderField replaces every field named name (case-insensitively) with one
@@ -845,17 +993,6 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(v)
-}
-
-func writeCBOR(w http.ResponseWriter, status int, v any) {
-	b, err := cbor.Marshal(v)
-	if err != nil {
-		writeErr(w, http.StatusInternalServerError, types.ErrorCodeInternal, "marshal failed")
-		return
-	}
-	w.Header().Set("Content-Type", "application/cbor")
-	w.WriteHeader(status)
-	w.Write(b)
 }
 
 func writeErr(w http.ResponseWriter, status int, code, msg string) {

@@ -297,6 +297,11 @@ func TestRun_ErrorPaths(t *testing.T) {
 			wantSub: "--dns-san-pattern",
 		},
 		{
+			name:    "follow seed without a seed",
+			mutate:  func(_ *testing.T, cfg *config) { cfg.followSeed = true },
+			wantSub: "--follow-seed",
+		},
+		{
 			name:    "invalid cn pattern",
 			mutate:  func(_ *testing.T, cfg *config) { cfg.allowedCNPattern = "(" },
 			wantSub: "--allowed-cn-pattern",

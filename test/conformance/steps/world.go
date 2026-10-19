@@ -22,7 +22,9 @@ type world struct {
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
-	entries  map[string]*entry
+	entries map[string]*entry
+	// bases holds, per scenario name, the name an entry is written under instead.
+	bases    map[string]string
 	written  map[string]bool
 	removed  map[string]json.RawMessage
 	api      cdsAPIState
@@ -111,6 +113,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				namespace:  "conf-" + hex.EncodeToString(suffix),
 				pods:       map[string]*pod{},
 				entries:    map[string]*entry{},
+				bases:      map[string]string{},
 				written:    map[string]bool{},
 				removed:    map[string]json.RawMessage{},
 				running:    map[string]*pod{},
