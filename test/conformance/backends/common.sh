@@ -132,6 +132,12 @@
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
 #                                    container when given; nothing while absent
+#   pod_file <ns> <pod> <container> <path>
+#                                    the file in the container, base64;
+#                                    fails while it is absent
+#   pod_fstype <ns> <pod> <container> <dir>
+#                                    the filesystem type of the directory, as
+#                                    stat -f names it; fails while it is absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
@@ -328,6 +334,8 @@ render_pod() {
 # carrying a workload ID; read through one of them, once it runs.
 CERT_VOLUME_PATH=/etc/c8s/certs
 pod_exec() { echo kubectl; }
+pod_file() { local out; out="$(kubectl -n "$1" exec "$2" -c "$3" -- cat "$4" | base64)" && tr -d '\n' <<<"$out"; }
+pod_fstype() { kubectl -n "$1" exec "$2" -c "$3" -- stat -f -c %T "$4"; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is

@@ -69,6 +69,21 @@ image_alias() { return $UNSUPPORTED; }
 # The node image's own c8s image is not pullable from the harness host.
 injected_image() { return $UNSUPPORTED; }
 
+# The reporter images (images/reporter, built by conformance-images.yml), in
+# place of the logical images they are built on; one not pinned yet stays
+# common's.
+REPORTER_REPO=ghcr.io/confidential-dot-ai/c8s-conformance-
+declare -A REPORTER_IMAGES=(
+    [model-server]=""
+    [tenant-app]=""
+    [job-runner]=""
+)
+eval "common_$(declare -f image_ref)"
+image_ref() {
+    local pinned="${REPORTER_IMAGES[$1]:-}"
+    if [ -n "$pinned" ]; then echo "$REPORTER_REPO$1@$pinned"; else common_image_ref "$1"; fi
+}
+
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
 
@@ -223,7 +238,7 @@ pod_exec() { echo agent; }
 AGENT=c8s-conformance/agent
 AGENT_DIR=/run/c8s-conformance-agent
 # shellcheck disable=SC2016  # expands in the pod
-AGENT_SCRIPT='last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
+AGENT_SCRIPT='export C8S_CONFORMANCE_AGENT=1; last=0; while :; do s=$(cat '"$AGENT_DIR"'/seq 2>/dev/null); if [ -n "$s" ] && [ "$s" != 0 ] && [ "$s" != "$last" ]; then last=$s; sh '"$AGENT_DIR"'/cmd > /tmp/.agent-out 2>&1; rc=$?; echo "agent $s $rc $(base64 < /tmp/.agent-out | tr -d "\n")"; fi; sleep 1; done'
 
 manifest_filter() { agent_wrap; }
 
@@ -312,15 +327,57 @@ agent_run() {
     return "$rc"
 }
 
+# A pod without the agent whose first container runs a reporter image
+# (REPORTER_IMAGES) prints its files to its log instead; any other answers
+# 77. reporter_line <ns> <pod> <file|fstype> <path>: the last value the
+# reporter printed for the path, failing while it has printed none.
+reporter_line() {
+    local image container line
+    image="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].image}')" || return "$UNSUPPORTED"
+    [[ "$image" == "$REPORTER_REPO"* ]] || return "$UNSUPPORTED"
+    container="$(kubectl -n "$1" get pod "$2" -o jsonpath='{.spec.containers[0].name}')" || return
+    line="$(kubectl -n "$1" logs "$2" -c "$container" 2>/dev/null | grep -F "c8s-report $3 $4 " | tail -1)"
+    [ -n "$line" ] || { echo "backend: the reporter in $1/$2 has printed no $3 for $4" >&2; return 1; }
+    echo "${line##* }"
+}
+
 # Nothing while the file is absent or the agent does not answer yet, as
-# pod_cert_file answers elsewhere; 77 for a pod without the agent.
+# pod_cert_file answers elsewhere; the reporter never prints the key.
 pod_cert_file() {
     local out rc=0
     out="$(agent_run "$1" "$2" "" "cat '$CERT_VOLUME_PATH/$3'" 2>/dev/null)" || rc=$?
     case "$rc" in
-        0) printf '%s\n' "$out" ;;
+        0) printf '%s\n' "$out"; return ;;
+        "$UNSUPPORTED") ;;
+        *) return 0 ;;
+    esac
+    [ "$3" != tls.key ] || return "$UNSUPPORTED"
+    rc=0
+    out="$(reporter_line "$1" "$2" file "$CERT_VOLUME_PATH/$3" 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0) base64 -d <<<"$out" ;;
         "$UNSUPPORTED") return "$UNSUPPORTED" ;;
     esac
+}
+
+pod_file() {
+    local tmp rc=0
+    tmp="$(mktemp)"
+    agent_run "$1" "$2" "$3" "cat $(shq "$4")" > "$tmp" || rc=$?
+    case "$rc" in
+        0) base64 < "$tmp" | tr -d '\n' ;;
+        "$UNSUPPORTED") reporter_line "$1" "$2" file "$4" || rc=$? ;;
+    esac
+    rm -f "$tmp"
+    [ "$rc" = 0 ] || [ "$rc" = "$UNSUPPORTED" ] && return "$rc"
+    return 1
+}
+
+pod_fstype() {
+    local rc=0
+    agent_run "$1" "$2" "$3" "stat -f -c %T $(shq "$4")" || rc=$?
+    [ "$rc" = "$UNSUPPORTED" ] || return "$rc"
+    reporter_line "$1" "$2" fstype "$4"
 }
 # No exec into mesh-sync: its log names the members each set write added
 # and removed, from everything on its first write, so replaying the current
@@ -335,7 +392,7 @@ mesh_member() {
         guard) set="$MESH_SET_GUARDED" ;;
         *) echo "backend: mesh_member: no membership '$2'" >&2; return 2 ;;
     esac
-    case "$3" in *:*) set+=6 ;; esac
+    case "$3" in *:*) set+="6" ;; esac
     log="$(kubectl -n "$NS" logs "$pod" -c "$MESH_SYNC_CONTAINER" | jq -Rc 'fromjson? | select(.msg == "ipset membership changed")')" || true
     [ -n "$log" ] || return "$UNSUPPORTED"
     jq -rs --arg set "$set" --arg ip "$3" '
