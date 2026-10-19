@@ -9,6 +9,10 @@ type mountRuleBehavior interface {
 	validate() error
 	admits(ObservedMount) bool
 	hostIndependent() bool
+	// grantPinned reports whether a secrets grant accepts the rule: the host
+	// chooses neither what the container reads through it nor where it
+	// writes. fsVerityFile (#938) qualifies when readOnly with a verityDigest.
+	grantPinned() bool
 }
 
 var (
@@ -52,6 +56,10 @@ func (emptyDirRule) hostIndependent() bool {
 	return true
 }
 
+func (emptyDirRule) grantPinned() bool {
+	return true
+}
+
 type dataRule struct {
 	emptyDirRule
 }
@@ -87,9 +95,15 @@ func (hostRule) hostIndependent() bool {
 	return false
 }
 
+// grantPinned is false: read-only or not, the host chooses the file's content,
+// and a writable path is a channel to whatever the host runs behind it.
+func (hostRule) grantPinned() bool {
+	return false
+}
+
 // nodeRootFileRule is a read-only host rule that also requires node-root
 // evidence. It still names a host path, so it is not host-independent, but a
-// secrets grant accepts it (MountRule.grantPinned).
+// secrets grant accepts it (grantPinned).
 type nodeRootFileRule struct {
 	hostRule
 }
@@ -105,21 +119,10 @@ func (r nodeRootFileRule) admits(m ObservedMount) bool {
 	return m.Provenance == ProvenanceNodeRoot && r.hostRule.admits(m)
 }
 
-// grantPinned reports whether a secrets grant accepts r: the host chooses
-// neither what the container reads through it nor where it writes. A read-only
-// nodeRootFile qualifies because the node proves the bytes are on the measured
-// root and read-only removes the write channel. A host rule, readable or
-// writable, gives the container content or a channel the host controls.
-func (r MountRule) grantPinned() bool {
-	switch r.Kind {
-	case MountEmptyDir, MountData:
-		return true
-	case MountNodeRootFile:
-		return r.ReadOnly
-	// fsVerityFile (#938) belongs here, pinned when readOnly with a verityDigest.
-	default:
-		return false
-	}
+// grantPinned is true when read-only: the node proves the bytes are on the
+// measured root, and read-only removes the write channel.
+func (r nodeRootFileRule) grantPinned() bool {
+	return r.ReadOnly
 }
 
 // observedClass is the ObservedMount class a rule of r's kind matches.

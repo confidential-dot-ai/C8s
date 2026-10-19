@@ -187,7 +187,7 @@ func TestMountRuleGrantPinned(t *testing.T) {
 		{"host writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.rule.grantPinned(); got != tc.want {
+			if got := tc.rule.behavior().grantPinned(); got != tc.want {
 				t.Fatalf("grantPinned(%+v) = %t, want %t", tc.rule, got, tc.want)
 			}
 		})

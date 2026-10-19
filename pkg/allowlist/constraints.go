@@ -77,10 +77,10 @@ func (m mountConstraint) hostIndependent() bool {
 }
 
 // grantPinned is hostIndependent as a secrets grant judges it: it also accepts
-// rules whose host file the node proves (MountRule.grantPinned).
+// rules whose host file the node proves.
 func (m mountConstraint) grantPinned() bool {
 	for _, rule := range m.policy.Rules {
-		if !rule.grantPinned() {
+		if behavior := rule.behavior(); behavior == nil || !behavior.grantPinned() {
 			return false
 		}
 	}
