@@ -155,6 +155,10 @@ containers:
         mountPath: /var/cache/nginx
       - name: nginx-tmp
         mountPath: /tmp
+      {{- if .Values.router.attest.enabled }}
+      - name: nginx-tunnel-body
+        mountPath: {{ include "router.tunnelBodyDir" . }}
+      {{- end }}
     {{- with .Values.router.nginx.resources }}
     resources:
       {{- toYaml . | nindent 6 }}
@@ -310,6 +314,17 @@ volumes:
     emptyDir:
       medium: Memory
       sizeLimit: 16Mi
+  {{- if .Values.router.attest.enabled }}
+  {{- $spool := include "router.quantityBytes" .Values.router.nginx.tunnelBodySpace }}
+  {{- $limit := include "router.quantityBytes" (dig "limits" "memory" "" (default dict .Values.router.nginx.resources)) }}
+  {{- if and $spool $limit (le ($limit | int64) ($spool | int64)) }}
+  {{- fail (printf "router.nginx.resources.limits.memory (%v) must exceed router.nginx.tunnelBodySpace (%v): the tunnel body tmpfs is charged to nginx's memory" .Values.router.nginx.resources.limits.memory .Values.router.nginx.tunnelBodySpace) }}
+  {{- end }}
+  - name: nginx-tunnel-body
+    emptyDir:
+      medium: Memory
+      sizeLimit: {{ required "router.nginx.tunnelBodySpace is required" .Values.router.nginx.tunnelBodySpace }}
+  {{- end }}
   - name: nginx-config
     {{- if .Values.node.baked }}
     hostPath:

@@ -491,7 +491,9 @@
             "resources": {},
             "runAsGroup": {},
             "runAsNonRoot": {},
-            "runAsUser": {}
+            "runAsUser": {},
+            "tunnelBodySpace": {},
+            "tunnelConnectionsPerClient": {}
           }
         },
         "publicTLS": {

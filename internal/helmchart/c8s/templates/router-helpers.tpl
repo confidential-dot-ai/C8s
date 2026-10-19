@@ -526,6 +526,21 @@ instead of a ConfigMap the control plane can edit.
 {{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
 {{- end -}}
 
+{{/*
+Bytes in a Kubernetes quantity written as an integer with an optional k, M,
+G, T, Ki, Mi, Gi or Ti suffix; "" for any other form.
+*/}}
+{{- define "router.quantityBytes" -}}
+{{- $q := toString . -}}
+{{- $digits := regexFind `^[0-9]+` $q -}}
+{{- $units := dict "" 1 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+{{- $suffix := trimPrefix $digits $q -}}
+{{- if and $digits (hasKey $units $suffix) -}}{{ mul ($digits | int64) (get $units $suffix) }}{{- end -}}
+{{- end -}}
+
+{{/* Where nginx spools tunnel request bodies (router.nginx.tunnelBodySpace). */}}
+{{- define "router.tunnelBodyDir" -}}/var/lib/c8s-tunnel-body{{- end -}}
+
 {{/* nodeservices.RouterTLSSnippetDir must equal it. */}}
 {{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
 
@@ -833,4 +848,28 @@ same predicate. Call with the address string.
 {{- if regexMatch "^c8s-[a-z]([-a-z0-9]*[a-z0-9])?\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.svc\\.cluster\\.local:[0-9]+$" . -}}
 true
 {{- end -}}
+{{- end -}}
+
+{{/*
+router.wellKnownProxyDirectives renders the directives every
+/.well-known/c8s/ location shares: CORS, the proxy to cds-attest with
+buffering on and no temp-file spill, and the forwarded headers. Inputs: root
+(the chart context) and readTimeout.
+*/}}
+{{- define "router.wellKnownProxyDirectives" -}}
+{{- $root := .root -}}
+{{- if default false $root.Values.router.cors.enabled -}}
+{{ include "router.corsLocationDirectives" $root.Values.router.cors | trim }}
+{{ else if eq (include "router.protocolCorsEnabled" $root) "true" -}}
+{{ include "router.protocolCorsLocationDirectives" $root | trim }}
+{{ end -}}
+proxy_pass http://127.0.0.1:{{ $root.Values.router.attest.port }};
+proxy_buffering on;
+proxy_request_buffering on;
+proxy_max_temp_file_size 0;
+proxy_read_timeout {{ .readTimeout }};
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
 {{- end -}}

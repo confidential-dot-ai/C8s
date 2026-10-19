@@ -12,10 +12,9 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/pkg/certutil"
+	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
@@ -112,11 +111,11 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 			tlsCfg.RootCAs = pool
 		}
 		if opts.ClientCertFile != "" && opts.ClientKeyFile != "" {
-			loader, err := newUpstreamCertLoader(opts.ClientCertFile, opts.ClientKeyFile)
+			loader, err := routing.NewClientCert(opts.ClientCertFile, opts.ClientKeyFile)
 			if err != nil {
 				return nil, fmt.Errorf("load upstream client cert: %w", err)
 			}
-			tlsCfg.GetClientCertificate = loader.getClientCertificate
+			tlsCfg.GetClientCertificate = loader.GetClientCertificate
 		}
 		transport.TLSClientConfig = tlsCfg
 	} else if !strings.HasPrefix(base, "http://") {
@@ -128,93 +127,6 @@ func NewHTTPBackend(base string, opts HTTPBackendOptions) (*HTTPBackend, error) 
 		timeout = defaultUpstreamTimeout
 	}
 	return &HTTPBackend{base: base, client: &http.Client{Transport: transport, Timeout: timeout}}, nil
-}
-
-// upstreamCertRecheckInterval is how often the upstream client credential is
-// re-read from disk while it is still valid. get-cert rotates at 50% of TTL,
-// so this only needs to be small next to the rotation window.
-const upstreamCertRecheckInterval = 30 * time.Second
-
-// upstreamCertLoader hands the upstream handshake a currently-valid copy of
-// the get-cert-managed client credential. Loading the pair once into
-// tls.Config.Certificates, as this backend used to, pins one leaf for the
-// lifetime of a long-lived sidecar: the upstream verifies it against its
-// ClientCAs, so the first expiry breaks the backend hop and nothing short of
-// a restart recovers. The mesh identity (identity.go) is already re-read per
-// request; this is the same rule for the one credential that predates
-// pkg/armtls' certState.
-type upstreamCertLoader struct {
-	certFile string
-	keyFile  string
-
-	mu        sync.Mutex
-	cached    *tls.Certificate
-	recheckAt time.Time
-}
-
-// newUpstreamCertLoader reads the pair once so an unreadable path or a
-// mismatched key still fails at startup, as it did when the pair was loaded
-// straight into tls.Config. The validity window is deliberately NOT enforced
-// here: a sidecar restarting while CDS is down would otherwise crash-loop
-// instead of coming up and serving whatever needs no upstream hop.
-func newUpstreamCertLoader(certFile, keyFile string) (*upstreamCertLoader, error) {
-	l := &upstreamCertLoader{certFile: certFile, keyFile: keyFile}
-	cert, err := l.read()
-	if err != nil {
-		return nil, err
-	}
-	l.cached = cert
-	l.recheckAt = time.Now().Add(upstreamCertRecheckInterval)
-	return l, nil
-}
-
-func (l *upstreamCertLoader) read() (*tls.Certificate, error) {
-	pair, err := tls.LoadX509KeyPair(l.certFile, l.keyFile)
-	if err != nil {
-		return nil, err
-	}
-	if len(pair.Certificate) == 0 {
-		return nil, fmt.Errorf("upstream client certificate %q has no certificate", l.certFile)
-	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return nil, fmt.Errorf("parse upstream client leaf: %w", err)
-	}
-	pair.Leaf = leaf
-	return &pair, nil
-}
-
-// getClientCertificate re-reads the files when the cached credential is stale
-// or outside its window, and applies the repo-wide validity check before
-// handing anything to a handshake.
-func (l *upstreamCertLoader) getClientCertificate(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-	now := time.Now()
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	canReuseCachedCertificate := l.cached != nil && now.Before(l.recheckAt) && certutil.CheckValidity(l.cached.Leaf, now) == nil
-	if canReuseCachedCertificate {
-		return l.cached, nil
-	}
-
-	cert, err := l.read()
-	if err == nil {
-		err = certutil.CheckValidity(cert.Leaf, now)
-	}
-	if err != nil {
-		// get-cert writes the certificate and the key as separate files, so a
-		// rotation can leave the two momentarily out of step. Keep serving
-		// the cached credential while it is still inside its own window
-		// rather than failing the hop on a transient mismatch.
-		if l.cached != nil && certutil.CheckValidity(l.cached.Leaf, now) == nil {
-			return l.cached, nil
-		}
-		return nil, fmt.Errorf("upstream client certificate: %w", err)
-	}
-
-	l.cached = cert
-	l.recheckAt = now.Add(upstreamCertRecheckInterval)
-	return cert, nil
 }
 
 // Forward implements Backend by proxying the reconstructed request upstream.

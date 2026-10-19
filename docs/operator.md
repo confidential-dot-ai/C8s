@@ -563,8 +563,9 @@ CDS counts past N again, or the plugin itself restarts.
 CDS stores one signed route manifest (`c8s.routes/v1`) at `/routes`, in the
 same database as the allowlist, so it shares the allowlist's lifetime. There
 is no route seed: after CDS starts with an empty database, write the manifest
-again. CDS logs a warning at startup when it holds none. The router does not
-apply the route manifest.
+again. CDS logs a warning at startup when it holds none. The chart does not
+yet route by the manifest: `cds-attest` applies it only when started with
+`--cds-url` (see [Route by the manifest](#route-by-the-manifest)).
 
 `GET /routes` is unauthenticated and returns
 `{"manifest": "<base64 of the manifest bytes>", "token": "<write token>"}`.
@@ -649,6 +650,131 @@ old public key. To recover, do one of the following:
   which re-signs the manifest under the new key.
 - Review the bytes from `c8s routes show --raw`, raise `revision`, and store
   the file with `put`.
+
+### Route by the manifest
+
+`cds-attest --cds-url` polls `GET /routes` from CDS over armTLS, verifies the
+signed manifest, and routes by it. It routes the requests it decrypts from
+the tunnel and, with `--routing-port`, plain requests on a loopback listener.
+The chart renders none of these flags yet, and nginx still sends application
+traffic to `router.upstream`, so a chart install routes no traffic by the
+manifest.
+
+Every flag in this table but `--tunnel-io-timeout` requires `--cds-url`.
+`--tunnel-io-timeout` and the 8 MiB request body limit apply to the tunnel
+with or without it.
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--cds-url` | none | CDS origin to poll. Enables manifest routing and excludes every `--upstream*` flag. Requires `--attestation-api-url` and the three `--mesh-identity-*` files. |
+| `--cds-measurements`, `--cds-rtmrs`, `--image-policy-file` | none | CDS pins. Without `--cds-measurements` or `--image-policy-file`, `cds-attest` logs a warning and accepts any armTLS-attested CDS. Unsafe outside development: any TEE on the pod network can pose as CDS and serve the manifest, and the operator keys when they come from `GET /operator-keys`. |
+| `--operator-keys-file` | `/run/c8s-node/operator-pubkey` | PEM operator public keys a manifest must verify under. |
+| `--routes-poll-interval` | `30s` | Time between polls. Keep it under half of `maxAgeSeconds`. |
+| `--routing-port` | `0` | Port of the loopback routing listener. `0` disables it. |
+| `--routing-host` | `127.0.0.1` | Host of the routing listener. Must be a loopback IP. |
+| `--backend-timeout` | `1h` | On the routing listener, how long a request, or an upgraded connection such as a WebSocket, may go with no data moving either way. A tunnelled request, whose response is buffered whole, gets this long in total for its backend call. Must be positive. |
+| `--tunnel-io-timeout` | `30s` | How long a tunnel upload, or the download of its sealed response, may make no progress. Must be positive. |
+| `--tunnel-budget` | 75% of the container memory limit, else `32Gi` | Bytes the tunnelled requests in flight in one replica may buffer, as a quantity such as `64Gi`. Each request reserves three copies of its record and four of the largest response (32 MiB); one client (by `X-Real-IP`) holds at most a quarter. Must cover one full-size request, 152 MiB. |
+| `--reserved-paths` | the router's own endpoints | Paths no manifest route can match. Each entry must be a normalized path. |
+| `--attest-endpoints` | `true` | `false` serves only the routing listener and probes. Requires `--cds-url` and `--routing-port`. |
+
+`cds-attest` takes the operator keys from `--operator-keys-file` when that
+file exists at startup. When the default path is absent, it takes them from
+CDS's `GET /operator-keys` and logs a warning: that list is control-plane
+configuration, and the router does not stop a substituted key. An explicit
+`--operator-keys-file` that is absent stops `cds-attest` at startup.
+
+Until it applies a manifest, `cds-attest` answers routed requests with 503
+and refuses attest-pq and attest-lb handshakes with 503 `routes_unavailable`.
+When `maxAgeSeconds` passes without a successful poll, it refuses them with
+503 `routes_stale` and keeps routing, by the stale manifest, both established
+sessions and the routing listener. A manifest whose `notBefore` is in the
+future counts as a successful poll. `cds-attest` applies it at the first poll
+at or after `notBefore` and keeps no timer, so while CDS is unreachable the
+applied revision keeps serving. CDS serves only the staged manifest, so a
+replica that starts before its `notBefore` (a restart, rollout or scale-up)
+has nothing to apply: until `notBefore` it refuses handshakes with
+`routes_unavailable` and answers routed requests with 503, while `/readyz`
+stays 200. Keep the `notBefore` window short, and avoid restarts and
+scale-ups inside it. The handshake gates on a fresh applied
+manifest; binding the route digest into the evidence and publishing the
+manifest land in a later change, with the verifier. Until the chart renders
+these flags and evidence carries the digest, manifest routing is not ready
+for production.
+
+`/readyz` ignores route state: it answers 200 before the first apply and
+while the manifest is stale. To spot a router that routes nothing, watch for
+the `route manifest poll failed` log and for handshakes refused with
+`routes_unavailable` or `routes_stale`; a router that routes has logged
+`route manifest applied`.
+
+After its signing key leaves the operator key set, every poll fails to verify
+the stored manifest: `cds-attest` keeps routing by the applied one and goes
+stale within `maxAgeSeconds`. After removing an operator key, write a new
+revision under a remaining key.
+
+A tunnelled request routes by the sealed request's `Host` header only. One
+with no `Host` header, or more than one, gets 400 inside the tunnel and is
+never routed by the outer request's host.
+Upgrade `c8s-verify-js` to a version that seals `Host` in every tunnel
+request before you upgrade the router; earlier versions seal it only when
+the caller passes it.
+
+Backends receive `X-Real-IP`, `X-Forwarded-For` and `X-Forwarded-Proto` as
+nginx set them on the outer request. They are metadata the host can forge,
+not client identity.
+
+`maxAgeSeconds` counts from the last successful poll, not from when the
+manifest was signed. The accepted revision lives in memory only: after a
+restart, `cds-attest` accepts any validly signed revision, including an older
+one. Once it accepts a revision with a future `notBefore`, it refuses every
+lower revision, including the applied one, and keeps the staged revision. To
+withdraw a staged revision, publish a higher one; restoring the previous
+manifest is refused.
+
+With `--cds-url`, `cds-attest` admits a tunnelled request only while
+`--tunnel-budget` covers every copy it may buffer: three of its record and
+four of the largest response, 32 MiB, so 128 MiB to 152 MiB. One client, by
+`X-Real-IP`, holds at most a quarter of the budget. Others get 503
+`tunnel_busy`. At 32 GiB that is about 250 requests per replica and 64 per
+client. Clients behind one NAT share a quarter, and so do all clients behind
+a node when the Service SNATs them (`externalTrafficPolicy: Cluster`). A
+request holds its reservation from reading the sealed request until the
+client has read the sealed response: through the backend call, up to
+`--backend-timeout`, and then for as long as the client keeps reading. One
+that names no live session gets 401 before its body is read. Anyone can open
+a session, so the per-client quarter is what bounds one client.
+
+With or without `--cds-url`, a tunnel request body over 8 MiB gets 413, and
+a response over 32 MiB gets a sealed 502; the routing listener streams
+responses without a cap. No timeout assumes a client speed: an upload or
+download loses its budget only once it makes no progress for
+`--tunnel-io-timeout`. `cds-attest` writes a sealed response in 16 KiB
+pieces and restarts that timeout after each, so a client that keeps reading
+gets the whole response however slowly it reads. On the routing listener,
+`--backend-timeout` restarts in the same way whenever data moves either way,
+also on an upgraded connection, which has no fixed lifetime.
+
+The chart's nginx settings apply to every install with the attest sidecar
+(`router.attest.enabled`), whether or not `cds-attest` routes by the
+manifest. nginx reads each request body whole before proxying it, so a slow
+upload holds nginx memory rather than budget; keep `proxy_request_buffering`
+on for `/.well-known/c8s/`. Replies stream once they outgrow
+`proxy_buffers`, so a slow download of a large reply holds its budget for as
+long as the client keeps reading. Its timeouts restart on progress too:
+`client_body_timeout` and `send_timeout` (nginx's 60s default) count from
+the last read from or write to the client, and `proxy_read_timeout`
+(`router.upstream.readTimeout`) from the last read from the sidecar. The
+handshake endpoints admit bodies up to 16 KiB. `/.well-known/c8s/tunnel`
+admits bodies up to 8 MiB and drops an upload that sends nothing for 10s.
+Bodies past 16 KiB spill to a tmpfs of `router.nginx.tunnelBodySpace`
+(default 8Gi), charged to nginx's memory, so a memory limit on nginx must
+exceed it. An upload that does not fit gets 500. One client address has at
+most `router.nginx.tunnelConnectionsPerClient` (default 64) tunnel requests
+open, so filling the tmpfs takes 16 addresses at the defaults; past that cap,
+and for a body over 8 MiB, nginx answers with its own HTML 503 or 413 page
+before the sidecar's JSON errors can apply. Each nginx worker accepts 16384
+connections.
 
 ## Attestation-api
 

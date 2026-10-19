@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -91,10 +90,19 @@ func TestRunErrors(t *testing.T) {
 			cfg:     config{frontDoorMode: types.FrontDoorModeWebPKI, platform: "snp", attestationAPIURL: "http://127.0.0.1:9", upstream: "ftp://backend"},
 			wantSub: "upstream must be an http:// or https:// URL",
 		},
+		{
+			name:    "non-positive tunnel io timeout",
+			cfg:     config{tunnelIOTimeout: -time.Second},
+			wantSub: "--tunnel-io-timeout must be positive",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := run(tc.cfg)
+			cfg := tc.cfg
+			if cfg.tunnelIOTimeout == 0 {
+				cfg.tunnelIOTimeout = defaultTunnelIOTimeout
+			}
+			err := run(t.Context(), cfg)
 			if err == nil || !strings.Contains(err.Error(), tc.wantSub) {
 				t.Fatalf("run() error = %v, want substring %q", err, tc.wantSub)
 			}
@@ -114,8 +122,9 @@ func TestRunReturnsListenError(t *testing.T) {
 		host:              "127.0.0.1",
 		port:              l.Addr().(*net.TCPAddr).Port, // already taken
 		attestationAPIURL: "http://127.0.0.1:9",
+		tunnelIOTimeout:   defaultTunnelIOTimeout,
 	}
-	if err := run(cfg); err == nil {
+	if err := run(t.Context(), cfg); err == nil {
 		t.Fatal("run() on an occupied port returned nil, want bind error")
 	}
 }
@@ -159,11 +168,14 @@ func TestRunServesUntilSignalled(t *testing.T) {
 		generation:        "genoa",
 		sessionTTL:        time.Minute,
 		readHeaderTimeout: time.Second,
+		tunnelIOTimeout:   defaultTunnelIOTimeout,
 		upstream:          "http://127.0.0.1:9", // valid URL; never dialed in this test
 	}
 
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- run(cfg) }()
+	go func() { done <- run(ctx, cfg) }()
 
 	base := fmt.Sprintf("http://127.0.0.1:%d", port)
 	var resp *http.Response
@@ -199,15 +211,13 @@ func TestRunServesUntilSignalled(t *testing.T) {
 		t.Fatalf("cds-cert.pem status = %d, want 404", certResp.StatusCode)
 	}
 
-	if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
-		t.Fatal(err)
-	}
+	cancel()
 	select {
 	case runErr := <-done:
 		if runErr != nil {
-			t.Fatalf("run returned error after SIGTERM: %v", runErr)
+			t.Fatalf("run returned error after cancel: %v", runErr)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("run did not shut down after SIGTERM")
+		t.Fatal("run did not shut down after cancel")
 	}
 }
