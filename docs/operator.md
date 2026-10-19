@@ -1149,10 +1149,12 @@ reports RTMR[3] as the seed followed by each policy it enforced since boot.
 Its router's attest-pq and attest-lb bundles list those digests as
 `measured_policies`, and its TDX armTLS certificates and discovery document
 carry them as runtime extensions. With `--operator-pkey`, or an
-`--image-policy-file` pinning an `approver_key`, `verify` replays that list
-against RTMR[3] and reports the longest prefix that matches as `history:`
-(`measured_policies` in JSON). Without either, a listed history is not
-replayed and the verdict warns. A non-empty replayed history leaves the verdict
+`--image-policy-file` whose matching image pins an `approver_key`, `verify`
+replays that list against RTMR[3] and reports the longest prefix that matches
+as `history:` (`measured_policies` in JSON). Only the anchor of an image the
+evidence matches on its own counts: another image's `approver_key` proves
+nothing about a guest that booted an unanchored one. Without such an anchor, a
+listed history is not replayed and the verdict warns. A non-empty replayed history leaves the verdict
 partial until `--pin-policy` or `--trust-operator` checks it: the replay proves
 which policies the node enforced, not that they are acceptable. Choose how to
 accept the history:
@@ -1171,7 +1173,8 @@ matched-workload stamp is unreadable; that stamp is CA-vouched, so without
 when the pod matches no single allowlist entry, leaves the verdict partial: it
 is indistinguishable from a leaf issued to a pod that presented no sandbox
 token, so the policy it was issued under is not checked (`leaf_stamped` is
-`false` in JSON, and absent when the evidence carries no leaf).
+`false` in JSON for an absent or unreadable stamp, and absent when the evidence
+carries no leaf).
 
 The history runs from boot up to the evidence's quote. Evidence that this
 check's nonce does not bind (a certificate, a discovery document or a saved
@@ -1191,7 +1194,8 @@ carries a token: a per-workload edit yields an unsigned policy, which fails
 `--trust-operator` until a signed upload of the same document stores a token
 for its digest. The documents authenticate
 themselves against the replayed digests, so any router replica may serve
-them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`; a fetch that times out or cannot
+them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`, and all of them together get four times
+`--timeout`; a fetch that times out or cannot
 connect exits 3, as for unavailable evidence.
 
 To review the documents before pinning them, add `--fetch-allowlists DIR`

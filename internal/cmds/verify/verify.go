@@ -419,8 +419,8 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
-	// Each history fetch has its own --timeout, not what the verification
-	// left of it.
+	// The history check gets its own --timeout budget, not what the
+	// verification left of it.
 	unreachable := checkPolicyHistory(ctx, &oc, cfg, ev, plan.trustKeys)
 	// The route note describes a check that passed, so a failed verdict
 	// carries none.
@@ -1433,7 +1433,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	}
 	if ev.leaf != nil {
 		oc.CertBody = describeCertBody(cfg, ev)
-		stamped := ev.workload != nil
+		d, err := leafPolicy(ev)
+		stamped := err == nil && d != ""
 		oc.LeafStamped = &stamped
 	}
 	if verr != nil {
@@ -1462,6 +1463,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	}
 
 	fullImagePinned := plan.pins.image != nil
+	historyBound := plan.pins.anchor != nil
 	if !plan.refValues.Empty() {
 		if plan.refValues.Family != teetypes.NormalizePlatform(oc.Platform).Family() {
 			oc.Error = fmt.Sprintf("--image-policy-file is for %q but the evidence platform is %q", plan.refValues.Family, oc.Platform)
@@ -1472,7 +1474,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 			oc.Error = fmt.Sprintf("--image-policy-file: %v", err)
 			return oc
 		}
-		oc.MeasuredPolicies = replayedHistory(result, plan.refValues.Images, ev.measured)
+		oc.MeasuredPolicies, historyBound = replayedHistory(response, plan.refValues.Images, teetypes.NormalizePlatform(oc.Platform), ev.measured)
 		// A TDX tuple covers the guest only when the matching entry pins both
 		// kernel and rootfs registers. A weak alternative must not borrow the
 		// completeness of an unrelated entry in the same policy.
@@ -1537,8 +1539,8 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 	if !applyRTMRPins(&oc, plan.pins, ev.measured, result) {
 		return oc
 	}
-	if len(ev.measured) > 0 && plan.pins.anchor == nil && !slices.ContainsFunc(plan.refValues.Images, anchored) && isTDX(oc.Platform) {
-		oc.Warnings = append(oc.Warnings, "the node reported a measured allowlist policy history that was not replayed: pass --operator-pkey, or an --image-policy-file pinning an approver_key, to check it against RTMR[3]")
+	if len(ev.measured) > 0 && !historyBound && isTDX(oc.Platform) {
+		oc.Warnings = append(oc.Warnings, "the node reported a measured allowlist policy history that was not replayed: pass --operator-pkey, or an --image-policy-file whose matching image pins an approver_key, to check it against RTMR[3]")
 	}
 	oc.Verified = true
 
@@ -1564,20 +1566,24 @@ func checkMeasuredList(measured []string) error {
 func anchored(img remote.ImagePin) bool { return img.Anchor != nil }
 
 // replayedHistory returns the prefix of measured that RTMR[3] proves on top of
-// the seed of an anchor images pin, nil when none replays.
-func replayedHistory(result *teetypes.VerificationResult, images []remote.ImagePin, measured []string) []string {
-	if len(measured) == 0 {
-		return nil
-	}
+// the seed of an anchored image the evidence matches on its own, and whether
+// such an image bound RTMR[3]. Another image's anchor proves nothing about a
+// guest that booted an unanchored one.
+func replayedHistory(response remote.VerifyResponse, images []remote.ImagePin, platform teetypes.PlatformType, measured []string) ([]string, bool) {
 	for _, img := range images {
-		if !anchored(img) {
+		if !anchored(img) || armtls.EnforceImages(response, []remote.ImagePin{img}, platform, measured) != nil {
 			continue
 		}
-		if k, err := runtimemeasure.MatchBindingPrefix(result, img.Anchor, measured); err == nil && k > 0 {
-			return slices.Clone(measured[:k])
+		k, err := runtimemeasure.MatchBindingPrefix(&response.Result, img.Anchor, measured)
+		if err != nil {
+			continue
 		}
+		if k == 0 {
+			return nil, true
+		}
+		return slices.Clone(measured[:k]), true
 	}
-	return nil
+	return nil, false
 }
 
 // enforceMinTCB settles the --min-tcb-* floor on the signature-verified

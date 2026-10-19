@@ -538,25 +538,35 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 	}
 }
 
-// An --image-policy-file pinning an approver_key replays the node's history
-// as --operator-pkey does, so --pin-policy can judge it.
-func TestImagePolicyFileReplaysHistory(t *testing.T) {
+// approverKey returns a fresh P-256 public key PEM for an approver_key.
+func approverKey(t *testing.T) []byte {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pubDER, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	pubPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubDER})
-	reg := func(h string) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+}
+
+func hexBytes(t *testing.T) func(string) []byte {
+	return func(h string) []byte {
 		b, err := hex.DecodeString(h)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return b
 	}
+}
+
+// An --image-policy-file pinning an approver_key replays the node's history
+// as --operator-pkey does, so --pin-policy can judge it.
+func TestImagePolicyFileReplaysHistory(t *testing.T) {
+	pubPEM := approverKey(t)
+	reg := hexBytes(t)
 	policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
 		Family: teetypes.FamilyTDX,
 		Images: []remote.ImagePin{{Name: "node", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}, Anchor: pubPEM}},
@@ -711,5 +721,87 @@ func TestPolicyHistoryUnreachable(t *testing.T) {
 				t.Errorf("checkPolicyHistory = unreachable %v, verified %v, error %q; want unreachable %v and a failed verdict", got, oc.Verified, oc.Error, tc.want)
 			}
 		})
+	}
+}
+
+// An approver_key on one image does not replay the history of a guest that
+// booted another, unanchored image in the same --image-policy-file.
+func TestHistoryReplayBoundToMatchedImage(t *testing.T) {
+	pubPEM := approverKey(t)
+	reg := hexBytes(t)
+	policy := writeImagePolicy(t, "node.json", refvalues.ReferenceValues{
+		Family: teetypes.FamilyTDX,
+		Images: []remote.ImagePin{
+			{Name: "anchored", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(strings.Repeat("5e", 48)), 2: reg(testRTMR2)}, Anchor: pubPEM},
+			{Name: "unanchored", Digest: reg(testMRTD), Registers: map[int][]byte{1: reg(testRTMR1), 2: reg(testRTMR2)}},
+		},
+	})
+	cfg := config{measurementsConfig: policy, pinPolicies: []string{testPolicyP}}
+	plan := mustPlan(t, cfg)
+	measured := []string{testPolicyP}
+	ev := &evidence{platform: "tdx", measured: measured, fresh: true}
+	forged := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pubPEM), measured)
+	oc := newOutcome(cfg, ev, tdxResult(testMRTD, rtmr3Claims(forged)), nil, plan)
+	if len(oc.MeasuredPolicies) != 0 {
+		t.Errorf("MeasuredPolicies = %v, want none", oc.MeasuredPolicies)
+	}
+	if !slices.ContainsFunc(oc.Warnings, func(w string) bool { return strings.Contains(w, "not replayed") }) {
+		t.Errorf("Warnings = %v, want the unreplayed-history warning", oc.Warnings)
+	}
+	applyPinPolicy(&oc, cfg, ev)
+	if oc.Verified || oc.Partial || !strings.Contains(oc.Error, "policy_history_absent") {
+		t.Errorf("verdict = verified %v, partial %v, error %q; want policy_history_absent", oc.Verified, oc.Partial, oc.Error)
+	}
+}
+
+// leaf_stamped is false for a stamp leafPolicy cannot read.
+func TestLeafStampedMalformed(t *testing.T) {
+	plan, seed := historyPlan(t, config{})
+	for _, tc := range []struct {
+		name   string
+		digest []byte
+		want   bool
+	}{
+		{"readable", make([]byte, sha256.Size), true},
+		{"malformed", []byte{1, 2, 3}, false},
+	} {
+		ev := &evidence{platform: "tdx", leaf: &x509.Certificate{}, workload: &armtls.MatchedWorkload{AllowlistDigest: tc.digest}}
+		oc := newOutcome(config{}, ev, tdxResult(testMRTD, rtmr3Claims(seed)), nil, plan)
+		if oc.LeafStamped == nil || *oc.LeafStamped != tc.want {
+			t.Errorf("%s: LeafStamped = %v (nil %v), want %v", tc.name, oc.LeafStamped != nil && *oc.LeafStamped, oc.LeafStamped == nil, tc.want)
+		}
+	}
+}
+
+// A target answering each history fetch just inside --timeout cannot hold
+// the check past its overall budget.
+func TestPolicyHistoryOverallDeadline(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	bodies := map[string][]byte{}
+	var history []string
+	for i := range 20 {
+		body := fmt.Appendf(nil, "policy %d", i)
+		sum := sha256.Sum256(body)
+		bodies[hex.EncodeToString(sum[:])] = body
+		history = append(history, "sha256:"+hex.EncodeToString(sum[:]))
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(timeout * 3 / 4):
+		case <-r.Context().Done():
+			return
+		}
+		w.Write(bodies[strings.TrimPrefix(r.URL.Path, "/allowlist/objects/sha256/")])
+	}))
+	defer srv.Close()
+	cfg := config{url: srv.URL, fetchAllowlists: t.TempDir(), timeout: timeout}
+	oc := Outcome{Verified: true, MeasuredPolicies: history}
+	start := time.Now()
+	unreachable := checkPolicyHistory(context.Background(), &oc, cfg, &evidence{}, nil)
+	if elapsed := time.Since(start); elapsed > 2*historyTimeouts*timeout {
+		t.Errorf("checkPolicyHistory took %v, want at most about %v", elapsed, historyTimeouts*timeout)
+	}
+	if !unreachable || oc.Verified {
+		t.Errorf("checkPolicyHistory = unreachable %v, verified %v, error %q; want an unreachable failure", unreachable, oc.Verified, oc.Error)
 	}
 }

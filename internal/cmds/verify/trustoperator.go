@@ -177,6 +177,10 @@ func demoteNaming(oc *Outcome, note string) {
 // its policies proves nothing about which ones it enforced.
 const noHistory = "no measured policy replayed against RTMR[3]; target a node that measures its policies (nriImagePolicy.measurePolicies)"
 
+// historyTimeouts is how many --timeout spans the whole history check gets, so
+// a target answering each fetch just in time cannot stall verify for hours.
+const historyTimeouts = 4
+
 // checkPolicyHistory fetches each policy in the replayed history from the
 // target and checks it hashes to its digest, then saves it (--fetch-allowlists)
 // and requires its stored operator signature to verify under keys
@@ -226,6 +230,11 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 	if err != nil {
 		fail("%s: %v", code, err)
 		return false
+	}
+	if cfg.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, historyTimeouts*cfg.timeout)
+		defer cancel()
 	}
 	if cfg.fetchAllowlists != "" {
 		if err := os.MkdirAll(cfg.fetchAllowlists, 0o755); err != nil {
