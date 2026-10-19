@@ -6,6 +6,7 @@ package nriimagepolicy
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -124,6 +125,7 @@ func Run(args []string) error {
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
 	}
 
+	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
@@ -145,7 +147,9 @@ func Run(args []string) error {
 	if cfg.WorkloadClaims.PublishNodeIP {
 		// Fail-soft: exiting would block container creation node-wide, while
 		// a missing file only fails closed the components that read it. The
-		// first attempt runs here so the signer below never reads a stale file.
+		// first attempt runs here so the signer below reads a file this
+		// process resolved, unless only the default route named another
+		// address (see nodeIPPublisher.write).
 		publisher := &nodeIPPublisher{cfg: cfg, logger: logger}
 		go publisher.run(ctx, publisher.publish())
 	}
@@ -408,19 +412,29 @@ type healthServerConfig struct {
 	writeTimeout time.Duration
 }
 
+// healthResponse is the body of GET /healthz. Probes and the installer read
+// only the status code; the body says which allowlist version admission
+// decides with, so a writer can watch an entry take effect.
+type healthResponse struct {
+	Status           string `json:"status"`
+	AllowlistVersion uint64 `json:"allowlist_version"` // plugin.AppliedAllowlistVersion
+}
+
 // startHealthServer starts an HTTP server for readiness/liveness probes.
 // addr accepts plain `host:port` for TCP or `unix:///path/to.sock` for a
 // Unix socket. Shuts down gracefully when ctx is cancelled.
 func startHealthServer(ctx context.Context, cfg healthServerConfig) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.plugin.Ready() {
-			w.WriteHeader(http.StatusOK)
-			fmt.Fprintln(w, "ok")
-		} else {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			fmt.Fprintln(w, "not ready")
+		body := healthResponse{Status: "ok", AllowlistVersion: cfg.plugin.AppliedAllowlistVersion()}
+		code := http.StatusOK
+		if !cfg.plugin.Ready() {
+			body.Status = "not ready"
+			code = http.StatusServiceUnavailable
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(code)
+		json.NewEncoder(w).Encode(body)
 	})
 
 	listener, err := healthListener(cfg.addr)
@@ -461,27 +475,111 @@ var (
 )
 
 // nodeIPPublisher keeps NodeIPFile current: a DHCP node may have no default
-// route when containerd starts, and its address may change later.
+// route when containerd starts, and its address may change later. Components
+// restart when the file names another address, and a restarted CDS that
+// reads it regenerates the mesh CA, so a transient failure never touches the
+// file and a change is published only once it held for two rechecks. A
+// resolver that alternates between two addresses therefore never publishes.
 type nodeIPPublisher struct {
 	cfg    *config
 	logger *slog.Logger
 	delay  time.Duration // current failure backoff, 0 after a success
+
+	kubelet string // the last address a host kubelet's --node-ip supplied
+	pending string // a changed address seen once, published if it holds
+	settled bool   // the file holds an address this process resolved
 }
 
 // publish makes one attempt and returns the wait before the next: the recheck
 // interval after a success, a doubling backoff after a failure.
 func (p *nodeIPPublisher) publish() time.Duration {
-	host, changed, err := publishNodeIP(p.cfg)
+	path := filepath.Join(p.cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	host, source, err := p.resolve()
+	if err == nil && !usableNodeIP(net.ParseIP(host)) {
+		// Not transient: advertise_host names an address no pod can dial.
+		p.pending = ""
+		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
+		p.logger.Error("node-ip emptied: the node address is not a unicast address other pods can dial; running components keep the address they read, and components that start will not until an address is published",
+			"address", host, "source", source, "error", emptyIfExists(path), "retry_in", p.delay)
+		return p.delay
+	}
+	if err == nil {
+		err = p.write(path, host, source)
+	}
 	if err != nil {
 		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
-		p.logger.Error("node-ip not published; components that read it will not start until it is", "error", err, "retry_in", p.delay)
+		p.logger.Error("node-ip not updated; it keeps its last address, and components that read none will not start until it is published", "error", err, "retry_in", p.delay)
 		return p.delay
 	}
 	p.delay = 0
-	if changed {
-		p.logger.Info("node-ip published", "address", host)
-	}
 	return nodeIPRecheckInterval
+}
+
+// write publishes host unless the file holds it already. A file naming
+// another address keeps it until a second recheck resolves host again. The
+// first write of a process skips that wait unless host came from the default
+// route: the file then predates this process, while a default route seen
+// before the kubelet is back from a node restart may name another interface.
+func (p *nodeIPPublisher) write(path, host, source string) error {
+	current := ""
+	if b, err := os.ReadFile(path); err == nil {
+		current = strings.TrimSpace(string(b))
+	}
+	if current == host {
+		p.pending = ""
+		p.settled = true
+		return nil
+	}
+	debounce := p.settled || source == "default_route"
+	if current != "" && debounce && p.pending != host {
+		p.pending = host
+		p.logger.Warn("node address changed; publishing it if the next recheck agrees", "address", host, "source", source, "published", current, "recheck_in", nodeIPRecheckInterval)
+		return nil
+	}
+	if err := writeNodeIP(p.cfg.WorkloadClaims.SocketDir, path, host); err != nil {
+		return err
+	}
+	p.pending = ""
+	p.settled = true
+	p.logger.Info("node-ip published", "address", host, "source", source)
+	return nil
+}
+
+// resolve returns the node's address and the source that supplied it:
+// advertise_host when it is an IP, else the --node-ip of a kubelet in the
+// host's mount namespace, which is the Node's registered InternalIP and its
+// pods' status.hostIP, else the default-route interface's address, which a
+// kubelet without --node-ip usually registers. Once a kubelet supplied an
+// address, a recheck that finds no kubelet keeps it rather than fall back to
+// the default route: the kubelet is restarting, and its address has not
+// changed. k3s runs its kubelet inside the k3s process, so a k3s node with
+// several interfaces needs advertise_host. A pod could otherwise pick the
+// attestation verifier components dial.
+func (p *nodeIPPublisher) resolve() (host, source string, err error) {
+	if host := p.cfg.WorkloadClaims.AdvertiseHost; net.ParseIP(host) != nil {
+		return host, "advertise_host", nil
+	}
+	host, running := kubeletNodeIP(p.cfg.WorkloadClaims.ProcRoot)
+	switch {
+	case host != "":
+		p.kubelet = host
+		return host, "kubelet", nil
+	case running:
+		// A kubelet that runs without a usable --node-ip picks its address
+		// as the default route does.
+		p.kubelet = ""
+	case p.kubelet != "":
+		return p.kubelet, "kubelet_last_seen", nil
+	}
+	ip, err := chooseHostInterface()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve node address: %w", err)
+	}
+	if !usableNodeIP(ip) {
+		// Likely a link-local address before DHCP completes: retry.
+		return "", "", fmt.Errorf("resolve node address: default route address %s is not one other pods can dial", ip)
+	}
+	return ip.String(), "default_route", nil
 }
 
 // run repeats publish until ctx is done, waiting wait before the first attempt.
@@ -491,58 +589,23 @@ func (p *nodeIPPublisher) run(ctx context.Context, wait time.Duration) {
 	}
 }
 
-// publishNodeIP writes NodeIPFile from the node's own view, unless it already
-// holds that address. The address is advertise_host when it is an IP, else
-// the --node-ip of a kubelet in the host's mount namespace, which is the
-// Node's registered InternalIP and its pods' status.hostIP, else the
-// default-route interface's address, which a kubelet without --node-ip
-// usually registers. k3s runs its kubelet inside the k3s process, so a k3s
-// node with several interfaces needs advertise_host. A pod could otherwise
-// pick the attestation verifier components dial.
-//
-// Components bind-mount the file itself, so it is rewritten in place: a
-// renamed replacement would leave their mount on the old inode. On any
-// failure it is emptied, not removed, for the same reason, so those components
-// fail closed rather than trust a stale address.
-func publishNodeIP(cfg *config) (host string, changed bool, err error) {
-	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
-	host = cfg.WorkloadClaims.AdvertiseHost
-	if net.ParseIP(host) == nil {
-		host = kubeletNodeIP(cfg.WorkloadClaims.ProcRoot)
-	}
-	if host == "" {
-		var ip net.IP
-		ip, err = chooseHostInterface()
-		if err != nil {
-			err = fmt.Errorf("resolve node address: %w", err)
-		}
-		host = ip.String()
-	}
-	if err == nil {
-		changed, err = writeNodeIP(cfg.WorkloadClaims.SocketDir, path, host)
-	}
-	if err != nil {
-		return "", false, errors.Join(err, emptyIfExists(path))
-	}
-	return host, changed, nil
-}
-
 // kubeletNodeIP is the first address of a host kubelet's --node-ip flag, read
 // from procRoot (default /proc), or "" when no host kubelet passes a usable
-// one. A pod's processes show up in procRoot too and can name themselves
-// kubelet, but cannot join the host's mount namespace, which is init's.
-// --node-ip=:: or 0.0.0.0 selects an address family, not an address.
-func kubeletNodeIP(procRoot string) string {
+// one; running reports whether a host kubelet runs at all. A pod's processes
+// show up in procRoot too and can name themselves kubelet, but cannot join
+// the host's mount namespace, which is init's. --node-ip=:: or 0.0.0.0
+// selects an address family, not an address.
+func kubeletNodeIP(procRoot string) (host string, running bool) {
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
 	hostMounts, err := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, e := range entries {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
@@ -560,6 +623,7 @@ func kubeletNodeIP(procRoot string) string {
 		if err != nil {
 			continue
 		}
+		running = true
 		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 		for i, arg := range args {
 			value, ok := strings.CutPrefix(arg, "--node-ip=")
@@ -571,11 +635,11 @@ func kubeletNodeIP(procRoot string) string {
 			}
 			first, _, _ := strings.Cut(value, ",")
 			if ip := net.ParseIP(first); usableNodeIP(ip) {
-				return ip.String()
+				return ip.String(), true
 			}
 		}
 	}
-	return ""
+	return "", running
 }
 
 // usableNodeIP reports whether components can dial ip as the node: an
@@ -585,22 +649,28 @@ func usableNodeIP(ip net.IP) bool {
 	return ip != nil && ip.IsGlobalUnicast()
 }
 
-func writeNodeIP(dir, path, host string) (bool, error) {
-	if !usableNodeIP(net.ParseIP(host)) {
-		return false, fmt.Errorf("node address %q is not a unicast address other pods can dial", host)
-	}
-	content := host + "\n"
-	if b, err := os.ReadFile(path); err == nil && string(b) == content {
-		return false, nil
-	}
+// writeNodeIP writes host to path in place: components bind-mount the file
+// itself, so a renamed replacement would leave their mount on the old inode.
+// A write can fail after it changed the file, so a failed one puts the
+// previous content back, or empties a file that held none.
+func writeNodeIP(dir, path, host string) error {
 	if err := os.MkdirAll(dir, 0o711); err != nil {
-		return false, err
+		return err
 	}
+	previous, readErr := os.ReadFile(path)
 	// World-readable: non-root components read it.
-	if err := writeNodeIPFile(path, []byte(content), 0o644); err != nil {
-		return false, fmt.Errorf("write %s: %w", path, err)
+	err := writeNodeIPFile(path, []byte(host+"\n"), 0o644)
+	if err == nil {
+		return nil
 	}
-	return true, nil
+	err = fmt.Errorf("write %s: %w", path, err)
+	if readErr != nil {
+		return errors.Join(err, emptyIfExists(path))
+	}
+	if restoreErr := writeNodeIPFile(path, previous, 0o644); restoreErr != nil {
+		return errors.Join(err, fmt.Errorf("restore %s: %w", path, restoreErr))
+	}
+	return err
 }
 
 // writeInPlace replaces path's content without replacing its inode, so a bind
@@ -811,4 +881,23 @@ func healthListener(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen tcp %s: %w", addr, err)
 	}
 	return l, nil
+}
+
+// logNodeRoot reports a missing measured root at Info: most nodes have none and
+// only policies that require node-root provenance depend on it. A node whose
+// boot command line declares a roothash= yet fails the proof is misbuilt, so
+// that is a warning. Without an allowlist no rule can require it, so nothing
+// is probed.
+func logNodeRoot(logger *slog.Logger, allowlistEnabled bool, unavailable func() (reason string, declared bool)) {
+	if !allowlistEnabled {
+		return
+	}
+	reason, declared := unavailable()
+	switch {
+	case reason == "":
+	case declared:
+		logger.Warn("node-root provenance unavailable on a node declaring a measured root", "reason", reason)
+	default:
+		logger.Info("node-root provenance unavailable", "reason", reason)
+	}
 }

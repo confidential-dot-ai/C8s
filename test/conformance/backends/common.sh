@@ -36,6 +36,10 @@
 #                                    ready, so each bootstraps from the CDS's mesh CA
 #   cds_volatile                     yes/no: a CDS restart loses the allowlist and its version
 #   served_version                   the version of the allowlist CDS serves now
+#   applied_version                  the allowlist version the admission plugin
+#                                    on the node decides with, from its health
+#                                    endpoint, or 77 where the node cannot be
+#                                    reached
 #   node_containers <node> <digest>  ids of the runtime's containers from digest
 #   pod_manifest [options] -- <name> <ns> <node> <image> <command...> [+ <image> <command...>]...
 #                                    a pod manifest pinned to node, one
@@ -43,12 +47,27 @@
 #                                    options, before the --, are
 #                                    --host-network, --run-as-user <uid>,
 #                                    --add-capability <cap>, --label <k=v>,
-#                                    --annotation <k=v>,
+#                                    --annotation <k=v>, --env <NAME=VALUE>
+#                                    (the first container's),
+#                                    --disk-volume <path> (an emptyDir on the
+#                                    node's disk in the last container),
 #                                    --init-container '<image> <command...>'
+#   scratch_encrypted                yes/no: the node's disk-backed emptyDirs
+#                                    sit on encrypted scratch
 #   image_entrypoint <ref>           the argv the image starts with when the pod
 #                                    spec overrides nothing, one word per line
+#   image_env <ref>                  the NAME=VALUE entries the image's
+#                                    configuration sets, one per line
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
+#   seed_add <name> <file>           add the entry in file to the seed the CDS
+#                                    follows, under name; 77 where the seed is
+#                                    not the cluster's to change or the CDS
+#                                    does not follow it (only a measured
+#                                    node image's CDS follows its seed)
+#   seed_restore                     put back the seed seed_add changed, if any
+#   cds_instance                     the CDS pod's uid and restart count, one
+#                                    line, so a later read tells a restart
 #   write_token <operator|foreign> <method> <path> <body-file> [validity]
 #                                    the Authorization header of a write token,
 #                                    signed with the operator's key or with one
@@ -103,11 +122,24 @@
 #                                    the node's
 #   evidence_unsigned <ns> <pod> <report-data-hex>
 #                                    evidence whose signature does not verify
-#   pod_exec                         yes: steps may exec in a pod's containers
+#   pod_exec                         how steps run a command in a pod: kubectl
+#                                    (exec), or agent (agent_run)
+#   agent_run <ns> <pod> <container> <script>
+#                                    where pod_exec is agent: the sh script's
+#                                    combined output, its status as the
+#                                    function's
+#   agent_exec <ns> <pod> <container> <argv...>
+#                                    agent_run of the argv
 #   pod_cert_file <ns> <pod> <file> [container]
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
 #                                    container when given; nothing while absent
+#   pod_file <ns> <pod> <container> <path>
+#                                    the file in the container, base64;
+#                                    fails while it is absent
+#   pod_fstype <ns> <pod> <container> <dir>
+#                                    the filesystem type of the directory, as
+#                                    stat -f names it; fails while it is absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
@@ -159,7 +191,8 @@
 #                                    then the response headers, one per line
 #   router_serving_cert              the leaf the router presents on its public
 #                                    address, PEM
-#   router_nginx_conf                the router's rendered nginx configuration
+#   router_nginx_conf                the router's rendered nginx configuration;
+#                                    77 where the node image holds it
 #   router_tls_mode                  cds, webpki or acme: the public TLS
 #                                    credential the router selects
 #   cds_relay_block / cds_relay_unblock
@@ -196,25 +229,30 @@ subject() { echo "c8s $(git -C "$C8S_ROOT" rev-parse --short HEAD) on $PLATFORM"
 kubeconfig() { echo "$KUBECONFIG"; }
 
 # "rogue" is the harness's curl image, which no entry declares at install;
-# "nginx" is its workload image, the router's nginx digest, which the install
-# seed admits only under its entrypoint and setup therefore admits under any
-# argv with an entry it writes. The rest are public images no
+# "nginx" is NGINX_IMAGE when a backend sets one, else the harness's workload
+# image, the router's nginx digest, which the install seed admits only under
+# its entrypoint; setup admits it under any argv with an entry it writes. The
+# rest are public images no
 # served entry and no base allowlist names, for the scenarios that write their
 # own entries; each has its own digest. "requester" is the curl image of the
 # pod requester_manifest renders, distinct from "rogue" so that one stays
 # undeclared while a scenario admits this one. "mesh-dialer" is the pod the
+# "secret-client" is the image the webhook injects its helpers from, for a
+# pod that runs a helper of its own; a backend whose node holds that image
+# out of the harness's reach answers 77 from injected_image. The
 # steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
 # tar for the copy, which no other logical image shares.
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
-        nginx) echo "docker.io/$WORKLOAD_IMAGE" ;;
+        nginx) echo "docker.io/${NGINX_IMAGE:-$WORKLOAD_IMAGE}" ;;
         tenant-app) echo "docker.io/library/python:3.12-alpine" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;
         requester) echo "docker.io/curlimages/curl:8.11.0" ;;
         mesh-dialer) echo "docker.io/library/busybox:1.36.1" ;;
+        secret-client) injected_image ;;
         *) return $UNSUPPORTED ;;
     esac
 }
@@ -234,9 +272,9 @@ dialer_bin() {
 
 # The plugin's pull interval: the chart's nriImagePolicy.refresh.interval,
 # which the node image bakes as the equal value (node-guest-image/c8s/
-# image-policy.yaml.in, allowlist.pull.interval). The plugin exposes nothing
-# about the version it holds, and containerd discards its log, so the steps
-# wait this out rather than observe it.
+# image-policy.yaml.in, allowlist.pull.interval). The steps poll
+# applied_version for the served version, with a deadline in these; where the
+# backend cannot reach the plugin they wait this out instead.
 pull_interval() { echo 5s; }
 
 # The harness's Restricted-compatible pod, pinned to the node. Containers after
@@ -248,7 +286,9 @@ pull_interval() { echo 5s; }
 # net.* sysctl). The tenant-app image is Alpine's python, whose ping uses that
 # socket; the library busybox image's cannot.
 PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
-pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@"; }
+pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@" | manifest_filter; }
+# A backend's last word on every pod the harness renders for its own argv.
+manifest_filter() { cat; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
@@ -258,8 +298,9 @@ REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
     image="$(image_ref requester)" || return
-    render_pod --annotation confidential.ai/c8s-injected=true --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
-        -- "$1" "$2" "$3" "$image" sleep 3600
+    render_pod --annotation confidential.ai/c8s-injected=true --annotation c8s-conformance/harness-argv=yes \
+        --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
+        -- "$1" "$2" "$3" "$image" sleep 3600 | manifest_filter
 }
 
 # render_pod [fixture flags...] -- <name> <ns> <node> <image> <command...> [+ ...]
@@ -291,7 +332,9 @@ render_pod() {
 # The webhook mounts the certificate volume here in every container of a pod
 # carrying a workload ID; read through one of them, once it runs.
 CERT_VOLUME_PATH=/etc/c8s/certs
-pod_exec() { echo yes; }
+pod_exec() { echo kubectl; }
+pod_file() { local out; out="$(kubectl -n "$1" exec "$2" -c "$3" -- cat "$4" | base64)" && tr -d '\n' <<<"$out"; }
+pod_fstype() { kubectl -n "$1" exec "$2" -c "$3" -- stat -f -c %T "$4"; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is
@@ -326,6 +369,9 @@ operator_arg() {
 }
 
 cds_arg() { deploy_arg "$1" '{.spec.template.spec.containers[?(@.name=="cds")].args}' c8s-cds; }
+
+# The image the webhook injects get-cert and its siblings from.
+injected_image() { operator_arg get-cert-image; }
 
 # What the webhook tells every requester it injects.
 cds_pod_url() { operator_arg cds-url; }
@@ -415,6 +461,49 @@ seed_declares() {
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .data["allowlist-seed.json"] // empty')"
     [ -n "$seed" ] || return $UNSUPPORTED
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
+}
+
+# The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
+# in the image instead, and renders no ConfigMap, so there it is not the
+# cluster's to change. A CDS rereads it only with --follow-seed, which the
+# chart sets only on a baked node, so on a chart-managed install seed_add
+# answers 77. The first change keeps the original for seed_restore.
+seed_configmap() {
+    kubectl -n "$NS" get configmaps -o json |
+        jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
+}
+
+seed_followed() {
+    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
+        jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
+}
+
+seed_add() {
+    local cm original
+    cm="$(seed_configmap)"
+    [ -n "$cm" ] || return $UNSUPPORTED
+    seed_followed || return $UNSUPPORTED
+    original="$(scratch)/seed-original.json"
+    [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
+    kubectl -n "$NS" get configmap "$cm" -o json |
+        jq --arg name "$1" --slurpfile entry "$2" \
+            '.data["allowlist-seed.json"] |= (fromjson | .workloads[$name] = $entry[0] | tojson)' |
+        kubectl replace -f - >/dev/null
+}
+
+# Only the data goes back: the ConfigMap's resourceVersion moved with the
+# change, so a replace of the saved object conflicts.
+seed_restore() {
+    local original cm
+    original="$(scratch)/seed-original.json"
+    [ -s "$original" ] || return 0
+    cm="$(jq -r .metadata.name "$original")"
+    kubectl -n "$NS" patch configmap "$cm" --type merge -p "$(jq -c '{data: .data}' "$original")" >/dev/null && rm -f "$original"
+}
+
+cds_instance() {
+    kubectl -n "$NS" get pods -l app.kubernetes.io/component=cds \
+        -o jsonpath='{range .items[*]}{.metadata.uid} {.status.containerStatuses[0].restartCount}{"\n"}{end}' | head -1
 }
 
 # A key that is not an operator key, minted once per run.
@@ -549,11 +638,21 @@ router_headers() {
     printf '%s\n' "${answer#*$'\n'}" | sed '/^$/d'
 }
 
+# Off a node image the configuration is a ConfigMap, mounted directly or
+# through a projected volume; a baked node mounts it from the image
+# (hostPath), which nothing here can read without a node shell.
 router_nginx_conf() {
-    local cm
-    cm="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o jsonpath='{.spec.template.spec.volumes[*].configMap.name}' |
-        tr ' ' '\n' | grep -- '-nginx$' | head -1)"
-    [ -n "$cm" ] || { echo "backend: the router mounts no nginx ConfigMap" >&2; return 1; }
+    local volumes cm
+    volumes="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json | jq -c '.spec.template.spec.volumes // []')" || return
+    cm="$(jq -r '.[] | (.configMap.name // empty), (.projected.sources[]?.configMap.name // empty)' <<<"$volumes" |
+        grep -- '-nginx$' | head -1)"
+    if [ -z "$cm" ]; then
+        if jq -e '.[] | select(.name == "nginx-config") | .hostPath' <<<"$volumes" >/dev/null; then
+            return "$UNSUPPORTED"
+        fi
+        echo "backend: the router mounts no nginx ConfigMap" >&2
+        return 1
+    fi
     kubectl -n "$NS" get configmap "$cm" -o json | jq -r '.data | to_entries | map(select(.key | endswith(".conf"))) | .[].value'
 }
 
@@ -562,7 +661,7 @@ router_nginx_conf() {
 # init container, reads the same file into the discovery document it writes, so that mode is
 # read from the document the router serves, which needs no exec.
 router_tls_mode() {
-    local args mode out path
+    local args mode out path conf
     args="$(kubectl -n "$NS" get deploy "$ROUTER_DEPLOY" -o json |
         jq -r '.spec.template.spec | ((.initContainers // []) + .containers)[] | (.args // [])[]')" || return
     mode="$(sed -n 's/^--front-door-mode=//p' <<<"$args" | head -1)"
@@ -570,7 +669,8 @@ router_tls_mode() {
         grep -q '^--front-door-mode-file=' <<<"$args" || { echo "backend: the router names no front-door mode" >&2; return 1; }
         out="$(sed -n 's/^--discovery-out=//p' <<<"$args" | head -1)"
         [ -n "$out" ] || { echo "backend: the router publishes no discovery document" >&2; return 1; }
-        path="$(router_nginx_conf | awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}')"
+        conf="$(router_nginx_conf)" || return
+        path="$(awk -v f="$out" '$1 == "location" {loc = $(NF - 1)} $1 == "alias" && $2 == f ";" {print loc; exit}' <<<"$conf")"
         [ -n "$path" ] || { echo "backend: no router location serves $out" >&2; return 1; }
         mode="$(curl -sk --max-time 30 "$(router_url)$path" | jq -r '.public_tls.mode // empty')" || return
     fi
@@ -703,7 +803,8 @@ mesh_scraper() {
         entry="$(scratch)/mesh-scraper.json"
         any_workload "$digest" "$image" > "$entry"
         allowlist_put "$MESH_SCRAPER" "$entry" || return
-        render_pod -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 | kubectl apply -f - >/dev/null
+        render_pod --annotation c8s-conformance/harness-argv=yes -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 |
+            manifest_filter | kubectl apply -f - >/dev/null
     fi
     kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=180s >/dev/null || return
     touch "$ready"
@@ -714,6 +815,7 @@ mesh_scraper() {
 teardown() {
     kubectl delete namespace "$MESH_SCRAPER_NS" --ignore-not-found --wait=false >/dev/null 2>&1 || true
     allowlist_delete "$MESH_SCRAPER" || true
+    seed_restore || true
     rm -f "$(scratch)/mesh-scraper.ready" "$(scratch)"/cache-*
     teardown_backend
 }
@@ -727,7 +829,7 @@ mesh_metrics() {
     port="${port:-15021}"
     for _ in 1 2; do
         mesh_scraper || return
-        if body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
+        if body="$(mesh_scrape curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
             printf '%s\n' "$body"
             return 0
         fi
@@ -736,6 +838,8 @@ mesh_metrics() {
     echo "backend: no scrape of $addr:$port" >&2
     return 1
 }
+
+mesh_scrape() { kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- "$@"; }
 
 # The sum of the series matching the pattern in a scrape on stdin.
 metric_sum() { awk -v pat="$1" '$0 ~ pat {sum += $NF} END {printf "%d\n", sum + 0}'; }

@@ -21,6 +21,10 @@ const (
 	// ErrorCodeTooManyRequests: the caller holds as many sessions as one
 	// client may. Retrying once the sessions it holds expire succeeds.
 	ErrorCodeTooManyRequests = "too_many_requests"
+	// ErrorCodeTunnelBusy: the router's tunnel budget, or this client
+	// address's share of it, cannot cover another request (503). Retry after
+	// one of the client's requests completes.
+	ErrorCodeTunnelBusy = "tunnel_busy"
 	// ErrorCodeExternalTLS: attest-lb was requested on a front door whose
 	// serving credential was generated outside the TEE (an operator-supplied
 	// WebPKI Secret), so there is no TEE-held serving key to bind; that
@@ -30,6 +34,15 @@ const (
 	ErrorCodeSecretHolderQuota = "secret_holder_quota"
 	// ErrorCodeSecretStoreFull: the store is at --secrets-max-paths.
 	ErrorCodeSecretStoreFull = "secret_store_full"
+	// ErrorCodeRoutesUnavailable: no route manifest is applied yet, so the
+	// automated ingress service refuses attested sessions (route policy A2).
+	// A retry succeeds after the operator writes a manifest and the router
+	// fetches it.
+	ErrorCodeRoutesUnavailable = "routes_unavailable"
+	// ErrorCodeRoutesStale: the applied route manifest is stale, so the
+	// automated ingress service refuses new attested sessions (route policy
+	// F2).
+	ErrorCodeRoutesStale = "routes_stale"
 )
 
 // ErrorResponse is the body a C8s service returns with a non-2xx status: one

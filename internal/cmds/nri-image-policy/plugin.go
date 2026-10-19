@@ -85,6 +85,32 @@ func (s *policyStore) baseAdmits(r allowlist.RunningContainer, phase launchPhase
 	return s.base.AdmitsContainer(r)
 }
 
+// admitsNodeRoot reports whether the base or applied allowlist admits r with
+// an exact nodeRootFile rule for m (allowlist.Index.AdmitsNodeRoot).
+func (s *policyStore) admitsNodeRoot(r allowlist.RunningContainer, m allowlist.ObservedMount) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.AdmitsNodeRoot(r, m) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.AdmitsNodeRoot(r, m)
+}
+
+// declaresNodeRoot reports whether the base or applied allowlist has a
+// nodeRootFile rule for digest.
+func (s *policyStore) declaresNodeRoot(digest string) bool {
+	if s == nil {
+		return false
+	}
+	if s.base.DeclaresNodeRoot(digest) {
+		return true
+	}
+	snap := s.current()
+	return snap != nil && snap.index.DeclaresNodeRoot(digest)
+}
+
 // needsVariableEvidence reports whether the base or applied allowlist has a
 // match env policy for digest.
 func (s *policyStore) needsVariableEvidence(digest string) bool {
@@ -222,6 +248,13 @@ func (p *plugin) SetReady() {
 	p.ready.Store(true)
 }
 
+// AppliedAllowlistVersion is the CDS version of the allowlist admission decides
+// with: the last pull apply accepted, so a pull the anti-rollback check ignored
+// does not move it. It is 0 until a pull applied.
+func (p *plugin) AppliedAllowlistVersion() uint64 {
+	return p.policy.current().version
+}
+
 // Run starts the plugin and blocks until context is cancelled.
 func (p *plugin) Run(ctx context.Context) error {
 	go func() {
@@ -311,14 +344,14 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
 		}
 	}
-	p.recordDigest(ctr, digest, observedMounts(pod, ctr))
+	p.recordDigest(ctr, digest, observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
 }
 
 // recordUncheckedForInventory records the digest inlined in the reference
 // without resolving; the pre-Ready hook must answer inside NRI's
 // plugin_request_timeout, so recording adds no containerd round-trip.
 func (p *plugin) recordUncheckedForInventory(pod *api.PodSandbox, ctr *api.Container, imageRef string) {
-	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr))
+	p.recordDigest(ctr, extractDigest(imageRef), observedMounts(pod, ctr, p.cfg.WorkloadClaims.SocketDir))
 }
 
 // recordDigest is the only inventory.record call site. ctr.Args is the
@@ -331,11 +364,11 @@ func (p *plugin) recordDigest(ctr *api.Container, digest string, mounts []allowl
 	p.inventory.recordObserved(ctr.GetId(), ctr.GetPodSandboxId(), ctr.GetName(), digest, ctr.GetArgs(), env, mounts)
 }
 
-func observedMounts(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
+func observedMounts(pod *api.PodSandbox, ctr *api.Container, socketDir string) []allowlist.ObservedMount {
 	if pod == nil {
 		return nil
 	}
-	return newMountObserver(nil).Observe(pod, ctr)
+	return newMountObserver(nil, socketDir).Observe(pod, ctr)
 }
 
 // resolveDigest returns the canonical store digest for imageRef using the same
@@ -496,7 +529,11 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 			reason = "launch_not_admitted"
 			denial = fmt.Sprintf("image %s is allowlisted, but its launch specification satisfies no workload entry's command, args, env or mounts policy", check.ImageRef)
 		}
-		log.Warn("image not admitted by allowlist", "digest", digest, "argv", check.Argv, "reason", reason)
+		attrs := []any{"digest", digest, "argv", check.Argv, "reason", reason}
+		if missing := nodeRootMissing(check.Mounts); missing != "" && p.policy.declaresNodeRoot(digest) {
+			attrs = append(attrs, "node_root_unavailable", missing)
+		}
+		log.Warn("image not admitted by allowlist", attrs...)
 		p.audit.Log(audit.Event{
 			Action:    "deny",
 			Reason:    reason,
@@ -545,7 +582,7 @@ func (p *plugin) checkContainer(ctx context.Context, cfg *config, pod *api.PodSa
 func (p *plugin) checkContainerPhase(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, phase launchPhase) (imageVerdict, string) {
 	var mounts []allowlist.ObservedMount
 	if phase == launchFinal {
-		mounts = newMountObserver(nil).Observe(pod, ctr)
+		mounts = newMountObserver(nil, cfg.WorkloadClaims.SocketDir).Observe(pod, ctr)
 	}
 	verdict, reason := p.checkContainerObserved(ctx, cfg, pod, ctr, imageRef, phase, containerEnv(ctr), mounts)
 	if verdict == verdictDeny || phase != launchFinal || !cfg.sandboxObserved() {
@@ -619,27 +656,46 @@ func (p *plugin) exemptNamespace(ctx context.Context, cfg *config, pod *api.PodS
 // hook or the marks of a privileged container. The allowlist bounds which bytes
 // run; this bounds what those bytes are handed.
 //
-// Only the MEASURED base allowlist is exempt, and only when the node config
-// claims it as the node TCB (allowlist.node_tcb). A CDS-served entry never is: the
-// document is authored by the cluster admin this policy defends against.
+// Two exemptions apply. The first is a node-TCB entry: only the MEASURED base
+// allowlist, and only when the node config claims it as the node TCB
+// (allowlist.node_tcb). A CDS-served entry never is, because the cluster admin
+// this policy defends against authors that document. The exemption is the
+// whole base entry — digest, argv, env and mounts — not the digest alone: the
+// control plane picks the image a pod runs, so a TCB image restaged with
+// another entrypoint is a tenant container, and an entry with a pinned argv
+// refuses it. An entry left at `any` exempts every launch of its digest; see
+// docs/allowlist-and-capabilities.md.
 //
-// The exemption is the whole base entry — digest, argv, env and mounts — not
-// the digest alone: the control plane picks the image a pod runs, so a TCB
-// image restaged with another entrypoint is a tenant container, and an entry
-// with a pinned argv refuses it. An entry left at `any` exempts every launch of
-// its digest; see docs/allowlist-and-capabilities.md.
+// The second exempts a single bind, not the container: one whose mount
+// evidence carries node-root provenance and that an exact `nodeRootFile` rule of
+// the base or the served allowlist admits at that destination and source. A
+// served rule is safe here because it can only name read-only bytes of the
+// measured node image, and strict clients verify the served policy byte for
+// byte.
 //
-// The digest is resolved only when there is something to excuse, so an ordinary
+// The digest is resolved only when an exemption could apply, so an ordinary
 // container costs no containerd round-trip.
 func (p *plugin) checkSandbox(ctx context.Context, cfg *config, pod *api.PodSandbox, ctr *api.Container, imageRef string, env *allowlist.EnvObservation, mounts []allowlist.ObservedMount) (imageVerdict, string) {
-	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir)
+	obs := observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, nil)
 	violations := obs.violations()
 	if len(violations) == 0 {
 		return verdictAllow, ""
 	}
 	digest := ""
-	if cfg.Allowlist.NodeTCB {
+	if cfg.AllowlistEnabled() && len(obs.HostBinds) > 0 && slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool { return m.Provenance != "" }) {
 		digest = p.resolveDigest(ctx, imageRef)
+		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
+		obs = observeSandbox(pod, ctr, cfg.WorkloadClaims.SocketDir, mounts, func(m allowlist.ObservedMount) bool {
+			return p.policy.admitsNodeRoot(rc, m)
+		})
+		if violations = obs.violations(); len(violations) == 0 {
+			return verdictAllow, ""
+		}
+	}
+	if cfg.Allowlist.NodeTCB {
+		if digest == "" {
+			digest = p.resolveDigest(ctx, imageRef)
+		}
 		rc := allowlist.RunningContainer{Digest: digest, Argv: ctr.GetArgs(), Env: env, Mounts: mounts}
 		if p.policy.baseAdmits(rc, launchFinal) {
 			return verdictAllow, ""

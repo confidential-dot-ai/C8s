@@ -31,6 +31,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // Exit codes. These are a stable contract for CI: a wrong measurement (2) is
@@ -119,6 +120,8 @@ type config struct {
 	operatorPubkey     string
 	rtmrs              []string
 	operatorKeys       string
+	routeDigests       []string
+	routesFloor        string
 	measurementsConfig string
 	servedPolicyFile   string
 	sandboxID          string
@@ -182,6 +185,17 @@ Evidence sources:
   c8s cds verify https://cds.example.com:8443 --measurements <sha384-hex>
   c8s verify https://lb.example.com:443 --kind lb --measurements <sha384-hex>
 
+--mode attest-pq and attest-lb evidence binds the digest of the route
+manifest the router applied. Check it with exactly one of:
+  --route-digest HEX     the digest ` + "`c8s routes show`" + ` prints; any other fails.
+                         Repeat it to accept the old and the new digest
+                         while a route change rolls out.
+  --operator-keys FILE   fetch /.well-known/c8s/routes (published when
+                         router.routePublication.enabled), verify its write
+                         token under these keys and require the evidence
+                         to bind its digest; add
+                         --routes-floor REV:HEX to refuse a rollback.
+
 Exit codes: 0 verified · 1 usage · 2 verification/policy failed · 3 evidence
 unavailable (unreachable / unparseable) · 4 partially verified (the evidence
 verified, but a property it presents is not proven — the front door's live
@@ -218,7 +232,9 @@ responder chose).`,
 	f.StringVar(&cfg.operatorPubkey, "operator-pkey", "", "path to the operator PUBLIC key PEM (the verbatim file bytes the guest initrd hashed, as written by `openssl ec -pubout`) — derives and pins RTMR[3] as the bare operator-key seed, SHA-384(0x00*48 ‖ SHA-384(pubkey)), so the register need not be computed by hand. Mutually exclusive with --expected-rtmr3, and like it a deployment property, NOT a cluster identity, so it requires --image-manifest. The bare seed is the value a node with no per-workload RTMR[3] extends reports, which today is every node. TDX evidence only — with SNP evidence this is a policy error")
 	f.StringSliceVar(&cfg.rtmrs, "rtmr", nil, "expected TDX runtime measurement register(s) as <index>=<sha384-hex> (repeatable). RTMR[1] pins the guest kernel and RTMR[2] the kernel command line carrying the dm-verity root hash: these ARE the image, so pinning them by hand cannot be combined with --image-manifest, which pins the same two plus the MRTD from one provenanced build. RTMR[3] is the operator-key/workload chain extended inside whatever image the host booted, so --rtmr 3= REQUIRES --image-manifest — alone it would read as proof of identity while proving none. RTMR[0] is not pinnable. TDX evidence only — with SNP evidence any pin here is a policy error")
 	cmdsutil.BindImagePolicyFlags(f, &cfg.measurementsConfig, nil, "", "pins complete target identities; for kind=cds also checks the served /measurements policy against it, unless --served-policy-file names the set for that check; excludes --measurements, --measurements-file and --image-manifest")
-	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys; verification fails unless the key set the attested target serves at /operator-keys matches it (kind=cds targets)")
+	f.StringVar(&cfg.operatorKeys, "operator-keys", "", "PEM bundle of expected operator public keys. kind=cds: verification fails unless the key set the attested target serves at /operator-keys matches it. --mode attest-pq/attest-lb: the manifest the router publishes at /.well-known/c8s/routes must verify under these keys, and its digest must be the one the evidence binds; refused with --kind cds")
+	f.StringVar(&cfg.routesFloor, "routes-floor", "", "with --operator-keys in attest-pq/attest-lb: <revision>:<route digest hex> last accepted; a published manifest with a lower revision, or the same revision and another digest, fails (rollback)")
+	f.StringSliceVar(&cfg.routeDigests, "route-digest", nil, "expected route digest(s) (repeatable / comma-separated), the hex SHA-256 of the route manifest bytes as `c8s routes show` prints it; attest-pq and attest-lb evidence binds one, so evidence binding any other digest fails verification. These modes require this or --operator-keys")
 	f.StringVar(&cfg.servedPolicyFile, "served-policy-file", "", "path to a complete JSON image policy naming the exact set the target must serve and enforce at /measurements (kind=cds targets); when set, the served-set equality check compares against this file instead of --image-policy-file, which then pins the target's own identity only — for a cluster launched from a c8s launch-config bundle this is peers.json beside server.json")
 	f.StringVar(&cfg.sandboxID, "sandbox-id", "", "expected CRI pod sandbox ID on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the ID (docs/armtls.md)")
 	f.StringVar(&cfg.workload, "workload", "", "expected matched-workload name on the target's leaf; requires --mesh-ca, since CDS's signature on the leaf is what vouches for the stamp (docs/armtls.md)")
@@ -231,7 +247,7 @@ responder chose).`,
 	f.UintVar(&cfg.minTCBTEE, "min-tcb-tee", 0, "minimum TEE TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBSNP, "min-tcb-snp", 0, "minimum SNP firmware TCB component"+tcbSNPOnly)
 	f.UintVar(&cfg.minTCBMicrocode, "min-tcb-microcode", 0, "minimum microcode TCB component"+tcbSNPOnly)
-	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer)")
+	f.StringVar(&cfg.expectedRDHex, "expected-report-data", "", "hex REPORTDATA / TPM-nonce anchor override for bare evidence files (1–64 bytes, exactly as bound by the producer); refused in --mode attest-pq and attest-lb")
 
 	f.StringVarP(&cfg.output, "output", "o", "text", "output format: text or json")
 	f.BoolVar(&cfg.showEvidence, "show-evidence", false, "print the raw report fields")
@@ -309,6 +325,10 @@ func run(ctx context.Context, cfg config, out, errOut io.Writer) int {
 			}, out)
 			return exitFailed
 		}
+		if errors.Is(err, errRouteRequired) || errors.Is(err, errRouteNotBound) {
+			fmt.Fprintf(errOut, "error: %v\n", err)
+			return exitUsage
+		}
 		fmt.Fprintf(errOut, "error: could not obtain evidence: %v\n", err)
 		return exitNoEvidence
 	}
@@ -341,8 +361,12 @@ type operatorKeysReport struct {
 // cert (see fetchOperatorKeyFingerprints). A failed fetch degrades to a note,
 // but records fetchErr so applySandboxPolicy can fail the verdict when
 // --operator-keys asked for a check: an endpoint erroring on /operator-keys
-// must not dodge it.
+// must not dodge it. The attested modes skip it silently: there
+// --operator-keys checks the published route manifest.
 func gatherOperatorKeys(ctx context.Context, cfg config, ev *evidence) operatorKeysReport {
+	if attestedMode(cfg) {
+		return operatorKeysReport{}
+	}
 	if cfg.kind != "cds" {
 		return operatorKeysReport{note: "operator-keys cross-check skipped: target kind is not cds (use --kind cds to enable)"}
 	}
@@ -385,6 +409,13 @@ func verifyEvidence(ctx context.Context, cfg config, plan *verifyPlan, ev *evide
 	oc.OperatorKeys = opKeys.fingerprints
 	oc.OperatorKeysNote = opKeys.note
 	applyVerdictPolicies(&oc, cfg, ev, held, opKeys, plan, servedMeasurements)
+	// The route note describes a check that passed, so a failed verdict
+	// carries none.
+	if ev.route != nil && oc.Error == "" {
+		oc.RouteDigest = hex.EncodeToString(ev.route.digest)
+		oc.RouteRevision = ev.route.revision
+		oc.RouteNote = ev.route.note
+	}
 	applyInitDataNote(&oc, result, plan)
 	render(cfg, oc, out)
 	return verdictExitCode(oc)
@@ -517,6 +548,8 @@ type verifyPlan struct {
 	// --served-policy-file nor --image-policy-file asked for the check. It
 	// never feeds the target's own identity pin (refValues above).
 	served *servedSet
+	// routes is the route digest check, nil when the run checks none.
+	routes *routeCheck
 }
 
 // servedSet pairs the policy the target must serve and enforce at
@@ -638,8 +671,8 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	// The matched-workload stamp is CA-vouched exactly like the sandbox ID, so
 	// both workload-policy flags demand the chain check that authenticates it.
 	if cfg.workload != "" {
-		if !pkgallowlist.ValidWorkloadName(cfg.workload) {
-			return nil, fmt.Errorf("--workload: %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", cfg.workload, pkgallowlist.MaxWorkloadNameLen)
+		if !workloadname.Valid(cfg.workload) {
+			return nil, fmt.Errorf("--workload: %q is not a valid workload entry name (1..%d bytes, [A-Za-z0-9][A-Za-z0-9._-]*)", cfg.workload, workloadname.MaxLen)
 		}
 		if cfg.meshCA == "" {
 			return nil, fmt.Errorf("--workload requires --mesh-ca: the matched workload is vouched by CDS's signature on the leaf, not by the hardware evidence")
@@ -652,6 +685,10 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 	}
 
 	initDataHash, err := parseInitDataPin(cfg.initDataHex)
+	if err != nil {
+		return nil, err
+	}
+	routes, err := parseRouteCheck(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -671,6 +708,7 @@ func buildPolicy(cfg config) (*verifyPlan, error) {
 		initDataHash: initDataHash,
 		refValues:    refValues,
 		served:       served,
+		routes:       routes,
 	}, nil
 }
 
@@ -944,10 +982,14 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		if err != nil {
 			return nil, err
 		}
-		if cfg.mode == "attest-lb" {
-			return gatherAttestLBFromFile(data, cfg.observedServingCert, cfg.attestationNonce, "file "+cfg.fromFile)
+		route, err := plan.routes.bind(ctx, "", "", 0)
+		if err != nil {
+			return nil, err
 		}
-		return gatherFromFile(data, overrideERD, "file "+cfg.fromFile, trust)
+		if cfg.mode == "attest-lb" {
+			return gatherAttestLBFromFile(data, cfg.observedServingCert, cfg.attestationNonce, route, "file "+cfg.fromFile)
+		}
+		return gatherFromFile(data, overrideERD, route, "file "+cfg.fromFile, trust)
 	}
 	if cfg.url == "" {
 		return nil, fmt.Errorf("no target: pass a host:port / URL argument or --from-file")
@@ -963,10 +1005,15 @@ func gatherEvidence(ctx context.Context, cfg config, plan *verifyPlan, overrideE
 		return gatherFromARMTLSCert(ctx, dialAddr, cfg.server, cfg.timeout, trust)
 	case "discovery":
 		return gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
-	case "attest-pq":
-		return gatherFromEndpoint(ctx, baseURL, cfg.server, cfg.timeout)
-	case "attest-lb":
-		return gatherFromAttestLB(ctx, baseURL, cfg.server, cfg.timeout)
+	case "attest-pq", "attest-lb":
+		route, err := plan.routes.bind(ctx, baseURL, cfg.server, cfg.timeout)
+		if err != nil {
+			return nil, err
+		}
+		if resolveMode(cfg) == "attest-pq" {
+			return gatherFromEndpoint(ctx, baseURL, cfg.server, cfg.timeout, route)
+		}
+		return gatherFromAttestLB(ctx, baseURL, cfg.server, cfg.timeout, route)
 	default: // auto: try the LB discovery doc (what the chart serves), then the
 		// serving cert. Don't fall back on a security error — surface it.
 		ev, err := gatherFromDiscovery(ctx, baseURL, cfg.discoveryPath, cfg.server, cfg.timeout, trust)
@@ -1129,6 +1176,14 @@ type Outcome struct {
 	WorkloadAllowlistVersion string `json:"workload_allowlist_version,omitempty"`
 	WorkloadAllowlistDigest  string `json:"workload_allowlist_digest,omitempty"`
 	WorkloadNote             string `json:"workload_note,omitempty"`
+
+	// RouteDigest is the hex route digest the attested transcript binds
+	// (attest-pq and attest-lb only); RouteRevision is the published
+	// manifest's revision when --operator-keys checked it, and RouteNote says
+	// which check supplied the digest.
+	RouteDigest   string `json:"route_digest,omitempty"`
+	RouteRevision uint64 `json:"route_revision,omitempty"`
+	RouteNote     string `json:"route_note,omitempty"`
 }
 
 // applySandboxPolicy surfaces the leaf's sandbox ID and enforces --sandbox-id /
@@ -1195,6 +1250,16 @@ func applySandboxPolicy(oc *Outcome, cfg config, ev *evidence, opKeys operatorKe
 
 	checkServedPolicy(plan, servedMeasurements, fail)
 
+	// In the attested modes --operator-keys checks the published route
+	// manifest instead (routeCheck).
+	if !attestedMode(cfg) {
+		checkServedOperatorKeys(oc, cfg, opKeys, fail)
+	}
+}
+
+// checkServedOperatorKeys compares the key set a kind=cds target serves at
+// /operator-keys with --operator-keys.
+func checkServedOperatorKeys(oc *Outcome, cfg config, opKeys operatorKeysReport, fail func(string, ...any)) {
 	// The served key list is authenticated by being fetched over the attested
 	// serving cert. A failed fetch fails closed when the operator asked for the
 	// check (a 404 is not an error — it maps to the empty-set digest in
@@ -1686,6 +1751,13 @@ func renderText(cfg config, oc Outcome, out io.Writer) {
 		fmt.Fprintf(out, "  chain anchor: %s\n", oc.ChainAnchor)
 	}
 	fmt.Fprintf(out, "  binding:      %s\n", oc.Binding)
+	if oc.RouteDigest != "" {
+		fmt.Fprintf(out, "  route digest: %s\n", oc.RouteDigest)
+		if oc.RouteRevision != 0 {
+			fmt.Fprintf(out, "  route rev:    %d\n", oc.RouteRevision)
+		}
+		fmt.Fprintf(out, "                %s\n", oc.RouteNote)
+	}
 	for _, np := range oc.NotProven {
 		fmt.Fprintf(out, "  not proven:   %s\n", np)
 	}

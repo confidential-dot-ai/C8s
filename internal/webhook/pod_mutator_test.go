@@ -494,7 +494,7 @@ func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
 		ok                bool
 	}{
 		{AnnotationCertDir, "/tls", false},
-		{AnnotationCertDir, certDir, true},
+		{AnnotationCertDir, CertDir, true},
 		{AnnotationSecretDir, "/var/run/app-secrets", false},
 		{AnnotationSecretDir, defaultSecretDir, true},
 		{AnnotationDiscoveryMountPath, "/discovery", false},
@@ -538,7 +538,7 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 		{"watch inside", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt", true},
 		{"watch elsewhere", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt,/edge-tls/tls.key", false},
 		{"cert file relative", nil, AnnotationCertFile, "server.crt", true},
-		{"cert file inside", nil, AnnotationCertFile, certDir + "/server.crt", true},
+		{"cert file inside", nil, AnnotationCertFile, CertDir + "/server.crt", true},
 		{"cert file elsewhere", nil, AnnotationCertFile, "/certs/tls.crt", false},
 		{"key file escaping", nil, AnnotationKeyFile, "../tls.key", false},
 		{"ca file elsewhere", nil, AnnotationCAFile, "/etc/ssl/ca.crt", false},
@@ -566,7 +566,7 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 		wantRefused bool
 	}{
 		{"own volume", "discovery", "", false},
-		{"default cert volume", defaultCertVolumeName, "", true},
+		{"default cert volume", DefaultCertVolumeName, "", true},
 		{"renamed cert volume", "edge-certs", "edge-certs", true},
 		{"secrets volume", secretsVolumeName, "", true},
 		{"encrypted volume", volume.KubeVolumePrefix + "data", "", true},
@@ -1323,7 +1323,7 @@ func TestCertContainerOmitsEmptyCDSMeasurements(t *testing.T) {
 // workloadclaims.SidecarSocketDir, so the endpoint must be rebased onto the
 // mount — and only there (every other shape passes through untouched).
 func TestSidecarAttestationApiURLRebase(t *testing.T) {
-	const hostDir = "/var/run/nri-image-policy"
+	const hostDir = "/run/nri-image-policy"
 	for _, tc := range []struct {
 		name    string
 		hostDir string
@@ -1357,8 +1357,8 @@ func TestSidecarAttestationApiURLRebase(t *testing.T) {
 // The rebased endpoint must be what the injected containers actually receive.
 func TestCertContainerGetsRebasedAttestationURL(t *testing.T) {
 	cfg := secretsConfig()
-	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
-	cfg.AttestationApiURL = "unix:///var/run/nri-image-policy/attestation-api.sock"
+	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
+	cfg.AttestationApiURL = "unix:///run/nri-image-policy/attestation-api.sock"
 	pod := podWithApp()
 	mutatePod(pod, &injection{WorkloadID: "api"}, cfg)
 
@@ -1375,8 +1375,8 @@ func TestCertContainerGetsRebasedAttestationURL(t *testing.T) {
 // restricted admits it.
 func TestFetchersCarryRebasedURLAsNRIMountTargets(t *testing.T) {
 	cfg := secretsConfig()
-	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
-	cfg.AttestationApiURL = "unix:///var/run/nri-image-policy/attestation-api.sock"
+	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
+	cfg.AttestationApiURL = "unix:///run/nri-image-policy/attestation-api.sock"
 	pod := podWithApp()
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
@@ -1496,15 +1496,15 @@ func TestMutatePodStaysRestrictedAdmissible(t *testing.T) {
 	hpType := corev1.HostPathDirectory
 	legacy.Spec.Volumes = append(legacy.Spec.Volumes, corev1.Volume{
 		Name:     "c8s-workload-claims",
-		HostPath: &corev1.HostPathVolumeSource{Path: "/var/run/nri-image-policy", Type: &hpType},
+		HostPath: &corev1.HostPathVolumeSource{Path: "/run/nri-image-policy", Type: &hpType},
 	})
 	if agg := evaluateRestricted(t, legacy); agg.Allowed {
 		t.Fatal("evaluator admitted a hostPath claims volume; the control proves nothing")
 	}
 
 	cfg := secretsConfig()
-	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
-	cfg.AttestationApiURL = "unix:///var/run/nri-image-policy/attestation-api.sock"
+	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
+	cfg.AttestationApiURL = "unix:///run/nri-image-policy/attestation-api.sock"
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
 		Reload:     reloadSpec{Nginx: true},

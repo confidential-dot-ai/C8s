@@ -22,7 +22,9 @@ type world struct {
 	// entries the scenario describes, written to CDS when it says the plugin
 	// has applied the served allowlist; written and removed are undone after
 	// the scenario.
-	entries  map[string]*entry
+	entries map[string]*entry
+	// bases holds, per scenario name, the name an entry is written under instead.
+	bases    map[string]string
 	written  map[string]bool
 	removed  map[string]json.RawMessage
 	api      cdsAPIState
@@ -34,8 +36,9 @@ type world struct {
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
-	// appliedVersion is the served version the plugin had applied when the
-	// scenario last waited for it.
+	// appliedVersion is the allowlist version the plugin reported applied when
+	// the scenario last waited for it, or the served one where the backend
+	// cannot ask the plugin.
 	appliedVersion string
 	// running maps an image to the pod a scenario started a container of.
 	running map[string]*pod
@@ -46,6 +49,9 @@ type world struct {
 	pluginDown   map[string]bool
 	cdsBlocked   bool
 	cdsRestarted bool
+	// cdsInstance is the CDS pod a seed-change sentence found serving, for
+	// the sentence that says it did not restart.
+	cdsInstance string
 }
 
 type pod struct {
@@ -88,6 +94,10 @@ type pod struct {
 type container struct {
 	ref     string // reference the manifest uses
 	command []string
+	env     []string // NAME=VALUE the pod spec sets, beside what the image and the node add
+	// stated: the scenario gave the argv; otherwise the harness chose it (a
+	// placeholder sleep, a hello server, a datagram listener).
+	stated bool
 }
 
 type worldKey struct{}
@@ -106,6 +116,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				namespace:  "conf-" + hex.EncodeToString(suffix),
 				pods:       map[string]*pod{},
 				entries:    map[string]*entry{},
+				bases:      map[string]string{},
 				written:    map[string]bool{},
 				removed:    map[string]json.RawMessage{},
 				running:    map[string]*pod{},
@@ -253,7 +264,7 @@ type entryContainer struct {
 	Command *argvPolicy  `json:"command,omitempty"`
 	Args    *argvPolicy  `json:"args,omitempty"`
 	Mounts  mountsPolicy `json:"mounts"`
-	Env     policy       `json:"env"`
+	Env     envPolicy    `json:"env"`
 }
 
 type argvPolicy struct {
@@ -267,8 +278,15 @@ func exactArgv(argv []string) *argvPolicy { return &argvPolicy{Policy: "exact", 
 
 func (p *argvPolicy) is(policy string) bool { return p != nil && p.Policy == policy }
 
-type policy struct {
-	Policy string `json:"policy"`
+type envPolicy struct {
+	Policy    string                `json:"policy"`
+	Variables map[string]envMatcher `json:"variables,omitempty"`
+}
+
+// envMatcher is one variable of a match policy: exactly one of the two is set.
+type envMatcher struct {
+	Exact   *string `json:"exact,omitempty"`
+	Present bool    `json:"present,omitempty"`
 }
 
 type mountsPolicy struct {

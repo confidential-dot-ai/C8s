@@ -61,6 +61,7 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 			}
 			prov := &journalingProvider{journal: journal, digest: q}
 			cfg := Config{
+				Routes:               testRoutes(t),
 				Evidence:             prov,
 				FrontDoorMode:        types.FrontDoorModeCDS,
 				ServingCertFile:      certPath,

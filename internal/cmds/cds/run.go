@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -183,11 +184,24 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
+		seedCtx, stopSeed := context.WithCancel(ctx)
+		following, err := startSeed(seedCtx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed)
 		if err != nil {
+			stopSeed()
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
-		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
+		// Runs before the store's deferred Close.
+		defer func() {
+			stopSeed()
+			<-following
+		}()
+	}
+
+	// C6: there is no route seed; an empty store waits for an operator write.
+	if _, err := allowlistStore.LoadRoutes(); errors.Is(err, allowlist.ErrNoRoutes) {
+		slog.Warn("no route manifest stored: write one with 'c8s routes put' or 'c8s routes add'")
+	} else if err != nil {
+		return err
 	}
 
 	if err := allowlistStore.StartJournal(); err != nil {
@@ -203,7 +217,7 @@ func run(cfg config) error {
 	}
 
 	if !cfg.allowlistPersistent {
-		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests, the allowlist history and spent operator tokens do not survive")
+		slog.Warn("allowlist store is not persistent (cds.persistence.enabled=false): a restart resets the served allowlist to the install seed and regenerates the mesh CA. Operator-added digests, the allowlist history, spent operator tokens and the route manifest do not survive")
 	}
 
 	policy := issuer.CSRPolicy{
@@ -322,6 +336,11 @@ func run(cfg config) error {
 			Store:             &allowlistStore,
 			WriteAuthorizer:   allowlistWriteAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
+		},
+		Routes: routeHandler{
+			Store:     &allowlistStore,
+			Authorize: allowlistWriteAuthorizer,
+			MeshCA:    mesh.Cert,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
 		CACertPEM:         caChainPEM,
@@ -515,6 +534,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
+	}
+	if cfg.followSeed && cfg.allowlistSeed == "" {
+		return fmt.Errorf("--follow-seed needs --allowlist-seed")
 	}
 	if err := validateSecretsConfig(cfg); err != nil {
 		return err

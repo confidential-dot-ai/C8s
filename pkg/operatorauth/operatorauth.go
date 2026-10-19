@@ -9,7 +9,8 @@
 // keys, re-hashes the body against pbh, matches htm/htu against the request,
 // and rejects any token whose exp−iat exceeds MaxTokenValidity — so a captured
 // token cannot be replayed against a different payload, verb, or path, and
-// cannot be minted long-lived regardless of client tooling.
+// cannot be minted long-lived regardless of client tooling. The algorithm must
+// match the key's curve: ES256 for P-256, ES384 for P-384, ES512 for P-521.
 //
 // FUTURE IMPROVEMENT — a CA + operator certificates (chain carried in the JWT
 // x5c header), giving delegated issuance and CA-based revocation instead of
@@ -195,8 +196,14 @@ func verifyToken(keys []*ecdsa.PublicKey, tokenStr, method, path string, body []
 	for _, pub := range keys {
 		claims := jwt.MapClaims{}
 		token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-			if _, ok := t.Method.(*jwt.SigningMethodECDSA); !ok {
-				return nil, fmt.Errorf("unexpected signing method %s", t.Method.Alg())
+			// jwt verifies an ES384 signature under a P-256 key; other
+			// verifiers refuse it, so the algorithm must name the key's curve.
+			want, err := esMethodFor(pub.Curve)
+			if err != nil {
+				return nil, err
+			}
+			if t.Method.Alg() != want.Alg() {
+				return nil, fmt.Errorf("signing method %s does not match the %s key", t.Method.Alg(), pub.Curve.Params().Name)
 			}
 			return pub, nil
 		}, append([]jwt.ParserOption{jwt.WithValidMethods(validMethods)}, opts...)...)

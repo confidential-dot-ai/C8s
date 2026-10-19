@@ -21,6 +21,9 @@ import (
 func registerCDSAPI(sc *godog.ScenarioContext) {
 	sc.Step(`^the CDS has (?:an operator key|operator keys)$`, cdsHasOperatorKey)
 	sc.Step(`^the seed of the CDS declares image "([^"]*)"$`, seedDeclares)
+	sc.Step(`^the seed of the CDS changes to also declare image "([^"]*)"$`, seedChanges)
+	sc.Step(`^the seed of the CDS changes to declare image "([^"]*)" under its generated name$`, seedChangesGenerated)
+	sc.Step(`^the CDS has not restarted$`, cdsNotRestarted)
 	sc.Step(`^the served allowlist has (a|no) workload entry "([^"]*)"$`, servedHasEntry)
 	sc.Step(`^a workload entry in the served allowlist admits image "([^"]*)" under any argv$`, servedAdmitsAnyArgv)
 	sc.Step(`^a caller holds no write token$`, callerHoldsNoToken)
@@ -103,7 +106,7 @@ func (w *world) putAnyArgv(name, image string) (write, error) {
 		Containers: []entryContainer{{
 			Digest: digest, Image: ref,
 			Command: anyArgv(), Args: anyArgv(),
-			Mounts: mountsPolicy{Policy: "any"}, Env: policy{Policy: "any"},
+			Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},
 		}},
 	})
 	if err != nil {
@@ -202,6 +205,102 @@ func seedDeclares(ctx context.Context, image string) error {
 	}
 	if answer != "yes" {
 		return godog.ErrSkip
+	}
+	return nil
+}
+
+// seedFollowTimeout bounds how long a changed seed takes to be served: the
+// kubelet refreshes a mounted ConfigMap within its sync period, then the CDS
+// rereads the file on its own interval.
+const seedFollowTimeout = 4 * time.Minute
+
+// seedChanges adds an entry admitting image under any argv to the seed the
+// CDS follows and waits until the served allowlist admits the image, so the
+// sentences after it read the state the change produced. The seed goes back
+// at the scenario's end, and so does the entry, which seeding never removes.
+func seedChanges(ctx context.Context, image string) error {
+	w := getWorld(ctx)
+	return w.seedAdds(image, w.writtenName("seed-"+image))
+}
+
+// seedChangesGenerated is seedChanges with the entry under the name the
+// chart generates for image, so a stored entry of that generated form, under
+// another name, is one the seed replaces (B2).
+func seedChangesGenerated(ctx context.Context, image string) error {
+	w := getWorld(ctx)
+	name, err := w.generatedBase(image)
+	if err != nil {
+		return err
+	}
+	return w.seedAdds(image, name)
+}
+
+func (w *world) seedAdds(image, name string) error {
+	ref, err := w.be.call("image_ref", image)
+	if err != nil {
+		return err
+	}
+	digest, err := w.digestOf(image)
+	if err != nil {
+		return err
+	}
+	instance, err := w.be.call("cds_instance")
+	if err != nil {
+		return err
+	}
+	if instance == "" {
+		return errors.New("harness precondition: no CDS pod found")
+	}
+	w.cdsInstance = instance
+	e := &entry{Label: ref, InitContainers: []entryContainer{}, Containers: []entryContainer{{
+		Digest: digest, Image: ref, Command: anyArgv(), Args: anyArgv(),
+		Mounts: mountsPolicy{Policy: "any"}, Env: envPolicy{Policy: "any"},
+	}}}
+	body, err := json.Marshal(e)
+	if err != nil {
+		return err
+	}
+	w.onUndo(func() error {
+		if _, err := w.be.call("seed_restore"); err != nil {
+			return err
+		}
+		return w.deleteEntry(name)
+	})
+	err = withBodyFile(body, func(path string) error {
+		_, err := w.be.call("seed_add", name, path)
+		return err
+	})
+	lastMutation = time.Now()
+	if err != nil {
+		return err
+	}
+	served, err := pollEvery(5*time.Second, seedFollowTimeout, func() (bool, error) {
+		s, err := w.served()
+		if err != nil {
+			return false, err
+		}
+		return s.admitsAnyArgv(digest), nil
+	})
+	if err != nil {
+		return err
+	}
+	if !served {
+		return fmt.Errorf("the CDS did not serve the changed seed within %s", seedFollowTimeout)
+	}
+	return nil
+}
+
+func cdsNotRestarted(ctx context.Context) error {
+	w := getWorld(ctx)
+	if w.cdsInstance == "" {
+		return errors.New("the scenario noted no CDS instance to compare with")
+	}
+	instance, err := w.be.call("cds_instance")
+	if err != nil {
+		return err
+	}
+	if instance != w.cdsInstance {
+		return fmt.Errorf("the CDS restarted: pod and restart count %q, before %q", instance, w.cdsInstance)
 	}
 	return nil
 }
@@ -534,13 +633,9 @@ func versionCompares(ctx context.Context, relation string) error {
 	if err != nil {
 		return fmt.Errorf("version read before %q: %w", w.api.versionBefore, err)
 	}
-	s, err := w.be.call("served_version")
+	now, err := w.servedVersion()
 	if err != nil {
 		return err
-	}
-	now, err := strconv.Atoi(s)
-	if err != nil {
-		return fmt.Errorf("served version %q: %w", s, err)
 	}
 	var holds bool
 	switch relation {

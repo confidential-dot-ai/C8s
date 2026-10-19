@@ -23,6 +23,7 @@ func registerAdmission(sc *godog.ScenarioContext) {
 	sc.Step(`^a pod "([^"]*)" whose only container names image "([^"]*)" without a digest$`, podNamesImageByTag)
 	sc.Step(`^the image store on node "([^"]*)" resolves that name to the digest of "([^"]*)"$`, storeResolves)
 	sc.Step(`^the argv of that container is "([^"]*)"$`, argv)
+	sc.Step(`^the environment of that container is "([^"]*)"$`, environment)
 	sc.Step(`^"([^"]*)" is deployed on node "([^"]*)"$`, deployOnNode)
 	sc.Step(`^the container of "([^"]*)" is not created$`, containerNotCreated)
 	sc.Step(`^(?:the container|both containers) of "([^"]*)" (?:is|are) created$`, containersCreated)
@@ -127,8 +128,33 @@ func argv(ctx context.Context, line string) error {
 		return errors.New("no container has been described yet")
 	}
 	w.lastPod.last().command = strings.Fields(line)
+	w.lastPod.last().stated = true
 	return nil
 }
+
+// environment sets the variables the pod spec gives the container, as
+// NAME=VALUE words. The image's own variables and the ones the node adds are
+// still there; an entry that matches the environment names those too.
+func environment(ctx context.Context, line string) error {
+	w := getWorld(ctx)
+	if w.lastPod == nil {
+		return errors.New("no container has been described yet")
+	}
+	if w.lastPod.last() != w.lastPod.containers[0] {
+		return errors.New("harness limitation: only the first container of a pod takes an environment")
+	}
+	for _, word := range strings.Fields(line) {
+		if !strings.Contains(word, "=") {
+			return fmt.Errorf("environment word %q is not NAME=VALUE", word)
+		}
+	}
+	w.lastPod.last().env = strings.Fields(line)
+	return nil
+}
+
+// annotationHarnessArgv marks a pod whose first container runs an argv the
+// harness chose, beside which a backend may run its pod agent (metal.sh).
+const annotationHarnessArgv = "c8s-conformance/harness-argv"
 
 // deployOnNode applies the pod. The entries the scenario described must have
 // reached the plugin first, which only the applied sentence promises.
@@ -148,6 +174,9 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		return err
 	}
 	args := append([]string(nil), p.opts...)
+	for _, variable := range p.containers[0].env {
+		args = append(args, "--env", variable)
+	}
 	if len(p.secrets) > 0 {
 		args = append(args, "--annotation", annotationSecrets+"="+strings.Join(p.secrets, ","))
 	}
@@ -164,6 +193,10 @@ func deployOnNode(ctx context.Context, name, node string) error {
 			renewal = secretsRenewal
 		}
 		args = append(args, "--annotation", annotationCW+"="+p.name, "--annotation", annotationRenewal+"="+renewal)
+	}
+	if !p.containers[0].stated {
+		// The backend may run more beside an argv the harness chose.
+		args = append(args, "--annotation", annotationHarnessArgv+"=yes")
 	}
 	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
 	for i, c := range p.containers {

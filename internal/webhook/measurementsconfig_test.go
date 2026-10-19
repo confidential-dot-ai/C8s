@@ -18,8 +18,8 @@ func TestEveryInjectedFetcherRetainsCompleteCDSPolicy(t *testing.T) {
 	}
 	cfg := secretsConfig()
 	cfg.CDSMeasurementsConfigJSON = string(doc)
-	cfg.WorkloadClaimsHostDir = "/var/run/nri-image-policy"
-	cfg.AttestationApiURL = "unix:///var/run/nri-image-policy/attestation-api.sock"
+	cfg.WorkloadClaimsHostDir = "/run/nri-image-policy"
+	cfg.AttestationApiURL = "unix:///run/nri-image-policy/attestation-api.sock"
 	// Derived scalar diagnostics must not become conflicting CLI inputs
 	// or replace the complete policy sent to a helper.
 	cfg.CDSMeasurements = []string{strings.Repeat("ab", 48)}

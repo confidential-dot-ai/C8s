@@ -1,4 +1,5 @@
 {{- if .Values.router.enabled }}
+{{- $tunnelConnsPerClient := include "c8s.positiveInt" (dict "value" .Values.router.nginx.tunnelConnectionsPerClient "label" "router.nginx.tunnelConnectionsPerClient") | int -}}
 {{- $sans := include "router.sanList" . | fromJsonArray -}}
 {{- range $s := $sans -}}{{- include "router.validateSan" $s -}}{{- end -}}
 {{- $serverNames := join " " $sans -}}
@@ -9,16 +10,29 @@
 {{- end -}}
 {{- $publicTLSMode := include "router.publicTLSMode" . -}}
 {{- $launchDriven := eq (include "router.launchDriven" .) "true" -}}
-{{- $readTimeout := toString (default "3600s" .Values.router.upstream.readTimeout) -}}
-{{- if not (regexMatch `^[0-9]+(ms|s|m|h|d)?$` $readTimeout) -}}
-{{- fail (printf "router.upstream.readTimeout must be an nginx time such as 3600s or 60m, got: %s" $readTimeout) -}}
-{{- end -}}
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
-{{- include "router.validateProtocol" (required "protocol must be http or https" .Values.router.upstream.protocol) -}}
 {{- $defaultMeshCAPath := printf "%s/ca.pem" .Values.router.tlsMountPath -}}
-{{- $upstreamTrustedCAPath := default $defaultMeshCAPath .Values.router.upstream.tls.trustedCAPath -}}
-{{- $upstreamAddress := .Values.router.upstream.address | trim -}}
-{{- $upstreamMeshWrapped := eq (include "router.meshWrappedUpstream" $upstreamAddress) "true" -}}
+{{- $routingPort := include "router.routingPort" . -}}
+{{- $readTimeout := toString .Values.router.routing.readTimeout -}}
+{{- if or (not (regexMatch `^[0-9]+(ms|s|m|h)$` $readTimeout)) (regexMatch `^0+(ms|s|m|h)$` $readTimeout) -}}
+{{- fail (printf "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: %s" $readTimeout) -}}
+{{- end -}}
+{{- /* nginx's proxy_read_timeout derives from backendTimeout and rejects multi-unit values. */ -}}
+{{- range $key := list "pollInterval" "backendTimeout" -}}
+{{- $d := toString (index $.Values.router.routing $key) -}}
+{{- if or (not (regexMatch `^[0-9]+(ms|s|m|h)$` $d)) (regexMatch `^0+(ms|s|m|h)$` $d) -}}
+{{- fail (printf "router.routing.%s must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: %v" $key (index $.Values.router.routing $key)) -}}
+{{- end -}}
+{{- end -}}
+{{- /* nginx waits 30s past cds-attest's --backend-timeout, so the sidecar's own timeout reply reaches the client. */ -}}
+{{- $backendTimeout := toString .Values.router.routing.backendTimeout -}}
+{{- $backendUnit := regexFind `(ms|s|m|h)$` $backendTimeout -}}
+{{- $backendCount := regexReplaceAll `^0*([0-9])` (trimSuffix $backendUnit $backendTimeout) "${1}" | int64 -}}
+{{- $tunnelReadTimeoutMs := add (mul $backendCount (get (dict "ms" 1 "s" 1000 "m" 60000 "h" 3600000) $backendUnit)) 30000 -}}
+{{- $tunnelReadTimeout := printf "%dms" $tunnelReadTimeoutMs -}}
+{{- if eq (mod $tunnelReadTimeoutMs 1000) 0 -}}
+{{- $tunnelReadTimeout = printf "%ds" (div $tunnelReadTimeoutMs 1000) -}}
+{{- end -}}
 {{- $renderAllowlistRoute := eq (include "router.renderAllowlistRoute" .) "true" -}}
 {{- $allowlistProxyPort := 0 -}}
 {{- $allowlistWriteRate := 0 -}}
@@ -32,7 +46,7 @@
 {{- if or (lt $allowlistProxyPort 1) (gt $allowlistProxyPort 65535) -}}
 {{- fail (printf "router.allowlist.proxyPort must be between 1 and 65535, got: %d" $allowlistProxyPort) -}}
 {{- end -}}
-{{- if and .Values.router.attest.enabled (eq $allowlistProxyPort (int .Values.router.attest.port)) -}}
+{{- if eq $allowlistProxyPort (int .Values.router.attest.port) -}}
 {{- fail (printf "router.allowlist.proxyPort must differ from router.attest.port, got: %d" $allowlistProxyPort) -}}
 {{- end -}}
 {{- if eq $allowlistProxyPort (int .Values.router.nginx.httpsPort) -}}
@@ -47,24 +61,7 @@
 {{- /* Cross-value budget invariants (per-client <= total < cds bucket) live
    in validations.yaml, kind=router_allowlist_rate_budget. */ -}}
 {{- end -}}
-{{- /*
-  No upstream is a legal state: router serves its cert and explicit routes with
-  no catch-all until one is wired (an install-then-attach-inference flow). The
-  address-format check, the secured-backend guard (validations.yaml), and the
-  location / block all render only when an upstream is set.
-*/ -}}
-{{- $upstreamServerName := "" -}}
-{{- if $upstreamAddress -}}
-{{- if not (regexMatch `^[^[:space:]{};/#]+$` $upstreamAddress) -}}
-{{- fail (printf "router.upstream.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: %s" $upstreamAddress) -}}
-{{- end -}}
-{{- $upstreamServerName = default (include "router.serverNameFromAddress" $upstreamAddress) .Values.router.upstream.tls.serverName -}}
-{{- include "router.validateProxyTLS" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "label" "router.upstream") -}}
-{{- end -}}
-{{- include "router.validateCORS" .Values.router.cors -}}
-{{- range $i, $route := .Values.router.routes -}}
-{{- include "router.validateRouteCORS" (dict "cors" $route.cors "label" (printf "router.routes[%d]" $i)) -}}
-{{- end }}
+{{- include "router.validateCORS" .Values.router.cors }}
 
 apiVersion: v1
 kind: ConfigMap
@@ -76,11 +73,14 @@ metadata:
 data:
   nginx.conf: |
     worker_processes auto;
+    # Each connection may hold a client socket, an upstream socket and a
+    # request body temp file.
+    worker_rlimit_nofile 65536;
     error_log /var/log/nginx/error.log warn;
     pid /tmp/nginx.pid;
 
     events {
-        worker_connections 1024;
+        worker_connections 16384;
     }
 
     http {
@@ -94,15 +94,13 @@ data:
 
         sendfile on;
         keepalive_timeout 65;
-{{- if or $upstreamAddress $launchDriven }}
 
         # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
-        # other requests keep Connection: close to the upstream.
+        # other requests keep Connection: close to the routing listener.
         map $http_upgrade $connection_upgrade {
             default upgrade;
             "" close;
         }
-{{- end }}
 {{- if default false .Values.router.cors.enabled }}
         {{- include "router.corsMap" . | nindent 8 }}
 {{- end }}
@@ -133,38 +131,11 @@ data:
         limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ $allowlistWriteTotalRate }}r/s;
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
 {{- end }}
+{{- if .Values.router.attest.enabled }}
 
-        {{- if or $upstreamMeshWrapped $launchDriven }}
-        # A mesh-wrapped catch-all is dialed via a variable (see location /), so
-        # nginx re-resolves it here at request time per record TTL: a static
-        # upstream block would pin the pod IPs the adopted workload's headless
-        # Service resolved to at startup and 502 after pod churn. Nothing
-        # authenticates the answer -- the app-layer hop is plaintext and the
-        # mesh binds the pod IP it is handed, not the name -- so an adversary
-        # who can forge cluster DNS retargets this hop. Every other upstream
-        # gets a static block below and no resolver is rendered at all.
-        resolver {{ include "c8s.router.resolver" . }};
-        {{- end }}
-
-        {{- range $i, $route := .Values.router.routes }}
-        {{- if hasKey $route "upstream" }}
-        {{- fail (printf "router.routes[%d].upstream is not supported; set backend.address and backend.protocol instead" $i) }}
-        {{- end }}
-        {{- $backend := required (printf "router.routes[%d].backend is required" $i) $route.backend }}
-        {{- $backendAddress := required (printf "router.routes[%d].backend.address is required" $i) $backend.address }}
-        {{- if not (regexMatch `^[^[:space:]{};/#]+$` $backendAddress) }}
-        {{- fail (printf "router.routes[%d].backend.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: %s" $i $backendAddress) }}
-        {{- end }}
-        upstream route_{{ $i }} {
-            server {{ $backendAddress }};
-        }
-
-        {{- end }}
-        {{- if and $upstreamAddress (not $upstreamMeshWrapped) }}
-        upstream catch_all {
-            server {{ $upstreamAddress }};
-        }
-        {{- end }}
+        # Bounds what one client address holds of the tunnel body spool.
+        limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
+{{- end }}
 
         server {
             listen {{ .Values.router.nginx.httpsPort }} ssl;
@@ -196,57 +167,6 @@ data:
             {{- $allowlistLocationArgs := dict "root" $ "proxyPort" $allowlistProxyPort "writeBurst" $allowlistWriteBurst "writeTotalBurst" $allowlistWriteTotalBurst "readBurst" $allowlistReadBurst }}
             {{- include "router.allowlistLocation" (merge (dict "exact" true "path" "/allowlist") $allowlistLocationArgs) | nindent 12 }}
             {{- include "router.allowlistLocation" (merge (dict "exact" false "path" "/allowlist/") $allowlistLocationArgs) | nindent 12 }}
-
-            {{- end }}
-            {{- range $i, $route := .Values.router.routes }}
-            {{- $path := required (printf "router.routes[%d].path is required" $i) $route.path }}
-            {{- $match := default "prefix" $route.match }}
-            {{- if not (or (eq $match "exact") (eq $match "prefix")) }}
-            {{- fail (printf "router.routes[%d].match must be 'exact' or 'prefix', got: %s" $i $match) }}
-            {{- end }}
-            {{- if not (regexMatch `^/[A-Za-z0-9._~!$&()*+,=:@%/-]*$` $path) }}
-            {{- fail (printf "router.routes[%d].path must start with '/' and contain only URI path characters safe for nginx locations, got: %s" $i $path) }}
-            {{- end }}
-            {{- $backend := required (printf "router.routes[%d].backend is required" $i) $route.backend }}
-            {{- $backendAddress := required (printf "router.routes[%d].backend.address is required" $i) $backend.address }}
-            {{- $backendProtocol := default "http" $backend.protocol }}
-            {{- if not (or (eq $backendProtocol "http") (eq $backendProtocol "https")) }}
-            {{- fail (printf "router.routes[%d].backend.protocol must be 'http' or 'https', got: %s" $i $backendProtocol) }}
-            {{- end }}
-            {{- if not (regexMatch `^[^[:space:]{};/#]+$` $backendAddress) }}
-            {{- fail (printf "router.routes[%d].backend.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: %s" $i $backendAddress) }}
-            {{- end }}
-            {{- $backendTLS := default dict $backend.tls }}
-            {{- $backendTrustedCAPath := default $defaultMeshCAPath $backendTLS.trustedCAPath }}
-            {{- $backendServerName := default (include "router.serverNameFromAddress" $backendAddress) $backendTLS.serverName }}
-            {{- include "router.validateProxyTLS" (dict "protocol" $backendProtocol "tls" $backendTLS "serverName" $backendServerName "trustedCAPath" $backendTrustedCAPath "label" (printf "router.routes[%d].backend" $i)) }}
-            {{- if and (ne $backendProtocol "https") (or (default false $backendTLS.verify) (default false $backendTLS.useCDSClientCert)) }}
-            {{- fail (printf "router.routes[%d].backend.tls.verify and useCDSClientCert require backend.protocol: https" $i) }}
-            {{- end }}
-            {{- include "router.requireSecuredBackend" (dict "protocol" $backendProtocol "tls" $backendTLS "address" $backendAddress "label" (printf "router.routes[%d].backend" $i) "kind" "router_unsecured_route" "suggest" "") }}
-            {{- /* Route inherits the global CORS block; route.cors.enabled (if set) toggles it on/off for this route only. */}}
-            {{- $routeCors := deepCopy $.Values.router.cors }}
-            {{- if and (hasKey $route "cors") (hasKey (default dict $route.cors) "enabled") }}
-            {{- $_ := set $routeCors "enabled" $route.cors.enabled }}
-            {{- end }}
-            # Route: {{ $path }} -> {{ $backendProtocol }}://{{ $backendAddress }}
-            {{- if eq $match "exact" }}
-            location = {{ $path }} {
-            {{- else }}
-            location {{ $path }} {
-            {{- end }}
-                {{- if default false $routeCors.enabled }}
-                {{- include "router.corsLocationDirectives" $routeCors | nindent 16 }}
-                {{- end }}
-                {{- if eq $backendProtocol "https" }}
-                {{- include "router.proxySSLDirectives" (dict "protocol" $backendProtocol "tls" $backendTLS "serverName" $backendServerName "trustedCAPath" $backendTrustedCAPath "tlsMountPath" $.Values.router.tlsMountPath) | nindent 16 }}
-                {{- end }}
-                proxy_pass {{ $backendProtocol }}://route_{{ $i }};
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
-            }
 
             {{- end }}
             {{- if .Values.router.discovery.enabled }}
@@ -289,12 +209,11 @@ data:
             {{- end }}
 
             {{- end }}
-            {{- if .Values.router.attest.enabled }}
             # The sidecar's readiness gate, proxied so kubelet can reach it.
             # cds-attest listens on loopback (its one listener also carries the
             # attestation and tunnel routes, which must not be
             # published on the pod IP). So the probe rides the front door:
-            # exact-match, ahead of any catch-all upstream.
+            # exact-match, ahead of location /.
             location = /readyz {
                 access_log off;
                 proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
@@ -303,6 +222,7 @@ data:
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
                 proxy_set_header X-Forwarded-Proto $scheme;
             }
+            {{- if .Values.router.attest.enabled }}
 
             # c8s-verify attestation + over-encryption sidecar (loopback).
             # nginx serves the static cert(s) via discovery above; the dynamic
@@ -310,62 +230,42 @@ data:
             # the attest-lb challenge, and the over-encrypted tunnel — are
             # proxied to the in-pod `cds-attest` sidecar.
             # X-Real-IP is the address the sidecar meters each client by.
+            # nginx reads each request body whole before proxying it, so a slow
+            # upload holds no sidecar budget; replies past proxy_buffers stream
+            # instead of spilling.
             location /.well-known/c8s/ {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
-                {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
-                {{- end }}
-                proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
+                {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $tunnelReadTimeout) | nindent 16 }}
+                client_max_body_size 16k;
+                client_body_buffer_size 16k;
+            }
+
+            # Tunnel records go up to 8 MiB. Past 16k they spill to a sized
+            # tmpfs that holds only the bytes received, where an 8m buffer
+            # would be allocated whole once a client declared the size. A full
+            # volume fails the upload with 500. The per-address cap stops one
+            # client filling it before cds-attest sees a session.
+            location = /.well-known/c8s/tunnel {
+                {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $tunnelReadTimeout) | nindent 16 }}
+                client_max_body_size 8m;
+                client_body_buffer_size 16k;
+                client_body_temp_path {{ include "router.tunnelBodyDir" . }};
+                client_body_timeout 10s;
+                limit_conn c8s_tunnel_per_client {{ $tunnelConnsPerClient }};
+                limit_conn_status 503;
             }
 
             {{- end }}
-            {{- if $launchDriven }}
-            # The catch-all upstream comes from the signed launch file:
-            # upstream.conf sets $c8s_upstream to a mesh-wrapped
-            # c8s-<id>.<ns>.svc.cluster.local:<port>, or to "" when the launch
-            # file names none. Resolved per request like any mesh-wrapped
-            # upstream (resolver above).
-            location / {
-                include {{ include "router.launchDir" . }}/upstream.conf;
-                if ($c8s_upstream = "") {
-                    return 404;
-                }
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- end }}
-                proxy_pass http://$c8s_upstream;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
-                proxy_set_header Upgrade $http_upgrade;
-                proxy_set_header Connection $connection_upgrade;
-                # Timeouts and streaming: see the static catch-all below.
-                proxy_connect_timeout 5s;
-                proxy_read_timeout {{ $readTimeout }};
-                proxy_send_timeout {{ $readTimeout }};
-                proxy_buffering off;
-                proxy_http_version 1.1;
-            }
-            {{- else if $upstreamAddress }}
+
+            # Application routing (route policy A7): every request no location
+            # above claims goes to the cds-attest routing listener, which routes
+            # it by the applied route manifest and dials the backend itself. No
+            # URI on proxy_pass, so the listener sees the request target as the
+            # client sent it, which path matching needs (M4).
             location / {
                 {{- if default false .Values.router.cors.enabled }}
                 {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
                 {{- end }}
-                {{- if eq .Values.router.upstream.protocol "https" }}
-                {{- include "router.proxySSLDirectives" (dict "protocol" .Values.router.upstream.protocol "tls" .Values.router.upstream.tls "serverName" $upstreamServerName "trustedCAPath" $upstreamTrustedCAPath "tlsMountPath" .Values.router.tlsMountPath) | nindent 16 }}
-                {{- end }}
-                {{- if $upstreamMeshWrapped }}
-                set $backend_addr {{ $upstreamAddress }};
-                proxy_pass {{ .Values.router.upstream.protocol }}://$backend_addr;
-                {{- else }}
-                proxy_pass {{ .Values.router.upstream.protocol }}://catch_all;
-                {{- end }}
+                proxy_pass http://127.0.0.1:{{ $routingPort }};
                 proxy_set_header Host $host;
                 proxy_set_header X-Real-IP $remote_addr;
                 proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -374,7 +274,7 @@ data:
                 proxy_set_header Connection $connection_upgrade;
                 # A non-streaming completion sends nothing until it is done, so
                 # nginx's 60s default read timeout would 504 long generations.
-                # A dead upstream must fail fast instead.
+                # A dead routing listener must fail fast instead.
                 proxy_connect_timeout 5s;
                 proxy_read_timeout {{ $readTimeout }};
                 proxy_send_timeout {{ $readTimeout }};
@@ -401,9 +301,10 @@ data:
                 proxy_buffering off;
                 proxy_http_version 1.1;
             }
-            {{- end }}
 
-            location /healthz {
+            # Exact: a prefix match would also claim manifest paths such as
+            # /healthz-ui.
+            location = /healthz {
                 access_log off;
                 return 200 "ok\n";
                 add_header Content-Type text/plain;

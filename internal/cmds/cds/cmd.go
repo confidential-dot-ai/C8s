@@ -71,10 +71,11 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.readinessInterval, "readiness-interval", 10*time.Second, "")
 	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the loaded mesh CA has less than this remaining lifetime")
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
-	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens and the mesh CA do not survive a restart")
+	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
-	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving, and again whenever its content changes; missing entries are added, existing entries are left untouched (empty disables seeding)")
-	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (PUT/DELETE) require an operator token signed by one of them, each token authorizing one allowlist write (empty = writes disabled, reads still served)")
+	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
+	flags.BoolVar(&cfg.followSeed, "follow-seed", false, "reread --allowlist-seed every 30s and seed it again when its content changes. Whoever can write the seed file then publishes entries without an operator token, so set it only for a seed no one can change, such as the measured node image's")
+	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (PUT/DELETE) and PUT /routes require an operator token signed by one of them, each token authorizing one write (empty = writes disabled, reads still served)")
 
 	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
 	flags.IntVar(&cfg.rateBurst, "rate-burst", 20, "max burst size per source IP")
@@ -144,6 +145,7 @@ type config struct {
 	allowlistDB         string
 	allowlistPersistent bool
 	allowlistSeed       string
+	followSeed          bool
 	inventoryCIDRs      []string
 	operatorKeys        string
 	armtlsPlatform      string

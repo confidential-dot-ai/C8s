@@ -1,6 +1,6 @@
 // The _linux suffix is deliberate, not incidental: nothing here needs Linux
 // to compile, but these commands write to fixed root-owned host paths
-// (/run/c8s-node, /etc/nri/conf.d, /var/run/nri-image-policy) and are run
+// (/run/c8s-node, /etc/nri/conf.d, /run/nri-image-policy) and are run
 // only by the node image's units after signed-launch staging: rke2-role.sh
 // calls `prepare` and nri-node-ip.service calls `node-ip`. Keeping
 // them out of the operator's macOS and Windows builds means the CLI cannot

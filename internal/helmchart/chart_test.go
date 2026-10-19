@@ -128,18 +128,13 @@ func parseDurationFormatFailure(t *testing.T, out string) durationFormatFailure 
 	return durationFormatFailure{}
 }
 
-// containerArgs returns the args of the named container, searching main and
-// init containers. Fails the test if no such container exists.
+// containerArgs returns the args of the named container, main or init, after
+// kubelet expansion. Fails the test if no such container exists.
 func containerArgs(t *testing.T, ds *appsv1.DaemonSet, name string) []string {
 	t.Helper()
-	for _, c := range ds.Spec.Template.Spec.Containers {
+	for _, c := range slices.Concat(ds.Spec.Template.Spec.Containers, ds.Spec.Template.Spec.InitContainers) {
 		if c.Name == name {
-			return c.Args
-		}
-	}
-	for _, c := range ds.Spec.Template.Spec.InitContainers {
-		if c.Name == name {
-			return c.Args
+			return runtimeArgv(corev1.Container{Args: c.Args, Env: c.Env}, nil)
 		}
 	}
 	t.Fatalf("container %q not found in DaemonSet", name)
@@ -184,7 +179,7 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	assertContainerArgs(t, cert,
 		"get-cert",
 		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 		"--san=c8s-router.c8s-system.svc",
 		"--out=/tls/cert.pem",
 		"--key-out=/tls/key.pem",
@@ -871,7 +866,7 @@ func TestChartHostNamespacePolicyDeniesAllHostPath(t *testing.T) {
 	// Absence, not presence: a leftover carve-out would pass a "some hostPath
 	// deny renders" check.
 	for _, v := range vap.Spec.Validations {
-		for _, stale := range []string{"/var/run/nri-image-policy", "readOnly", "hostPath.type"} {
+		for _, stale := range []string{"/run/nri-image-policy", "readOnly", "hostPath.type"} {
 			if strings.Contains(v.Expression, stale) {
 				t.Errorf("validation still carves out the claims dir (%q); expression=%q", stale, v.Expression)
 			}
@@ -1589,7 +1584,7 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	if got, want := workerCfg.Allowlist.Pull.Interval, "5s"; got != want {
 		t.Fatalf("worker pull interval = %q, want %q", got, want)
 	}
-	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///var/run/nri-image-policy/attestation-api.sock"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
 	}
 	if want := []string{measurement}; !slices.Equal(workerCfg.Allowlist.Pull.CDSMeasurements, want) {
@@ -1642,7 +1637,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	proxy := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attest-proxy")
 	assertContainerArgs(t, proxy,
 		"attest-proxy",
-		"--socket=/var/run/nri-image-policy/attestation-api.sock",
+		"--socket=/run/nri-image-policy/attestation-api.sock",
 		"--upstream=http://127.0.0.1:8400",
 	)
 	assertContainerNoArgPrefix(t, "attest-proxy", proxy.Args, "--api-key-file")
@@ -1650,12 +1645,12 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	// API read their config from the ConfigMap — dropping either renders
 	// fine and only fails at runtime.
 	assertPodVolume(t, &ds.Spec.Template.Spec, "socket-dir", func(v corev1.Volume) bool {
-		return v.HostPath != nil && v.HostPath.Path == "/var/run/nri-image-policy"
+		return v.HostPath != nil && v.HostPath.Path == "/run/nri-image-policy"
 	})
 	assertPodVolume(t, &ds.Spec.Template.Spec, "config", func(v corev1.Volume) bool {
 		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
-	assertContainerMount(t, proxy, "socket-dir", "/var/run/nri-image-policy")
+	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec), against
 	// the proxy's own health listener: the API's loopback bind is not
 	// kubelet-dialable, and this is the evidence path's only liveness signal.
@@ -1739,7 +1734,7 @@ func TestChartAttestationApiSocketWiresNRI(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
-	if got, want := cfg.Allowlist.Pull.AttestationApiURL, "unix:///var/run/nri-image-policy/attestation-api.sock"; got != want {
+	if got, want := cfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
 	}
 }
@@ -2244,7 +2239,7 @@ func TestChartOperatorHasPodNameEnv(t *testing.T) {
 // socket URL and the socket-directory mount are asserted per shape.
 func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 	t.Parallel()
-	const socketURL = "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock"
+	const socketURL = "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock"
 	for _, mode := range []string{"gke", "aks"} {
 		t.Run(mode, func(t *testing.T) {
 			out, err := helmTemplate(t, "--set-string", "attestationApi.cvmMode="+mode, "--set", "router.attest.enabled=true")
@@ -2269,7 +2264,7 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 			assertHasSocketMount := func(c corev1.Container) {
 				t.Helper()
 				for _, m := range c.VolumeMounts {
-					if m.Name == "attestation-api-socket" && m.MountPath == "/var/run/nri-image-policy" && m.ReadOnly {
+					if m.Name == "attestation-api-socket" && m.MountPath == "/run/nri-image-policy" && m.ReadOnly {
 						return
 					}
 				}
@@ -2277,7 +2272,7 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 			}
 			assertHasSocketMount(cds)
 			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-			if !slices.Contains(mesh.Args, "unix:///var/run/nri-image-policy/attestation-api.sock") {
+			if !slices.Contains(mesh.Args, "unix:///run/nri-image-policy/attestation-api.sock") {
 				t.Errorf("armtls-mesh missing the socket URL arg; have %v", mesh.Args)
 			}
 			assertHasSocketMount(mesh)
@@ -2360,18 +2355,14 @@ func hasPullSecret(refs []corev1.LocalObjectReference, name string) bool {
 
 func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	t.Parallel()
-	out, err := helmTemplate(t, noUpstreamArgs(
+	out, err := helmTemplate(t,
 		"--set-string", "router.publicTLS.mode=webpki",
 		"--set-string", "router.publicTLS.secretName=router-public-tls",
 		"--set-string", "router.publicTLS.mountPath=/mnt/c8s-data/edge-tls",
 		"--set-string", "router.publicTLS.certKey=public.crt",
 		"--set-string", "router.publicTLS.keyKey=public.key",
 		"--set", "router.discovery.enabled=true",
-		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true",
-		"--set-string", "router.upstream.tls.serverName=my-backend.other-ns.svc.cluster.local",
-	)...)
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
@@ -2387,14 +2378,10 @@ func TestChartRendersRouterPublicTLSAndDiscovery(t *testing.T) {
 	cfg.location(t, "exact", "/v1/discovery").assertDirective(t, "alias", "/discovery/discovery.json")
 	cfg.location(t, "exact", "/.well-known/cds-cert.pem").assertDirective(t, "alias", "/tls/cert.pem")
 	cfg.location(t, "exact", "/.well-known/mesh-ca.pem").assertDirective(t, "alias", "/tls/ca.pem")
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_certificate", "/tls/cert.pem")
-	defaultRoute.assertDirective(t, "proxy_ssl_certificate_key", "/tls/key.pem")
-	defaultRoute.assertDirective(t, "proxy_ssl_name", "my-backend.other-ns.svc.cluster.local")
-	defaultRoute.assertDirective(t, "proxy_ssl_verify", "on")
-	defaultRoute.assertDirective(t, "proxy_ssl_trusted_certificate", "/tls/cert.pem")
-	defaultRoute.assertDirective(t, "proxy_pass", "https://catch_all")
-	cfg.upstream(t, "catch_all").assertServer(t, "my-backend.other-ns.svc:8443")
+	// The public TLS mode changes only what nginx serves: application
+	// requests still go to the routing listener, which dials backends itself.
+	cfg.location(t, "prefix", "/").assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
 
 	spec := renderedDeployment(t, out, "c8s-router").Spec.Template.Spec
 	if _, ok := podVolume(spec, "tls-certs"); !ok {
@@ -2798,7 +2785,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 			vol = &dep.Spec.Template.Spec.Volumes[i]
 		}
 	}
-	if vol == nil || vol.HostPath == nil || vol.HostPath.Path != "/var/run/nri-image-policy" {
+	if vol == nil || vol.HostPath == nil || vol.HostPath.Path != "/run/nri-image-policy" {
 		t.Fatalf("workload-claims hostPath volume missing or wrong, got %+v", dep.Spec.Template.Spec.Volumes)
 	}
 
@@ -2810,7 +2797,6 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 func TestChartRouterReadinessGateGuards(t *testing.T) {
 	t.Parallel()
 	gate := []string{"--set-string", "router.attest.expectedWorkload=infer"}
-	noHostPort := []string{"--set", "router.hostPort.enabled=false"}
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -2823,13 +2809,6 @@ func TestChartRouterReadinessGateGuards(t *testing.T) {
 			args: gate,
 			want: "router.attest.expectedWorkload cannot gate ingress while router.hostPort.enabled=true: the node port is published by CNI portmap regardless of pod readiness. Set router.hostPort.enabled=false and route through the Service, or clear expectedWorkload",
 		},
-		{
-			// Without the sidecar there is no /readyz to gate on, yet the
-			// claims wiring the gate pulls in would still render.
-			name: "gate without the sidecar it gates",
-			args: append(append([]string{}, gate...), append(noHostPort, "--set", "router.attest.enabled=false")...),
-			want: "router.attest.expectedWorkload gates the cds-attest sidecar's /readyz endpoint: set router.attest.enabled=true or clear expectedWorkload",
-		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, tc.args...)
@@ -2839,6 +2818,23 @@ func TestChartRouterReadinessGateGuards(t *testing.T) {
 			assertHelmFailMessage(t, out, tc.want)
 		})
 	}
+}
+
+// TestChartRouterReadinessGateWithoutAttestEndpoints pins that the gate no
+// longer needs the attestation endpoints: cds-attest always runs for
+// application routing, and its /readyz serves the gate either way.
+func TestChartRouterReadinessGateWithoutAttestEndpoints(t *testing.T) {
+	out, err := helmTemplate(t,
+		"--set-string", "router.attest.expectedWorkload=infer",
+		"--set", "router.hostPort.enabled=false",
+		"--set", "router.attest.enabled=false",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	assertContainerArgs(t, attest, "--attest-endpoints=false", "--expected-workload=infer")
+	assertRouterReadyzProbe(t, out)
 }
 
 // TestChartRouterServiceType pins that the Service type is exactly what the
@@ -2892,24 +2888,15 @@ func TestChartRouterServiceRejectsInvalidTrafficPolicy(t *testing.T) {
 	assertHelmFailMessage(t, out, "router.service.externalTrafficPolicy must be Local or Cluster, got: bogus")
 }
 
-// With no adopted workload the upstream address is empty; the sidecar must
-// render without any --upstream* flag (its echo backend takes over) instead
-// of a scheme-only "--upstream=http://" that crash-loops the container.
-func TestChartRouterAttestSidecarNoUpstream(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set", "router.attest.enabled=true",
-		"--set-string", "router.upstream.address=",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	sidecar := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
-	for _, arg := range sidecar.Args {
-		if strings.HasPrefix(arg, "--upstream") {
-			t.Fatalf("cds-attest must omit %q when no upstream address is set: %v", arg, sidecar.Args)
-		}
-	}
+// routerRoutingArgs are the manifest-routing arguments cds-attest carries in
+// every shape at the chart defaults.
+var routerRoutingArgs = []string{
+	"--cds-url=https://c8s-cds.c8s-system.svc:8443",
+	"--routing-host=127.0.0.1",
+	"--routing-port=8802",
+	"--routes-poll-interval=30s",
+	"--backend-timeout=1h",
+	"--reserved-paths=/allowlist,/.well-known/c8s/,/.well-known/acme-challenge/,/v1/discovery,/.well-known/cds-cert.pem,/.well-known/mesh-ca.pem,/readyz,/healthz",
 }
 
 func TestChartRendersRouterAttestSidecar(t *testing.T) {
@@ -2930,86 +2917,206 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 	if len(sidecar.Args) == 0 || sidecar.Args[0] != "cds-attest" {
 		t.Fatalf("cds-attest args = %v, want first arg 'cds-attest'", sidecar.Args)
 	}
-	assertContainerArgs(t, sidecar,
+	assertContainerArgs(t, sidecar, append([]string{
 		"--host=127.0.0.1",
 		"--port=8800",
 		"--generation=milan",
 		"--mesh-identity-cert-file=/tls/cert.pem",
 		"--mesh-identity-key-file=/tls/key.pem",
 		"--mesh-identity-ca-file=/tls/ca.pem",
-		// The baseline mesh-wrapped upstream is a plain-HTTP workload upstream;
-		// the mTLS args render only for an https upstream.
-		"--upstream=http://c8s-infer.c8s-system.svc.cluster.local:8000",
-	)
-	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock")
-	for _, banned := range []string{"--upstream-ca", "--upstream-cert", "--upstream-key", "--upstream-server-name"} {
+	}, routerRoutingArgs...)...)
+	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
+	for _, banned := range []string{"--upstream", "--attest-endpoints", "--operator-keys-file", "--image-policy-file", "--cds-measurements", "--cds-rtmrs", "--publish-routes"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
-	}
-	// The sidecar must not mount the mesh-CA for the default cert.pem trust path.
-	if _, ok := containerVolumeMount(sidecar, "mesh-ca"); ok {
-		t.Fatalf("cds-attest should not mount mesh-ca with the default /tls/cert.pem trust; mounts=%v", sidecar.VolumeMounts)
 	}
 	if got := len(deployment.Spec.Template.Spec.Containers); got != 3 {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
 
-	// nginx reverse-proxies the dynamic well-known prefix to the sidecar.
-	renderedRouterNginxConfig(t, out).
-		location(t, "prefix", "/.well-known/c8s/").
-		assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
-	renderedRouterNginxConfig(t, out).
-		location(t, "prefix", "/.well-known/c8s/").
-		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
-	renderedRouterNginxConfig(t, out).
-		location(t, "exact", "/readyz").
-		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
-
-	// An https upstream: the sidecar presents the CDS client cert and
-	// verifies the upstream against the CA chain get-cert writes to
-	// /tls/cert.pem, mirroring the nginx proxy_ssl_* config.
-	httpsOut, err := helmTemplate(t, noUpstreamArgs(
-		"--set", "router.attest.enabled=true",
-		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-		"--set", "router.upstream.protocol=https",
-	)...)
+	// The protocol endpoints take 16k bodies. Tunnel records up to 8 MiB
+	// spill to a sized tmpfs, capped per client address only.
+	cfg := renderedRouterNginxConfig(t, out)
+	protocol := cfg.location(t, "prefix", "/.well-known/c8s/")
+	tunnel := cfg.location(t, "exact", "/.well-known/c8s/tunnel")
+	for _, loc := range []*nginxBlock{protocol, tunnel} {
+		for _, name := range []string{"proxy_buffering", "proxy_request_buffering"} {
+			if got := loc.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{"on"}) {
+				t.Fatalf("%s = %v, want exactly on", name, got)
+			}
+		}
+		loc.assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
+		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
+		loc.assertDirective(t, "proxy_read_timeout", "3630s")
+		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	}
+	protocol.assertNoDirective(t, "limit_conn")
+	protocol.assertDirective(t, "client_max_body_size", "16k")
+	protocol.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_max_body_size", "8m")
+	tunnel.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_body_temp_path", "/var/lib/c8s-tunnel-body")
+	tunnel.assertDirective(t, "client_body_timeout", "10s")
+	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "64")
+	tunnel.assertDirective(t, "limit_conn_status", "503")
+	if got := cfg.http.directives["limit_conn_zone"]; len(got) != 1 || !slices.Equal(got[0], []string{"$binary_remote_addr", "zone=c8s_tunnel_per_client:10m"}) {
+		t.Fatalf("limit_conn_zone = %v, want only the per-client tunnel zone", got)
+	}
+	conf := renderedRouterNginxConf(t, out)
+	for _, want := range []string{"\nworker_rlimit_nofile 65536;\n", "\n    worker_connections 16384;\n"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("router nginx.conf lacks %q", want)
+		}
+	}
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	if m, ok := containerVolumeMount(nginx, "nginx-tunnel-body"); !ok || m.MountPath != "/var/lib/c8s-tunnel-body" {
+		t.Fatalf("nginx tunnel body mount = %+v, %v, want /var/lib/c8s-tunnel-body", m, ok)
+	}
+	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
+		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
+	}
+	capOut, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.tunnelConnectionsPerClient=512")
 	if err != nil {
-		t.Fatalf("helm template (https upstream): %v\n%s", err, httpsOut)
+		t.Fatalf("helm template (tunnelConnectionsPerClient=512): %v\n%s", err, capOut)
 	}
-	httpsSidecar := renderedDeploymentContainer(t, httpsOut, "c8s-router", "cds-attest")
-	assertContainerArgs(t, httpsSidecar,
-		"--upstream=https://my-backend.other-ns.svc:8443",
-		"--upstream-ca=/tls/cert.pem",
-		"--upstream-cert=/tls/cert.pem",
-		"--upstream-key=/tls/key.pem",
-		"--upstream-server-name=my-backend.other-ns.svc",
-	)
+	renderedRouterNginxConfig(t, capOut).location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "512")
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=8Gi"); err == nil || !strings.Contains(out, "must exceed router.nginx.tunnelBodySpace") {
+		t.Fatalf("helm template with an nginx memory limit of tunnelBodySpace = %v, want the tmpfs refusal\n%s", err, out)
+	}
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=9Gi"); err != nil {
+		t.Fatalf("helm template with an nginx memory limit above tunnelBodySpace: %v\n%s", err, out)
+	}
+	cfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
 
-	// Default on: the sidecar and its well-known proxy render without any
-	// attest override.
-	defOut, err := helmTemplate(t)
+	assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, "--tunnel-budget")
+	budgetOut, err := helmTemplate(t, "--set-string", "router.routing.tunnelBudget=64Gi")
 	if err != nil {
-		t.Fatalf("helm template (defaults): %v\n%s", err, defOut)
+		t.Fatalf("helm template (tunnelBudget=64Gi): %v\n%s", err, budgetOut)
 	}
-	wellKnown := nginxLocationKey{match: "prefix", path: "/.well-known/c8s/"}
-	defContainers := renderedDeployment(t, defOut, "c8s-router").Spec.Template.Spec.Containers
-	if _, ok := findContainer(defContainers, "cds-attest"); !ok {
-		t.Fatal("cds-attest sidecar should render by default (router.attest.enabled defaults true)")
-	}
-	if _, ok := renderedRouterNginxConfig(t, defOut).locations[wellKnown]; !ok {
-		t.Fatal("well-known proxy location should render by default (router.attest.enabled defaults true)")
-	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, budgetOut, "c8s-router", "cds-attest"), "--tunnel-budget=64Gi")
 
-	// Explicit opt-out: no sidecar, no well-known proxy.
+	// attest.enabled=false keeps cds-attest for application routing and only
+	// unregisters the attestation endpoints; /readyz stays proxied to it.
 	offOut, err := helmTemplate(t, "--set", "router.attest.enabled=false")
 	if err != nil {
 		t.Fatalf("helm template (attest disabled): %v\n%s", err, offOut)
 	}
-	offContainers := renderedDeployment(t, offOut, "c8s-router").Spec.Template.Spec.Containers
-	if _, ok := findContainer(offContainers, "cds-attest"); ok {
-		t.Fatal("cds-attest sidecar should not render when router.attest.enabled=false")
-	}
-	if _, ok := renderedRouterNginxConfig(t, offOut).locations[wellKnown]; ok {
+	off := renderedDeploymentContainer(t, offOut, "c8s-router", "cds-attest")
+	assertContainerArgs(t, off, append([]string{"--attest-endpoints=false"}, routerRoutingArgs...)...)
+	assertContainerNoArgPrefix(t, "cds-attest", off.Args, "--upstream")
+	offCfg := renderedRouterNginxConfig(t, offOut)
+	if _, ok := offCfg.locations[nginxLocationKey{match: "prefix", path: "/.well-known/c8s/"}]; ok {
 		t.Fatal("well-known proxy location should not render when router.attest.enabled=false")
+	}
+	offCfg.location(t, "exact", "/readyz").assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
+	offCfg.location(t, "prefix", "/").assertDirective(t, "proxy_pass", "http://127.0.0.1:8802")
+}
+
+// TestChartRouterRoutePublication pins router.routePublication.enabled to
+// cds-attest --publish-routes, which needs the attestation endpoints.
+func TestChartRouterRoutePublication(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "router.routePublication.enabled=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"), "--publish-routes")
+
+	out, err = helmTemplate(t, "--set", "router.routePublication.enabled=true", "--set", "router.attest.enabled=false")
+	if err == nil {
+		t.Fatalf("expected render to fail with publication on and attest off; got success\n%s", out)
+	}
+	assertHelmFailMessage(t, out, "VALIDATION_ERROR kind=router_route_publication: router.routePublication.enabled requires router.attest.enabled: cds-attest serves the route publication beside the attestation endpoints whose evidence binds its route digest. Set router.attest.enabled: true, or set router.routePublication.enabled: false.")
+
+	// A string "false" is truthy in a template; the schema refuses it.
+	out, err = helmTemplate(t, "--set-string", "router.routePublication.enabled=false")
+	if err == nil || !strings.Contains(out, "routePublication") {
+		t.Fatalf("expected a schema refusal of a string routePublication.enabled; err %v\n%s", err, out)
+	}
+}
+
+// TestChartRouterCDSPins pins that cds-attest and allowlist-proxy verify the
+// same CDS: both take their pins from router.cdsPinArgs.
+func TestChartRouterCDSPins(t *testing.T) {
+	measurement := strings.Repeat("ab", armtls.SNPMeasurementSize)
+	rtmr := "2=" + strings.Repeat("cd", 48)
+	policy := writeChartImagePolicy(t, fmt.Sprintf(`{"schema_version":"1","tee":"sev-snp","measurements":[{"name":"snp","measurement":%q}]}`, chartDigestA))
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantArgs  []string
+		wantMount bool
+	}{
+		{
+			name:     "measurements and rtmrs",
+			args:     []string{"--set-string", "cds.measurements[0]=" + measurement, "--set-string", "cds.rtmrs[0]=" + rtmr},
+			wantArgs: []string{"--cds-measurements=" + measurement, "--cds-rtmrs=" + rtmr},
+		},
+		{
+			name: "measurementsConfig",
+			// NRI requires the equivalent flat pins beside a policy file; the
+			// router sidecars take the file alone.
+			args:      []string{"--set-file", "cds.measurementsConfig=" + policy, "--set-string", "cds.measurements[0]=" + chartDigestA},
+			wantArgs:  []string{"--image-policy-file=/mnt/c8s-data/measurements/cds.json"},
+			wantMount: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			for _, name := range []string{"cds-attest", "allowlist-proxy"} {
+				c := renderedDeploymentContainer(t, out, "c8s-router", name)
+				assertContainerArgs(t, c, tc.wantArgs...)
+				m, ok := containerVolumeMount(c, "measurements-config")
+				if ok != tc.wantMount || (ok && (m.MountPath != "/mnt/c8s-data/measurements" || !m.ReadOnly)) {
+					t.Errorf("%s measurements-config mount = (%+v, %v), want present=%v at /mnt/c8s-data/measurements read-only", name, m, ok, tc.wantMount)
+				}
+			}
+		})
+	}
+}
+
+// TestChartRouterUnpinnedCDS pins the router's operator-key source off a baked
+// node: cds.operatorKeys when set, else CDS, which needs a CDS pin or
+// router.routing.allowUnpinnedCDS. The test helpers set the opt-in.
+func TestChartRouterUnpinnedCDS(t *testing.T) {
+	t.Parallel()
+	optOut := []string{"--set", "router.routing.allowUnpinnedCDS=false"}
+	pinned := append([]string{"--set-string", "cds.measurements[0]=" + strings.Repeat("ab", armtls.SNPMeasurementSize)}, optOut...)
+	keys := append([]string{"--set-string", "cds.operatorKeys=-----BEGIN PUBLIC KEY-----\nMFkw\n-----END PUBLIC KEY-----\n"}, optOut...)
+	const keysArg = "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem"
+	for _, tc := range []struct {
+		name               string
+		args               []string
+		wantFlag, wantKeys bool
+	}{
+		{name: "opt-in", wantFlag: true},
+		{name: "pinned CDS", args: pinned},
+		{name: "pinned keys", args: keys, wantKeys: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			c := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			if got := slices.Contains(c.Args, "--allow-unpinned-cds"); got != tc.wantFlag {
+				t.Errorf("cds-attest has --allow-unpinned-cds = %v, want %v", got, tc.wantFlag)
+			}
+			if got := slices.Contains(c.Args, keysArg); got != tc.wantKeys {
+				t.Errorf("cds-attest has %s = %v, want %v", keysArg, got, tc.wantKeys)
+			}
+			if tc.wantKeys {
+				assertContainerMount(t, c, "operator-keys", "/mnt/c8s-data/operator-keys")
+			}
+		})
+	}
+	out, err := helmTemplate(t, optOut...)
+	if err == nil {
+		t.Fatalf("helm template accepted an unpinned CDS without the opt-in\n%s", out)
+	}
+	if got := parseValidationErrorKind(out); got != "unpinned_route_source" {
+		t.Fatalf("validation kind = %q, want unpinned_route_source\n%s", got, out)
 	}
 }
 
@@ -3064,112 +3171,6 @@ func TestRouterCertProvisioningValuesDriveGetCertContainers(t *testing.T) {
 	assertContainerArgs(t, claimsCert, "--workload-claims", "--ca-watch-interval=3m")
 }
 
-// TestChartDefaultRouterUpstreamIsWorkloadDirect pins the default front-door
-// path: router proxies straight to the workload over plain HTTP at the app
-// layer (the node mesh wraps pod-IP hops in attested mTLS), with no
-// proxy_ssl_* directives on the default route. The upstream is dialed via a
-// variable with a resolver so nginx re-resolves per DNS TTL: a headless
-// Service (an adopted workload) returns pod IPs that change on pod churn, and
-// a static upstream block would pin the startup-time IPs and 502 until the
-// next config reload.
-func TestChartRouterMeshWrappedUpstreamIsWorkloadDirect(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.http.assertDirective(t, "resolver", "kube-dns.kube-system.svc.cluster.local")
-	defaultRoute := cfg.location(t, "prefix", "/")
-	// The baseline mesh-wrapped upstream is the operator-managed headless
-	// Service, so the pod-IP hop is mesh-wrapped.
-	defaultRoute.assertDirective(t, "set", "$backend_addr", "c8s-infer.c8s-system.svc.cluster.local:8000")
-	defaultRoute.assertDirective(t, "proxy_pass", "http://$backend_addr")
-	if len(cfg.upstreams) != 0 {
-		t.Fatalf("catch-all upstream must be a variable dial, not a static upstream block (it would pin headless pod IPs at startup); got %v", cfg.upstreams)
-	}
-	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
-}
-
-// A manual upstream is dialed through a static upstream block, so nginx
-// resolves it once at startup instead of per request. Per-request resolution
-// asks cluster DNS -- plaintext UDP the mesh does not intercept -- where to
-// send every request, so a forged answer retargets the hop mid-session; a
-// loose tls.serverName or a wildcard SAN pattern leaves nothing to catch it.
-// Only the mesh-wrapped headless shape keeps the variable dial, because its
-// pod IPs churn; the resolver is rendered for that shape alone.
-func TestChartRouterManualUpstreamResolvesAtStartup(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplate(t,
-		"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true")
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.upstream(t, "catch_all").assertServer(t, "my-backend.other-ns.svc:8443")
-	route := cfg.location(t, "prefix", "/")
-	route.assertDirective(t, "proxy_pass", "https://catch_all")
-	route.assertNoDirective(t, "set")
-	cfg.http.assertNoDirective(t, "resolver")
-}
-
-// nginx exits at startup on a resolver name that does not resolve, and RKE2
-// names its CoreDNS Service rke2-coredns-rke2-coredns — the kube-dns default
-// crash-loops router on every RKE2 cluster. The resolver therefore derives
-// from the distro values (which every RKE2 install already sets for the
-// containerd layout); an explicit router.nginx.resolver still wins.
-func TestChartRouterResolverDerivesFromDistro(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "rke2 via nriImagePolicy.distro",
-			args: []string{"--set-string", "nriImagePolicy.distro=rke2"},
-			want: "rke2-coredns-rke2-coredns.kube-system.svc.cluster.local",
-		},
-		{
-			name: "explicit resolver wins over distro",
-			args: []string{
-				"--set-string", "nriImagePolicy.distro=rke2",
-				"--set-string", "router.nginx.resolver=my-dns.dns-ns.svc.cluster.local",
-			},
-			want: "my-dns.dns-ns.svc.cluster.local",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			cfg := renderedRouterNginxConfig(t, out)
-			if cfg.http == nil {
-				t.Fatal("nginx config missing http block")
-			}
-			cfg.http.assertDirective(t, "resolver", tc.want)
-		})
-	}
-}
-
-func TestRouterVerifyDerivesProxySSLNameFromUpstream(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "upstream.address=my-backend.other-ns.svc.cluster.local:443",
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_name", "my-backend.other-ns.svc.cluster.local")
-}
-
 func TestRouterCORSAllowsSessionHeaderByDefault(t *testing.T) {
 	t.Parallel()
 	// Browser clients send X-C8s-Session on the /tunnel request, so the default
@@ -3199,6 +3200,7 @@ var protocolCORSLocations = []struct{ match, path string }{
 	{"exact", "/.well-known/cds-cert.pem"},
 	{"exact", "/.well-known/mesh-ca.pem"},
 	{"prefix", "/.well-known/c8s/"},
+	{"exact", "/.well-known/c8s/tunnel"},
 }
 
 func TestRouterProtocolEndpointsCORSByDefault(t *testing.T) {
@@ -3215,7 +3217,7 @@ func TestRouterProtocolEndpointsCORSByDefault(t *testing.T) {
 		block := cfg.location(t, loc.match, loc.path)
 		block.assertDirective(t, "add_header", "Access-Control-Allow-Origin", `"*"`, "always")
 	}
-	// The workload catch-all inherits nothing from the protocol default.
+	// Application routing inherits nothing from the protocol default.
 	cfg.location(t, "prefix", "/").assertNoDirective(t, "add_header")
 	// The built-in policy is self-contained: none of the global CORS
 	// http-level maps are rendered.
@@ -3322,7 +3324,7 @@ func TestRouterExposesAllowlistThroughCDSByDefault(t *testing.T) {
 		"--host=127.0.0.1",
 		"--port=8801",
 		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 	} {
 		assertContainerHasArg(t, "allowlist-proxy", proxy.Args, want)
 	}
@@ -3402,170 +3404,6 @@ func TestRouterBuiltInAllowlistRouteCanBeDisabled(t *testing.T) {
 	if _, ok := findContainer(deployment.Spec.Template.Spec.Containers, "allowlist-proxy"); ok {
 		t.Fatal("disabled built-in allowlist route still renders allowlist-proxy")
 	}
-}
-
-func TestRouterExplicitAllowlistRouteOverridesBuiltInRoute(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=exact",
-		"--set-string", "routes[0].backend.address=custom-cds.example:8443",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.location(t, "exact", "/allowlist").assertDirective(t, "proxy_pass", "https://route_0")
-	if _, ok := cfg.locations[nginxLocationKey{match: "prefix", path: "/allowlist/"}]; ok {
-		t.Fatal("built-in /allowlist/ route rendered alongside explicit allowlist route")
-	}
-	if _, ok := cfg.maps[nginxMapKey{source: "$request_method", target: "$allowlist_write_rate_key"}]; ok {
-		t.Fatal("explicit allowlist route still renders the built-in rate-limit map")
-	}
-	cfg.http.assertNoDirective(t, "limit_req_zone")
-	deployment := renderedDeployment(t, out, "c8s-router")
-	if _, ok := findContainer(deployment.Spec.Template.Spec.Containers, "allowlist-proxy"); ok {
-		t.Fatal("explicit allowlist route still renders the built-in allowlist-proxy")
-	}
-}
-
-func TestRouterAdditionalRoutesConfigureNginxLocations(t *testing.T) {
-	t.Parallel()
-	// Route backends must be secured (https + verify); the location/upstream
-	// wiring under test is protocol-independent.
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=exact",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[1].path=/tenant/",
-		"--set-string", "routes[1].backend.address=tenant-router.c8s-system.svc:8080",
-		"--set-string", "routes[1].backend.protocol=https",
-		"--set", "routes[1].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-
-	for _, tt := range []struct {
-		name     string
-		match    string
-		path     string
-		proxyURL string
-	}{
-		{
-			name:     "exact",
-			match:    "exact",
-			path:     "/allowlist",
-			proxyURL: "https://route_0",
-		},
-		{
-			name:     "default-prefix",
-			match:    "prefix",
-			path:     "/tenant/",
-			proxyURL: "https://route_1",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			route := cfg.location(t, tt.match, tt.path)
-			route.assertDirective(t, "proxy_pass", tt.proxyURL)
-		})
-	}
-
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_pass", "https://catch_all")
-	cfg.upstream(t, "catch_all").assertServer(t, "vllm:8000")
-	cfg.upstream(t, "route_0").assertServer(t, "cds.c8s-system.svc:8080")
-	cfg.upstream(t, "route_1").assertServer(t, "tenant-router.c8s-system.svc:8080")
-}
-
-// A route backend forwards X-Forwarded-Proto to the origin regardless of the
-// backend protocol; the backend must be secured (https + verify), so a client
-// cert is presented but no proxy_ssl client cert is required for that header.
-func TestRouterRouteForwardsProto(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/tenant/",
-		"--set-string", "routes[0].backend.address=tenant-router.c8s-system.svc:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.upstream(t, "route_0").assertServer(t, "tenant-router.c8s-system.svc:8080")
-	route := cfg.location(t, "prefix", "/tenant/")
-	route.assertDirective(t, "proxy_pass", "https://route_0")
-	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
-}
-
-func TestRouterTypedHTTPSRouteConfiguresProxyTLS(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=exact",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc.cluster.local:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[0].backend.tls.serverName=cds.c8s-system.svc.cluster.local",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.upstream(t, "route_0").assertServer(t, "cds.c8s-system.svc.cluster.local:8080")
-	route := cfg.location(t, "exact", "/allowlist")
-	route.assertDirective(t, "proxy_ssl_server_name", "on")
-	route.assertDirective(t, "proxy_ssl_name", "cds.c8s-system.svc.cluster.local")
-	route.assertDirective(t, "proxy_ssl_verify", "on")
-	route.assertDirective(t, "proxy_ssl_verify_depth", "2")
-	route.assertDirective(t, "proxy_ssl_trusted_certificate", "/tls/ca.pem")
-	route.assertDirective(t, "proxy_pass", "https://route_0")
-	route.assertNoDirective(t, "proxy_ssl_certificate")
-	route.assertNoDirective(t, "proxy_ssl_certificate_key")
-}
-
-func TestRouterTypedHTTPSRouteCanUseCDSClientCert(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc.cluster.local:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.useCDSClientCert=true",
-		"--set", "routes[0].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	route := cfg.location(t, "prefix", "/allowlist")
-	route.assertDirective(t, "proxy_ssl_certificate", "/tls/cert.pem")
-	route.assertDirective(t, "proxy_ssl_certificate_key", "/tls/key.pem")
-	route.assertDirective(t, "proxy_ssl_name", "cds.c8s-system.svc.cluster.local")
-	route.assertDirective(t, "proxy_pass", "https://route_0")
-}
-
-func TestRouterTypedHTTPSRouteCustomTrustedCAPathDoesNotMountMeshCA(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc.cluster.local:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[0].backend.tls.trustedCAPath=/etc/ssl/certs/ca-certificates.crt",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	route := cfg.location(t, "prefix", "/allowlist")
-	route.assertDirective(t, "proxy_ssl_trusted_certificate", "/etc/ssl/certs/ca-certificates.crt")
-	assertNoRouterMeshCAVolume(t, out)
 }
 
 func renderedRouterNginxConf(t *testing.T, manifest string) string {
@@ -3669,15 +3507,6 @@ func parseNginxConfig(t *testing.T, conf string) nginxConfig {
 	return cfg
 }
 
-func (cfg nginxConfig) upstream(t *testing.T, name string) *nginxBlock {
-	t.Helper()
-	upstream, ok := cfg.upstreams[name]
-	if !ok {
-		t.Fatalf("nginx config missing upstream %q; got %v", name, cfg.upstreams)
-	}
-	return upstream
-}
-
 func (cfg nginxConfig) location(t *testing.T, match, path string) *nginxBlock {
 	t.Helper()
 	key := nginxLocationKey{match: match, path: path}
@@ -3719,11 +3548,6 @@ func (cfg nginxConfig) mapBlock(t *testing.T, source, target string) *nginxBlock
 	return block
 }
 
-func (block *nginxBlock) assertServer(t *testing.T, server string) {
-	t.Helper()
-	block.assertDirective(t, "server", server)
-}
-
 func (block *nginxBlock) assertDirective(t *testing.T, name string, args ...string) {
 	t.Helper()
 	for _, got := range block.directives[name] {
@@ -3738,16 +3562,6 @@ func (block *nginxBlock) assertNoDirective(t *testing.T, name string) {
 	t.Helper()
 	if got := block.directives[name]; len(got) > 0 {
 		t.Fatalf("nginx directive %q = %v, want absent", name, got)
-	}
-}
-
-func assertNoRouterMeshCAVolume(t *testing.T, manifest string) {
-	t.Helper()
-	dep := renderedDeployment(t, manifest, "c8s-router")
-	for _, volume := range dep.Spec.Template.Spec.Volumes {
-		if volume.Name == "mesh-ca" {
-			t.Fatalf("Deployment/router has mesh-ca volume, want absent: %#v", volume)
-		}
 	}
 }
 
@@ -3821,7 +3635,9 @@ func assertSamePorts(t *testing.T, site string, got, listens []int32) {
 	}
 }
 
-func TestRouterRejectsUnsafeProxyTLS(t *testing.T) {
+// TestRouterRejectsInvalidValues pins the router render guards; helmTemplateRouter
+// prefixes each --set path with router.
+func TestRouterRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
 		name string
@@ -3913,61 +3729,78 @@ func TestRouterRejectsUnsafeProxyTLS(t *testing.T) {
 			want: "router.allowlist.readRateLimit.burst must be a positive integer, got: 0",
 		},
 		{
-			name: "route-verifyDepth-injection",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-				"--set", "routes[0].backend.tls.verify=true",
-				"--set-string", "routes[0].backend.tls.verifyDepth=9; return 444",
-			},
-			want: "router.routes[0].backend.tls.verifyDepth must be a non-negative integer, got: 9; return 444",
+			name: "routing-port-out-of-range",
+			args: []string{"--set", "routing.port=70000"},
+			want: "router.routing.port must be between 1 and 65535, got: 70000",
 		},
 		{
-			name: "route-tls-on-http-backend",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set", "routes[0].backend.tls.verify=true",
-			},
-			want: "router.routes[0].backend.tls.verify and useCDSClientCert require backend.protocol: https",
+			name: "routing-port-collides-with-attestation",
+			args: []string{"--set", "routing.port=8800"},
+			want: "router.routing.port must differ from router.attest.port, got: 8800",
 		},
 		{
-			name: "route-verify-not-bool",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-				"--set-string", "routes[0].backend.tls.verify=false",
-			},
-			want: "router.routes[0].backend.tls.verify must be a boolean; do not set it via --set-string, got: false",
+			name: "routing-port-collides-with-allowlist-proxy",
+			args: []string{"--set", "routing.port=8801"},
+			want: "router.routing.port must differ from router.allowlist.proxyPort, got: 8801",
 		},
 		{
-			name: "route-address-with-hash",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080#x",
-			},
-			want: "router.routes[0].backend.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: svc:8080#x",
+			name: "routing-port-collides-with-nginx",
+			args: []string{"--set", "routing.port=8443"},
+			want: "router.routing.port must differ from router.nginx.httpsPort, got: 8443",
 		},
 		{
-			name: "route-serverName-with-slash",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-				"--set-string", "routes[0].backend.tls.serverName=a/b",
-			},
-			want: "router.routes[0].backend.tls.serverName must not contain whitespace, semicolons, braces, slashes, or '#', got: a/b",
+			name: "routing-readTimeout-injection",
+			args: []string{"--set-string", "routing.readTimeout=1h; return 200"},
+			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 1h; return 200",
 		},
 		{
-			name: "upstream-serverName-injection",
-			args: []string{
-				"--set", "upstream.protocol=https",
-				"--set", "upstream.tls.verify=true",
-				"--set-string", "upstream.tls.serverName=evil; return 444",
-			},
-			want: "router.upstream.tls.serverName must not contain whitespace, semicolons, braces, slashes, or '#', got: evil; return 444",
+			name: "routing-readTimeout-zero",
+			args: []string{"--set-string", "routing.readTimeout=0s"},
+			want: "router.routing.readTimeout must be a positive whole number of ms, s, m or h, such as 3600s, got: 0s",
+		},
+		{
+			name: "routing-pollInterval-not-a-duration",
+			args: []string{"--set-string", "routing.pollInterval=soon"},
+			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: soon",
+		},
+		{
+			name: "routing-pollInterval-zero",
+			args: []string{"--set-string", "routing.pollInterval=0s"},
+			want: "router.routing.pollInterval must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0s",
+		},
+		{
+			name: "routing-backendTimeout-sub-nanosecond",
+			args: []string{"--set-string", "routing.backendTimeout=0.1ns"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 0.1ns",
+		},
+		{
+			name: "routing-backendTimeout-not-a-duration",
+			args: []string{"--set-string", "routing.backendTimeout=1d"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 1d",
+		},
+		{
+			// nginx reads it as the tunnel's proxy_read_timeout.
+			name: "routing-backendTimeout-microseconds",
+			args: []string{"--set-string", "routing.backendTimeout=500us"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 500us",
+		},
+		{
+			// nginx's proxy_read_timeout rejects a multi-unit value.
+			name: "routing-backendTimeout-multi-unit",
+			args: []string{"--set-string", "routing.backendTimeout=30m1h"},
+			want: "router.routing.backendTimeout must be a positive whole number of ms, s, m or h, such as 30s or 90m, got: 30m1h",
+		},
+		{
+			name: "routing-tunnelBudget-not-a-quantity",
+			args: []string{"--set-string", "routing.tunnelBudget=lots"},
+			want: "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: lots",
+		},
+		{
+			// The path joins --reserved-paths, which cds-attest refuses unless
+			// already normalized.
+			name: "discovery-path-dot-segment",
+			args: []string{"--set-string", "discovery.path=/v1/../x"},
+			want: "router.discovery paths must be absolute paths of letters, digits and ._~- segments, without . or .. segments, got: /v1/../x",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -3978,215 +3811,6 @@ func TestRouterRejectsUnsafeProxyTLS(t *testing.T) {
 			assertHelmFailMessage(t, out, tt.want)
 		})
 	}
-}
-
-// TestRouterVerifyDepthZeroPreserved guards against the sprig `default` footgun
-// where an int 0 is treated as empty: an explicit verifyDepth: 0 (verify leaf
-// only) must reach nginx as 0, not be silently bumped to the default 2.
-func TestRouterVerifyDepthZeroPreserved(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-		"--set", "upstream.tls.verifyDepth=0",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	cfg.location(t, "prefix", "/").assertDirective(t, "proxy_ssl_verify_depth", "0")
-}
-
-// TestRouterMultiRouteVerifiedRouteUsesMeshCABundle pins that a verified HTTPS
-// route using the default (mesh) CA resolves its trusted cert to the mesh CA
-// bundle the get-cert sidecar writes alongside the leaf, even when an earlier
-// route does not need it.
-func TestRouterMultiRouteVerifiedRouteUsesMeshCABundle(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/a",
-		"--set-string", "routes[0].backend.address=svc-a:8080",
-		"--set-string", "routes[0].backend.protocol=https",
-		"--set", "routes[0].backend.tls.verify=true",
-		"--set-string", "routes[0].backend.tls.trustedCAPath=/tls/other.pem",
-		"--set-string", "routes[1].path=/b",
-		"--set-string", "routes[1].backend.address=svc-b:8080",
-		"--set-string", "routes[1].backend.protocol=https",
-		"--set", "routes[1].backend.tls.verify=true",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	route := cfg.location(t, "prefix", "/b")
-	route.assertDirective(t, "proxy_ssl_verify", "on")
-	route.assertDirective(t, "proxy_ssl_trusted_certificate", "/tls/ca.pem")
-}
-
-// TestRouterRejectsUnsecuredRoute pins the per-route secured-backend guard,
-// mirroring the catch-all upstream: a route backend must be https with
-// tls.verify=true (app-TLS). A plaintext http backend, or https without verify,
-// fails the render; there is no plaintext-to-unattested acknowledgment.
-func TestRouterRejectsUnsecuredRoute(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		kind string
-	}{
-		{
-			name: "http-route",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-			},
-			kind: "router_unsecured_route",
-		},
-		{
-			name: "unverified-https-route",
-			args: []string{
-				"--set-string", "routes[0].path=/x",
-				"--set-string", "routes[0].backend.address=svc:8080",
-				"--set-string", "routes[0].backend.protocol=https",
-			},
-			kind: "router_unsecured_route",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplateRouter(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want %s failure\n%s", tt.kind, out)
-			}
-			if got := parseValidationErrorKind(out); got != tt.kind {
-				t.Fatalf("validation kind = %q, want %q\n%s", got, tt.kind, out)
-			}
-		})
-	}
-}
-
-func TestRouterRejectsInvalidRouteMatch(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].match=regex",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want invalid route match failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].match must be 'exact' or 'prefix', got: regex")
-}
-
-func TestRouterRejectsMissingRouteFields(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{
-			name: "path",
-			args: []string{
-				"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-			},
-			want: "router.routes[0].path is required",
-		},
-		{
-			name: "backend",
-			args: []string{
-				"--set-string", "routes[0].path=/allowlist",
-			},
-			want: "router.routes[0].backend is required",
-		},
-		{
-			name: "backend-address",
-			args: []string{
-				"--set-string", "routes[0].path=/allowlist",
-				"--set-string", "routes[0].backend.protocol=https",
-			},
-			want: "router.routes[0].backend.address is required",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplateRouter(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want missing route field failure\n%s", out)
-			}
-			assertHelmFailMessage(t, out, tt.want)
-		})
-	}
-}
-
-func TestRouterRejectsRouteUpstream(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].upstream=http://cds.c8s-system.svc:8080",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want unsupported route upstream failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].upstream is not supported; set backend.address and backend.protocol instead")
-}
-
-func TestRouterRejectsInvalidTypedRouteProtocol(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/allowlist",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-		"--set-string", "routes[0].backend.protocol=grpc",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want invalid typed route protocol failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].backend.protocol must be 'http' or 'https', got: grpc")
-}
-
-func TestRouterRejectsUnsafeRoutePath(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set-string", "routes[0].path=/bad;return",
-		"--set-string", "routes[0].backend.address=cds.c8s-system.svc:8080",
-	)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want unsafe route path failure\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.routes[0].path must start with '/' and contain only URI path characters safe for nginx locations, got: /bad;return")
-}
-
-func TestRouterCustomTrustedCAPathDoesNotMountMeshCA(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-		"--set-string", "upstream.tls.trustedCAPath=/etc/ssl/certs/ca-certificates.crt",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_trusted_certificate", "/etc/ssl/certs/ca-certificates.crt")
-	assertNoRouterMeshCAVolume(t, out)
-}
-
-// TestRouterExplicitTrustedCAPathRendersVerbatim pins that an operator-supplied
-// trustedCAPath is emitted verbatim in proxy_ssl_trusted_certificate. The chart
-// no longer mounts any volume for it: providing the file at that path is the
-// operator's responsibility.
-func TestRouterExplicitTrustedCAPathRendersVerbatim(t *testing.T) {
-	t.Parallel()
-	out, err := helmTemplateRouter(t,
-		"--set", "upstream.protocol=https",
-		"--set", "upstream.tls.verify=true",
-		"--set-string", "upstream.tls.trustedCAPath=/mesh-ca/ca.pem",
-	)
-	if err != nil {
-		t.Fatalf("helm template: %v\n%s", err, out)
-	}
-	cfg := renderedRouterNginxConfig(t, out)
-	defaultRoute := cfg.location(t, "prefix", "/")
-	defaultRoute.assertDirective(t, "proxy_ssl_trusted_certificate", "/mesh-ca/ca.pem")
 }
 
 func TestRouterDiscoveryRequiresAdvertisedMeshCA(t *testing.T) {
@@ -4242,14 +3866,14 @@ func TestRouterRollsOnNginxConfigChange(t *testing.T) {
 	}
 
 	changedOut, err := helmTemplateRouter(t,
-		"--set-string", "upstream.address=other-upstream:8080",
+		"--set", "routing.port=8803",
 	)
 	if err != nil {
 		t.Fatalf("helm template changed config: %v\n%s", err, changedOut)
 	}
 	changedChecksum := renderedDeployment(t, changedOut, "c8s-router").Spec.Template.Annotations["checksum/nginx-config"]
 	if changedChecksum == defaultChecksum {
-		t.Fatalf("checksum/nginx-config did not change after changing upstream: %s", defaultChecksum)
+		t.Fatalf("checksum/nginx-config did not change after changing routing.port: %s", defaultChecksum)
 	}
 }
 
@@ -4711,17 +4335,13 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
 		"--set", "armtlsMesh.image.tag=dev",
+		// The default install pins no CDS; see TestChartRouterUnpinnedCDS.
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "nriImagePolicy.image.tag=dev",
 		// volumed is off by default, so its image is unused unless a test
 		// enables it; set the tag here so those tests need not repeat it (its
 		// own image requires a tag or digest, like every component).
 		"--set", "volumed.image.tag=dev",
-		// router has no default upstream (a silently-plaintext VIP was
-		// removed); a c8s-<id> headless-Service address (what `c8s install
-		// --upstream` derives) is the representative mesh-wrapped baseline, and
-		// the chart recognizes that shape as mesh-wrapped. Tests for the
-		// manual-upstream paths clear it via noUpstreamArgs.
-		"--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000",
 		// The installer image must stay digest-pinned: the seed admits it
 		// argv-pinned (c8s.argvPinnedEntries), which a tag cannot pin. No
 		// bootstrap entry is needed — the uncovered_component_digest guard
@@ -4736,45 +4356,113 @@ func helmTemplateIn(t *testing.T, dir string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// noUpstreamArgs clears the mesh-wrapped upstream that helmTemplate pins by
-// default, for tests exercising the manual router.upstream paths.
-// assertRouterUpstreamTimeouts checks the catch-all route outlives nginx's 60s
-// read/send default (non-streaming LLM responses send nothing until done) and
-// gives up quickly on a dead upstream.
-func assertRouterUpstreamTimeouts(t *testing.T, route *nginxBlock, readTimeout string) {
+// assertRouterRoutingLocation checks location / proxies to the routing
+// listener with no URI (so cds-attest sees the request target as sent), with
+// the forwarding headers, streaming settings and timeouts the catch-all
+// carried: non-streaming LLM responses send nothing until done, and a dead
+// listener must fail fast.
+func assertRouterRoutingLocation(t *testing.T, route *nginxBlock, port, readTimeout string) {
 	t.Helper()
 	for name, want := range map[string]string{
+		"proxy_pass":            "http://127.0.0.1:" + port,
 		"proxy_connect_timeout": "5s",
 		"proxy_read_timeout":    readTimeout,
 		"proxy_send_timeout":    readTimeout,
+		"proxy_buffering":       "off",
+		"proxy_http_version":    "1.1",
 	} {
 		if got := route.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{want}) {
 			t.Errorf("location / %s = %v, want exactly [%s]", name, got, want)
 		}
 	}
+	route.assertDirective(t, "proxy_set_header", "Host", "$host")
+	route.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	route.assertDirective(t, "proxy_set_header", "X-Forwarded-For", "$proxy_add_x_forwarded_for")
+	route.assertDirective(t, "proxy_set_header", "X-Forwarded-Proto", "$scheme")
 }
 
-func TestChartRouterUpstreamReadTimeout(t *testing.T) {
+func TestChartRouterRoutingLocation(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "3600s")
+	cfg := renderedRouterNginxConfig(t, out)
+	route := cfg.location(t, "prefix", "/")
+	assertRouterRoutingLocation(t, route, "8802", "3600s")
+	route.assertNoDirective(t, "add_header")
+	cfg.assertNoDirectivePrefix(t, "proxy_ssl_")
+	cfg.http.assertNoDirective(t, "resolver")
+	if len(cfg.upstreams) != 0 {
+		t.Fatalf("nginx renders upstream blocks %v, want none: cds-attest dials every backend", cfg.upstreams)
+	}
 
-	out, err = helmTemplate(t, "--set-string", "router.upstream.readTimeout=900s")
+	out, err = helmTemplate(t,
+		"--set", "router.routing.port=9900",
+		"--set-string", "router.routing.readTimeout=900s",
+		"--set-string", "router.routing.pollInterval=5s",
+		"--set-string", "router.routing.backendTimeout=2h",
+	)
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	assertRouterUpstreamTimeouts(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "900s")
+	assertRouterRoutingLocation(t, renderedRouterNginxConfig(t, out).location(t, "prefix", "/"), "9900", "900s")
+	assertContainerArgs(t, renderedDeploymentContainer(t, out, "c8s-router", "cds-attest"),
+		"--routing-port=9900", "--routes-poll-interval=5s", "--backend-timeout=2h")
 
-	if out, err := helmTemplate(t, "--set-string", "router.upstream.readTimeout=1h; return 200"); err == nil || !strings.Contains(out+err.Error(), "router.upstream.readTimeout must be an nginx time") {
-		t.Errorf("readTimeout with injected directive rendered: %v", err)
+	// Global CORS covers application routing too.
+	out, err = helmTemplate(t,
+		"--set", "router.cors.enabled=true",
+		"--set", "router.cors.allowOrigins={https://example.github.io}",
+	)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	renderedRouterNginxConfig(t, out).location(t, "prefix", "/").
+		assertDirective(t, "add_header", "Access-Control-Allow-Origin", "$cors_out_origin", "always")
+}
+
+// TestChartRouterHealthzIsExact pins /healthz as an exact location: a prefix
+// one would also claim manifest paths such as /healthz-ui.
+func TestChartRouterHealthzIsExact(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	cfg := renderedRouterNginxConfig(t, out)
+	cfg.location(t, "exact", "/healthz").assertDirective(t, "return", "200", `"ok\n"`)
+	if _, ok := cfg.locations[nginxLocationKey{match: "prefix", path: "/healthz"}]; ok {
+		t.Fatal("prefix location /healthz rendered, want only the exact one")
+	}
+}
+
+// TestChartRejectsRemovedRouterBackendValues pins kind=removed_router_routes:
+// values a carried-over file still sets for the Helm-configured backends must
+// fail the render with a pointer to the route manifest, not be ignored.
+func TestChartRejectsRemovedRouterBackendValues(t *testing.T) {
+	for _, set := range []string{
+		"router.upstream.address=x",
+		"router.upstream.readTimeout=60s",
+		"router.routes[0].path=/x",
+		"router.nginx.resolver=kube-dns",
+	} {
+		t.Run(set, func(t *testing.T) {
+			out, err := helmTemplate(t, "--set-string", set)
+			if err == nil {
+				t.Fatalf("helm template accepted %s\n%s", set, out)
+			}
+			if got := parseValidationErrorKind(out); got != "removed_router_routes" {
+				t.Fatalf("validation kind = %q, want removed_router_routes\n%s", got, out)
+			}
+			if !strings.Contains(out, "c8s routes") {
+				t.Fatalf("removed_router_routes message does not mention `c8s routes`\n%s", out)
+			}
+		})
 	}
 }
 
 // assertRouterWebSocketUpgrade checks location / passes a client's WebSocket
-// upgrade on to the upstream.
+// upgrade on to the routing listener.
 func assertRouterWebSocketUpgrade(t *testing.T, cfg nginxConfig, route *nginxBlock) {
 	t.Helper()
 	upgrade := cfg.mapBlock(t, "$http_upgrade", "$connection_upgrade")
@@ -4793,10 +4481,6 @@ func TestChartRouterWebSocketUpgrade(t *testing.T) {
 	}
 	cfg := renderedRouterNginxConfig(t, out)
 	assertRouterWebSocketUpgrade(t, cfg, cfg.location(t, "prefix", "/"))
-}
-
-func noUpstreamArgs(args ...string) []string {
-	return append([]string{"--set-string", "router.upstream.address="}, args...)
 }
 
 // docMeta is the minimum we decode from each YAML doc to dispatch by kind+name.
@@ -4997,7 +4681,7 @@ func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	for _, want := range []string{
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 		"--allowlist-db=/mnt/c8s-data/cds/allowlist.db",
 		"--ca-common-name=c8s Mesh CA",
 		"--ca-cert-validity=8760h",
@@ -5291,24 +4975,6 @@ func TestChartNoTeeProxyRemnants(t *testing.T) {
 	}
 }
 
-// TestChartRejectsMalformedUpstreamAddress pins the catch-all upstream to the
-// same charset guard every routes[].backend.address gets: an address with
-// nginx metacharacters must fail the render, not corrupt the config.
-func TestChartRejectsMalformedUpstreamAddress(t *testing.T) {
-	t.Parallel()
-	// Clear the workload baseline and secure the manual upstream (https + verify)
-	// so the render reaches the address-format check rather than tripping the
-	// workload-conflict / unsecured-upstream guards first.
-	out, err := helmTemplate(t, noUpstreamArgs(
-		"--set-string", "router.upstream.address=bad addr;{}",
-		"--set-string", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true")...)
-	if err == nil {
-		t.Fatalf("helm template succeeded, want upstream address rejection\n%s", out)
-	}
-	assertHelmFailMessage(t, out, "router.upstream.address must be a host:port address without scheme, whitespace, semicolons, braces, slashes, or '#', got: bad addr;{}")
-}
-
 // TestChartRejectsLeftoverTeeProxyValues: helm silently ignores values keys
 // the chart no longer reads, so a values file carried over from a release
 // that still had tee-proxy would drop its settings (e.g. the hostPort
@@ -5488,13 +5154,10 @@ func renderedDeploymentContainer(t *testing.T, manifest, deploymentName, contain
 
 // helmTemplateRouter renders the router component from the parent C8s chart in
 // isolation: siblings are disabled and every caller-supplied --set/--set-string
-// path is prefixed with router. so the existing subchart-relative test values
-// (upstream.*, routes[*], nginx.*) keep working after the hoist. The release is
-// named "c8s" so router.fullname resolves to c8s-router, matching the resource
-// names the parent-chart router tests already assert. upstream.address is
-// pinned to the standalone subchart's old default (vllm:8000) so the
-// default-backend assertions remain a meaningful fixture rather than the
-// parent's default upstream wiring.
+// path is prefixed with router., so callers write router-relative paths
+// (cors.*, allowlist.*, routing.*). The release is named "c8s" so
+// router.fullname resolves to c8s-router, matching the resource names the
+// parent-chart router tests assert.
 func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
@@ -5507,6 +5170,7 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "armtlsMesh.enabled=false",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest so the render is valid
@@ -5515,13 +5179,6 @@ func helmTemplateRouter(t *testing.T, args ...string) (string, error) {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest=" + baseNRIDigest,
-		"--set-string", "router.upstream.address=vllm:8000",
-		// Secured (https + verify) upstream baseline for the router subchart
-		// tests, on a bare vllm address. A manual address must be app-TLS now
-		// that no default ships and there is no unmeshed acknowledgment; tests
-		// that exercise a specific upstream protocol override it.
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true",
 		"--set", "router.nginx.image.tag=dev",
 		"--show-only", "templates/router-configmap.yaml",
 		"--show-only", "templates/router-deployment.yaml",
@@ -5548,10 +5205,10 @@ func prefixRouterSetArgs(args []string) []string {
 	return out
 }
 
-// Example_routerConfig renders the router ConfigMap for a representative route
-// set — one plaintext HTTP backend (/allowlist) and one armTLS-verified HTTPS
-// backend (/tenant/) — and prints the generated nginx.conf. It doubles as a
-// golden test of templates/configmap.yaml: a template edit that changes the
+// Example_routerConfig renders the router ConfigMap with discovery and the
+// attestation endpoints off — the built-in /allowlist route, /readyz,
+// application routing on location / and /healthz — and prints the generated
+// nginx.conf. It doubles as a golden test of templates/router-configmap.yaml: a template edit that changes the
 // rendered config must be reflected in the Output block, so the full config
 // diff surfaces in review. helm is required, as it is for every test in this
 // package; without it the render errors and the example fails.
@@ -5559,11 +5216,14 @@ func Example_routerConfig() {
 	fmt.Print(renderExampleRouterNginxConf())
 	// Output:
 	// worker_processes auto;
+	// # Each connection may hold a client socket, an upstream socket and a
+	// # request body temp file.
+	// worker_rlimit_nofile 65536;
 	// error_log /var/log/nginx/error.log warn;
 	// pid /tmp/nginx.pid;
 	//
 	// events {
-	//     worker_connections 1024;
+	//     worker_connections 16384;
 	// }
 	//
 	// http {
@@ -5579,20 +5239,36 @@ func Example_routerConfig() {
 	//     keepalive_timeout 65;
 	//
 	//     # Pass a client's WebSocket upgrade (e.g. socket.io) through location /;
-	//     # other requests keep Connection: close to the upstream.
+	//     # other requests keep Connection: close to the routing listener.
 	//     map $http_upgrade $connection_upgrade {
 	//         default upgrade;
 	//         "" close;
 	//     }
-	//     upstream route_0 {
-	//         server c8s-cds.c8s-system.svc:8443;
+	//
+	//     # Rate-limit /allowlist while nginx still has the public client IP;
+	//     # empty map keys are not accounted by limit_req. Mutations count per
+	//     # client and in aggregate (the constant-key zone guards the shared
+	//     # per-pod-IP CDS bucket; see docs/operator.md), reads per client;
+	//     # OPTIONS (CORS preflight) is exempt. The total key chains off the
+	//     # write key so the exempt-method list exists once.
+	//     map $request_method $allowlist_write_rate_key {
+	//         default $binary_remote_addr;
+	//         GET "";
+	//         HEAD "";
+	//         OPTIONS "";
 	//     }
-	//     upstream route_1 {
-	//         server tenant-router.c8s-system.svc:8080;
+	//     map $allowlist_write_rate_key $allowlist_write_total_key {
+	//         "" "";
+	//         default "all";
 	//     }
-	//     upstream catch_all {
-	//         server vllm:8000;
+	//     map $request_method $allowlist_read_rate_key {
+	//         default "";
+	//         GET $binary_remote_addr;
+	//         HEAD $binary_remote_addr;
 	//     }
+	//     limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate=1r/s;
+	//     limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate=8r/s;
+	//     limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate=20r/s;
 	//
 	//     server {
 	//         listen 8443 ssl;
@@ -5610,44 +5286,87 @@ func Example_routerConfig() {
 	//         # Headroom for upstream responses with large headers.
 	//         proxy_buffer_size 16k;
 	//         proxy_buffers 4 16k;
-	//         # Route: /allowlist -> https://c8s-cds.c8s-system.svc:8443
+	//         # Built-in control-plane route. The exact + slash-prefix pair
+	//         # exposes only /allowlist and its API subtree, not lookalike paths.
 	//         location = /allowlist {
-	//
-	//             proxy_ssl_server_name on;
-	//             proxy_ssl_name c8s-cds.c8s-system.svc;
-	//             proxy_ssl_verify on;
-	//             proxy_ssl_verify_depth 2;
-	//             proxy_ssl_trusted_certificate /tls/ca.pem;
-	//             proxy_pass https://route_0;
+	//             proxy_hide_header Access-Control-Allow-Origin;
+	//             proxy_hide_header Access-Control-Allow-Methods;
+	//             proxy_hide_header Access-Control-Allow-Headers;
+	//             proxy_hide_header Access-Control-Allow-Credentials;
+	//             proxy_hide_header Access-Control-Expose-Headers;
+	//             if ($request_method = 'OPTIONS') {
+	//                 add_header Access-Control-Allow-Origin  "*" always;
+	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
+	//                 add_header Access-Control-Max-Age       "600" always;
+	//                 add_header Content-Length 0;
+	//                 return 204;
+	//             }
+	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # These run before nginx collapses callers onto the loopback proxy source.
+	//             # Each zone's map key is empty for the methods it does not cover, so
+	//             # mutations count per client and in aggregate, reads per client only.
+	//             limit_req zone=allowlist_write_per_client burst=5 nodelay;
+	//             limit_req zone=allowlist_write_total burst=15 nodelay;
+	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
+	//             limit_req_status 429;
+	//             proxy_pass http://127.0.0.1:8801$request_uri;
+	//             proxy_set_header Host $host;
+	//             proxy_set_header Authorization $http_authorization;
+	//             proxy_set_header X-Real-IP $remote_addr;
+	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//         }
+	//         location /allowlist/ {
+	//             proxy_hide_header Access-Control-Allow-Origin;
+	//             proxy_hide_header Access-Control-Allow-Methods;
+	//             proxy_hide_header Access-Control-Allow-Headers;
+	//             proxy_hide_header Access-Control-Allow-Credentials;
+	//             proxy_hide_header Access-Control-Expose-Headers;
+	//             if ($request_method = 'OPTIONS') {
+	//                 add_header Access-Control-Allow-Origin  "*" always;
+	//                 add_header Access-Control-Allow-Methods "GET, POST, OPTIONS" always;
+	//                 add_header Access-Control-Allow-Headers "Authorization, Content-Type, X-C8s-Session" always;
+	//                 add_header Access-Control-Max-Age       "600" always;
+	//                 add_header Content-Length 0;
+	//                 return 204;
+	//             }
+	//             add_header Access-Control-Allow-Origin "*" always;
+	//             # These run before nginx collapses callers onto the loopback proxy source.
+	//             # Each zone's map key is empty for the methods it does not cover, so
+	//             # mutations count per client and in aggregate, reads per client only.
+	//             limit_req zone=allowlist_write_per_client burst=5 nodelay;
+	//             limit_req zone=allowlist_write_total burst=15 nodelay;
+	//             limit_req zone=allowlist_read_per_client burst=40 nodelay;
+	//             limit_req_status 429;
+	//             proxy_pass http://127.0.0.1:8801$request_uri;
+	//             proxy_set_header Host $host;
+	//             proxy_set_header Authorization $http_authorization;
+	//             proxy_set_header X-Real-IP $remote_addr;
+	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+	//             proxy_set_header X-Forwarded-Proto $scheme;
+	//         }
+	//         # The sidecar's readiness gate, proxied so kubelet can reach it.
+	//         # cds-attest listens on loopback (its one listener also carries the
+	//         # attestation and tunnel routes, which must not be
+	//         # published on the pod IP). So the probe rides the front door:
+	//         # exact-match, ahead of location /.
+	//         location = /readyz {
+	//             access_log off;
+	//             proxy_pass http://127.0.0.1:8800;
 	//             proxy_set_header Host $host;
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
 	//             proxy_set_header X-Forwarded-Proto $scheme;
 	//         }
-	//         # Route: /tenant/ -> https://tenant-router.c8s-system.svc:8080
-	//         location /tenant/ {
 	//
-	//             proxy_ssl_server_name on;
-	//             proxy_ssl_name tenant-router.c8s-system.svc;
-	//             proxy_ssl_verify on;
-	//             proxy_ssl_verify_depth 2;
-	//             proxy_ssl_trusted_certificate /tls/ca.pem;
-	//             proxy_pass https://route_1;
-	//             proxy_set_header Host $host;
-	//             proxy_set_header X-Real-IP $remote_addr;
-	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-	//             proxy_set_header X-Forwarded-Proto $scheme;
-	//         }
+	//         # Application routing (route policy A7): every request no location
+	//         # above claims goes to the cds-attest routing listener, which routes
+	//         # it by the applied route manifest and dials the backend itself. No
+	//         # URI on proxy_pass, so the listener sees the request target as the
+	//         # client sent it, which path matching needs (M4).
 	//         location / {
-	//
-	//             proxy_ssl_certificate /tls/cert.pem;
-	//             proxy_ssl_certificate_key /tls/key.pem;
-	//             proxy_ssl_server_name on;
-	//             proxy_ssl_name vllm;
-	//             proxy_ssl_verify on;
-	//             proxy_ssl_verify_depth 2;
-	//             proxy_ssl_trusted_certificate /tls/cert.pem;
-	//             proxy_pass https://catch_all;
+	//             proxy_pass http://127.0.0.1:8802;
 	//             proxy_set_header Host $host;
 	//             proxy_set_header X-Real-IP $remote_addr;
 	//             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -5656,7 +5375,7 @@ func Example_routerConfig() {
 	//             proxy_set_header Connection $connection_upgrade;
 	//             # A non-streaming completion sends nothing until it is done, so
 	//             # nginx's 60s default read timeout would 504 long generations.
-	//             # A dead upstream must fail fast instead.
+	//             # A dead routing listener must fail fast instead.
 	//             proxy_connect_timeout 5s;
 	//             proxy_read_timeout 3600s;
 	//             proxy_send_timeout 3600s;
@@ -5664,7 +5383,9 @@ func Example_routerConfig() {
 	//             proxy_http_version 1.1;
 	//         }
 	//
-	//         location /healthz {
+	//         # Exact: a prefix match would also claim manifest paths such as
+	//         # /healthz-ui.
+	//         location = /healthz {
 	//             access_log off;
 	//             return 200 "ok\n";
 	//             add_header Content-Type text/plain;
@@ -6643,8 +6364,10 @@ func TestChartNriComponentCoveredByArgvPin(t *testing.T) {
 	}
 }
 
-// golden stays gofmt-clean. Render errors are returned verbatim so the example
-// fails loudly rather than masking a broken template.
+// renderExampleRouterNginxConf renders the nginx.conf Example_routerConfig
+// prints, with trailing whitespace trimmed so the golden stays gofmt-clean.
+// Render errors are returned verbatim so the example fails loudly rather than
+// masking a broken template.
 func renderExampleRouterNginxConf() string {
 	cmd := exec.Command("helm",
 		"template", "c8s", "c8s",
@@ -6653,6 +6376,7 @@ func renderExampleRouterNginxConf() string {
 		"--set", "image.tag=dev",
 		"--set", "attestationApi.image.tag=dev",
 		"--set", "cds.image.tag=dev",
+		"--set", "router.routing.allowUnpinnedCDS=true",
 		"--set", "armtlsMesh.enabled=false",
 		// nri-image-policy is enabled in this render
 		// (require_host_image_policy); pin its digest (the seed admits it
@@ -6661,23 +6385,12 @@ func renderExampleRouterNginxConf() string {
 		"--set", "nriImagePolicy.image.tag=dev",
 		"--set", "cds.image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000001",
 		"--set", "nriImagePolicy.image.digest="+baseNRIDigest,
-		// discovery defaults to enabled; scope this example to route rendering
-		// (discovery's own locations are covered by a dedicated test above).
+		// discovery and the attestation endpoints default to enabled; their
+		// locations are covered by dedicated tests, so this example shows the
+		// allowlist route and application routing.
 		"--set", "router.discovery.enabled=false",
 		"--set", "router.attest.enabled=false",
-		"--set-string", "router.upstream.address=vllm:8000",
-		"--set", "router.upstream.protocol=https",
-		"--set", "router.upstream.tls.verify=true",
 		"--set", "router.nginx.image.tag=dev",
-		"--set-string", "router.routes[0].path=/allowlist",
-		"--set-string", "router.routes[0].match=exact",
-		"--set-string", "router.routes[0].backend.address=c8s-cds.c8s-system.svc:8443",
-		"--set-string", "router.routes[0].backend.protocol=https",
-		"--set", "router.routes[0].backend.tls.verify=true",
-		"--set-string", "router.routes[1].path=/tenant/",
-		"--set-string", "router.routes[1].backend.address=tenant-router.c8s-system.svc:8080",
-		"--set-string", "router.routes[1].backend.protocol=https",
-		"--set", "router.routes[1].backend.tls.verify=true",
 		"--show-only", "templates/router-configmap.yaml",
 	)
 	cmd.Dir = "."
@@ -6848,176 +6561,6 @@ func TestChartDefaultRendersNoPullSecretRefs(t *testing.T) {
 		}
 		return false
 	})
-}
-
-// routerUpstreamAddress returns the catch-all upstream address from the
-// rendered router nginx config: the `upstream catch_all` block's server for a
-// static dial, or the `set $backend_addr <addr>;` directive for the
-// mesh-wrapped shape that is re-resolved per request.
-func routerUpstreamAddress(t *testing.T, manifest string) string {
-	t.Helper()
-	cfg := renderedRouterNginxConfig(t, manifest)
-	if block, ok := cfg.upstreams["catch_all"]; ok {
-		servers := block.directives["server"]
-		if len(servers) != 1 || len(servers[0]) != 1 {
-			t.Fatalf("upstream catch_all must carry exactly one server; got %v", servers)
-		}
-		return servers[0][0]
-	}
-	sets := cfg.location(t, "prefix", "/").directives["set"]
-	for _, args := range sets {
-		if len(args) == 2 && args[0] == "$backend_addr" {
-			return args[1]
-		}
-	}
-	t.Fatalf("catch-all has neither an `upstream catch_all` block nor a `set $backend_addr <addr>;` directive; got %v", sets)
-	return ""
-}
-
-// TestChartRouterUpstreamChoice: there is no default upstream. An unset upstream
-// is a legal install-then-attach state (router serves with no catch-all); when
-// an upstream IS set that is not a c8s-<id> headless Service it must be https
-// with tls.verify=true (app-TLS) — a plaintext http address or unverified https
-// fails instead of shipping a silently-plaintext hop.
-func TestChartRouterUpstreamChoice(t *testing.T) {
-	t.Parallel()
-	// No upstream renders a healthy front door with NO catch-all: the operator
-	// attaches a workload later via --upstream. The cert, discovery, and
-	// /healthz still render; only location / is withheld.
-	t.Run("no-upstream-renders-without-catch-all", func(t *testing.T) {
-		out, err := helmTemplate(t, noUpstreamArgs()...)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		cfg := renderedRouterNginxConfig(t, out)
-		if _, ok := cfg.locations[nginxLocationKey{match: "prefix", path: "/"}]; ok {
-			t.Fatalf("no upstream should render no catch-all location /, but one is present\n%s", out)
-		}
-		// The front door is still healthy and serving.
-		cfg.location(t, "prefix", "/healthz")
-	})
-
-	// An https upstream with tls.verify (verify defaults to true) terminates and
-	// authenticates TLS itself: that hop is app-TLS, the only manual-address
-	// shape the guard admits, and the address passes through verbatim.
-	t.Run("verified-https-upstream-passes-verbatim", func(t *testing.T) {
-		out, err := helmTemplate(t, noUpstreamArgs(
-			"--set-string", "router.upstream.address=my-backend.other-ns.svc:8443",
-			"--set", "router.upstream.protocol=https")...)
-		if err != nil {
-			t.Fatalf("helm template: %v\n%s", err, out)
-		}
-		if got, want := routerUpstreamAddress(t, out), "my-backend.other-ns.svc:8443"; got != want {
-			t.Fatalf("upstream = %q, want %q", got, want)
-		}
-	})
-
-	// A disabled router needs no upstream, and a leftover upstream (e.g. a
-	// migration that flips router.enabled=false without clearing the value)
-	// must not trip the secured-backend check: the unmeshed-hop risk cannot
-	// occur when router renders nothing.
-	for _, tc := range []struct {
-		name string
-		args []string
-	}{
-		{"router-disabled-needs-no-upstream", noUpstreamArgs("--set", "router.enabled=false")},
-		{"router-disabled-ignores-leftover-upstream", noUpstreamArgs(
-			"--set", "router.enabled=false",
-			"--set-string", "router.upstream.address=my-router.ns.svc:9000")},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tc.args...)
-			if err != nil {
-				t.Fatalf("helm template: %v\n%s", err, out)
-			}
-			// The render must not just succeed: a disabled router must emit no
-			// Deployment, so no upstream (leftover or otherwise) can ship.
-			if renderedManifestHasNamedKind(t, out, "Deployment", "c8s-router") {
-				t.Fatalf("router.enabled=false still rendered a c8s-router Deployment\n%s", out)
-			}
-		})
-	}
-}
-
-func TestChartUpstreamValidation(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name string
-		args []string
-		kind string
-	}{
-		{
-			// A c8s-<id> headless-Service address is recognized as mesh-wrapped
-			// (plaintext http, the mesh secures it), so https can only fail at runtime.
-			name: "mesh-wrapped-https",
-			args: []string{
-				"--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000",
-				"--set", "router.upstream.protocol=https",
-			},
-			kind: "workload_https_upstream",
-		},
-		{
-			// A plaintext http manual upstream cannot render: there is no
-			// acknowledgment, only https + verify is admitted.
-			name: "http-upstream",
-			args: noUpstreamArgs("--set-string", "router.upstream.address=my-router.ns.svc:9000"),
-			kind: "router_unsecured_upstream",
-		},
-		{
-			// https alone does not secure the hop: verify=false is an
-			// encrypted-but-unauthenticated backend, rejected like http.
-			name: "unverified-https-upstream",
-			args: noUpstreamArgs(
-				"--set-string", "router.upstream.address=my-router.ns.svc:8443",
-				"--set", "router.upstream.protocol=https",
-				"--set", "router.upstream.tls.verify=false"),
-			kind: "router_unsecured_upstream",
-		},
-		{
-			// A near-miss of the c8s-<id>.<ns>.svc.cluster.local shape (here the
-			// short .svc form) is NOT recognized as mesh-wrapped, so plaintext
-			// http fails closed: only the exact headless-Service FQDN gets the
-			// plaintext pass. Guards the shape regex against being too loose.
-			name: "c8s-shape-short-svc-not-meshwrapped",
-			args: noUpstreamArgs("--set-string", "router.upstream.address=c8s-infer.vllm.svc:8000"),
-			kind: "router_unsecured_upstream",
-		},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			out, err := helmTemplate(t, tt.args...)
-			if err == nil {
-				t.Fatalf("helm template succeeded, want %s failure\n%s", tt.kind, out)
-			}
-			if got := parseValidationErrorKind(out); got != tt.kind {
-				t.Fatalf("validation kind = %q, want %q\n%s", got, tt.kind, out)
-			}
-		})
-	}
-}
-
-// TestChartRouterUpstreamDefaultEmpty guards the no-default-upstream invariant:
-// a shipped default would silently render a catch-all and could put the
-// inference hop back on an unmeshed Service VIP. Empty keeps the front door
-// catch-all-free until an upstream is deliberately wired.
-func TestChartRouterUpstreamDefaultEmpty(t *testing.T) {
-	t.Parallel()
-	data, err := os.ReadFile("c8s/values.yaml")
-	if err != nil {
-		t.Fatalf("read values.yaml: %v", err)
-	}
-	var values struct {
-		Router struct {
-			Upstream struct {
-				Address string `yaml:"address"`
-			} `yaml:"upstream"`
-		} `yaml:"router"`
-	}
-	if err := yaml.Unmarshal(data, &values); err != nil {
-		t.Fatalf("unmarshal values.yaml: %v", err)
-	}
-	if values.Router.Upstream.Address != "" {
-		t.Fatalf("router.upstream.address default = %q, want empty: a shipped default silently renders a catch-all and can leave the hop unmeshed", values.Router.Upstream.Address)
-	}
 }
 
 // TestCDSPodDisruptionBudget guards the singleton trust root: the PDB must
@@ -7227,7 +6770,7 @@ func TestChartVolumedDaemonSetShape(t *testing.T) {
 // carve-out would only reopen tenant access to the node filesystem.
 func TestChartVolumedSocketDirTracksTheInventoryDir(t *testing.T) {
 	t.Parallel()
-	const runtimeDir = "/var/run/c8s-inventory-elsewhere"
+	const runtimeDir = "/run/c8s-inventory-elsewhere"
 	out, err := helmTemplate(t,
 		"--set", "volumed.enabled=true",
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+runtimeDir,
@@ -8058,6 +7601,52 @@ func TestChartSweepMountAdmission(t *testing.T) {
 				}
 				if got := idx.AdmitsContainer(pkgallowlist.RunningContainer{Digest: baseNRIDigest, Argv: tc.argv, Mounts: mounts}); got != tc.want {
 					t.Errorf("%s admitted=%v, want %v", tc.name, got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestChartRouterReservedPathsCoverNginxLocations: every path nginx serves
+// itself is a --reserved-paths entry, so the tunnel never routes a request to
+// a manifest backend that the public path would have answered (route policy
+// M6). A location added without its reserved path fails here.
+func TestChartRouterReservedPathsCoverNginxLocations(t *testing.T) {
+	location := regexp.MustCompile(`(?m)^\s*location\s+(?:=\s+)?(\S+)\s*\{`)
+	for name, args := range map[string][]string{
+		"default":      nil,
+		"attest off":   {"--set", "router.attest.enabled=false"},
+		"global cors":  {"--set", "router.cors.enabled=true", "--set", "router.cors.allowOrigins={https://app.example}"},
+		"custom paths": {"--set-string", "router.discovery.path=/x/discovery", "--set-string", "router.discovery.cdsCertPath=/x/cds.pem", "--set-string", "router.discovery.meshCAPath=/x/ca.pem"},
+		"acme":         {"--set-string", "router.publicTLS.mode=acme", "--set", "router.san={lb.example.com}", "--set-string", "router.acme.email=ops@example.com"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := helmTemplate(t, args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			var reserved []string
+			for _, arg := range renderedDeploymentContainer(t, out, "c8s-router", "cds-attest").Args {
+				if v, ok := strings.CutPrefix(arg, "--reserved-paths="); ok {
+					reserved = strings.Split(v, ",")
+				}
+			}
+			if len(reserved) == 0 {
+				t.Fatal("cds-attest has no --reserved-paths")
+			}
+			// M3 prefix match, as routes.Table.Select applies a reserved path.
+			covered := func(p string) bool {
+				return slices.ContainsFunc(reserved, func(r string) bool {
+					return p == r || strings.HasPrefix(p, r) && (strings.HasSuffix(r, "/") || p[len(r)] == '/')
+				})
+			}
+			matches := location.FindAllStringSubmatch(renderedRouterNginxConf(t, out), -1)
+			if len(matches) < 3 {
+				t.Fatalf("found %d nginx locations, want the router's protocol endpoints", len(matches))
+			}
+			for _, m := range matches {
+				if p := m[1]; p != "/" && !covered(p) {
+					t.Errorf("nginx serves location %s, which --reserved-paths %v does not cover", p, reserved)
 				}
 			}
 		})

@@ -1,6 +1,7 @@
 package helmchart
 
 import (
+	"cmp"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,8 +19,8 @@ import (
 // operator's argv and so the installer's boot config. The store starts with
 // the previous release's policies only, which admit neither new launch. CDS
 // keeps its shape, so the old boot base still admits it and it is not
-// recreated; it reseeds when the mounted seed changes (cds.followSeed), and
-// after that the old and the new launches are all admitted.
+// recreated. Once the new seed is published (c8s allowlist apply), the old
+// and the new launches are all admitted.
 func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 	t.Parallel()
 	args := []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=true"}
@@ -60,7 +61,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 			if imageDigest(c.Image) != operatorDigest {
 				continue
 			}
-			mounts := observedMounts(t, w.spec, c, true)
+			mounts := observedMounts(t, w.spec, c)
 			pin := componentPins(t, after, args)[operatorDigest]
 			if previous.BuildIndex().AdmitsContainer(pkgallowlist.RunningContainer{Digest: operatorDigest, Argv: runtimeArgv(c, pin.entrypoint), Mounts: mounts, Env: launchEnv(t, w.spec, c, pin.imageEnv)}) {
 				t.Fatalf("previous policies admit the upgraded operator container %s; the test no longer exercises a policy change", c.Name)
@@ -87,7 +88,7 @@ func TestChartConfigOnlyUpgradeAdmitsOldAndNewShapes(t *testing.T) {
 						continue
 					}
 					checked["operator"]++
-					mounts := observedMounts(t, w.spec, c, true)
+					mounts := observedMounts(t, w.spec, c)
 					if !index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: digest, Argv: runtimeArgv(c, pins[digest].entrypoint), Mounts: mounts, Env: launchEnv(t, w.spec, c, pins[digest].imageEnv)}) {
 						t.Errorf("%s: operator container %s refused after both seeds", release, c.Name)
 					}
@@ -142,7 +143,7 @@ func TestCDSShapeGuard(t *testing.T) {
 	files := map[string]string{
 		"Chart.yaml":             "apiVersion: v2\nname: guard\nversion: 0.0.1\n",
 		"templates/_upgrade.tpl": string(tpl),
-		"templates/guard.yaml":   `{{ include "c8s.cdsShapeGuard" (dict "live" .Values.live "want" .Values.want "published" .Values.published) }}`,
+		"templates/guard.yaml":   `{{ include "c8s.cdsShapeGuard" (dict "live" .Values.live "want" .Values.want "entry" .Values.entry "published" .Values.published) }}`,
 	}
 	for name, body := range files {
 		path := filepath.Join(dir, name)
@@ -154,8 +155,8 @@ func TestCDSShapeGuard(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		name, live, want, published string
-		fails                       bool
+		name, live, want, entry, published string
+		fails                              bool
 	}{
 		{name: "first install", want: "cds-new"},
 		{name: "unchanged", live: "cds-old", want: "cds-old"},
@@ -163,17 +164,48 @@ func TestCDSShapeGuard(t *testing.T) {
 		{name: "changed and unpublished", live: "cds-old", want: "cds-new", fails: true},
 		{name: "changed and another shape published", live: "cds-old", want: "cds-new", published: "cds-old", fails: true},
 		{name: "changed and published", live: "cds-old", want: "cds-new", published: "cds-new"},
+		{name: "changed under an override", live: "cds-old", want: "cds-new", entry: "cds-override", fails: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := exec.Command("helm", "template", "g", dir,
-				"--set-string", "live="+tc.live, "--set-string", "want="+tc.want, "--set-string", "published="+tc.published).CombinedOutput()
+				"--set-string", "live="+tc.live, "--set-string", "want="+tc.want, "--set-string", "entry="+tc.entry, "--set-string", "published="+tc.published).CombinedOutput()
 			if (err != nil) != tc.fails {
 				t.Fatalf("render error = %v, want failure %t\n%s", err, tc.fails, out)
 			}
 			if tc.fails && !strings.Contains(string(out), "cds.publishedShape="+tc.want) {
 				t.Errorf("failure does not name the entry to publish:\n%s", out)
 			}
+			// A CDS recreated since the nodes last pulled counts from a lower
+			// version, which the nodes ignore until it passes theirs or their
+			// plugins restart; each apply raises it by one only.
+			if tc.fails && !strings.Contains(string(out), "above every allowlist_version the nodes' image policy plugins reported") {
+				t.Errorf("failure does not require publication past the nodes' versions:\n%s", out)
+			}
+			if tc.fails && !strings.Contains(string(out), "restart the image policy plugin (containerd) on each node that reports more") {
+				t.Errorf("failure does not offer a plugin restart for a large version gap:\n%s", out)
+			}
+			if tc.fails && !strings.Contains(string(out), "publish entry "+cmp.Or(tc.entry, tc.want)+" ") {
+				t.Errorf("failure does not name entry %s:\n%s", cmp.Or(tc.entry, tc.want), out)
+			}
 		})
+	}
+}
+
+// A digest bump alone changes the shape the Deployment records, so the guard
+// trips on it.
+func TestChartCDSDigestBumpChangesShape(t *testing.T) {
+	t.Parallel()
+	before, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, before)
+	}
+	const bumped = "sha256:c100000000000000000000000000000000000000000000000000000000000000"
+	after, err := helmTemplate(t, "--set", "cds.image.digest="+bumped)
+	if err != nil {
+		t.Fatalf("helm template with a bumped CDS digest: %v\n%s", err, after)
+	}
+	if got, old := cdsShapeAnnotation(t, after), cdsShapeAnnotation(t, before); got == old || !strings.HasPrefix(got, "cds-c10000000000-") {
+		t.Errorf("CDS shape after a digest bump = %q, want a cds-c10000000000- shape other than %q", got, old)
 	}
 }
 
@@ -268,5 +300,36 @@ func TestChartSeedRetiresPreShapeComponentEntries(t *testing.T) {
 		if _, ok := live.Workloads[name]; ok {
 			t.Errorf("pre-shape entry %q survived the seed", name)
 		}
+	}
+}
+
+// Following the seed lets whoever edits it publish entries, so CDS follows
+// only the measured node image's seed and reads the seed ConfigMap once,
+// with or without operator keys.
+func TestChartCDSFollowsOnlyBakedSeed(t *testing.T) {
+	t.Parallel()
+	keys := filepath.Join(t.TempDir(), "operator.pub")
+	if err := os.WriteFile(keys, []byte("-----BEGIN PUBLIC KEY-----\nMFkwfakefakefake\n-----END PUBLIC KEY-----\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		args   []string
+		follow bool
+	}{
+		{name: "chart-managed"},
+		{name: "chart-managed with operator keys", args: []string{"--set-file", "cds.operatorKeys=" + keys}},
+		{name: "baked node", args: bakedArgs, follow: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, tc.args...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
+			if got := slices.Contains(args, "--follow-seed"); got != tc.follow {
+				t.Errorf("CDS args contain --follow-seed = %t, want %t: %q", got, tc.follow, args)
+			}
+		})
 	}
 }

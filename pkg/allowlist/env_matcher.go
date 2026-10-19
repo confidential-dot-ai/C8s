@@ -6,6 +6,8 @@ import (
 	"fmt"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 )
 
 // EnvMatcher holds one exact-value or presence matcher.
@@ -41,7 +43,7 @@ func (m EnvMatcher) MarshalYAML() (any, error) {
 
 // Unknown matcher fields fail closed even when parsing a served allowlist.
 func (m *EnvMatcher) UnmarshalJSON(data []byte) error {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return fmt.Errorf("invalid environment matcher")
 	}
 	var exact exactEnvMatcher

@@ -1,6 +1,7 @@
 package allowlist
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,8 @@ import (
 // `workload_entry_digest` indexes each container digest for membership, and
 // `allowlist_version` is the counter every mutation bumps (the worker pull
 // ETag). The journal tables (journal.go) keep the history of served documents.
+// `route_manifest` holds the signed route manifest, which shares the database
+// and so its lifetime (route policy C5).
 type Store struct {
 	mu sync.Mutex
 	db *sql.DB
@@ -55,6 +58,13 @@ CREATE TABLE IF NOT EXISTS workload_entry_digest (
 	entry_name TEXT NOT NULL,
 	role       TEXT NOT NULL,
 	PRIMARY KEY (digest, entry_name, role)
+);
+CREATE TABLE IF NOT EXISTS route_manifest (
+	id       INTEGER PRIMARY KEY CHECK (id = 1),
+	revision INTEGER NOT NULL,
+	digest   TEXT NOT NULL,
+	manifest BLOB NOT NULL,
+	token    TEXT NOT NULL
 );
 `
 
@@ -257,10 +267,13 @@ func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added
 // retireReplacedTx deletes every stored entry seed replaces and returns how
 // many it deleted.
 func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, error) {
-	seedKeys := map[string]bool{}
+	seedKeys, overrideKeys := map[string]bool{}, map[string]bool{}
 	for name := range seed {
 		if key := GeneratedKey(name); key != "" {
 			seedKeys[key] = true
+		}
+		if key := overrideKey(name); key != "" {
+			overrideKeys[key] = true
 		}
 	}
 	stored, err := loadWorkloads(tx)
@@ -269,7 +282,12 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 	}
 	var retired int
 	for name, w := range stored {
-		if _, ok := seed[name]; ok || !retiredBySeed(name, w, seedKeys) {
+		// An override takes its name from the <image>-<12 hex> entry releases
+		// before per-shape names generated, which the store may still hold.
+		if entry, ok := seed[name]; ok && (overrideKey(name) == "" || sameWorkload(entry, w)) {
+			continue
+		}
+		if !retiredBySeed(name, w, seedKeys, overrideKeys) {
 			continue
 		}
 		if _, err := tx.Exec("DELETE FROM workload_entry WHERE name = ?", name); err != nil {
@@ -282,6 +300,12 @@ func retireReplacedTx(tx *sql.Tx, seed map[string]pkgallowlist.Workload) (int, e
 		retired++
 	}
 	return retired, nil
+}
+
+func sameWorkload(a, b pkgallowlist.Workload) bool {
+	x, errX := json.Marshal(a)
+	y, errY := json.Marshal(b)
+	return errX == nil && errY == nil && bytes.Equal(x, y)
 }
 
 // seedWorkloadsTx inserts every entry whose name is free and returns how many

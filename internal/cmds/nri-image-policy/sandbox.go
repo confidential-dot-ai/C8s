@@ -7,6 +7,7 @@ import (
 
 	"github.com/containerd/nri/pkg/api"
 
+	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -82,13 +83,16 @@ type sandboxObservation struct {
 // violation rather than as consent.
 //
 // ownSocketDir is the inventory socket directory this plugin bind-mounts into
-// injected sidecars itself (socketDirAdjustment); it is the one host bind the
-// policy does not hold against a container, because the policy put it there.
-func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) sandboxObservation {
+// injected sidecars itself (socketDirAdjustment); the policy put it there, so
+// it does not hold that bind against a container. mounts is the container's
+// mount evidence, as mountObserver.Observe returns it. A bind whose evidence
+// nodeRoot accepts carries measured node bytes an allowlist rule pinned at that
+// destination, so it is not a host bind either; nil accepts none.
+func observeSandbox(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) sandboxObservation {
 	obs := sandboxObservation{
 		PodNamespaces:    namespaceTypes(pod.GetLinux().GetNamespaces()),
 		CtrNamespaces:    namespaceTypes(ctr.GetLinux().GetNamespaces()),
-		HostBinds:        hostBinds(pod, ctr, ownSocketDir),
+		HostBinds:        hostBinds(pod, ctr, ownSocketDir, mounts, nodeRoot),
 		WritableKernelFS: writableKernelFS(ctr),
 		Hooks:            hookStages(ctr.GetHooks()),
 		Sysctls:          slices.Sorted(maps.Keys(ctr.GetLinux().GetSysctl())),
@@ -178,7 +182,7 @@ func namespaceTypes(nss []*api.LinuxNamespace) []string {
 // the pod UID, so a UID appearing anywhere in the source proves nothing, and an
 // uncleaned source would let `<uid>/..` name the parent. A pod with neither
 // identifier is unidentifiable, and every bind is then foreign.
-func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []string {
+func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) []string {
 	var owned []string
 	if uid := pod.GetUid(); uid != "" {
 		owned = append(owned, kubeletRoot+"/pods/"+uid+"/")
@@ -200,9 +204,29 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 		if ownSocketDir != "" && src == ownSocketDir && isInjectedSocketMount(pod, ctr, m) {
 			continue
 		}
+		if nodeRoot != nil && nodeRootBind(src, m.GetDestination(), mounts, nodeRoot) {
+			continue
+		}
 		out = append(out, src)
 	}
 	return out
+}
+
+// nodeRootBind reports whether mounts holds evidence for source at destination
+// and nodeRoot accepts all of it. Keying on the pair, not on the position, keeps
+// a duplicate bind with weaker evidence from riding on an accepted one.
+func nodeRootBind(source, destination string, mounts []allowlist.ObservedMount, nodeRoot func(allowlist.ObservedMount) bool) bool {
+	found := false
+	for _, m := range mounts {
+		if m.Source != source || m.Destination != destination {
+			continue
+		}
+		if !nodeRoot(m) {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
 // isInjectedSocketMount reports whether m is the mount socketDirAdjustment
@@ -212,9 +236,28 @@ func hostBinds(pod *api.PodSandbox, ctr *api.Container, ownSocketDir string) []s
 // inventory sockets.
 func isInjectedSocketMount(pod *api.PodSandbox, ctr *api.Container, m *api.Mount) bool {
 	return m.GetDestination() == workloadclaims.SidecarSocketDir &&
-		slices.Contains(m.GetOptions(), "ro") &&
+		endsReadOnly(m) &&
 		pod.GetAnnotations()[workloadclaims.AnnotationInjected] == "true" &&
 		workloadclaims.IsSocketConsumer(ctr.GetName())
+}
+
+// endsReadOnly reports whether m is read-only once runc has applied its
+// options: the last "ro" or "rw" wins, and "rrw" (a recursive setattr applied
+// after the mount) leaves it writable whatever came before. "rro" alone is
+// not taken as read-only, so a caller fails closed on it.
+func endsReadOnly(m *api.Mount) bool {
+	readOnly := false
+	for _, option := range m.GetOptions() {
+		switch option {
+		case "ro":
+			readOnly = true
+		case "rw":
+			readOnly = false
+		case "rrw":
+			return false
+		}
+	}
+	return readOnly
 }
 
 // writableKernelFS returns the destinations of sysfs and cgroup mounts that are
@@ -225,7 +268,7 @@ func writableKernelFS(ctr *api.Container) []string {
 		if !slices.Contains(kernelFSTypes, m.GetType()) {
 			continue
 		}
-		if !slices.Contains(m.GetOptions(), "ro") {
+		if !endsReadOnly(m) {
 			out = append(out, m.GetDestination())
 		}
 	}

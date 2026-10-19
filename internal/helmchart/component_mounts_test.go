@@ -10,6 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // kubeletExpand is the kubelet's $(VAR) expansion of one argv token: $$ is a
@@ -47,10 +48,14 @@ func kubeletExpand(token string, env map[string]string) string {
 }
 
 // runtimeArgv is the OCI process.args the runtime starts: the container's
-// command and args after kubelet expansion, with the image entrypoint in
-// place of an absent command.
+// command and args after kubelet expansion over its env and the kubelet's
+// service variables, with the image entrypoint in place of an absent command.
 func runtimeArgv(c corev1.Container, entrypoint []string) []string {
 	env := map[string]string{}
+	for _, kv := range kubeletServiceEnv {
+		name, value, _ := strings.Cut(kv, "=")
+		env[name] = value
+	}
 	for _, e := range c.Env {
 		env[e.Name] = e.Value
 		if e.ValueFrom != nil {
@@ -118,10 +123,9 @@ func launchEnv(t *testing.T, spec corev1.PodSpec, c corev1.Container, imageEnv m
 // plugin does on a node without encrypted scratch, the least the chart's
 // entries must admit: tmpfs-backed volumes (memory emptyDirs, Secrets,
 // projected and downward-API volumes) are memory, ConfigMaps, PVCs and disk
-// emptyDirs are of unknown storage, and a hostPath is a host mount whose
-// source containerd resolves through symlinks (resolveVarRun: /var/run is
-// /run). The kubelet and containerd add their platform mounts too.
-func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container, resolveVarRun bool) []pkgallowlist.ObservedMount {
+// emptyDirs are of unknown storage, and a hostPath is a host mount of its
+// source. The kubelet and containerd add their platform mounts too.
+func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkgallowlist.ObservedMount {
 	t.Helper()
 	volumes := map[string]corev1.Volume{}
 	for _, v := range spec.Volumes {
@@ -139,11 +143,7 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container, resol
 		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
 		switch {
 		case v.HostPath != nil:
-			source := v.HostPath.Path
-			if rest, ok := strings.CutPrefix(source, "/var/run"); resolveVarRun && ok && (rest == "" || rest[0] == '/') {
-				source = "/run" + rest
-			}
-			digest, err := pkgallowlist.HostSourceDigest(source)
+			digest, err := pkgallowlist.HostSourceDigest(v.HostPath.Path)
 			if err != nil {
 				t.Fatalf("container %s volume %q: %v", c.Name, m.Name, err)
 			}
@@ -215,7 +215,7 @@ func injectedShape(c pkgallowlist.Container) bool {
 // fewer or one more, a loader variable or a redirected PATH is refused. On
 // default, bare-metal and baked renders alike, no component entry leaves env
 // open, nor args or mounts except the injected sidecar shapes, whose args are
-// per pod.
+// per pod and whose mount tables leave out the inventory socket.
 func TestChartComponentShapesAreExact(t *testing.T) {
 	t.Parallel()
 	digests := []string{}
@@ -244,7 +244,7 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 			"--set", "cds.measurements={"+measurements+"}"), true},
 		{"acme", append(slices.Clone(derived),
 			"--set", "router.publicTLS.mode=acme", "--set", "router.service.type=LoadBalancer", "--set-json", `router.san=["a.example.com"]`), true},
-		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)"]`), true},
+		{"escaped operator args", append(slices.Clone(derived), "--set-json", `operator.extraArgs=["cost $5","$(a $$","$$(POD_NAME)","$$(KUBERNETES_SERVICE_HOST)"]`), true},
 		{"baked", append(slices.Clone(bakedArgs), "--set", "armtlsMesh.image.digest=sha256:"+strings.Repeat("2", 64)), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -268,6 +268,11 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 							t.Errorf("%s entry %s leaves env %q", source, name, c.Env.Policy)
 						}
 						if injectedShape(c) {
+							// The plugin's own socket mount observes as platform,
+							// which exact rules never match.
+							if slices.ContainsFunc(c.Mounts.Rules, func(r pkgallowlist.MountRule) bool { return r.Destination == workloadclaims.SidecarSocketDir }) {
+								t.Errorf("%s entry %s names the inventory socket mount %s", source, name, workloadclaims.SidecarSocketDir)
+							}
 							continue
 						}
 						if c.Args.Policy == pkgallowlist.PolicyAny || c.Mounts.Policy == pkgallowlist.PolicyAny {
@@ -292,11 +297,9 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 					launch := func(extra ...string) *pkgallowlist.EnvObservation {
 						return launchEnv(t, w.spec, c, pin.imageEnv, extra...)
 					}
-					for _, resolve := range []bool{false, true} {
-						mounts := observedMounts(t, w.spec, c, resolve)
-						for source, al := range sources {
-							checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, launch)
-						}
+					mounts := observedMounts(t, w.spec, c)
+					for source, al := range sources {
+						checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, launch)
 					}
 				}
 			}
@@ -329,7 +332,7 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {
 		return index.AdmitsContainer(pkgallowlist.RunningContainer{
-			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx, false), Env: launchEnv(t, spec, nginx, pin.imageEnv),
+			Digest: imageDigest(nginx.Image), Argv: argv, Mounts: observedMounts(t, spec, nginx), Env: launchEnv(t, spec, nginx, pin.imageEnv),
 		})
 	}
 	if !admits() {

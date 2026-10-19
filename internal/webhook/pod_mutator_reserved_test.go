@@ -22,7 +22,7 @@ func TestPreDeclaredReservedMountIsForcedReadOnly(t *testing.T) {
 		volume string
 	}{
 		{"secrets", secretsVolumeName},
-		{"certs", defaultCertVolumeName},
+		{"certs", DefaultCertVolumeName},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pod := podWithApp()
@@ -125,7 +125,7 @@ func TestReservedVolumeNamesCoversSidecarMounts(t *testing.T) {
 	}
 
 	reserved := reservedVolumeNames(pod)
-	for _, want := range []string{secretsVolumeName, defaultCertVolumeName, "my-certs", "sidecar-extra"} {
+	for _, want := range []string{secretsVolumeName, DefaultCertVolumeName, "my-certs", "sidecar-extra"} {
 		if !reserved[want] {
 			t.Errorf("%q not reserved", want)
 		}

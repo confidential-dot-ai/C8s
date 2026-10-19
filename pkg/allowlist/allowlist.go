@@ -28,7 +28,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/confidential-dot-ai/c8s/internal/strictjson"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadname"
 )
 
 // Schema identifies the allowlist document format. It is the first field of the
@@ -100,6 +102,8 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	// VerityDigest is reserved for fs-verity and rejected for now.
+	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
 // MountClass identifies who controls the content behind a bind mount.
@@ -110,7 +114,16 @@ const (
 	MountEmptyDir MountClass = "emptyDir"
 	MountData     MountClass = "data"
 	MountHost     MountClass = "host"
+	// MountNodeRootFile is a rule kind only: it admits a read-only host file
+	// bind that carries ProvenanceNodeRoot evidence. It is a kind rather than a
+	// field on a host rule so that an enforcer predating it refuses the served
+	// document instead of applying the rule as a plain host rule.
+	MountNodeRootFile MountClass = "nodeRootFile"
 )
+
+// ProvenanceNodeRoot is mount evidence for a regular file reached through the
+// node's measured, read-only dm-verity root.
+const ProvenanceNodeRoot = "node-root"
 
 // MountStorage records the storage guarantee established by the node.
 type MountStorage string
@@ -160,7 +173,7 @@ func ParseServedJSON(data []byte) (*Allowlist, error) {
 }
 
 func parseJSON(data []byte, strict bool) (*Allowlist, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -187,7 +200,7 @@ func (a *Allowlist) Normalize() error {
 // a PUT /allowlist/workloads/{name} — applying the same normalization as
 // ParseJSON so a stored entry is canonical.
 func ParseWorkloadJSON(data []byte) (*Workload, error) {
-	if err := validateJSON(data); err != nil {
+	if err := strictjson.Validate(data); err != nil {
 		return nil, err
 	}
 	dec := json.NewDecoder(bytes.NewReader(data))
@@ -220,7 +233,7 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 
 var (
 	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
-	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -267,13 +280,13 @@ func (w Workload) ArgvPinned() bool {
 }
 
 // MountsPinned reports whether every container's mounts policy is deny, or
-// exact with no host rule, so the host adds no mount and names no node path.
-// A data rule still mounts content the cluster chooses (a ConfigMap, a PVC)
-// at a destination the entry declares. A secrets grant requires it
-// (docs/secrets.md).
+// exact with no host rule other than a read-only nodeRootFile, so the host adds
+// no mount and chooses no content. A data rule still mounts content the cluster
+// chooses (a ConfigMap, a PVC) at a destination the entry declares. A secrets
+// grant requires it (docs/secrets.md).
 func (w Workload) MountsPinned() bool {
 	for _, c := range w.containers() {
-		if !(mountConstraint{policy: &c.Mounts}).hostIndependent() {
+		if !(mountConstraint{policy: &c.Mounts}).grantPinned() {
 			return false
 		}
 	}
@@ -385,7 +398,7 @@ func DigestEntryName(digest types.Digest, image string) string {
 	if len(base) > 50 {
 		base = base[:50]
 	}
-	if !ValidWorkloadName(base) {
+	if !workloadname.Valid(base) {
 		base = "image"
 	}
 	return base + "-" + digest.Hex()[:12]
@@ -409,7 +422,7 @@ func (a *Allowlist) CanonicalDigest() ([]byte, error) {
 }
 
 // normalize canonicalizes the document. strict is the write/ingest posture
-// (ParseJSON): it enforces MaxWorkloadNameLen, so no entry that the cw selector
+// (ParseJSON): it enforces workloadname.MaxLen, so no entry that the cw selector
 // or the leaf stamp cannot represent ever enters the store. A served document
 // (ParseServedJSON) is not ours to reject over that bound — it arrived after
 // entries could already have been written, and failing the whole document would
@@ -422,19 +435,19 @@ func (a *Allowlist) normalize(strict bool) error {
 	for name, w := range a.Workloads {
 		// The grammar is not negotiable on either path: the name is used
 		// verbatim as a URL path segment.
-		if !workloadNameGrammarOK(name) {
+		if !workloadname.ValidGrammar(name) {
 			return fmt.Errorf("workload name %q must match [A-Za-z0-9][A-Za-z0-9._-]* (it is a URL path segment)", name)
 		}
-		if len(name) > MaxWorkloadNameLen {
+		if len(name) > workloadname.MaxLen {
 			if strict {
-				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), MaxWorkloadNameLen)
+				return fmt.Errorf("workload name %q is %d bytes; the maximum is %d (it is mirrored as a Kubernetes label value)", name, len(name), workloadname.MaxLen)
 			}
 			// Dropping is fail-closed: the entry's digests stop being admitted
 			// by this consumer. It could never have been named on a leaf either
 			// (armtls.MatchedWorkload.Validate applies the same bound), so
 			// nothing that depended on it is lost.
 			slog.Warn("allowlist: dropping a served workload entry whose name exceeds the label-value bound",
-				"name", name, "bytes", len(name), "max", MaxWorkloadNameLen)
+				"name", name, "bytes", len(name), "max", workloadname.MaxLen)
 			delete(a.Workloads, name)
 			continue
 		}
@@ -636,44 +649,4 @@ func sortContainers(cs []Container) {
 func policyKey(c Container) string {
 	b, _ := json.Marshal([]any{c.Command, c.Args, c.Mounts, c.Env})
 	return string(b)
-}
-
-// MaxWorkloadNameLen bounds an entry name to the Kubernetes label-value length,
-// so the confidential.ai/cw selector, an allowlist entry name, and the
-// matched-workload leaf stamp (pkg/armtls) can all represent it. It is enforced
-// where entries are written, not where a served document is read — see
-// normalize.
-const MaxWorkloadNameLen = 63
-
-// workloadNameGrammarOK restricts entry names to a URL-safe segment so a name
-// can be used verbatim as a path parameter without escaping ambiguity. It does
-// not apply MaxWorkloadNameLen; ValidWorkloadName is the bounded form.
-func workloadNameGrammarOK(name string) bool {
-	if name == "" {
-		return false
-	}
-	for i := 0; i < len(name); i++ {
-		b := name[i]
-		switch {
-		case b >= 'a' && b <= 'z', b >= 'A' && b <= 'Z', b >= '0' && b <= '9':
-		case (b == '.' || b == '_' || b == '-') && i > 0:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-// ValidWorkloadName reports whether name is a legal workload entry name: the
-// URL-path-segment grammar, bounded to MaxWorkloadNameLen. It is the check the
-// write path, the admission selector, and the matched-workload certificate
-// stamp share.
-//
-// It is not identical to what every consumer accepts: a name may end in '.',
-// '_' or '-' here and still fail k8s validation.IsValidLabelValue, which the
-// injection webhook applies to the cw label. Tightening the grammar to close
-// that gap would retroactively invalidate stored entries, so the narrower rule
-// stays where it is enforced.
-func ValidWorkloadName(name string) bool {
-	return workloadNameGrammarOK(name) && len(name) <= MaxWorkloadNameLen
 }

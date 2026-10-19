@@ -49,6 +49,7 @@ workload-agnostic: anything that runs on Kubernetes can run confidentially.
 - [c8s-verify](https://github.com/confidential-dot-ai/c8s-verify-js), verify a C8s cluster from a browser
 - [attestation-rs](https://github.com/confidential-dot-ai/attestation-rs), the TEE evidence verification service C8s uses
 - [armTLS](docs/armtls.md), how attested TLS works in C8s — the handshake step by step, the guarantees, and which certificate is used where
+- [Route evidence](docs/routes-evidence.md), how the router binds its route manifest into attestation evidence and how `c8s verify` checks it
 
 ## Features
 
@@ -180,11 +181,12 @@ kubectl label node <cds-node> role=cds
 openssl ecparam -name prime256v1 -genkey -noout -out operator.key
 openssl ec -in operator.key -pubout -out operator.pub
 
-# Install the platform (node-as-CVM) and point the bundled router
-# at your workload
+# Install the platform (node-as-CVM) and route the bundled router to your
+# workload, which serves TLS on 8443 with its injected certificate; install
+# prints the `c8s routes add` commands that store the route
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --namespace c8s-system \
   --operator-keys operator.pub \
-  --workload-ref vllm=vllm/deployment/serving:8000 \
+  --workload-ref vllm=vllm/deployment/serving:8443 \
   --upstream vllm
 ```
 
@@ -394,8 +396,9 @@ openssl ec -in operator.key -pubout -out operator.pub
 c8s install --operator-keys operator.pub   # plus your other install flags
 ```
 
-Installing without `--operator-keys` leaves allowlist writes disabled, and
-`c8s install` refuses that on the default path unless you pass `--force` to
+Installing without `--operator-keys` leaves allowlist writes disabled and
+CDS unable to store a route manifest, so the router routes nothing. `c8s
+install` refuses that on the default path unless you pass `--force` to
 acknowledge. Supply the private key to the CLI by flag (`--operator-key`) or
 environment (`C8S_OPERATOR_KEY`). Write tokens are short-lived and bound to
 the request body, so a captured token cannot be replayed against a different
@@ -427,6 +430,15 @@ only verifiers that run it. For
 GitOps consumers, `c8s render-values --operator-keys operator.pub` embeds the
 PEM content (the chart value takes content, never a file path); the chart
 wiring is described in [docs/operator.md](docs/operator.md).
+
+## Manage the route manifest
+
+`c8s routes` (`show`, `digest`, `put`, `add`, `rm`) reads and writes the signed
+route manifest that CDS stores at `/routes`, with the operator key used for
+allowlist writes. Point `--url` at CDS directly, for example through a
+port-forward, because the router does not relay `/routes`. The commands only
+store the manifest: the router does not apply it yet. See
+[Route manifest](docs/operator.md#route-manifest).
 
 ## Docker images
 

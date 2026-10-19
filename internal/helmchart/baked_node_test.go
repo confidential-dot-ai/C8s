@@ -9,11 +9,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-// bakedArgs is the chart shape `c8s node-image render` produces. A baked
-// router reads its upstream from the launch file, so the shape clears the
-// mesh-wrapped address helmTemplate pins by default.
+// bakedArgs is the chart shape `c8s node-image render` produces.
 var bakedArgs = []string{
-	"--set-string", "router.upstream.address=",
 	"--set", "node.baked=true",
 	"--set", "attestationApi.cvmMode=bare-metal",
 	"--set", "attestationApi.enabled=false",
@@ -39,6 +36,7 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 		"c8s-operator/operator":       "cds.json",
 		"c8s-router/c8s-cert":         "cds.json",
 		"c8s-router/allowlist-proxy":  "cds.json",
+		"c8s-router/cds-attest":       "cds.json",
 		"c8s-armtls-mesh/armtls-mesh": "peers.json",
 	}
 	workloads := renderedPodSpecs(t, out)
@@ -126,6 +124,9 @@ func TestChartBakedNodeLaunchContract(t *testing.T) {
 	}
 	assertContainerHasArg(t, "c8s-cert", cert.Args, "--san-file=/run/c8s-node/tls-san")
 	assertContainerNoArgPrefix(t, "c8s-cert", cert.Args, "--san=")
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	assertContainerHasArg(t, "cds-attest", attest.Args, "--operator-keys-file=/run/c8s-node/operator-pubkey")
+	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--allow-unpinned-cds")
 	if got, want := expectedWorkloadArg(cert), routerEntryName(t, renderedSeed(t, out)); want == "" || got != want {
 		t.Errorf("c8s-cert --expected-workload = %q, want the seeded router entry %q", got, want)
 	}
@@ -151,43 +152,41 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	for _, want := range []string{
 		"server_name _;",
 		"include /run/c8s-node/router/tls.conf;",
-		"resolver rke2-coredns-rke2-coredns.kube-system.svc.cluster.local;",
-		"include /run/c8s-node/router/upstream.conf;",
-		"if ($c8s_upstream = \"\") {",
-		"proxy_pass http://$c8s_upstream;",
 		"listen 8080;",
 		"location /.well-known/acme-challenge/ {",
 		"location /.well-known/c8s/ {",
 		"location = /allowlist {",
 		"location = /v1/discovery {",
-		"location /healthz {",
+		"location = /healthz {",
 	} {
 		if !strings.Contains(conf, want) {
 			t.Errorf("nginx.conf lacks %q", want)
 		}
 	}
-	if strings.Contains(conf, "upstream catch_all") {
-		t.Error("launch-driven router must not render a static catch-all")
+	for _, unwanted := range []string{"upstream catch_all", "upstream.conf", "$c8s_upstream", "resolver "} {
+		if strings.Contains(conf, unwanted) {
+			t.Errorf("launch-driven nginx.conf contains %q; location / must proxy to the routing listener", unwanted)
+		}
 	}
 	if strings.Contains(conf, "ssl_certificate ") {
 		t.Error("launch-driven nginx.conf must leave the certificate to tls.conf")
 	}
-	// The :80 redirect server also has a location /, so pick the catch-all by
-	// its proxy_pass.
+	// The :80 redirect server also has a location /, so pick the routing one
+	// by its proxy_pass.
 	cfg := parseNginxConfig(t, conf)
 	var route *nginxBlock
 	for _, block := range cfg.all {
 		if slices.ContainsFunc(block.directives["proxy_pass"], func(args []string) bool {
-			return slices.Equal(args, []string{"http://$c8s_upstream"})
+			return slices.Equal(args, []string{"http://127.0.0.1:8802"})
 		}) {
 			route = block
 		}
 	}
 	if route == nil {
-		t.Fatal("launch-driven catch-all location missing")
+		t.Fatal("launch-driven routing location missing")
 	}
 	assertRouterWebSocketUpgrade(t, cfg, route)
-	assertRouterUpstreamTimeouts(t, route, "3600s")
+	assertRouterRoutingLocation(t, route, "8802", "3600s")
 
 	snippets := renderedConfigMap(t, out, "c8s-router-nginx").Data
 	for key, want := range map[string]string{
@@ -250,30 +249,32 @@ func TestChartBakedRouterReadsLaunchFiles(t *testing.T) {
 	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
 	for _, arg := range []string{
 		"--front-door-mode-file=/run/c8s-node/router/front-door-mode",
-		"--upstream-file=/run/c8s-node/router/upstream",
 		"--serving-cert-file=/tls/cert.pem",
 		"--acme-serving-cert-file=/etc/c8s-acme-tls/cert.pem",
 	} {
 		assertContainerHasArg(t, "cds-attest", attest.Args, arg)
 	}
 	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--front-door-mode=")
-	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--upstream=")
+	assertContainerNoArgPrefix(t, "cds-attest", attest.Args, "--upstream")
 	assertContainerMount(t, attest, "node-config", "/run/c8s-node")
 }
 
-func TestChartBakedRouterRejectsReplacedValues(t *testing.T) {
+func TestChartBakedRouterRejectsChartTLSMode(t *testing.T) {
 	t.Parallel()
-	for name, args := range map[string][]string{
-		"upstream": append(slices.Clone(bakedArgs), "--set-string", "router.upstream.address=c8s-infer.c8s-system.svc.cluster.local:8000"),
-		"tls mode": append(slices.Clone(bakedArgs), "--set", "router.publicTLS.mode=acme"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			out, err := helmTemplate(t, args...)
-			if err == nil || !strings.Contains(out, "node.baked takes the") {
-				t.Fatalf("render accepted or failed elsewhere: %v\n%s", err, out)
-			}
-		})
+	out, err := helmTemplate(t, append(slices.Clone(bakedArgs), "--set", "router.publicTLS.mode=acme")...)
+	if err == nil || !strings.Contains(out, "node.baked takes the public TLS mode") {
+		t.Fatalf("render accepted or failed elsewhere: %v\n%s", err, out)
 	}
+}
+
+// A baked router runs the ACME sidecar whatever router.publicTLS.mode says.
+func TestChartBakedRouterRoutingPortAvoidsACMEPorts(t *testing.T) {
+	t.Parallel()
+	out, err := helmTemplate(t, append(slices.Clone(bakedArgs), "--set", "router.routing.port=8080")...)
+	if err == nil {
+		t.Fatalf("helm template succeeded, want the ACME port collision refused\n%s", out)
+	}
+	assertHelmFailMessage(t, out, "router.routing.port must differ from the ACME HTTP port, got: 8080")
 }
 
 // A regular Helm install never reads launch files.
@@ -283,7 +284,7 @@ func TestChartRouterDefaultIgnoresLaunchFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
-	for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file", "--upstream-file", "$c8s_upstream"} {
+	for _, unwanted := range []string{"/run/c8s-node/router", "--domains-file", "--discovery-public-tls-mode-file", "--front-door-mode-file"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("unbaked render contains %q", unwanted)
 		}
@@ -315,7 +316,7 @@ func TestChartBakedRouterRequestsWorkloadIdentity(t *testing.T) {
 	}
 	foundVolume := false
 	for _, volume := range pod.Volumes {
-		if volume.Name == "workload-claims" && volume.HostPath != nil && volume.HostPath.Path == "/var/run/nri-image-policy" && volume.HostPath.Type != nil && *volume.HostPath.Type == corev1.HostPathDirectory {
+		if volume.Name == "workload-claims" && volume.HostPath != nil && volume.HostPath.Path == "/run/nri-image-policy" && volume.HostPath.Type != nil && *volume.HostPath.Type == corev1.HostPathDirectory {
 			foundVolume = true
 		}
 	}

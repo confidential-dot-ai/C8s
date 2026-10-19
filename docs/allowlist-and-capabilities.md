@@ -333,6 +333,84 @@ the path pin grants access to the contents at that node path. Read-only mode
 applies to the mount itself; nested mounts retain their own flags. Recursive
 read-only/write mount options leave the host source commitment unavailable.
 
+A read-only host **file** from the node image can use mount kind
+`nodeRootFile` instead of `host`, so it is not treated as operator-supplied
+executable content:
+
+```json
+{"destination":"/usr/bin/nvidia-smi","kind":"nodeRootFile","source":"/usr/bin/nvidia-smi","readOnly":true}
+```
+
+A `nodeRootFile` rule takes the same `source` and requires `readOnly: true`.
+The bind it admits must carry node-root provenance: a regular file reached
+directly through the node's read-only dm-verity root. The enforcer opens the source without symlinks or
+intervening mounts, checks the active kernel table for a single strict read-only
+dm-verity target, and compares its SHA-256 root hash with `roothash=` in the
+measured boot command line. Writable overlays, foreign verity devices, bind
+aliases, directories and missing evidence do not qualify.
+
+The node image must meet this precondition:
+
+- `/` is mounted read-only directly from one dm-verity device, with no overlay
+  over it. State overlays on other directories are fine, but files under an
+  overlaid or separately mounted directory never qualify.
+- The kernel command line carries exactly one `roothash=` for that device.
+  `usrhash=` and a verity `/usr` alone do not count.
+- The verity table is a single `verity` target over the whole device, hashed
+  with SHA-256. Its optional parameters are limited to
+  `restart_on_corruption`, `panic_on_corruption`, `restart_on_error`,
+  `panic_on_error`, `ignore_zero_blocks` and `try_verify_in_tasklet`. Forward
+  error correction (`veritysetup --fec-device`), `ignore_corruption`,
+  `check_at_most_once` and any other option leave provenance unavailable.
+
+A node that fails the precondition denies every `nodeRootFile` rule. With the
+allowlist enabled, the enforcer logs `node-root provenance unavailable` at
+startup, as a warning when the command line declares `roothash=`. A denied
+launch of an image with a `nodeRootFile` rule logs `node_root_unavailable` with
+the node-wide cause, or, on a measured root, a reason saying the source is not
+a plain read-only bind of a regular file on that root. The C8s node
+image meets the precondition, and `make test-node-guest-image-immutable-root`
+checks that its initrd opens the root device without extra verity options. The approved node launch measurement authenticates the image,
+including its kernel command line and root hash; no separate file hash is needed.
+Customer verification must approve that measurement. A dev image or an unchecked
+measurement does not become trustworthy merely because it uses dm-verity.
+
+Blocking adjustment validation checks provenance before creation, and the
+persisted launch is checked again. Provenance travels with the mount evidence
+through inventory, admission history and CDS workload matching, so `nodeRootFile`
+bytes are bound to the attested node image.
+
+Lint permits `nodeRootFile` rules on `PATH` and loader search paths. Host rules
+and data mounts retain search-path rejection. Source, destination and
+access-mode constraints still apply. Use `allowlist derive --mounts-file` to
+supply the rules. This covers the measured NVIDIA files in [issue #868](https://github.com/confidential-dot-ai/C8s/issues/868) without a
+blanket NVIDIA exemption or lint bypass.
+
+Provenance requires a plain bind mount (`bind` type or a `bind`/`rbind` option,
+with only access and propagation flags). Any other mount type or option, such
+as an overlay naming the verified file with another `lowerdir`, gets no
+provenance. The sandbox policy (`policy.sandbox`) exempts a bind from the
+host-bind check only when an allowlist entry admits the container under an
+`exact` mount policy whose `nodeRootFile` rule names that destination and
+source. That entry can be CDS-served. Every other bind stays a host bind,
+including a measured file under mount policy `any`, under a `host` rule, or
+with the allowlist disabled. A read-only `nodeRootFile` rule does not stop an
+entry from carrying a secrets grant; a `host` rule does (see
+[Secrets](secrets.md)).
+
+The reserved `verityDigest` field is rejected as not supported on every kind. This exception is scoped to read-only regular files.
+It does not implement whole-volume provenance, arbitrary dm-verity volume trust,
+directory mounts, IMA/IPE policy, dependency approval, or a general prohibition
+on interpreters reading executable scripts from data. Keep exact env/mount
+policies and review arguments and dependencies. Existing permissive policies
+retain their behavior.
+
+Upgrade CDS/CLI consumers and every node enforcer before publishing
+`nodeRootFile` rules. An enforcer that has not been upgraded does not know the
+kind, so it refuses the served document and keeps its last good policy; it
+never applies the rule as a plain host rule. Baked enforcers require a
+node-image rebuild.
+
 The pod UID embedded in a kubelet source must equal the pod being admitted, and
 containerd sandbox sources must name its exact sandbox. These runtime IDs prove
 local ownership only and are not serialized into the stable allowlist.
@@ -340,6 +418,7 @@ local ownership only and are not serialized into the stable allowlist.
 | Observed source | Class | Storage | `exact` behavior |
 |---|---|---|---|
 | Node-created platform mount at its fixed destination | `platform` | not relevant | admitted without a rule |
+| The node inventory's socket directory, bind-mounted read-only by the node policy itself into an injected pod's socket consumers | `platform` | not relevant | admitted without a rule |
 | Current pod's `emptyDir` on tmpfs | `emptyDir` | `memory` | requires a matching `emptyDir` rule |
 | Current pod's `emptyDir` whose backing chain reaches encrypted boot scratch | `emptyDir` | `encrypted` | requires a matching `emptyDir` rule |
 | Another pod's `emptyDir` | `host` | `unknown` | requires an explicit host rule |
@@ -524,7 +603,8 @@ baked plugin, whose mode the chart cannot see), the chart writes it as
 plugin (a host process, from the host's own view) or the node image's
 `nri-node-ip.service` writes into the socket directory, never a pod, mounted read-only at `/run/c8s/node-ip` from a host path the entry
 pins. The plugin rewrites the file in place, and the binary rereads it and
-restarts when the address changes. The render refuses `$(HOST_IP)` in a component's argv there: the binary
+restarts when it names another address
+(see [`armtls.md`](armtls.md) for when the plugin publishes a change). The render refuses `$(HOST_IP)` in a component's argv there: the binary
 would read it from the `HOST_IP` variable, and a restaged pod could set that
 to name its own `/verify`. Under an audit policy the chart keeps `HOST_IP`,
 since nothing is refused anyway. Node images before this release publish
@@ -611,8 +691,9 @@ them. get-cert runs with per-pod dynamic arguments, which is exactly why the
 sidecar shapes in the C8s image's component entry carry `command: exact` at
 the invocation (`/c8s get-cert`) and `args: any`. Their mounts are `exact`:
 the webhook mounts at fixed destinations, and each optional mount (discovery,
-reload-watch, the inventory socket the NRI plugin adds) is a separate
-container of the entry, so admission is the union across them. Before
+reload-watch) is a separate container of the entry, so admission is the union
+across them. The inventory socket the NRI plugin adds is a `platform` mount and
+needs no rule. Before
 matching, a container whose image is admitted with open args for its
 invocation and running one of the invocations the webhook injects is dropped
 from the candidate set
@@ -664,8 +745,11 @@ tracked follow-on.
 
 `nriImagePolicy.refresh.interval` sets the poll, so a node runs the previous
 document for up to one interval after CDS commits a write; a node has taken a
-write once its plugin logs `pull loop: allowlist refreshed` with a version at or
-above the one `c8s allowlist list` reports.
+write once the `allowlist_version` its plugin's `GET /healthz` reports (on the
+health socket, beside the readiness status) is at or above the one
+`c8s allowlist list` reports. The plugin also logs each refresh as
+`pull loop: allowlist refreshed` with that version. The reported version is the
+one applied, so a pull the anti-rollback check ignored does not move it.
 
 The host NRI plugin also carries a **base enforcement allowlist** in
 `allowlist.base`, baked into its boot config and never changed by a pull.
@@ -729,13 +813,16 @@ pods and the pods the webhook injects into set `enableServiceLinks: false`, so
 the set does not depend on the Services in the namespace; a workload that read
 service-link variables must resolve the Service by DNS. The chart refuses to
 render a component container with `envFrom` or an optional key reference. The
-injected sidecar shapes match the variables the webhook sets on them. A
-hostPath under `/var/run` gets a second
-container with the source under `/run`, because containerd resolves that
-symlink on most nodes. The chart refuses to render a component container whose
+injected sidecar shapes match the variables the webhook sets on them. The
+chart refuses to render a component hostPath under `/var/run`: containerd
+resolves symlinks in a hostPath source and `/var/run` is a symlink to `/run`
+on some nodes only, so the node reports no single path for it. The chart refuses to render a component container whose
 argv references one of its own variables (`$(NAME)`): the value would differ
 per node. An operator-authored `workloads` entry named `<image basename>-<first 12 hex
-of digest>` replaces the entry whole in the rendered seed. The same component entries feed the host
+of digest>` replaces the entry whole in the rendered seed and in the host
+plugin's base, and one named for the installer's digest replaces the
+installer's argv-pinned entry; keep the host-sweep script and its pause in
+it, or `c8s uninstall` cannot replay them. The same component entries feed the host
 plugin's base allowlist, as does every operator entry that leaves args,
 environment and mounts unconstrained, whether its command is `any` or pinned,
 and every operator entry for a component's digest whatever it pins; other
@@ -759,29 +846,104 @@ beside the old one, which pods still running the old shape keep matching
 while they recycle, and which a rollback matches again. The argv-pinned
 installer entries are named the same way. The seed never overwrites an entry
 the store already holds, so an edit made with `workload apply` survives a
-restart, while a deleted entry returns on the next CDS start or seed change
-for as long as the chart still renders it — to remove an image, roll the
-chart with it gone.
+restart, while a deleted entry returns on the next CDS start for as long as
+the chart still renders it — to remove an image, roll the chart with it gone.
 
-A running CDS rereads its mounted seed every 30 seconds and seeds it again
-when it changed. A configuration-only upgrade therefore publishes its new
-entries through the running CDS without restarting it, so the store and its
-version continue. The enforcers admit the new shapes on their next pull, and
-the kubelet's retries start the new pods. A rollback needs no publication: the
-store still holds the previous release's entries.
+On a chart-managed install, CDS reads its seed once, at start: anyone with
+write access to the seed ConfigMap could otherwise publish entries without an
+operator token. A configuration-only upgrade keeps CDS running, so publish the
+new release's entries through it, signed with your operator key, before you
+upgrade:
+
+1. Run the upgrade's values through `helm template` and save the
+   `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap as
+   `seed.json`.
+2. Note the highest `allowlist_version` any node's image policy plugin
+   reports on `GET /healthz`.
+3. Publish the seed: `c8s allowlist apply seed.json`. Each entry replaces the
+   live entry of that name whole.
+4. Check that `c8s allowlist list` reports a version above the one you noted.
+   If it does not, CDS restarted since the nodes last pulled, and they ignore
+   its versions up to the one they hold ([Refresh and
+   anti-rollback](#refresh-and-anti-rollback)). Each `apply` raises the
+   version by one, so for a small gap, run it again until the version passes.
+   For a larger gap, restart the image policy plugin on each node that
+   reports a version at or above it: restart containerd there (on RKE2, the
+   `rke2-server` or `rke2-agent` unit), one node at a time. A restarted
+   plugin applies the version CDS serves, whatever it held before. A node at
+   or above an older version may hold a policy the restarted CDS never
+   served.
+5. Wait until every node has taken the write: its plugin reports an
+   `allowlist_version` at or above the one `c8s allowlist list` reports.
+6. Run the upgrade.
+
+An override that narrows a component (an entry named `<image>-<first 12 hex
+of the digest>`, see above) needs one more change: the store still serves the
+generated entries it replaces, which admit what the override forbids, and
+`apply` refuses an override that such an entry shadows. Publish it in one
+write that retires them, in place of step 3:
+
+```sh
+c8s allowlist export live.json
+jq --slurpfile seed seed.json --arg override OVERRIDE \
+  '($override | capture("^(?<base>.+)-(?<digest>[0-9a-f]{12})$") | .base[:41] + "-" + .digest + "-") as $shape
+   | .workloads |= (with_entries(select(.key | startswith($shape) | not)) + $seed[0].workloads)' \
+  live.json > next.json
+c8s allowlist upload next.json
+```
+
+`OVERRIDE` is the override's entry name. The filter cuts its image segment to
+the 41 characters a generated shape keeps. Pods that still run the narrowed-away
+launch keep running, but cannot restart under it. A CDS that seeds the
+override, at start or while following its seed, retires those entries itself.
+
+On a measured node image (`node.baked`), the seed is a file the image holds,
+so CDS follows it: it rereads the file every 30 seconds and seeds it again
+when it changed. The chart sets `--follow-seed` only there.
+
+Known limitations:
+
+- The chart-managed store has no durable backing or version handoff yet, so
+  a recreated CDS loses operator writes and counts from a version below the
+  one the nodes hold.
+- Without `cds.operatorKeys`, a chart-managed CDS accepts no write, so
+  nothing can publish a new release's entries. An upgrade that changes a
+  shape, a `cds.image.digest` bump included, fails the CDS shape guard below
+  or leaves the new pods refused, and restarting CDS does not help, since its
+  version starts below the nodes'. Adding the keys later changes CDS's mounts,
+  which is such an upgrade. To upgrade in place, set `cds.operatorKeys` when
+  you install; otherwise uninstall the release and install the new one.
+
+A rollback that keeps CDS running needs no publication: the store still holds
+the previous release's entries, unless an override retired them (see above).
+A rollback to a release without that override needs its generated entries
+back: publish its seed as described next. A rollback across an upgrade that recreated
+CDS does need one. The new store and the updated boot bases need not admit
+the previous CDS or installer, and `helm rollback` reapplies the stored
+manifests without the upgrade guard below. Before you roll back, save the
+`allowlist-seed.json` of the seed ConfigMap in
+`helm get manifest <release> --revision <previous>`, publish it with
+`c8s allowlist apply`, and wait for every node as in steps 2 to 5.
 
 CDS itself is recreated, not rolled, so it cannot publish its own new shape:
-the old CDS stops before the new one starts. The chart records CDS's entry
-name on its Deployment, and an upgrade that changes CDS's command line or
-mounts fails until you publish the new entry:
+the old CDS stops before the new one starts. The chart records CDS's shape,
+named as its generated entry, on its Deployment, and an upgrade that changes
+CDS's image, command line or mounts fails until you publish the entry that
+admits the new shape. A plain `cds.image.digest` bump changes the shape too.
+The error names the entry to publish, which is your override when one admits
+CDS, and the `cds.publishedShape` value. To publish it:
 
-1. Run the failed upgrade's values through `helm template` and save the
-   `allowlist-seed.json` of the `<release>-cds-allowlist-seed` ConfigMap.
-2. Copy the entry the error names into a file and publish it:
-   `c8s allowlist apply ENTRY_FILE`.
-3. Wait until every node's image policy plugin has pulled the new version.
-4. Rerun the upgrade with `--set cds.publishedShape=<NAME>`, where `NAME` is
-   the entry name from the error.
+1. Run the failed upgrade's values through `helm template` with
+   `--set cds.publishedShape=NAME`, where `NAME` is the value from the
+   error, and save the `allowlist-seed.json` of the
+   `<release>-cds-allowlist-seed` ConfigMap.
+2. Copy the entry the error names into a file and publish it as in steps 2
+   to 4 of the configuration-only procedure above, with
+   `c8s allowlist apply ENTRY_FILE`. Without operator keys, nothing can
+   publish it to the running CDS (see the known limitations above).
+3. Wait until every node has taken the write, as in step 5 of that
+   procedure.
+4. Rerun the upgrade with `--set cds.publishedShape=NAME`.
 
 When it seeds, CDS deletes a stored entry the seed replaces if it pins a
 component executable with `args` or `mounts` `any`: an entry under a generated
@@ -827,13 +989,11 @@ entry's SHA-256>`: every nginx and c8s-image container of the router pod,
 pinned to the exact command line and mount table the chart renders, like the
 component entries. nginx, `cds-attest` and `allowlist-proxy` are required
 main containers; `acme`, `c8s-cert` and `c8s-cert-wait` are init containers,
-admitted but not required. A sidecar's host path under `/var/run` is pinned as
-the `/run` path containerd resolves it to where `/var/run` is `/run`, so on a
-node where it is its own directory the router's leaf stays unnamed. It is the
+admitted but not required. It is the
 only entry the router pod matches, so the router's mesh leaf is stamped with
 that name. An upgrade that changes the router's image repositories, digests,
-arguments or mounts seeds a new entry beside the old one. Until the running
-CDS rereads the changed seed, the router's leaf stays unnamed. Old entries persist like the
+arguments or mounts seeds a new entry beside the old one. Until that entry
+is published, the router's leaf stays unnamed. Old entries persist like the
 digest-named ones; remove them with `c8s allowlist delete`. Remove a
 superseded `c8s-router-*` entry after the upgrade: when the two differ only in
 image repositories, both match the router pod, and so do two that differ only
@@ -850,7 +1010,10 @@ name, or the render fails.
 Busybox and the NRI installer provide general-purpose shells, so the chart
 admits their configured invocations through argv-pinned entries and excludes
 those digests from the local floors. Their first startup may wait for the
-plugin's first successful policy pull and kubelet retry.
+plugin's first successful policy pull and kubelet retry. The chart escapes every `$` in
+those scripts as `$$`, so the kubelet's `$(NAME)` expansion hands the runtime
+the script the seed pins, including a component argument the operator
+escaped as `$$(NAME)` that the install script embeds.
 
 ## CLI
 
@@ -931,3 +1094,19 @@ README and [`operator.md`](operator.md). Rotating the pinned set rolls CDS, and
 a verifier detects a changed write policy by comparing the served
 `/operator-keys` list against its own bundle. Secret grants (`secrets`) are
 managed with the same `edit`/`apply` flow.
+
+To check node-root provenance against a real dm-verity table on a disposable
+Linux build host with root, `mkfs.ext4`, `veritysetup` and loop devices:
+
+```sh
+go test -c -o /tmp/nri-verity.test ./internal/cmds/nri-image-policy
+sudo bash node-guest-image/tests/mount-verity-test.sh /tmp/nri-verity.test
+```
+
+The script creates a private mount namespace and a disposable verity image. The
+test confirms that the device passes as the measured root only when the boot
+command line carries its `roothash`, and fails with any other hash.
+CI also runs this test and merges its instrumented coverage into the coverage
+gate. To collect its profile, build the test binary with `-coverpkg=./...` and
+pass an existing coverage directory as the script's second argument. It does not
+boot an attested node or deploy a GPU workload.

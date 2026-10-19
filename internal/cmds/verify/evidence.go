@@ -116,6 +116,9 @@ type evidence struct {
 	// workloadErr records a carried matched-workload extension this build
 	// cannot interpret (or a duplicate). The verdict fails closed on it.
 	workloadErr error
+	// route is the route digest erd binds (attested modes only; nil
+	// otherwise).
+	route *boundRoute
 }
 
 // platformOrDefault returns p, or "snp" when p is empty (the historical default
@@ -146,6 +149,8 @@ type attestationResponse struct {
 	// ServingLeafSHA256 is informational (pkg/types): the verifier recomputes
 	// it from the leaf it observed and only checks that the two agree.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	// RouteDigest is informational: resolveRoute only selects or rejects on it.
+	RouteDigest string `json:"route_digest"`
 }
 
 // leafTrust is what a caller can offer to authenticate a leaf body that is
@@ -297,8 +302,9 @@ func insecureClient(serverName string, timeout time.Duration) *http.Client {
 // endpoint, client-first: it generates a fresh challenge and a throwaway
 // X-Wing keypair, POSTs both, requires the response to echo them, and binds
 // REPORTDATA to the complete key exchange + session id + nonce (a freshness
-// proof). The keypair is discarded — this verifier never opens the channel.
-func gatherFromEndpoint(ctx context.Context, base, serverName string, timeout time.Duration) (*evidence, error) {
+// proof) + route digest. The keypair is discarded — this verifier never opens the
+// channel.
+func gatherFromEndpoint(ctx context.Context, base, serverName string, timeout time.Duration, route *boundRoute) (*evidence, error) {
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
@@ -338,14 +344,15 @@ func gatherFromEndpoint(ctx context.Context, base, serverName string, timeout ti
 	if err != nil {
 		return nil, &connectError{err: fmt.Errorf("read response: %w", err)}
 	}
-	return evidenceFromEndpointJSON(data, nonce, clientKey.EncapsulationKey(), fmt.Sprintf("attestation endpoint %s", endpoint))
+	return evidenceFromEndpointJSON(data, nonce, clientKey.EncapsulationKey(), route, fmt.Sprintf("attestation endpoint %s", endpoint))
 }
 
 // evidenceFromEndpointJSON parses an attestation response. When expectNonce is
 // non-nil (live fetch) the response must echo it and expectEK (the client's
 // X-Wing encapsulation key); when nil (from-file) the response's own echoed
-// values are used and the result is not a freshness proof.
-func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string) (*evidence, error) {
+// values are used and the result is not a freshness proof. route is the
+// digest the transcript is recomputed with; nil refuses the response.
+func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRoute, source string) (*evidence, error) {
 	var r attestationResponse
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("parse attestation response: %w", err)
@@ -392,6 +399,10 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 		return nil, fmt.Errorf("attestation response has no xwing_ct; pass --expected-report-data to verify bare evidence")
 	}
 
+	route, err = resolveRoute(r.RouteDigest, route)
+	if err != nil {
+		return nil, err
+	}
 	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
@@ -399,7 +410,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 	// The transcript rejects wrong-size keys and nonces: report_data framing is
 	// length-prefixed, so a wrong-size field can never reproduce the served
 	// hash — refuse it here instead of failing report-data match downstream.
-	erd, err := overenc.IdentityTranscriptHash(r.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leaf.Raw, ca.Raw)
+	erd, err := overenc.IdentityTranscriptHash(r.FrontDoorMode, xwingEK, xwingCT, sessionID, nonce, leaf.Raw, ca.Raw, route.digest)
 	if err != nil {
 		return nil, fmt.Errorf("compute identity transcript: %w", err)
 	}
@@ -427,7 +438,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 		erd:              erd,
 		fresh:            fresh,
 		source:           source,
-		bindingNote:      "REPORTDATA binds the identity transcript: front-door mode + session keys + nonce + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
+		bindingNote:      "REPORTDATA binds the identity transcript: front-door mode + session keys + nonce + the exact mesh leaf and its transcript-committed issuing CA + the route digest (leaf proof of possession verified)",
 		leaf:             leaf,
 		leafChainDerived: true,
 		frontDoor:        frontDoorNone,
@@ -435,6 +446,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, source string)
 		sandboxErr:       sandboxErr,
 		workload:         workload,
 		workloadErr:      workloadErr,
+		route:            route,
 	}, nil
 }
 
@@ -543,13 +555,16 @@ func keyAnchor(rd [64]byte) []byte { return rd[:sha512.Size384] }
 // A saved file is bytes with no connection behind them, so trust never
 // carries proof of possession here: a CA-issued certificate in it is
 // authenticated by --mesh-ca or not at all (authorizeLeafBody).
-func gatherFromFile(data []byte, overrideERD []byte, source string, trust leafTrust) (*evidence, error) {
+func gatherFromFile(data []byte, overrideERD []byte, route *boundRoute, source string, trust leafTrust) (*evidence, error) {
 	if block, _ := pem.Decode(data); block != nil && block.Type == "CERTIFICATE" {
 		if overrideERD != nil {
 			// A certificate's REPORTDATA binding is the certificate key; an
 			// override would silently replace a real binding with an arbitrary
 			// value while still reporting "binds the certificate public key".
 			return nil, fmt.Errorf("--expected-report-data does not apply to a certificate (its binding is the certificate key)")
+		}
+		if route != nil {
+			return nil, errRouteNotBound
 		}
 		cert, err := x509.ParseCertificate(block.Bytes)
 		if err != nil {
@@ -559,21 +574,25 @@ func gatherFromFile(data []byte, overrideERD []byte, source string, trust leafTr
 	}
 	if overrideERD != nil {
 		ev, err := evidenceFromBareJSON(data, overrideERD, source)
-		if err == nil {
-			return ev, nil
+		if err != nil {
+			return nil, fmt.Errorf("%w; to verify an attestation response, drop --expected-report-data and pass --route-digest", err)
 		}
-		// fall through to full-response parsing if it wasn't bare evidence
+		return ev, nil
 	}
-	return evidenceFromEndpointJSON(data, nil, nil, source)
+	return evidenceFromEndpointJSON(data, nil, nil, route, source)
 }
 
 // evidenceFromBareJSON parses a bare {platform, evidence:{attestation_report,
 // cert_chain:{vcek}}} object (no session keys) and binds the caller-supplied
-// REPORTDATA.
+// REPORTDATA. It refuses attest-pq and attest-lb responses: their transcript,
+// not an override, binds the report data and the route digest.
 func evidenceFromBareJSON(data []byte, erd []byte, source string) (*evidence, error) {
 	var r attestationResponse
 	if err := json.Unmarshal(data, &r); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse bare evidence: %w", err)
+	}
+	if r.Version == types.BindingAttestPQ || r.Version == types.BindingAttestLB {
+		return nil, fmt.Errorf("%s is an attestation response (version %q), not bare evidence", source, r.Version)
 	}
 	if len(r.Evidence) == 0 {
 		return nil, fmt.Errorf("bare evidence has no evidence object")
