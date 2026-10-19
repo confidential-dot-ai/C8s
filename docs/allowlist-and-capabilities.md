@@ -333,9 +333,9 @@ the path pin grants access to the contents at that node path. Read-only mode
 applies to the mount itself; nested mounts retain their own flags. Recursive
 read-only/write mount options leave the host source commitment unavailable.
 
-A read-only host **file** from the node image can use mount kind
-`nodeRootFile` instead of `host`, so it is not treated as operator-supplied
-executable content:
+A read-only host **file** can use one of two mount kinds instead of `host`, so
+it is not treated as operator-supplied executable content. A file from the node
+image uses `nodeRootFile`:
 
 ```json
 {"destination":"/usr/bin/nvidia-smi","kind":"nodeRootFile","source":"/usr/bin/nvidia-smi","readOnly":true}
@@ -380,8 +380,66 @@ persisted launch is checked again. Provenance travels with the mount evidence
 through inventory, admission history and CDS workload matching, so `nodeRootFile`
 bytes are bound to the attested node image.
 
-Lint permits `nodeRootFile` rules on `PATH` and loader search paths. Host rules
-and data mounts retain search-path rejection. Source, destination and
+Any other host file uses `fsVerityFile` and pins its kernel fs-verity digest:
+
+```json
+{"destination":"/usr/bin/tool","kind":"fsVerityFile","source":"/opt/tools/tool","readOnly":true,"verityDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+```
+
+An `fsVerityFile` rule takes the same `source`, requires `readOnly: true`, and
+requires `verityDigest`: the kernel's SHA-256 **fs-verity digest**, as 64
+lowercase hexadecimal digits. This is a Merkle tree descriptor digest, not the
+`sha256sum` of the file. To get it, enable fs-verity on the reviewed artifact
+and run `fsverity measure`. Enabling fs-verity on arbitrary bytes does not
+authorize them: the digest must match a rule in the active policy.
+
+The source must be on ext4, f2fs or btrfs, whose kernel drivers verify every
+read against the Merkle tree. Files on any other filesystem, including FUSE,
+overlayfs, tmpfs and network filesystems, get no fs-verity evidence: those
+filesystems can report a digest the kernel does not enforce. The node kernel
+enables `CONFIG_FS_VERITY`; the filesystem must also be created with fs-verity
+support.
+
+At NRI create time the enforcer opens the source without symlinks, measures it
+with `FS_IOC_MEASURE_VERITY`, and bind-mounts the **opened inode** into
+node-owned staging under `/run/c8s/verity-mounts`. The staging mount is
+private and read-only, and the container's mount source becomes that staging
+path. Renaming or replacing the original file cannot substitute new bytes.
+Validation re-measures the staging inode and checks its filesystem again.
+Staging requires a native node enforcer with mount privileges.
+
+Staging is bounded:
+
+- A create call stages for at most one second. A call that overruns stages
+  nothing; its late pins are released in the background and never reach the
+  container.
+- At most 16 staging calls run at once, abandoned ones included. While all 16
+  are busy, further creates are not staged until a slot frees.
+- The node keeps at most 1024 staging mounts. Container removal, or a denied
+  validation or start, releases the container's mounts.
+
+A mount that is not staged keeps its path-only evidence. An `fsVerityFile` rule
+then rejects it, and final matching decides whether another entry admits it.
+A node-root file is never staged, so it matches a `nodeRootFile` rule but not
+an `fsVerityFile` rule. Only files the container already mounts at create time
+can be staged: a file that a later plugin adds cannot satisfy an `fsVerityFile`
+rule. Other policy entries and audit mode keep their documented behavior for
+such files.
+
+The staging registry lives in the enforcer process. An enforcer restart loses
+it, which fails closed for running containers that rely on fs-verity
+evidence: recreate them. At startup, before it registers with the runtime, the
+enforcer detaches staging left by the earlier process; running containers keep
+their own binds.
+
+The fs-verity digest travels with the mount evidence as node-root provenance
+does, so `fsVerityFile` bytes are bound to the attested policy. An operator can
+change policy, but a verifier sees that change; nobody can substitute bytes
+under a pinned rule.
+
+Lint permits `nodeRootFile` and `fsVerityFile` rules on `PATH` and loader
+search paths. Host rules and data mounts retain search-path rejection. Source,
+destination and
 access-mode constraints still apply. Use `allowlist derive --mounts-file` to
 supply the rules. This covers the measured NVIDIA files in [issue #868](https://github.com/confidential-dot-ai/C8s/issues/868) without a
 blanket NVIDIA exemption or lint bypass.
@@ -391,13 +449,13 @@ with only access and propagation flags). Any other mount type or option, such
 as an overlay naming the verified file with another `lowerdir`, gets no
 provenance. The sandbox policy (`policy.sandbox`) exempts a bind from the
 host-bind check only when an allowlist entry admits the container under an
-`exact` mount policy whose `nodeRootFile` rule names that destination and
-source. That entry can be CDS-served. Every other bind stays a host bind,
-including a measured file under mount policy `any`, under a `host` rule, or
-with the allowlist disabled. A `nodeRootFile` rule still names a host path, so
-an entry with one cannot carry a secrets grant.
+`exact` mount policy whose `nodeRootFile` or `fsVerityFile` rule names that
+destination and source. That entry can be CDS-served. Every other bind stays a
+host bind, including a verified file under mount policy `any`, under a `host`
+rule, or with the allowlist disabled. Both kinds still name a host path, so an
+entry with one cannot carry a secrets grant.
 
-The reserved `verityDigest` field is rejected as not supported on every kind. This exception is scoped to read-only regular files.
+Other kinds reject `verityDigest`. This exception is scoped to read-only regular files.
 It does not implement whole-volume provenance, arbitrary dm-verity volume trust,
 directory mounts, IMA/IPE policy, dependency approval, or a general prohibition
 on interpreters reading executable scripts from data. Keep exact env/mount
@@ -405,10 +463,10 @@ policies and review arguments and dependencies. Existing permissive policies
 retain their behavior.
 
 Upgrade CDS/CLI consumers and every node enforcer before publishing
-`nodeRootFile` rules. An enforcer that has not been upgraded does not know the
-kind, so it refuses the served document and keeps its last good policy; it
-never applies the rule as a plain host rule. Baked enforcers require a
-node-image rebuild.
+`nodeRootFile` or `fsVerityFile` rules. An enforcer that has not been upgraded
+does not know the kind, so it refuses the served document and keeps its last
+good policy; it never applies the rule as a plain host rule. Baked enforcers
+require a node-image rebuild.
 
 The pod UID embedded in a kubelet source must equal the pod being admitted, and
 containerd sandbox sources must name its exact sandbox. These runtime IDs prove
@@ -1012,18 +1070,21 @@ a verifier detects a changed write policy by comparing the served
 `/operator-keys` list against its own bundle. Secret grants (`secrets`) are
 managed with the same `edit`/`apply` flow.
 
-To check node-root provenance against a real dm-verity table on a disposable
-Linux build host with root, `mkfs.ext4`, `veritysetup` and loop devices:
+To check fs-verity staging and node-root provenance on a real kernel, use a
+disposable Linux build host with root, loop devices, fs-verity support,
+`mkfs.ext4` and `veritysetup`:
 
 ```sh
 go test -c -o /tmp/nri-verity.test ./internal/cmds/nri-image-policy
 sudo bash node-guest-image/tests/mount-verity-test.sh /tmp/nri-verity.test
 ```
 
-The script creates a private mount namespace and a disposable verity image. The
-test confirms that the device passes as the measured root only when the boot
-command line carries its `roothash`, and fails with any other hash.
-CI also runs this test and merges its instrumented coverage into the coverage
-gate. To collect its profile, build the test binary with `-coverpkg=./...` and
-pass an existing coverage directory as the script's second argument. It does not
+The script creates a private mount namespace and disposable images. The
+fs-verity test stages a real verity file, replaces the source, and checks
+blocking admission. The dm-verity test confirms that the device passes as the
+measured root only when the boot command line carries its `roothash`.
+CI also runs these tests and merges their instrumented coverage into the
+coverage gate. To collect the profiles, build the test binary with
+`-coverpkg=./...` and pass an existing coverage directory as the script's
+second argument. It does not
 boot an attested node or deploy a GPU workload.
