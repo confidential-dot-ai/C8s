@@ -2,23 +2,20 @@ package getkubeconfig
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
-	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // A node that measured allowlist policies after its workloads binds the
@@ -31,6 +28,10 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 	q := "sha256:" + strings.Repeat("2", 64)
 	quote := func(policies ...string) *policyList {
 		return &policyList{list: policies}
+	}
+	overCap := []string{p}
+	for len(overCap) <= armtls.MaxRuntimeExtensions {
+		overCap = append(overCap, q)
 	}
 	for _, tc := range []struct {
 		name     string
@@ -45,6 +46,7 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 		{name: "list does not replay", measured: []string{p}, policies: quote(q), wantErr: true},
 		{name: "measured without a list", measured: []string{p}, wantErr: true},
 		{name: "measured, empty list", measured: []string{p}, policies: quote(), wantErr: true},
+		{name: "replaying list over the cap", measured: []string{p}, policies: quote(overCap...), wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			res := verifiedResultFor(exp)
@@ -52,44 +54,15 @@ func TestCheckIdentityReplaysMeasuredPolicies(t *testing.T) {
 			res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
 			e := exp
 			e.policies = tc.policies
-			if err := e.checkIdentity(res); (err != nil) != tc.wantErr {
+			err := e.checkIdentity(res)
+			if (err != nil) != tc.wantErr {
 				t.Fatalf("checkIdentity = %v, want error %v", err, tc.wantErr)
 			}
+			// A miss with a list says the list may be stale.
+			if err != nil && tc.policies != nil && !strings.Contains(err.Error(), "may predate") {
+				t.Errorf("checkIdentity = %v, want it to say the list may predate the latest policy", err)
+			}
 		})
-	}
-}
-
-// A node whose list no leaf has recorded yet, or that measured a policy since
-// the last verified leaf, passes once a refresh records a list that replays;
-// a list that still replays is not refreshed.
-func TestPolicyListRefreshesOnMiss(t *testing.T) {
-	exp := testPolicy(t, operatorPub(t))
-	p := "sha256:" + strings.Repeat("1", 64)
-	q := "sha256:" + strings.Repeat("2", 64)
-	leaves := [][]string{{p}, {p, q}}
-	refreshes := 0
-	exp.policies = &policyList{}
-	exp.policies.refresh = func() {
-		exp.policies.record(leaves[min(refreshes, len(leaves)-1)])
-		refreshes++
-	}
-	for _, step := range []struct {
-		measured      []string
-		wantRefreshes int
-	}{
-		{measured: []string{p}, wantRefreshes: 1},
-		{measured: []string{p, q}, wantRefreshes: 2},
-		{measured: []string{p}, wantRefreshes: 2},
-	} {
-		res := verifiedResultFor(exp)
-		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), append(slices.Clone(exp.workloadDigests), step.measured...))
-		res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
-		if err := exp.checkIdentity(res); err != nil {
-			t.Fatalf("checkIdentity(seed+%v) = %v, want nil", step.measured, err)
-		}
-		if refreshes != step.wantRefreshes {
-			t.Fatalf("after seed+%v: list refreshed %d times, want %d", step.measured, refreshes, step.wantRefreshes)
-		}
 	}
 }
 
@@ -172,41 +145,5 @@ func TestAttestResponseListSupersedesLeaf(t *testing.T) {
 				t.Fatalf("attestCredentialRelease = %v, want error %v", err, tc.wantErr)
 			}
 		})
-	}
-}
-
-// With --attest-url, Run records cred-release's list before the gate, waiting
-// out --release-wait, and a refresh on a miss is one dial within --timeout.
-func TestRunBoundsPolicyRefresh(t *testing.T) {
-	env := newTestEnv(t, newAttestStub(t).URL()+"/attest", http.StatusOK, goodRelease)
-	res := verifiedResultFor(env.exp)
-	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(env.exp.operatorPubPEM), []string{"sha256:" + strings.Repeat("1", 64)})
-	res.Claims.PlatformData["rtmr_3"] = hex.EncodeToString(reg[:])
-	stubVerify(t, res, nil)
-
-	orig := dialTLS
-	t.Cleanup(func() { dialTLS = orig })
-	dials := 0
-	dialTLS = func(context.Context, *tls.Dialer, string) (net.Conn, error) {
-		dials++
-		if dials == 1 { // the pre-dial reaches a server whose leaf lists nothing
-			client, server := net.Pipe()
-			t.Cleanup(func() { _ = server.Close() })
-			return client, nil
-		}
-		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED}
-	}
-	cfg := env.config()
-	cfg.ReleaseWait = time.Minute
-
-	start := time.Now()
-	if err := Run(context.Background(), cfg); err == nil {
-		t.Fatal("Run = nil, want the gate to fail on an unrecorded list")
-	}
-	if dials != 2 {
-		t.Errorf("dials = %d, want 2: the pre-dial and one refresh", dials)
-	}
-	if elapsed := time.Since(start); elapsed > 4*time.Second {
-		t.Errorf("Run took %v: the refresh retried a refused dial", elapsed)
 	}
 }

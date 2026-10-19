@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -19,6 +20,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote/mockapi"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 var operatorPub = []byte("operator public key bytes")
@@ -450,6 +452,7 @@ func TestVerifyNodeBindingReplaysMeasuredPolicies(t *testing.T) {
 		{name: "journal ahead of the report", journal: p + "\n" + q + "\n", report: report(p)},
 		{name: "extend the journal does not hold", journal: p + "\n", report: report(q), wantErr: true},
 		{name: "extend without a journal", report: report(p), wantErr: true},
+		{name: "replaying journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1), report: report("sha256:" + strings.Repeat("0", 64)), wantErr: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setMeasuredPolicies(t, tc.journal)
@@ -478,4 +481,13 @@ func setMeasuredPolicies(t *testing.T, journal string) {
 	orig := measuredPoliciesPath
 	measuredPoliciesPath = path
 	t.Cleanup(func() { measuredPoliciesPath = orig })
+}
+
+// distinctJournal is a journal of n distinct digests, the first sha256:0…0.
+func distinctJournal(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "sha256:%064x\n", i)
+	}
+	return b.String()
 }

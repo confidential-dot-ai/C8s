@@ -1199,8 +1199,12 @@ both on the armTLS connection and on a fresh nonce-bound attestation report:
   extended, in order, by each digest-pinned `--workload-image` ref (tags are
   rejected). With no `--workload-image` the register must equal the bare seed.
   A node that measures allowlist policies extends them after that chain and
-  lists them in cred-release's armTLS certificate; the
-  register may then also carry the longest prefix of that list that replays;
+  sends their list with the fresh report, or in cred-release's armTLS
+  certificate; the register may then also carry the longest prefix of that
+  list that replays. That trailing part is a prefix check, not an exact
+  chain: policy and workload extends share one event encoding, so
+  `--workload-image` excludes an unpinned workload only while the measured
+  image journals policies alone, which the image pin above enforces;
 - **guest image + operator key (SEV-SNP)** — the report's MEASUREMENT must be
   one of the per-SMP launch digests pinned by `snp_variants` (one image has
   one digest per vCPU count), and HOSTDATA must equal `SHA-256(operator
@@ -1234,6 +1238,12 @@ stop the flow. An explicit `--attest-url` retains the separate nonce check
 for older images with a reachable attestation API. There is no automatic
 fallback: images without the authenticated `/attest` endpoint need a rebuild
 to use the default flow.
+
+With `--attest-url`, the measured-policy list comes from cred-release's
+certificate, which the node reissues only at half its armTLS lifetime. After
+the node measures a new policy, the gate fails until that reissue. To avoid
+the wait, omit `--attest-url`: the default flow takes the list from the
+`/attest` response, read after the quote.
 
 The released kubeconfig's client certificate is
 `CN=operator, O=c8s:node-operators`, with a one-hour default (and baked
@@ -1486,6 +1496,9 @@ To roll out policy measurement, upgrade in this order:
 2. The clients that send the list: get-cert and the CDS client. An older CDS
    rejects an `/attest` request carrying `runtime_extensions` with 400.
 3. The node's policy measurer.
+
+At boot the measurer and its readers start in any order: the journal records
+each policy before extending it, and every reader reads it after its report.
 
 On a baked node image (`node.baked=true`, set by `c8s node-image render`), the
 signed launch file selects the mode at boot. Mode `acme` applies when its

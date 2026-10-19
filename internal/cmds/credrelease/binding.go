@@ -196,9 +196,9 @@ func LoadMeasuredIdentity(ctx context.Context, platform, attestationAPIURL strin
 // the measured allowlist policies. The journal is read after the report, so it
 // may hold extends the report does not.
 func verifyNodeBinding(report *teetypes.VerificationResult, anchor []byte) error {
-	policies, err := runtimemeasure.ReadJournal(measuredPoliciesPath)
+	policies, err := armtls.ReadRuntimeExtensions(measuredPoliciesPath)
 	if err != nil {
-		return fmt.Errorf("read measured policies: %w", err)
+		return fmt.Errorf("read measured policies %s: %w", measuredPoliciesPath, err)
 	}
 	slog.Info("measured-policy journal", "path", measuredPoliciesPath, "policies", len(policies))
 	if _, err := runtimemeasure.MatchBindingPrefix(report, anchor, policies); err != nil {

@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -19,11 +20,38 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 )
 
-// TestMain keeps the host's measured-policy journal out of every certificate
-// the package's tests build.
-func TestMain(m *testing.M) {
-	runtimeJournals = nil
-	os.Exit(m.Run())
+// Test binaries, here and in every package that builds evidence through
+// WithRuntimeExtensions, never read the host's journal.
+func TestRuntimeJournalsUnsetUnderTest(t *testing.T) {
+	if got := defaultRuntimeJournals(); got != nil {
+		t.Fatalf("defaultRuntimeJournals() = %v, want nil in a test binary", got)
+	}
+}
+
+func TestReadRuntimeExtensions(t *testing.T) {
+	p := "sha256:" + strings.Repeat("1", 64)
+	dir := t.TempDir()
+	for _, tc := range []struct {
+		name    string
+		journal string // "" leaves no file
+		want    []string
+		wantErr bool
+	}{
+		{name: "missing"},
+		{name: "within the cap", journal: p + "\n", want: []string{p}},
+		{name: "over the cap", journal: distinctJournal(MaxRuntimeExtensions + 1), wantErr: true},
+	} {
+		path := filepath.Join(dir, tc.name)
+		if tc.journal != "" {
+			if err := os.WriteFile(path, []byte(tc.journal), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := ReadRuntimeExtensions(path)
+		if (err != nil) != tc.wantErr || !slices.Equal(got, tc.want) {
+			t.Errorf("%s: ReadRuntimeExtensions = %d entries, %v; want %d entries, error %v", tc.name, len(got), err, len(tc.want), tc.wantErr)
+		}
+	}
 }
 
 func TestWithRuntimeExtensions(t *testing.T) {
@@ -31,8 +59,12 @@ func TestWithRuntimeExtensions(t *testing.T) {
 	q := "sha256:" + strings.Repeat("2", 64)
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "missing")
+	empty := filepath.Join(dir, "empty")
 	journal := filepath.Join(dir, "measured-policies")
 	if err := os.WriteFile(journal, []byte(p+"\n"+q+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	tdxReport, err := json.Marshal(teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{"quote":"AA=="}`)})
@@ -52,7 +84,7 @@ func TestWithRuntimeExtensions(t *testing.T) {
 		journals []string
 		want     []string
 	}{
-		{name: "TDX carries the first journal that exists", att: tdx, journals: []string{missing, journal}, want: []string{p, q}},
+		{name: "TDX carries the first non-empty journal", att: tdx, journals: []string{missing, empty, journal}, want: []string{p, q}},
 		{name: "TDX without a journal", att: tdx, journals: []string{missing}},
 		{name: "TDX keeps its own list", att: own, journals: []string{journal}, want: []string{q}},
 		{name: "SEV-SNP never", att: snp, journals: []string{journal}},
@@ -194,4 +226,13 @@ func TestRuntimeExtensionsOmitsUnusableJournal(t *testing.T) {
 			t.Errorf("%s: MarshalExtension(WithRuntimeExtensions) = %v, want nil", tc.name, err)
 		}
 	}
+}
+
+// distinctJournal is a journal of n distinct digests.
+func distinctJournal(n int) string {
+	var b strings.Builder
+	for i := range n {
+		fmt.Fprintf(&b, "sha256:%064x\n", i)
+	}
+	return b.String()
 }

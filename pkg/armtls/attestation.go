@@ -4,7 +4,9 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/asn1"
+	"fmt"
 	"log/slog"
+	"testing"
 
 	agarmtls "github.com/confidential-dot-ai/attestation-go/armtls"
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
@@ -92,38 +94,59 @@ func WithRuntimeExtensions(att *Attestation) *Attestation {
 //   - on a tmpfs, so it lives exactly as long as the register;
 //   - at most [MaxRuntimeExtensions] entries per boot. Producers send no list
 //     beyond that, and verifiers reject the node until it reboots.
+//
+// Readers read it after the evidence, so the measurer and its readers start
+// in any order.
 const (
 	MeasuredPoliciesJournal = "measured-policies"
-	NodeJournal             = "/var/run/nri-image-policy/" + MeasuredPoliciesJournal
+	NodeJournal             = "/run/nri-image-policy/" + MeasuredPoliciesJournal
 	SidecarJournal          = "/run/c8s/workload-claims/" + MeasuredPoliciesJournal
 )
 
 // runtimeJournals are where this node's measured-policy journal may be; the
-// first that exists wins. Var so tests can move it.
-var runtimeJournals = []string{NodeJournal, SidecarJournal}
+// first non-empty one wins. Test binaries start with none, so no test reads
+// the host's journal; tests in this package move it.
+var runtimeJournals = defaultRuntimeJournals()
+
+func defaultRuntimeJournals() []string {
+	if testing.Testing() {
+		return nil
+	}
+	return []string{NodeJournal, SidecarJournal}
+}
 
 // readJournal reads one journal. Var so tests can fail it.
 var readJournal = runtimemeasure.ReadJournal
+
+// ReadRuntimeExtensions reads the measured-policy journal at path: nil when it
+// does not exist, an error when it cannot be read or holds more than
+// [MaxRuntimeExtensions] entries. Every producer of the list reads through it.
+func ReadRuntimeExtensions(path string) ([]string, error) {
+	list, err := readJournal(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(list) > MaxRuntimeExtensions {
+		return nil, fmt.Errorf("journal lists %d measured policies, over the per-boot cap of %d", len(list), MaxRuntimeExtensions)
+	}
+	return list, nil
+}
 
 // RuntimeExtensions returns the RTMR[3] runtime extensions this node
 // journaled, nil when it journals none. Call it after obtaining the evidence:
 // the journal records before it extends, so it may run ahead of the quote,
 // which verifiers allow for, but must not lag it.
 //
-// An unreadable journal, or one over [MaxRuntimeExtensions], is logged and
-// yields nil: a verifier that needs the list then fails closed, and one that
-// does not still accepts the evidence.
+// An unusable journal is logged and yields nil: a verifier that needs the
+// list then fails closed, and one that does not still accepts the evidence.
 func RuntimeExtensions() []string {
 	for _, path := range runtimeJournals {
-		list, err := readJournal(path)
-		switch {
-		case err != nil:
+		list, err := ReadRuntimeExtensions(path)
+		if err != nil {
 			slog.Warn("armtls: evidence omits the measured policies", "path", path, "error", err)
 			return nil
-		case len(list) > MaxRuntimeExtensions:
-			slog.Warn("armtls: evidence omits the measured policies: journal over the per-boot cap", "path", path, "policies", len(list), "max", MaxRuntimeExtensions)
-			return nil
-		case list != nil:
+		}
+		if list != nil {
 			slog.Info("armtls: evidence lists the measured policies", "path", path, "policies", len(list))
 			return list
 		}

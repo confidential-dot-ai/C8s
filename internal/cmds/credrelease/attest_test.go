@@ -17,6 +17,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -306,6 +307,7 @@ func TestAttestCarriesMeasuredPolicies(t *testing.T) {
 	}{
 		{name: "journal", journal: p + "\n", want: []string{p}},
 		{name: "no journal"},
+		{name: "journal over the cap", journal: distinctJournal(armtls.MaxRuntimeExtensions + 1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			setMeasuredPolicies(t, tc.journal)

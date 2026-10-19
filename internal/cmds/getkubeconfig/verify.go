@@ -26,6 +26,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teeverify"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // verifyEnvelope verifies a self-describing evidence envelope in-process with
@@ -61,15 +62,12 @@ type measuredPolicy struct {
 }
 
 // policyList holds the runtime extension list of the latest verified
-// cred-release leaf. The leaf's self-signature under its attested key covers
-// the list, so the host cannot rewrite it.
+// cred-release leaf, or of the fresh /attest response. The leaf's
+// self-signature under its attested key covers the list, so the host cannot
+// rewrite it.
 type policyList struct {
 	mu   sync.Mutex
 	list []string
-	// refresh opens a new armTLS connection, whose verified leaf records its
-	// list; nil for a fixed list. The node reissues its leaf only at half its
-	// armTLS TTL, so a leaf that predates an extend keeps failing until then.
-	refresh func()
 }
 
 func (l *policyList) record(list []string) {
@@ -84,22 +82,13 @@ func (l *policyList) current() []string {
 	return l.list
 }
 
-// replays reports whether got is start extended by a prefix of the node's
-// list. A list ahead of the quote still replays; a list behind it does not.
-// A miss refreshes the list once: no leaf may have been verified yet, or the
-// node may have reissued its leaf since.
-func (l *policyList) replays(got []byte, start [runtimemeasure.Size]byte) bool {
-	if replaysPrefix(got, start, l.current()) {
-		return true
-	}
-	if l.refresh == nil {
+// replaysPrefix reports whether got is reg extended by a prefix of policies.
+// A list ahead of the quote still replays; a list behind it, or over
+// armtls.MaxRuntimeExtensions, does not.
+func replaysPrefix(got []byte, reg [runtimemeasure.Size]byte, policies []string) bool {
+	if len(policies) > armtls.MaxRuntimeExtensions {
 		return false
 	}
-	l.refresh()
-	return replaysPrefix(got, start, l.current())
-}
-
-func replaysPrefix(got []byte, reg [runtimemeasure.Size]byte, policies []string) bool {
 	for _, p := range policies {
 		d, err := runtimemeasure.CanonicalDigest(p)
 		if err != nil {
@@ -199,10 +188,11 @@ func (exp measuredPolicy) checkIdentity(res *teetypes.VerificationResult) error 
 	if berr != nil {
 		return err
 	}
-	if exp.policies.replays(got, runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)) {
+	policies := exp.policies.current()
+	if replaysPrefix(got, runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests), policies) {
 		return nil
 	}
-	return err
+	return fmt.Errorf("%w: no prefix of the node's %d measured policies replays it; the list may predate the node's latest policy, so retry after cred-release reissues its certificate, or omit --attest-url", err, len(policies))
 }
 
 // verifyEvidence verifies an evidence envelope with attestation-go (HW chain +

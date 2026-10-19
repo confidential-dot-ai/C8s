@@ -14,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -563,5 +564,18 @@ func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
 				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
 			}
 		})
+	}
+}
+
+// The chart's default runtime directory is where the node's binaries look for
+// the journal, so the two never drift apart.
+func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "attestationApi.enabled=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	if flag := "--measured-policies-file=" + armtls.NodeJournal; !slices.Contains(attest.Args, flag) {
+		t.Fatalf("cds-attest args lack %s: %v", flag, attest.Args)
 	}
 }

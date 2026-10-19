@@ -362,8 +362,9 @@ What it does **not** guarantee:
   `c8s get-kubeconfig`) accept RTMR[3] as the seed followed by any prefix of
   the node's list that replays. They do not check the digests against the
   operator's policy history, and a workload-image digest replays as well as a
-  policy digest, since both use one event encoding. CDS does not copy the
-  list into the leaf it issues, so a CA-verified peer cannot see it. This is
+  policy digest, since both use one event encoding. CDS copies the CSR's
+  armTLS extension, list included, into the leaf it issues, so armTLS-mode
+  verifiers of a CA-issued leaf replay the list too. This is
   a non-goal: only code inside the measured image can extend RTMR[3], so a
   list naming a digest the operator never approved requires a compromised
   image, which the image pin already excludes. Judging the list is the job of

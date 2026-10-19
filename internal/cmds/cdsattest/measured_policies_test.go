@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/overenc"
 	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
@@ -46,11 +48,13 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 		name       string
 		configured bool
 		unreadable bool
+		overCap    bool
 		want       []string
 	}{
 		{name: "configured", configured: true, want: []string{p, q}},
 		{name: "unset"},
 		{name: "unreadable", configured: true, unreadable: true},
+		{name: "over the cap", configured: true, overCap: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			identity := writeTestMeshIdentity(t)
@@ -74,6 +78,16 @@ func TestBundlesCarryMeasuredPolicies(t *testing.T) {
 			}
 			if tc.unreadable {
 				cfg.MeasuredPoliciesFile = t.TempDir() // a directory: Read fails
+			}
+			if tc.overCap {
+				cfg.MeasuredPoliciesFile = filepath.Join(t.TempDir(), "measured-policies")
+				var full strings.Builder
+				for i := range armtls.MaxRuntimeExtensions + 1 {
+					fmt.Fprintf(&full, "sha256:%064x\n", i)
+				}
+				if err := os.WriteFile(cfg.MeasuredPoliciesFile, []byte(full.String()), 0o644); err != nil {
+					t.Fatal(err)
+				}
 			}
 			ts := httptest.NewServer(NewServer(cfg).Handler())
 			defer ts.Close()
