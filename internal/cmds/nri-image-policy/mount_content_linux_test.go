@@ -3,6 +3,7 @@
 package nriimagepolicy
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,7 +41,33 @@ func verityTableFixture(options string) []byte {
 	return data
 }
 
-func safeVerityTable(data []byte, device uint64) bool { return verityTableRootHash(data, device) != "" }
+func safeVerityTable(data []byte, device uint64) bool {
+	hash, err := verityTableRootHash(data, device)
+	return err == nil && hash != ""
+}
+
+func TestVerityTableRejectionNamesCause(t *testing.T) {
+	_, err := verityTableRootHash(verityTableFixture(" 2 use_fec_from_device /dev/sda3"), 123)
+	if !errors.Is(err, errNotStrictVerity) || !strings.Contains(err.Error(), `unsupported verity option "use_fec_from_device"`) {
+		t.Fatalf("verityTableRootHash(fec) error = %v, want the unsupported option named", err)
+	}
+}
+
+func TestProbeRecordsDeclaredRoot(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		cmdline  string
+		declared bool
+	}{
+		{"ro roothash=" + strings.Repeat("b", 64), true},
+		{"ro", false},
+	} {
+		probe := probeMeasuredRoot(root, tc.cmdline)
+		if probe.reason == "" || probe.declared != tc.declared {
+			t.Fatalf("probeMeasuredRoot(%q) = %+v, want a reason and declared %t", tc.cmdline, probe, tc.declared)
+		}
+	}
+}
 
 func TestVerityTableProof(t *testing.T) {
 	for _, tc := range []struct {
@@ -178,7 +205,7 @@ func TestBootRootHash(t *testing.T) {
 			t.Fatalf("bootRootHash(%q)=%q", tc.cmdline, got)
 		}
 	}
-	if verityTableRootHash(verityTableFixture(""), 123) != hash {
+	if got, err := verityTableRootHash(verityTableFixture(""), 123); err != nil || got != hash {
 		t.Fatal("lost active root hash")
 	}
 }

@@ -2,5 +2,5 @@
 
 package nriimagepolicy
 
-func nodeRootFile(string) bool    { return false }
-func nodeRootUnavailable() string { return "" }
+func nodeRootFile(string) bool            { return false }
+func nodeRootUnavailable() (string, bool) { return "unsupported platform", false }

@@ -154,3 +154,53 @@ func TestProvenanceHostRuleIsNotPinnedForGrant(t *testing.T) {
 		t.Fatal("node-root host rule reported host-independent, so a secrets grant would accept it")
 	}
 }
+
+func TestAdmitsNodeRoot(t *testing.T) {
+	const source = "/usr/bin/nvidia-smi"
+	sourceDigest, err := HostSourceDigest(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherDigest, err := HostSourceDigest("/usr/bin/other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	index := func(mounts MountPolicy) *Index {
+		if err := normalizeMounts(&mounts); err != nil {
+			t.Fatal(err)
+		}
+		return (&Allowlist{Workloads: map[string]Workload{"c": {Containers: []Container{{
+			Digest: dig(t, dApp), Command: ArgvPolicy{Policy: PolicyAny}, Args: ArgvPolicy{Policy: PolicyAny},
+			Mounts: mounts, Env: EnvPolicy{Policy: PolicyAny},
+		}}}}}).BuildIndex()
+	}
+	rule := MountRule{Destination: source, Kind: MountHost, Source: source, ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	plain := rule
+	plain.Provenance = ""
+	exact := MountPolicy{Policy: PolicyExact, Rules: []MountRule{rule}}
+	verified := ObservedMount{Destination: source, Class: MountHost, Storage: MountUnknown, HostSourceDigest: sourceDigest, ReadOnly: true, Provenance: ProvenanceNodeRoot}
+	for _, tc := range []struct {
+		name   string
+		index  *Index
+		mutate func(*ObservedMount)
+		want   bool
+	}{
+		{"exact node-root rule", index(exact), nil, true},
+		{"mount policy any", index(MountPolicy{Policy: PolicyAny}), nil, false},
+		{"rule without provenance", index(MountPolicy{Policy: PolicyExact, Rules: []MountRule{plain}}), nil, false},
+		{"other source", index(exact), func(m *ObservedMount) { m.HostSourceDigest = otherDigest }, false},
+		{"no observed provenance", index(exact), func(m *ObservedMount) { m.Provenance = "" }, false},
+		{"no allowlist", nil, nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := verified
+			if tc.mutate != nil {
+				tc.mutate(&m)
+			}
+			got := tc.index.AdmitsNodeRoot(RunningContainer{Digest: dApp, Mounts: []ObservedMount{m}, Env: &EnvObservation{}}, m)
+			if got != tc.want {
+				t.Fatalf("AdmitsNodeRoot(%s) = %t, want %t", tc.name, got, tc.want)
+			}
+		})
+	}
+}

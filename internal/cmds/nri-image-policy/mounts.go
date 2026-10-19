@@ -238,6 +238,22 @@ func cutTwoOrMore(s string) (string, string, bool) {
 // nodeRootEvidence is replaced in tests, which cannot boot from a measured root.
 var nodeRootEvidence = nodeRootFile
 
+// nodeRootUnavailableReason is replaced in tests, as nodeRootEvidence is.
+var nodeRootUnavailableReason = nodeRootUnavailable
+
+// nodeRootMissing explains why a read-only host bind in mounts carries no
+// node-root provenance, so a denial of a node-root rule names its cause. It
+// returns "" when there is no such bind or the root is the measured one.
+func nodeRootMissing(mounts []allowlist.ObservedMount) string {
+	if !slices.ContainsFunc(mounts, func(m allowlist.ObservedMount) bool {
+		return m.Class == allowlist.MountHost && m.ReadOnly && m.HostSourceDigest != "" && m.Provenance == ""
+	}) {
+		return ""
+	}
+	reason, _ := nodeRootUnavailableReason()
+	return reason
+}
+
 func observeHostMount(m *api.Mount) allowlist.ObservedMount {
 	mount := observed(m, allowlist.MountHost, allowlist.MountUnknown)
 	for _, option := range m.GetOptions() {

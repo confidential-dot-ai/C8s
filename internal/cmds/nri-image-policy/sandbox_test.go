@@ -305,7 +305,7 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			got := observeSandbox(pod, ctr, tt.ownSocket, nil).violations()
+			got := observeSandbox(pod, ctr, tt.ownSocket, nil, nil).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -545,9 +545,61 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 					mounts = append(mounts, allowlist.ObservedMount{Source: m.Source, Destination: m.Destination})
 				}
 			}
-			got := observeSandbox(pod, ctr, "", mounts).HostBinds
+			admitted := func(m allowlist.ObservedMount) bool {
+				return m.Provenance == allowlist.ProvenanceNodeRoot && m.ReadOnly
+			}
+			got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds
 			if (len(got) > 0) != tc.hostBind {
 				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
+			}
+		})
+	}
+}
+
+// Only an exact node-root rule at the bind's destination exempts it: measured
+// bytes the pod places anywhere else, such as over a pinned entrypoint, are a
+// host bind like any other.
+func TestNodeRootBindNeedsExactNodeRootRule(t *testing.T) {
+	const source = "/usr/bin/nvidia-smi"
+	original := nodeRootEvidence
+	nodeRootEvidence = func(string) bool { return true }
+	t.Cleanup(func() { nodeRootEvidence = original })
+	rule := allowlist.MountRule{Destination: source, Kind: allowlist.MountHost, Source: source, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	plain := rule
+	plain.Provenance = ""
+	for _, tc := range []struct {
+		name        string
+		mounts      allowlist.MountPolicy
+		destination string
+		pull        bool
+		want        imageVerdict
+	}{
+		{"exact node-root rule", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}, source, true, verdictAllow},
+		{"mount policy any, unlisted destination", allowlist.MountPolicy{Policy: allowlist.PolicyAny}, "/app/verify", true, verdictDeny},
+		{"rule without provenance", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{plain}}, source, true, verdictDeny},
+		{"allowlist disabled", allowlist.MountPolicy{Policy: allowlist.PolicyExact, Rules: []allowlist.MountRule{rule}}, source, false, verdictDeny},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			al := workloadAllowlist(t, pushDigestA, pushDigestB, []string{"/bin/app"})
+			al.Workloads["w"].Containers[0].Mounts = tc.mounts
+			if err := al.Normalize(); err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config{Policy: policyConfig{Mode: ModeFailClosed, Sandbox: SandboxEnforce}}
+			if tc.pull {
+				cfg.Allowlist.Pull.URL = "https://cds"
+			}
+			p, _ := newCachedPlugin(cfg, al)
+			pod, ctr := sandboxedPod(), sandboxedContainer()
+			ctr.Annotations = map[string]string{annotationImageName: "registry/repo@" + pushDigestB}
+			ctr.Args = []string{"/bin/app"}
+			ctr.Mounts = append(ctr.Mounts[:3:3], &api.Mount{Type: "bind", Source: source, Destination: tc.destination, Options: []string{"rbind", "ro"}})
+			verdict, reason := p.checkContainer(context.Background(), cfg, pod, ctr, "registry/repo@"+pushDigestB)
+			if verdict != tc.want {
+				t.Fatalf("checkContainer(%s) = %d %q, want %d", tc.name, verdict, reason, tc.want)
+			}
+			if tc.want == verdictDeny && !strings.Contains(reason, "host path bind mount") {
+				t.Fatalf("checkContainer(%s) reason = %q, want a sandbox violation", tc.name, reason)
 			}
 		})
 	}

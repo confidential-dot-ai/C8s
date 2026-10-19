@@ -359,16 +359,19 @@ bytes are bound to the attested node image.
 Lint permits `node-root` rules on `PATH` and loader search paths. Path-only host
 rules and data mounts retain search-path rejection. Source, destination and
 access-mode constraints still apply. Use `allowlist derive --mounts-file` to
-supply the rules. This covers the measured NVIDIA files in #868 without a
+supply the rules. This covers the measured NVIDIA files in [issue #868](https://github.com/confidential-dot-ai/C8s/issues/868) without a
 blanket NVIDIA exemption or lint bypass.
 
 Provenance requires a plain bind mount (`bind` type or a `bind`/`rbind` option,
 with only access and propagation flags). Any other mount type or option, such
 as an overlay naming the verified file with another `lowerdir`, gets no
-provenance. A read-only file bind with provenance is not a host bind for the
-sandbox policy (`policy.sandbox`), so a CDS-served entry can admit it. A
-provenance rule is still a host rule, so an entry with one cannot carry a
-secrets grant.
+provenance. The sandbox policy (`policy.sandbox`) does not count a bind as a
+host bind only when an allowlist entry admits the container under an `exact`
+mount policy whose `node-root` rule names that destination and source, so a
+CDS-served entry can admit it. Every other bind stays a host bind, including a
+measured file under mount policy `any`, under a rule without provenance, or
+with the allowlist disabled. A provenance rule is still a host rule, so an
+entry with one cannot carry a secrets grant.
 
 Any other `provenance` value, and the reserved `verityDigest` field, are
 rejected as not supported. This exception is scoped to read-only regular files.

@@ -52,10 +52,14 @@ var measuredRoot = &rootCache{probe: func() rootProbe {
 }}
 
 // nodeRootUnavailable explains why node-root provenance is unavailable, or
-// returns "" when the root is the measured one.
-func nodeRootUnavailable() string {
-	_, reason := measuredRoot.device()
-	return reason
+// returns "" when the root is the measured one. declared reports whether the
+// boot command line claims a measured root, which makes a reason a fault.
+func nodeRootUnavailable() (reason string, declared bool) {
+	c := measuredRoot
+	_, reason = c.device()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return reason, c.declared
 }
 
 type rootProbe struct {
@@ -64,12 +68,16 @@ type rootProbe struct {
 	reason string
 	// transient marks a reason that a later probe may not repeat.
 	transient bool
+	// declared is set when the boot command line carries a roothash=.
+	declared bool
 }
 
 type rootCache struct {
 	probe  func() rootProbe
 	mu     sync.Mutex
 	result *rootProbe
+	// declared is the last probe's rootProbe.declared.
+	declared bool
 }
 
 func (c *rootCache) device() (uint64, string) {
@@ -79,31 +87,33 @@ func (c *rootCache) device() (uint64, string) {
 	if result == nil {
 		probe := c.probe()
 		result = &probe
+		c.mu.Lock()
+		c.declared = probe.declared
 		if !probe.transient {
-			c.mu.Lock()
 			c.result = result
-			c.mu.Unlock()
 		}
+		c.mu.Unlock()
 	}
 	return result.device, result.reason
 }
 
 func probeMeasuredRoot(rootPath, cmdline string) rootProbe {
+	declared := bootRootHash(cmdline) != ""
 	var fs unix.Statfs_t
 	if err := unix.Statfs(rootPath, &fs); err != nil {
-		return rootProbe{reason: "cannot statfs root filesystem", transient: true}
+		return rootProbe{reason: "cannot statfs root filesystem", transient: true, declared: declared}
 	}
 	if fs.Flags&unix.ST_RDONLY == 0 {
-		return rootProbe{reason: "root filesystem is not read-only"}
+		return rootProbe{reason: "root filesystem is not read-only", declared: declared}
 	}
 	var st unix.Stat_t
 	if err := unix.Stat(rootPath, &st); err != nil {
-		return rootProbe{reason: "cannot stat root filesystem", transient: true}
+		return rootProbe{reason: "cannot stat root filesystem", transient: true, declared: declared}
 	}
 	if reason, transient := rootDeviceVerityMismatch(uint64(st.Dev), cmdline); reason != "" {
-		return rootProbe{reason: reason, transient: transient}
+		return rootProbe{reason: reason, transient: transient, declared: declared}
 	}
-	return rootProbe{device: uint64(st.Dev)}
+	return rootProbe{device: uint64(st.Dev), declared: declared}
 }
 
 // statRootFile stats source beneath root through an O_PATH descriptor, so a
@@ -136,14 +146,19 @@ func rootDeviceVerityMismatch(device uint64, cmdline string) (string, bool) {
 	}
 	actual, err := deviceVerityRootHash(device)
 	if err != nil {
-		// A root that is no device-mapper device never becomes one.
-		return err.Error(), !errors.Is(err, unix.ENXIO)
+		// A root that is no device-mapper device never becomes one, and its
+		// table is fixed for the boot.
+		return err.Error(), !errors.Is(err, unix.ENXIO) && !errors.Is(err, errNotStrictVerity)
 	}
 	if actual != expected {
-		return "root device is not a strict dm-verity target with the boot roothash", false
+		return "root device verity hash does not match the boot roothash", false
 	}
 	return "", false
 }
+
+// errNotStrictVerity marks a device-mapper table that is no single, read-only
+// dm-verity target whose reads are always verified.
+var errNotStrictVerity = errors.New("root device is not a strict dm-verity target")
 
 func deviceVerityRootHash(device uint64) (string, error) {
 	fd, err := unix.Open("/dev/mapper/control", unix.O_RDWR|unix.O_CLOEXEC, 0)
@@ -162,37 +177,48 @@ func deviceVerityRootHash(device uint64) (string, error) {
 	if errno != 0 {
 		return "", fmt.Errorf("query device-mapper table: %w", errno)
 	}
-	return verityTableRootHash(data, device), nil
+	return verityTableRootHash(data, device)
 }
 
-func verityTableRootHash(data []byte, device uint64) string {
+func verityTableRootHash(data []byte, device uint64) (string, error) {
 	if len(data) < unix.SizeofDmIoctl {
-		return ""
+		return "", fmt.Errorf("%w: truncated device-mapper reply", errNotStrictVerity)
 	}
 	header := (*unix.DmIoctl)(unsafe.Pointer(&data[0]))
 	start, size := uint64(header.Data_start), uint64(header.Data_size)
-	if header.Dev != device || header.Target_count != 1 || header.Flags&unix.DM_READONLY_FLAG == 0 || header.Flags&unix.DM_ACTIVE_PRESENT_FLAG == 0 || header.Flags&unix.DM_BUFFER_FULL_FLAG != 0 || start < unix.SizeofDmIoctl || size > uint64(len(data)) || start+unix.SizeofDmTargetSpec >= size || start%8 != 0 {
-		return ""
+	switch {
+	case header.Dev != device:
+		return "", fmt.Errorf("%w: reply names another device", errNotStrictVerity)
+	case header.Target_count != 1:
+		return "", fmt.Errorf("%w: %d targets", errNotStrictVerity, header.Target_count)
+	case header.Flags&unix.DM_READONLY_FLAG == 0:
+		return "", fmt.Errorf("%w: device is writable", errNotStrictVerity)
+	case header.Flags&unix.DM_ACTIVE_PRESENT_FLAG == 0:
+		return "", fmt.Errorf("%w: no active table", errNotStrictVerity)
+	case header.Flags&unix.DM_BUFFER_FULL_FLAG != 0:
+		return "", fmt.Errorf("%w: table does not fit the reply buffer", errNotStrictVerity)
+	case start < unix.SizeofDmIoctl || size > uint64(len(data)) || start+unix.SizeofDmTargetSpec >= size || start%8 != 0:
+		return "", fmt.Errorf("%w: malformed device-mapper reply", errNotStrictVerity)
 	}
 	target := (*unix.DmTargetSpec)(unsafe.Pointer(&data[start]))
 	if target.Sector_start != 0 || target.Length == 0 || unix.ByteSliceToString(target.Target_type[:]) != "verity" {
-		return ""
+		return "", fmt.Errorf("%w: target is not verity over the whole device", errNotStrictVerity)
 	}
 	parameters := data[start+unix.SizeofDmTargetSpec : size]
 	end := strings.IndexByte(string(parameters), 0)
 	if end < 0 {
-		return ""
+		return "", fmt.Errorf("%w: unterminated target parameters", errNotStrictVerity)
 	}
 	fields := strings.Fields(string(parameters[:end]))
 	if len(fields) < 10 || fields[7] != "sha256" || !canonicalSHA256(fields[8]) {
-		return ""
+		return "", fmt.Errorf("%w: unsupported hash or malformed parameters", errNotStrictVerity)
 	}
 	if len(fields) == 10 {
-		return fields[8]
+		return fields[8], nil
 	}
 	count, err := strconv.Atoi(fields[10])
 	if err != nil || count != len(fields)-11 {
-		return ""
+		return "", fmt.Errorf("%w: malformed optional parameters", errNotStrictVerity)
 	}
 	// Unknown options fail closed. In particular, ignore_corruption and
 	// check_at_most_once cannot guarantee that later reads retain verified bytes.
@@ -200,10 +226,10 @@ func verityTableRootHash(data []byte, device uint64) string {
 		switch option {
 		case "restart_on_corruption", "panic_on_corruption", "restart_on_error", "panic_on_error", "ignore_zero_blocks", "try_verify_in_tasklet":
 		default:
-			return ""
+			return "", fmt.Errorf("%w: unsupported verity option %q", errNotStrictVerity, option)
 		}
 	}
-	return fields[8]
+	return fields[8], nil
 }
 
 func bootRootHash(cmdline string) string {

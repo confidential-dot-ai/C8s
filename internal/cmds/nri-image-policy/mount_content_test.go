@@ -3,6 +3,7 @@ package nriimagepolicy
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/containerd/nri/pkg/api"
@@ -57,6 +58,30 @@ func TestNodeRootProvenanceAdmitsBeforeCreation(t *testing.T) {
 		err := p.ValidateContainerAdjustment(t.Context(), &api.ValidateContainerAdjustmentRequest{Pod: pod, Container: ctr})
 		if (err == nil) != measured {
 			t.Fatalf("ValidateContainerAdjustment(measured root %t) = %v", measured, err)
+		}
+	}
+}
+
+func TestNodeRootMissingNamesCause(t *testing.T) {
+	original := nodeRootUnavailableReason
+	nodeRootUnavailableReason = func() (string, bool) { return "root filesystem is not read-only", true }
+	t.Cleanup(func() { nodeRootUnavailableReason = original })
+	unproven := allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, HostSourceDigest: "sha256:" + strings.Repeat("a", 64), ReadOnly: true}
+	proven := unproven
+	proven.Provenance = allowlist.ProvenanceNodeRoot
+	writable := unproven
+	writable.ReadOnly = false
+	for _, tc := range []struct {
+		name   string
+		mounts []allowlist.ObservedMount
+		want   string
+	}{
+		{"unproven read-only bind", []allowlist.ObservedMount{unproven}, "root filesystem is not read-only"},
+		{"proven bind", []allowlist.ObservedMount{proven}, ""},
+		{"writable bind", []allowlist.ObservedMount{writable}, ""},
+	} {
+		if got := nodeRootMissing(tc.mounts); got != tc.want {
+			t.Fatalf("nodeRootMissing(%s) = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
