@@ -58,6 +58,10 @@ type evidence struct {
 	// fresh is true when erd binds a caller-supplied nonce, so a passing
 	// verification proves the evidence was produced for THIS check (not replayed).
 	fresh bool
+	// measured is the node's measured policy list (a bundle's
+	// measured_policies, a certificate's or discovery document's runtime
+	// extensions), unauthenticated until replayed against RTMR[3].
+	measured []string
 	// source describes where the evidence came from (for output).
 	source string
 	// certSHA256 is the hex SHA-256 of the serving certificate (cert modes only).
@@ -150,7 +154,8 @@ type attestationResponse struct {
 	// it from the leaf it observed and only checks that the two agree.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
 	// RouteDigest is informational: resolveRoute only selects or rejects on it.
-	RouteDigest string `json:"route_digest"`
+	RouteDigest      string   `json:"route_digest"`
+	MeasuredPolicies []string `json:"measured_policies,omitempty"`
 }
 
 // leafTrust is what a caller can offer to authenticate a leaf body that is
@@ -274,6 +279,7 @@ func evidenceFromCert(cert *x509.Certificate, source string, trust leafTrust) (*
 		platform:          platform,
 		rawEvidence:       raw,
 		erd:               params.ExpectedReportData,
+		measured:          params.RuntimeExtensions,
 		fresh:             false,
 		source:            source,
 		certSHA256:        hex.EncodeToString(sum[:]),
@@ -437,6 +443,7 @@ func evidenceFromEndpointJSON(data, expectNonce, expectEK []byte, route *boundRo
 		rawEvidence:      r.Evidence,
 		erd:              erd,
 		fresh:            fresh,
+		measured:         r.MeasuredPolicies,
 		source:           source,
 		bindingNote:      "REPORTDATA binds the identity transcript: front-door mode + session keys + nonce + the exact mesh leaf and its transcript-committed issuing CA + the route digest (leaf proof of possession verified)",
 		leaf:             leaf,
