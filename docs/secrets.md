@@ -236,6 +236,20 @@ token binds the method, path, and body, so a captured one cannot be replayed
 against a different path or a different value. `overwrite` travels in the body
 for that reason: a query parameter is outside what the token covers.
 
+CDS spends each token once, as for allowlist writes, including on
+`GET /secrets-explain`. A token is spent once it verifies, before CDS checks the
+request it carries, so a retry mints a fresh token. Reusing a spent token
+answers `409` with a plain-text error. CDS answers `503` when it verifies a token
+but cannot record it as spent; nothing ran, so retry with a fresh token. Each
+CDS keeps its own record of spent tokens and never prunes it: every request adds
+a row, explain reads included, and without persistence that record counts
+toward `cds.persistence.memorySizeLimit`. Writes count too: when the path
+already holds a value, `c8s secrets put --overwrite` spends two tokens, one for
+the create attempt and one for the overwrite. Do not poll explain.
+Without `cds.persistence.enabled`, CDS also refuses every token issued before
+its start plus `--jwt-clock-skew` (`cds.jwtClockSkew`, 30 seconds by default)
+with `401`; wait that long after a restart.
+
 ### Replacing a value
 
 A path that already holds a value answers `409` and names what put it there —
@@ -428,6 +442,15 @@ actually released.
   whose content the host chooses. A `data` rule is allowed: its content
   (a ConfigMap, a PVC) is still the cluster's, but only at a destination
   under `/mnt/c8s-data/` the entry declares.
+- A read-only `nodeRootFile` rule is allowed. The node proves the file is on
+  its measured dm-verity root, and read-only removes the write channel, so the
+  host chooses neither what the container reads nor where it writes. This is
+  how a GPU worker holds a grant beside the NVIDIA CDI driver files of the
+  node image.
+- A `host` rule stays refused, read-only or writable. This includes
+  `/run/nvidia-persistenced/socket` from the NVIDIA CDI set: a socket has no
+  content to prove, and it is a channel to whatever process the host runs
+  behind it. Drop it from the worker's mounts to hold a grant.
 - The write path refuses an entry that breaks either rule, and release refuses
   one stored before it did. `env` is not required yet: `exact` fingerprints
   the whole environment, including the pod's `HOSTNAME`, so no policy pins it

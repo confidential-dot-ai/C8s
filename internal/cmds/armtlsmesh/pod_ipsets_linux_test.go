@@ -3,13 +3,17 @@
 package armtlsmesh
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -462,5 +466,35 @@ func TestIptablesMetricsSnapshot_CarriesIPSetMembership(t *testing.T) {
 	}
 	if snap.CWIPSetShrinks != 4 {
 		t.Errorf("CWIPSetShrinks = %d, want 4", snap.CWIPSetShrinks)
+	}
+}
+
+// Only a change is logged, with the whole set, and the all-pods sets not at
+// all.
+func TestLogIPSetMembership(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, nil))
+	logged := map[string][]string{}
+	spec := ipSetSpec{name: cwPodIPSetName4, members: []string{"10.0.0.1", "10.0.0.2"}}
+	logIPSetMembership(logger, logged, spec)
+	logIPSetMembership(logger, logged, spec)
+	spec.members = nil
+	logIPSetMembership(logger, logged, spec)
+	logIPSetMembership(logger, logged, ipSetSpec{name: podIPSetName4, members: []string{"10.0.0.9"}})
+
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var rec struct {
+			Set     string   `json:"set"`
+			Members []string `json:"members"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		got = append(got, fmt.Sprint(rec.Set, rec.Members))
+	}
+	want := []string{cwPodIPSetName4 + "[10.0.0.1 10.0.0.2]", cwPodIPSetName4 + "[]"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("logged %q, want %q", got, want)
 	}
 }

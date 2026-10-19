@@ -18,7 +18,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/confidential-dot-ai/c8s/internal/allowlist"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cdsconn"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
@@ -127,16 +126,18 @@ func (o *options) trustedKeys() ([]*ecdsa.PublicKey, error) {
 	return keys, nil
 }
 
-// put signs and writes manifest, sending ifMatch when not empty. On a 409 or
-// 412 it appends rebase, the recovery step for the calling command, unless
-// the 409 refuses a spent token, which a fresh signature fixes.
+// put signs and writes manifest, sending ifMatch when not empty. On a
+// revision 409 or a 412 it appends rebase, the recovery step for the calling
+// command.
 func put(ctx context.Context, c routesclient.Client, manifest []byte, signer operatorauth.Authorizer, ifMatch, rebase string) error {
 	err := c.Put(ctx, manifest, signer, ifMatch)
 	var se *operatorauth.StatusError
 	if errors.As(err, &se) {
 		switch {
 		case SpentToken(err):
-			return fmt.Errorf("%w; re-run the command to sign a new token", err)
+			return fmt.Errorf("%w; re-run the command to mint a fresh token", err)
+		case se.Status == http.StatusServiceUnavailable && se.Body == operatorauth.ErrTokenNotRecorded.Error():
+			return fmt.Errorf("%w; nothing was stored, so re-running the command with a fresh token is safe", err)
 		case se.Status == http.StatusConflict, se.Status == http.StatusPreconditionFailed:
 			return fmt.Errorf("%w; %s", err, rebase)
 		case se.Status == http.StatusUnauthorized:
@@ -151,7 +152,7 @@ func put(ctx context.Context, c routesclient.Client, manifest []byte, signer ope
 // revision's 409.
 func SpentToken(err error) bool {
 	var se *operatorauth.StatusError
-	return errors.As(err, &se) && se.Status == http.StatusConflict && strings.Contains(se.Body, allowlist.ErrTokenReused.Error())
+	return errors.As(err, &se) && se.Status == http.StatusConflict && strings.Contains(se.Body, operatorauth.ErrTokenReused.Error())
 }
 
 func digestHex(manifest []byte) string {

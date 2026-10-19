@@ -394,8 +394,9 @@ host-bind check only when an allowlist entry admits the container under an
 `exact` mount policy whose `nodeRootFile` rule names that destination and
 source. That entry can be CDS-served. Every other bind stays a host bind,
 including a measured file under mount policy `any`, under a `host` rule, or
-with the allowlist disabled. A `nodeRootFile` rule still names a host path, so
-an entry with one cannot carry a secrets grant.
+with the allowlist disabled. A read-only `nodeRootFile` rule does not stop an
+entry from carrying a secrets grant; a `host` rule does (see
+[Secrets](secrets.md)).
 
 The reserved `verityDigest` field is rejected as not supported on every kind. This exception is scoped to read-only regular files.
 It does not implement whole-volume provenance, arbitrary dm-verity volume trust,
@@ -716,8 +717,10 @@ reproduces the same bytes.
 Writes are authorized by an operator EC key. The `c8s allowlist` CLI mints a
 short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
-operator public keys it pins. Each token authorizes one allowlist write: CDS
-remembers every spent token and answers a replay with 409. Without
+operator public keys it pins. Each token authorizes one request to any
+operator-token endpoint (allowlist, routes, secrets): CDS remembers every spent
+token and answers a replay with 409. CDS answers 503 when it verifies a token
+but cannot record it as spent; nothing ran, so retry with a fresh token. Without
 `cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
 token issued before its start plus `--jwt-clock-skew`; after a restart, wait
 that long and mint a fresh token.

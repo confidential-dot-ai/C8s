@@ -233,7 +233,7 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 
 var (
 	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
-	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -280,13 +280,13 @@ func (w Workload) ArgvPinned() bool {
 }
 
 // MountsPinned reports whether every container's mounts policy is deny, or
-// exact with no host rule, so the host adds no mount and names no node path.
-// A data rule still mounts content the cluster chooses (a ConfigMap, a PVC)
-// at a destination the entry declares. A secrets grant requires it
-// (docs/secrets.md).
+// exact with no host rule other than a read-only nodeRootFile, so the host adds
+// no mount and chooses no content. A data rule still mounts content the cluster
+// chooses (a ConfigMap, a PVC) at a destination the entry declares. A secrets
+// grant requires it (docs/secrets.md).
 func (w Workload) MountsPinned() bool {
 	for _, c := range w.containers() {
-		if !(mountConstraint{policy: &c.Mounts}).hostIndependent() {
+		if !(mountConstraint{policy: &c.Mounts}).grantPinned() {
 			return false
 		}
 	}
