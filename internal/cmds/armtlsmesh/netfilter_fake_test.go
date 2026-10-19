@@ -1019,7 +1019,7 @@ func cwPodStore(t *testing.T) cache.Store {
 // abandoned whenever an earlier set failed.
 func TestReconcilePodIPSetsWritesGuardSetsFirst(t *testing.T) {
 	nf := installFakeNetfilter(t)
-	if _, err := reconcilePodIPSets(cwPodStore(t), []string{"10.0.0.1"}, nil, 100, testLogger()); err != nil {
+	if _, err := reconcilePodIPSets(cwPodStore(t), []string{"10.0.0.1"}, nil, 100, nil, testLogger()); err != nil {
 		t.Fatalf("reconcilePodIPSets: %v", err)
 	}
 	script := nf.read("restore_scripts")
@@ -1038,7 +1038,7 @@ func TestReconcilePodIPSetsAttemptsEverySetWhenOneFails(t *testing.T) {
 	nf.set("ipset_restore_fail", "ipset v7.15: Kernel error received: Invalid argument")
 	before := iptablesIPSetSyncFailures()
 
-	_, err := reconcilePodIPSets(cwPodStore(t), []string{"10.0.0.1"}, nil, 100, testLogger())
+	_, err := reconcilePodIPSets(cwPodStore(t), []string{"10.0.0.1"}, nil, 100, nil, testLogger())
 	if err == nil {
 		t.Fatal("a failing ipset write must surface")
 	}

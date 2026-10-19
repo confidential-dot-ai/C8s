@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -180,7 +181,8 @@ func runIptablesSync(ctx context.Context, cfg *iptablesSyncConfig) error {
 	if err := reconcileLiveSetMaxElem(logger, cfg.ipsetMaxElem); err != nil {
 		return err
 	}
-	cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, logger)
+	loggedMembers := map[string][]string{}
+	cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, loggedMembers, logger)
 	if err != nil {
 		return err
 	}
@@ -234,7 +236,7 @@ func runIptablesSync(ctx context.Context, cfg *iptablesSyncConfig) error {
 			resync = true
 		case <-syncCh:
 		}
-		cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, logger)
+		cwIPs, err := reconcilePodIPSets(podInformer.GetStore(), cfg.nodeIPs, excludedSourceNamespaces, cfg.ipsetMaxElem, loggedMembers, logger)
 		if err != nil {
 			logger.Warn("pod ipset sync failed", "error", err)
 			continue
@@ -337,12 +339,38 @@ type ipSetSpec struct {
 	label   string
 }
 
+// membershipLoggedSets are the node's own sets. The all-pods sets change with
+// every pod in the cluster, on every node, so they are not logged.
+var membershipLoggedSets = map[string]bool{
+	localPodIPSetName4: true,
+	localPodIPSetName6: true,
+	cwPodIPSetName4:    true,
+	cwPodIPSetName6:    true,
+}
+
+// logIPSetMembership logs the set's whole membership when a successful write
+// changed it from what logged holds, so the last line per set is the set; a
+// process's first write logs every set. Which pod IPs have interception or
+// the cw guard is otherwise visible only by reading the set on the node.
+func logIPSetMembership(logger *slog.Logger, logged map[string][]string, spec ipSetSpec) {
+	if logged == nil || !membershipLoggedSets[spec.name] {
+		return
+	}
+	prev, seen := logged[spec.name]
+	if seen && slices.Equal(prev, spec.members) {
+		return
+	}
+	logged[spec.name] = spec.members
+	logger.Info("ipset membership changed", "set", spec.name, "members", append([]string{}, spec.members...))
+}
+
 // reconcilePodIPSets rewrites the managed ipsets from the pod cache. The cw
 // guard is always installed, so the cw sets are always computed and written.
 // reconcilePodIPSets returns the cw pod IPs it wrote so the caller can flush
 // their conntrack entries and keep the guard fail-closed across membership
-// changes.
-func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNamespaces map[string]struct{}, ipsetMaxElem int, logger *slog.Logger) ([]string, error) {
+// changes. logged is the membership last logged per set (logIPSetMembership);
+// nil logs none.
+func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNamespaces map[string]struct{}, ipsetMaxElem int, logged map[string][]string, logger *slog.Logger) ([]string, error) {
 	sets := collectPodIPSetMembers(store.List(), nodeIPs, excludedSourceNamespaces)
 	if sets.exceeds(ipsetMaxElem) {
 		ipsetOverflows.Add(1)
@@ -367,7 +395,9 @@ func reconcilePodIPSets(store cache.Store, nodeIPs []string, excludedSourceNames
 		if err := replaceIPSetMembers(logger, spec.name, spec.family, spec.members, ipsetMaxElem); err != nil {
 			ipsetSyncFailures.Add(1)
 			errs = append(errs, fmt.Errorf("sync %s: %w", spec.label, err))
+			continue
 		}
+		logIPSetMembership(logger, logged, spec)
 	}
 	if len(errs) > 0 {
 		publishIptablesMetrics(logger)
