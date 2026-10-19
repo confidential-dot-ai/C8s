@@ -16,14 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        include:
-          # The logical image names and bases of test/conformance/backends/common.sh's image_ref.
-          - name: model-server
-            base: docker.io/library/debian:bookworm-slim
-          - name: tenant-app
-            base: docker.io/library/python:3.12-alpine
-          - name: job-runner
-            base: docker.io/library/alpine:3.20
+        # The Dockerfile's stages, one per logical image name.
+        name: [model-server, tenant-app, job-runner]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -42,7 +36,7 @@ jobs:
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: test/conformance/images/reporter
-          build-args: BASE=${{ matrix.base }}
+          target: ${{ matrix.name }}
           platforms: linux/amd64
           push: true
           provenance: false
