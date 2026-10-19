@@ -178,47 +178,15 @@ the same PR.
 
 ### The metal backend
 
-The harness host has no node shell and no TEE, and the operator's credential
-may neither exec, port-forward nor write in the c8s namespace.
-
-- **Pod commands.** The node image closes pod exec for every principal.
-  `pod_exec` answers agent: a pod whose first container runs an argv the
-  harness chose runs an agent there, which takes a command from two of the
-  pod's annotations through a downward-API volume and prints its output and
-  status to the log. `agent_exec`, `pod_cert_file`, `pod_file`, `pod_fstype`,
-  `requester_request` and the kept scraper's `mesh_metrics` go through it;
-  another container answers 77, and so does `dialer_bin`, since the dialer
-  is copied in.
-- **Pinned pods.** A pod without the agent whose first container runs a
-  pinned reporter image (`REPORTER_IMAGES`, see
-  [Probes](#probes-the-steps-exec)) answers `pod_cert_file` but the key,
-  `pod_file` and `pod_fstype` from its log; any other pod answers 77.
-- **The CDS.** Its allowlist routes go through the router's allowlist route at
-  `C8S_ALLOWLIST_URL`, rate-limited to one write a second per client, so a
-  429 is waited out. Its other routes, documents and serving certificate are
-  reached from the kept scraper pod. `operator_keys` answers yes from the
-  launch; `cds_plain_url`, `cds_block`, `cds_relay_block`, `node_refuses` and
-  their undoing answer 77.
-- **The mesh.** `mesh_member` reads the set's last logged membership from the
-  mesh-sync log, and answers 77 where the mesh logs none.
-- **The node image.** It holds the seed, so `seed_add` answers 77, and the
-  router's nginx configuration, so `router_nginx_conf`, and `router_tls_mode`
-  where a launch file names the mode, answer 77; the built-in allowlist
-  route then counts as enabled when the router serves the allowlist there.
-  Its scratch is encrypted, so `scratch_encrypted` answers yes. Its own c8s
-  image is out of reach, so `image_ref secret-client` answers 77.
-  `base_declares` answers from its image policy alone, since c8s's component
-  entries pin their entrypoints.
-- **Images.** "nginx" is another build of the router's nginx, since the served
-  allowlist pins the router's digest and lint refuses an any-argv entry
-  beside that pin. `image_entrypoint` and `image_env` answer 77 without
-  `crane`, `write_token` without Go.
-- **Always 77.** `image_alias`, `node_containers`, `plugin_stop`,
-  `plugin_start`, `cds_restart`, `cds_restart_with`,
-  `attestation_service_stop`, `private_keys`, `attest_direct`,
-  `pod_sandbox_id` and `evidence` over a chosen launch digest; and, as no
-  address outside the cluster answers and there is no mock,
-  `external_endpoint` and `attestation_endpoint`.
+The harness host has no node shell and no TEE, the operator's credential may
+neither exec, port-forward nor write in the c8s namespace, and the node image
+holds the seed and the router's configuration; what needs any of those
+answers 77. Pod exec is closed too, so `pod_exec` answers agent: a pod the
+steps mark `c8s-conformance/harness-argv`, because they chose its first
+container's argv, runs an agent there in place of that argv, and `agent_exec`
+reaches it. Pods whose argv a scenario pins are read from a reporter image's
+log instead. [`metal.sh`](backends/metal.sh) gives each function's answer and
+its reason beside the function.
 
 ## What is a coordinated change
 
