@@ -1,4 +1,5 @@
 {{- if .Values.router.enabled }}
+{{- $tunnelConnsPerClient := include "c8s.positiveInt" (dict "value" .Values.router.nginx.tunnelConnectionsPerClient "label" "router.nginx.tunnelConnectionsPerClient") | int -}}
 {{- $sans := include "router.sanList" . | fromJsonArray -}}
 {{- range $s := $sans -}}{{- include "router.validateSan" $s -}}{{- end -}}
 {{- $serverNames := join " " $sans -}}
@@ -76,11 +77,14 @@ metadata:
 data:
   nginx.conf: |
     worker_processes auto;
+    # Each connection may hold a client socket, an upstream socket and a
+    # request body temp file.
+    worker_rlimit_nofile 65536;
     error_log /var/log/nginx/error.log warn;
     pid /tmp/nginx.pid;
 
     events {
-        worker_connections 1024;
+        worker_connections 16384;
     }
 
     http {
@@ -132,6 +136,11 @@ data:
         limit_req_zone $allowlist_write_rate_key zone=allowlist_write_per_client:10m rate={{ $allowlistWriteRate }}r/s;
         limit_req_zone $allowlist_write_total_key zone=allowlist_write_total:1m rate={{ $allowlistWriteTotalRate }}r/s;
         limit_req_zone $allowlist_read_rate_key zone=allowlist_read_per_client:10m rate={{ $allowlistReadRate }}r/s;
+{{- end }}
+{{- if .Values.router.attest.enabled }}
+
+        # Bounds what one client address holds of the tunnel body spool.
+        limit_conn_zone $binary_remote_addr zone=c8s_tunnel_per_client:10m;
 {{- end }}
 
         {{- if or $upstreamMeshWrapped $launchDriven }}
@@ -310,17 +319,28 @@ data:
             # the attest-lb challenge, and the over-encrypted tunnel — are
             # proxied to the in-pod `cds-attest` sidecar.
             # X-Real-IP is the address the sidecar meters each client by.
+            # nginx reads each request body whole before proxying it, so a slow
+            # upload holds no sidecar budget; replies past proxy_buffers stream
+            # instead of spilling.
             location /.well-known/c8s/ {
-                {{- if default false .Values.router.cors.enabled }}
-                {{- include "router.corsLocationDirectives" .Values.router.cors | nindent 16 }}
-                {{- else if eq (include "router.protocolCorsEnabled" .) "true" }}
-                {{- include "router.protocolCorsLocationDirectives" . | nindent 16 }}
-                {{- end }}
-                proxy_pass http://127.0.0.1:{{ .Values.router.attest.port }};
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                proxy_set_header X-Forwarded-Proto $scheme;
+                {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $readTimeout) | nindent 16 }}
+                client_max_body_size 16k;
+                client_body_buffer_size 16k;
+            }
+
+            # Tunnel records go up to 8 MiB. Past 16k they spill to a sized
+            # tmpfs that holds only the bytes received, where an 8m buffer
+            # would be allocated whole once a client declared the size. A full
+            # volume fails the upload with 500. The per-address cap stops one
+            # client filling it before cds-attest sees a session.
+            location = /.well-known/c8s/tunnel {
+                {{- include "router.wellKnownProxyDirectives" (dict "root" . "readTimeout" $readTimeout) | nindent 16 }}
+                client_max_body_size 8m;
+                client_body_buffer_size 16k;
+                client_body_temp_path {{ include "router.tunnelBodyDir" . }};
+                client_body_timeout 10s;
+                limit_conn c8s_tunnel_per_client {{ $tunnelConnsPerClient }};
+                limit_conn_status 503;
             }
 
             {{- end }}

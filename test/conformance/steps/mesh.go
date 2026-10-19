@@ -388,6 +388,43 @@ func (w *world) podIPs(p *pod) (ips []string, phase string, err error) {
 	return strings.Fields(addrs), phase, nil
 }
 
+// podExits describes the pod's containers that terminated: exit code,
+// reason and the log lines the kubelet kept (FallbackToLogsOnError), for an
+// error saying why a pod stopped. Empty when none did or the pod is gone.
+func podExits(p *pod) string {
+	out, err := kubectl(nil, "-n", p.namespace, "get", "pod", p.name, "-o", "json")
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Status struct {
+			Init       []containerExit `json:"initContainerStatuses"`
+			Containers []containerExit `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if json.Unmarshal([]byte(out), &st) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, c := range append(st.Status.Init, st.Status.Containers...) {
+		if t := c.State.Terminated; t != nil && t.ExitCode != 0 {
+			fmt.Fprintf(&b, "\ncontainer %s exited %d (%s):\n%s", c.Name, t.ExitCode, t.Reason, strings.TrimSpace(t.Message))
+		}
+	}
+	return b.String()
+}
+
+type containerExit struct {
+	Name  string `json:"name"`
+	State struct {
+		Terminated *struct {
+			ExitCode int    `json:"exitCode"`
+			Reason   string `json:"reason"`
+			Message  string `json:"message"`
+		} `json:"terminated"`
+	} `json:"state"`
+}
+
 func podRunning(ctx context.Context, name string) error {
 	w := getWorld(ctx)
 	p, err := w.pod(name)
@@ -405,7 +442,7 @@ func podRunning(ctx context.Context, name string) error {
 			return false, err
 		}
 		if phase == "Failed" || phase == "Succeeded" {
-			return false, fmt.Errorf("%q is %s", name, phase)
+			return false, fmt.Errorf("%q is %s%s", name, phase, podExits(p))
 		}
 		return phase == "Running" && len(p.addrs) > 0, nil
 	})
@@ -430,6 +467,10 @@ func (w *world) helloListening(p *pod) error {
 			}
 			if err != nil {
 				last = err.Error()
+				// A pod that has stopped will never answer.
+				if _, phase, perr := w.podIPs(p); perr == nil && (phase == "Failed" || phase == "Succeeded") {
+					return false, fmt.Errorf("%q is %s before its hello API on port %d answered%s", p.name, phase, port, podExits(p))
+				}
 				return false, nil
 			}
 			last = r.out

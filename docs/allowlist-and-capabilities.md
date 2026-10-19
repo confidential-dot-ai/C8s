@@ -613,8 +613,9 @@ them. get-cert runs with per-pod dynamic arguments, which is exactly why the
 sidecar shapes in the C8s image's component entry carry `command: exact` at
 the invocation (`/c8s get-cert`) and `args: any`. Their mounts are `exact`:
 the webhook mounts at fixed destinations, and each optional mount (discovery,
-reload-watch, the inventory socket the NRI plugin adds) is a separate
-container of the entry, so admission is the union across them. Before
+reload-watch) is a separate container of the entry, so admission is the union
+across them. The inventory socket the NRI plugin adds is a `platform` mount and
+needs no rule. Before
 matching, a container whose image is admitted with open args for its
 invocation and running one of the invocations the webhook injects is dropped
 from the candidate set
@@ -734,10 +735,10 @@ pods and the pods the webhook injects into set `enableServiceLinks: false`, so
 the set does not depend on the Services in the namespace; a workload that read
 service-link variables must resolve the Service by DNS. The chart refuses to
 render a component container with `envFrom` or an optional key reference. The
-injected sidecar shapes match the variables the webhook sets on them. A
-hostPath under `/var/run` gets a second
-container with the source under `/run`, because containerd resolves that
-symlink on most nodes. The chart refuses to render a component container whose
+injected sidecar shapes match the variables the webhook sets on them. The
+chart refuses to render a component hostPath under `/var/run`: containerd
+resolves symlinks in a hostPath source and `/var/run` is a symlink to `/run`
+on some nodes only, so the node reports no single path for it. The chart refuses to render a component container whose
 argv references one of its own variables (`$(NAME)`): the value would differ
 per node. An operator-authored `workloads` entry named `<image basename>-<first 12 hex
 of digest>` replaces the entry whole in the rendered seed and in the host
@@ -904,9 +905,7 @@ entry's SHA-256>`: every nginx and c8s-image container of the router pod,
 pinned to the exact command line and mount table the chart renders, like the
 component entries. nginx, `cds-attest` and `allowlist-proxy` are required
 main containers; `acme`, `c8s-cert` and `c8s-cert-wait` are init containers,
-admitted but not required. A sidecar's host path under `/var/run` is pinned as
-the `/run` path containerd resolves it to where `/var/run` is `/run`, so on a
-node where it is its own directory the router's leaf stays unnamed. It is the
+admitted but not required. It is the
 only entry the router pod matches, so the router's mesh leaf is stamped with
 that name. An upgrade that changes the router's image repositories, digests,
 arguments or mounts seeds a new entry beside the old one. Until that entry

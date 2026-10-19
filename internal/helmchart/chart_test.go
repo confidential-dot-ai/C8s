@@ -179,7 +179,7 @@ func TestChartDefaultRendersReplacementStack(t *testing.T) {
 	assertContainerArgs(t, cert,
 		"get-cert",
 		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 		"--san=c8s-router.c8s-system.svc",
 		"--out=/tls/cert.pem",
 		"--key-out=/tls/key.pem",
@@ -866,7 +866,7 @@ func TestChartHostNamespacePolicyDeniesAllHostPath(t *testing.T) {
 	// Absence, not presence: a leftover carve-out would pass a "some hostPath
 	// deny renders" check.
 	for _, v := range vap.Spec.Validations {
-		for _, stale := range []string{"/var/run/nri-image-policy", "readOnly", "hostPath.type"} {
+		for _, stale := range []string{"/run/nri-image-policy", "readOnly", "hostPath.type"} {
 			if strings.Contains(v.Expression, stale) {
 				t.Errorf("validation still carves out the claims dir (%q); expression=%q", stale, v.Expression)
 			}
@@ -1584,7 +1584,7 @@ func TestChartNRIImagePolicyUsesPullMode(t *testing.T) {
 	if got, want := workerCfg.Allowlist.Pull.Interval, "5s"; got != want {
 		t.Fatalf("worker pull interval = %q, want %q", got, want)
 	}
-	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///var/run/nri-image-policy/attestation-api.sock"; got != want {
+	if got, want := workerCfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
 	}
 	if want := []string{measurement}; !slices.Equal(workerCfg.Allowlist.Pull.CDSMeasurements, want) {
@@ -1637,7 +1637,7 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	proxy := renderedDaemonSetContainer(t, out, "c8s-attestation-api", "attest-proxy")
 	assertContainerArgs(t, proxy,
 		"attest-proxy",
-		"--socket=/var/run/nri-image-policy/attestation-api.sock",
+		"--socket=/run/nri-image-policy/attestation-api.sock",
 		"--upstream=http://127.0.0.1:8400",
 	)
 	assertContainerNoArgPrefix(t, "attest-proxy", proxy.Args, "--api-key-file")
@@ -1645,12 +1645,12 @@ func TestChartAttestationApiDefaultsToNodeLocalSocket(t *testing.T) {
 	// API read their config from the ConfigMap — dropping either renders
 	// fine and only fails at runtime.
 	assertPodVolume(t, &ds.Spec.Template.Spec, "socket-dir", func(v corev1.Volume) bool {
-		return v.HostPath != nil && v.HostPath.Path == "/var/run/nri-image-policy"
+		return v.HostPath != nil && v.HostPath.Path == "/run/nri-image-policy"
 	})
 	assertPodVolume(t, &ds.Spec.Template.Spec, "config", func(v corev1.Volume) bool {
 		return projectedConfigMap(v) == "c8s-attestation-api"
 	})
-	assertContainerMount(t, proxy, "socket-dir", "/var/run/nri-image-policy")
+	assertContainerMount(t, proxy, "socket-dir", "/run/nri-image-policy")
 	// HTTP (a locked node image denies every runc exec), against
 	// the proxy's own health listener: the API's loopback bind is not
 	// kubelet-dialable, and this is the evidence path's only liveness signal.
@@ -1734,7 +1734,7 @@ func TestChartAttestationApiSocketWiresNRI(t *testing.T) {
 		t.Fatalf("helm template: %v\n%s", err, out)
 	}
 	cfg := renderedNRIBootConfig(t, out, "c8s-nri-image-policy-worker")
-	if got, want := cfg.Allowlist.Pull.AttestationApiURL, "unix:///var/run/nri-image-policy/attestation-api.sock"; got != want {
+	if got, want := cfg.Allowlist.Pull.AttestationApiURL, "unix:///run/nri-image-policy/attestation-api.sock"; got != want {
 		t.Fatalf("runtime attestation-api URL = %q, want %q", got, want)
 	}
 }
@@ -2239,7 +2239,7 @@ func TestChartOperatorHasPodNameEnv(t *testing.T) {
 // socket URL and the socket-directory mount are asserted per shape.
 func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 	t.Parallel()
-	const socketURL = "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock"
+	const socketURL = "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock"
 	for _, mode := range []string{"gke", "aks"} {
 		t.Run(mode, func(t *testing.T) {
 			out, err := helmTemplate(t, "--set-string", "attestationApi.cvmMode="+mode, "--set", "router.attest.enabled=true")
@@ -2264,7 +2264,7 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 			assertHasSocketMount := func(c corev1.Container) {
 				t.Helper()
 				for _, m := range c.VolumeMounts {
-					if m.Name == "attestation-api-socket" && m.MountPath == "/var/run/nri-image-policy" && m.ReadOnly {
+					if m.Name == "attestation-api-socket" && m.MountPath == "/run/nri-image-policy" && m.ReadOnly {
 						return
 					}
 				}
@@ -2272,7 +2272,7 @@ func TestChartNonBareMetalModeUsesAttestationSocket(t *testing.T) {
 			}
 			assertHasSocketMount(cds)
 			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
-			if !slices.Contains(mesh.Args, "unix:///var/run/nri-image-policy/attestation-api.sock") {
+			if !slices.Contains(mesh.Args, "unix:///run/nri-image-policy/attestation-api.sock") {
 				t.Errorf("armtls-mesh missing the socket URL arg; have %v", mesh.Args)
 			}
 			assertHasSocketMount(mesh)
@@ -2793,7 +2793,7 @@ func TestChartRouterAttestFrontDoorModeAndReadinessGate(t *testing.T) {
 			vol = &dep.Spec.Template.Spec.Volumes[i]
 		}
 	}
-	if vol == nil || vol.HostPath == nil || vol.HostPath.Path != "/var/run/nri-image-policy" {
+	if vol == nil || vol.HostPath == nil || vol.HostPath.Path != "/run/nri-image-policy" {
 		t.Fatalf("workload-claims hostPath volume missing or wrong, got %+v", dep.Spec.Template.Spec.Volumes)
 	}
 
@@ -2936,7 +2936,7 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		// the mTLS args render only for an https upstream.
 		"--upstream=http://c8s-infer.c8s-system.svc.cluster.local:8000",
 	)
-	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock")
+	assertContainerHasArgPrefix(t, "cds-attest", sidecar.Args, "--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock")
 	for _, banned := range []string{"--upstream-ca", "--upstream-cert", "--upstream-key", "--upstream-server-name"} {
 		assertContainerNoArgPrefix(t, "cds-attest", sidecar.Args, banned)
 	}
@@ -2948,13 +2948,58 @@ func TestChartRendersRouterAttestSidecar(t *testing.T) {
 		t.Fatalf("router should have nginx + cds-attest + allowlist-proxy, got %d containers", got)
 	}
 
-	// nginx reverse-proxies the dynamic well-known prefix to the sidecar.
-	renderedRouterNginxConfig(t, out).
-		location(t, "prefix", "/.well-known/c8s/").
-		assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
-	renderedRouterNginxConfig(t, out).
-		location(t, "prefix", "/.well-known/c8s/").
-		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	// The protocol endpoints take 16k bodies. Tunnel records up to 8 MiB
+	// spill to a sized tmpfs, capped per client address only.
+	cfg := renderedRouterNginxConfig(t, out)
+	protocol := cfg.location(t, "prefix", "/.well-known/c8s/")
+	tunnel := cfg.location(t, "exact", "/.well-known/c8s/tunnel")
+	for _, loc := range []*nginxBlock{protocol, tunnel} {
+		for _, name := range []string{"proxy_buffering", "proxy_request_buffering"} {
+			if got := loc.directives[name]; len(got) != 1 || !slices.Equal(got[0], []string{"on"}) {
+				t.Fatalf("%s = %v, want exactly on", name, got)
+			}
+		}
+		loc.assertDirective(t, "proxy_pass", "http://127.0.0.1:8800")
+		loc.assertDirective(t, "proxy_max_temp_file_size", "0")
+		loc.assertDirective(t, "proxy_read_timeout", "3600s")
+		loc.assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
+	}
+	protocol.assertNoDirective(t, "limit_conn")
+	protocol.assertDirective(t, "client_max_body_size", "16k")
+	protocol.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_max_body_size", "8m")
+	tunnel.assertDirective(t, "client_body_buffer_size", "16k")
+	tunnel.assertDirective(t, "client_body_temp_path", "/var/lib/c8s-tunnel-body")
+	tunnel.assertDirective(t, "client_body_timeout", "10s")
+	tunnel.assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "64")
+	tunnel.assertDirective(t, "limit_conn_status", "503")
+	if got := cfg.http.directives["limit_conn_zone"]; len(got) != 1 || !slices.Equal(got[0], []string{"$binary_remote_addr", "zone=c8s_tunnel_per_client:10m"}) {
+		t.Fatalf("limit_conn_zone = %v, want only the per-client tunnel zone", got)
+	}
+	conf := renderedRouterNginxConf(t, out)
+	for _, want := range []string{"\nworker_rlimit_nofile 65536;\n", "\n    worker_connections 16384;\n"} {
+		if !strings.Contains(conf, want) {
+			t.Fatalf("router nginx.conf lacks %q", want)
+		}
+	}
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	if m, ok := containerVolumeMount(nginx, "nginx-tunnel-body"); !ok || m.MountPath != "/var/lib/c8s-tunnel-body" {
+		t.Fatalf("nginx tunnel body mount = %+v, %v, want /var/lib/c8s-tunnel-body", m, ok)
+	}
+	if v, ok := podVolume(deployment.Spec.Template.Spec, "nginx-tunnel-body"); !ok || v.EmptyDir == nil || v.EmptyDir.Medium != corev1.StorageMediumMemory || v.EmptyDir.SizeLimit == nil || v.EmptyDir.SizeLimit.String() != "8Gi" {
+		t.Fatalf("nginx-tunnel-body volume = %+v, want an 8Gi memory emptyDir", v)
+	}
+	capOut, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.tunnelConnectionsPerClient=512")
+	if err != nil {
+		t.Fatalf("helm template (tunnelConnectionsPerClient=512): %v\n%s", err, capOut)
+	}
+	renderedRouterNginxConfig(t, capOut).location(t, "exact", "/.well-known/c8s/tunnel").assertDirective(t, "limit_conn", "c8s_tunnel_per_client", "512")
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=8Gi"); err == nil || !strings.Contains(out, "must exceed router.nginx.tunnelBodySpace") {
+		t.Fatalf("helm template with an nginx memory limit of tunnelBodySpace = %v, want the tmpfs refusal\n%s", err, out)
+	}
+	if out, err := helmTemplate(t, "--set", "router.attest.enabled=true", "--set", "router.nginx.resources.limits.memory=9Gi"); err != nil {
+		t.Fatalf("helm template with an nginx memory limit above tunnelBodySpace: %v\n%s", err, out)
+	}
 	renderedRouterNginxConfig(t, out).
 		location(t, "exact", "/readyz").
 		assertDirective(t, "proxy_set_header", "X-Real-IP", "$remote_addr")
@@ -3194,6 +3239,7 @@ var protocolCORSLocations = []struct{ match, path string }{
 	{"exact", "/.well-known/cds-cert.pem"},
 	{"exact", "/.well-known/mesh-ca.pem"},
 	{"prefix", "/.well-known/c8s/"},
+	{"exact", "/.well-known/c8s/tunnel"},
 }
 
 func TestRouterProtocolEndpointsCORSByDefault(t *testing.T) {
@@ -3317,7 +3363,7 @@ func TestRouterExposesAllowlistThroughCDSByDefault(t *testing.T) {
 		"--host=127.0.0.1",
 		"--port=8801",
 		"--cds-url=https://c8s-cds.c8s-system.svc:8443",
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 	} {
 		assertContainerHasArg(t, "allowlist-proxy", proxy.Args, want)
 	}
@@ -4994,7 +5040,7 @@ func TestChartCDSWiresInProcessTrustRoot(t *testing.T) {
 	}
 	args := renderedDeploymentContainer(t, out, "c8s-cds", "cds").Args
 	for _, want := range []string{
-		"--attestation-api-url=unix:///var/run/nri-image-policy/attestation-api.sock",
+		"--attestation-api-url=unix:///run/nri-image-policy/attestation-api.sock",
 		"--allowlist-db=/mnt/c8s-data/cds/allowlist.db",
 		"--ca-common-name=c8s Mesh CA",
 		"--ca-cert-validity=8760h",
@@ -5558,11 +5604,14 @@ func Example_routerConfig() {
 	fmt.Print(renderExampleRouterNginxConf())
 	// Output:
 	// worker_processes auto;
+	// # Each connection may hold a client socket, an upstream socket and a
+	// # request body temp file.
+	// worker_rlimit_nofile 65536;
 	// error_log /var/log/nginx/error.log warn;
 	// pid /tmp/nginx.pid;
 	//
 	// events {
-	//     worker_connections 1024;
+	//     worker_connections 16384;
 	// }
 	//
 	// http {
@@ -7228,7 +7277,7 @@ func TestChartVolumedDaemonSetShape(t *testing.T) {
 // carve-out would only reopen tenant access to the node filesystem.
 func TestChartVolumedSocketDirTracksTheInventoryDir(t *testing.T) {
 	t.Parallel()
-	const runtimeDir = "/var/run/c8s-inventory-elsewhere"
+	const runtimeDir = "/run/c8s-inventory-elsewhere"
 	out, err := helmTemplate(t,
 		"--set", "volumed.enabled=true",
 		"--set-string", "nriImagePolicy.hostPaths.runtimeDir="+runtimeDir,

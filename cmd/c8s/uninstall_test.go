@@ -306,7 +306,7 @@ func TestHostSweepDaemonSetShape(t *testing.T) {
 		NriPluginDir:        "/opt/nri/plugins",
 		NriPluginFilename:   "10-nri-image-policy",
 		NriConfigDir:        "/etc/nri/conf.d",
-		NriRuntimeDir:       "/var/run/nri-image-policy",
+		NriRuntimeDir:       "/run/nri-image-policy",
 		NriCacheDir:         "/var/lib/nri-image-policy",
 		ImagePullSecretRef:  []string{"regcred"},
 	}
@@ -366,7 +366,7 @@ func TestHostSweepDaemonSetShape(t *testing.T) {
 		"NRI_PLUGIN_DIR":      "/opt/nri/plugins",
 		"NRI_PLUGIN_FILENAME": "10-nri-image-policy",
 		"NRI_CONFIG_DIR":      "/etc/nri/conf.d",
-		"NRI_RUNTIME_DIR":     "/var/run/nri-image-policy",
+		"NRI_RUNTIME_DIR":     "/run/nri-image-policy",
 		"NRI_CACHE_DIR":       "/var/lib/nri-image-policy",
 	}
 	gotEnv := map[string]string{}
@@ -429,7 +429,7 @@ nriImagePolicy:
 		NriPluginDir:      "/opt/nri/plugins",
 		NriPluginFilename: "10-nri-image-policy",
 		NriConfigDir:      "/etc/nri/conf.d",
-		NriRuntimeDir:     "/var/run/nri-image-policy",
+		NriRuntimeDir:     "/run/nri-image-policy",
 		NriCacheDir:       "/var/lib/nri-image-policy",
 	}
 	if !reflect.DeepEqual(cfg, want) {
