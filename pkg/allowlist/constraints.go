@@ -75,6 +75,18 @@ func (m mountConstraint) hostIndependent() bool {
 	}
 	return m.policy.Policy == PolicyDeny || m.policy.Policy == PolicyExact || m.policy.Policy == ""
 }
+
+// grantPinned is hostIndependent as a secrets grant judges it: it also accepts
+// rules whose host file the node proves (MountRule.grantPinned).
+func (m mountConstraint) grantPinned() bool {
+	for _, rule := range m.policy.Rules {
+		if !rule.grantPinned() {
+			return false
+		}
+	}
+	return m.policy.Policy == PolicyDeny || m.policy.Policy == PolicyExact || m.policy.Policy == ""
+}
+
 func (m mountConstraint) isUnconstrained() bool {
 	return m.policy.Policy == PolicyAny
 }

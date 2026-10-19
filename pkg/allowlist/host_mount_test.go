@@ -2,6 +2,7 @@ package allowlist
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -163,10 +164,67 @@ func TestServedUnknownMountKindRefusesDocument(t *testing.T) {
 	}
 }
 
-func TestNodeRootFileRuleIsNotPinnedForGrant(t *testing.T) {
+func TestNodeRootFileRuleStaysHostDependent(t *testing.T) {
 	policy := MountPolicy{Policy: PolicyExact, Rules: []MountRule{{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}}}
 	if (mountConstraint{policy: &policy}).hostIndependent() {
-		t.Fatal("nodeRootFile rule reported host-independent, so a secrets grant would accept it")
+		t.Fatal("nodeRootFile rule reported host-independent; it still names a host path")
+	}
+}
+
+// A secrets grant accepts a host file only when the node proves what the
+// container reads and the container cannot write back (#934).
+func TestMountRuleGrantPinned(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		rule MountRule
+		want bool
+	}{
+		{"emptyDir", MountRule{Destination: "/models", Kind: MountEmptyDir}, true},
+		{"data", MountRule{Destination: DataMountPrefix + "config", Kind: MountData}, true},
+		{"nodeRootFile read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, true},
+		{"nodeRootFile writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountNodeRootFile, Source: "/usr/bin/nvidia-smi"}, false},
+		{"host read-only", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi", ReadOnly: true}, false},
+		{"host writable", MountRule{Destination: "/usr/bin/nvidia-smi", Kind: MountHost, Source: "/usr/bin/nvidia-smi"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.rule.grantPinned(); got != tc.want {
+				t.Fatalf("grantPinned(%+v) = %t, want %t", tc.rule, got, tc.want)
+			}
+		})
+	}
+}
+
+// The NVIDIA CDI file set of a GPU worker, as nodeRootFile rules, passes a
+// grant; an unproven host path and the writable persistenced socket do not.
+func TestGPUWorkerGrantWithNodeRootCDIFiles(t *testing.T) {
+	files := []string{
+		"/lib/firmware/nvidia/595.71.05/gsp_ga10x.bin",
+		"/usr/bin/nvidia-smi",
+		"/usr/lib/x86_64-linux-gnu/libcuda.so.595.71.05",
+		"/usr/lib/x86_64-linux-gnu/libnvidia-ml.so.595.71.05",
+	}
+	worker := func(extra ...MountRule) Workload {
+		rules := []MountRule{{Destination: "/models", Kind: MountEmptyDir}}
+		for _, f := range files {
+			rules = append(rules, MountRule{Destination: f, Kind: MountNodeRootFile, Source: f, ReadOnly: true})
+		}
+		rules = append(rules, extra...)
+		return Workload{Containers: []Container{{
+			Command: ArgvPolicy{Policy: PolicyExact, Argv: []string{"python3"}},
+			Args:    ArgvPolicy{Policy: PolicyExact, Argv: []string{"-m", "sglang.launch_server"}},
+			Mounts:  MountPolicy{Policy: PolicyExact, Rules: rules},
+		}}}
+	}
+	if err := worker().PinnedForGrant(); err != nil {
+		t.Fatalf("nodeRootFile CDI files: PinnedForGrant = %v, want nil", err)
+	}
+	for name, extra := range map[string]MountRule{
+		"unproven host path":  {Destination: "/opt/tools", Kind: MountHost, Source: "/opt/tools", ReadOnly: true},
+		"persistenced socket": {Destination: "/run/nvidia-persistenced/socket", Kind: MountHost, Source: "/run/nvidia-persistenced/socket"},
+	} {
+		if err := worker(extra).PinnedForGrant(); !errors.Is(err, errGrantUnpinnedMounts) {
+			t.Errorf("%s: PinnedForGrant = %v, want errGrantUnpinnedMounts", name, err)
+		}
 	}
 }
 
