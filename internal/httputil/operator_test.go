@@ -29,6 +29,9 @@ func TestRefuseOperatorToken(t *testing.T) {
 			if body := strings.TrimSpace(w.Body.String()); w.Code != tc.wantCode || body != tc.wantBody {
 				t.Fatalf("RefuseOperatorToken(%v) = %d %q, want %d %q", tc.err, w.Code, body, tc.wantCode, tc.wantBody)
 			}
+			if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+				t.Fatalf("RefuseOperatorToken(%v) Content-Type = %q, want text/plain", tc.err, ct)
+			}
 		})
 	}
 }

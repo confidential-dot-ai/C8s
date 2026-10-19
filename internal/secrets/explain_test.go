@@ -400,12 +400,12 @@ func TestExplainNamesTheEnvEvidenceCase(t *testing.T) {
 	}
 }
 
-// A malformed sandbox ID is refused before the token is checked, so it does not
-// spend a single-use token.
-func TestExplainValidatesTheIDBeforeAuthorizing(t *testing.T) {
+// Authorization runs before the sandbox ID is checked, as on PUT /secrets, so
+// every verified token is spent the same way.
+func TestExplainChecksAuthBeforeTheID(t *testing.T) {
 	eh := newExplainHarness(t)
-	eh.authErr = fmt.Errorf("authorize must not run")
-	if w, _ := eh.serve(strings.Repeat("a", 129)); w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400 without authorizing: %s", w.Code, w.Body)
+	eh.authErr = fmt.Errorf("no token")
+	if w, _ := eh.serve(strings.Repeat("a", 129)); w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 rather than an ID error: %s", w.Code, w.Body)
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
-// singleUse lets each operator token authorize one write. CDS serves the token
+// singleUse lets each operator token authorize one request. CDS serves the token
 // of a whole-document write as that document's signature, so without this
 // anyone who fetched it could replay the write until it expires. A non-zero
 // started refuses tokens that could have been spent before CDS started, since

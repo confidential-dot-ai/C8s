@@ -168,6 +168,9 @@ func (h OperatorHandler) authorize(w http.ResponseWriter, r *http.Request) ([]by
 	return body, true
 }
 
+// writeResult answers with a JSON PutResponse. The CLI relies on the JSON
+// Content-Type to tell an occupied-path 409 from a spent-token 409, which
+// httputil.RefuseOperatorToken answers in plain text.
 func writeResult(w http.ResponseWriter, status int, resp PutResponse) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")

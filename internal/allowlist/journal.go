@@ -215,9 +215,9 @@ func (s *Store) Signature(digest string) (string, bool, error) {
 	return token, err == nil, err
 }
 
-// ConsumeToken records that the JWT token authorized a write, or returns
+// ConsumeToken records that the JWT token authorized a request, or returns
 // operatorauth.ErrTokenReused if it or another encoding of it already did. Stored
-// signatures make write tokens public, so each must authorize one write only.
+// signatures make write tokens public, so each must authorize one request only.
 // Records are never pruned: expiry is judged on a clock the host can turn
 // back, and a pruned record would let a published token write again.
 func (s *Store) ConsumeToken(token string) error {

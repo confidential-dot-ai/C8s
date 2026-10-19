@@ -2,7 +2,7 @@ package operatorauth
 
 import "errors"
 
-// ErrTokenReused refuses an operator token that already authorized a write.
+// ErrTokenReused refuses an operator token that already authorized a request.
 // CDS answers it with 409.
 var ErrTokenReused = errors.New("operator token already used")
 

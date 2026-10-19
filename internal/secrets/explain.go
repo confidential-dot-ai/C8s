@@ -102,17 +102,16 @@ func (h ExplainHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "operator writes are not configured", http.StatusUnauthorized)
 		return
 	}
-	// Validated first so a malformed ID does not spend the token.
-	sandboxID := chi.URLParam(r, "sandboxID")
-	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
-		http.Error(w, "invalid sandbox ID", http.StatusBadRequest)
-		return
-	}
-	// The read has no body; the token still binds the method and the sandbox ID
-	// in the path.
+	// Authorized before the ID is checked, as on PUT /secrets. The token binds
+	// the path, so one minted for a malformed ID can never serve a corrected one.
 	if err := h.Authorize(r, nil); err != nil {
 		h.logger().Warn("secret explain rejected", "remote", r.RemoteAddr, "reason", err)
 		httputil.RefuseOperatorToken(w, err)
+		return
+	}
+	sandboxID := chi.URLParam(r, "sandboxID")
+	if err := armtls.ValidateSandboxID(sandboxID); err != nil {
+		http.Error(w, "invalid sandbox ID", http.StatusBadRequest)
 		return
 	}
 

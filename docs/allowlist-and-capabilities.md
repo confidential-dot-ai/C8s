@@ -719,7 +719,8 @@ short-lived token bound to the exact method, path, and body (so a captured token
 cannot be replayed against a different payload) and CDS verifies it against the
 operator public keys it pins. Each token authorizes one request to any
 operator-token endpoint (allowlist, routes, secrets): CDS remembers every spent
-token and answers a replay with 409. Without
+token and answers a replay with 409. CDS answers 503 when it verifies a token
+but cannot record it as spent; nothing ran, so retrying is safe. Without
 `cds.persistence.enabled` that memory resets with CDS, so CDS refuses every
 token issued before its start plus `--jwt-clock-skew`; after a restart, wait
 that long and mint a fresh token.
