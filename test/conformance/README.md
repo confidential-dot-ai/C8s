@@ -62,7 +62,8 @@ it reads the pod's files from the pod's log instead. Each reporter image
 ([`images/reporter`](images/reporter)) is a base image of `image_ref` with the
 reporter as its `sleep`: it sleeps as asked and, while it does, prints each
 file of the certificate volume but the key, and of the secret client's output
-directory, as it appears or changes, and that directory's filesystem type.
+directory, as `c8s-report file <path> <base64>` when it appears or changes,
+and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
 [`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
 builds them on dispatch, and a backend pins the digests it uses.
 

@@ -1,28 +1,21 @@
 #!/bin/sh
-# The conformance reporter: this image's sleep. It sleeps as asked and,
-# meanwhile, prints to the container log each file of the certificate volume
-# but its key, and of the secret client's output directory, whenever one
-# appears or changes, and that directory's filesystem type once. The harness
-# reads them there where it cannot exec into the pod (backends/metal.sh); the
-# argv and the mounts stay the pod's own. Inside the pod agent it is plain
-# sleep.
-[ -z "${C8S_CONFORMANCE_AGENT:-}" ] || exec /bin/sleep "$@"
+# The conformance reporter, as this image's sleep: test/conformance/README.md
+# ("Probes the steps exec"). The paths are CERT_VOLUME_PATH and the steps'
+# secretClientDir.
 /bin/sleep "$@" &
 pid=$!
-seen=""
+prev=""
 fstype=""
 while kill -0 "$pid" 2>/dev/null; do
-    while read -r f; do
-        [ -n "$f" ] || continue
-        sum="$f $(cksum < "$f")"
-        case "$seen" in *"
-$sum"*) continue ;; esac
-        seen="$(printf '%s\n' "$seen" | grep -vF "$f ")
-$sum"
-        echo "c8s-report file $f $(base64 < "$f" | tr -d '\n')"
-    done <<FILES
-$(find /etc/c8s/certs /run/c8s/secrets -type f ! -path /etc/c8s/certs/tls.key 2>/dev/null)
-FILES
+    now="$(find /etc/c8s/certs /run/c8s/secrets -type f ! -path /etc/c8s/certs/tls.key -exec cksum {} + 2>/dev/null)"
+    if [ "$now" != "$prev" ]; then
+        while read -r _ _ f; do
+            [ -z "$f" ] || echo "c8s-report file $f $(base64 < "$f" | tr -d '\n')"
+        done <<CHANGED
+$(printf '%s\n' "$now" | grep -vxF -e "$prev")
+CHANGED
+        prev="$now"
+    fi
     if [ -z "$fstype" ] && [ -d /run/c8s/secrets ]; then
         fstype="$(stat -f -c %T /run/c8s/secrets 2>/dev/null)"
         [ -z "$fstype" ] || echo "c8s-report fstype /run/c8s/secrets $fstype"
