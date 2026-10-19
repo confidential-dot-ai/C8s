@@ -139,7 +139,7 @@ func TestChartOverridePublishedThroughCLINarrowsAdmission(t *testing.T) {
 					continue
 				}
 				checked++
-				if !index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: operatorDigest, Argv: runtimeArgv(c, pin.entrypoint), Mounts: observedMounts(t, w.spec, c, true), Env: launchEnv(t, w.spec, c, pin.imageEnv)}) {
+				if !index.AdmitsContainer(pkgallowlist.RunningContainer{Digest: operatorDigest, Argv: runtimeArgv(c, pin.entrypoint), Mounts: observedMounts(t, w.spec, c), Env: launchEnv(t, w.spec, c, pin.imageEnv)}) {
 					return false
 				}
 			}
