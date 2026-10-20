@@ -1,4 +1,4 @@
-package getkubeconfig
+package guestverify
 
 import (
 	"bytes"
@@ -61,9 +61,9 @@ func snpManifest() string {
 
 // testPolicy builds the full measured policy for the test tuple + operator
 // key, with no workload images (bare-seed RTMR[3]).
-func testPolicy(t *testing.T, operatorPubPEM []byte) measuredPolicy {
+func testPolicy(t *testing.T, operatorPubPEM []byte) Policy {
 	t.Helper()
-	exp, err := policyFor(writeTestManifest(t, tdxManifest()), operatorPubPEM, nil)
+	exp, err := PolicyFor(writeTestManifest(t, tdxManifest()), operatorPubPEM, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,20 +80,11 @@ func operatorPub(t *testing.T) []byte {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub, err := publicKeyPEMFromPrivate(mustKeyPEM(t, key))
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return pub
-}
-
-func mustKeyPEM(t *testing.T, key *ecdsa.PrivateKey) []byte {
-	t.Helper()
-	der, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
 }
 
 // attestedCert builds a genuine armTLS TDX cert carrying the given evidence
@@ -154,18 +145,22 @@ func (r *verifyRecorder) all() []capturedVerify {
 func stubVerify(t *testing.T, res *teetypes.VerificationResult, err error) *verifyRecorder {
 	t.Helper()
 	rec := &verifyRecorder{}
-	orig := verifyEnvelope
-	verifyEnvelope = func(envelope []byte, params teetypes.VerifyParams) (*teetypes.VerificationResult, error) {
+	orig := VerifyEnvelope
+	VerifyEnvelope = func(envelope []byte, params teetypes.VerifyParams) (*teetypes.VerificationResult, error) {
 		rec.add(envelope, params)
 		return res, err
 	}
-	t.Cleanup(func() { verifyEnvelope = orig })
+	t.Cleanup(func() { VerifyEnvelope = orig })
 	return rec
 }
 
+// tdxEnvelope is a minimal self-describing evidence envelope; the actual
+// verification verdict comes from the stubbed VerifyEnvelope.
+const tdxEnvelope = `{"platform":"tdx","evidence":{}}`
+
 // verifiedResultFor builds a passing VerificationResult whose claims satisfy
 // exp exactly. Tests break individual claims from here.
-func verifiedResultFor(exp measuredPolicy) *teetypes.VerificationResult {
+func verifiedResultFor(exp Policy) *teetypes.VerificationResult {
 	mrtd := exp.identity.LaunchDigests()[0].Digest
 	rtmrs := exp.identity.RTMRs()
 	rtmr1, rtmr2 := rtmrs[1], rtmrs[2]
@@ -377,9 +372,9 @@ func TestVerifyServerCertAuthenticatesBody(t *testing.T) {
 }
 
 // snpTestPolicy builds an SNP gate from a two-variant manifest.
-func snpTestPolicy(t *testing.T, operatorPubPEM []byte) measuredPolicy {
+func snpTestPolicy(t *testing.T, operatorPubPEM []byte) Policy {
 	t.Helper()
-	exp, err := policyFor(writeTestManifest(t, snpManifest()), operatorPubPEM, nil)
+	exp, err := PolicyFor(writeTestManifest(t, snpManifest()), operatorPubPEM, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,7 +385,7 @@ func snpTestPolicy(t *testing.T, operatorPubPEM []byte) measuredPolicy {
 }
 
 // smpDigest is the launch digest exp pins for an smp-vCPU guest.
-func smpDigest(t *testing.T, exp measuredPolicy, smp int) [runtimemeasure.Size]byte {
+func smpDigest(t *testing.T, exp Policy, smp int) [runtimemeasure.Size]byte {
 	t.Helper()
 	label := fmt.Sprintf("smp%d", smp)
 	for _, v := range exp.identity.LaunchDigests() {
@@ -402,7 +397,7 @@ func smpDigest(t *testing.T, exp measuredPolicy, smp int) [runtimemeasure.Size]b
 	return [runtimemeasure.Size]byte{}
 }
 
-func snpResultFor(t *testing.T, exp measuredPolicy, smp int) *teetypes.VerificationResult {
+func snpResultFor(t *testing.T, exp Policy, smp int) *teetypes.VerificationResult {
 	t.Helper()
 	digest := smpDigest(t, exp, smp)
 	return &teetypes.VerificationResult{
@@ -470,7 +465,7 @@ func TestSNPGateFailsClosed(t *testing.T) {
 // usage error rather than a silently-ignored flag.
 func TestSNPPolicyRejectsWorkloadImages(t *testing.T) {
 	p := writeTestManifest(t, snpManifest())
-	_, err := policyFor(p, operatorPub(t), []string{"repo@sha256:" + strings.Repeat("c", 64)})
+	_, err := PolicyFor(p, operatorPub(t), []string{"repo@sha256:" + strings.Repeat("c", 64)})
 	if err == nil || !strings.Contains(err.Error(), "requires a TDX node") {
 		t.Fatalf("want workload-image rejection, got %v", err)
 	}
@@ -481,12 +476,12 @@ func TestSNPPolicyRejectsWorkloadImages(t *testing.T) {
 func stubSNPARMTLS(t *testing.T, res *teetypes.VerificationResult, err error) *localverify.Params {
 	t.Helper()
 	var got localverify.Params
-	orig := verifySNPARMTLS
-	verifySNPARMTLS = func(_ context.Context, _ string, _ json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
+	orig := VerifySNP
+	VerifySNP = func(_ context.Context, _ string, _ json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
 		got = p
 		return res, err
 	}
-	t.Cleanup(func() { verifySNPARMTLS = orig })
+	t.Cleanup(func() { VerifySNP = orig })
 	return &got
 }
 
@@ -652,13 +647,13 @@ func TestAttestGateSNPFailsClosed(t *testing.T) {
 // expectedRTMR3 is the register a node satisfying exp must report: the
 // operator-key seed extended by exp's workload chain. VerifyBinding derives
 // the same value inside the gate; here it builds the claims to feed it.
-func expectedRTMR3(exp measuredPolicy) []byte {
+func expectedRTMR3(exp Policy) []byte {
 	reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(exp.operatorPubPEM), exp.workloadDigests)
 	return reg[:]
 }
 
 // expectedHostData is the HOSTDATA a node satisfying exp must report.
-func expectedHostData(exp measuredPolicy) []byte {
+func expectedHostData(exp Policy) []byte {
 	hd := runtimemeasure.HostData(exp.operatorPubPEM)
 	return hd[:]
 }

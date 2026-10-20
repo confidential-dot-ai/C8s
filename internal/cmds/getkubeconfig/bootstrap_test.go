@@ -16,6 +16,7 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
@@ -29,7 +30,7 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 	if platform == teetypes.PlatformSNP {
 		env.manifestPath = writeTestManifest(t, snpManifest())
 		var err error
-		env.exp, err = policyFor(env.manifestPath, env.exp.operatorPubPEM, nil)
+		env.exp, err = guestverify.PolicyFor(env.manifestPath, env.operatorPubPEM, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -37,9 +38,9 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 	verify := func(evidence []byte, params teetypes.VerifyParams) (*teetypes.VerificationResult, error) {
 		var result *teetypes.VerificationResult
 		if platform == teetypes.PlatformSNP {
-			result = snpResultFor(t, env.exp, 4)
+			result = snpResultFor(env.operatorPubPEM)
 		} else {
-			result = verifiedResultFor(env.exp)
+			result = verifiedResultFor(env.operatorPubPEM)
 		}
 		if len(params.ExpectedReportData) == 32 {
 			var reported credrelease.AttestRequest
@@ -54,23 +55,23 @@ func newBootstrapEnv(t *testing.T, platform teetypes.PlatformType, mutateFresh f
 		return result, nil
 	}
 	if platform == teetypes.PlatformSNP {
-		restore := verifySNPARMTLS
-		verifySNPARMTLS = func(_ context.Context, _ string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
+		restore := guestverify.VerifySNP
+		guestverify.VerifySNP = func(_ context.Context, _ string, evidence json.RawMessage, params localverify.Params) (*teetypes.VerificationResult, error) {
 			return verify(evidence, params.VerifyParams)
 		}
-		t.Cleanup(func() { verifySNPARMTLS = restore })
+		t.Cleanup(func() { guestverify.VerifySNP = restore })
 	} else {
-		restore := verifyEnvelope
-		verifyEnvelope = func(envelope []byte, params teetypes.VerifyParams) (*teetypes.VerificationResult, error) {
+		restore := guestverify.VerifyEnvelope
+		guestverify.VerifyEnvelope = func(envelope []byte, params teetypes.VerifyParams) (*teetypes.VerificationResult, error) {
 			var evidence teetypes.AttestationEvidence
 			if err := json.Unmarshal(envelope, &evidence); err != nil {
 				return nil, err
 			}
 			return verify(evidence.Evidence, params)
 		}
-		t.Cleanup(func() { verifyEnvelope = restore })
+		t.Cleanup(func() { guestverify.VerifyEnvelope = restore })
 	}
-	keys, err := operatorauth.ParsePublicKeysPEM(env.exp.operatorPubPEM)
+	keys, err := operatorauth.ParsePublicKeysPEM(env.operatorPubPEM)
 	if err != nil {
 		t.Fatal(err)
 	}
