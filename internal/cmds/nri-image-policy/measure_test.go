@@ -91,3 +91,35 @@ func TestMeasureStartedExtendsAndDeniesOnFailure(t *testing.T) {
 		t.Fatal("disabled measurement must be a no-op")
 	}
 }
+
+// A tag resolves once per start: the digest measured is the one admitted,
+// even if the tag moves between the checks and the measurement.
+func TestStartContainerMeasuresTheAdmittedDigest(t *testing.T) {
+	reg := &fakeRegister{value: runtimemeasure.Seed([]byte("launch key"))}
+	m, err := openMeasurer(measureFixture(t, reg), "tdx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := newTestPlugin(&config{Policy: policyConfig{Mode: ModeFailClosed}, Allowlist: allowlistConfig{Base: anyAllowlist(map[string]string{pushDigestA: "base"})}})
+	p.SetReady()
+	p.measurer = m
+	answers := []string{pushDigestA, pushDigestB}
+	p.containerd = &fakeContainerd{resolve: func(context.Context, string) (string, error) {
+		if len(answers) == 0 {
+			t.Fatal("tag resolved more than twice")
+		}
+		d := answers[0]
+		answers = answers[1:]
+		return d, nil
+	}}
+	pod := makePod("default", "pod")
+	if err := p.StartContainer(context.Background(), pod, makeCtrWithImage(pod.Id, "ctr", "registry/repo:latest")); err != nil {
+		t.Fatal(err)
+	}
+	if len(answers) != 1 {
+		t.Fatalf("resolved the tag %d times in one start, want 1", 2-len(answers))
+	}
+	if reg.value != runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed([]byte("launch key")), []string{pushDigestA}) {
+		t.Fatal("measured a digest other than the admitted one")
+	}
+}

@@ -482,7 +482,7 @@ func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, erro
 	if d := extractDigest(imageRef); d != "" || imageRef == "" {
 		return d, nil
 	}
-	resolved, err := p.containerd.Resolve(ctx, imageRef)
+	resolved, err := p.resolve(ctx, imageRef)
 	if err != nil {
 		return "", err
 	}
@@ -496,11 +496,34 @@ func (p *plugin) resolveDigest(ctx context.Context, imageRef string) string {
 	if imageRef == "" {
 		return ""
 	}
-	resolved, err := p.containerd.Resolve(ctx, imageRef)
+	resolved, err := p.resolve(ctx, imageRef)
 	if err != nil {
 		return ""
 	}
 	return resolved
+}
+
+type resolvedKey struct{}
+
+// withResolved scopes one hook call: within it each tag resolves once, so
+// admission, the RTMR[3] measurement and the inventory see one digest even if
+// the tag moves, and the hook pays one containerd round-trip per tag.
+func withResolved(ctx context.Context) context.Context {
+	return context.WithValue(ctx, resolvedKey{}, &sync.Map{})
+}
+
+func (p *plugin) resolve(ctx context.Context, imageRef string) (string, error) {
+	memo, _ := ctx.Value(resolvedKey{}).(*sync.Map)
+	if memo != nil {
+		if d, ok := memo.Load(imageRef); ok {
+			return d.(string), nil
+		}
+	}
+	d, err := p.containerd.Resolve(ctx, imageRef)
+	if err == nil && memo != nil {
+		memo.Store(imageRef, d)
+	}
+	return d, err
 }
 
 // evaluateRule checks whether a pod satisfies a compiled Kubernetes selector.
@@ -595,7 +618,7 @@ func (p *plugin) checkImagePhase(ctx context.Context, cfg *config, check imageCh
 	digest := extractDigest(check.ImageRef)
 	if digest == "" {
 		// No digest in reference — resolve tag via containerd image store
-		resolved, err := p.containerd.Resolve(ctx, check.ImageRef)
+		resolved, err := p.resolve(ctx, check.ImageRef)
 		if err != nil {
 			log.Warn("cannot resolve image digest via containerd", "error", err)
 			p.audit.Log(audit.Event{
@@ -1130,6 +1153,7 @@ func (p *plugin) CreateContainer(ctx context.Context, pod *api.PodSandbox, ctr *
 // precedes other plugins and runtime CDI injection. Start updates cannot edit
 // argv/env. Failed checks leave no admitted-container evidence.
 func (p *plugin) StartContainer(ctx context.Context, pod *api.PodSandbox, ctr *api.Container) error {
+	ctx = withResolved(ctx)
 	cfg := p.cfg
 	imageRef := ctr.GetAnnotations()[annotationImageName]
 	if !p.Ready() {
