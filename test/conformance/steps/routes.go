@@ -32,10 +32,12 @@ import (
 const routesApplyTimeout = 3 * time.Minute
 
 // routesState is whether the manifest stored before the scenario is saved
-// for the undo, and the manifest the scenario sent last.
+// for the undo, the manifest the scenario sent last, and the hosts of the
+// manifest it is describing, to apply.
 type routesState struct {
-	saved bool
-	sent  []byte
+	saved   bool
+	sent    []byte
+	pending map[string]any
 }
 
 // routesRead is the CDS's stored manifest as a step read it, and the

@@ -167,6 +167,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerSecrets(sc)
 		registerRouter(sc)
 		registerRoutes(sc)
+		registerRouteBackends(sc)
 	}
 }
 
