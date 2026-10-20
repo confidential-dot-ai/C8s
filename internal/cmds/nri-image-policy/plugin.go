@@ -233,7 +233,7 @@ func newPlugin(
 			"trusted_enforcement", cfg.requiresTrustedMeshEnforcement(),
 			"exempt_namespaces", cfg.Mesh.ExemptNamespaces)
 	}
-	measurer, err := openMeasurer(cfg.Measure, cfg.Platform)
+	measurer, err := openMeasurer(cfg, logger)
 	if err != nil {
 		return nil, err
 	}

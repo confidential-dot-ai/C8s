@@ -9,7 +9,6 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlist"
-	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // Pod-role outputs. The kubelet, containerd and CNI configs are static and
@@ -50,12 +49,11 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	delete(a, "pull")
 	policy["sandbox"] = "enforce"
 	// Measure every started workload into RTMR[3], on top of the launch-key
-	// seed the initrd extended from operator-pubkey's exact bytes.
+	// seed the initrd extended from operator-pubkey's exact bytes, into the
+	// journal under the baked inventory directory that pod-status and the
+	// get-cert sidecars read.
 	if d.Image.HasRuntimeRegister() {
-		floor["measure"] = map[string]any{
-			"rtmr3":        true,
-			"journal_path": armtls.PodJournal,
-		}
+		floor["measure"] = map[string]any{"rtmr3": true}
 	}
 	policyData, err := yaml.Marshal(floor)
 	if err != nil {
