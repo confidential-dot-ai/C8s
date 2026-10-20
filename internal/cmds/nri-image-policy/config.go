@@ -41,11 +41,11 @@ type config struct {
 
 // measureConfig extends each started workload's image digest into RTMR[3]
 // (pod-role CVMs only; set by node-services prepare). The register already
-// holds the launch-key seed, so the journal opens seeded with it.
+// holds the seed of the operator key the initrd staged, so the journal opens
+// seeded with it.
 type measureConfig struct {
-	RTMR3        bool   `yaml:"rtmr3"`
-	JournalPath  string `yaml:"journal_path"`
-	LaunchPubkey string `yaml:"launch_pubkey"`
+	RTMR3       bool   `yaml:"rtmr3"`
+	JournalPath string `yaml:"journal_path"`
 }
 
 // pluginConfig contains plugin runtime settings.
