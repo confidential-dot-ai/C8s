@@ -75,6 +75,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&cfg.Platform, "platform", "", "TEE platform: tdx or snp (required)")
 	f.StringVar(&cfg.AttestationAPIURL, "attestation-api-url", launchconfig.DefaultAttestationAPIURL, "node-local attestation API")
 	f.StringVar(&cfg.KubeletURL, "kubelet-url", "https://127.0.0.1:10250", "loopback kubelet base URL")
+	f.StringVar(&cfg.KubeletCert, "kubelet-cert", KubeletCertPath, "the kubelet's self-signed serving certificate, pinned on every dial")
 	f.StringVar(&cfg.StagedPath, "staged", launchconfig.DefaultStagedPath, "staged launch configuration")
 	f.StringVar(&cfg.JournalPath, "journal", JournalPath, "RTMR[3] journal of measured workload digests")
 	_ = cmd.MarkFlagRequired("platform")
