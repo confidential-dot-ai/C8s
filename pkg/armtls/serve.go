@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -16,6 +15,31 @@ import (
 
 // serveWarmUpTimeout bounds provisioning the first serving certificate.
 const serveWarmUpTimeout = 30 * time.Second
+
+// ServeAttestBudget is how long a handler under Serve may spend attesting
+// within one response; WriteTimeout leaves room for it.
+const ServeAttestBudget = 30 * time.Second
+
+// maxServeConns caps accepted sockets. Serve's callers bind every interface,
+// and each connection costs an armTLS handshake before any request is read.
+const maxServeConns = 64
+
+// newServer states the resource bounds once so they can be asserted: none
+// changes a legitimate answer, so a regression is otherwise silent.
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Allow the bounded body read, attestation, and response write.
+		WriteTimeout: ServeAttestBudget + 20*time.Second,
+		IdleTimeout:  30 * time.Second,
+		// Go's 1MiB default lets one unauthenticated request buy far more
+		// memory than any real request needs.
+		MaxHeaderBytes: 16 << 10,
+	}
+}
 
 type servingKeyCtx struct{}
 
@@ -33,25 +57,18 @@ func WithServingKey(ctx context.Context, pub crypto.PublicKey) context.Context {
 	return context.WithValue(ctx, servingKeyCtx{}, func() crypto.PublicKey { return pub })
 }
 
-// Serve serves srv over armTLS on srv.Addr until ctx is done, then shuts it
+// Serve serves handler over armTLS on addr until ctx is done, then shuts it
 // down. It provisions the serving certificate from cfg before binding, so the
 // first request doesn't race a cold cert manager, and records each
-// connection's certificate for ServingKey. maxConns > 0 caps accepted
-// sockets; every connection costs a handshake before any request is read.
-//
-// Serve owns srv.TLSConfig, srv.ConnContext and srv.ConnState; they must be
-// unset.
-func Serve(ctx context.Context, srv *http.Server, cfg *ServerConfig, maxConns int) error {
-	return ServeListener(ctx, nil, srv, cfg, maxConns)
+// connection's certificate for ServingKey.
+func Serve(ctx context.Context, addr string, handler http.Handler, cfg *ServerConfig) error {
+	return ServeListener(ctx, nil, addr, handler, cfg)
 }
 
 // ServeListener is Serve over ln, which the caller bound; a test binds
 // 127.0.0.1:0 so it knows the port before the server accepts. A nil ln binds
-// srv.Addr after the certificate warm-up, as Serve does.
-func ServeListener(ctx context.Context, ln net.Listener, srv *http.Server, cfg *ServerConfig, maxConns int) error {
-	if srv.TLSConfig != nil || srv.ConnContext != nil || srv.ConnState != nil {
-		return errors.New("armtls.Serve: srv.TLSConfig, ConnContext and ConnState must be unset")
-	}
+// addr after the certificate warm-up, as Serve does.
+func ServeListener(ctx context.Context, ln net.Listener, addr string, handler http.Handler, cfg *ServerConfig) error {
 	tlsCfg, certMgr, err := NewServerTLSConfig(cfg)
 	if err != nil {
 		return fmt.Errorf("build armTLS config: %w", err)
@@ -73,6 +90,7 @@ func ServeListener(ctx context.Context, ln net.Listener, srv *http.Server, cfg *
 		}
 		return cert, err
 	}
+	srv := newServer(addr, handler)
 	srv.TLSConfig = tlsCfg
 	srv.ConnContext = func(ctx context.Context, c net.Conn) context.Context {
 		if tc, ok := c.(*tls.Conn); ok {
@@ -91,14 +109,12 @@ func ServeListener(ctx context.Context, ln net.Listener, srv *http.Server, cfg *
 	}
 
 	if ln == nil {
-		ln, err = net.Listen("tcp", srv.Addr)
+		ln, err = net.Listen("tcp", addr)
 		if err != nil {
-			return fmt.Errorf("listen %s: %w", srv.Addr, err)
+			return fmt.Errorf("listen %s: %w", addr, err)
 		}
 	}
-	if maxConns > 0 {
-		ln = netutil.LimitListener(ln, maxConns)
-	}
+	ln = netutil.LimitListener(ln, maxServeConns)
 
 	errCh := make(chan error, 1)
 	go func() {

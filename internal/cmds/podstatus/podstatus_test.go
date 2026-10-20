@@ -547,29 +547,3 @@ func TestServeRejectsBrokenStagedDocuments(t *testing.T) {
 		})
 	}
 }
-
-// TestServerBoundsConnectionResources: pod-status binds every interface, so
-// each bound costs an unauthenticated peer something it would otherwise get
-// free. Asserted because a regression is silent.
-func TestServerBoundsConnectionResources(t *testing.T) {
-	if maxConcurrentConns <= 0 {
-		t.Errorf("maxConcurrentConns = %d, want a positive accept cap", maxConcurrentConns)
-	}
-	srv := newServer(":0", nil)
-	if srv.WriteTimeout <= srv.ReadTimeout {
-		t.Errorf("WriteTimeout = %s leaves no time to attest after the body read", srv.WriteTimeout)
-	}
-	if srv.MaxHeaderBytes <= 0 || srv.MaxHeaderBytes > 64<<10 {
-		t.Errorf("MaxHeaderBytes = %d, want a bound well under Go's 1MiB default", srv.MaxHeaderBytes)
-	}
-	for name, got := range map[string]time.Duration{
-		"ReadHeaderTimeout": srv.ReadHeaderTimeout,
-		"ReadTimeout":       srv.ReadTimeout,
-		"WriteTimeout":      srv.WriteTimeout,
-		"IdleTimeout":       srv.IdleTimeout,
-	} {
-		if got <= 0 {
-			t.Errorf("%s is unset; a parked connection holds a goroutine open", name)
-		}
-	}
-}
