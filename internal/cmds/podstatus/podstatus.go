@@ -241,7 +241,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return json.Marshal(resp.Envelope())
 		},
 	}
-	return credrelease.ServeARMTLS(ctx, cfg.ListenAddr, family.String(), cfg.AttestationAPIURL, "", h)
+	// The serving cert lists the journal as its runtime extensions, so a
+	// client can replay the register from the certificate alone.
+	return credrelease.ServeARMTLS(ctx, cfg.ListenAddr, family.String(), cfg.AttestationAPIURL, cfg.JournalPath, h)
 }
 
 // kubeletPods reads the loopback kubelet. Its serving cert is self-signed
@@ -360,10 +362,12 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 			return nil, nil, errors.New("measured digests kept changing during attestation; retry")
 		}
 	}
-	res, err := verifyFresh(cfg.ImageManifestPath, pub, envelope, reportData)
+	res, err := verifyFresh(cfg.ImageManifestPath, pub, envelope, reportData, digests)
 	if err != nil {
 		return nil, nil, fmt.Errorf("evidence: %w", err)
 	}
+	// The gate accepts any replaying prefix; here the list was read on both
+	// sides of the quote and agreed, so the whole of it must replay.
 	if err := runtimemeasure.VerifyBinding(res, pub, digests); err != nil {
 		return nil, nil, fmt.Errorf("measured digests do not explain the attested register: %w", err)
 	}
