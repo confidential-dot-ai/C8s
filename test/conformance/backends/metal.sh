@@ -2,7 +2,7 @@
 # metal backend: the single-node c8s node image a metal lane (snp-metal-e2e /
 # tdx-metal-e2e) booted and attested, driven from the lane's extra-suite hook
 # after its own asserts passed. A real TEE, but no shell on the node: what
-# needs one (ctr, crictl) answers 77. Needs the c8s CLI on PATH.
+# needs one (ctr, crictl) answers unsupported. Needs the c8s CLI on PATH.
 # Interface: common.sh.
 
 : "${KUBECONFIG:?the attested kubeconfig from the lane}"
@@ -90,7 +90,7 @@ scratch_encrypted() { echo yes; }
 # operator's credential may neither exec, port-forward nor write in $NS, so
 # the CDS's other routes are sent from the pod the run keeps (mesh_scraper),
 # to the address pods dial, as is the CDS's own serving certificate read;
-# its Service answers 77 below. The launch bundle's key is the run's operator key; the
+# its Service answers unsupported below. The launch bundle's key is the run's operator key; the
 # token minter is built from the checkout on first use, with the Go
 # toolchain that built the CLI.
 cds_url() { echo "${C8S_ALLOWLIST_URL%/}"; }
@@ -212,7 +212,7 @@ env = json.loads(sys.argv[1])
 try:
     report = bytearray(base64.b64decode(env["evidence"]["attestation_report"]))
 except (KeyError, TypeError):
-    sys.exit(77)
+    sys.exit(77)  # UNSUPPORTED
 report[0x90] ^= 0xFF
 env["evidence"]["attestation_report"] = base64.b64encode(bytes(report)).decode()
 print(json.dumps(env))
@@ -294,7 +294,7 @@ agent_wrap() {
 
 # agent_run <ns> <pod> <container> <script>: the sh script's combined output,
 # and its status as ours. The agent runs in the first container alone, so
-# another named container answers 77, as does a pod without the agent; 1 when
+# another named container answers unsupported, as does a pod without the agent; 1 when
 # the agent has not answered in 90s, longer than the kubelet's resync of the
 # volume should it miss a patch.
 agent_run() {
@@ -327,7 +327,8 @@ agent_run() {
 # pod_read <ns> <pod> <container> <file|fstype> <path>: the file as base64,
 # or the directory's filesystem type, failing while absent. A pod with the
 # agent runs the read; one whose first container runs a reporter image
-# (REPORTER_IMAGES) printed it to its log, the key never; any other pod 77.
+# (REPORTER_IMAGES) as sleep, with no init container of the scenario's to
+# hold it back, printed it to its log, the key never; any other pod is unsupported.
 pod_read() {
     local ns="$1" pod="$2" container="$3" kind="$4" path="$5" spec line
     spec="$(kubectl -n "$ns" get pod "$pod" -o json 2>/dev/null)" || return "$UNSUPPORTED"
@@ -338,8 +339,12 @@ pod_read() {
         esac
         return
     fi
-    read -r image container < <(jq -r '.spec.containers[0] | "\(.image) \(.name)"' <<<"$spec")
-    [[ "$image" == "$REPORTER_REPO"* ]] && [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
+    read -r image container argv0 blocked < <(jq -r '
+        (.spec.containers[0] | "\(.image) \(.name) \(((.command // []) + (.args // []))[0] // "-")"),
+        ([.spec.initContainers[]? | select(.restartPolicy != "Always" and (.name | startswith("c8s-") | not))] | length)
+    ' <<<"$spec" | paste -sd' ' -)
+    [[ "$image" == "$REPORTER_REPO"* ]] && [ "${argv0##*/}" = sleep ] && [ "$blocked" = 0 ] &&
+        [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
     line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep -F "c8s-report $kind $path " | tail -1)"
     [ -n "$line" ] || { echo "backend: the reporter in $ns/$pod has printed no $kind for $path" >&2; return 1; }
     echo "${line##* }"
@@ -359,7 +364,7 @@ pod_cert_file() {
 
 # No exec into mesh-sync: it logs a set's whole membership whenever a write
 # changes it, and every set on its first write, so the last line for the set
-# is the set. A mesh that logs none predates that log, so 77.
+# is the set. A mesh that logs none predates that log, so it is unsupported.
 mesh_member() {
     local pod set member
     pod="$(mesh_pod_on "$1")"
@@ -448,6 +453,21 @@ plugin_ready() {
 }
 
 node_containers() { return $UNSUPPORTED; }
+
+# The node image's confos-operator-scope policy denies the operator every
+# write in kube-system, local-path-storage and c8s-system, and every Node
+# write. Those namespaces are the ones that admit host-network and root
+# pods, so those are out of reach.
+PRIVILEGED_NAMESPACES="kube-system local-path-storage c8s-system"
+host_namespace_ns() { return "$UNSUPPORTED"; }
+node_writes() { return "$UNSUPPORTED"; }
+excluded_namespace() {
+    local ns
+    for ns in $(mesh_arg exclude-source-namespaces | tr ',' ' '); do
+        [[ " $PRIVILEGED_NAMESPACES " == *" $ns "* ]] || { echo "$ns"; return; }
+    done
+    return "$UNSUPPORTED"
+}
 
 # No shell on the node, so its plugin cannot be stopped or started; and
 # without a plugin start the plugin would ignore every allowlist a restarted

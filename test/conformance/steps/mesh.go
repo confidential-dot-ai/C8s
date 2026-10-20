@@ -752,6 +752,9 @@ func ghostPod(ctx context.Context, name, node string) error {
 		return err
 	}
 	if w.mesh.realNode == "" {
+		if _, err := w.be.call("node_writes"); err != nil {
+			return err
+		}
 		w.onUndo(func() error {
 			_, err := kubectl(nil, "delete", "node", ghostNode, "--ignore-not-found", "--wait=false")
 			return err

@@ -28,7 +28,7 @@ var constant = map[string]bool{
 	"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true, "cds_pod_url": true,
 	"cert_paths": true, "node_address": true, "mesh_ready": true, "mesh_port": true, "mesh_uids": true,
 	"mesh_platform": true, "excluded_namespace": true, "host_namespace_ns": true, "attestation_endpoint": true, "dialer_bin": true,
-	"pod_exec": true,
+	"pod_exec": true, "node_writes": true,
 }
 
 // newBackend finds the backend beside this package; `go test` runs with the
@@ -53,7 +53,7 @@ func newBackend(name string) (backend, error) {
 	return b, nil
 }
 
-// call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip,
+// call returns the function's trimmed stdout. An unsupported exit is godog.ErrSkip,
 // wrapped to name the function; any other failure is a harness error
 // carrying the function's stderr.
 func (b backend) call(fn string, args ...string) (string, error) {
