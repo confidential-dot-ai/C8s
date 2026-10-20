@@ -755,7 +755,7 @@ func mountsDiskVolume(ctx context.Context) error {
 		return err
 	}
 	if answer == "yes" {
-		return godog.ErrSkip
+		return skipf("disk-backed emptyDirs are encrypted here (scratch_encrypted)")
 	}
 	p.opts = append(p.opts, "--disk-volume", "/scratch")
 	return nil

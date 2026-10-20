@@ -841,7 +841,7 @@ func cdsPinsDigests(ctx context.Context) error {
 		return err
 	}
 	if len(pins) == 0 {
-		return godog.ErrSkip
+		return skipf("the CDS pins no launch digests here")
 	}
 	return nil
 }

@@ -197,7 +197,8 @@ the seed and the router's configuration.
 A function the backend cannot answer some other way under those limits
 answers unsupported, which the steps report as a skip, so the scenarios that need it are
 reported as not run on metal, never as passed; the skipped step carries a
-`skip-reason` attachment naming the function. Pod exec is closed too, so `pod_exec` answers agent: a pod the
+`skip-reason` attachment naming the function, as does a step that skips
+for a precondition the environment lacks. Pod exec is closed too, so `pod_exec` answers agent: a pod the
 steps mark `c8s-conformance/harness-argv`, because they chose its first
 container's argv, runs an agent there in place of that argv, and `agent_exec`
 reaches it. Pods whose argv a scenario pins are read from a reporter image's

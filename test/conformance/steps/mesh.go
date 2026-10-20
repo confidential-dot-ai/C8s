@@ -351,7 +351,7 @@ func excludedUID(ctx context.Context, name string) error {
 		return err
 	}
 	if len(excluded) == 0 {
-		return godog.ErrSkip
+		return skipf("the mesh excludes no UID here")
 	}
 	p.opts = append(p.opts, "--run-as-user", excluded[0])
 	return w.elsewhere(p, "host_namespace_ns")
@@ -495,7 +495,7 @@ func (w *world) addressOf(p *pod, family string) (string, error) {
 			return ip, nil
 		}
 	}
-	return "", godog.ErrSkip
+	return "", skipf("%q has no %s address", p.name, family)
 }
 
 func isFamily(ip, family string) bool {
@@ -675,7 +675,7 @@ func pinsSatisfied(ctx context.Context, node string) error {
 		return err
 	}
 	if out != "yes" {
-		return godog.ErrSkip
+		return skipf("the evidence of node %q does not satisfy the mesh pins here", k8sNode)
 	}
 	return nil
 }
@@ -693,7 +693,7 @@ func rolePresentsCDSLeaf(ctx context.Context, node string) error {
 		return err
 	}
 	if out != "cds" {
-		return godog.ErrSkip
+		return skipf("the mesh on node %q does not use CDS-issued certificates here (mesh_cert_mode %s)", k8sNode, out)
 	}
 	return nil
 }
