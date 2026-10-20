@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/http"
 	"strings"
 	"time"
 
@@ -13,30 +12,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
 )
-
-// maxConcurrentConns caps accepted sockets. cred-release is the external
-// credential choke point and binds every interface, so an unbounded accept
-// loop lets any peer that can route to the guest spend its memory and its
-// attestation-api budget on handshakes alone.
-const maxConcurrentConns = 64
-
-// newServer builds the release HTTP server. The resource bounds live here so
-// they are stated once and can be asserted: none of them changes how the
-// service answers a legitimate request, so a regression is otherwise silent.
-func newServer(addr string, handler http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		// Allow the bounded body read, attestation, and response write.
-		WriteTimeout: attestTimeout + 20*time.Second,
-		IdleTimeout:  30 * time.Second,
-		// Go's 1MiB default lets one unauthenticated request buy far more
-		// memory than any real CSR needs.
-		MaxHeaderBytes: 16 << 10,
-	}
-}
 
 // Config is the release service configuration.
 type Config struct {
@@ -128,26 +103,16 @@ func Run(ctx context.Context, cfg Config) error {
 	attestationClient := attestclient.NewClient("")
 	handler.attester = localEvidenceGenerator{client: attestationClient, apiURL: cfg.AttestationAPIURL}
 	handler.measuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
-	return serveARMTLS(ctx, cfg.listener, cfg.ListenAddr, cfg.Platform, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile, handler)
-}
-
-// serveARMTLS serves handler over armTLS on addr until ctx is done: the
-// self-signed serving cert embeds a fresh quote from the local
-// attestation-api whose report data binds the cert's own key, so a client
-// verifying it (getkubeconfig) knows the channel ends in the measured guest.
-// platform must already be a parsed family name. measuredPoliciesFile is the
-// RTMR[3] journal the serving cert lists as its runtime extensions; empty
-// lists none. ln, when given, is served instead of binding addr; tests pass
-// a bound listener so the port is known before the server accepts.
-func serveARMTLS(ctx context.Context, ln net.Listener, addr, platform, attestationAPIURL, measuredPoliciesFile string, handler http.Handler) error {
-	// AttestFunc is platform-generic despite the SNP name: it reads
-	// resp.Platform, so it yields a TDX quote on TDX; same pattern as cds.
-	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationAPIURL)
-	return armtls.ServeListener(ctx, ln, newServer(addr, handler), &armtls.ServerConfig{
-		Platform:   platform,
-		AttestFunc: attestFunc,
+	// The self-signed serving cert embeds a fresh quote whose report data
+	// binds the cert's own key, so a client verifying it (getkubeconfig)
+	// knows the channel ends in the measured guest. The attest func reads
+	// resp.Platform, so it yields a TDX quote on TDX despite its SNP name.
+	// cfg.listener, when set, is served instead of binding ListenAddr.
+	return armtls.ServeListener(ctx, cfg.listener, cfg.ListenAddr, handler, &armtls.ServerConfig{
+		Platform:   cfg.Platform,
+		AttestFunc: attestclient.MakeSNPARMTLSAttestFunc(attestationClient, cfg.AttestationAPIURL),
 		Logger:     slog.Default(),
 
-		MeasuredPoliciesFile: measuredPoliciesFile,
-	}, maxConcurrentConns)
+		MeasuredPoliciesFile: cfg.MeasuredPoliciesFile,
+	})
 }

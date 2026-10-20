@@ -50,7 +50,7 @@ func TestServeBindsServingKeyToConnection(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, &http.Server{Addr: addr, Handler: handler, ReadHeaderTimeout: time.Second}, testServerConfig(), 4)
+		done <- Serve(ctx, addr, handler, testServerConfig())
 	}()
 
 	client := &http.Client{
@@ -117,7 +117,7 @@ func TestServeListenerServesTheGivenListener(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- ServeListener(ctx, ln, &http.Server{Addr: "127.0.0.1:1", ReadHeaderTimeout: time.Second}, testServerConfig(), 0)
+		done <- ServeListener(ctx, ln, "127.0.0.1:1", http.NotFoundHandler(), testServerConfig())
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -147,7 +147,7 @@ func TestServeFailsBeforeBinding(t *testing.T) {
 	addr := freeAddr(t)
 	cfg := testServerConfig()
 	cfg.AttestFunc = func(context.Context, string) (string, error) { return "", errors.New("attestation down") }
-	if err := Serve(context.Background(), &http.Server{Addr: addr, ReadHeaderTimeout: time.Second}, cfg, 0); err == nil {
+	if err := Serve(context.Background(), addr, nil, cfg); err == nil {
 		t.Fatal("Serve with a failing attester returned nil")
 	}
 	ln, err := net.Listen("tcp", addr)
@@ -157,17 +157,29 @@ func TestServeFailsBeforeBinding(t *testing.T) {
 	_ = ln.Close()
 }
 
-func TestServeRejectsPresetHooks(t *testing.T) {
-	for name, srv := range map[string]*http.Server{
-		"TLSConfig":   {TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12}},
-		"ConnContext": {ConnContext: func(ctx context.Context, _ net.Conn) context.Context { return ctx }},
-		"ConnState":   {ConnState: func(net.Conn, http.ConnState) {}},
+// TestServerBoundsConnectionResources: Serve's callers bind every interface,
+// so each bound costs an unauthenticated peer something it would otherwise
+// get free. Asserted because a regression is silent.
+func TestServerBoundsConnectionResources(t *testing.T) {
+	if maxServeConns <= 0 {
+		t.Errorf("maxServeConns = %d, want a positive accept cap", maxServeConns)
+	}
+	srv := newServer(":0", nil)
+	if srv.WriteTimeout <= srv.ReadTimeout+ServeAttestBudget {
+		t.Errorf("WriteTimeout = %s leaves no response time after body read and attestation", srv.WriteTimeout)
+	}
+	if srv.MaxHeaderBytes <= 0 || srv.MaxHeaderBytes > 64<<10 {
+		t.Errorf("MaxHeaderBytes = %d, want a bound well under Go's 1MiB default", srv.MaxHeaderBytes)
+	}
+	for name, got := range map[string]time.Duration{
+		"ReadHeaderTimeout": srv.ReadHeaderTimeout,
+		"ReadTimeout":       srv.ReadTimeout,
+		"WriteTimeout":      srv.WriteTimeout,
+		"IdleTimeout":       srv.IdleTimeout,
 	} {
-		t.Run(name, func(t *testing.T) {
-			if err := Serve(context.Background(), srv, testServerConfig(), 0); err == nil {
-				t.Fatal("Serve accepted a server whose hook it would overwrite")
-			}
-		})
+		if got <= 0 {
+			t.Errorf("%s is unset; a parked connection holds a goroutine open", name)
+		}
 	}
 }
 
