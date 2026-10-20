@@ -577,7 +577,7 @@
 {{- if has $mode (list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy") -}}
 credentials
 {{- else if eq $mode "cds-attest" -}}
-router
+upstream
 {{- else if eq $mode "acme" -}}
 acme
 {{- end -}}
@@ -634,7 +634,7 @@ null
 {{- range $mode := list "get-cert" "probe-file" "get-secret" "get-volume" "allowlist-proxy" -}}
 {{- $argvs = append $argvs (dict "role" "credentials" "container" (get (dict "get-cert" "c8s-cert" "probe-file" "c8s-cert-wait" "allowlist-proxy" "allowlist-proxy") $mode | default "") "argv" (list "/c8s" $mode)) -}}
 {{- end -}}
-{{- $argvs = append $argvs (dict "role" "router" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
+{{- $argvs = append $argvs (dict "role" "upstream" "container" "cds-attest" "argv" (list "/c8s" "cds-attest")) -}}
 {{- $argvs = append $argvs (dict "role" "acme" "container" "acme" "argv" (list "/c8s" "acme")) -}}
 {{- else if eq $repository (include "c8s.imageRepository" $root.Values.router.nginx.image.repository) -}}
 {{- $argvs = list (dict "role" "router" "container" "nginx" "argv" (include "c8s.routerNginxArgv" $root | fromJsonArray)) -}}

@@ -30,6 +30,10 @@ const (
 	// acmeRole is the one role of that namespace whose sockets leave the
 	// cluster in the clear.
 	acmeRole = "acme"
+	// upstreamRole is that namespace's route authority: it holds the signed
+	// route manifest and reaches the cluster uncaptured, as a mesh client of
+	// the backend each route names.
+	upstreamRole = "upstream"
 )
 
 // routerNamespace is the namespace whose pods serve the router's ports. The
@@ -39,7 +43,7 @@ const routerNamespace = workloadclaims.RouterNamespace
 // The ports of the router's namespace that cross the pod boundary in the
 // clear. A listener is uncaptured in both directions, so the kubelet reaches
 // it; the egress ports are the acme role's alone, so a request the router
-// forwards is captured wherever its name resolves.
+// forwards outside the cluster is captured wherever its name resolves.
 //
 // INVARIANT: routerListeners are the container ports the chart's router pod
 // binds (router.nginx.httpsPort, the HTTP-01 port and the acme sidecar's
@@ -121,6 +125,7 @@ func LoadMeshFloor(configPath string) (*MeshFloor, error) {
 	}
 	floor.ReservedIDs[workloadclaims.RouterUID] = RoleFloor{Name: routerRole}
 	floor.ReservedIDs[workloadclaims.AcmeUID] = RoleFloor{Name: acmeRole}
+	floor.ReservedIDs[workloadclaims.UpstreamUID] = RoleFloor{Name: upstreamRole}
 	return floor, nil
 }
 
@@ -188,26 +193,29 @@ func validateRole(role roleBinding) error {
 		return fmt.Errorf("mesh.roles %s needs exactly one destination, the CDS its clients dial", CredentialRole)
 	case role.Name != CredentialRole && role.UID == workloadclaims.CredentialsUID:
 		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, CredentialRole)
-	case role.Name == routerRole || role.Name == acmeRole:
+	case role.Name == routerRole || role.Name == acmeRole || role.Name == upstreamRole:
 		return fmt.Errorf("mesh.roles %s is a compiled role of the router's namespace, not a dialing role", role.Name)
 	case role.UID == workloadclaims.RouterUID:
 		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, routerRole)
 	case role.UID == workloadclaims.AcmeUID:
 		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, acmeRole)
+	case role.UID == workloadclaims.UpstreamUID:
+		return fmt.Errorf("mesh.roles %s holds uid %d, reserved for the %s role", role.Name, role.UID, upstreamRole)
 	}
 	return nil
 }
 
 // reservedIdentities pairs every platform role with the identity it reserves:
-// the dialing roles trusted policy binds, and the two compiled roles of the
+// the dialing roles trusted policy binds, and the three compiled roles of the
 // router's namespace.
 func (p meshPolicy) reservedIdentities() map[string]uint32 {
-	ids := make(map[string]uint32, len(p.Roles)+2)
+	ids := make(map[string]uint32, len(p.Roles)+3)
 	for _, role := range p.Roles {
 		ids[role.Name] = role.UID
 	}
 	ids[routerRole] = workloadclaims.RouterUID
 	ids[acmeRole] = workloadclaims.AcmeUID
+	ids[upstreamRole] = workloadclaims.UpstreamUID
 	return ids
 }
 

@@ -1,6 +1,7 @@
 package armtls
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,6 +13,7 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -30,6 +32,7 @@ type meshLeafSpec struct {
 	omitSandboxID bool            // the leaf carries no sandbox-ID extension
 	sandboxExt    *pkix.Extension // replaces the well-formed sandbox-ID extension
 	armtlsExt     *pkix.Extension // an armTLS attestation extension the leaf also carries
+	workload      string          // the matched workload CDS stamped, none when empty
 }
 
 func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, spec meshLeafSpec) *tls.Certificate {
@@ -60,6 +63,9 @@ func signMeshLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, s
 	}
 	if spec.armtlsExt != nil {
 		extensions = append(extensions, *spec.armtlsExt)
+	}
+	if spec.workload != "" {
+		extensions = append(extensions, mustWorkloadExt(t, spec.workload))
 	}
 	tmpl := &x509.Certificate{
 		SerialNumber:    big.NewInt(700),
@@ -221,7 +227,7 @@ func TestChainVerifyPeerCallback(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := chainVerifyPeerCallback(tt.ca, x509.ExtKeyUsageServerAuth)(tt.peer, nil)
+			err := chainVerifyPeerCallback(tt.ca, x509.ExtKeyUsageServerAuth, nil)(tt.peer, nil)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("verify err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -487,5 +493,125 @@ func TestSelfSignedProviderDerivesTEETypeFromEvidence(t *testing.T) {
 				t.Errorf("extension certChain carries %d bytes, want none", len(att.CertChain))
 			}
 		})
+	}
+}
+
+// mustWorkloadExt is the matched-workload stamp CDS places on a named leaf.
+func mustWorkloadExt(t *testing.T, name string) pkix.Extension {
+	t.Helper()
+	ext, err := MarshalMatchedWorkloadExtension(&MatchedWorkload{
+		Name:             name,
+		AllowlistVersion: "1",
+		AllowlistDigest:  bytes.Repeat([]byte{0x42}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ext
+}
+
+// acceptingMeshPair wires a mesh server and client against one mesh CA, with
+// the workload each leaf is stamped with and the AcceptPeer each side judges
+// the other by.
+func acceptingMeshPair(t *testing.T, server, client meshLeafSpec, acceptClient, acceptServer func(Peer) error) (*tls.Config, *tls.Config) {
+	t.Helper()
+	caKey, caCert := generateCACert(t)
+	serverCert := signMeshLeaf(t, caKey, caCert, server)
+	clientCert := signMeshLeaf(t, caKey, caCert, client)
+	serverCfg, _, err := NewMeshServerTLSConfig(&MeshConfig{
+		CertProvider: &mockProvider{
+			cert: serverCert,
+			ttl:  time.Hour,
+		},
+		MeshCA:     caCert,
+		AcceptPeer: acceptClient,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientCfg, _, err := NewMeshClientTLSConfig(&MeshConfig{
+		CertProvider: &mockProvider{
+			cert: clientCert,
+			ttl:  time.Hour,
+		},
+		MeshCA:     caCert,
+		AcceptPeer: acceptServer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return serverCfg, clientCfg
+}
+
+// Each role hands its AcceptPeer the identity the chain path read off the
+// peer it just verified: the instance the leaf names, the workload CDS
+// stamped on it, and the purpose that role required.
+func TestMeshAcceptPeerReadsTheVerifiedIdentity(t *testing.T) {
+	accepted := make(chan Peer, 1)
+	var reachedServer Peer
+	server, client := acceptingMeshPair(t,
+		meshLeafSpec{workload: "web"},
+		meshLeafSpec{workload: "router"},
+		func(peer Peer) error {
+			accepted <- peer
+			return nil
+		},
+		func(peer Peer) error {
+			reachedServer = peer
+			return nil
+		},
+	)
+	if _, err := meshHandshake(t, server, client); err != nil {
+		t.Fatalf("mesh handshake failed: %v", err)
+	}
+	want := Peer{
+		SandboxID:    testMeshSandboxID,
+		WorkloadName: "web",
+		Purpose:      x509.ExtKeyUsageServerAuth,
+	}
+	if reachedServer != want {
+		t.Fatalf("the client judged %+v, want %+v", reachedServer, want)
+	}
+	want = Peer{
+		SandboxID:    testMeshSandboxID,
+		WorkloadName: "router",
+		Purpose:      x509.ExtKeyUsageClientAuth,
+	}
+	select {
+	case got := <-accepted:
+		if got != want {
+			t.Fatalf("the server judged %+v, want %+v", got, want)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the server never judged its peer")
+	}
+}
+
+// An AcceptPeer that refuses the peer fails the handshake, so no application
+// byte moves on a chain-verified peer the endpoint does not want.
+func TestMeshAcceptPeerRefusalFailsTheHandshake(t *testing.T) {
+	server, client := acceptingMeshPair(t,
+		meshLeafSpec{workload: "other"},
+		meshLeafSpec{},
+		nil,
+		func(peer Peer) error {
+			return fmt.Errorf("peer names workload %q", peer.WorkloadName)
+		},
+	)
+	_, err := meshHandshake(t, server, client)
+	if err == nil {
+		t.Fatal("a refused peer completed the mesh handshake")
+	}
+	if !strings.Contains(err.Error(), `peer names workload "other"`) {
+		t.Fatalf("handshake error = %v, want the refusal", err)
+	}
+}
+
+// An endpoint that sets no AcceptPeer admits every peer the chain path
+// authenticates, named or not.
+func TestMeshWithoutAcceptPeerAdmitsAVerifiedPeer(t *testing.T) {
+	server, client := acceptingMeshPair(t, meshLeafSpec{}, meshLeafSpec{}, nil, nil)
+	if _, err := meshHandshake(t, server, client); err != nil {
+		t.Fatalf("mesh handshake failed: %v", err)
 	}
 }

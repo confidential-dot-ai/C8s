@@ -18,9 +18,9 @@ nodeSelector:
 {{- /* Every container of this pod holds a platform role the measured base
        grants it, and runs as that role's reserved identity: c8s.meshUID for
        the endpoint, c8s.credentialsUID for get-cert, the probe-file gate and
-       the allowlist proxy, c8s.routerUID for nginx and cds-attest,
-       c8s.acmeUID for acme — the one identity of this pod the node lets out
-       of the cluster in the clear. The volume group (c8s.certFsGroup) is what
+       the allowlist proxy, c8s.routerUID for nginx, c8s.upstreamUID for
+       cds-attest, c8s.acmeUID for acme — the one identity of this pod the
+       node lets out of the cluster in the clear. The volume group (c8s.certFsGroup) is what
        lets a role read what another role wrote. */}}
 initContainers:
   {{- /* The endpoint leads: the enforcer gates the rest of the pod on its
@@ -243,8 +243,12 @@ containers:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
       runAsNonRoot: true
-      runAsUser: {{ include "c8s.routerUID" . }}
-      runAsGroup: {{ include "c8s.routerUID" . }}
+      {{- /* It holds the signed route manifest and dials each member backend
+             itself, so it runs as the upstream role's reserved identity: the
+             one identity of this pod the node leaves uncaptured into the
+             cluster. */}}
+      runAsUser: {{ include "c8s.upstreamUID" . }}
+      runAsGroup: {{ include "c8s.upstreamUID" . }}
       capabilities:
         drop:
           - ALL

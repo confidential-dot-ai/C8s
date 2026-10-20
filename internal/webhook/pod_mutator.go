@@ -122,7 +122,7 @@ const (
 	// CertVolumeName is the injected memory-backed credential volume.
 	CertVolumeName = "c8s-certs"
 	// CertDir is where every container of an injected pod mounts it.
-	CertDir  = "/etc/c8s/certs"
+	CertDir  = workloadclaims.MemberCertDir
 	certFile = "tls.crt"
 	keyFile  = "tls.key"
 	caFile   = "ca.crt"

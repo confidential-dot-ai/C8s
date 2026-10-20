@@ -46,7 +46,10 @@ func TestB1WorkloadBackend(t *testing.T) {
 
 func TestB1RequiresTLS13(t *testing.T) {
 	f := newFixture(t)
-	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"), func(c *tls.Config) { c.MaxVersion = tls.VersionTLS12 })
+	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"), func(c *tls.Config) {
+		c.MinVersion = tls.VersionTLS12
+		c.MaxVersion = tls.VersionTLS12
+	})
 	f.apply(t, simpleManifest(1, web.addr()))
 	if got := f.get("/").Code; got != http.StatusBadGateway {
 		t.Fatalf("GET / to a TLS 1.2 workload backend = %d, want %d", got, http.StatusBadGateway)
@@ -70,7 +73,9 @@ func TestB1PicksUpRotatedMeshCA(t *testing.T) {
 	if got := f.get("/").Code; got != http.StatusBadGateway {
 		t.Fatalf("GET / before the bundle holds the new CA = %d, want %d", got, http.StatusBadGateway)
 	}
-	if err := os.WriteFile(caFile, []byte(caPEM(f.mesh, rotated)), 0o600); err != nil {
+	// get-cert publishes the one mesh CA of the generation it adopted, so a
+	// rotation replaces the bundle rather than adding to it.
+	if err := os.WriteFile(caFile, []byte(caPEM(rotated)), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if got := f.get("/").Code; got != http.StatusOK {
@@ -81,7 +86,7 @@ func TestB1PicksUpRotatedMeshCA(t *testing.T) {
 func TestB3AddressBackend(t *testing.T) {
 	f := newFixture(t)
 	external := newCA(t, "external")
-	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"))
+	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
 	tests := []struct {
 		name       string
 		serverName string
@@ -108,7 +113,7 @@ func TestB4PresentsMeshLeaf(t *testing.T) {
 	f := newFixture(t)
 	external := newCA(t, "external")
 	web := startBackend(t, "web", issueLeaf(t, f.mesh, "web"))
-	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"))
+	admin := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
 	f.apply(t, manifestSpec{revision: 1, hosts: map[string][]route{testHost: {
 		workloadRoute("/", "prefix", web.addr(), "web"),
 		addressRoute("/admin", "prefix", admin.addr(), "admin.ops.svc", caPEM(external)),

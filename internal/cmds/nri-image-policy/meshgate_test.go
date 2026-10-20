@@ -340,6 +340,34 @@ func TestMeshGateKeepsARouterNamespacePodRoleOnly(t *testing.T) {
 		t.Fatalf("error = %v, want the pinned-mounts rule", err)
 	}
 
+	// The upstream identity reaches this cluster's members uncaptured, so the
+	// role holding it runs here under a declaration that pins its mounts and
+	// as that identity alone.
+	attest := gateCtr("cds-attest", workloadclaims.UpstreamUID)
+	routing := gatedContainer{
+		role:         upstreamRole,
+		mountsPinned: true,
+	}
+	if _, _, err := gate.admissible(pod, attest, routing); err != nil {
+		t.Fatalf("the upstream role was refused in its own pod: %v", err)
+	}
+	unpinned := routing
+	unpinned.mountsPinned = false
+	_, _, err = gate.admissible(pod, attest, unpinned)
+	if err == nil {
+		t.Fatal("the upstream role joined the router's pod with its mounts left to the host")
+	}
+	if !strings.Contains(err.Error(), "pins its mounts") {
+		t.Fatalf("error = %v, want the pinned-mounts rule", err)
+	}
+	_, _, err = gate.admissible(pod, gateCtr("nginx", workloadclaims.UpstreamUID), launch)
+	if err == nil {
+		t.Fatal("the front door ran as the upstream identity")
+	}
+	if !strings.Contains(err.Error(), "the router role runs as uid 1339") {
+		t.Fatalf("error = %v, want the role-identity rule", err)
+	}
+
 	// A pod of any other namespace keeps running workloads.
 	plain := meshPod("default", "pod", testNetNS)
 	plainGate, state := gateWithPod(plain)

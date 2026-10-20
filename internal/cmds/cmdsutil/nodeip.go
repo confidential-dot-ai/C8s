@@ -24,7 +24,7 @@ const nodeIPPollInterval = 15 * time.Second
 // rawURL without $(NODE_IP) returns ctx unchanged. Return the component's
 // final error through NodeIPChanged.
 func WatchNodeIP(ctx context.Context, rawURL, expanded string) context.Context {
-	if !strings.Contains(rawURL, nodeIPReference) {
+	if !strings.Contains(rawURL, NodeIPReference) {
 		return ctx
 	}
 	ctx, cancel := context.WithCancelCause(ctx)

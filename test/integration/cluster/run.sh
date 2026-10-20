@@ -702,6 +702,46 @@ done
 [ "$SUMMARY" = "1/1" ] || fail "status mirror never reported the adopted workload (got: $SUMMARY)"
 pass "status mirror reports the adopted workload (attestationSummary 1/1)"
 
+# Store the manifest the install wrote, naming the floor's entry for the
+# adopted nginx digest: no allowlist entry is named web here, so that is the
+# name the leaf must carry for the router to reach it.
+WEB_ENTRY="nginx-unprivileged-$(printf '%s' "${WORKLOAD_IMAGE#*@sha256:}" | cut -c1-12)"
+python3 - "$WORKDIR/routes-install.json" "$WEB_ENTRY" > "$WORKDIR/routes-web.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+m["revision"] += 1
+for host in m["hosts"].values():
+    host["routes"][0]["backend"]["workload"] = sys.argv[2]
+print(json.dumps(m))
+PY
+code="$(cds_write PUT /routes "$WORKDIR/routes-web.json")"
+[ "$code" = "204" ] || fail "route manifest naming $WEB_ENTRY: want HTTP 204, got $code"
+
+# The front door routes its catch-all to the adopted workload, which the
+# routing sidecar reaches as a mesh client of that workload. The router polls
+# the manifest, so the request repeats until it applies.
+BODY=""
+for _ in $(seq 1 10); do
+    kubectl -n kube-system delete pod it-curl-root --ignore-not-found >/dev/null 2>&1 || true
+    front_door_pod it-curl-root kube-system it-mesh-ca "https://c8s-router.$ROUTER_NS.svc/" \
+        > "$WORKDIR/curl-root.yaml"
+    kubectl apply -f "$WORKDIR/curl-root.yaml" >/dev/null
+    kubectl -n kube-system wait --for=jsonpath='{.status.phase}'=Succeeded pod/it-curl-root --timeout=120s >/dev/null \
+        || fail "front-door request to the adopted workload failed"
+    # Read the body once: piping a live `kubectl logs` into `grep -q` races
+    # with SIGPIPE under pipefail.
+    BODY="$(kubectl -n kube-system logs it-curl-root)" || fail "could not read the it-curl-root logs"
+    case "$BODY" in
+        *"Welcome to nginx"*) break ;;
+    esac
+    sleep 2
+done
+case "$BODY" in
+    *"Welcome to nginx"*) ;;
+    *) fail "front door did not proxy the adopted workload: $BODY" ;;
+esac
+pass "router routes the front door to the adopted workload over the mesh"
+
 log "Checking the served allowlist pins the host sweep argv"
 curl -sSk "https://127.0.0.1:$CDS_LOCAL_PORT/allowlist" > "$WORKDIR/served.json" \
     || fail "could not read the served allowlist"

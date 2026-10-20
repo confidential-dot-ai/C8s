@@ -51,10 +51,12 @@ func (p meshPolicy) podRuleset(kubeNamespace string) ruleset.Policy {
 // servedPorts is the server role the ruleset of a pod of the router's
 // namespace carries, and an empty role for a pod of any other namespace. The
 // acme role holds the egress ports and the router role never does, so a
-// request the router forwards is captured wherever its name resolves.
+// request the router forwards outside the cluster is captured wherever its
+// name resolves. Inside it, the upstream role reaches a member itself, as the
+// mesh client of the workload its route names.
 //
-// The router role reaches the one CDS the credential role is bound to, and the
-// verifier that weighs its evidence where policy names a port for it: the
+// The upstream role reaches the one CDS the credential role is bound to, and
+// the verifier that weighs its evidence where policy names a port for it: the
 // front door answers from the signed route manifest it fetches there, over
 // armTLS it cannot verify without that verifier, and the node is what names
 // both.
@@ -63,12 +65,12 @@ func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 		return ruleset.ServerRole{}
 	}
 	server := ruleset.ServerRole{
-		UID:       workloadclaims.RouterUID,
 		Listeners: routerListeners,
 		Egress: ruleset.ServerEgress{
 			UID:   workloadclaims.AcmeUID,
 			Ports: acmeEgressPorts,
 		},
+		Upstream:      workloadclaims.UpstreamUID,
 		ClusterRanges: p.ClusterRanges,
 	}
 	if cds, bound := p.boundCDS(); bound {
@@ -84,7 +86,7 @@ func (p meshPolicy) servedPorts(kubeNamespace string) ruleset.ServerRole {
 }
 
 // boundCDS is the one CDS endpoint this node's credential role is bound to
-// (bindCredentialRole). A policy that binds none leaves the router role
+// (bindCredentialRole). A policy that binds none leaves the upstream role
 // without it, as it leaves the credential clients without it.
 func (p meshPolicy) boundCDS() (ruleset.Destination, bool) {
 	role, bound := p.role(CredentialRole)

@@ -210,17 +210,17 @@ func TestCDSAddressIsMountedIntoCredentialSidecars(t *testing.T) {
 	}
 }
 
-// The router's own identity reads the endpoint at the same path, and that
+// The upstream identity reads the endpoint at the same path, and that
 // endpoint alone: it polls the signed route manifest from the one CDS its
 // node admits for it, and takes its pins from the measured base.
-func TestCDSAddressIsMountedIntoTheRouterRole(t *testing.T) {
+func TestCDSAddressIsMountedIntoTheRoutingRole(t *testing.T) {
 	p := &plugin{
 		cfg:        &config{},
 		cdsAddress: "/var/run/nri-image-policy/cds-address",
 	}
 	pod := &api.PodSandbox{Namespace: routerNamespace}
-	router := &api.Container{Name: workloadclaims.AttestContainerName, User: &api.User{Uid: workloadclaims.RouterUID}}
-	adjustment := mustCredentialMounts(t, p, pod, router)
+	routing := &api.Container{Name: workloadclaims.AttestContainerName, User: &api.User{Uid: workloadclaims.UpstreamUID}}
+	adjustment := mustCredentialMounts(t, p, pod, routing)
 	mount := addressMount(t, adjustment)
 	if mount.GetSource() != p.cdsAddress {
 		t.Fatalf("source = %q, want the plugin's own file", mount.GetSource())
@@ -229,15 +229,15 @@ func TestCDSAddressIsMountedIntoTheRouterRole(t *testing.T) {
 		t.Fatalf("options = %v, want a read-only mount", mount.GetOptions())
 	}
 	if got := len(adjustment.GetMounts()); got != 1 {
-		t.Fatalf("the router role takes %d mounts, want the endpoint alone: %+v", got, adjustment.GetMounts())
+		t.Fatalf("the upstream role takes %d mounts, want the endpoint alone: %+v", got, adjustment.GetMounts())
 	}
 	// That identity outside the router's namespace, and another identity of
 	// the router's pod, take none.
-	if got := mustCredentialMounts(t, p, &api.PodSandbox{Namespace: "default"}, router); got != nil {
+	if got := mustCredentialMounts(t, p, &api.PodSandbox{Namespace: "default"}, routing); got != nil {
 		t.Fatalf("a pod outside the router namespace takes %+v", got)
 	}
-	// The front door holds the same role and takes none: the measured base
-	// pins what it may mount, and the manifest comes through the sidecar.
+	// The front door takes none: the measured base pins what it may mount,
+	// and the manifest comes through the sidecar.
 	nginx := &api.Container{Name: "nginx", User: &api.User{Uid: workloadclaims.RouterUID}}
 	if got := mustCredentialMounts(t, p, pod, nginx); got != nil {
 		t.Fatalf("the front door takes %+v", got)

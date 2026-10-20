@@ -142,6 +142,9 @@ func run(ctx context.Context, cfg config) error {
 	if err := checkRoutingFlags(cfg); err != nil {
 		return err
 	}
+	if err := checkNodeVerifier(attestationURL); err != nil {
+		return err
+	}
 
 	var provider EvidenceProvider
 	if !cfg.attestOff {

@@ -283,13 +283,13 @@ func TestNodeImageBaseBindsEveryRoleVolume(t *testing.T) {
 
 // The front door's key directory may not be bound at the attestation
 // sidecar's chain destination: that swap would hand the serving key to the
-// one other container of the router role.
+// pod's route authority.
 func TestNodeImageBaseRefusesASwappedVolume(t *testing.T) {
 	cfg, err := parseConfig([]byte(renderNodeImagePolicy(t)))
 	if err != nil {
 		t.Fatalf("the rendered node-image boot config does not parse: %v", err)
 	}
-	entry, ok := cfg.Allowlist.Base.Workloads["c8s-cds-attest"]
+	entry, ok := cfg.Allowlist.Base.Workloads["c8s-router-upstream"]
 	if !ok {
 		t.Fatal("the baked base carries no attestation sidecar entry")
 	}
@@ -382,7 +382,7 @@ func roleEntries() map[string]string {
 		"c8s-allowlist-proxy": CredentialRole,
 		"c8s-router-nginx":    routerRole,
 		"c8s-acme":            acmeRole,
-		"c8s-cds-attest":      routerRole,
+		"c8s-router-upstream": upstreamRole,
 	}
 }
 

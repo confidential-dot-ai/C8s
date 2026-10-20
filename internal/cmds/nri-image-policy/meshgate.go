@@ -322,7 +322,9 @@ func (c gatedContainer) identity() roleLaunch {
 // Each of them runs under a declaration that pins its mounts as well, because
 // the credentials of this pod are separated by mount set alone: a role
 // container whose mounts are left to the host could be given another role's
-// credential volume.
+// credential volume, and the upstream role's mount set is what binds its
+// uncaptured reach into the cluster to the sidecar that authenticates a
+// backend itself.
 func (s *protectedPod) requireRoleOnlyPod(launch gatedContainer) error {
 	if s.kubeNamespace != routerNamespace {
 		return nil

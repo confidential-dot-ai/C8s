@@ -5,10 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/spf13/pflag"
@@ -18,6 +23,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/routing"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/routes"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 // nodeOperatorKeysFile is where a baked node's signed launch configuration
@@ -145,6 +151,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("--cds-url: %w", err)
 	}
+	fetcher := clusterWorkloadRoutes{routes: cds}
 	keys, err := operatorKeySource(r, cdsPinned, cds, logger)
 	if err != nil {
 		return nil, err
@@ -153,7 +160,7 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("load mesh identity for backends: %w", err)
 	}
-	meshCAs := routing.CAFile(cfg.meshIdentityCAFile)
+	meshCAs := memberMeshCAs()
 	state := routing.NewState(routing.StateConfig{Reserved: r.reservedPaths, MeshCAs: meshCAs})
 	transports := routing.NewTransports(routing.TransportConfig{MeshCAs: meshCAs, ClientCertificate: clientCert.GetClientCertificate})
 	return &routingEngine{
@@ -163,9 +170,125 @@ func newRoutingEngine(cfg config, logger *slog.Logger) (*routingEngine, error) {
 			State: state, Transports: transports, Timeout: r.backendTimeout, TunnelBudget: tunnelBudget(r.tunnelBudget, cgroupMemoryMax, logger), Logger: logger,
 		}),
 		poller: routing.NewPoller(routing.PollerConfig{
-			State: state, Fetcher: cds, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
+			State: state, Fetcher: fetcher, Keys: keys, Transports: transports, Interval: r.pollInterval, Logger: logger,
 		}),
 	}, nil
+}
+
+// checkNodeVerifier binds this router to the verifier its node chose, as
+// every credential client is bound, and refuses one it would reach in the
+// clear at an address of its own: the upstream identity's connections into
+// the cluster are uncaptured, so a plaintext verifier an argument named
+// could be a member pod rather than the node's own attestation-api.
+//
+// resolved is the URL this process dials, after ExpandHostIP replaced a node
+// address reference with the address the enforcer published.
+func checkNodeVerifier(resolved string) error {
+	if err := cmdsutil.RequireNodeVerifier(workloadclaims.CDSPinsPath, workloadclaims.AttestationAPISocket, resolved); err != nil {
+		return err
+	}
+	return checkVerifierEndpoint(resolved, cmdsutil.NodeIPPath)
+}
+
+// checkVerifierEndpoint admits the node's own attestation-api socket, an
+// https endpoint, and plaintext only where it crosses no pod boundary: this
+// pod's loopback, or the node's own address as nodeIPPath holds it. The
+// decision is made on the parsed URL after expansion and compares addresses,
+// so a host that merely carries the node's address — in userinfo, or as the
+// head of a longer name — is another host and is refused, and no name is
+// resolved: DNS is the control plane's.
+func checkVerifierEndpoint(resolved, nodeIPPath string) error {
+	endpoint, err := url.Parse(resolved)
+	if err != nil {
+		return fmt.Errorf("--attestation-api-url %q: %w", resolved, err)
+	}
+	switch endpoint.Scheme {
+	case "unix", "https":
+		return nil
+	case "http":
+		return checkPlaintextVerifier(resolved, endpoint, nodeIPPath)
+	}
+	return fmt.Errorf("--attestation-api-url %q names the scheme %q: the verifier is this node's attestation-api socket, an https endpoint, or http at this node's own address",
+		resolved, endpoint.Scheme)
+}
+
+func checkPlaintextVerifier(resolved string, endpoint *url.URL, nodeIPPath string) error {
+	// The port is the node's to serve on and the pod ruleset's to admit; the
+	// host, and nothing else in the URL, is what this check decides.
+	refusal := fmt.Errorf("--attestation-api-url %q is plaintext at an address this pod named: give this node's attestation-api socket, an https endpoint, or http://%s:<port>",
+		resolved, cmdsutil.NodeIPReference)
+	if endpoint.User != nil || endpoint.Path != "" || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return refusal
+	}
+	host, err := netip.ParseAddr(endpoint.Hostname())
+	if err != nil {
+		return refusal
+	}
+	if host.Unmap().IsLoopback() {
+		return nil
+	}
+	node, err := nodeAddress(nodeIPPath)
+	if err != nil {
+		return errors.Join(refusal, err)
+	}
+	if host.Unmap() != node {
+		return refusal
+	}
+	return nil
+}
+
+// nodeAddress is the node's own address, as the enforcer publishes it for the
+// components that reach its attestation-api by address.
+func nodeAddress(nodeIPPath string) (netip.Addr, error) {
+	published, err := os.ReadFile(nodeIPPath)
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("read the node address: %w", err)
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(string(published)))
+	if err != nil {
+		return netip.Addr{}, fmt.Errorf("the node address in %s: %w", nodeIPPath, err)
+	}
+	return address.Unmap(), nil
+}
+
+// memberMeshCAs is the trust root of the hop to a member backend: the mesh CA
+// of the credential generation get-cert published on this pod's own volume,
+// re-read per handshake so a rotation takes effect without a restart. The
+// path is compiled and no argument reaches it — a CA an argument named would
+// be one the control plane chose, and its holder could stamp any workload
+// name on a leaf this router then accepted.
+func memberMeshCAs() routing.CASource {
+	return routing.CAFile(workloadclaims.MemberCAPath)
+}
+
+// clusterWorkloadRoutes refuses a fetched manifest this router cannot serve,
+// so the refusal arrives with the manifest that names it rather than at dial
+// time. Every route must name a cluster workload: this pod reaches a backend
+// as the mesh client of the workload its route names, and its ruleset leaves
+// it nothing else to reach. Nothing is applied either way, so reading the
+// manifest here, before Accept verifies its signature, decides nothing but
+// the diagnostic.
+type clusterWorkloadRoutes struct {
+	routes routing.Fetcher
+}
+
+func (c clusterWorkloadRoutes) Routes(ctx context.Context) (routes.Envelope, error) {
+	env, err := c.routes.Routes(ctx)
+	if err != nil {
+		return routes.Envelope{}, err
+	}
+	manifest, err := routes.Parse(env.Manifest)
+	if err != nil {
+		return routes.Envelope{}, err
+	}
+	for _, host := range slices.Sorted(maps.Keys(manifest.Hosts)) {
+		for _, route := range manifest.Hosts[host].Routes {
+			if route.Backend.Workload == "" {
+				return routes.Envelope{}, fmt.Errorf("host %q route %q names the address backend %s: the router serves cluster workloads only", host, route.Path, route.Backend.Address)
+			}
+		}
+	}
+	return env, nil
 }
 
 // operatorKeySource implements W6: the node's signed launch configuration

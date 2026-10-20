@@ -6420,6 +6420,25 @@ func TestChartNRICDSURLRefusesAnUnderivableService(t *testing.T) {
 	}
 }
 
+// The pod's route authority runs as the upstream role's reserved identity: the
+// one identity of this pod the node leaves uncaptured into the cluster,
+// because it authenticates the member it reaches itself. The front door, which
+// forwards application requests, holds the router role's.
+func TestChartRouterRunsTheRouteAuthorityAsTheRoutingIdentity(t *testing.T) {
+	out, err := helmTemplate(t)
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	if got := attest.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.UpstreamUID) {
+		t.Errorf("cds-attest runAsUser = %v, want the upstream role's uid %d", got, workloadclaims.UpstreamUID)
+	}
+	nginx := renderedDeploymentContainer(t, out, "c8s-router", "nginx")
+	if got := nginx.SecurityContext.RunAsUser; got == nil || *got != int64(workloadclaims.RouterUID) {
+		t.Errorf("nginx runAsUser = %v, want the router role's uid %d", got, workloadclaims.RouterUID)
+	}
+}
+
 // The chart renders the router pod itself, and every pod of the router role's
 // namespace holds platform-role containers only. So each of its containers
 // must take a role from the node's measured base, which pins the argv — and
@@ -6441,7 +6460,7 @@ func TestChartRouterPodTakesTheMeasuredRoles(t *testing.T) {
 		"c8s-cert-wait":   "credentials",
 		"allowlist-proxy": "credentials",
 		"nginx":           "router",
-		"cds-attest":      "router",
+		"cds-attest":      "upstream",
 		"acme":            "acme",
 	}
 	// The measured base is the baked node's, whose launch file carries the

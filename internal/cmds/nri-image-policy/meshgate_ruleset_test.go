@@ -18,8 +18,8 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	policy := meshRoles()
 
 	server := policy.podRuleset(routerNamespace).Server
-	if server.UID != workloadclaims.RouterUID {
-		t.Fatalf("server uid = %d, want the reserved %d", server.UID, workloadclaims.RouterUID)
+	if server.Upstream != workloadclaims.UpstreamUID {
+		t.Fatalf("server upstream uid = %d, want the reserved %d", server.Upstream, workloadclaims.UpstreamUID)
 	}
 	if !slices.Equal(server.Listeners, routerListeners) || !slices.Equal(server.Egress.Ports, acmeEgressPorts) {
 		t.Fatalf("server ports = %+v, want the compiled listeners and egress ports", server)
@@ -34,7 +34,7 @@ func TestPodRulesetServesOwnPortsOnlyInTheRouterNamespace(t *testing.T) {
 	}
 
 	member := policy.podRuleset("default")
-	if member.Server.UID != 0 {
+	if member.Server.Upstream != 0 {
 		t.Fatalf("a pod outside that namespace serves %+v", member.Server)
 	}
 	if member.MeshUID != testMeshUID {

@@ -76,6 +76,17 @@ const (
 // sidecars see it.
 const MeasuredPoliciesJournal = SidecarSocketDir + "/" + armtls.MeasuredPoliciesJournal
 
+// MemberCertDir is where every container of a member pod mounts the
+// credential volume get-cert publishes on, and MemberCAPath is the mesh CA of
+// the generation it published there. The path is compiled because it is a
+// trust root: a relying party that took its mesh CA from an argument would
+// chain its peers to whatever CA the control plane named, and admit any peer
+// keyed to it.
+const (
+	MemberCertDir = "/etc/c8s/certs"
+	MemberCAPath  = MemberCertDir + "/ca.crt"
+)
+
 // CDSPinsPath is where an injected credential client reads the CDS attestation
 // policy it holds the CDS to. Compiled for the same reason as the socket path:
 // the node bind-mounts its own policy there, so neither the pod nor the control
@@ -221,10 +232,9 @@ const CredentialsUID uint32 = 1338
 // is compiled rather than chosen per cluster.
 const RouterNamespace = "c8s-router"
 
-// RouterUID is the reserved identity of the router role: the one role that
-// answers ports of its own, in RouterNamespace. The node binds its external
-// listener ports to this number, and the enforcer refuses it in any other
-// container.
+// RouterUID is the reserved identity of the router role, the front door in
+// RouterNamespace. The node gives it no network rule of its own, so its
+// traffic is captured, and the enforcer refuses it in any other container.
 const RouterUID uint32 = 1339
 
 // AcmeUID is the reserved identity of the role that proves control of the
@@ -233,6 +243,14 @@ const RouterUID uint32 = 1339
 // forwards application traffic never holds, and the enforcer refuses it in
 // any other container.
 const AcmeUID uint32 = 1340
+
+// UpstreamUID is the reserved identity of the upstream role: the router
+// pod's route authority, which holds the signed route manifest and dials a
+// member backend as a mesh client itself. The node leaves this number's connections
+// to the cluster ranges uncaptured, so it is the one identity of that pod
+// that authenticates a backend on its own, and the enforcer refuses it in any
+// other container.
+const UpstreamUID uint32 = 1341
 
 // CertWaitContainerName is the run-once init container injected beside
 // c8s-cert to hold the workload until the first certificate lands.
