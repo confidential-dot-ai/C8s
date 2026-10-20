@@ -181,45 +181,82 @@ func TestSeedStore_FailsClosedOnStoreError(t *testing.T) {
 	}
 }
 
-// A chart upgrade rewrites the mounted seed while CDS runs: the new entries
-// reach the store without a restart, and an entry deleted while the seed is
-// unchanged stays deleted.
-func TestFollowSeedAppliesChangedSeed(t *testing.T) {
+// A followed seed is a layer of its own: a changed seed takes effect without a
+// restart and never enters the store.
+func TestFollowSeedSetsChangedSeedLayer(t *testing.T) {
 	store, err := allowlist.OpenInMemory()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	layers := allowlist.NewLayered(&store)
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
-	applied, err := seedStore(&store, path)
+	applied, err := seedLayer(layers, path)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if ok, err := store.DeleteWorkload("cds"); err != nil || !ok {
-		t.Fatalf("DeleteWorkload(cds) = %t, %v", ok, err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	tick := make(chan time.Time)
 	done := make(chan struct{})
-	go func() { followSeed(ctx, &store, path, applied, tick); close(done) }()
+	go func() { followSeed(ctx, layers, path, applied, tick); close(done) }()
 	t.Cleanup(func() { cancel(); <-done })
 	// tick is unbuffered: a send returns only once the previous check is done.
 	check := func() { tick <- time.Time{}; tick <- time.Time{} }
 
-	check()
-	if doc, _, err := store.LoadAll(); err != nil || len(doc.Workloads) != 0 {
-		t.Fatalf("unchanged seed reapplied: %v, %v", doc.Workloads, err)
-	}
 	if err := os.WriteFile(path, []byte(anySeed(map[string]string{"cds": digestA, "operator-v2": digestB})), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	check()
-	doc, _, err := store.LoadAll()
+	doc, _, err := layers.LoadAll()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := doc.Workloads["operator-v2"]; !ok {
 		t.Fatalf("changed seed not applied: %v", doc.Workloads)
+	}
+	if stored, _, err := store.LoadAll(); err != nil || len(stored.Workloads) != 0 {
+		t.Fatalf("the seed reached the store: %v, %v", stored.Workloads, err)
+	}
+}
+
+// An upload replaces the stored document only: the followed seed still
+// decides, and GET /allowlist serves exactly what the operator wrote.
+func TestFollowedSeedSurvivesUpload(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	layers := allowlist.NewLayered(&store)
+	ctx, cancel := context.WithCancel(context.Background())
+	done, err := startSeed(ctx, layers, writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); <-done })
+
+	app, err := pkgallowlist.ParseJSON([]byte(anySeed(map[string]string{"app": digestB})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceAll(app); err != nil {
+		t.Fatal(err)
+	}
+	served, _, err := store.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(served.Workloads) != 1 || served.Workloads["app"].Label == "" {
+		t.Fatalf("served %v, want the uploaded app entry alone", served.Workloads)
+	}
+	decided, _, err := layers.LoadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"cds", "app"} {
+		if _, ok := decided.Workloads[name]; !ok {
+			t.Errorf("decisions lack %q after the upload: %v", name, decided.Workloads)
+		}
 	}
 }
 
@@ -230,13 +267,13 @@ func TestStartSeedWithoutFollowIgnoresChanges(t *testing.T) {
 	orig := seedRecheckInterval
 	seedRecheckInterval = time.Millisecond
 	t.Cleanup(func() { seedRecheckInterval = orig })
-	open := func() *allowlist.Store {
+	open := func() *allowlist.Layered {
 		store, err := allowlist.OpenInMemory()
 		if err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = store.Close() })
-		return &store
+		return allowlist.NewLayered(&store)
 	}
 	fixed, following := open(), open()
 	path := writeSeed(t, anySeed(map[string]string{"cds": digestA}))
@@ -293,7 +330,7 @@ func TestStartSeedDoneClosesOnCancel(t *testing.T) {
 	}
 	defer store.Close()
 	ctx, cancel := context.WithCancel(context.Background())
-	done, err := startSeed(ctx, &store, writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
+	done, err := startSeed(ctx, allowlist.NewLayered(&store), writeSeed(t, anySeed(map[string]string{"cds": digestA})), true)
 	if err != nil {
 		t.Fatal(err)
 	}

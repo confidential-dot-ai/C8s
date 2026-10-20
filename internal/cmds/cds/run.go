@@ -126,6 +126,7 @@ func run(cfg config) error {
 		return fmt.Errorf("open allowlist database: %w", err)
 	}
 	defer allowlistStore.Close()
+	allowlistLayers := allowlist.NewLayered(&allowlistStore)
 
 	// CDS generates its mesh CA in process at startup; the private key never
 	// touches a Kubernetes Secret.
@@ -179,13 +180,15 @@ func run(cfg config) error {
 	secretsChallenges := attestation.NewChallengeStore(cfg.challengeTTL)
 	checker := readiness.NewChecker(asClient, cfg.readinessInterval)
 
-	// Seed before serving so the first GET /allowlist returns the bootstrap
-	// allowlist (CDS, attestation-api, system images) rather than an empty
-	// set; an unseeded store would deny every worker pull until an operator
-	// populated it. Fail closed on any seed error.
+	// Seed before serving so the first decision, and on a chart-managed
+	// install the first GET /allowlist, includes the bootstrap allowlist (CDS,
+	// attestation-api, system images); an unseeded store would deny every
+	// worker pull until an operator populated it. On a baked node the seed is
+	// a layer of its own and the node's NRI base admits it already. Fail closed
+	// on any seed error.
 	if cfg.allowlistSeed != "" {
 		seedCtx, stopSeed := context.WithCancel(ctx)
-		following, err := startSeed(seedCtx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed)
+		following, err := startSeed(seedCtx, allowlistLayers, cfg.allowlistSeed, cfg.followSeed)
 		if err != nil {
 			stopSeed()
 			return fmt.Errorf("seed allowlist: %w", err)
@@ -274,7 +277,7 @@ func run(cfg config) error {
 		// One store behind both handlers: an operator write and a workload read
 		// are two doors onto the same paths.
 		store := newSecretsStore(cfg)
-		policy := secrets.NewCachedPolicy(&allowlistStore)
+		policy := secrets.NewCachedPolicy(allowlistLayers)
 		secretsHandler = &secrets.Handler{
 			Store:          store,
 			Challenges:     &secretsChallenges,
@@ -319,7 +322,7 @@ func run(cfg config) error {
 			Images:            pinned.Images,
 			SANValidation:     cfg.sanValidation,
 			Policy:            policy,
-			AllowlistStore:    &allowlistStore,
+			AllowlistStore:    allowlistLayers,
 			PolicySnapshots:   &policySnapshotCache{},
 			SandboxDigests:    sandboxDigests,
 			InventoryHosts:    inventoryHosts,
@@ -329,6 +332,7 @@ func run(cfg config) error {
 			Store:             &allowlistStore,
 			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
+			Layers:            allowlistLayers,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,

@@ -58,7 +58,9 @@ type MatchedWorkload struct {
 	// snapshot the match used — a canonical positive decimal integer.
 	AllowlistVersion string
 	// AllowlistDigest is SHA-256 of Allowlist.Canonical() of that snapshot,
-	// exactly 32 bytes.
+	// exactly 32 bytes. When CDS keeps the measured node seed as a layer of
+	// its own and the matched entry is the seed's, it is the digest of the
+	// seed layer instead, which CDS serves at /allowlist/objects/sha256/<hex>.
 	AllowlistDigest []byte
 }
 

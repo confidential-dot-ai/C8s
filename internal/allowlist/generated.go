@@ -88,6 +88,21 @@ func overrideKey(name string) string {
 	return trimBase(m[4]) + "-" + m[5]
 }
 
+// seedKeySets returns the generated keys and the override keys of seed's
+// entry names, the sets retiredBySeed takes.
+func seedKeySets(seed map[string]pkgallowlist.Workload) (seedKeys, overrideKeys map[string]bool) {
+	seedKeys, overrideKeys = map[string]bool{}, map[string]bool{}
+	for name := range seed {
+		if key := GeneratedKey(name); key != "" {
+			seedKeys[key] = true
+		}
+		if key := overrideKey(name); key != "" {
+			overrideKeys[key] = true
+		}
+	}
+	return seedKeys, overrideKeys
+}
+
 // retiredBySeed reports whether a stored entry is one an earlier chart
 // generated and seed replaces: a generated name seed lacks, for an image seed
 // still generates an entry for, that admits a component with open args,

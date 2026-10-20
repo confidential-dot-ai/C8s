@@ -982,8 +982,20 @@ launch keep running, but cannot restart under it. A CDS that seeds the
 override, at start or while following its seed, retires those entries itself.
 
 On a measured node image (`node.baked`), the seed is a file the image holds,
-so CDS follows it: it rereads the file every 30 seconds and seeds it again
-when it changed. The chart sets `--follow-seed` only there.
+so CDS keeps it as a layer of its own (`--follow-seed`, which the chart sets
+only there) and rereads it every 30 seconds:
+
+- The seed never enters the store. `GET /allowlist` serves the stored
+  document alone, byte for byte the one an operator signed, so an upload
+  carries only application entries and cannot drop C8s's own.
+- `/attest` and `/secrets` decide on both layers. The seed's entries, and
+  every stored entry the seed neither names nor replaces, count: an entry
+  name both layers hold is the seed's, which the node's image policy plugin
+  enforces too, since its base allowlist is the same seed.
+- A leaf whose workload matched a seed entry is stamped with the seed's
+  digest, not the served document's. CDS serves the seed's canonical bytes at
+  `/allowlist/objects/sha256/<hex>`. The seed is not in the allowlist history
+  and carries no operator signature: the node image measurement covers it.
 
 Known limitations:
 

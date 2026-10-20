@@ -701,7 +701,13 @@ verify, CDS makes one unified inventory decision
 6. run `allowlist.MatchWorkload` — argv-aware, "nothing foreign, every main
    present" — once against the snapshot.
 
-A unique match stamps `(name, snapshot version, snapshot digest)`. Everything
+A unique match stamps `(name, snapshot version, snapshot digest)`. On a
+measured node image, CDS keeps the image's allowlist seed as a layer of its
+own beside the stored document (`--follow-seed`): steps 3 to 6 run on both
+layers, and a match on a seed entry stamps the seed's digest in place of the
+snapshot digest. CDS serves the seed's bytes at
+`/allowlist/objects/sha256/<hex>`; the node image measurement, not an
+operator signature, vouches for them. Everything
 else — an old inventory with no containers view, a malformed answer, no match
 mid-lifecycle, an ambiguous match — issues the existing **membership-only
 (unnamed) leaf**: incomplete pods need a mesh certificate to bootstrap, so the

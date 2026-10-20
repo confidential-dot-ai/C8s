@@ -26,6 +26,8 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// Layers, when set, serves its seed layer by digest beside the history.
+	Layers *Layered
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -195,10 +197,14 @@ func (h Handler) HandleHistory(w http.ResponseWriter, _ *http.Request) {
 var objectHex = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // HandleObject handles GET /allowlist/objects/sha256/{hex}: the exact bytes
-// of a document in the history.
+// of a document in the history, or of the measured seed layer.
 func (h Handler) HandleObject(w http.ResponseWriter, r *http.Request) {
 	h.serveByDigest(w, r, "application/json", func(digest string) ([]byte, bool, error) {
-		return h.Store.Object(digest)
+		body, ok, err := h.Store.Object(digest)
+		if !ok && err == nil && h.Layers != nil {
+			body, ok = h.Layers.SeedObject(digest)
+		}
+		return body, ok, err
 	})
 }
 
