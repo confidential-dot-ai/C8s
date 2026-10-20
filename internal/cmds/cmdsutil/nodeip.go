@@ -16,11 +16,13 @@ var ErrNodeIPChanged = errors.New("the node address changed: restarting to dial 
 const nodeIPPollInterval = 15 * time.Second
 
 // WatchNodeIP returns a context that is canceled with ErrNodeIPChanged once
-// rawURL no longer expands to expanded: NodeIPPath names another address, or
-// none. The image policy plugin rewrites the file in place when the node's
-// address changes, and a component dials the address it expanded at startup,
-// so it restarts to pick up the new one. rawURL without $(NODE_IP) returns
-// ctx unchanged. Return the component's final error through NodeIPChanged.
+// rawURL expands to another address than expanded. The image policy plugin
+// rewrites NodeIPPath in place when the node's address changes, and a
+// component dials the address it expanded at startup, so it restarts to pick
+// up the new one. A file that is unreadable or holds no address keeps the
+// component on the address it has: a restart could not expand one either.
+// rawURL without $(NODE_IP) returns ctx unchanged. Return the component's
+// final error through NodeIPChanged.
 func WatchNodeIP(ctx context.Context, rawURL, expanded string) context.Context {
 	if !strings.Contains(rawURL, nodeIPReference) {
 		return ctx
@@ -29,12 +31,8 @@ func WatchNodeIP(ctx context.Context, rawURL, expanded string) context.Context {
 	ticker := time.NewTicker(nodeIPPollInterval)
 	go func() {
 		defer ticker.Stop()
-		watchNodeIP(ctx, cancel, ticker.C, expanded, func() string {
-			u, err := expandNodeAddress(rawURL, NodeIPPath, os.Getenv)
-			if err != nil {
-				return err.Error()
-			}
-			return u
+		watchNodeIP(ctx, cancel, ticker.C, expanded, func() (string, error) {
+			return expandNodeAddress(rawURL, NodeIPPath, os.Getenv)
 		})
 	}()
 	return ctx
@@ -42,8 +40,8 @@ func WatchNodeIP(ctx context.Context, rawURL, expanded string) context.Context {
 
 // watchNodeIP cancels ctx once expand returns the same value other than want
 // on two consecutive ticks: a reader can catch the plugin's in-place write
-// half done.
-func watchNodeIP(ctx context.Context, cancel context.CancelCauseFunc, tick <-chan time.Time, want string, expand func() string) {
+// half done. An expand error is no value.
+func watchNodeIP(ctx context.Context, cancel context.CancelCauseFunc, tick <-chan time.Time, want string, expand func() (string, error)) {
 	var last string
 	seen := false
 	for {
@@ -52,8 +50,8 @@ func watchNodeIP(ctx context.Context, cancel context.CancelCauseFunc, tick <-cha
 			return
 		case <-tick:
 		}
-		got := expand()
-		if got == want {
+		got, err := expand()
+		if err != nil || got == want {
 			seen = false
 			continue
 		}

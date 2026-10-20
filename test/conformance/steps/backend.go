@@ -53,8 +53,9 @@ func newBackend(name string) (backend, error) {
 	return b, nil
 }
 
-// call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip;
-// any other failure is a harness error carrying the function's stderr.
+// call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip,
+// wrapped to name the function; any other failure is a harness error
+// carrying the function's stderr.
 func (b backend) call(fn string, args ...string) (string, error) {
 	key := fn + "\x00" + strings.Join(args, "\x00")
 	if out, ok := b.memo[key]; ok && constant[fn] {
@@ -73,17 +74,23 @@ func (b backend) call(fn string, args ...string) (string, error) {
 		}
 		return out, nil
 	case errors.As(err, &exit) && exit.ExitCode() == exitUnsupported:
-		return "", godog.ErrSkip
+		return "", fmt.Errorf("%w: the backend cannot answer %s", godog.ErrSkip, fn)
 	default:
 		return "", fmt.Errorf("backend %s %s: %w\n%s", fn, strings.Join(args, " "), err, stderr.String())
 	}
 }
 
 // podExec runs cmd in a container of the pod, kubectl's default one when
-// container is empty. Where the backend's cluster closes pod exec it skips.
+// container is empty: through kubectl exec, or where the backend's cluster
+// closes pod exec, through the agent the backend runs in the pod (pod_exec,
+// agent_exec), which skips what it cannot reach.
 func (w *world) podExec(p *pod, container string, cmd ...string) (string, error) {
-	if _, err := w.be.call("pod_exec"); err != nil {
+	mode, err := w.be.call("pod_exec")
+	if err != nil {
 		return "", err
+	}
+	if mode == "agent" {
+		return w.be.call("agent_exec", append([]string{p.namespace, p.name, container}, cmd...)...)
 	}
 	args := []string{"-n", p.namespace, "exec", p.name}
 	if container != "" {

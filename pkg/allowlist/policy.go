@@ -1,6 +1,10 @@
 package allowlist
 
-import "github.com/confidential-dot-ai/c8s/pkg/types"
+import (
+	"slices"
+
+	"github.com/confidential-dot-ai/c8s/pkg/types"
+)
 
 // Index answers admission queries for enforcers in O(1). Build it once from a
 // normalized Allowlist (BuildIndex). A nil *Index admits nothing, so an
@@ -154,4 +158,46 @@ func (i *Index) AdmitsProcess(r RunningContainer) bool {
 		}
 	}
 	return false
+}
+
+// AdmitsNodeRoot reports whether some entry that admits r does so through an
+// exact nodeRootFile mount rule at m's destination and host source. Only such a mount carries bytes the allowlist pinned to the measured
+// node image; mounts admitted under `any` or by a host rule do not.
+func (i *Index) AdmitsNodeRoot(r RunningContainer, m ObservedMount) bool {
+	if i == nil || m.Class != MountHost || m.Provenance != ProvenanceNodeRoot || !m.ReadOnly {
+		return false
+	}
+	d, err := types.ParseDigest(r.Digest)
+	if err != nil {
+		return false
+	}
+	r.Digest = d.String()
+	for _, c := range i.byDigest[r.Digest] {
+		if c.Mounts.Policy != PolicyExact || !c.admits(r) {
+			continue
+		}
+		for _, rule := range c.Mounts.Rules {
+			if rule.Kind == MountNodeRootFile && rule.Destination == m.Destination && rule.behavior().admits(m) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// DeclaresNodeRoot reports whether some entry for digest has a nodeRootFile
+// mount rule.
+func (i *Index) DeclaresNodeRoot(digest string) bool {
+	if i == nil {
+		return false
+	}
+	d, err := types.ParseDigest(digest)
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(i.byDigest[d.String()], func(c Container) bool {
+		return slices.ContainsFunc(c.Mounts.Rules, func(rule MountRule) bool {
+			return rule.Kind == MountNodeRootFile
+		})
+	})
 }

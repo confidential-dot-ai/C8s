@@ -253,7 +253,7 @@ func genoaFileEvidence(t *testing.T) *evidence {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ev, err := gatherFromFile(fixture, []byte("genoa-test-fixture"), "fixture", leafTrust{})
+	ev, err := gatherFromFile(fixture, []byte("genoa-test-fixture"), nil, "fixture", leafTrust{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -425,8 +425,8 @@ func TestEndpointEvidenceMarksChainDerived(t *testing.T) {
 		name string
 		get  func() (*evidence, error)
 	}{
-		{"live fetch", func() (*evidence, error) { return evidenceFromEndpointJSON(data, nonce, sess.ek, "test") }},
-		{"saved bundle", func() (*evidence, error) { return gatherFromFile(data, nil, "file", leafTrust{}) }},
+		{"live fetch", func() (*evidence, error) { return evidenceFromEndpointJSON(data, nonce, sess.ek, testRoute, "test") }},
+		{"saved bundle", func() (*evidence, error) { return gatherFromFile(data, nil, testRoute, "file", leafTrust{}) }},
 	} {
 		ev, err := tc.get()
 		if err != nil {
@@ -523,4 +523,17 @@ func TestRunDiscoveryPublicTLSModeVerdicts(t *testing.T) {
 			t.Errorf("the verdict should name the unrecognized mode:\n%s", out.String())
 		}
 	})
+}
+
+// A route note describes a passing check, so a verdict the history check
+// fails carries none.
+func TestVerifyEvidenceHistoryFailureDropsRouteNote(t *testing.T) {
+	ev := genoaFileEvidence(t)
+	ev.route = &boundRoute{digest: []byte{1}, note: "route note"}
+	cfg := config{output: "json", trustOperator: true}
+	var out, errOut bytes.Buffer
+	code := verifyEvidence(context.Background(), cfg, &verifyPlan{policy: &armtls.VerifyPolicy{}}, ev, nil, operatorKeysReport{}, measurementsReport{}, &out, &errOut)
+	if code != exitFailed || !strings.Contains(out.String(), "policy_history_absent") || strings.Contains(out.String(), "route_note") {
+		t.Errorf("exit = %d, output:\n%s\nwant exit %d with policy_history_absent and no route_note", code, out.String(), exitFailed)
+	}
 }

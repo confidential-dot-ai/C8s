@@ -255,14 +255,18 @@ whose release a bare `helm uninstall` already deleted. See [`operator.md`](opera
 
 ```bash
 # Every flow below also requires --hardware-platform (the nodes' CPU TEE:
-# sev-snp or tdx). --operator-keys authorizes `c8s allowlist` writes; a -f
-# values file may carry the keys instead, and --force installs without.
-# --upstream (with the port on its --workload-ref) points router at an adopted
-# workload's mesh-wrapped headless Service (see operator.md, "router upstream").
+# sev-snp or tdx). --operator-keys authorizes `c8s allowlist` writes and pins
+# the router's route-manifest keys; a -f values file may carry the keys
+# instead. --force installs without, but CDS then stores no route manifest, so
+# the router answers 503 until cds.operatorKeys is set and the release upgraded;
+# the install also needs --measurements to pin CDS.
+# --upstream (with the port on its --workload-ref) writes a route manifest that
+# routes / to an adopted workload serving TLS on that port with its get-cert
+# certificate; install prints how to store it (see operator.md, "Route manifest").
 
 # Base — normal cluster, host-side components, no per-pod confidentiality.
 c8s install --cvm-mode=bare-metal --hardware-platform=sev-snp --operator-keys operator-pub.pem \
-  --workload-ref vllm=vllm/deployment/serving:8000 --upstream vllm
+  --workload-ref vllm=vllm/deployment/serving:8443 --upstream vllm
 
 # Uninstall: helm uninstall + sweep chart-installed host artifacts.
 c8s uninstall

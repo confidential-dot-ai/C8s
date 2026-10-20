@@ -35,9 +35,9 @@ type backendJSON struct {
 	CA         string `json:"ca,omitempty"`
 }
 
-// encode writes m as new manifest bytes. It authors a new revision; a stored
+// Encode writes m as new manifest bytes. It authors a new revision; a stored
 // manifest is never re-encoded, since its bytes are what the token signs.
-func encode(m *pkgroutes.Manifest) ([]byte, error) {
+func Encode(m *pkgroutes.Manifest) ([]byte, error) {
 	doc := manifestJSON{
 		Schema:        pkgroutes.Schema,
 		Revision:      m.Revision,
@@ -65,9 +65,9 @@ func encode(m *pkgroutes.Manifest) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// addRoute adds r to host, replacing a route with the same path and match
+// AddRoute adds r to host, replacing a route with the same path and match
 // (D8), and reports what it did.
-func addRoute(m *pkgroutes.Manifest, host string, r pkgroutes.Route) string {
+func AddRoute(m *pkgroutes.Manifest, host string, r pkgroutes.Route) string {
 	h := m.Hosts[host]
 	h.Routes = slices.Clone(h.Routes)
 	verb := "added"

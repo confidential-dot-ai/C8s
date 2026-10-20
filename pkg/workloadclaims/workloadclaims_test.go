@@ -707,10 +707,10 @@ func TestListenUnixNoChgrpWhenGIDNonPositive(t *testing.T) {
 // construction instead of at the first issuance.
 func TestDigestsCallbackRequiresAttestationApi(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
+	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "", armtls.Pins{}, 0, ""); err == nil {
 		t.Fatal("server config built with no attestation-api URL")
 	}
-	if _, err := NewDigestsClient(context.Background(), "sev-snp", attest, "", armtls.Pins{}, 0); err == nil {
+	if _, err := NewDigestsClient(context.Background(), DigestsClientConfig{Platform: "sev-snp", AttestFunc: attest}); err == nil {
 		t.Fatal("client built with no attestation-api URL")
 	}
 }
@@ -719,7 +719,7 @@ func TestDigestsCallbackRequiresAttestationApi(t *testing.T) {
 // yields a working, unpinned-but-attested peer on both ends.
 func TestDigestsCallbackAcceptsEmptyMeasurements(t *testing.T) {
 	attest := func(context.Context, string) (string, error) { return "", nil }
-	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.Pins{}, 0); err != nil {
+	if _, _, err := DigestsServerTLSConfig("sev-snp", attest, "http://127.0.0.1:8400", armtls.Pins{}, 0, ""); err != nil {
 		t.Fatalf("server config rejected empty measurements: %v", err)
 	}
 }
@@ -902,5 +902,15 @@ func TestServePendingTokens(t *testing.T) {
 	signer.Store(testSigner(t))
 	if _, err := FetchSandboxToken(t.Context(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce); err != nil {
 		t.Fatalf("FetchSandboxToken after signer = %v, want a token", err)
+	}
+}
+
+// CDS's client certificate lists the node's measured policies, or the
+// inventory's TDX pins reject it once the node measures one.
+func TestDigestsClientCertificateListsMeasuredPolicies(t *testing.T) {
+	const journal = "/run/custom-nri/measured-policies"
+	got := DigestsClientConfig{Platform: "tdx", MeasuredPoliciesFile: journal}.tlsConfig().MeasuredPoliciesFile
+	if got != journal {
+		t.Fatalf("tlsConfig().MeasuredPoliciesFile = %q, want %q", got, journal)
 	}
 }

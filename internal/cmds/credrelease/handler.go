@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
@@ -99,11 +100,12 @@ func (wallClock) Now() time.Time { return time.Now() }
 // Handler serves operator-authorized bootstrap attestation and credential
 // release against the measured operator key.
 type Handler struct {
-	attester evidenceGenerator
-	verifier operatorauth.Verifier
-	ca       *clusterCA
-	roles    Roles
-	clock    clock
+	attester         evidenceGenerator
+	measuredPolicies *armtls.Journal
+	verifier         operatorauth.Verifier
+	ca               *clusterCA
+	roles            Roles
+	clock            clock
 }
 
 // NewHandler builds the release handler from the measured operator pubkey (PEM),

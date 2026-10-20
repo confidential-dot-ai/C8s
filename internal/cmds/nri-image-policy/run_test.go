@@ -815,3 +815,25 @@ func stalledListener(t *testing.T, done <-chan struct{}) string {
 	}()
 	return ln.Addr().String()
 }
+
+func TestLogNodeRootLevel(t *testing.T) {
+	for _, tc := range []struct {
+		enabled, declared bool
+		want              string
+	}{
+		{true, false, "level=INFO"},
+		{true, true, "level=WARN"},
+		{false, true, ""},
+	} {
+		var buf bytes.Buffer
+		logNodeRoot(slog.New(slog.NewTextHandler(&buf, nil)), tc.enabled, func() (string, bool) {
+			if !tc.enabled {
+				t.Fatal("probed node-root provenance with the allowlist disabled")
+			}
+			return "open /dev/mapper/control: permission denied", tc.declared
+		})
+		if got := buf.String(); tc.want == "" && got != "" || !strings.Contains(got, tc.want) {
+			t.Fatalf("logNodeRoot(enabled=%t, declared=%t) logged %q, want %q", tc.enabled, tc.declared, got, tc.want)
+		}
+	}
+}

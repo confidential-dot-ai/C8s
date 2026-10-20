@@ -63,7 +63,7 @@ func TestValueArgsToTreeBuildsListFromIndexedKeys(t *testing.T) {
 // builder fails loudly rather than writing a bogus key.
 func TestValueArgsToTreeRejectsMalformedIndex(t *testing.T) {
 	for _, kv := range []string{
-		"a.b[0].c=x",  // index mid-path
+		"a.b[x].c=x",  // non-numeric mid-path
 		"a.b[=x",      // unterminated
 		"a.b[x]=x",    // non-numeric
 		"a.b[0][1]=x", // nested index
@@ -71,6 +71,28 @@ func TestValueArgsToTreeRejectsMalformedIndex(t *testing.T) {
 		if _, err := valueArgsToTree([]string{"--set-string", kv}); err == nil {
 			t.Errorf("valueArgsToTree(%q) = nil error, want a grammar error", kv)
 		}
+	}
+}
+
+// An inner key[n] builds a list of maps, as an allowlist entry's containers do.
+func TestValueArgsToTreeNestsListsOfMaps(t *testing.T) {
+	got, err := valueArgsToTree([]string{
+		"--set-string", "w.containers[1].digest=b",
+		"--set-string", "w.containers[0].digest=a",
+		"--set-string", "w.containers[0].mounts.rules[0].kind=emptyDir",
+	})
+	if err != nil {
+		t.Fatalf("valueArgsToTree: %v", err)
+	}
+	want := map[string]any{"w": map[string]any{"containers": []any{
+		map[string]any{"digest": "a", "mounts": map[string]any{"rules": []any{map[string]any{"kind": "emptyDir"}}}},
+		map[string]any{"digest": "b"},
+	}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("valueArgsToTree() = %#v, want %#v", got, want)
+	}
+	if _, err := valueArgsToTree([]string{"--set-string", "a.b=x", "--set-string", "a.b[0].c=y"}); err == nil {
+		t.Error("valueArgsToTree() indexed a scalar, want a conflict error")
 	}
 }
 
@@ -384,8 +406,6 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	installCRDs, installSingleNode, installResolveDigests = false, true, false
 	installImagePullSecret, installCvmMode = "regcred", "bare-metal"
 	installHardwarePlatform = "sev-snp"
-	installWorkloadRefs = []string{"infer=workloads/deployment/vllm:8000"}
-	installUpstream = "infer"
 	installOperatorKeys = writeTestOperatorKeys(t)
 
 	args, err := buildValueArgs(context.Background(), cmd, "", nil, "main", "rke2", appendResolvedDigestArgs)
@@ -447,34 +467,17 @@ func TestBuildValueArgsStaysWithinParserGrammar(t *testing.T) {
 	}
 }
 
-// --upstream derives router.upstream.address from an adopted --workload-ref (a
-// c8s-<id> headless-Service address the chart recognizes as mesh-wrapped). A
-// duplicate ref dedups to one adoption, so --upstream still resolves it.
-func TestBuildValueArgsDerivesUpstreamFromRef(t *testing.T) {
-	cmd := &cobra.Command{}
-	cmd.Flags().String(flagCvmMode, "bare-metal", "")
-	setCvmModeForTest(t, "bare-metal")
-
-	prev := struct {
-		resolveDigests bool
-		upstream       string
-		workloadRefs   []string
-	}{installResolveDigests, installUpstream, slices.Clone(installWorkloadRefs)}
-	defer func() {
-		installResolveDigests = prev.resolveDigests
-		installUpstream = prev.upstream
-		installWorkloadRefs = prev.workloadRefs
-	}()
-	installResolveDigests = false
-	installWorkloadRefs = []string{"infer=vllm/deployment/x:8000", "infer=vllm/deployment/x:8000"}
-	installUpstream = "infer"
-
-	args, err := buildValueArgs(context.Background(), cmd, "", nil, "main", "", appendResolvedDigestArgs)
-	if err != nil {
-		t.Fatalf("buildValueArgs: %v", err)
-	}
-	if !slices.Contains(args, "router.upstream.address=c8s-infer.vllm.svc.cluster.local:8000") {
-		t.Fatalf("want derived router.upstream.address, got %v", args)
+// render-values has no --upstream or --workload-ref: values carry neither
+// the route manifest nor the workload patch.
+func TestRenderValuesRefusesRoutingFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"--upstream", "infer"},
+		{"--workload-ref", "infer=vllm/deployment/x:8000"},
+	} {
+		err := runC8s(t, append([]string{"render-values", "--cvm-mode=bare-metal"}, args...)...)
+		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Errorf("render-values %v = %v, want unknown flag", args, err)
+		}
 	}
 }
 
