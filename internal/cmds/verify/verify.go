@@ -1498,8 +1498,7 @@ func newOutcome(cfg config, ev *evidence, result *teetypes.VerificationResult, v
 		// allowlist: RTMR[1]/[2] are pinned against THIS manifest, so an MRTD
 		// that merely appears somewhere in --measurements would let a launch
 		// digest from a different build satisfy the tuple. Same rule as
-		// getkubeconfig's measuredPolicy.checkIdentity — one manifest, one
-		// meaning.
+		// guestverify's Policy.checkIdentity — one manifest, one meaning.
 		// buildPolicy now refuses a manifest and an allowlist in the same run,
 		// so the two compares below cannot both fire on a CLI-built plan; the
 		// exact compare stays exact anyway, because widening it is precisely

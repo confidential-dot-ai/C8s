@@ -1,4 +1,4 @@
-package getkubeconfig
+package guestverify
 
 import (
 	"crypto/x509"

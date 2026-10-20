@@ -1,4 +1,4 @@
-package getkubeconfig
+package guestverify
 
 import (
 	"context"
@@ -15,7 +15,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
 
-// newARMTLSClient builds an HTTP client whose :8443 dial is verified with the
+// NewClient builds an HTTP client whose :8443 dial is verified with the
 // operator's OWN in-process verifier (attestation-go), with no trust in the
 // guest's attestation-api and not TOFU. The cred-release serving cert embeds a
 // fresh TDX quote bound to the cert's public key (armtls.ReportDataForKey);
@@ -27,18 +27,20 @@ import (
 // Go's own chain/hostname verification is disabled (InsecureSkipVerify): the
 // serving cert is self-signed and carries no SAN for the per-launch IP. armTLS
 // replaces it — the quote binding is strictly stronger than a CA chain here.
-func newARMTLSClient(cfg Config, exp platformVerifier) *http.Client {
+func NewClient(exp Policy, timeout time.Duration) *http.Client {
 	return &http.Client{
-		Timeout: cfg.Timeout,
+		Timeout: timeout,
 		// Never move signed bootstrap requests onto another endpoint or HTTP.
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
-		Transport: &http.Transport{TLSClientConfig: armTLSConfig(exp)},
+		Transport: &http.Transport{TLSClientConfig: TLSConfig(exp)},
 	}
 }
 
-func armTLSConfig(exp platformVerifier) *tls.Config {
+// TLSConfig verifies the peer's armTLS certificate against exp in place of
+// Go's chain and hostname checks.
+func TLSConfig(exp Policy) *tls.Config {
 	return &tls.Config{
 		InsecureSkipVerify: true, //nolint:gosec // armTLS in VerifyConnection is the real check
 		VerifyConnection: func(cs tls.ConnectionState) error {
@@ -59,7 +61,7 @@ func armTLSConfig(exp platformVerifier) *tls.Config {
 // binding), and enforces the full measured-identity policy — identical to the
 // attest gate. Fails closed on any missing piece.
 func verifyServerCert(leaf *x509.Certificate, exp platformVerifier) error {
-	// This leaf is self-signed by construction (newARMTLSClient's doc comment:
+	// This leaf is self-signed by construction (NewClient's doc comment:
 	// there is no CA on this path at all), so the classification must come
 	// back BodySelfSigned. Assert it rather than discard it: a CA-vouched
 	// result here means the presented cert was issued by something, and
@@ -76,9 +78,9 @@ func verifyServerCert(leaf *x509.Certificate, exp platformVerifier) error {
 }
 
 // verifyCertificate routes to the arm the manifest's family names. An unknown
-// family cannot reach here — policyFor refuses one — but the default fails
+// family cannot reach here — PolicyFor refuses one — but the default fails
 // closed rather than falling through to another family's rules.
-func (exp measuredPolicy) verifyCertificate(leaf *x509.Certificate) error {
+func (exp Policy) verifyCertificate(leaf *x509.Certificate) error {
 	switch exp.identity.Family() {
 	case teetypes.FamilySNP:
 		return exp.verifySNPCertificate(leaf)
@@ -89,7 +91,7 @@ func (exp measuredPolicy) verifyCertificate(leaf *x509.Certificate) error {
 	}
 }
 
-func (exp measuredPolicy) verifyTDXCertificate(leaf *x509.Certificate) error {
+func (exp Policy) verifyTDXCertificate(leaf *x509.Certificate) error {
 	att, err := armtls.ExtractAttestation(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)
@@ -130,9 +132,9 @@ func (exp measuredPolicy) verifyTDXCertificate(leaf *x509.Certificate) error {
 	return nil
 }
 
-// verifySNPARMTLS is localverify.Verify; a package var so tests can stub the
+// VerifySNP is localverify.Verify; a package var so tests can stub the
 // verdict without AMD KDS.
-var verifySNPARMTLS localverify.VerifyFunc = localverify.Verify
+var VerifySNP localverify.VerifyFunc = localverify.Verify
 
 // snpARMTLSTimeout bounds the dial-time verification, whose collateral fetch
 // (VCEK from AMD KDS) crosses the network. VerifyConnection has no context.
@@ -146,7 +148,7 @@ const snpARMTLSTimeout = 30 * time.Second
 //
 // The REPORTDATA anchor is the cert's own key hash, so a captured quote from
 // another guest cannot be replayed onto this channel.
-func (exp measuredPolicy) verifySNPCertificate(leaf *x509.Certificate) error {
+func (exp Policy) verifySNPCertificate(leaf *x509.Certificate) error {
 	platform, evidence, params, err := localverify.CertEnvelope(leaf)
 	if err != nil {
 		return fmt.Errorf("armtls: %w", err)
@@ -159,7 +161,7 @@ func (exp measuredPolicy) verifySNPCertificate(leaf *x509.Certificate) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), snpARMTLSTimeout)
 	defer cancel()
-	res, err := verifySNPARMTLS(ctx, platform, evidence, exp.verificationParams(params.ExpectedReportData))
+	res, err := VerifySNP(ctx, platform, evidence, exp.verificationParams(params.ExpectedReportData))
 	if err != nil {
 		return fmt.Errorf("armtls: verify serving cert evidence: %w", err)
 	}
