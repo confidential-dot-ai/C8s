@@ -57,6 +57,16 @@ sidecar's image is the c8s image, with nothing else in it) is a hidden `c8s`
 subcommand; one that is a peer in a pod of its own is an image under
 [`tools/`](tools).
 
+Where a backend cannot exec into a pod whose argv and mounts a scenario pins,
+it reads the pod's files from the pod's log instead. The reporter image
+([`images/reporter`](images/reporter)) is `image_ref`'s model-server with the
+reporter as its `sleep`: it sleeps as asked and, while it does, prints each
+file of the certificate volume but the key, and of the secret client's output
+directory, as `c8s-report file <path> <base64>` when it appears or changes,
+and that directory's filesystem type, as `c8s-report fstype <dir> <type>`.
+[`conformance-images.yml`](../../.github/workflows/conformance-images.yml)
+builds it on dispatch, and a backend pins its digest.
+
 ## Running
 
 [`run.sh`](run.sh) is what the suite's judge runs as its test command. It sets
@@ -166,9 +176,9 @@ rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77 | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; no node shell and no TEE on the harness host, so `image_alias`, `node_containers`, `plugin_stop`, `plugin_start`, `cds_restart`, `cds_restart_with`, `attestation_service_stop`, `private_keys`, `attest_direct`, `pod_sandbox_id` and `evidence` over a chosen launch digest answer 77; the node image holds the seed, so `seed_add` answers 77; the node's own c8s image is out of the harness's reach, so `image_ref secret-client` answers 77, and its scratch is encrypted, so `scratch_encrypted` answers yes; the CDS is reached on its Service's node port at the guest's address, `operator_keys` answers yes from the launch, and the operator's credential may not write in the c8s namespace, so `cds_block`, `cds_relay_block`, `node_refuses` and their undoing answer 77; `base_declares` answers from the node image's image policy alone, since c8s's component entries pin their entrypoints; `image_entrypoint` and `image_env` answer 77 without `crane`, `write_token` without Go; the node image closes pod exec for every principal, so `pod_exec`, `pod_cert_file`, `requester_request`, `mesh_member` and `mesh_metrics` answer 77; `router_nginx_conf` is what `c8s node-image render` writes at the checkout, which is the image's ref; the router admits one allowlist write a second per client, so a 429 to the harness's writes is waited out; "nginx" is another build of the router's nginx, since the served allowlist pins the router's digest and lint refuses an any-argv entry beside that pin; `external_endpoint` is an HTTP server on the runner; no mock, so `attestation_endpoint` answers 77 | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions and `dialer_bin`, `crane` for `image_entrypoint` and `image_env` |
-| [`metal-dev.sh`](backends/metal-dev.sh) | a metal lane's `C8S_DEV=1` SSH image (`dev: true`): metal.sh's answers, with exec, a node shell over SSH by the launch key and the node's RKE2 admin kubeconfig, so the kind implementations hold; `attestation_service_stop` freezes the node's attestation-api unit; `cds_restart_with`, `attest_direct`, `attestation_endpoint` and evidence over a chosen launch digest answer 77. A different measurement from the shipped image | metal.sh's, plus `C8S_NODE_SSH_CONFIG` and `C8S_ADMIN_KUBECONFIG` from `.github/scripts/dev-node-shell.sh` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers 77 | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers 77 ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
+| [`metal-dev.sh`](backends/metal-dev.sh) | a metal lane's `C8S_DEV=1` SSH image (`dev: true`): metal.sh's answers where it has no others, with exec, a node shell over SSH by the launch key and the node's RKE2 admin kubeconfig, so the kind implementations hold ([below](#the-metal-dev-backend)) | metal.sh's, plus `C8S_NODE_SSH_CONFIG` and `C8S_ADMIN_KUBECONFIG` from [`dev-node-shell.sh`](../../.github/scripts/dev-node-shell.sh) |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
@@ -177,6 +187,34 @@ copied into pods by the steps, and may import c8s packages: they stand in for
 peers the cluster does not have, not for the steps' judgement. A change to any of those updates the backend in
 the same PR.
 `shellcheck` runs over them and `run.sh` in the node-guest-image lint workflow.
+
+### The metal backend
+
+On a metal lane the harness host has no node shell and no TEE, the
+operator's credential may neither exec, port-forward nor write in the c8s
+namespace, and the node image holds the seed and the router's configuration.
+A function the backend cannot answer some other way under those limits
+exits 77, which the steps report as a skip, so the scenarios that need it are
+reported as not run on metal, never as passed; the skipped step carries a
+`skip-reason` attachment naming the function. Pod exec is closed too, so `pod_exec` answers agent: a pod the
+steps mark `c8s-conformance/harness-argv`, because they chose its first
+container's argv, runs an agent there in place of that argv, and `agent_exec`
+reaches it. Pods whose argv a scenario pins are read from a reporter image's
+log instead. [`metal.sh`](backends/metal.sh) gives each function's answer and
+its reason beside the function.
+
+### The metal-dev backend
+
+A metal lane with `dev: true` boots the `C8S_DEV=1` build of the node image:
+no pod exec policy, root SSH by the launch key, and so a different
+measurement from the shipped image. [`metal-dev.sh`](backends/metal-dev.sh)
+takes metal.sh's definitions, then the shared ones in `common.sh` over them,
+so exec and the node shell work as on kind. The CDS is reached on its
+Service's node port at the guest's address. `attestation_service_stop`
+freezes the node's attestation-api unit, since RKE2 and cred-release require
+it. `cds_restart_with`, `attest_direct`, `attestation_endpoint`,
+`external_endpoint` and evidence over a chosen launch digest answer 77, as on
+metal.
 
 ## What is a coordinated change
 

@@ -107,7 +107,7 @@ Name the backend in one of two ways:
 				newMaxAge = maxAge
 			}
 			return o.edit(cmd, dryRun, newMaxAge, revision, func(m *pkgroutes.Manifest) (string, error) {
-				return addRoute(m, host, r), nil
+				return AddRoute(m, host, r), nil
 			})
 		},
 	}
@@ -169,23 +169,23 @@ func bindRevisionFlag(f *pflag.FlagSet, revision *uint64) {
 	f.Uint64Var(revision, "revision", 0, "revision to write, above the stored one; default the later of the stored revision plus one and the current Unix time")
 }
 
-// nextRevision returns the revision after stored (C6): revision when nonzero,
+// NextRevision returns the revision after stored (C6): revision when nonzero,
 // else the later of stored+1 and now in Unix seconds, so a manifest written
 // after a CDS reset outranks the revisions routers keep once they apply
 // manifests.
-func nextRevision(stored, revision uint64, now time.Time) (uint64, error) {
+func NextRevision(stored, revision uint64, now time.Time) (uint64, error) {
 	if revision == 0 {
 		return max(stored+1, uint64(max(now.Unix(), 1))), nil
 	}
 	if revision <= stored {
-		return 0, fmt.Errorf("--revision %d is not above the stored revision %d; pass a higher one", revision, stored)
+		return 0, fmt.Errorf("revision %d is not above the stored revision %d; pass a higher one", revision, stored)
 	}
 	return revision, nil
 }
 
 // edit fetches the stored manifest, applies change, and stores the result at
-// nextRevision. newMaxAge > 0 lets it start a new manifest when CDS stores
-// none.
+// NextRevision. newMaxAge > 0 lets it start a new manifest when CDS stores
+// none; otherwise it refuses.
 func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration, revision uint64, change func(*pkgroutes.Manifest) (string, error)) error {
 	// Without verification, the operator would sign whatever routes the
 	// control plane planted in CDS.
@@ -237,14 +237,14 @@ func (o *options) edit(cmd *cobra.Command, dryRun bool, newMaxAge time.Duration,
 	}
 	now := time.Now()
 	stored := m.Revision
-	if m.Revision, err = nextRevision(stored, revision, now); err != nil {
+	if m.Revision, err = NextRevision(stored, revision, now); err != nil {
 		return err
 	}
 	// A staged notBefore stays staged (D3).
 	if notBefore := now.UTC().Truncate(time.Second); notBefore.After(m.NotBefore) {
 		m.NotBefore = notBefore
 	}
-	manifest, err := encode(m)
+	manifest, err := Encode(m)
 	if err != nil {
 		return err
 	}

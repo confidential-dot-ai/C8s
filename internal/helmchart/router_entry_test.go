@@ -14,6 +14,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
@@ -279,7 +280,8 @@ func TestChartRouterEntryPresence(t *testing.T) {
 		{name: "components not derived", args: []string{"--set", "image.digest=" + c8sDigest, "--set", "nriImagePolicy.policy.mode=audit"}, want: false},
 		{name: "router disabled", args: append(slices.Clone(digestArgs), "--set", "router.enabled=false"), want: false},
 		{name: "nginx by tag", args: append(slices.Clone(digestArgs), nginxByTag...), want: false},
-		{name: "no c8s-image main", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: false},
+		// cds-attest runs for application routing even with its attestation endpoints off.
+		{name: "attest and allowlist disabled", args: append(slices.Clone(digestArgs), "--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"), want: true},
 		{
 			// The argv carries $(HOST_IP) literally; the binary expands it.
 			name: "attestation api by host IP",
@@ -316,7 +318,7 @@ func TestChartRouterExpectedWorkloadDefault(t *testing.T) {
 		{name: "explicit off", args: slices.Concat(digestArgs, noHostPort, []string{"--set-string", "router.attest.expectedWorkload="})},
 		{name: "no entry", args: noHostPort},
 		{name: "nginx by tag", args: slices.Concat(digestArgs, noHostPort, nginxByTag)},
-		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"})},
+		{name: "attest and allowlist disabled", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}), want: defaultGate},
 		// No inventory could stamp the leaf; the chart refuses the shape.
 		{name: "no inventory", args: slices.Concat(digestArgs, noHostPort, []string{"--set", "nriImagePolicy.enabled=false", "--set", "attestationApi.cvmMode=gke"}), wantErr: "kind=require_host_image_policy"},
 		{name: "baked", args: slices.Concat(bakedArgs, noHostPort, []string{"--set", "router.service.type=LoadBalancer"}), want: defaultGate},
@@ -441,7 +443,6 @@ func TestChartRouterExplicitGateNamesSeededEntry(t *testing.T) {
 		{name: "nginx by tag", args: nginxByTag, cause: "router.nginx.image.digest is unset"},
 		{name: "c8s image by tag", args: []string{"--set-string", "image.digest="}, cause: "image.digest is unset"},
 		{name: "components not derived", args: []string{"--set", "nriImagePolicy.bootstrapAllowlist.deriveComponents=false", "--set", "nriImagePolicy.policy.mode=audit"}, cause: "nriImagePolicy.bootstrapAllowlist.deriveComponents is false"},
-		{name: "no c8s-image router container", args: []string{"--set", "router.attest.enabled=false", "--set", "router.allowlist.enabled=false"}, cause: "no router container runs the c8s image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out, err := helmTemplate(t, slices.Concat(gateArgs, tc.args, []string{"--set-string", "router.attest.expectedWorkload=" + derived})...)
@@ -528,5 +529,119 @@ func TestChartRouterExpectedWorkloadType(t *testing.T) {
 	out, err = helmTemplateIn(t, dir, slices.Concat(gateArgs, []string{"--set", "router.attest.expectedWorkload=true"})...)
 	if err == nil || !strings.Contains(out, "must be a string or null") {
 		t.Fatalf("boolean expectedWorkload without schema validation: err = %v, want the template's type error\n%s", err, out)
+	}
+}
+
+// cds-attest reads the measured-policy journal from the runtime directory it
+// mounts beside the attestation-api socket, and only when it serves the
+// attestation bundles that carry the list.
+func TestChartCDSAttestMeasuredPoliciesFile(t *testing.T) {
+	const dir = "/run/custom-nri"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
+		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
+		{name: "baked", args: bakedArgs, wantFlag: true},
+		{name: "attest endpoints off", args: []string{"--set", "attestationApi.enabled=true", "--set", "router.attest.enabled=false"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(attest.Args, flag); got != tc.wantFlag {
+				t.Fatalf("cds-attest carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, attest.Args)
+			}
+			mounted := slices.ContainsFunc(attest.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("cds-attest reads the journal without mounting %s read-only: %+v", dir, attest.VolumeMounts)
+			}
+		})
+	}
+}
+
+// The mesh reads the journal from the runtime directory it mounts for the
+// attestation-api socket, wherever cds-attest does.
+func TestChartMeshMeasuredPoliciesFile(t *testing.T) {
+	const dir = "/run/custom-nri"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
+		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
+		{name: "baked", args: bakedArgs, wantFlag: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			mesh := renderedDaemonSetContainer(t, out, "c8s-armtls-mesh", "armtls-mesh")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(mesh.Args, flag); got != tc.wantFlag {
+				t.Fatalf("armtls-mesh carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, mesh.Args)
+			}
+			mounted := slices.ContainsFunc(mesh.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("armtls-mesh reads the journal without mounting %s read-only: %+v", dir, mesh.VolumeMounts)
+			}
+		})
+	}
+}
+
+// CDS reads the journal from the runtime directory it mounts for the
+// attestation-api socket, wherever the mesh does.
+func TestChartCDSMeasuredPoliciesFile(t *testing.T) {
+	const dir = "/run/custom-nri"
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		wantFlag bool
+	}{
+		{name: "no attestation-api", args: []string{"--set", "attestationApi.enabled=false"}},
+		{name: "attestation-api", args: []string{"--set", "attestationApi.enabled=true"}, wantFlag: true},
+		{name: "baked", args: bakedArgs, wantFlag: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, err := helmTemplate(t, append(slices.Clone(tc.args), "--set-string", "nriImagePolicy.hostPaths.runtimeDir="+dir)...)
+			if err != nil {
+				t.Fatalf("helm template: %v\n%s", err, out)
+			}
+			cds := renderedDeploymentContainer(t, out, "c8s-cds", "cds")
+			flag := "--measured-policies-file=" + dir + "/measured-policies"
+			if got := slices.Contains(cds.Args, flag); got != tc.wantFlag {
+				t.Fatalf("cds carries %s: %v, want %v\nargs: %v", flag, got, tc.wantFlag, cds.Args)
+			}
+			mounted := slices.ContainsFunc(cds.VolumeMounts, func(m corev1.VolumeMount) bool {
+				return m.MountPath == dir && m.ReadOnly
+			})
+			if tc.wantFlag && !mounted {
+				t.Errorf("cds reads the journal without mounting %s read-only: %+v", dir, cds.VolumeMounts)
+			}
+		})
+	}
+}
+
+// The chart's default runtime directory is where the node's binaries look for
+// the journal, so the two never drift apart.
+func TestChartDefaultMeasuredPoliciesFileIsNodeJournal(t *testing.T) {
+	out, err := helmTemplate(t, "--set", "attestationApi.enabled=true")
+	if err != nil {
+		t.Fatalf("helm template: %v\n%s", err, out)
+	}
+	attest := renderedDeploymentContainer(t, out, "c8s-router", "cds-attest")
+	if flag := "--measured-policies-file=" + armtls.NodeJournal; !slices.Contains(attest.Args, flag) {
+		t.Fatalf("cds-attest args lack %s: %v", flag, attest.Args)
 	}
 }

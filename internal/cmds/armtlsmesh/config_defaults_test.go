@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // The duration and interval defaults are load-bearing operational contracts:
@@ -80,5 +82,12 @@ func TestArmtlsTEETypeAutoWithoutGuestDevices(t *testing.T) {
 	}
 	if got := err.Error(); !strings.Contains(got, "found neither") {
 		t.Errorf("error %q does not mention the missing devices", got)
+	}
+}
+
+// The mesh reads the journal at the node path unless the chart moves it.
+func TestMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
+	if got := defaultTestProxyConfig(t).measuredPolicies; got != armtls.NodeJournal {
+		t.Errorf("--measured-policies-file default = %q, want %q", got, armtls.NodeJournal)
 	}
 }

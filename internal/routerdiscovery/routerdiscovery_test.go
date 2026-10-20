@@ -18,6 +18,8 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -162,6 +164,35 @@ func TestNewVerifiedHTTPClient_EndToEnd(t *testing.T) {
 		if resp.StatusCode != http.StatusOK || !bytes.Contains(body, []byte(`"workloads"`)) {
 			t.Fatalf("GET /allowlist #%d = %d %s", i+1, resp.StatusCode, body)
 		}
+	}
+}
+
+// The document's runtime extensions reach the verifier, which replays them
+// against RTMR[3].
+func TestNewVerifiedHTTPClient_PassesRuntimeExtensions(t *testing.T) {
+	servingCert, leaf := plainServingCert(t)
+	var d types.DiscoveryDocument
+	if err := json.Unmarshal(discoveryDoc(t, leaf, []byte("issuance-challenge"), "cds", string(teetypes.PlatformTDX), `{"quote":"fake"}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"sha256:" + strings.Repeat("1", 64)}
+	d.Attestation.RuntimeExtensions = want
+	doc, err := json.Marshal(d)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lb := fakeLB(t, servingCert, doc)
+
+	var got []string
+	verify := func(ctx context.Context, platform string, evidence json.RawMessage, p localverify.Params) (*teetypes.VerificationResult, error) {
+		got = p.RuntimeExtensions
+		return approvingVerify(nil)(ctx, platform, evidence, p)
+	}
+	if _, err := NewVerifiedHTTPClient(context.Background(), lb.URL, nil, verify); err != nil {
+		t.Fatalf("NewVerifiedHTTPClient: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("verifier got runtime extensions %v, want %v", got, want)
 	}
 }
 

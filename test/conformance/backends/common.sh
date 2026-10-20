@@ -62,7 +62,9 @@
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
 #   seed_add <name> <file>           add the entry in file to the seed the CDS
 #                                    follows, under name; 77 where the seed is
-#                                    not the cluster's to change
+#                                    not the cluster's to change or the CDS
+#                                    does not follow it (only a measured
+#                                    node image's CDS follows its seed)
 #   seed_restore                     put back the seed seed_add changed, if any
 #   cds_instance                     the CDS pod's uid and restart count, one
 #                                    line, so a later read tells a restart
@@ -120,15 +122,29 @@
 #                                    the node's
 #   evidence_unsigned <ns> <pod> <report-data-hex>
 #                                    evidence whose signature does not verify
-#   pod_exec                         yes: steps may exec in a pod's containers
+#   pod_exec                         how steps run a command in a pod: kubectl
+#                                    (exec), or agent (agent_run)
+#   agent_run <ns> <pod> <container> <script>
+#                                    where pod_exec is agent: the sh script's
+#                                    combined output, its status as the
+#                                    function's
+#   agent_exec <ns> <pod> <container> <argv...>
+#                                    agent_run of the argv
 #   pod_cert_file <ns> <pod> <file> [container]
 #                                    tls.crt or tls.key from the pod's
 #                                    certificate volume, through the named
 #                                    container when given; nothing while absent
+#   pod_file <ns> <pod> <container> <path>
+#                                    the file in the container, base64;
+#                                    fails while it is absent
+#   pod_fstype <ns> <pod> <container> <dir>
+#                                    the filesystem type of the directory, as
+#                                    stat -f names it; fails while it is absent
 #   pod_sandbox_id <ns> <pod>        the runtime's sandbox ID of the pod
 #   relying_party <leaf-file> <ca-file> [verify flags...]
 #                                    the operator's verifier on a saved leaf;
-#                                    prints accepts or rejects
+#                                    prints accepts or rejects, then on a
+#                                    rejection the verifier's reason
 #   mesh_ready <node>                wait until the node's mesh proxy runs; 77
 #                                    where the mesh is not installed
 #   mesh_member <node> <interception|guard> <ip>
@@ -271,7 +287,9 @@ pull_interval() { echo 5s; }
 # net.* sysctl). The tenant-app image is Alpine's python, whose ping uses that
 # socket; the library busybox image's cannot.
 PING_SYSCTL="net.ipv4.ping_group_range=0 2147483647"
-pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@"; }
+pod_manifest() { render_pod --sysctl "$PING_SYSCTL" "$@" | manifest_filter; }
+# A backend's last word on every pod the harness renders for its own argv.
+manifest_filter() { cat; }
 
 # The node's admission plugin binds its socket directory into a container
 # named as a sidecar an application may run itself (cds-attest) in a pod
@@ -281,8 +299,9 @@ REQUESTER_CONTAINER=cds-attest
 requester_manifest() {
     local image
     image="$(image_ref requester)" || return
-    render_pod --annotation confidential.ai/c8s-injected=true --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
-        -- "$1" "$2" "$3" "$image" sleep 3600
+    render_pod --annotation confidential.ai/c8s-injected=true --annotation c8s-conformance/harness-argv=yes \
+        --container-name "$REQUESTER_CONTAINER" --supplemental-group 65532 \
+        -- "$1" "$2" "$3" "$image" sleep 3600 | manifest_filter
 }
 
 # render_pod [fixture flags...] -- <name> <ns> <node> <image> <command...> [+ ...]
@@ -314,7 +333,9 @@ render_pod() {
 # The webhook mounts the certificate volume here in every container of a pod
 # carrying a workload ID; read through one of them, once it runs.
 CERT_VOLUME_PATH=/etc/c8s/certs
-pod_exec() { echo yes; }
+pod_exec() { echo kubectl; }
+pod_file() { local out; out="$(kubectl -n "$1" exec "$2" -c "$3" -- cat "$4" | base64)" && tr -d '\n' <<<"$out"; }
+pod_fstype() { kubectl -n "$1" exec "$2" -c "$3" -- stat -f -c %T "$4"; }
 pod_cert_file_in() { kubectl -n "$1" exec "$2" -c "$3" -- cat "$CERT_VOLUME_PATH/$4" 2>/dev/null || true; }
 
 # Sent by curl inside the requester, so the source address the CDS sees is
@@ -445,16 +466,24 @@ seed_declares() {
 
 # The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
 # in the image instead, and renders no ConfigMap, so there it is not the
-# cluster's to change. The first change keeps the original for seed_restore.
+# cluster's to change. A CDS rereads it only with --follow-seed, which the
+# chart sets only on a baked node, so on a chart-managed install seed_add
+# answers 77. The first change keeps the original for seed_restore.
 seed_configmap() {
     kubectl -n "$NS" get configmaps -o json |
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
+}
+
+seed_followed() {
+    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
+        jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
 }
 
 seed_add() {
     local cm original
     cm="$(seed_configmap)"
     [ -n "$cm" ] || return $UNSUPPORTED
+    seed_followed || return $UNSUPPORTED
     original="$(scratch)/seed-original.json"
     [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
     kubectl -n "$NS" get configmap "$cm" -o json |
@@ -775,7 +804,8 @@ mesh_scraper() {
         entry="$(scratch)/mesh-scraper.json"
         any_workload "$digest" "$image" > "$entry"
         allowlist_put "$MESH_SCRAPER" "$entry" || return
-        render_pod -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 | kubectl apply -f - >/dev/null
+        render_pod --annotation c8s-conformance/harness-argv=yes -- "$MESH_SCRAPER" "$MESH_SCRAPER_NS" "$node" "$image" sleep 86400 |
+            manifest_filter | kubectl apply -f - >/dev/null
     fi
     kubectl -n "$MESH_SCRAPER_NS" wait --for=condition=Ready "pod/$MESH_SCRAPER" --timeout=180s >/dev/null || return
     touch "$ready"
@@ -800,7 +830,7 @@ mesh_metrics() {
     port="${port:-15021}"
     for _ in 1 2; do
         mesh_scraper || return
-        if body="$(kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
+        if body="$(mesh_scrape curl -sf --max-time 10 "http://$addr:$port/metrics")"; then
             printf '%s\n' "$body"
             return 0
         fi
@@ -809,6 +839,8 @@ mesh_metrics() {
     echo "backend: no scrape of $addr:$port" >&2
     return 1
 }
+
+mesh_scrape() { kubectl -n "$MESH_SCRAPER_NS" exec "$MESH_SCRAPER" -- "$@"; }
 
 # The sum of the series matching the pattern in a scrape on stdin.
 metric_sum() { awk -v pat="$1" '$0 ~ pat {sum += $NF} END {printf "%d\n", sum + 0}'; }

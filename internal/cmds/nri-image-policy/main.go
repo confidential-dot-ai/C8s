@@ -10,12 +10,14 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -24,8 +26,11 @@ import (
 
 	utilnet "k8s.io/apimachinery/pkg/util/net"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
+	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/audit"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/cmdsutil"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	ctrdresolver "github.com/confidential-dot-ai/c8s/internal/containerd"
 	"github.com/confidential-dot-ai/c8s/internal/version"
 	"github.com/confidential-dot-ai/c8s/pkg/allowlistclient"
@@ -125,6 +130,7 @@ func Run(args []string) error {
 		wlClient = allowlistclient.NewClientWithHTTP(cfg.Allowlist.Pull.URL, httpClient)
 	}
 
+	logNodeRoot(logger, cfg.AllowlistEnabled(), nodeRootUnavailable)
 	plugin, err := newPlugin(cfg, resolver, store, auditLogger, logger)
 	if err != nil {
 		return fmt.Errorf("create plugin: %w", err)
@@ -146,7 +152,9 @@ func Run(args []string) error {
 	if cfg.WorkloadClaims.PublishNodeIP {
 		// Fail-soft: exiting would block container creation node-wide, while
 		// a missing file only fails closed the components that read it. The
-		// first attempt runs here so the signer below never reads a stale file.
+		// first attempt runs here so the signer below reads a file this
+		// process resolved, unless only the default route named another
+		// address (see nodeIPPublisher.write).
 		publisher := &nodeIPPublisher{cfg: cfg, logger: logger}
 		go publisher.run(ctx, publisher.publish())
 	}
@@ -177,11 +185,13 @@ func Run(args []string) error {
 		}
 	}
 
+	measure := policyMeasurer(cfg, logger)
 	var initialETag string
 	if cfg.PullEnabled() {
 		initialETag, err = pullInitial(ctx, pullArgs{
 			client:      wlClient,
 			store:       store,
+			measure:     measure,
 			timeout:     cfg.Allowlist.Pull.Timeout,
 			pluginErrCh: pluginErrCh,
 			logger:      logger,
@@ -218,6 +228,7 @@ func Run(args []string) error {
 		go runPullLoop(ctx, pullLoopArgs{
 			client:   wlClient,
 			store:    store,
+			measure:  measure,
 			interval: cfg.Allowlist.Pull.Interval,
 			timeout:  cfg.Allowlist.Pull.Timeout,
 			etag:     initialETag,
@@ -276,6 +287,7 @@ func (cfg pullConfig) cdsPins() (armtls.Pins, error) {
 type pullArgs struct {
 	client      allowlistclient.Client
 	store       *policyStore
+	measure     func(digest string) error // nil measures nothing
 	timeout     time.Duration
 	pluginErrCh <-chan error
 	logger      *slog.Logger
@@ -301,26 +313,31 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 
 		reqCtx, reqCancel := context.WithTimeout(ctx, args.timeout)
 		args.logger.Info("fetching initial allowlist from CDS", "attempt", attempt)
-		wl, etag, notModified, err := args.client.Fetch(reqCtx, "")
+		served, notModified, err := args.client.FetchServed(reqCtx, "")
+		wl, etag := served.Allowlist, served.ETag
 		reqCancel()
 		if err == nil {
 			if notModified {
 				err = errInitialAllowlistNotModified
 			} else if wl == nil {
 				err = errInitialAllowlistNil
-			} else {
+			} else if err = measureWith(args.measure, served.Digest); err == nil {
 				version := parseVersion(etag)
 				args.store.apply(wl, version)
 				args.logger.Info("initial allowlist pulled from CDS",
 					"workloads", len(wl.Workloads),
 					"version", version,
 					"etag", etag,
+					"digest", served.Digest,
 				)
 				return etag, nil
 			}
 		}
 
 		args.logger.Error("allowlist fetch failed", "attempt", attempt, "error", err)
+		if errors.Is(err, errPolicyRefused) {
+			return "", err // retrying cannot succeed
+		}
 		if attempt >= allowlistApiMaxRetries {
 			return "", fmt.Errorf("allowlist fetch failed after %d attempts: %w", allowlistApiMaxRetries, err)
 		}
@@ -338,6 +355,7 @@ func pullInitial(ctx context.Context, args pullArgs) (string, error) {
 type pullLoopArgs struct {
 	client   allowlistclient.Client
 	store    *policyStore
+	measure  func(digest string) error // nil measures nothing
 	interval time.Duration
 	timeout  time.Duration
 	etag     string
@@ -347,12 +365,15 @@ type pullLoopArgs struct {
 // runPullLoop polls CDS with If-None-Match. 200 rebuilds the index from the
 // pulled document and advances the ETag — unless the pulled version is below the applied
 // one (epoch rollback), which is ignored so the ETag keeps re-fetching until a
-// forward version arrives. 304 and errors leave the index untouched.
+// forward version arrives. 304 and errors leave the index untouched. A
+// version the measurer refuses for good also advances the ETag and is logged
+// once per digest.
 func runPullLoop(ctx context.Context, args pullLoopArgs) {
 	ticker := time.NewTicker(args.interval)
 	defer ticker.Stop()
 
 	etag := args.etag
+	var refused, failing string // digests last logged as refused or unmeasured
 	for {
 		select {
 		case <-ctx.Done():
@@ -361,7 +382,8 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, args.timeout)
-		wl, newETag, notModified, err := args.client.Fetch(reqCtx, etag)
+		served, notModified, err := args.client.FetchServed(reqCtx, etag)
+		wl, newETag := served.Allowlist, served.ETag
 		cancel()
 		if err != nil {
 			args.logger.Warn("pull loop fetch failed", "error", err)
@@ -376,16 +398,42 @@ func runPullLoop(ctx context.Context, args pullLoopArgs) {
 			continue
 		}
 		version := parseVersion(newETag)
-		if !args.store.apply(wl, version) {
+		// A rolled-back document is never enforced, so it is not measured.
+		if args.store.rolledBack(version) {
 			args.logger.Warn("pull loop: ignoring rolled-back allowlist; keeping current index",
 				"pulled_version", version, "etag", newETag)
 			continue
 		}
-		etag = newETag
+		if err := measureWith(args.measure, served.Digest); err != nil {
+			if !errors.Is(err, errPolicyRefused) {
+				// Retried every tick; logged at Error once per digest.
+				level := slog.LevelError
+				if served.Digest == failing {
+					level = slog.LevelDebug
+				}
+				failing = served.Digest
+				args.logger.Log(ctx, level, "pull loop: not applying an allowlist this node could not measure",
+					"digest", served.Digest, "error", err)
+				continue
+			}
+			// Advance past the refused version so later ticks get 304
+			// instead of downloading it again.
+			etag = newETag
+			failing = "" // a later failure is news again
+			if served.Digest != refused {
+				refused = served.Digest
+				args.logger.Error("pull loop: allowlist refused; keeping current policy",
+					"digest", served.Digest, "etag", etag, "error", err)
+			}
+			continue
+		}
+		args.store.apply(wl, version)
+		etag, failing = newETag, ""
 		args.logger.Info("pull loop: allowlist refreshed",
 			"workloads", len(wl.Workloads),
 			"version", version,
 			"etag", etag,
+			"digest", served.Digest,
 		)
 	}
 }
@@ -472,27 +520,111 @@ var (
 )
 
 // nodeIPPublisher keeps NodeIPFile current: a DHCP node may have no default
-// route when containerd starts, and its address may change later.
+// route when containerd starts, and its address may change later. Components
+// restart when the file names another address, and a restarted CDS that
+// reads it regenerates the mesh CA, so a transient failure never touches the
+// file and a change is published only once it held for two rechecks. A
+// resolver that alternates between two addresses therefore never publishes.
 type nodeIPPublisher struct {
 	cfg    *config
 	logger *slog.Logger
 	delay  time.Duration // current failure backoff, 0 after a success
+
+	kubelet string // the last address a host kubelet's --node-ip supplied
+	pending string // a changed address seen once, published if it holds
+	settled bool   // the file holds an address this process resolved
 }
 
 // publish makes one attempt and returns the wait before the next: the recheck
 // interval after a success, a doubling backoff after a failure.
 func (p *nodeIPPublisher) publish() time.Duration {
-	host, changed, err := publishNodeIP(p.cfg)
+	path := filepath.Join(p.cfg.WorkloadClaims.SocketDir, NodeIPFile)
+	host, source, err := p.resolve()
+	if err == nil && !usableNodeIP(net.ParseIP(host)) {
+		// Not transient: advertise_host names an address no pod can dial.
+		p.pending = ""
+		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
+		p.logger.Error("node-ip emptied: the node address is not a unicast address other pods can dial; running components keep the address they read, and components that start will not until an address is published",
+			"address", host, "source", source, "error", emptyIfExists(path), "retry_in", p.delay)
+		return p.delay
+	}
+	if err == nil {
+		err = p.write(path, host, source)
+	}
 	if err != nil {
 		p.delay = min(max(2*p.delay, nodeRetryMinDelay), nodeRetryMaxDelay)
-		p.logger.Error("node-ip not published; components that read it will not start until it is", "error", err, "retry_in", p.delay)
+		p.logger.Error("node-ip not updated; it keeps its last address, and components that read none will not start until it is published", "error", err, "retry_in", p.delay)
 		return p.delay
 	}
 	p.delay = 0
-	if changed {
-		p.logger.Info("node-ip published", "address", host)
-	}
 	return nodeIPRecheckInterval
+}
+
+// write publishes host unless the file holds it already. A file naming
+// another address keeps it until a second recheck resolves host again. The
+// first write of a process skips that wait unless host came from the default
+// route: the file then predates this process, while a default route seen
+// before the kubelet is back from a node restart may name another interface.
+func (p *nodeIPPublisher) write(path, host, source string) error {
+	current := ""
+	if b, err := os.ReadFile(path); err == nil {
+		current = strings.TrimSpace(string(b))
+	}
+	if current == host {
+		p.pending = ""
+		p.settled = true
+		return nil
+	}
+	debounce := p.settled || source == "default_route"
+	if current != "" && debounce && p.pending != host {
+		p.pending = host
+		p.logger.Warn("node address changed; publishing it if the next recheck agrees", "address", host, "source", source, "published", current, "recheck_in", nodeIPRecheckInterval)
+		return nil
+	}
+	if err := writeNodeIP(p.cfg.WorkloadClaims.SocketDir, path, host); err != nil {
+		return err
+	}
+	p.pending = ""
+	p.settled = true
+	p.logger.Info("node-ip published", "address", host, "source", source)
+	return nil
+}
+
+// resolve returns the node's address and the source that supplied it:
+// advertise_host when it is an IP, else the --node-ip of a kubelet in the
+// host's mount namespace, which is the Node's registered InternalIP and its
+// pods' status.hostIP, else the default-route interface's address, which a
+// kubelet without --node-ip usually registers. Once a kubelet supplied an
+// address, a recheck that finds no kubelet keeps it rather than fall back to
+// the default route: the kubelet is restarting, and its address has not
+// changed. k3s runs its kubelet inside the k3s process, so a k3s node with
+// several interfaces needs advertise_host. A pod could otherwise pick the
+// attestation verifier components dial.
+func (p *nodeIPPublisher) resolve() (host, source string, err error) {
+	if host := p.cfg.WorkloadClaims.AdvertiseHost; net.ParseIP(host) != nil {
+		return host, "advertise_host", nil
+	}
+	host, running := kubeletNodeIP(p.cfg.WorkloadClaims.ProcRoot)
+	switch {
+	case host != "":
+		p.kubelet = host
+		return host, "kubelet", nil
+	case running:
+		// A kubelet that runs without a usable --node-ip picks its address
+		// as the default route does.
+		p.kubelet = ""
+	case p.kubelet != "":
+		return p.kubelet, "kubelet_last_seen", nil
+	}
+	ip, err := chooseHostInterface()
+	if err != nil {
+		return "", "", fmt.Errorf("resolve node address: %w", err)
+	}
+	if !usableNodeIP(ip) {
+		// Likely a link-local address before DHCP completes: retry.
+		return "", "", fmt.Errorf("resolve node address: default route address %s is not one other pods can dial", ip)
+	}
+	return ip.String(), "default_route", nil
 }
 
 // run repeats publish until ctx is done, waiting wait before the first attempt.
@@ -502,58 +634,23 @@ func (p *nodeIPPublisher) run(ctx context.Context, wait time.Duration) {
 	}
 }
 
-// publishNodeIP writes NodeIPFile from the node's own view, unless it already
-// holds that address. The address is advertise_host when it is an IP, else
-// the --node-ip of a kubelet in the host's mount namespace, which is the
-// Node's registered InternalIP and its pods' status.hostIP, else the
-// default-route interface's address, which a kubelet without --node-ip
-// usually registers. k3s runs its kubelet inside the k3s process, so a k3s
-// node with several interfaces needs advertise_host. A pod could otherwise
-// pick the attestation verifier components dial.
-//
-// Components bind-mount the file itself, so it is rewritten in place: a
-// renamed replacement would leave their mount on the old inode. On any
-// failure it is emptied, not removed, for the same reason, so those components
-// fail closed rather than trust a stale address.
-func publishNodeIP(cfg *config) (host string, changed bool, err error) {
-	path := filepath.Join(cfg.WorkloadClaims.SocketDir, NodeIPFile)
-	host = cfg.WorkloadClaims.AdvertiseHost
-	if net.ParseIP(host) == nil {
-		host = kubeletNodeIP(cfg.WorkloadClaims.ProcRoot)
-	}
-	if host == "" {
-		var ip net.IP
-		ip, err = chooseHostInterface()
-		if err != nil {
-			err = fmt.Errorf("resolve node address: %w", err)
-		}
-		host = ip.String()
-	}
-	if err == nil {
-		changed, err = writeNodeIP(cfg.WorkloadClaims.SocketDir, path, host)
-	}
-	if err != nil {
-		return "", false, errors.Join(err, emptyIfExists(path))
-	}
-	return host, changed, nil
-}
-
 // kubeletNodeIP is the first address of a host kubelet's --node-ip flag, read
 // from procRoot (default /proc), or "" when no host kubelet passes a usable
-// one. A pod's processes show up in procRoot too and can name themselves
-// kubelet, but cannot join the host's mount namespace, which is init's.
-// --node-ip=:: or 0.0.0.0 selects an address family, not an address.
-func kubeletNodeIP(procRoot string) string {
+// one; running reports whether a host kubelet runs at all. A pod's processes
+// show up in procRoot too and can name themselves kubelet, but cannot join
+// the host's mount namespace, which is init's. --node-ip=:: or 0.0.0.0
+// selects an address family, not an address.
+func kubeletNodeIP(procRoot string) (host string, running bool) {
 	if procRoot == "" {
 		procRoot = "/proc"
 	}
 	hostMounts, err := os.Readlink(filepath.Join(procRoot, "1", "ns", "mnt"))
 	if err != nil {
-		return ""
+		return "", false
 	}
 	entries, err := os.ReadDir(procRoot)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	for _, e := range entries {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
@@ -571,6 +668,7 @@ func kubeletNodeIP(procRoot string) string {
 		if err != nil {
 			continue
 		}
+		running = true
 		args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
 		for i, arg := range args {
 			value, ok := strings.CutPrefix(arg, "--node-ip=")
@@ -582,11 +680,11 @@ func kubeletNodeIP(procRoot string) string {
 			}
 			first, _, _ := strings.Cut(value, ",")
 			if ip := net.ParseIP(first); usableNodeIP(ip) {
-				return ip.String()
+				return ip.String(), true
 			}
 		}
 	}
-	return ""
+	return "", running
 }
 
 // usableNodeIP reports whether components can dial ip as the node: an
@@ -596,22 +694,28 @@ func usableNodeIP(ip net.IP) bool {
 	return ip != nil && ip.IsGlobalUnicast()
 }
 
-func writeNodeIP(dir, path, host string) (bool, error) {
-	if !usableNodeIP(net.ParseIP(host)) {
-		return false, fmt.Errorf("node address %q is not a unicast address other pods can dial", host)
-	}
-	content := host + "\n"
-	if b, err := os.ReadFile(path); err == nil && string(b) == content {
-		return false, nil
-	}
+// writeNodeIP writes host to path in place: components bind-mount the file
+// itself, so a renamed replacement would leave their mount on the old inode.
+// A write can fail after it changed the file, so a failed one puts the
+// previous content back, or empties a file that held none.
+func writeNodeIP(dir, path, host string) error {
 	if err := os.MkdirAll(dir, 0o711); err != nil {
-		return false, err
+		return err
 	}
+	previous, readErr := os.ReadFile(path)
 	// World-readable: non-root components read it.
-	if err := writeNodeIPFile(path, []byte(content), 0o644); err != nil {
-		return false, fmt.Errorf("write %s: %w", path, err)
+	err := writeNodeIPFile(path, []byte(host+"\n"), 0o644)
+	if err == nil {
+		return nil
 	}
-	return true, nil
+	err = fmt.Errorf("write %s: %w", path, err)
+	if readErr != nil {
+		return errors.Join(err, emptyIfExists(path))
+	}
+	if restoreErr := writeNodeIPFile(path, previous, 0o644); restoreErr != nil {
+		return errors.Join(err, fmt.Errorf("restore %s: %w", path, restoreErr))
+	}
+	return err
 }
 
 // writeInPlace replaces path's content without replacing its inode, so a bind
@@ -712,12 +816,16 @@ func startSandboxDigests(ctx context.Context, logger *slog.Logger, cfg *config, 
 		logger.Warn("allowlist.pull.cds_measurements not set: the sandbox-digests endpoint answers ANY armTLS-attested caller, so any TEE on the network can read what this node runs. UNSAFE outside development.")
 	}
 	attestationApiURL := cfg.Allowlist.Pull.AttestationApiURL
+	var journal string
+	if cfg.WorkloadClaims.SocketDir != "" {
+		journal = filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
+	}
 	// The attest func is platform-agnostic despite its name (see its doc
 	// comment); the platform string is the only thing that follows the hardware.
 	return workloadclaims.StartDigestsEndpoint(ctx, logger, inventory, signer.PublicKeyDER(),
 		cfg.NormalizedPlatform(),
 		attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), attestationApiURL),
-		attestationApiURL, pins)
+		attestationApiURL, pins, journal)
 }
 
 // startAdmissionInventory serves the node-CVM token socket (docs/armtls.md).
@@ -822,4 +930,150 @@ func healthListener(addr string) (net.Listener, error) {
 		return nil, fmt.Errorf("listen tcp %s: %w", addr, err)
 	}
 	return l, nil
+}
+
+// logNodeRoot reports a missing measured root at Info: most nodes have none and
+// only policies that require node-root provenance depend on it. A node whose
+// boot command line declares a roothash= yet fails the proof is misbuilt, so
+// that is a warning. Without an allowlist no rule can require it, so nothing
+// is probed.
+func logNodeRoot(logger *slog.Logger, allowlistEnabled bool, unavailable func() (reason string, declared bool)) {
+	if !allowlistEnabled {
+		return
+	}
+	reason, declared := unavailable()
+	switch {
+	case reason == "":
+	case declared:
+		logger.Warn("node-root provenance unavailable on a node declaring a measured root", "reason", reason)
+	default:
+		logger.Info("node-root provenance unavailable", "reason", reason)
+	}
+}
+
+// measureWith runs measure, when set, on digest.
+func measureWith(measure func(string) error, digest string) error {
+	if measure == nil {
+		return nil
+	}
+	return measure(digest)
+}
+
+// readOperatorKey reads the launch operator key that seeded RTMR[3], and
+// openPolicyJournal opens the journal over the hardware register. Vars so tests
+// can supply a key and a register.
+var (
+	readOperatorKey   = credrelease.ReadOperatorPubkey
+	openPolicyJournal = openJournal
+)
+
+// policyMeasurer returns the hook that extends RTMR[3] with each pulled policy
+// before the node applies it, so the register records every policy the node
+// enforced since boot. It returns nil, measuring nothing, unless
+// allowlist.pull.measure_policies is set on a platform with a runtime
+// register. The hook fails every call while measuring cannot work, so the node
+// keeps its current policy rather than enforce unmeasured ones. A missing
+// operator key refuses for good; any other open failure is retried on the next
+// call.
+func policyMeasurer(cfg *config, logger *slog.Logger) func(digest string) error {
+	if !cfg.Allowlist.Pull.MeasurePolicies {
+		return nil
+	}
+	platform := teetypes.PlatformType(cfg.NormalizedPlatform())
+	if !platform.HasRegisters() {
+		logger.Info("allowlist policies are not measured: no runtime register", "platform", platform)
+		return nil
+	}
+	path := filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
+	var journal *runtimemeasure.Journal
+	open := func() error {
+		anchor, err := readOperatorKey()
+		if err == nil {
+			journal, err = openPolicyJournal(cfg.WorkloadClaims.SocketDir, platform, anchor)
+		}
+		if journal == nil {
+			if errors.Is(err, credrelease.ErrNoOperatorKey) || errors.Is(err, runtimemeasure.ErrNoRegister) {
+				err = fmt.Errorf("%w: %w", errPolicyRefused, err)
+			}
+			return fmt.Errorf("allowlist policy measurement unavailable: %w", err)
+		}
+		if err != nil {
+			// A diverged journal refuses every extend, so policy updates stop.
+			logger.Error("allowlist policy measurement journal", "error", err)
+		}
+		// Created readable up front: the journal's first append would create it
+		// 0600, and certificate producers would fail to read it until the chmod.
+		if err := createReadable(path); err != nil {
+			logger.Error("measured-policy journal stays unreadable to the router", "error", err)
+		}
+		return nil
+	}
+	openErr := open()
+	if openErr != nil {
+		logger.Error("allowlist policies cannot be measured; pulled allowlists are not applied", "error", openErr)
+	}
+	return func(digest string) error {
+		if journal == nil {
+			if errors.Is(openErr, errPolicyRefused) {
+				return openErr
+			}
+			if openErr = open(); openErr != nil {
+				return openErr
+			}
+		}
+		if err := checkJournalRoom(journal, digest); err != nil {
+			return err
+		}
+		_, err := journal.MeasureOnce(digest)
+		if errors.Is(err, runtimemeasure.ErrRegisterDiverged) {
+			err = fmt.Errorf("%w: %w", errPolicyRefused, err)
+		}
+		// Also after a failed extend, which rewrites the file: the router
+		// reads it as a non-root user, and it lists only public digests.
+		if cerr := os.Chmod(path, 0o644); cerr != nil && !errors.Is(cerr, fs.ErrNotExist) {
+			logger.Error("measured-policy journal stays unreadable to the router", "error", cerr)
+		}
+		return err
+	}
+}
+
+// checkJournalRoom refuses a digest the journal does not hold once it holds
+// armtls.MaxRuntimeExtensions: certificates cannot carry a longer list, so
+// measuring it would cost the node its armTLS identity. The node keeps its
+// current policy until it reboots.
+func checkJournalRoom(journal *runtimemeasure.Journal, digest string) error {
+	measured := journal.Digests()
+	if len(measured) < armtls.MaxRuntimeExtensions {
+		return nil
+	}
+	if d, err := runtimemeasure.CanonicalDigest(digest); err == nil && slices.Contains(measured, d) {
+		return nil
+	}
+	return fmt.Errorf("%w: allowlist policy %s not applied: the node measured %d policies since boot, the most its certificates can carry; reboot to take further updates", errPolicyRefused, digest, len(measured))
+}
+
+// errPolicyRefused marks a measure failure that persists until the plugin
+// restarts, so retrying the same policy cannot succeed.
+var errPolicyRefused = errors.New("policy refused")
+
+// createReadable creates path empty and world-readable unless it exists.
+func createReadable(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)
+	if err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
+}
+
+// openJournal opens the measured-policy journal in dir over this node's
+// RTMR[3], whose launch seeded it from anchor.
+func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
+	reg, err := runtimemeasure.Open(platform)
+	if err != nil {
+		return nil, err
+	}
+	return runtimemeasure.OpenJournalSeeded(filepath.Join(dir, armtls.MeasuredPoliciesJournal), reg, runtimemeasure.Seed(anchor))
 }

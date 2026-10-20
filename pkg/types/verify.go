@@ -20,16 +20,15 @@ type AttestPQRequest struct {
 
 const (
 	// ProtocolVersion is the attest-pq identity-transcript domain: the exact
-	// string overenc.IdentityTranscriptHash frames into report_data. It is a
-	// hash input shipped in deployed evidence, so it never changes; the wire
-	// discriminator clients check is the per-endpoint binding identifier below.
+	// string overenc.IdentityTranscriptHash frames into report_data. Clients
+	// check the per-endpoint binding identifier below, not this domain.
 	ProtocolVersion = "c8s-verify/v1"
 
 	// BindingAttestPQ / BindingAttestLB are the response binding identifiers
 	// carried in AttestationBundle.Version by the two explicit attestation
 	// endpoints. A client requires the identifier selected by its endpoint
-	// mode and rejects the other response shape even if its evidence is
-	// otherwise valid — there is no negotiation, alias, or fallback.
+	// mode and rejects any other — there is no negotiation, alias, or
+	// fallback. BindingAttestLB is also the attest-lb transcript domain.
 	BindingAttestPQ = "c8s/attest-pq/v1"
 	BindingAttestLB = "c8s/attest-lb/v1"
 
@@ -101,6 +100,17 @@ type AttestationBundle struct {
 	// observed on its own TLS connection and verify the transcript with that
 	// value — trusting the served field would let a relay substitute the leaf.
 	ServingLeafSHA256 string `json:"serving_leaf_sha256,omitempty"`
+	// MeasuredPolicies (TDX node) lists the allowlist policies the router's
+	// node extended into RTMR[3] after the operator-key seed, in extend order,
+	// read after the evidence was produced: a verifier replays a prefix of it
+	// against the quote's RTMR[3]. Not part of any transcript; the replay
+	// authenticates it.
+	MeasuredPolicies []string `json:"measured_policies,omitempty"`
+	// RouteDigest is the lowercase hex route digest both transcripts bind;
+	// both attested handshakes set it. Recomputing the transcript with it
+	// proves only which manifest the router applied: to require one, a client
+	// pins the digest or verifies the operator-signed published manifest.
+	RouteDigest string `json:"route_digest,omitempty"`
 }
 
 // HeaderField is one HTTP header field in a tunnel envelope, on the wire a

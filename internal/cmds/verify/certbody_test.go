@@ -6,11 +6,14 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"math/big"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 )
@@ -102,7 +105,7 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 	forged := mintForgedIssuerLeaf(t, &holder.PublicKey, time.Now().Add(500000*time.Hour))
 
 	t.Run("saved certificate file", func(t *testing.T) {
-		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, "file", leafTrust{})
+		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, nil, "file", leafTrust{})
 		if err == nil {
 			t.Fatal("a CA-issued certificate whose chain is unchecked must not become evidence")
 		}
@@ -129,7 +132,7 @@ func TestUnauthenticatedCertBodyRejected(t *testing.T) {
 	t.Run("--mesh-ca that does not cover the leaf", func(t *testing.T) {
 		// A pinned CA that did not issue this leaf is a chain failure, not a
 		// pass: the pin is the authentication, so it has to actually hold.
-		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, "file",
+		_, err := gatherFromFile(certutil.EncodeCertPEM(forged.Raw), nil, nil, "file",
 			leafTrust{meshCA: x509.NewCertPool()})
 		if err == nil || !strings.Contains(err.Error(), "does not chain") {
 			t.Fatalf("want a chain failure against the pinned CA, got %v", err)
@@ -201,11 +204,23 @@ func TestMeshCAAuthenticatesCAIssuedCertBody(t *testing.T) {
 	pool := x509.NewCertPool()
 	pool.AddCert(ca)
 
-	doc := discoveryDocWith(t, string(certutil.EncodeCertPEM(leaf.Raw)), []byte("challenge"),
-		`{"attestation_report":"AAAA"}`)
+	measured := []string{"sha256:" + strings.Repeat("1", 64)}
+	var fields map[string]any
+	if err := json.Unmarshal(discoveryDocWith(t, string(certutil.EncodeCertPEM(leaf.Raw)), []byte("challenge"),
+		`{"attestation_report":"AAAA"}`), &fields); err != nil {
+		t.Fatal(err)
+	}
+	fields["attestation"].(map[string]any)["runtime_extensions"] = measured
+	doc, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ev, err := evidenceFromDiscovery(doc, "test", leafTrust{meshCA: pool}, nil)
 	if err != nil {
 		t.Fatalf("a CA-issued discovery cert chaining to --mesh-ca must be accepted: %v", err)
+	}
+	if !slices.Equal(ev.measured, measured) {
+		t.Errorf("measured = %v, want the document's runtime extensions %v", ev.measured, measured)
 	}
 	if !ev.leafChainVerified {
 		t.Fatal("leafChainVerified must record the CA anchor the verdict keys on")
@@ -369,5 +384,31 @@ func TestDescribeCertBody(t *testing.T) {
 	}
 	if strings.Contains(unauth, "validity enforced") {
 		t.Errorf("unauthenticated note = %q: validity checked against unauthenticated bytes bounds nothing", unauth)
+	}
+}
+
+// A TDX certificate's runtime extensions become the list replayed against
+// RTMR[3].
+func TestEvidenceFromCertRuntimeExtensions(t *testing.T) {
+	report, err := json.Marshal(teetypes.AttestationEvidence{Platform: teetypes.PlatformTDX, Evidence: json.RawMessage(`{"quote":"AA=="}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	measured := []string{"sha256:" + strings.Repeat("1", 64)}
+	key := testKey(t)
+	der, err := armtls.CreateAttestedCert(key, &armtls.Attestation{Family: armtls.TEETypeTDX, Report: report, RuntimeExtensions: measured}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev, err := evidenceFromCert(cert, "test", leafTrust{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(ev.measured, measured) {
+		t.Errorf("measured = %v, want the certificate's runtime extensions %v", ev.measured, measured)
 	}
 }

@@ -461,6 +461,8 @@ func searchPathFindings(al *pkgallowlist.Allowlist) []finding {
 }
 
 func searchPathLoadsMountedContent(value string, rule pkgallowlist.MountRule) bool {
+	// A nodeRootFile rule requires evidence that the bytes come from the
+	// measured node image, so it is not operator-supplied.
 	operatorSupplied := rule.Kind == pkgallowlist.MountData || rule.Kind == pkgallowlist.MountHost
 	return operatorSupplied && searchPathReachesMount(value, rule.Destination)
 }

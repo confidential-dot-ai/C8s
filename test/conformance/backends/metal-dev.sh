@@ -22,6 +22,19 @@ RKE2_BIN=/var/lib/rancher/rke2/bin
 CONTAINERD_SOCKET=/run/k3s/containerd/containerd.sock
 SEED=/run/c8s-node/allowlist-seed.json
 
+# The CDS Service's node port on the guest: the lane's runner reaches every
+# port of the guest at the address of the router's front door. Signed writes
+# and raw reads go there, as kind's go through its port-forward.
+guest_host() { local host="${C8S_ALLOWLIST_URL#https://}"; echo "${host%%[:/]*}"; }
+cds_url() {
+    local port
+    port="$(cached cds-node-port kubectl -n "$NS" get svc c8s-cds -o jsonpath='{.spec.ports[0].nodePort}')" || return
+    [ -n "$port" ] || { echo "backend: the CDS Service has no node port" >&2; return 1; }
+    echo "https://$(guest_host):$port"
+}
+# The same listener dialled without TLS; it is TLS-only.
+cds_plain_url() { local url; url="$(cds_url)" || return; echo "${url/https:/http:}"; }
+
 # Root on the node, with RKE2's ctr and crictl pointed at its containerd.
 node_exec() {
     ssh -n -F "$C8S_NODE_SSH_CONFIG" node "$(printf '%q ' env \

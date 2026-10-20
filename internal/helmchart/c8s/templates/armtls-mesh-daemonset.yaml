@@ -248,6 +248,12 @@ containers:
       - /tmp/armtls-iptables-metrics.json
       - --log-level
       - {{ .Values.armtlsMesh.logLevel | quote }}
+      {{- /* The measured-policy journal, under the attestation-api-socket
+             mount. Without that mount the default node path is absent and
+             the mesh logs it. */}}
+      {{- if include "c8s.attestationApiSocketPresent" . }}
+      - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+      {{- end }}
       {{- if ne .Values.armtlsMesh.certTtl "4h" }}
       - --cert-ttl
       - {{ .Values.armtlsMesh.certTtl | quote }}

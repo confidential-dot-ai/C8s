@@ -13,6 +13,11 @@ NODE_IMAGE="${C8S_IT_NODE_IMAGE:-kindest/node:v1.34.11@sha256:44e222ee2132dab25f
 IMAGE_TAG=it
 NS=c8s-system
 CDS_LOCAL_PORT=18443
+ROUTER_LOCAL_PORT=18444
+ADOPTED_LOCAL_PORT=18445
+# The router's default router.san, which `c8s install --upstream` makes the
+# route manifest's host.
+ROUTER_HOST="c8s-router.c8s-system.svc"
 # The mock attestation-api's synthetic launch digest (all zero). Pinned into
 # cds.measurements / armtlsMesh.measurements so every armTLS hop is verified
 # against it, exactly as a pinned production measurement.
@@ -120,6 +125,55 @@ cds_pf_stop() {
     pid="$(cat "$WORKDIR/cds-pf.pid" 2>/dev/null || true)"
     [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
     rm -f "$WORKDIR/cds-pf.pid"
+}
+
+# --- Router front door helpers ---
+
+router_healthy() { curl -sSk -o /dev/null "https://127.0.0.1:$ROUTER_LOCAL_PORT/healthz" 2>/dev/null; }
+
+# router_pf_start opens the port-forward to the router Service, or reuses the
+# one this WORKDIR opened.
+router_pf_start() {
+    local pid
+    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null && router_healthy && return 0
+    kubectl -n "$NS" port-forward svc/c8s-router "$ROUTER_LOCAL_PORT:443" >/dev/null 2>&1 &
+    echo "$!" > "$WORKDIR/router-pf.pid"
+    for _ in $(seq 1 30); do
+        router_healthy && return 0
+        sleep 1
+    done
+    fail "router port-forward never came up"
+}
+
+router_pf_stop() {
+    local pid
+    pid="$(cat "$WORKDIR/router-pf.pid" 2>/dev/null || true)"
+    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    rm -f "$WORKDIR/router-pf.pid"
+}
+
+# router_get <host> <path> <out-file> -> http code; a request through the
+# router front door for <host>, which nginx hands the routing listener as Host.
+# The path goes out as given (--path-as-is), empty segments included.
+router_get() {
+    router_pf_start
+    curl -sSk --path-as-is -o "$3" -w '%{http_code}' \
+        --resolve "$1:$ROUTER_LOCAL_PORT:127.0.0.1" "https://$1:$ROUTER_LOCAL_PORT$2" || true
+}
+
+# await_route <host> <path> <code> [<body substring>]: the router polls the
+# route manifest, so a write takes a poll interval to apply.
+await_route() {
+    local code
+    for _ in $(seq 1 30); do
+        code="$(router_get "$1" "$2" "$WORKDIR/route-body")"
+        if [ "$code" = "$3" ] && { [ -z "${4:-}" ] || grep -q "$4" "$WORKDIR/route-body"; }; then
+            return 0
+        fi
+        sleep 2
+    done
+    fail "GET https://$1$2 through the router: want HTTP $3${4:+ with \"$4\"}, got $code: $(head -c 300 "$WORKDIR/route-body")"
 }
 
 # any_workload <digest> <image>: print a workload entry that admits the digest

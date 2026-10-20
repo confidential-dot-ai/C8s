@@ -1726,11 +1726,11 @@ func canStillRead(ctx context.Context, name, logical string) error {
 // --- The secret client ---
 
 func (w *world) readSecretFile(p *pod, logical string) ([]byte, error) {
-	out, err := w.podExec(p, firstContainer, "cat", secretClientDir+"/"+secretFile(logical))
+	out, err := w.be.call("pod_file", p.namespace, p.name, firstContainer, secretClientDir+"/"+secretFile(logical))
 	if err != nil {
 		return nil, err
 	}
-	return []byte(out), nil
+	return base64.StdEncoding.DecodeString(out)
 }
 
 func outputHoldsFile(ctx context.Context, name, logical string) error {
@@ -1803,7 +1803,7 @@ func outputOnMemory(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	out, err := w.podExec(p, firstContainer, "stat", "-f", "-c", "%T", secretClientDir)
+	out, err := w.be.call("pod_fstype", p.namespace, p.name, firstContainer, secretClientDir)
 	if err != nil {
 		return err
 	}

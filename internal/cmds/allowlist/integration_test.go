@@ -278,3 +278,47 @@ func TestWorkloadDeleteRoundTrip(t *testing.T) {
 		t.Fatal("expected delete of an absent workload to fail (404)")
 	}
 }
+
+func TestNodeRootExecutableWritesRemainAuthorized(t *testing.T) {
+	for _, command := range []string{"upload", "apply"} {
+		for _, mode := range []string{"node-root", "path only", "unpinned operator key"} {
+			t.Run(command+"/"+mode, func(t *testing.T) {
+				dir := t.TempDir()
+				key, pub := newOperatorKeypair(t, dir, "operator.key")
+				srv, cds := cdsTestServer(t, []*ecdsa.PublicKey{pub})
+				if mode == "unpinned operator key" {
+					key, _ = newOperatorKeypair(t, dir, "untrusted.key")
+				}
+				kind := "nodeRootFile"
+				if mode == "path only" {
+					kind = "host"
+				}
+				entries := `{"worker":{"containers":[{"digest":"` + digA + `","command":{"policy":"exact","argv":["/app"]},"args":{"policy":"deny"},"env":{"policy":"exact","values":{"PATH":"/usr/bin:/bin"}},"mounts":{"policy":"exact","rules":[{"destination":"/usr/bin/nvidia-smi","kind":"` + kind + `","source":"/usr/bin/nvidia-smi","readOnly":true}]}}]}}`
+				body := entries
+				if command == "upload" {
+					body = `{"schema":"c8s.allowlist/v1","workloads":` + entries + `}`
+				}
+				file := writeFile(t, "worker.json", body)
+				args := []string{command, file, "--url", srv.URL, "--insecure", "--operator-key", key}
+				if command == "upload" {
+					// Missing components only; lint still applies.
+					args = append(args, "--force")
+				}
+				_, _, err := runCmd(args...)
+				if mode != "node-root" {
+					if err == nil || cds.count() != 0 {
+						t.Fatalf("unsafe or unauthorized policy written: %v", err)
+					}
+					return
+				}
+				if err != nil {
+					t.Fatalf("node-root %s: %v", command, err)
+				}
+				worker, ok := cds.workload("worker")
+				if !ok || worker.Containers[0].Mounts.Rules[0].Kind != pkgallowlist.MountNodeRootFile {
+					t.Fatal("lost the nodeRootFile kind on the signed write path")
+				}
+			})
+		}
+	}
+}
