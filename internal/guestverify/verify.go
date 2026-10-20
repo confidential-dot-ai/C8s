@@ -46,10 +46,6 @@ type Policy struct {
 	identity        runtimemeasure.ImageIdentity
 	operatorPubPEM  []byte
 	workloadDigests []string
-	// imageOnlyTDX skips the RTMR[3] check on TDX: a measuring guest's
-	// register moves after boot, so its channel cert cannot pin it. Only for
-	// channels whose answers are then checked with fresh nonce evidence.
-	imageOnlyTDX bool
 	// policies are the allowlist policies the node measured after the
 	// workloads, as the runtime extensions of its last verified cred-release
 	// leaf; nil on SNP. checkIdentity accepts the list only as far as the
@@ -182,9 +178,6 @@ func workloadChain(family teetypes.Family, workloadImages []string) ([]string, e
 func (exp Policy) checkIdentity(res *teetypes.VerificationResult) error {
 	if err := exp.identity.Verify(res); err != nil {
 		return err
-	}
-	if exp.imageOnlyTDX && exp.identity.Family() == teetypes.FamilyTDX {
-		return nil
 	}
 	err := runtimemeasure.VerifyBinding(res, exp.operatorPubPEM, exp.workloadDigests)
 	if err == nil || exp.policies == nil {
