@@ -72,6 +72,13 @@ would be wrapped, so `.github/scripts/node-guest-image-invariants.sh` fails if
 the profile bakes any of them, and the CI job runs `containerdcheck` a second
 time with `-extra-runtime` to prove the check still catches one.
 
+The pod role runs containerd without RKE2, from the baked
+`mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml`. The CI job checks it
+with `-base` against the same drop-ins, and `containerdcheck`'s
+`TestPodRoleConfigFollowsRKE2Base` compares it key by key with RKE2's rendered
+base. Only the keys listed in `podRoleDifferences`, each with its reason, may
+differ.
+
 RKE2's base template is vendored at
 `node-guest-image/c8s/containerdcheck/rke2-base-v3.toml.tmpl`. Its header
 records the RKE2 version it came from, and the invariants gate compares that to
