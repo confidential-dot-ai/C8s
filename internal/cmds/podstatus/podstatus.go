@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -37,12 +38,13 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 const (
 	PodPath          = "/v1/pod"
 	MeasurementsPath = "/v1/measurements"
-	// EvidencePath takes credrelease.AttestRequest (a 32-byte nonce) and
+	// EvidencePath takes types.NonceRequest (a 32-byte nonce) and
 	// returns fresh evidence whose report data is armtls.ReportDataForKey(
 	// serving cert key, nonce): SHA-384(SPKI DER || nonce), zero-padded. It
 	// binds the answer to this TLS channel, so a host cannot relay the request
@@ -146,14 +148,14 @@ func (h Handler) serveMeasurements(w http.ResponseWriter) {
 }
 
 func (h Handler) serveEvidence(w http.ResponseWriter, r *http.Request) {
-	var req credrelease.AttestRequest
+	var req types.NonceRequest
 	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil || len(req.Nonce) != 32 {
 		http.Error(w, "want {\"nonce\": <32 bytes, base64>}", http.StatusBadRequest)
 		return
 	}
-	key := credrelease.ServingKey(r.Context())
+	key := armtls.ServingKey(r.Context())
 	if key == nil {
 		http.Error(w, "no serving key for this connection", http.StatusInternalServerError)
 		return
@@ -237,9 +239,40 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return json.Marshal(resp.Envelope())
 		},
 	}
-	// The serving cert lists the journal as its runtime extensions, so a
-	// client can replay the register from the certificate alone.
-	return credrelease.ServeARMTLS(ctx, cfg.ListenAddr, family.String(), cfg.AttestationAPIURL, cfg.JournalPath, h)
+	return serveARMTLS(ctx, cfg, family.String(), h)
+}
+
+// maxConcurrentConns caps accepted sockets: pod-status binds every interface
+// and each connection costs an armTLS handshake before any request is read.
+const maxConcurrentConns = 64
+
+// newServer builds the pod-status HTTP server. The bounds live here so they
+// can be asserted; none changes a legitimate answer, so a regression is silent.
+func newServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		// Allow the body read, attestation, and response write.
+		WriteTimeout:   50 * time.Second,
+		IdleTimeout:    30 * time.Second,
+		MaxHeaderBytes: 16 << 10,
+	}
+}
+
+// serveARMTLS serves h over armTLS with a self-signed certificate whose quote
+// binds its own key. The certificate lists the journal as its runtime
+// extensions, so a client can replay the register from the certificate alone.
+func serveARMTLS(ctx context.Context, cfg ServeConfig, platform string, h http.Handler) error {
+	// The attest func reads resp.Platform, so it serves TDX despite its name.
+	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.AttestationAPIURL)
+	return armtls.Serve(ctx, newServer(cfg.ListenAddr, h), &armtls.ServerConfig{
+		Platform:             platform,
+		AttestFunc:           attestFunc,
+		Logger:               slog.Default(),
+		MeasuredPoliciesFile: cfg.JournalPath,
+	}, maxConcurrentConns)
 }
 
 // kubeletPods reads the loopback kubelet. Its serving certificate is
@@ -382,7 +415,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		if _, err := rand.Read(nonce); err != nil {
 			return nil, nil, err
 		}
-		reqBody, _ := json.Marshal(credrelease.AttestRequest{Nonce: nonce})
+		reqBody, _ := json.Marshal(types.NonceRequest{Nonce: nonce})
 		var peer crypto.PublicKey
 		if envelope, peer, err = postEvidence(ctx, client, base, reqBody); err != nil {
 			return nil, nil, fmt.Errorf("fresh evidence: %w", err)

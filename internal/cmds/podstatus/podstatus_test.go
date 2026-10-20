@@ -29,8 +29,9 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/guestverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 const pods = `{"kind":"PodList","apiVersion":"v1","items":[
@@ -162,7 +163,7 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 		},
 	}
 	var guest http.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(credrelease.WithServingKey(r.Context(), servingKey)))
+		h.ServeHTTP(w, r.WithContext(armtls.WithServingKey(r.Context(), servingKey)))
 	})
 	for _, w := range wrap {
 		guest = w(guest)
@@ -331,9 +332,9 @@ func TestEvidenceReportDataRoundTrip(t *testing.T) {
 	var sent []byte
 	h := Handler{Evidence: func(_ context.Context, rd []byte) ([]byte, error) { sent = rd; return []byte(`{}`), nil }}
 	rec := httptest.NewRecorder()
-	body, _ := json.Marshal(credrelease.AttestRequest{Nonce: nonce})
+	body, _ := json.Marshal(types.NonceRequest{Nonce: nonce})
 	req := httptest.NewRequest(http.MethodPost, EvidencePath, bytes.NewReader(body))
-	h.ServeHTTP(rec, req.WithContext(credrelease.WithServingKey(req.Context(), cert.Leaf.PublicKey)))
+	h.ServeHTTP(rec, req.WithContext(armtls.WithServingKey(req.Context(), cert.Leaf.PublicKey)))
 	if rec.Code != http.StatusOK || rec.Header().Get(BindingHeader) != BindingVersion {
 		t.Fatalf("status %d header %q", rec.Code, rec.Header().Get(BindingHeader))
 	}
@@ -544,5 +545,31 @@ func TestServeRejectsBrokenStagedDocuments(t *testing.T) {
 				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// TestServerBoundsConnectionResources: pod-status binds every interface, so
+// each bound costs an unauthenticated peer something it would otherwise get
+// free. Asserted because a regression is silent.
+func TestServerBoundsConnectionResources(t *testing.T) {
+	if maxConcurrentConns <= 0 {
+		t.Errorf("maxConcurrentConns = %d, want a positive accept cap", maxConcurrentConns)
+	}
+	srv := newServer(":0", nil)
+	if srv.WriteTimeout <= srv.ReadTimeout {
+		t.Errorf("WriteTimeout = %s leaves no time to attest after the body read", srv.WriteTimeout)
+	}
+	if srv.MaxHeaderBytes <= 0 || srv.MaxHeaderBytes > 64<<10 {
+		t.Errorf("MaxHeaderBytes = %d, want a bound well under Go's 1MiB default", srv.MaxHeaderBytes)
+	}
+	for name, got := range map[string]time.Duration{
+		"ReadHeaderTimeout": srv.ReadHeaderTimeout,
+		"ReadTimeout":       srv.ReadTimeout,
+		"WriteTimeout":      srv.WriteTimeout,
+		"IdleTimeout":       srv.IdleTimeout,
+	} {
+		if got <= 0 {
+			t.Errorf("%s is unset; a parked connection holds a goroutine open", name)
+		}
 	}
 }

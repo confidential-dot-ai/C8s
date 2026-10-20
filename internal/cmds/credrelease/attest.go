@@ -10,18 +10,13 @@ import (
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/pkg/attestclient"
+	"github.com/confidential-dot-ai/c8s/pkg/types"
 )
 
 // AttestPath serves operator-authorized, nonce-bound bootstrap evidence.
 const AttestPath = "/attest"
 
 const attestTimeout = 30 * time.Second
-
-// AttestRequest supplies a fresh 32-byte nonce, encoded as base64 in JSON.
-// The operator token must authorize these exact request bytes.
-type AttestRequest struct {
-	Nonce []byte `json:"nonce"`
-}
 
 // AttestResponse is the evidence envelope plus the RTMR[3] runtime extensions
 // this node journaled, read after the quote so the list may run ahead of it
@@ -42,9 +37,10 @@ func (g localEvidenceGenerator) GenerateEvidence(ctx context.Context, nonce []by
 	return response.Envelope(), err
 }
 
-// serveAttest is reached only after ServeHTTP authorizes the request.
+// serveAttest is reached only after ServeHTTP authorizes the request: the
+// operator token covers these exact types.NonceRequest bytes.
 func (h *Handler) serveAttest(w http.ResponseWriter, r *http.Request, body []byte) {
-	var req AttestRequest
+	var req types.NonceRequest
 	dec := json.NewDecoder(bytes.NewReader(body))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
