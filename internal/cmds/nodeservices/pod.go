@@ -53,9 +53,8 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	// seed the initrd extended from operator-pubkey's exact bytes.
 	if d.Image.HasRuntimeRegister() {
 		floor["measure"] = map[string]any{
-			"rtmr3":         true,
-			"journal_path":  armtls.PodJournal,
-			"launch_pubkey": launchDir + "operator-pubkey",
+			"rtmr3":        true,
+			"journal_path": armtls.PodJournal,
 		}
 	}
 	policyData, err := yaml.Marshal(floor)
