@@ -10,12 +10,13 @@
 #     on a PVC the VM attaches with serial c8s-vol-gwstate.
 #
 # Needs: c8s, crane, go, jq, kubectl (launcher cluster), python3, sudo.
-# Env: C8S_SOURCE_DIR, c8sRef, VM, NS, GH_TOKEN (reads the org-internal
-# confidential-inference images). Writes everything to $CIE_DIR.
+# Env: C8S_SOURCE_DIR, c8sRef, VM, NS, IMAGE_MANIFEST (the node image under
+# test), GH_TOKEN (reads the org-internal confidential-inference images).
+# Writes everything to $CIE_DIR.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 . "$here/pins.env"
-: "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${VM:?}" "${NS:?}" "${CIE_DIR:?}" "${GH_TOKEN:?}"
+: "${C8S_SOURCE_DIR:?}" "${c8sRef:?}" "${VM:?}" "${NS:?}" "${CIE_DIR:?}" "${IMAGE_MANIFEST:?}" "${GH_TOKEN:?}"
 mkdir -p "$CIE_DIR"
 cd "$CIE_DIR"
 
@@ -61,11 +62,16 @@ c8s_release=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1
 # objects, and replaces only the gateway's release-identity ConfigMap, whose
 # CDS policy and operator-key pins exist only after boot. The ConfigMap is
 # mounted as data, so the derived entries do not depend on its content.
+# The cds-attest sidecars pin CDS by the node image: this lane's, not the
+# one the release pins.
 chart_args=(--namespace confidential-inference --kube-version 1.32.0
   --values release/profile-values-release-values.yaml
   --values release/profile-values-release-staging-values.yaml
   --values release/release-values.yaml
   --values "$here/values.yaml")
+for reg in mrtd rtmr1 rtmr2; do
+  chart_args+=(--set-string "attestationReceipts.cdsPin.$reg=$(jq -er ".tdx.$reg" "$IMAGE_MANIFEST")")
+done
 printf '%s\n' "${chart_args[@]}" > chart-args
 helm template confidential-inference ci/helm/confidential-inference "${chart_args[@]}" \
   | SIM_IMAGE=$SIM_IMAGE python3 "$here/patch_render.py" > manifest.yaml

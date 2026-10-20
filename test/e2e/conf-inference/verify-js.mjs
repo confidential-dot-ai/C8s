@@ -1,6 +1,7 @@
 // c8s-verify-js against the live front door: TDX image pin, fresh evidence,
 // the served allowlist pinned and matched to the expected bytes, the router's
-// matched-workload stamp, then GET /v1/models through the tunnel.
+// matched-workload stamp, the operator-signed route manifest the evidence
+// binds, then GET /v1/models through the tunnel.
 import { readFileSync } from "node:fs";
 import { request } from "node:https";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { parseArgs } from "node:util";
 
 const { values: a } = parseArgs({
   options: Object.fromEntries(
-    ["url", "server-name", "image-manifest", "workload", "api-key-file", "allowlist"].map((k) => [k, { type: "string" }]),
+    ["url", "server-name", "image-manifest", "workload", "api-key-file", "allowlist", "route-operator-keys"].map((k) => [k, { type: "string" }]),
   ),
 });
 for (const [k, v] of Object.entries(a)) if (!v) throw new Error(`--${k} is required`);
@@ -18,8 +19,8 @@ const { C8sClient, parseImageManifest } = await import(
   pathToFileURL(join(process.env.VERIFY_JS_SRC, "src", "index.ts")).href
 );
 
-// The front door's TLS leaf is CDS-issued for c8s.local and reached by IP, so
-// the transport is not WebPKI-verifiable. Trust comes from attest-pq: the
+// The front door's TLS leaf is CDS-issued for c8s.local, not for the routed
+// host, so the transport is not WebPKI-verifiable. Trust comes from attest-pq: the
 // evidence, the stamped mesh leaf and the transcript, all checked below.
 function frontDoorFetch(url, init = {}) {
   return new Promise((resolve, reject) => {
@@ -61,6 +62,7 @@ const client = new C8sClient({
   requireFreshness: true,
   allowlist,
   workloadName: a.workload,
+  routeOperatorKeys: readFileSync(a["route-operator-keys"], "utf8"),
 });
 
 // The router's stamp follows allowlist writes within the get-cert renewal
@@ -90,6 +92,6 @@ if (res.status !== 200) throw new Error(`tunnel GET /v1/models: HTTP ${res.statu
 const models = JSON.parse(res.text());
 if (!models.data?.length) throw new Error("tunnel GET /v1/models listed no models");
 console.log(
-  `ok: c8s-verify-js verified ${a.workload} (tdx, cds front door, ${at.trustClass}) and listed ${models.data[0].id} through the tunnel`,
+  `ok: c8s-verify-js verified ${a.workload} (tdx, cds front door, ${at.trustClass}, operator-signed routes ${at.routeDigest}) and listed ${models.data[0].id} through the tunnel`,
 );
 for (const w of at.warnings) console.log(`warning: ${w}`);
