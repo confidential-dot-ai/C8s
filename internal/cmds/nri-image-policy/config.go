@@ -35,18 +35,21 @@ type config struct {
 	Logging        loggingConfig        `yaml:"logging"`
 	WorkloadClaims workloadClaimsConfig `yaml:"workload_claims"`
 	// Mesh is the trusted mesh policy (roles.go); required.
-	Mesh *meshPolicy `yaml:"mesh"`
-	Measure        measureConfig        `yaml:"measure"`
+	Mesh    *meshPolicy   `yaml:"mesh"`
+	Measure measureConfig `yaml:"measure"`
 }
 
 // measureConfig extends each started workload's image digest into RTMR[3]
-// (pod-role CVMs only; set by node-services prepare). The register already
-// holds the seed of the operator key the initrd staged, so the journal opens
-// seeded with it.
+// (pod-role CVMs only; set by node-services prepare), into the measured-policy
+// journal under workload_claims.socket_dir, seeded with the staged launch key
+// the register already holds. It excludes allowlist.pull.measure_policies: a
+// boot has one RTMR[3] writer.
 type measureConfig struct {
-	RTMR3       bool   `yaml:"rtmr3"`
-	JournalPath string `yaml:"journal_path"`
+	RTMR3 bool `yaml:"rtmr3"`
 }
+
+// ErrPodRoleMeasurePolicies marks a config naming two RTMR[3] writers.
+var ErrPodRoleMeasurePolicies = errors.New("measure.rtmr3 and allowlist.pull.measure_policies both extend RTMR[3]: a boot has one writer")
 
 // pluginConfig contains plugin runtime settings.
 type pluginConfig struct {
@@ -459,6 +462,14 @@ func (c *config) Validate() error {
 	}
 	if c.Allowlist.Pull.MeasurePolicies && filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
 		return fmt.Errorf("allowlist.pull.measure_policies requires workload_claims.socket_dir %s (got %q): certificate producers read the measured-policy journal there", journalDir, c.WorkloadClaims.SocketDir)
+	}
+	if c.Measure.RTMR3 {
+		if c.Allowlist.Pull.MeasurePolicies {
+			return ErrPodRoleMeasurePolicies
+		}
+		if filepath.Clean(c.WorkloadClaims.SocketDir) != journalDir {
+			return fmt.Errorf("measure.rtmr3 requires workload_claims.socket_dir %s (got %q): pod-status and certificate producers read the measured journal there", journalDir, c.WorkloadClaims.SocketDir)
+		}
 	}
 	if len(c.Policy.ExemptNamespaces) > 0 && c.Policy.ExemptSnapshotPath == "" {
 		return fmt.Errorf("policy.exempt_namespaces requires policy.exempt_snapshot_path: the captured digest set must persist across restarts")

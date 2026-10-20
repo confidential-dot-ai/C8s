@@ -1064,7 +1064,7 @@ func createReadable(path string) error {
 // openJournal opens the measured-policy journal in dir over this node's
 // RTMR[3], whose launch seeded it from anchor.
 func openJournal(dir string, platform teetypes.PlatformType, anchor []byte) (*runtimemeasure.Journal, error) {
-	reg, err := runtimemeasure.Open(platform)
+	reg, err := openRegister(platform)
 	if err != nil {
 		return nil, err
 	}

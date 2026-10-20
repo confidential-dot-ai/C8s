@@ -81,10 +81,11 @@ func WithRuntimeExtensions(att *Attestation, journal *Journal) *Attestation {
 	return &withList
 }
 
-// The measured-policy journal lists the allowlist policies a TDX node extends
-// into RTMR[3]. Its writer is the policy measurer in nri-image-policy, which
-// keeps it in the plugin's runtime directory (workload_claims.socket_dir, the
-// chart's nriImagePolicy.hostPaths.runtimeDir).
+// The measured-policy journal lists what a TDX guest extends into RTMR[3]: the
+// allowlist policies of a node, the admitted image digests of a pod CVM. Its
+// one writer per boot is nri-image-policy, which keeps it in the plugin's
+// runtime directory (workload_claims.socket_dir, the chart's
+// nriImagePolicy.hostPaths.runtimeDir).
 // NodeJournal is its path on the node and in pods that mount that directory at
 // its host path; workloadclaims.MeasuredPoliciesJournal is its path in the
 // sidecars the plugin mounts the directory into.
@@ -106,10 +107,6 @@ const (
 	MeasuredPoliciesJournal = "measured-policies"
 	NodeJournal             = "/run/nri-image-policy/" + MeasuredPoliciesJournal
 )
-
-// PodJournal is the workload-digest journal nri-image-policy keeps in a pod
-// CVM, which pod-status serves. It follows the same contract.
-const PodJournal = "/run/c8s/rtmr3-measured"
 
 // ReadRuntimeExtensions reads the measured-policy journal at path: nil when it
 // does not exist, an error when it cannot be read or holds more than
