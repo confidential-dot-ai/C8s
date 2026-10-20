@@ -22,10 +22,16 @@ cleanup() {
 trap cleanup EXIT
 
 udevadm settle --timeout=10
-device=$(blkid -L opkeydata) || {
+# The launch CD can appear after udev settles on a first boot.
+for attempt in $(seq 30); do
+    device=$(blkid -L opkeydata) && break
+    echo "rke2-role: no opkeydata disk yet (attempt $attempt/30)" >&2
+    sleep 1
+done
+if [ -z "${device:-}" ]; then
     echo "rke2-role: opkeydata containing signed launch.yaml is required" >&2
     exit 1
-}
+fi
 timeout 10 mount -t iso9660 -o ro,nodev,nosuid,noexec "$device" "$mount_dir"
 mounted=1
 # C8s authenticates the exact bytes before strict parsing and writes the
