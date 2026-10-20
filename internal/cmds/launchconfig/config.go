@@ -267,6 +267,9 @@ type Image struct {
 // "tdx" inline. Adding a platform means adding an entry, not new branches.
 type imagePlatform struct {
 	family teetypes.Family
+	// runtimeRegister is set when the platform has a register the guest can
+	// extend after launch (RTMR[3]), into which a pod measures its workloads.
+	runtimeRegister bool
 	// validateRegisters rejects a register map that does not match what this
 	// platform measures. Its error names the platform's own rule.
 	validateRegisters func(rtmrs map[int]string) error
@@ -274,7 +277,8 @@ type imagePlatform struct {
 
 var imagePlatforms = map[string]imagePlatform{
 	"tdx": {
-		family: teetypes.FamilyTDX,
+		family:          teetypes.FamilyTDX,
+		runtimeRegister: true,
 		validateRegisters: func(rtmrs map[int]string) error {
 			if len(rtmrs) != 2 || !registerHex(rtmrs[1]) || !registerHex(rtmrs[2]) {
 				return fmt.Errorf("TDX image must pin exactly RTMR[1] and RTMR[2]")
@@ -298,6 +302,13 @@ var imagePlatforms = map[string]imagePlatform{
 func (i Image) platform() (imagePlatform, bool) {
 	p, ok := imagePlatforms[i.Platform]
 	return p, ok
+}
+
+// HasRuntimeRegister reports whether the image's platform can measure
+// workloads after launch.
+func (i Image) HasRuntimeRegister() bool {
+	p, _ := i.platform()
+	return p.runtimeRegister
 }
 
 type Node struct {

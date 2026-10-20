@@ -107,6 +107,10 @@ const (
 	NodeJournal             = "/run/nri-image-policy/" + MeasuredPoliciesJournal
 )
 
+// PodJournal is the workload-digest journal nri-image-policy keeps in a pod
+// CVM, which pod-status serves. It follows the same contract.
+const PodJournal = "/run/c8s/rtmr3-measured"
+
 // ReadRuntimeExtensions reads the measured-policy journal at path: nil when it
 // does not exist, an error when it cannot be read or holds more than
 // [MaxRuntimeExtensions] entries.
