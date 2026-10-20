@@ -3,13 +3,14 @@ package nriimagepolicy
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
-	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 type fakeRegister struct {
@@ -29,45 +30,93 @@ func (r *fakeRegister) Extension() ([]byte, error) { return r.value[:], nil }
 
 const testDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-func measureFixture(t *testing.T, reg *fakeRegister) measureConfig {
+var launchSeed = runtimemeasure.Seed([]byte("launch key"))
+
+// measureFixture is a pod-role config over reg: the staged launch key is
+// "launch key" and the journal directory is a fresh temp dir.
+func measureFixture(t *testing.T, reg *fakeRegister) *config {
 	t.Helper()
-	oldReg, oldKey := openRegister, readOperatorKey
-	t.Cleanup(func() { openRegister, readOperatorKey = oldReg, oldKey })
-	openRegister = func(teetypes.PlatformType) (runtimemeasure.Register, error) { return reg, nil }
+	origKey, origOpen := readOperatorKey, openRegister
+	t.Cleanup(func() { readOperatorKey, openRegister = origKey, origOpen })
 	readOperatorKey = func() ([]byte, error) { return []byte("launch key"), nil }
-	return measureConfig{RTMR3: true, JournalPath: filepath.Join(t.TempDir(), "journal")}
+	openRegister = func(teetypes.PlatformType) (runtimemeasure.Register, error) { return reg, nil }
+	return &config{
+		Platform:       "tdx",
+		Measure:        measureConfig{RTMR3: true},
+		WorkloadClaims: workloadClaimsConfig{SocketDir: t.TempDir()},
+	}
+}
+
+func journalPath(cfg *config) string {
+	return filepath.Join(cfg.WorkloadClaims.SocketDir, armtls.MeasuredPoliciesJournal)
 }
 
 func TestOpenMeasurerGating(t *testing.T) {
-	if m, err := openMeasurer(measureConfig{}, "tdx"); m != nil || err != nil {
+	reg := &fakeRegister{value: launchSeed}
+	cfg := measureFixture(t, reg)
+	cfg.Measure.RTMR3 = false
+	if m, err := openMeasurer(cfg, discardLogger()); m != nil || err != nil {
 		t.Fatalf("disabled: %v %v", m, err)
 	}
-	if _, err := openMeasurer(measureConfig{RTMR3: true}, "tdx"); err == nil {
-		t.Fatal("enabled without paths")
+	cfg.Measure.RTMR3 = true
+	cfg.Platform = "snp"
+	if m, err := openMeasurer(cfg, discardLogger()); m != nil || err != nil {
+		t.Fatalf("no runtime register: %v %v", m, err)
 	}
-	// The register holds only the launch-key seed: reconciles.
-	reg := &fakeRegister{value: runtimemeasure.Seed([]byte("launch key"))}
-	cfg := measureFixture(t, reg)
-	if m, err := openMeasurer(cfg, "tdx"); err != nil || m == nil {
+	cfg.Platform = "tdx"
+	// The register holds only the launch-key seed: reconciles, and the
+	// journal is readable to the non-root readers before the first measure.
+	m, err := openMeasurer(cfg, discardLogger())
+	if err != nil || m == nil {
 		t.Fatalf("seeded register: %v", err)
 	}
+	if info, err := os.Stat(journalPath(cfg)); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("journal = %v, %v; want an empty 0644 file", info, err)
+	}
+	// No staged launch key: nothing to seed from.
+	readOperatorKey = func() ([]byte, error) { return nil, errors.New("no key") }
+	if _, err := openMeasurer(cfg, discardLogger()); err == nil || !strings.Contains(err.Error(), "no key") {
+		t.Fatalf("missing anchor: %v", err)
+	}
 	// An unexplained extend: refuse to start.
-	reg2 := &fakeRegister{value: runtimemeasure.Seed([]byte("other key"))}
-	cfg = measureFixture(t, reg2)
-	if _, err := openMeasurer(cfg, "tdx"); err == nil || !strings.Contains(err.Error(), "reconcile") {
+	cfg = measureFixture(t, &fakeRegister{value: runtimemeasure.Seed([]byte("other key"))})
+	if _, err := openMeasurer(cfg, discardLogger()); err == nil || !strings.Contains(err.Error(), "reconcile") {
 		t.Fatalf("diverged register: %v", err)
 	}
-	// No staged operator key: nothing to seed from, refuse to start.
-	cfg = measureFixture(t, &fakeRegister{})
-	readOperatorKey = func() ([]byte, error) { return nil, credrelease.ErrNoOperatorKey }
-	if _, err := openMeasurer(cfg, "tdx"); !errors.Is(err, credrelease.ErrNoOperatorKey) {
-		t.Fatalf("missing operator key: %v", err)
+}
+
+// A journal that recorded a digest the register never received is an extend
+// the plugin was killed in the middle of: opening finishes it, and the digest
+// is not measured twice.
+func TestPodRoleJournalReconcilesAfterInterruptedExtend(t *testing.T) {
+	d1, d2 := testDigest, "sha256:"+strings.Repeat("c", 64)
+	reg := &fakeRegister{value: runtimemeasure.FromDigestsSeeded(launchSeed, []string{d1})}
+	cfg := measureFixture(t, reg)
+	if err := os.WriteFile(journalPath(cfg), []byte(d1+"\n"+d2+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m, err := openMeasurer(cfg, discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := runtimemeasure.FromDigestsSeeded(launchSeed, []string{d1, d2})
+	if reg.value != want {
+		t.Fatal("opening did not finish the interrupted extend")
+	}
+	if extended, err := m.MeasureOnce(d2); err != nil || extended {
+		t.Fatalf("MeasureOnce(d2) = %v, %v; want already measured", extended, err)
+	}
+	if reg.value != want {
+		t.Fatal("measured d2 twice")
+	}
+	if info, err := os.Stat(journalPath(cfg)); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("journal = %v, %v; want 0644", info, err)
 	}
 }
 
 func TestMeasureStartedExtendsAndDeniesOnFailure(t *testing.T) {
-	reg := &fakeRegister{value: runtimemeasure.Seed([]byte("launch key"))}
-	m, err := openMeasurer(measureFixture(t, reg), "tdx")
+	reg := &fakeRegister{value: launchSeed}
+	m, err := openMeasurer(measureFixture(t, reg), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +124,7 @@ func TestMeasureStartedExtendsAndDeniesOnFailure(t *testing.T) {
 	if err := p.measureStarted(context.Background(), "busybox@"+testDigest); err != nil {
 		t.Fatal(err)
 	}
-	if reg.value != runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed([]byte("launch key")), []string{testDigest}) {
+	if reg.value != runtimemeasure.FromDigestsSeeded(launchSeed, []string{testDigest}) {
 		t.Fatal("register does not hold seed + digest")
 	}
 	reg.fail = errors.New("tsm write failed")
@@ -94,11 +143,37 @@ func TestMeasureStartedExtendsAndDeniesOnFailure(t *testing.T) {
 	}
 }
 
+// Certificates carry at most armtls.MaxRuntimeExtensions digests: the guest
+// refuses the workload that would push the list past that, and still admits
+// an image it already measured.
+func TestMeasureOnceRefusesBeyondTheCertificateCap(t *testing.T) {
+	reg := &fakeRegister{value: launchSeed}
+	m, err := openMeasurer(measureFixture(t, reg), discardLogger())
+	if err != nil {
+		t.Fatal(err)
+	}
+	digests := make([]string, armtls.MaxRuntimeExtensions)
+	for i := range digests {
+		digests[i] = "sha256:" + strings.Repeat("0", 56) + string([]byte{hexDigit(i >> 12), hexDigit(i >> 8), hexDigit(i >> 4), hexDigit(i)}) + "0000"
+		if _, err := m.MeasureOnce(digests[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := m.MeasureOnce(testDigest); err == nil || !strings.Contains(err.Error(), "most its certificates can carry") {
+		t.Fatalf("over the cap: %v", err)
+	}
+	if extended, err := m.MeasureOnce(digests[0]); err != nil || extended {
+		t.Fatalf("already measured at the cap: %v, %v", extended, err)
+	}
+}
+
+func hexDigit(v int) byte { return "0123456789abcdef"[v&0xf] }
+
 // A tag resolves once per start: the digest measured is the one admitted,
 // even if the tag moves between the checks and the measurement.
 func TestStartContainerMeasuresTheAdmittedDigest(t *testing.T) {
-	reg := &fakeRegister{value: runtimemeasure.Seed([]byte("launch key"))}
-	m, err := openMeasurer(measureFixture(t, reg), "tdx")
+	reg := &fakeRegister{value: launchSeed}
+	m, err := openMeasurer(measureFixture(t, reg), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +196,7 @@ func TestStartContainerMeasuresTheAdmittedDigest(t *testing.T) {
 	if len(answers) != 1 {
 		t.Fatalf("resolved the tag %d times in one start, want 1", 2-len(answers))
 	}
-	if reg.value != runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed([]byte("launch key")), []string{pushDigestA}) {
+	if reg.value != runtimemeasure.FromDigestsSeeded(launchSeed, []string{pushDigestA}) {
 		t.Fatal("measured a digest other than the admitted one")
 	}
 }
