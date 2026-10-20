@@ -167,16 +167,17 @@ leaf every two hours rather than the ten seconds an issuance scenario's pod
 does, so the leaf it obtained stays the one it holds.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
-function, its arguments, what it prints, and the exit status that means "this
-environment cannot express that", which the steps turn into a skip. It also
+function, its arguments, what it prints, and when it answers *unsupported*:
+exit status 77 (`UNSUPPORTED`), meaning "this environment cannot express
+that", which the steps turn into a skip, never a pass. It also
 implements the functions that are the same everywhere. A backend sources it,
 sets `PLATFORM`, defines what differs, and ends with `dispatch "$@"`, which
 rejects unknown names.
 
 | Backend | Environment | Requires |
 |---|---|---|
-| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer 77; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers 77 | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
-| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers 77 ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
+| [`kind.sh`](backends/kind.sh) | the kept kind cluster of [`test/integration/cluster/run.sh`](../integration/cluster/run.sh) (`C8S_IT_KEEP=1 C8S_IT_SETUP_ONLY=1`); mocked attestation, node shell via `docker exec`; the mock signs nothing and verifies only at the mock, so `evidence_unsigned` and `relying_party` answer unsupported; the CDS reads its seed ConfigMap once, as on any chart-managed install, so `seed_add` answers unsupported | `C8S_IT_WORKDIR`; `go` for `dialer_bin` |
+| [`metal.sh`](backends/metal.sh) | the attested node image a metal lane booted (`snp-metal-e2e`, `tdx-metal-e2e`), from its `extra-suite` hook; what it cannot reach answers unsupported ([below](#the-metal-backend)) | `KUBECONFIG`, `C8S_ALLOWLIST_URL`, `C8S_OPERATOR_KEY`, the `c8s` CLI on `PATH`; `go` for the write-token functions, `crane` for `image_entrypoint` and `image_env` |
 
 The backends source the kind harness's `lib.sh`, render pods with
 `pod-fixture.py`, and name components (the NRI DaemonSet, its socket) that
@@ -194,7 +195,7 @@ write in the privileged namespaces (kube-system, local-path-storage, c8s-system)
 the only ones admitting host-network and root pods, and the node image holds
 the seed and the router's configuration.
 A function the backend cannot answer some other way under those limits
-exits 77, which the steps report as a skip, so the scenarios that need it are
+answers unsupported, which the steps report as a skip, so the scenarios that need it are
 reported as not run on metal, never as passed; the skipped step carries a
 `skip-reason` attachment naming the function. Pod exec is closed too, so `pod_exec` answers agent: a pod the
 steps mark `c8s-conformance/harness-argv`, because they chose its first
