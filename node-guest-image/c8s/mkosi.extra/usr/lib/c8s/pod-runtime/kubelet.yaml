@@ -6,7 +6,8 @@ fileCheckFrequency: 2s
 syncFrequency: 10s
 # Loopback only: pod-status (:8443, armTLS) is the one external reader of
 # /pods. Anonymous AlwaysAllow is reachable from the root netns only; the pod
-# netns has no route to the VM's loopback.
+# netns has no route to the VM's loopback. That holds only while the CNI
+# portmap keeps snat off: snat sets route_localnet on the pod bridge.
 address: 127.0.0.1
 port: 10250
 readOnlyPort: 0
