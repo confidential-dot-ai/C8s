@@ -154,7 +154,7 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	oldClient, oldVerify := newClient, verifyFresh
 	t.Cleanup(func() { newClient, verifyFresh = oldClient, oldVerify })
 	newClient = func(string, []byte, time.Duration) (*http.Client, error) { return srv.Client(), nil }
-	verifyFresh = func(_ string, key, _, reportData []byte) (*teetypes.VerificationResult, error) {
+	verifyFresh = func(_ string, key, _, reportData []byte, _ []string) (*teetypes.VerificationResult, error) {
 		if string(key) != string(pub) || !slices.Equal(reportData, quoted) {
 			return nil, errors.New("report data does not match the expected binding")
 		}

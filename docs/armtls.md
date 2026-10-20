@@ -92,7 +92,8 @@ proves possession of the corresponding private key in either path.
        report      OCTET STRING, -- evidence, two shapes (below)
        certChain   OCTET STRING, -- optional inline VCEK chain
        runtimeExtensions [0] EXPLICIT SEQUENCE OF PrintableString OPTIONAL
-                                 -- TDX: the node's measured policies
+                                 -- TDX: the node's measured policies,
+                                 --      or a pod CVM's measured images
    }
    ```
 
@@ -101,7 +102,10 @@ proves possession of the corresponding private key in either path.
    node extended into RTMR[3] after the operator-key seed, read after the
    quote; c8s's verifiers accept the seed followed by the longest prefix of
    the list that replays. They do not judge which digests the list names
-   (see "What armTLS guarantees"). The list holds at most 256 entries, and
+   (see "What armTLS guarantees"). On a pod CVM (`role: pod`) the same field
+   lists the image digests the admission plugin measured before each
+   container started, and `c8s pod-attest` replays it the same way (see
+   "Measured policy history" below). The list holds at most 256 entries, and
    the journal is never pruned within a boot: a node past the cap sends no
    list, and verifiers reject it until it reboots. cred-release also refuses
    to start over the cap, since its operator-key check replays the journal.
