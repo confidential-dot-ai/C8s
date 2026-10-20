@@ -53,6 +53,65 @@ const (
 	Agent  Role = "agent"
 )
 
+// Valid reports whether r is a role this image can boot.
+func (r Role) Valid() bool {
+	_, ok := roles[r]
+	return ok
+}
+
+// presence says whether a role's document must, may or must not carry a
+// field. The zero value is the strict one.
+type presence int
+
+const (
+	forbidden presence = iota
+	optional
+	required
+)
+
+// roleRules keeps each role's document rules in one place, so validate,
+// and authorizeKey ask the role instead of testing for it
+// inline. Adding a role means adding an entry, not new branches; every entry
+// sets every field.
+type roleRules struct {
+	serverToken presence // rke2.serverToken, distinct from rke2.agentToken
+	agentKeys   presence // agentOperatorPublicKeys
+	// namesServer requires server.address in the signed document; otherwise
+	// it is checked only when present.
+	namesServer bool
+	// stagedAddress requires the staged document to carry a server address,
+	// which Stage resolves for a server that omitted it.
+	stagedAddress bool
+	router        bool // may carry a router block
+	// ownLaunchKey authorizes the exact server.operatorPublicKey bytes;
+	// otherwise the launch key must be listed in agentOperatorPublicKeys and
+	// differ from the server's.
+	ownLaunchKey bool
+}
+
+var roles = map[Role]roleRules{
+	Server: {
+		serverToken:   required,
+		agentKeys:     optional,
+		namesServer:   false,
+		stagedAddress: true,
+		router:        true,
+		ownLaunchKey:  true,
+	},
+	Agent: {
+		serverToken:   forbidden,
+		agentKeys:     required,
+		namesServer:   true,
+		stagedAddress: true,
+		router:        false,
+		ownLaunchKey:  false,
+	},
+}
+
+// rules resolves the document's role. Callers reach it only after validate,
+// which rejects any role without an entry in roles.
+func (d *Document) rules() roleRules { return roles[d.Role] }
+
 // Document is the signed launch.yaml wire contract. All secrets are boot
 // inputs; agent documents must never carry the control-plane server token.
 type Document struct {
@@ -317,9 +376,10 @@ func (d *Document) validate() error {
 	if !dnsLabel(d.Node.Name) {
 		return fmt.Errorf("node.name must be an RFC1123 label")
 	}
-	if d.Role != Server && d.Role != Agent {
+	if !d.Role.Valid() {
 		return fmt.Errorf("role must be server or agent")
 	}
+	rules := d.rules()
 	platform, ok := d.Image.platform()
 	if !ok {
 		return fmt.Errorf("image.platform must be tdx or snp")
@@ -330,7 +390,7 @@ func (d *Document) validate() error {
 	if err := platform.validateRegisters(d.Image.RTMRs); err != nil {
 		return err
 	}
-	if d.Server.Address != "" || d.Role == Agent {
+	if d.Server.Address != "" || rules.namesServer {
 		if err := ValidateIPv4(d.Server.Address, true); err != nil {
 			return fmt.Errorf("server.address: %w", err)
 		}
@@ -351,15 +411,18 @@ func (d *Document) validate() error {
 	if !tokenRE.MatchString(d.RKE2.AgentToken) {
 		return fmt.Errorf("rke2.agentToken must be 64 lowercase hex characters")
 	}
-	if d.Role == Server {
+	switch rules.serverToken {
+	case required:
 		if !tokenRE.MatchString(d.RKE2.ServerToken) {
-			return fmt.Errorf("server requires a 64-character lowercase hex rke2.serverToken")
+			return fmt.Errorf("%s requires a 64-character lowercase hex rke2.serverToken", d.Role)
 		}
 		if d.RKE2.ServerToken == d.RKE2.AgentToken {
 			return fmt.Errorf("server and agent tokens must differ")
 		}
-	} else if d.RKE2.ServerToken != "" || d.serverTokenPresent {
-		return fmt.Errorf("agent must not carry rke2.serverToken")
+	case forbidden:
+		if d.RKE2.ServerToken != "" || d.serverTokenPresent {
+			return fmt.Errorf("%s must not carry rke2.serverToken", d.Role)
+		}
 	}
 	server, err := parseLaunchKey(d.Server.OperatorPublicKey)
 	if err != nil {
@@ -368,8 +431,15 @@ func (d *Document) validate() error {
 	if len(d.AgentOperatorPublicKeys) > maxAgentKeys {
 		return fmt.Errorf("too many agent operator keys")
 	}
-	if d.Role == Agent && len(d.AgentOperatorPublicKeys) == 0 {
-		return fmt.Errorf("agent requires agentOperatorPublicKeys")
+	switch rules.agentKeys {
+	case required:
+		if len(d.AgentOperatorPublicKeys) == 0 {
+			return fmt.Errorf("%s requires agentOperatorPublicKeys", d.Role)
+		}
+	case forbidden:
+		if len(d.AgentOperatorPublicKeys) != 0 {
+			return fmt.Errorf("%s must not carry agentOperatorPublicKeys", d.Role)
+		}
 	}
 	seen := []*ecdsa.PublicKey{server}
 	for _, raw := range d.AgentOperatorPublicKeys {
@@ -391,7 +461,7 @@ func (d *Document) validate() error {
 		return fmt.Errorf("tlsSAN: %w", err)
 	}
 	if d.Router != nil {
-		if d.Role != Server {
+		if !rules.router {
 			return fmt.Errorf("router is server-only")
 		}
 		if err := d.Router.validate(); err != nil {
@@ -414,21 +484,21 @@ func (d *Document) authorizeKey(pub []byte, key *ecdsa.PublicKey) error {
 	if err != nil {
 		return fmt.Errorf("parse server operator public key: %w", err)
 	}
-	if d.Role == Server {
+	if d.rules().ownLaunchKey {
 		if !bytes.Equal(pub, []byte(d.Server.OperatorPublicKey)) {
-			return fmt.Errorf("server launch key does not match server.operatorPublicKey bytes")
+			return fmt.Errorf("%s launch key does not match server.operatorPublicKey bytes", d.Role)
 		}
 		return nil
 	}
 	if key.Equal(server) {
-		return fmt.Errorf("agent must use a different launch key from its server")
+		return fmt.Errorf("%s must use a different launch key from its server", d.Role)
 	}
 	for _, agent := range d.AgentOperatorPublicKeys {
 		if bytes.Equal(pub, []byte(agent)) {
 			return nil
 		}
 	}
-	return fmt.Errorf("this agent's measured launch key is not in agentOperatorPublicKeys")
+	return fmt.Errorf("this %s's measured launch key is not in agentOperatorPublicKeys", d.Role)
 }
 
 func parseLaunchKey(raw string) (*ecdsa.PublicKey, error) {
@@ -539,7 +609,7 @@ func LoadStaged(path string) (*Document, error) {
 	if err := doc.validate(); err != nil {
 		return nil, err
 	}
-	if doc.Server.Address == "" {
+	if doc.Server.Address == "" && doc.rules().stagedAddress {
 		return nil, fmt.Errorf("staged configuration must contain a resolved server address")
 	}
 	return &doc, nil
