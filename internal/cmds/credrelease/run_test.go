@@ -203,7 +203,7 @@ func TestServerBoundsConnectionResources(t *testing.T) {
 	if maxConcurrentConns <= 0 {
 		t.Errorf("maxConcurrentConns = %d, want a positive accept cap", maxConcurrentConns)
 	}
-	srv := newServer(":0", nil, nil)
+	srv := newServer(":0", nil)
 	if srv.WriteTimeout <= srv.ReadTimeout+attestTimeout {
 		t.Errorf("WriteTimeout = %s leaves no response time after body read and attestation", srv.WriteTimeout)
 	}
