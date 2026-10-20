@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -327,6 +328,18 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
 
+	// The first answer fixes the serving key: every connection after it,
+	// here and over the returned client, must present that key. Otherwise a
+	// host could answer the later reads from another pod CVM launched with
+	// the same launch key, whose certificate passes the same checks.
+	_, peer, _, err := doPeer(ctx, client, http.MethodGet, base+MeasurementsPath, nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("measurements: %w", err)
+	}
+	if client, err = pinServingKey(client, peer); err != nil {
+		return nil, nil, err
+	}
+
 	// A container may start between the quote and the list; read the list
 	// on both sides of the quote and retry until they agree.
 	var digests []string
@@ -384,6 +397,41 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		report.RTMR3 = hex.EncodeToString(reg)
 	}
 	return report, client, nil
+}
+
+// pinServingKey returns a client that accepts only connections served with
+// peer, before the checks client already makes. Every pod CVM launched with
+// one launch key presents a certificate that passes those checks; the pin
+// tells the attested one apart.
+func pinServingKey(client *http.Client, peer crypto.PublicKey) (*http.Client, error) {
+	want, err := x509.MarshalPKIXPublicKey(peer)
+	if err != nil {
+		return nil, fmt.Errorf("pin serving key: %w", err)
+	}
+	base, ok := client.Transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("pin serving key: the attested client has no TLS transport")
+	}
+	tr := base.Clone()
+	if tr.TLSClientConfig == nil {
+		tr.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
+	}
+	verify := tr.TLSClientConfig.VerifyConnection
+	tr.TLSClientConfig.VerifyConnection = func(cs tls.ConnectionState) error {
+		if len(cs.PeerCertificates) == 0 {
+			return errors.New("server presented no certificate")
+		}
+		got, err := x509.MarshalPKIXPublicKey(cs.PeerCertificates[0].PublicKey)
+		if err != nil || !bytes.Equal(got, want) {
+			return errors.New("serving key differs from the attested one: another guest answered")
+		}
+		if verify != nil {
+			return verify(cs)
+		}
+		return nil
+	}
+	client.CloseIdleConnections()
+	return &http.Client{Timeout: client.Timeout, CheckRedirect: client.CheckRedirect, Transport: tr}, nil
 }
 
 func sameSet(a, b []string) bool {
