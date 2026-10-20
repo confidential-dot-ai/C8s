@@ -269,7 +269,7 @@ func holdsLeaf(ctx context.Context, name string) error {
 		return err
 	}
 	if !found {
-		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s", name, observe, tail(w.certLog(p), 5))
+		return fmt.Errorf("%q holds no leaf after %s; its requester logged: %s; its containers: %+v", name, observe, tail(w.certLog(p), 5), w.statuses(p))
 	}
 	return nil
 }
