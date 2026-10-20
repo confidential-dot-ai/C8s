@@ -393,12 +393,12 @@ stage "$CACHE_DIR/rke2-images-cilium-${CACHE_VER}.tar.zst" \
 #                                  containerd-shim-runc-v2, runc, crictl, ctr);
 #                                  podcvm-containerd links REAL_RUNC's dir here
 #   usr/lib/c8s/pod-runtime/pause.tar  the sandbox image, imported at boot
-#   usr/lib/c8s/cni/               bridge, host-local, loopback from
-#                                  hardened-cni-plugins in the Cilium bundle
-#                                  (installed at runtime on a node, never in
-#                                  a pod boot)
+#   usr/lib/c8s/cni/               bridge, host-local, loopback, portmap
+#                                  from hardened-cni-plugins in the Cilium
+#                                  bundle (installed at runtime on a node,
+#                                  never in a pod boot)
 POD_RUNTIME_BINS="kubelet containerd containerd-shim-runc-v2 runc crictl ctr"
-CNI_PLUGINS="bridge host-local loopback"
+CNI_PLUGINS="bridge host-local loopback portmap"
 
 # <bundle dir> <repo:tag prefix> -> the image's manifest entry, or null.
 # Bundles disagree on the docker.io/ prefix (core omits it, others keep it),
