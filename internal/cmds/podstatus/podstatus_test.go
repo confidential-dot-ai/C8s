@@ -153,7 +153,11 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	}
 	oldClient, oldVerify := newClient, verifyFresh
 	t.Cleanup(func() { newClient, verifyFresh = oldClient, oldVerify })
-	newClient = func(string, []byte, time.Duration) (*http.Client, error) { return srv.Client(), nil }
+	// Like the armTLS client, this one leaves the certificate check to its own
+	// VerifyConnection; the fixture has none, so the serving-key pin alone decides.
+	newClient = func(string, []byte, time.Duration) (*http.Client, error) {
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}, nil //nolint:gosec // test fixture
+	}
 	verifyFresh = func(_ string, key, _, reportData []byte, _ []string) (*teetypes.VerificationResult, error) {
 		if string(key) != string(pub) || !slices.Equal(reportData, quoted) {
 			return nil, errors.New("report data does not match the expected binding")
@@ -285,4 +289,28 @@ func must(b []byte, err error) []byte {
 		panic(err)
 	}
 	return b
+}
+
+// After the first answer, every connection must present the attested
+// serving key: a host that moves later reads to another pod CVM launched
+// with the same launch key is caught, although that guest's certificate
+// would pass the armTLS checks on its own.
+func TestAttestPinsTheServingKey(t *testing.T) {
+	cfg := attestFixture(t, []string{dA}, []string{dA}, nil)
+	_, client, err := Attest(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(pods))
+	}))
+	other.TLS = &tls.Config{Certificates: []tls.Certificate{ecdsaCert(t)}}
+	other.StartTLS()
+	t.Cleanup(other.Close)
+	if _, err := do(context.Background(), client, http.MethodGet, other.URL+PodPath, nil); err == nil || !strings.Contains(err.Error(), "serving key differs") {
+		t.Fatalf("read from another guest: %v", err)
+	}
+	if _, err := do(context.Background(), client, http.MethodGet, "https://"+hostPort(cfg.Node)+PodPath, nil); err != nil {
+		t.Fatalf("read from the attested guest: %v", err)
+	}
 }
