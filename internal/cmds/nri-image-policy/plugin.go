@@ -442,13 +442,9 @@ func (p *plugin) recordForInventory(ctx context.Context, pod *api.PodSandbox, ct
 	if p.inventory == nil {
 		return
 	}
-	digest := extractDigest(imageRef)
-	if digest == "" && imageRef != "" {
-		if resolved, err := p.containerd.Resolve(ctx, imageRef); err == nil {
-			digest = extractDigest(resolved)
-		} else {
-			p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
-		}
+	digest, err := p.imageDigest(ctx, imageRef)
+	if err != nil {
+		p.logger.Error("cannot resolve the image digest of a running container; the sandbox inventory will refuse to answer for this pod", "image", imageRef, "error", err)
 	}
 	p.recordDigest(ctr, digest, p.observedMounts(pod, ctr))
 }
@@ -486,6 +482,19 @@ func (p *plugin) observedMounts(pod *api.PodSandbox, ctr *api.Container) []allow
 // path checkImagePhase admits on: the inline digest if present, else the containerd
 // content store. Empty on an unresolvable or absent reference. Quiet — the
 // callers that need an audit trail (checkImagePhase) do their own logging.
+// imageDigest returns imageRef's digest, resolving a tag through containerd.
+// It returns "" without error when imageRef is empty or resolves to no digest.
+func (p *plugin) imageDigest(ctx context.Context, imageRef string) (string, error) {
+	if d := extractDigest(imageRef); d != "" || imageRef == "" {
+		return d, nil
+	}
+	resolved, err := p.containerd.Resolve(ctx, imageRef)
+	if err != nil {
+		return "", err
+	}
+	return extractDigest(resolved), nil
+}
+
 func (p *plugin) resolveDigest(ctx context.Context, imageRef string) string {
 	if d := extractDigest(imageRef); d != "" {
 		return d

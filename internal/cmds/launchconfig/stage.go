@@ -28,8 +28,6 @@ const (
 	// would lock a rebooted node out of its own name: the document's
 	// rke2.nodePassword is staged here instead.
 	nodePasswordPath = "/etc/rancher/node/password"
-	// PodManifestPath is the staged static pod of a pod-role boot.
-	PodManifestPath = Dir + "/pod.yaml"
 )
 
 // Stage authenticates the launch document and writes only fixed boot paths.
@@ -61,7 +59,7 @@ func clearOutputs(cfg Config) error {
 	// attempting to remove the other.
 	var errs []error
 	paths := []string{serverMarker, agentMarker, podMarker, serverTokenPath, agentTokenPath, rke2FragmentPath, nodePasswordPath}
-	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json", "pod.yaml"} {
+	for _, name := range []string{"peers.json", "cds.json", "operator-pubkey", "config.json", "workloads.json"} {
 		paths = append(paths, Dir+"/"+name)
 	}
 	for _, path := range paths {
@@ -121,7 +119,7 @@ func stageVerified(cfg Config, v *Verified) error {
 	}
 	if doc.Role == Pod {
 		// No RKE2 token or fragment: nothing in a pod boot joins a cluster.
-		outputs = append(outputs, outputFile{PodManifestPath, []byte(doc.Pod.Manifest)})
+		// nodeservices writes the static pod from config.json.
 		return publish(cfg, outputs, podMarker)
 	}
 	fragment, err := yaml.Marshal(rke2Fragment(doc))

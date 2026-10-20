@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto"
 	"crypto/tls"
-	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
@@ -196,12 +195,9 @@ func serveARMTLS(ctx context.Context, ln net.Listener, addr, platform, attestati
 	getCert := tlsCfg.GetCertificate
 	tlsCfg.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 		cert, err := getCert(hello)
-		if err == nil && cert != nil && cert.Leaf != nil {
+		if err == nil {
+			// armtls sets Leaf on every certificate it serves.
 			served.Store(hello.Conn, cert.Leaf.PublicKey)
-		} else if err == nil && cert != nil && len(cert.Certificate) > 0 {
-			if leaf, perr := x509.ParseCertificate(cert.Certificate[0]); perr == nil {
-				served.Store(hello.Conn, leaf.PublicKey)
-			}
 		}
 		return cert, err
 	}
