@@ -203,20 +203,31 @@ evidence() {
     tail -n +2 <<<"$out"
 }
 
-# Real evidence with one byte of the signed report body changed: an SNP
-# report's launch measurement. Other evidence shapes are not edited here.
+# Real evidence with one byte of the signed report body changed, its launch
+# measurement: an SNP report's MEASUREMENT, or a TDX quote's MRTD (after the
+# 48-byte header, and in a v5 quote the 6-byte body descriptor). Other
+# evidence shapes are not edited here.
 evidence_unsigned() {
     local env
     env="$(evidence "$1" "$2" "$3")" || return
     python3 - "$env" <<'PYEOF'
 import base64, json, sys
 env = json.loads(sys.argv[1])
-try:
-    report = bytearray(base64.b64decode(env["evidence"]["attestation_report"]))
-except (KeyError, TypeError):
+ev = env.get("evidence") or {}
+if "attestation_report" in ev:
+    key, offset = "attestation_report", 0x90
+elif "quote" in ev:
+    key = "quote"
+else:
     sys.exit(77)  # UNSUPPORTED
-report[0x90] ^= 0xFF
-env["evidence"]["attestation_report"] = base64.b64encode(bytes(report)).decode()
+blob = bytearray(base64.b64decode(ev[key]))
+if key == "quote":
+    version = int.from_bytes(blob[0:2], "little")
+    if version not in (4, 5):
+        sys.exit(77)
+    offset = 48 + (6 if version == 5 else 0) + 136
+blob[offset] ^= 0xFF
+ev[key] = base64.b64encode(bytes(blob)).decode()
 print(json.dumps(env))
 PYEOF
 }
