@@ -70,7 +70,7 @@ const (
 )
 
 // roleRules keeps each role's document rules in one place, so validate,
-// authorizeKey and referenceValues ask the role instead of testing for it
+// and authorizeKey ask the role instead of testing for it
 // inline. Adding a role means adding an entry, not new branches; every entry
 // sets every field.
 type roleRules struct {
@@ -87,8 +87,6 @@ type roleRules struct {
 	// otherwise the launch key must be listed in agentOperatorPublicKeys and
 	// differ from the server's.
 	ownLaunchKey bool
-	// pinName names the reference value anchored at server.operatorPublicKey.
-	pinName string
 }
 
 var roles = map[Role]roleRules{
@@ -99,7 +97,6 @@ var roles = map[Role]roleRules{
 		stagedAddress: true,
 		router:        true,
 		ownLaunchKey:  true,
-		pinName:       "server",
 	},
 	Agent: {
 		serverToken:   forbidden,
@@ -108,7 +105,6 @@ var roles = map[Role]roleRules{
 		stagedAddress: true,
 		router:        false,
 		ownLaunchKey:  false,
-		pinName:       "server",
 	},
 }
 
@@ -568,7 +564,7 @@ func (d *Document) referenceValues() (refvalues.ReferenceValues, error) {
 	pins := refvalues.ReferenceValues{Family: platform.family}
 	keys := append([]string{d.Server.OperatorPublicKey}, d.AgentOperatorPublicKeys...)
 	for i, pub := range keys {
-		name := d.rules().pinName
+		name := "server"
 		if i > 0 {
 			name = fmt.Sprintf("agent-%d", i)
 		}

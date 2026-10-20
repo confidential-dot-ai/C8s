@@ -422,9 +422,6 @@ func TestRoleValidFollowsRoleTable(t *testing.T) {
 		if !role.Valid() {
 			t.Errorf("%s has no role table entry", role)
 		}
-		if roles[role].pinName == "" {
-			t.Errorf("%s names no reference value", role)
-		}
 	}
 	for _, role := range []Role{"", "observer", "Server"} {
 		if role.Valid() {
