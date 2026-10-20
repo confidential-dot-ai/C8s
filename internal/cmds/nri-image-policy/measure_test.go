@@ -3,13 +3,13 @@ package nriimagepolicy
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
+	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 )
 
 type fakeRegister struct {
@@ -31,15 +31,11 @@ const testDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 func measureFixture(t *testing.T, reg *fakeRegister) measureConfig {
 	t.Helper()
-	dir := t.TempDir()
-	pub := filepath.Join(dir, "pubkey")
-	if err := os.WriteFile(pub, []byte("launch key"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	old := openRegister
-	t.Cleanup(func() { openRegister = old })
+	oldReg, oldKey := openRegister, readOperatorKey
+	t.Cleanup(func() { openRegister, readOperatorKey = oldReg, oldKey })
 	openRegister = func(teetypes.PlatformType) (runtimemeasure.Register, error) { return reg, nil }
-	return measureConfig{RTMR3: true, JournalPath: filepath.Join(dir, "journal"), LaunchPubkey: pub}
+	readOperatorKey = func() ([]byte, error) { return []byte("launch key"), nil }
+	return measureConfig{RTMR3: true, JournalPath: filepath.Join(t.TempDir(), "journal")}
 }
 
 func TestOpenMeasurerGating(t *testing.T) {
@@ -60,6 +56,12 @@ func TestOpenMeasurerGating(t *testing.T) {
 	cfg = measureFixture(t, reg2)
 	if _, err := openMeasurer(cfg, "tdx"); err == nil || !strings.Contains(err.Error(), "reconcile") {
 		t.Fatalf("diverged register: %v", err)
+	}
+	// No staged operator key: nothing to seed from, refuse to start.
+	cfg = measureFixture(t, &fakeRegister{})
+	readOperatorKey = func() ([]byte, error) { return nil, credrelease.ErrNoOperatorKey }
+	if _, err := openMeasurer(cfg, "tdx"); !errors.Is(err, credrelease.ErrNoOperatorKey) {
+		t.Fatalf("missing operator key: %v", err)
 	}
 }
 

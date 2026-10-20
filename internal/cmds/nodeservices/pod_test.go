@@ -10,6 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 const podWorkloads = `{"schema":"c8s.allowlist/v1","workloads":{"app":{"containers":[{"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","command":{"policy":"any"},"args":{"policy":"any"}}]}}}`
@@ -44,7 +45,7 @@ func TestPreparePodAdmitsOnlySignedWorkloads(t *testing.T) {
 	if err := yaml.Unmarshal([]byte(floor), &before); err != nil {
 		t.Fatal(err)
 	}
-	if m := got["measure"].(map[string]any); m["rtmr3"] != true || m["launch_pubkey"] != launchDir+"operator-pubkey" {
+	if m := got["measure"].(map[string]any); m["rtmr3"] != true || m["journal_path"] != armtls.PodJournal || m["launch_pubkey"] != nil {
 		t.Fatalf("measure = %v", m)
 	}
 	a := got["allowlist"].(map[string]any)

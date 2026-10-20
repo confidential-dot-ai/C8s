@@ -3,7 +3,6 @@ package nriimagepolicy
 import (
 	"context"
 	"fmt"
-	"os"
 
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
@@ -17,17 +16,18 @@ type workloadMeasurer interface {
 // openRegister is a package var so tests can inject a fake register.
 var openRegister = runtimemeasure.Open
 
-// openMeasurer opens RTMR[3] and its journal seeded with the launch key.
+// openMeasurer opens RTMR[3] and its journal seeded with the operator key the
+// initrd staged, as the policy measurer does.
 // Any journal problem (divergence, unreadable register, skipped lines) is
 // fatal: the plugin must not start measuring on a register it cannot explain.
 func openMeasurer(cfg measureConfig, platform string) (workloadMeasurer, error) {
 	if !cfg.RTMR3 {
 		return nil, nil
 	}
-	if cfg.JournalPath == "" || cfg.LaunchPubkey == "" {
-		return nil, fmt.Errorf("measure.rtmr3 requires journal_path and launch_pubkey")
+	if cfg.JournalPath == "" {
+		return nil, fmt.Errorf("measure.rtmr3 requires journal_path")
 	}
-	pub, err := os.ReadFile(cfg.LaunchPubkey)
+	pub, err := readOperatorKey()
 	if err != nil {
 		return nil, fmt.Errorf("measure: read launch key: %w", err)
 	}
