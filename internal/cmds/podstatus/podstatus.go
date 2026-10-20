@@ -318,8 +318,8 @@ type Report struct {
 
 // Seams for tests.
 var (
-	newClient   = guestverify.NewMeasuringGuestClient
-	verifyFresh = guestverify.VerifyFreshEvidence
+	newClient   = guestverify.NewClient
+	verifyFresh = guestverify.VerifyEvidence
 )
 
 // Attest verifies fresh evidence from the pod CVM and its measured digest
@@ -346,10 +346,17 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	if err != nil {
 		return nil, nil, fmt.Errorf("--launch-key-pub: %w", err)
 	}
-	client, err := newClient(cfg.ImageManifestPath, pub, cfg.Timeout)
+	// One gate for the channel and the evidence: the image the manifest pins
+	// and the launch key, bound as every c8s verifier binds a node's. The
+	// channel replays the list the serving certificate carries as a prefix
+	// of the register; the fresh evidence replays the list read from the
+	// guest.
+	exp, err := guestverify.PolicyFor(cfg.ImageManifestPath, pub, nil)
 	if err != nil {
 		return nil, nil, err
 	}
+	exp = exp.WithMeasuredPolicies(nil)
+	client := newClient(exp, cfg.Timeout)
 	base := "https://" + hostPort(cfg.Node)
 	ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer cancel()
@@ -397,7 +404,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		}
 		before = digests
 	}
-	res, err := verifyFresh(cfg.ImageManifestPath, pub, envelope, reportData, digests)
+	res, err := verifyFresh(envelope, reportData, exp.WithMeasuredPolicies(digests))
 	if err != nil {
 		return nil, nil, fmt.Errorf("evidence: %w", err)
 	}

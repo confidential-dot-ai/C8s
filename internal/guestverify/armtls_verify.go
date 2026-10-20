@@ -52,39 +52,6 @@ func TLSConfig(exp Policy) *tls.Config {
 	}
 }
 
-// NewMeasuringGuestClient returns an HTTPS client for a guest that extends
-// RTMR[3] at runtime (pod CVMs). The armTLS certificate must prove the image
-// pinned by manifestPath and bind the launch key the same way a node's does:
-// on TDX the register replays the key's seed followed by a prefix of the
-// measured list the certificate carries as its runtime extensions, on SNP
-// HOSTDATA names the key. The list is the guest's own claim, covered by the
-// cert's self-signature; VerifyFreshEvidence over this channel ties it to a
-// nonce.
-func NewMeasuringGuestClient(manifestPath string, launchPubPEM []byte, timeout time.Duration) (*http.Client, error) {
-	exp, err := PolicyFor(manifestPath, launchPubPEM, nil)
-	if err != nil {
-		return nil, err
-	}
-	exp.policies = &policyList{}
-	return NewClient(exp, timeout), nil
-}
-
-// VerifyFreshEvidence verifies an evidence envelope with the get-kubeconfig
-// gate: platform evidence, image tuple, report data = expectedReportData and
-// the launch key binding. On TDX the register must replay the key's seed
-// followed by a prefix of claimed, the measured list the guest reports, under
-// the rule every c8s verifier applies; a caller that needs the whole list
-// replayed checks that on the result. On SNP claimed is ignored: HOSTDATA
-// carries the key alone.
-func VerifyFreshEvidence(manifestPath string, launchPubPEM []byte, envelope, expectedReportData []byte, claimed []string) (*teetypes.VerificationResult, error) {
-	exp, err := PolicyFor(manifestPath, launchPubPEM, nil)
-	if err != nil {
-		return nil, err
-	}
-	exp.policies = &policyList{list: claimed}
-	return VerifyEvidence(envelope, expectedReportData, exp)
-}
-
 // verifyServerCert runs the armTLS check on the :8443 leaf cert: it
 // authenticates the certificate body itself (validity within the shared skew
 // bound; the self-signature under the cert's own key — the quote binds only
