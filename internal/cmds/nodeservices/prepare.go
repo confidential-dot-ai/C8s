@@ -57,17 +57,9 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		}
 	}
 
-	data, err := os.ReadFile(path("/usr/lib/c8s/image-policy.yaml"))
+	floor, a, err := loadFloor(rootDir)
 	if err != nil {
 		return err
-	}
-	var floor map[string]any
-	if err := yaml.Unmarshal(data, &floor); err != nil {
-		return fmt.Errorf("baked NRI policy: %w", err)
-	}
-	a, ok := floor["allowlist"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing allowlist")
 	}
 	pull, ok := a["pull"].(map[string]any)
 	if !ok {
@@ -100,7 +92,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 			return err
 		}
 	}
-	data, err = yaml.Marshal(floor)
+	data, err := yaml.Marshal(floor)
 	if err != nil {
 		return err
 	}
@@ -114,6 +106,23 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 }
 
 const nriPolicyPath = "/etc/nri/conf.d/image-policy.yaml"
+
+// loadFloor reads the NRI policy baked into the image, returning the whole
+// document and its allowlist section for the caller to edit.
+func loadFloor(rootDir string) (floor, allowlistSection map[string]any, err error) {
+	data, err := os.ReadFile(filepath.Join(rootDir, "/usr/lib/c8s/image-policy.yaml"))
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := yaml.Unmarshal(data, &floor); err != nil {
+		return nil, nil, fmt.Errorf("baked NRI policy: %w", err)
+	}
+	allowlistSection, ok := floor["allowlist"].(map[string]any)
+	if !ok {
+		return nil, nil, fmt.Errorf("baked NRI policy missing allowlist")
+	}
+	return floor, allowlistSection, nil
+}
 
 func publishPublic(publicPath string, outputs map[string][]byte, clearServer bool) error {
 	if err := os.MkdirAll(publicPath, 0755); err != nil {

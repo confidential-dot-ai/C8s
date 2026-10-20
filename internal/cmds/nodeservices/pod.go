@@ -37,17 +37,9 @@ func preparePod(rootDir string, d *launchconfig.Document, outputs map[string][]b
 	if _, err := launchconfig.ParsePodManifest([]byte(d.Pod.Manifest)); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path("/usr/lib/c8s/image-policy.yaml"))
+	floor, a, err := loadFloor(rootDir)
 	if err != nil {
 		return err
-	}
-	var floor map[string]any
-	if err := yaml.Unmarshal(data, &floor); err != nil {
-		return fmt.Errorf("baked NRI policy: %w", err)
-	}
-	a, ok := floor["allowlist"].(map[string]any)
-	if !ok {
-		return fmt.Errorf("baked NRI policy missing allowlist")
 	}
 	policy, ok := floor["policy"].(map[string]any)
 	if !ok {
