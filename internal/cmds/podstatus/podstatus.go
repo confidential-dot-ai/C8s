@@ -239,40 +239,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 			return json.Marshal(resp.Envelope())
 		},
 	}
-	return serveARMTLS(ctx, cfg, family.String(), h)
-}
-
-// maxConcurrentConns caps accepted sockets: pod-status binds every interface
-// and each connection costs an armTLS handshake before any request is read.
-const maxConcurrentConns = 64
-
-// newServer builds the pod-status HTTP server. The bounds live here so they
-// can be asserted; none changes a legitimate answer, so a regression is silent.
-func newServer(addr string, handler http.Handler) *http.Server {
-	return &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		// Allow the body read, attestation, and response write.
-		WriteTimeout:   50 * time.Second,
-		IdleTimeout:    30 * time.Second,
-		MaxHeaderBytes: 16 << 10,
-	}
-}
-
-// serveARMTLS serves h over armTLS with a self-signed certificate whose quote
-// binds its own key. The certificate lists the journal as its runtime
-// extensions, so a client can replay the register from the certificate alone.
-func serveARMTLS(ctx context.Context, cfg ServeConfig, platform string, h http.Handler) error {
-	// The attest func reads resp.Platform, so it serves TDX despite its name.
-	attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.AttestationAPIURL)
-	return armtls.Serve(ctx, newServer(cfg.ListenAddr, h), &armtls.ServerConfig{
-		Platform:             platform,
-		AttestFunc:           attestFunc,
+	// The certificate's quote binds its own key and lists the journal as its
+	// runtime extensions, so a client can replay the register from the
+	// certificate alone. The attest func reads resp.Platform, so it serves
+	// TDX despite its name.
+	return armtls.Serve(ctx, cfg.ListenAddr, h, &armtls.ServerConfig{
+		Platform:             family.String(),
+		AttestFunc:           attestclient.MakeSNPARMTLSAttestFunc(api, cfg.AttestationAPIURL),
 		Logger:               slog.Default(),
 		MeasuredPoliciesFile: cfg.JournalPath,
-	}, maxConcurrentConns)
+	})
 }
 
 // kubeletPods reads the loopback kubelet. Its serving certificate is
