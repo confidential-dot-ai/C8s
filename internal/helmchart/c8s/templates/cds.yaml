@@ -46,6 +46,10 @@ containers:
       - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
       {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json
+      {{- /* The measured image holds this seed, so following it publishes
+             nothing an operator token would not. The seed ConfigMap below is
+             editable by namespace RBAC: read it once. */}}
+      - --follow-seed
       - --operator-keys=/run/c8s-node/operator-pubkey
       - --dns-san-file=/run/c8s-node/tls-san
       {{- else }}
@@ -99,6 +103,12 @@ containers:
       - --rate-limiter-idle-timeout={{ .Values.cds.rateLimiterIdleTimeout }}
       - --armtls-platform={{ .Values.cds.armtlsPlatform }}
       - --armtls-cert-ttl={{ .Values.cds.armtlsCertTTL }}
+      {{- /* The measured-policy journal, under the attestation-api-socket
+             mount. Without that mount the default node path is absent and
+             CDS logs it. */}}
+      {{- if include "c8s.attestationApiSocketPresent" . }}
+      - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
+      {{- end }}
     {{- with (include "c8s.attestationApiHostIPEnv" .) }}
     # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
     # IP so this pod-netns pod reaches the node-baked host attestation-api.
@@ -253,7 +263,7 @@ spec:
 {{- end }}
 {{- $cdsShape := include "c8s.cdsShapeName" . }}
 {{- $liveCDS := lookup "apps/v1" "Deployment" .Release.Namespace (include "c8s.cdsName" .) | default dict }}
-{{- include "c8s.cdsShapeGuard" (dict "live" (dig "metadata" "annotations" "confidential.ai/cds-shape" "" $liveCDS) "want" $cdsShape "published" (default "" .Values.cds.publishedShape)) }}
+{{- include "c8s.cdsShapeGuard" (dict "live" (dig "metadata" "annotations" "confidential.ai/cds-shape" "" $liveCDS) "want" $cdsShape "entry" (include "c8s.cdsEntryName" .) "published" (default "" .Values.cds.publishedShape)) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

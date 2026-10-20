@@ -134,7 +134,7 @@ func NewBundle(opts BundleOptions) (err error) {
 		TLSSAN:                  opts.TLSSAN,
 		Workloads:               workloads,
 	}
-	if opts.Router.Upstream != "" || len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.ACMECA != "" {
+	if len(opts.Router.Hostnames) > 0 || opts.Router.ACMEEmail != "" || opts.Router.ACMEDirectoryURL != "" || opts.Router.ACMECA != "" {
 		router := opts.Router
 		server.Router = &router
 	}

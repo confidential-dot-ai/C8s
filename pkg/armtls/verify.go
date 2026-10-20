@@ -215,7 +215,8 @@ const defaultAttestationVerifyTimeout = 10 * time.Second
 
 // verifyOnline hands the evidence to the attestation-api through
 // [agarmtls.VerifyWithService], which derives the REPORTDATA anchor from pub
-// and nonce, fails closed on the verdict, and then enforces policy.Policy.
+// and nonce, fails closed on the verdict, and then enforces policy.Policy,
+// whose anchored pins accept a replaying runtime list as [EnforceImages] does.
 //
 // C8s ships no in-process quote parser, so every platform is verified there,
 // bare-metal SNP included; an inline VCEK travels in the envelope as
@@ -234,7 +235,9 @@ func verifyOnline(att *Attestation, pub crypto.PublicKey, policy *VerifyPolicy, 
 	defer cancel()
 
 	svc := NewAttestationClient(policy.AttestationApiURL)
-	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, policy.Policy)
+	pins := policy.Policy
+	pins.Images = acceptReplayed(pins.Images)
+	resp, err := agarmtls.VerifyWithService(ctx, svc, att, pub, nonce, pins)
 	if err != nil {
 		return nil, mapVerifyError(att.Family, err)
 	}

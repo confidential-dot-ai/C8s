@@ -225,6 +225,7 @@ func evidenceFromDiscovery(data []byte, source string, trust leafTrust, observed
 	return &evidence{
 		platform:            platformOrDefault(d.Attestation.Platform),
 		rawEvidence:         d.Attestation.Evidence,
+		measured:            d.Attestation.RuntimeExtensions,
 		erd:                 keyAnchor(rd),
 		fresh:               false,
 		source:              source,

@@ -347,7 +347,7 @@ func TestNonDiscoveryEvidencePresentsNoFrontDoor(t *testing.T) {
 			return gatherFromARMTLSCert(context.Background(), strings.TrimPrefix(srv.URL, "https://"), "", 5*time.Second, leafTrust{})
 		}, "verified"},
 		{"attest-pq endpoint", func(*testing.T) (*evidence, error) {
-			return evidenceFromEndpointJSON(endpointJSON, nonce, sess.ek, "attestation endpoint")
+			return evidenceFromEndpointJSON(endpointJSON, nonce, sess.ek, testRoute, "attestation endpoint")
 		}, "partial"},
 		{"saved bare evidence", func(*testing.T) (*evidence, error) {
 			return evidenceFromBareJSON([]byte(`{"evidence":{"attestation_report":"AAAA"}}`), make([]byte, 48), "file")

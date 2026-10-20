@@ -6,6 +6,7 @@ enableServiceLinks: false
 {{- $acmeSidecar := eq (include "router.acmeSidecar" .) "true" -}}
 {{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- $renderAllowlistProxy := eq (include "router.renderAllowlistRoute" .) "true" -}}
+{{- $operatorKeys := and (not .Values.node.baked) .Values.cds.operatorKeys -}}
 {{- /* Same control-plane pin as CDS: a baked image boots one server,
        and only servers carry this RKE2 role label. */}}
 {{- if .Values.node.baked }}
@@ -147,19 +148,24 @@ containers:
         mountPath: {{ include "router.configDir" . }}
         readOnly: true
       {{- if $launchDriven }}
-      {{- /* nginx.conf includes router/upstream.conf and router/tls.conf
-             from here. */}}
+      {{- /* nginx.conf includes router/tls.conf from here. */}}
       {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
       {{- end }}
       - name: nginx-cache
         mountPath: /var/cache/nginx
       - name: nginx-tmp
         mountPath: /tmp
+      {{- if .Values.router.attest.enabled }}
+      - name: nginx-tunnel-body
+        mountPath: {{ include "router.tunnelBodyDir" . }}
+      {{- end }}
     {{- with .Values.router.nginx.resources }}
     resources:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-  {{- if .Values.router.attest.enabled }}
+  {{- /* Always rendered: its routing listener carries every application
+  request nginx's location / sends it (route policy A7), and
+  attest.enabled=false only unregisters the attestation endpoints. */}}
   - name: cds-attest
     image: {{ include "c8s.image" . }}
     imagePullPolicy: {{ default "IfNotPresent" .Values.image.pullPolicy }}
@@ -199,6 +205,17 @@ containers:
         mountPath: {{ .Values.router.tlsMountPath }}
         readOnly: true
       {{- include "c8s.attestationApiSocketMount" . | nindent 6 }}
+      {{- include "c8s.nodeConfigMount" . | nindent 6 }}
+      {{- if .Values.cds.measurementsConfig }}
+      - name: measurements-config
+        mountPath: /mnt/c8s-data/measurements
+        readOnly: true
+      {{- end }}
+      {{- if $operatorKeys }}
+      - name: operator-keys
+        mountPath: /mnt/c8s-data/operator-keys
+        readOnly: true
+      {{- end }}
       {{- if eq $publicTLSMode "webpki" }}
       # cds-attest reads the same public leaf nginx serves
       # (--serving-cert-file).
@@ -211,9 +228,6 @@ containers:
         mountPath: {{ include "router.acmeCertDir" . }}
         readOnly: true
       {{- end }}
-      {{- if $launchDriven }}
-      {{- include "c8s.nodeConfigMount" . | trim | nindent 6 }}
-      {{- end }}
     securityContext:
       allowPrivilegeEscalation: false
       readOnlyRootFilesystem: true
@@ -225,7 +239,6 @@ containers:
     resources:
       {{- toYaml . | nindent 6 }}
     {{- end }}
-  {{- end }}
   {{- if $renderAllowlistProxy }}
   # nginx terminates the public, router-attested connection and forwards
   # /allowlist over pod loopback. This sidecar establishes the second
@@ -277,6 +290,13 @@ volumes:
         - configMap:
             name: {{ include "c8s.fullname" . }}-measurements
   {{- end }}
+  {{- if $operatorKeys }}
+  - name: operator-keys
+    projected:
+      sources:
+        - configMap:
+            name: {{ include "c8s.cdsName" . }}-operator-keys
+  {{- end }}
   {{- if eq $publicTLSMode "webpki" }}
   - name: public-tls
     secret:
@@ -310,6 +330,17 @@ volumes:
     emptyDir:
       medium: Memory
       sizeLimit: 16Mi
+  {{- if .Values.router.attest.enabled }}
+  {{- $spool := include "router.quantityBytes" .Values.router.nginx.tunnelBodySpace }}
+  {{- $limit := include "router.quantityBytes" (dig "limits" "memory" "" (default dict .Values.router.nginx.resources)) }}
+  {{- if and $spool $limit (le ($limit | int64) ($spool | int64)) }}
+  {{- fail (printf "router.nginx.resources.limits.memory (%v) must exceed router.nginx.tunnelBodySpace (%v): the tunnel body tmpfs is charged to nginx's memory" .Values.router.nginx.resources.limits.memory .Values.router.nginx.tunnelBodySpace) }}
+  {{- end }}
+  - name: nginx-tunnel-body
+    emptyDir:
+      medium: Memory
+      sizeLimit: {{ required "router.nginx.tunnelBodySpace is required" .Values.router.nginx.tunnelBodySpace }}
+  {{- end }}
   - name: nginx-config
     {{- if .Values.node.baked }}
     hostPath:
@@ -358,13 +389,6 @@ Recreate, silently defeating the operator's opt-out. */ -}}
 
 {{- $expectedWorkload := include "router.expectedWorkload" . -}}
 {{- if $expectedWorkload -}}
-{{- if not .Values.router.attest.enabled -}}
-{{- /* The gate *is* the cds-attest sidecar's /readyz. Without the sidecar
-nothing renders it, yet the claims wiring it pulls in (get-cert's
---workload-claims, the inventory hostPath, the supplemental group) still would
-— cost and hostPath surface for a gate that does not exist. */ -}}
-{{- fail "router.attest.expectedWorkload gates the cds-attest sidecar's /readyz endpoint: set router.attest.enabled=true or clear expectedWorkload" -}}
-{{- end -}}
 {{- if .Values.router.hostPort.enabled -}}
 {{- /* Readiness only withdraws Service endpoints. The hostPort is published by
 the CNI portmap plugin, wired at sandbox creation and independent of pod
@@ -414,6 +438,9 @@ spec:
         # A ConfigMap edit alone does not change the pod template, so without
         # this a tightened pin would not roll the router.
         checksum/measurements-config: {{ .Values.cds.measurementsConfig | sha256sum }}
+        {{- end }}
+        {{- if and (not .Values.node.baked) .Values.cds.operatorKeys }}
+        checksum/operator-keys: {{ .Values.cds.operatorKeys | sha256sum }}
         {{- end }}
     spec:
 {{- include "router.podSpec" . | nindent 6 }}

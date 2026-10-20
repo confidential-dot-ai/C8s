@@ -70,8 +70,8 @@ MUT_PATH=/e2e/volumes/$MUT
 # specs are generated from the same variables so they cannot drift apart. The
 # scripts must stay free of double quotes and backslashes: they are embedded
 # raw into JSON (the workload entry and the pod manifest).
-reader_script="until [ -f /run/c8s/volumes/$IMM/secret.txt ]; do sleep 1; done; httpd -f -p 8080 -h /run/c8s/volumes/$IMM"
-writer_script="until mountpoint -q /run/c8s/volumes/$MUT; do sleep 1; done; printf %s $MARKER > /run/c8s/volumes/$MUT/proof.txt; httpd -f -p 8080 -h /run/c8s/volumes/$MUT"
+reader_script="until [ -f /mnt/c8s-data/c8s-volumes/$IMM/secret.txt ]; do sleep 1; done; httpd -f -p 8080 -h /mnt/c8s-data/c8s-volumes/$IMM"
+writer_script="until mountpoint -q /mnt/c8s-data/c8s-volumes/$MUT; do sleep 1; done; printf %s $MARKER > /mnt/c8s-data/c8s-volumes/$MUT/proof.txt; httpd -f -p 8080 -h /mnt/c8s-data/c8s-volumes/$MUT"
 
 PF_PODS=""
 cleanup() {
@@ -146,7 +146,7 @@ digest=$(c8s allowlist inspect-image "$BUSYBOX" | awk '$1 == "digest:" { print $
 image="$BUSYBOX@$digest"
 
 entry() {
-  # $1 = entry name, $2 = argv script, $3 = granted secret path
+  # $1 = entry name, $2 = argv script, $3 = granted secret path, $4 = volume name
   cat <<EOF
 {
   "$1": {
@@ -157,7 +157,11 @@ entry() {
         "digest": "$digest",
         "image": "$image",
         "command": { "policy": "exact", "argv": ["sh", "-c"] },
-        "args":    { "policy": "exact", "argv": ["$2"] }
+        "args":    { "policy": "exact", "argv": ["$2"] },
+        "mounts":  { "policy": "exact", "rules": [
+          { "destination": "/etc/c8s/certs", "kind": "emptyDir" },
+          { "destination": "/mnt/c8s-data/c8s-volumes/$4", "kind": "data" }
+        ] }
       }
     ],
     "secrets": { "policy": "allow", "read": ["$3"] }
@@ -206,7 +210,7 @@ consumer_pod() {
 EOF
 }
 
-entry "$READER" "$reader_script" "$IMM_PATH" | al apply - >/dev/null \
+entry "$READER" "$reader_script" "$IMM_PATH" "$IMM" | al apply - >/dev/null \
   || fail "reader workload entry rejected"
 echo "ok: reader workload entry applied (grant $IMM_PATH)"
 # The plugin polls CDS for allowlist changes on a 5s interval.
@@ -268,7 +272,7 @@ kubectl -n "$ns" delete pod $DENIED --wait=true --timeout=60s >/dev/null
 
 # --- 4. the writer: mutable volume, write + read + persistence -----------------
 
-entry "$WRITER" "$writer_script" "$MUT_PATH" | al apply - >/dev/null \
+entry "$WRITER" "$writer_script" "$MUT_PATH" "$MUT" | al apply - >/dev/null \
   || fail "writer workload entry rejected"
 echo "ok: writer workload entry applied (grant $MUT_PATH)"
 sleep 8

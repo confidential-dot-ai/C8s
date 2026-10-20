@@ -230,6 +230,7 @@ func verifyDocument(ctx context.Context, data []byte, verify localverify.VerifyF
 	if _, err := verify(ctx, platform, d.Attestation.Evidence, localverify.Params{
 		Measurements:       measurements,
 		ExpectedReportData: erd[:sha512.Size384],
+		RuntimeExtensions:  d.Attestation.RuntimeExtensions,
 	}); err != nil {
 		return nil, err
 	}

@@ -15,6 +15,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/verify"
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/secrets"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 const (
@@ -52,7 +53,7 @@ func NewCmd() *cobra.Command {
 	cmdsutil.BindImagePolicyFlags(flags, &cfg.measurementsConfig, nil, "", "pins complete client identities for /attest; excludes --measurements and --rtmrs")
 	flags.StringSliceVar(&cfg.rtmrs, "rtmrs", nil, "TDX RTMR pins <index>=<sha384-hex> required of TDX callers on /attest (repeatable; RTMR[1] pins the guest kernel, RTMR[2] the command line carrying the dm-verity root hash). SNP evidence is unaffected. Empty = no RTMR pinning: on TDX the reference values then cover TDVF firmware only, UNSAFE")
 
-	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses allowlist writes for this long after it starts")
+	flags.Int64Var(&cfg.jwtClockSkew, "jwt-clock-skew", 30, "operator JWT clock skew tolerance in seconds; without --allowlist-persistent, CDS also refuses operator-token requests (allowlist, routes, secrets) for this long after it starts")
 	flags.DurationVar(&cfg.certTTL, "cert-ttl", 24*time.Hour, "")
 	flags.DurationVar(&cfg.namedCertTTL, "named-cert-ttl", issuer.MaxNamedLeafTTL, "upper bound on the TTL of a leaf carrying a matched-workload stamp — the documented stale-identity bound for a named leaf (never applied to membership-only leaves). Must be positive and may only shorten the built-in ceiling, never raise it")
 	flags.DurationVar(&cfg.challengeTTL, "challenge-ttl", 60*time.Second, "")
@@ -73,7 +74,8 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
-	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving, and again whenever its content changes; missing entries are added, existing entries are left untouched (empty disables seeding)")
+	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
+	flags.BoolVar(&cfg.followSeed, "follow-seed", false, "reread --allowlist-seed every 30s and seed it again when its content changes. Whoever can write the seed file then publishes entries without an operator token, so set it only for a seed no one can change, such as the measured node image's")
 	flags.StringVar(&cfg.operatorKeys, "operator-keys", "", "Path to a PEM bundle of pinned operator EC public keys; /allowlist writes (PUT/DELETE) and PUT /routes require an operator token signed by one of them, each token authorizing one write (empty = writes disabled, reads still served)")
 
 	flags.Float64Var(&cfg.rateLimit, "rate-limit", 10, "max requests per second per source IP on attestation endpoints")
@@ -89,6 +91,7 @@ func NewCmd() *cobra.Command {
 
 	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
+	flags.StringVar(&cfg.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the armTLS serving and sandbox-digests client certificates list it. Empty lists none")
 
 	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
@@ -144,10 +147,12 @@ type config struct {
 	allowlistDB         string
 	allowlistPersistent bool
 	allowlistSeed       string
+	followSeed          bool
 	inventoryCIDRs      []string
 	operatorKeys        string
 	armtlsPlatform      string
 	armtlsCertTTL       time.Duration
+	measuredPolicies    string
 
 	rateLimit                float64
 	rateBurst                int

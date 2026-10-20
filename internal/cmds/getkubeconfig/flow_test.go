@@ -45,11 +45,27 @@ func newAttestedTLSServer(t *testing.T, handler http.Handler) *httptest.Server {
 
 func newPlatformAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, handler http.Handler) *httptest.Server {
 	t.Helper()
+	return newAttestedTLSServerWithExtensions(t, platform, nil, handler)
+}
+
+// newAttestedTLSServerWithExtensions serves a leaf whose TDX attestation
+// carries extensions as its runtime extension list.
+func newAttestedTLSServerWithExtensions(t *testing.T, platform teetypes.PlatformType, extensions []string, handler http.Handler) *httptest.Server {
+	t.Helper()
+	srv := unstartedAttestedTLSServer(t, platform, extensions, handler)
+	srv.StartTLS()
+	return srv
+}
+
+// unstartedAttestedTLSServer is newAttestedTLSServerWithExtensions before
+// StartTLS, so a test can choose its listener.
+func unstartedAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, extensions []string, handler http.Handler) *httptest.Server {
+	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	att := &armtls.Attestation{Family: armtls.TEETypeTDX, Report: []byte(tdxEnvelope)}
+	att := &armtls.Attestation{Family: armtls.TEETypeTDX, Report: []byte(tdxEnvelope), RuntimeExtensions: extensions}
 	if platform == teetypes.PlatformSNP {
 		rd, err := armtls.ReportDataForKey(&key.PublicKey, nil)
 		if err != nil {
@@ -65,7 +81,6 @@ func newPlatformAttestedTLSServer(t *testing.T, platform teetypes.PlatformType, 
 	}
 	srv := httptest.NewUnstartedServer(handler)
 	srv.TLS = &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}}}
-	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
 }

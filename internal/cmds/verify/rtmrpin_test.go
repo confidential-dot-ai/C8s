@@ -3,6 +3,7 @@ package verify
 import (
 	"context"
 	"crypto/x509"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -352,6 +353,9 @@ func TestTDXMRTDOnlyWarns(t *testing.T) {
 func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
 	for _, mode := range []string{"", "auto", "armtls-cert", "discovery", "attest-pq"} {
 		cfg := config{mode: mode, measurements: []string{testMRTD}}
+		if mode == "attest-pq" {
+			cfg.routeDigests = []string{hex.EncodeToString(testRouteDigest)}
+		}
 		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
 		if oc.Verified {
 			t.Errorf("mode %q: an MRTD-only TDX policy with no CA anchor must fail — the measurement pins are the entire trust anchor", mode)
@@ -368,7 +372,7 @@ func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
 	t.Run("--mesh-ca pinned", func(t *testing.T) {
 		plan := mustPlan(t, config{measurements: []string{testMRTD}})
 		plan.meshCA = x509.NewCertPool()
-		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}}
+		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}, routeDigests: []string{hex.EncodeToString(testRouteDigest)}}
 		oc := newOutcome(cfg, &evidence{platform: "tdx"}, tdxResult(testMRTD, matchingRTMRs()), nil, plan)
 		if !oc.Verified {
 			t.Fatalf("a pinned-anchor verdict must pass with a warning: %s", oc.Error)
@@ -379,7 +383,7 @@ func TestTDXMRTDOnlyRejectedWithoutCAAnchor(t *testing.T) {
 	})
 
 	t.Run("responder-committed chain is not an anchor", func(t *testing.T) {
-		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}}
+		cfg := config{mode: "attest-pq", measurements: []string{testMRTD}, routeDigests: []string{hex.EncodeToString(testRouteDigest)}}
 		ev := &evidence{platform: "tdx", leafChainDerived: true}
 		oc := newOutcome(cfg, ev, tdxResult(testMRTD, matchingRTMRs()), nil, mustPlan(t, cfg))
 		if oc.Verified {

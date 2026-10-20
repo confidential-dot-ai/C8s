@@ -27,7 +27,7 @@ import (
 // gatherFromAttestLB fetches attest-lb evidence over one TLS connection and
 // binds it to the serving leaf that connection presented, so the verdict
 // speaks for the connection a native client rides afterwards.
-func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout time.Duration) (*evidence, error) {
+func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout time.Duration, route *boundRoute) (*evidence, error) {
 	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("generate nonce: %w", err)
@@ -80,13 +80,13 @@ func gatherFromAttestLB(ctx context.Context, base, serverName string, timeout ti
 	if servingLeaf == nil {
 		return nil, fmt.Errorf("attest-lb needs a TLS target: no serving certificate was observed")
 	}
-	return evidenceFromAttestLBJSON(data, nonce, servingLeaf, true, fmt.Sprintf("attest-lb endpoint %s", u.Redacted()))
+	return evidenceFromAttestLBJSON(data, nonce, servingLeaf, true, route, fmt.Sprintf("attest-lb endpoint %s", u.Redacted()))
 }
 
 // gatherAttestLBFromFile verifies a saved attest-lb receipt against the
 // challenge and serving leaf the caller recorded when fetching it. The
 // caller chose the nonce, so nothing proves the receipt is current.
-func gatherAttestLBFromFile(data []byte, servingCertPath, nonceB64, source string) (*evidence, error) {
+func gatherAttestLBFromFile(data []byte, servingCertPath, nonceB64 string, route *boundRoute, source string) (*evidence, error) {
 	nonce, err := base64.RawURLEncoding.DecodeString(nonceB64)
 	if err != nil || len(nonce) != nonceSize {
 		return nil, fmt.Errorf("--attestation-nonce must be %d bytes of unpadded base64url", nonceSize)
@@ -102,13 +102,13 @@ func gatherAttestLBFromFile(data []byte, servingCertPath, nonceB64, source strin
 	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
 		return nil, fmt.Errorf("parse --observed-serving-cert: %w", err)
 	}
-	return evidenceFromAttestLBJSON(data, nonce, block.Bytes, false, source)
+	return evidenceFromAttestLBJSON(data, nonce, block.Bytes, false, route, source)
 }
 
 // evidenceFromAttestLBJSON verifies an attest-lb bundle against the nonce
-// sent and the serving leaf observed on the same connection. fresh reports
-// whether this process generated the nonce.
-func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, source string) (*evidence, error) {
+// sent, the serving leaf observed on the same connection and the expected
+// route digest. fresh reports whether this process generated the nonce.
+func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, route *boundRoute, source string) (*evidence, error) {
 	var r attestationResponse
 	if err := json.Unmarshal(data, &r); err != nil {
 		return nil, fmt.Errorf("parse attestation response: %w", err)
@@ -127,11 +127,15 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 	if r.ServingLeafSHA256 != "" && r.ServingLeafSHA256 != servingDigest {
 		return nil, &securityError{err: fmt.Errorf("receipt serving_leaf_sha256 does not match the serving certificate observed on the connection")}
 	}
+	route, err = resolveRoute(r.RouteDigest, route)
+	if err != nil {
+		return nil, err
+	}
 	leaf, ca, err := committedMeshChain(r.CDSCertPEM, r.IdentityProof)
 	if err != nil {
 		return nil, err
 	}
-	erd, err := overenc.LBTranscriptHash(r.FrontDoorMode, nonce, servingLeaf, leaf.Raw, ca.Raw)
+	erd, err := overenc.LBTranscriptHash(r.FrontDoorMode, nonce, servingLeaf, leaf.Raw, ca.Raw, route.digest)
 	if err != nil {
 		return nil, fmt.Errorf("compute attest-lb transcript: %w", err)
 	}
@@ -153,8 +157,9 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 		rawEvidence:       r.Evidence,
 		erd:               erd,
 		fresh:             fresh,
+		measured:          r.MeasuredPolicies,
 		source:            source,
-		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA (leaf proof of possession verified)",
+		bindingNote:       "REPORTDATA binds the attest-lb transcript: front-door mode + nonce + " + servingLeafNote + " + the exact mesh leaf and its transcript-committed issuing CA + the route digest (leaf proof of possession verified)",
 		leaf:              leaf,
 		leafChainDerived:  true,
 		frontDoor:         frontDoorAttested,
@@ -163,6 +168,7 @@ func evidenceFromAttestLBJSON(data, nonce, servingLeaf []byte, fresh bool, sourc
 		sandboxErr:        sandboxErr,
 		workload:          workload,
 		workloadErr:       workloadErr,
+		route:             route,
 	}, nil
 }
 

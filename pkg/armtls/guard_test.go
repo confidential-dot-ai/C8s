@@ -72,6 +72,108 @@ func rawReportFieldReads(t *testing.T, root string) []string {
 	}
 
 	var hits []string
+	walkSources(t, root, func(rel string, fset *token.FileSet, f *ast.File) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			if what, bad := banned[sel.Sel.Name]; bad {
+				hits = append(hits, rel+":"+strconv.Itoa(fset.Position(sel.Pos()).Line)+" "+sel.Sel.Name+" ("+what+")")
+			}
+			return true
+		})
+	})
+	return hits
+}
+
+// Every producer that can self-sign a TDX certificate or attest names the
+// node's measured-policy journal, so none silently omits the list a peer
+// replays RTMR[3] with.
+func TestProducersNameTheJournal(t *testing.T) {
+	if hits := producersWithoutJournal(t, moduleRoot(t)); len(hits) > 0 {
+		t.Fatalf("producers must set MeasuredPoliciesFile:\n  %s", strings.Join(hits, "\n  "))
+	}
+}
+
+func TestProducersWithoutJournalFires(t *testing.T) {
+	for _, tc := range []struct {
+		name, literal string
+		want          bool
+	}{
+		{name: "self-signing server", literal: "armtls.ServerConfig{AttestFunc: f}", want: true},
+		{name: "self-signing client", literal: "&armtls.ClientConfig{Platform: p, AttestFunc: f}", want: true},
+		{name: "CDS client", literal: "cdsclient.Config{CDSURL: u}", want: true},
+		{name: "digests client", literal: "workloadclaims.DigestsClientConfig{AttestFunc: f}", want: true},
+		{name: "wired server", literal: "armtls.ServerConfig{AttestFunc: f, MeasuredPoliciesFile: j}"},
+		{name: "verify-only client", literal: "armtls.ClientConfig{Policy: p}"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := "package x\n\nvar v = " + tc.literal + "\n"
+			if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte(src), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if hits := producersWithoutJournal(t, dir); (len(hits) == 1) != tc.want {
+				t.Fatalf("producersWithoutJournal(%s) = %v, want a hit: %v", tc.literal, hits, tc.want)
+			}
+		})
+	}
+}
+
+// producersWithoutJournal lists the producer configs under root that leave
+// out MeasuredPoliciesFile: armTLS configs that self-sign (they set
+// AttestFunc), and the CDS and sandbox-digests clients, which always attest.
+func producersWithoutJournal(t *testing.T, root string) []string {
+	t.Helper()
+	var hits []string
+	walkSources(t, root, func(rel string, fset *token.FileSet, f *ast.File) {
+		ast.Inspect(f, func(n ast.Node) bool {
+			lit, ok := n.(*ast.CompositeLit)
+			if !ok {
+				return true
+			}
+			typ := typeName(lit.Type)
+			keys := map[string]bool{}
+			for _, elt := range lit.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					if id, ok := kv.Key.(*ast.Ident); ok {
+						keys[id.Name] = true
+					}
+				}
+			}
+			var producer bool
+			switch typ {
+			case "armtls.ServerConfig", "armtls.ClientConfig", "ServerConfig", "ClientConfig":
+				producer = keys["AttestFunc"]
+			case "cdsclient.Config", "workloadclaims.DigestsClientConfig":
+				producer = true
+			}
+			if producer && !keys["MeasuredPoliciesFile"] {
+				hits = append(hits, rel+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+" "+typ)
+			}
+			return true
+		})
+	})
+	return hits
+}
+
+func typeName(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.SelectorExpr:
+		if x, ok := e.X.(*ast.Ident); ok {
+			return x.Name + "." + e.Sel.Name
+		}
+	}
+	return ""
+}
+
+// walkSources parses every non-test Go file of the module under root and
+// passes it to visit with its path relative to root.
+func walkSources(t *testing.T, root string, visit func(rel string, fset *token.FileSet, f *ast.File)) {
+	t.Helper()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -97,26 +199,16 @@ func rawReportFieldReads(t *testing.T, root string) []string {
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			sel, ok := n.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if what, bad := banned[sel.Sel.Name]; bad {
-				r, rerr := filepath.Rel(root, path)
-				if rerr != nil {
-					r = path
-				}
-				hits = append(hits, r+":"+strconv.Itoa(fset.Position(sel.Pos()).Line)+" "+sel.Sel.Name+" ("+what+")")
-			}
-			return true
-		})
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			rel = path
+		}
+		visit(rel, fset, f)
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
-	return hits
 }
 
 // moduleRoot walks up from the package dir to the go.mod root, so the guard

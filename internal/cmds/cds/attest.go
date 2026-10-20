@@ -205,7 +205,7 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 	// only record of what actually attested.
 	launchDigest := strings.ToLower(verifyResp.Result.Claims.LaunchDigest)
 	if len(h.Images) > 0 {
-		if err := remote.EnforceImages(verifyResp, h.Images, req.Evidence.Platform); err != nil {
+		if err := armtls.EnforceImages(verifyResp, h.Images, req.Evidence.Platform, req.RuntimeExtensions); err != nil {
 			slog.Warn("node identity does not match policy", "error", err, "remote_addr", r.RemoteAddr)
 			attestation.WriteError(w, http.StatusForbidden, types.ErrorCodeMeasurementDenied, "node identity not allowed")
 			return

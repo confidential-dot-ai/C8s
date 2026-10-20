@@ -59,6 +59,11 @@ type ServerConfig struct {
 	// The certificate is rotated automatically at 50% of TTL.
 	CertTTL time.Duration
 
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// ([NodeJournal] on the node) a self-signed TDX certificate lists. Empty
+	// lists none.
+	MeasuredPoliciesFile string
+
 	// ClientPolicy, when set, enables mTLS: the server requires client
 	// certificates and verifies their armTLS attestation against this policy.
 	// When nil, the server does not request client certificates.
@@ -123,6 +128,11 @@ type ClientConfig struct {
 	// CertTTL is the client certificate lifetime. Default: 24h.
 	// Only used when Platform and AttestFunc are set.
 	CertTTL time.Duration
+
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// ([NodeJournal] on the node) a self-signed TDX certificate lists. Empty
+	// lists none.
+	MeasuredPoliciesFile string
 
 	// RotationTimeout is the maximum time allowed for background certificate
 	// rotation. Default: 30s.
@@ -700,8 +710,9 @@ func NewServerTLSConfig(cfg *ServerConfig) (*tls.Config, *CertManager, error) {
 			return nil, nil, fmt.Errorf("armtls: AttestFunc is required")
 		}
 		provider = &SelfSignedProvider{
-			Platform:   cfg.Platform,
-			AttestFunc: cfg.AttestFunc,
+			Platform:         cfg.Platform,
+			AttestFunc:       cfg.AttestFunc,
+			MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
 			Opts: &CertOptions{
 				Subject:  cfg.Subject,
 				TTL:      cfg.CertTTL,
@@ -812,9 +823,10 @@ func NewClientTLSConfig(cfg *ClientConfig) (*tls.Config, *CertManager, error) {
 			provider = cfg.CertProvider
 		} else {
 			provider = &SelfSignedProvider{
-				Platform:   cfg.Platform,
-				AttestFunc: cfg.AttestFunc,
-				Opts:       &CertOptions{TTL: cfg.CertTTL},
+				Platform:         cfg.Platform,
+				AttestFunc:       cfg.AttestFunc,
+				MeasuredPolicies: NewJournal(cfg.MeasuredPoliciesFile),
+				Opts:             &CertOptions{TTL: cfg.CertTTL},
 			}
 		}
 
@@ -886,32 +898,7 @@ func dualVerifyPeerCallback(policy *VerifyPolicy, shared *sharedCACerts) func([]
 
 		// Try X.509 chain verification first (fast path — no AMD KDS).
 		// Read the CA pool atomically so UpdateCACerts is safe.
-		caPool := shared.getPool()
-		intermediates := x509.NewCertPool()
-		for _, rawCert := range rawCerts[1:] {
-			if ic, err := x509.ParseCertificate(rawCert); err == nil {
-				intermediates.AddCert(ic)
-			}
-		}
-		// Both branches must share one validity window. x509.Verify grants no
-		// NotBefore skew while certutil.CheckValidity (the embedded-evidence branch,
-		// through VerifyCert) grants certutil.LeafValiditySkew, so without
-		// CurrentTime a CA-signed leaf minted a couple of minutes into our
-		// future fails the chain here and silently falls through to embedded-evidence verification —
-		// where the sandbox and workload pins below are not enforced at all.
-		// Shifting CurrentTime closes that divergence; the leaf's own NotAfter
-		// is then re-checked at the true now, so the shift buys nothing at the
-		// expiry end.
-		now := time.Now()
-		_, chainErr := cert.Verify(x509.VerifyOptions{
-			Roots:         caPool,
-			Intermediates: intermediates,
-			KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
-			CurrentTime:   now.Add(certutil.LeafValiditySkew),
-		})
-		if chainErr == nil {
-			chainErr = certutil.CheckValidity(cert, now)
-		}
+		chainErr := verifyChain(cert, rawCerts[1:], shared.getPool(), time.Now())
 		if chainErr == nil {
 			// The chain is verified here and only here, so this is the one place
 			// a sandbox-ID or workload pin can be enforced: CDS's signature over
