@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -41,7 +40,7 @@ func attestedTDXServer(t *testing.T, extensions []string, handler http.Handler) 
 // launch key once the register replays the key's seed followed by a prefix
 // of the measured list the guest claims. A list the register does not
 // explain, or a register the list does not reach, fails.
-func TestVerifyFreshEvidenceAcceptsReplayingPrefix(t *testing.T) {
+func TestVerifyEvidenceAcceptsReplayingPrefix(t *testing.T) {
 	pub := operatorPub(t)
 	manifest := writeTestManifest(t, tdxManifest())
 	exp, err := PolicyFor(manifest, pub, nil)
@@ -82,10 +81,10 @@ func TestVerifyFreshEvidenceAcceptsReplayingPrefix(t *testing.T) {
 				return res, nil
 			}
 			envelope := []byte(`{"platform":"tdx","evidence":{"quote":"AA=="}}`)
-			res, err := VerifyFreshEvidence(manifest, pub, envelope, reportData, tc.claimed)
+			res, err := VerifyEvidence(envelope, reportData, exp.WithMeasuredPolicies(tc.claimed))
 			if tc.wantErr == "" {
 				if err != nil {
-					t.Fatalf("VerifyFreshEvidence = %v, want success", err)
+					t.Fatalf("VerifyEvidence = %v, want success", err)
 				}
 				if res == nil || res.Platform != teetypes.PlatformTDX {
 					t.Fatalf("result = %+v, want the verified TDX result", res)
@@ -93,7 +92,7 @@ func TestVerifyFreshEvidenceAcceptsReplayingPrefix(t *testing.T) {
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
-				t.Fatalf("VerifyFreshEvidence = %v, want error containing %q", err, tc.wantErr)
+				t.Fatalf("VerifyEvidence = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
 	}
@@ -102,7 +101,7 @@ func TestVerifyFreshEvidenceAcceptsReplayingPrefix(t *testing.T) {
 // The measuring-guest client binds the launch key through the leaf's own
 // list: a leaf whose list replays its quote's register opens the channel, a
 // leaf that lists nothing while the register has moved does not.
-func TestNewMeasuringGuestClientReplaysTheLeafList(t *testing.T) {
+func TestClientReplaysTheLeafList(t *testing.T) {
 	pub := operatorPub(t)
 	manifest := writeTestManifest(t, tdxManifest())
 	exp, err := PolicyFor(manifest, pub, nil)
@@ -134,10 +133,7 @@ func TestNewMeasuringGuestClientReplaysTheLeafList(t *testing.T) {
 				_, _ = w.Write([]byte(`{"digests":[]}`))
 			}))
 			t.Cleanup(srv.Close)
-			client, err := NewMeasuringGuestClient(manifest, pub, 5*time.Second)
-			if err != nil {
-				t.Fatal(err)
-			}
+			client := NewClient(exp.WithMeasuredPolicies(nil), 5*time.Second)
 			resp, err := client.Get(srv.URL + "/v1/measurements")
 			if err == nil {
 				resp.Body.Close()
@@ -152,8 +148,5 @@ func TestNewMeasuringGuestClientReplaysTheLeafList(t *testing.T) {
 				t.Fatalf("dial = %v, want error containing %q", err, tc.wantErr)
 			}
 		})
-	}
-	if _, err := NewMeasuringGuestClient(filepath.Join(t.TempDir(), "absent.json"), pub, time.Second); err == nil || !strings.Contains(err.Error(), "--image-manifest") {
-		t.Fatalf("missing manifest: %v", err)
 	}
 }

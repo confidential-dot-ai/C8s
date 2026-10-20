@@ -30,6 +30,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/runtimemeasure"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
+	"github.com/confidential-dot-ai/c8s/internal/guestverify"
 )
 
 const pods = `{"kind":"PodList","apiVersion":"v1","items":[
@@ -72,6 +73,15 @@ func TestHandlerReturnsOnlyTheSignedPod(t *testing.T) {
 	}
 }
 
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestGetValidatesInputsBeforeDialing(t *testing.T) {
 	ok := AttestConfig{Node: "10.0.0.5", LaunchKeyPubPath: "pub", ImageManifestPath: "m.json", Timeout: time.Second}
 	tests := []struct {
@@ -85,6 +95,7 @@ func TestGetValidatesInputsBeforeDialing(t *testing.T) {
 		{"zero timeout", func(c *AttestConfig) { c.Timeout = 0 }, "--timeout"},
 		{"url node", func(c *AttestConfig) { c.Node = "https://10.0.0.5/x" }, "host or IP"},
 		{"missing key file", func(c *AttestConfig) {}, "--launch-key-pub"},
+		{"missing manifest file", func(c *AttestConfig) { c.LaunchKeyPubPath = writeFile(t, "pubkey", "k") }, "--image-manifest"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -135,6 +146,7 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	if err := os.WriteFile(pubPath, pub, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	manifestPath := writeTDXManifest(t, dir)
 	if err := os.WriteFile(journalPath, []byte(strings.Join(journal, "\n")+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,20 +177,63 @@ func attestFixture(t *testing.T, registered, journal []string, relayKey crypto.P
 	}
 	oldClient, oldVerify := newClient, verifyFresh
 	t.Cleanup(func() { newClient, verifyFresh = oldClient, oldVerify })
+	lastClaimed = nil
 	// Like the armTLS client, this one leaves the certificate check to its own
 	// VerifyConnection; the fixture has none, so the serving-key pin alone decides.
-	newClient = func(string, []byte, time.Duration) (*http.Client, error) {
-		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}, nil //nolint:gosec // test fixture
+	newClient = func(exp guestverify.Policy, _ time.Duration) *http.Client {
+		if !exp.MeasuresPolicies() {
+			t.Error("channel policy does not replay the leaf's measured list")
+		}
+		return &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} //nolint:gosec // test fixture
 	}
-	verifyFresh = func(_ string, key, _, reportData []byte, _ []string) (*teetypes.VerificationResult, error) {
-		if string(key) != string(pub) || !slices.Equal(reportData, quoted) {
+	verifyFresh = func(_, reportData []byte, exp guestverify.Policy) (*teetypes.VerificationResult, error) {
+		lastClaimed = exp.MeasuredPolicies()
+		if !slices.Equal(reportData, quoted) {
 			return nil, errors.New("report data does not match the expected binding")
 		}
 		reg := runtimemeasure.FromDigestsSeeded(runtimemeasure.Seed(pub), registered)
 		return &teetypes.VerificationResult{SignatureValid: true, Platform: teetypes.PlatformTDX,
 			Claims: teetypes.Claims{LaunchDigest: "11", PlatformData: map[string]any{"rtmr_3": hex.EncodeToString(reg[:])}}}, nil
 	}
-	return AttestConfig{Node: strings.TrimPrefix(srv.URL, "https://"), LaunchKeyPubPath: pubPath, ImageManifestPath: "m.json", Timeout: 5 * time.Second}
+	return AttestConfig{Node: strings.TrimPrefix(srv.URL, "https://"), LaunchKeyPubPath: pubPath, ImageManifestPath: manifestPath, Timeout: 5 * time.Second}
+}
+
+// lastClaimed is the measured list the fixture's verifier was last asked to
+// replay against the fresh evidence.
+var lastClaimed []string
+
+// writeTDXManifest writes a TDX image manifest with throwaway register pins.
+func writeTDXManifest(t *testing.T, dir string) string {
+	t.Helper()
+	pin := func(b byte) string { return strings.Repeat(string(rune(b)), 96) }
+	path := filepath.Join(dir, "manifest.json")
+	manifest := `{"mrtd":"` + pin('1') + `","rtmr1":"` + pin('2') + `","rtmr2":"` + pin('3') + `"}`
+	if err := os.WriteFile(path, []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The channel and the fresh evidence share one gate. The channel's policy
+// tracks the leaf's list, so the serving certificate must replay its own
+// list; the evidence is asked to replay exactly the list read on both sides
+// of the quote (PS6), and the register must equal that list in full.
+func TestAttestReplaysCertListAgainstRegister(t *testing.T) {
+	cfg := attestFixture(t, []string{dA, dB}, []string{dA, dB}, nil)
+	report, _, err := Attest(context.Background(), cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(lastClaimed, []string{dA, dB}) || !slices.Equal(report.MeasuredDigests, []string{dA, dB}) {
+		t.Fatalf("claimed %v, reported %v; want the list read from the guest", lastClaimed, report.MeasuredDigests)
+	}
+	cfg = attestFixture(t, []string{dA, dB}, []string{dA}, nil)
+	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "do not explain the attested register") {
+		t.Fatalf("list short of the register: %v", err)
+	}
+	if !slices.Equal(lastClaimed, []string{dA}) {
+		t.Fatalf("claimed %v, want the short list the guest served", lastClaimed)
+	}
 }
 
 func TestAttestBindsMeasuredDigests(t *testing.T) {
@@ -198,7 +253,7 @@ func TestAttestBindsMeasuredDigests(t *testing.T) {
 	if _, _, err := Attest(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "expected") {
 		t.Fatalf("expected set mismatch: %v", err)
 	}
-	if body, err := Get(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: "m.json", Timeout: 5 * time.Second}); err != nil || !strings.Contains(string(body), `"app"`) {
+	if body, err := Get(context.Background(), AttestConfig{Node: cfg.Node, LaunchKeyPubPath: cfg.LaunchKeyPubPath, ImageManifestPath: cfg.ImageManifestPath, Timeout: 5 * time.Second}); err != nil || !strings.Contains(string(body), `"app"`) {
 		t.Fatalf("get: %s %v", body, err)
 	}
 }
