@@ -72,6 +72,7 @@ curl -fs --cacert acme-ca.pem "https://127.0.0.1:14000/dir" >/dev/null || { cat 
 cat > front-door.env <<EOF
 FRONT_DOOR_MODE=acme
 SERVER_NAME=$hostname
+ROUTE_HOST=$hostname
 ACME_DIRECTORY_URL=https://$runner_ip:14000/dir
 EOF
 echo "acme front door: $hostname, pebble at $runner_ip"

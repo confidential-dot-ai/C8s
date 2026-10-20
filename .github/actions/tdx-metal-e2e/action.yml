@@ -395,6 +395,7 @@ runs:
     env:
       CIE_DIR: /tmp/conf-inference
       FRONT_DOOR: ${{ inputs.front_door }}
+      IMAGE_MANIFEST: /tmp/image-manifest.json
       GH_TOKEN: ${{ github.token }}
     shell: bash
     run: bash "$GITHUB_WORKSPACE/test/e2e/conf-inference/prepare.sh"
@@ -414,8 +415,7 @@ runs:
       fi
       c8s launch-config new --out /tmp/launch-data --cluster-id "$VM" --server-name c8s-node \
         --image-manifest /tmp/image-manifest.json \
-        --workloads /tmp/conf-inference/allowlist/app.json \
-        --router-upstream c8s-gateway.confidential-inference.svc.cluster.local:9443 "${router_args[@]}"
+        --workloads /tmp/conf-inference/allowlist/app.json "${router_args[@]}"
       kubectl -n "$NS" create secret generic "$VM-opkey" \
         --from-file=pubkey=/tmp/launch-data/server/pubkey \
         --from-file=launch.yaml=/tmp/launch-data/server/launch.yaml \

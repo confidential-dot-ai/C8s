@@ -4,9 +4,10 @@
 # measured node, then check from outside, as a customer does, with
 # TEErminator and the gateway API. Nothing here skips; a missing input fails.
 #
-# The node was launched with prepare.sh's app.json as --workloads and the
-# gateway as --router-upstream. After the launch-path checks the script
-# uploads the full allowlist with `c8s allowlist upload` and checks again.
+# The node was launched with prepare.sh's app.json as --workloads. The
+# script routes the front door to the gateway with `c8s routes add`, as the
+# operator does after boot. After the launch-path checks it uploads the full
+# allowlist with `c8s allowlist upload` and checks again.
 #
 # Env: GUEST_IP, KUBECONFIG, CIE_DIR (prepare.sh's output), LAUNCH_DIR
 # (launch-config new --out), IMAGE_MANIFEST, GH_TOKEN (pulls the org-internal
@@ -27,6 +28,7 @@ front=https://$GUEST_IP:443
 cds=https://$GUEST_IP:30808
 pin=(--image-policy-file "$LAUNCH_DIR/server.json")
 key=$LAUNCH_DIR/server.key
+operator_pub=$LAUNCH_DIR/server/pubkey
 apps=(gateway inference-worker-0 sglang-router)
 router=$(jq -er '[.workloads | keys[] | select(startswith("c8s-router-"))] | if length == 1 then .[0] else error("want one router entry") end' node-image/allowlist-seed.json)
 echo "front-door workload from this build's seed: $router"
@@ -55,8 +57,15 @@ jq -e --rawfile pub "$LAUNCH_DIR/server/pubkey" '
   | if (.measurements | length) == 1 then . else error("want one server entry") end' \
   served-image-policy.json > cds-image-policy.json
 c8s verify "$cds" --kind cds --mode armtls-cert --image-policy-file cds-image-policy.json \
-  --served-policy-file served-image-policy.json --operator-keys "$LAUNCH_DIR/server/pubkey"
+  --served-policy-file served-image-policy.json --operator-keys "$operator_pub"
 echo "ok: CDS attests, serves the launch measurements and the launch operator key"
+
+# The front door's only route: / on $ROUTE_HOST to the gateway's mesh TLS
+# port, whose leaf must name the gateway entry.
+c8s routes add --new --url "$cds" "${pin[@]}" --operator-key "$key" --operator-keys "$operator_pub" \
+  --host "$ROUTE_HOST" --path / --address "c8s-gateway.$ns.svc.cluster.local:9444" --workload gateway
+# The acme name resolves through sslip.io; the cds one only here.
+[ "$FRONT_DOOR_MODE" = acme ] || echo "$GUEST_IP $ROUTE_HOST" | sudo tee -a /etc/hosts >/dev/null
 
 pub_der() { openssl pkey -in "$key" -pubout -outform DER; }
 op_sha=$(pub_der | sha256sum | cut -d' ' -f1)
@@ -152,8 +161,9 @@ verified() {
 # doubling to 30s), so allow a few rounds.
 attest() {
   teerminator remote rm "$local_addr" >/dev/null 2>&1 || true
-  teerminator remote add "$local_addr" "https://$GUEST_IP" --mode attest-lb --server-name "$SERVER_NAME" \
-    --image-manifest tdx-image.json --tdx-tcb-status UpToDate --workload "$router"
+  teerminator remote add "$local_addr" "https://$ROUTE_HOST" --mode attest-lb --server-name "$SERVER_NAME" \
+    --image-manifest tdx-image.json --tdx-tcb-status UpToDate --workload "$router" \
+    --route-operator-key "$operator_pub"
   for _ in $(seq 1 12); do verified && return 0; sleep 10; done
   fail "the front door is not Verified as $router"
 }
@@ -230,7 +240,7 @@ customer_round() {
   workload_args=()
   for app in "${apps[@]}"; do workload_args+=(--workload "$app"); done
   python3 "$here/client.py" attestation --mode "$FRONT_DOOR_MODE" --allowlist "$fetched" "${workload_args[@]}"
-  IMAGE_MANIFEST=$CIE_DIR/tdx-image.json "$here/verify-js.sh" "$router" api-key "$fetched"
+  IMAGE_MANIFEST=$CIE_DIR/tdx-image.json "$here/verify-js.sh" "https://$ROUTE_HOST" "$router" api-key "$fetched" "$operator_pub"
 }
 
 customer_round fetched-launch.json
