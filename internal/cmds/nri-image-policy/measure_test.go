@@ -73,6 +73,15 @@ func TestOpenMeasurerGating(t *testing.T) {
 	if info, err := os.Stat(journalPath(cfg)); err != nil || info.Mode().Perm() != 0o644 {
 		t.Fatalf("journal = %v, %v; want an empty 0644 file", info, err)
 	}
+	// The runtime directory may not exist yet on the first start of a boot:
+	// opening creates it rather than failing the plugin.
+	cfg.WorkloadClaims.SocketDir = filepath.Join(cfg.WorkloadClaims.SocketDir, "not-yet", "nri-image-policy")
+	if _, err := openMeasurer(cfg, discardLogger()); err != nil {
+		t.Fatalf("missing runtime directory: %v", err)
+	}
+	if info, err := os.Stat(journalPath(cfg)); err != nil || info.Mode().Perm() != 0o644 {
+		t.Fatalf("journal in a created directory = %v, %v; want 0644", info, err)
+	}
 	// No staged launch key: nothing to seed from.
 	readOperatorKey = func() ([]byte, error) { return nil, errors.New("no key") }
 	if _, err := openMeasurer(cfg, discardLogger()); err == nil || !strings.Contains(err.Error(), "no key") {
