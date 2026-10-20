@@ -166,8 +166,9 @@ func cdsCredentialSelected(ctx context.Context) error {
 	return nil
 }
 
-func (w *world) routerGet(path string) error {
-	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "")
+// routerGet sends the router GET path with headers ("Name: value").
+func (w *world) routerGet(path string, headers ...string) error {
+	a, err := w.httpRequest("router_request", http.MethodGet, path, nil, "", "", "", headers...)
 	if err != nil {
 		return err
 	}

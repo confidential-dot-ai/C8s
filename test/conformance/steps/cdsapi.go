@@ -58,12 +58,14 @@ const (
 	callerForeign = "foreign"
 )
 
-// write is one request to the CDS's allowlist routes; validity is the
-// lifetime its token is minted with, the signer's default when empty.
+// write is one request to the CDS's write routes; validity is the lifetime
+// its token is minted with, the signer's default when empty, and headers
+// ("Name: value") go beside the token's Authorization.
 type write struct {
 	method, path string
 	body         []byte
 	validity     string
+	headers      []string
 }
 
 // reading is what a relying party got back from a read.
@@ -145,8 +147,8 @@ func (w *world) token(signer string, wr write) (string, error) {
 }
 
 // send sends wr with auth as its Authorization, none when empty, and records
-// the status. A stored write changed the served allowlist: a put entry is
-// the scenario's to delete afterwards.
+// the status. A stored allowlist write changed the served allowlist: a put
+// entry is the scenario's to delete afterwards.
 func (w *world) send(wr write, auth string) error { return w.sendVia("cds_request", wr, auth) }
 
 // sendVia is send through a backend function taking cds_request's arguments.
@@ -155,12 +157,12 @@ func (w *world) sendVia(fn string, wr write, auth string) error {
 	if body == nil {
 		body = []byte{} // sent as an empty body, which the token signed
 	}
-	a, err := w.httpRequest(fn, wr.method, wr.path, body, auth, "", "")
+	a, err := w.httpRequest(fn, wr.method, wr.path, body, auth, "", "", wr.headers...)
 	if err != nil {
 		return err
 	}
 	w.api.lastStatus = a.status
-	if w.api.lastStatus == http.StatusNoContent {
+	if w.api.lastStatus == http.StatusNoContent && strings.HasPrefix(wr.path, workloadsPath) {
 		lastMutation = time.Now()
 		if wr.method == http.MethodPut {
 			w.written[strings.TrimPrefix(wr.path, workloadsPath)] = true
@@ -350,6 +352,11 @@ func callerWrites(ctx context.Context, name, image string) error {
 	if err != nil {
 		return err
 	}
+	return w.sendAsCaller(wr)
+}
+
+// sendAsCaller sends wr with the write token the scenario's caller holds.
+func (w *world) sendAsCaller(wr write) error {
 	switch w.api.caller {
 	case callerNone:
 		return w.send(wr, "")
@@ -461,7 +468,7 @@ func operatorSendsSigned(ctx context.Context) error {
 	return w.operatorWrite(*w.api.pending)
 }
 
-func (w *world) refused(status int, what string) error {
+func (w *world) cdsAnswered(status int, what string) error {
 	if w.api.lastStatus == 0 {
 		return errors.New("the scenario has sent the CDS no write")
 	}
@@ -472,15 +479,15 @@ func (w *world) refused(status int, what string) error {
 }
 
 func cdsRefusesWrite(ctx context.Context) error {
-	return getWorld(ctx).refused(http.StatusUnauthorized, "authorization failed")
+	return getWorld(ctx).cdsAnswered(http.StatusUnauthorized, "authorization failed")
 }
 
 func cdsRefusesInvalid(ctx context.Context) error {
-	return getWorld(ctx).refused(http.StatusUnprocessableEntity, "validation failed")
+	return getWorld(ctx).cdsAnswered(http.StatusUnprocessableEntity, "validation failed")
 }
 
 func cdsRefusesRemovalNoEntry(ctx context.Context) error {
-	return getWorld(ctx).refused(http.StatusNotFound, "no entry has that name")
+	return getWorld(ctx).cdsAnswered(http.StatusNotFound, "no entry has that name")
 }
 
 func readsVersion(ctx context.Context) error {
