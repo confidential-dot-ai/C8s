@@ -416,3 +416,22 @@ func TestStageMeasuredPoliciesFileDefaultsToNodeJournal(t *testing.T) {
 		t.Fatalf("--measured-policies-file = %v, want default %s", flag, armtls.NodeJournal)
 	}
 }
+
+func TestRoleValidFollowsRoleTable(t *testing.T) {
+	for _, role := range []Role{Server, Agent} {
+		if !role.Valid() {
+			t.Errorf("%s has no role table entry", role)
+		}
+		if roles[role].pinName == "" {
+			t.Errorf("%s names no reference value", role)
+		}
+	}
+	for _, role := range []Role{"", "observer", "Server"} {
+		if role.Valid() {
+			t.Errorf("%q is accepted as a role", role)
+		}
+	}
+	if len(roles) != 2 {
+		t.Errorf("role table has %d entries; give each new role a constant and a case above", len(roles))
+	}
+}
