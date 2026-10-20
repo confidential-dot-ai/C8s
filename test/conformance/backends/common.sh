@@ -62,10 +62,12 @@
 #   operator_keys                    yes/no: the CDS holds an operator key
 #   seed_declares <digest>           yes/no: the seed of the CDS names digest
 #   seed_add <name> <file>           add the entry in file to the seed the CDS
-#                                    follows, under name; unsupported where the seed is
-#                                    not the cluster's to change or the CDS
-#                                    does not follow it (only a measured
-#                                    node image's CDS follows its seed)
+#                                    follows, under name; unsupported where
+#                                    the CDS does not follow its seed or the
+#                                    seed it follows is not the cluster's to
+#                                    change (only a measured node image's CDS
+#                                    follows its seed, and that seed is in
+#                                    the image)
 #   seed_restore                     put back the seed seed_add changed, if any
 #   cds_instance                     the CDS pod's uid and restart count, one
 #                                    line, so a later read tells a restart
@@ -467,11 +469,13 @@ seed_declares() {
     if printf '%s' "$seed" | grep -qF "$1"; then echo yes; else echo no; fi
 }
 
-# The seed is the ConfigMap the CDS Deployment mounts; a baked node holds it
-# in the image instead, and renders no ConfigMap, so there it is not the
-# cluster's to change. A CDS rereads it only with --follow-seed, which the
-# chart sets only on a baked node, so on a chart-managed install seed_add
-# answers unsupported. The first change keeps the original for seed_restore.
+# The seed the CDS reads is the ConfigMap only where the CDS Deployment
+# mounts it; a baked node's CDS reads the seed held in the image, and the
+# chart still renders the ConfigMap, which nothing reads. A CDS rereads its
+# seed only with --follow-seed, which the chart sets only on a baked node. So
+# seed_add answers unsupported on a chart-managed install (not followed) and on a
+# baked node (followed, but not the cluster's to change), and the original
+# is kept for seed_restore only once a change is possible.
 seed_configmap() {
     kubectl -n "$NS" get configmaps -o json |
         jq -r '.items[] | select(.metadata.name | endswith("-allowlist-seed")) | .metadata.name' | head -1
@@ -482,11 +486,17 @@ seed_followed() {
         jq -e '[.items[].spec.template.spec.containers[] | select(.name == "cds") | .args[]?] | index("--follow-seed")' >/dev/null
 }
 
+# Whether the CDS Deployment mounts the ConfigMap, as a projected volume.
+seed_mounted() {
+    kubectl -n "$NS" get deployments -l app.kubernetes.io/component=cds -o json |
+        jq -e --arg cm "$1" '[.items[].spec.template.spec.volumes[]? | .projected.sources[]?.configMap.name // .configMap.name // empty] | index($cm)' >/dev/null
+}
+
 seed_add() {
     local cm original
     cm="$(seed_configmap)"
     [ -n "$cm" ] || return $UNSUPPORTED
-    seed_followed || return $UNSUPPORTED
+    seed_followed && seed_mounted "$cm" || return $UNSUPPORTED
     original="$(scratch)/seed-original.json"
     [ -s "$original" ] || kubectl -n "$NS" get configmap "$cm" -o json > "$original" || return
     kubectl -n "$NS" get configmap "$cm" -o json |
