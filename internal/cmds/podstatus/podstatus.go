@@ -18,6 +18,7 @@ import (
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -50,7 +51,10 @@ const (
 	EvidencePath = "/v1/evidence"
 	// JournalPath is the RTMR[3] journal nri-image-policy keeps in pod mode.
 	JournalPath = "/run/c8s/rtmr3-measured"
-	maxBody     = 4 << 20
+	// KubeletCertPath is where a kubelet with no tlsCertFile writes the
+	// self-signed serving certificate pod-status pins.
+	KubeletCertPath = "/var/lib/kubelet/pki/kubelet.crt"
+	maxBody         = 4 << 20
 )
 
 // BindingHeader names the report-data convention on /v1/evidence, so a
@@ -205,6 +209,7 @@ type ServeConfig struct {
 	Platform          string
 	AttestationAPIURL string
 	KubeletURL        string
+	KubeletCert       string
 	StagedPath        string
 	JournalPath       string
 }
@@ -232,7 +237,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	api := attestclient.NewClient("")
 	h := Handler{
 		UID:     doc.Pod.UID,
-		Pods:    kubeletPods(cfg.KubeletURL),
+		Pods:    kubeletPods(cfg.KubeletURL, cfg.KubeletCert),
 		Journal: cfg.JournalPath,
 		Evidence: func(ctx context.Context, reportData []byte) ([]byte, error) {
 			resp, err := api.GenerateEvidenceContext(ctx, cfg.AttestationAPIURL, reportData)
@@ -247,13 +252,22 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	return credrelease.ServeARMTLS(ctx, cfg.ListenAddr, family.String(), cfg.AttestationAPIURL, cfg.JournalPath, h)
 }
 
-// kubeletPods reads the loopback kubelet. Its serving cert is self-signed
-// and the address is loopback-only, so the cert is not checked.
-func kubeletPods(base string) func(context.Context) ([]byte, error) {
+// kubeletPods reads the loopback kubelet. Its serving certificate is
+// self-signed, so the dial pins it to the certificate kubelet wrote to
+// certFile instead of checking a chain; the file and the listener share the
+// root network namespace, which the pod cannot reach. The file is read on
+// every handshake, so a kubelet that regenerates its certificate is followed.
+func kubeletPods(base, certFile string) func(context.Context) ([]byte, error) {
 	client := &http.Client{
 		Timeout: 5 * time.Second,
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec // loopback kubelet
+			TLSClientConfig: &tls.Config{
+				InsecureSkipVerify: true, //nolint:gosec // VerifyConnection pins the kubelet's own certificate
+				MinVersion:         tls.VersionTLS12,
+				VerifyConnection: func(cs tls.ConnectionState) error {
+					return verifyPinnedCertificate(cs, certFile)
+				},
+			},
 		},
 	}
 	return func(ctx context.Context) ([]byte, error) {
@@ -271,6 +285,28 @@ func kubeletPods(base string) func(context.Context) ([]byte, error) {
 		}
 		return io.ReadAll(io.LimitReader(resp.Body, maxBody))
 	}
+}
+
+// verifyPinnedCertificate accepts a connection only when the peer's leaf is
+// byte for byte the first certificate in the PEM file at certFile.
+func verifyPinnedCertificate(cs tls.ConnectionState, certFile string) error {
+	if len(cs.PeerCertificates) == 0 {
+		return errors.New("kubelet presented no certificate")
+	}
+	pemBytes, err := os.ReadFile(certFile)
+	if err != nil {
+		return fmt.Errorf("read kubelet serving certificate: %w", err)
+	}
+	for block, rest := pem.Decode(pemBytes); block != nil; block, rest = pem.Decode(rest) {
+		if block.Type != "CERTIFICATE" {
+			continue
+		}
+		if bytes.Equal(block.Bytes, cs.PeerCertificates[0].Raw) {
+			return nil
+		}
+		return fmt.Errorf("kubelet certificate differs from %s", certFile)
+	}
+	return fmt.Errorf("%s holds no certificate", certFile)
 }
 
 // AttestConfig configures the client.
