@@ -174,9 +174,10 @@ apply also routes a probe host named for its revision to a closed address
 backend, and the steps wait until the probe answers 502, which no earlier
 manifest gives it. The CDS removes no manifest, so after the scenario the
 steps write the one stored before it again, or an empty one, under a later
-revision. A workload backend is a pod of `tenant-app` running a Python echo
-API over TLS under the leaf it holds, read again for each connection: it
-answers every request with the request target and headers it received.
+revision. A workload backend is a pod of `tenant-app` running
+[`steps/echo.py`](steps/echo.py) over TLS under the leaf it holds, read again
+for each connection: it answers every request with the request target and
+headers it received.
 
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:
