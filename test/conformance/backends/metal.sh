@@ -100,14 +100,16 @@ cds_request() {
         *) cds_pod_request "$@" ;;
     esac
 }
-# cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
+# cds_pod_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 cds_pod_request() {
-    local url
+    local url route="$2" body="${3:-}" cert="${5:-}" key="${6:-}" h
     local -a opts=(-X "$1")
     [ -z "${4:-}" ] || opts+=(-H "Authorization: $4")
+    shift "$(($# < 6 ? $# : 6))"
+    for h; do opts+=(-H "$h"); done
     url="$(cds_pod_url)" || return
     mesh_scraper || return
-    agent_curl "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "${3:-}" "${5:-}" "${6:-}" "${opts[@]}" "$url$2"
+    agent_curl "$MESH_SCRAPER_NS" "$MESH_SCRAPER" "" "$body" "$cert" "$key" "${opts[@]}" "$url$route"
 }
 cds_read() {
     local path
