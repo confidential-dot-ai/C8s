@@ -7,7 +7,6 @@
 package podstatus
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -22,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"slices"
@@ -49,8 +48,6 @@ const (
 	// binds the answer to this TLS channel, so a host cannot relay the request
 	// to another pod CVM launched with the same key.
 	EvidencePath = "/v1/evidence"
-	// JournalPath is the RTMR[3] journal nri-image-policy keeps in pod mode.
-	JournalPath = "/run/c8s/rtmr3-measured"
 	// KubeletCertPath is where a kubelet with no tlsCertFile writes the
 	// self-signed serving certificate pod-status pins.
 	KubeletCertPath = "/var/lib/kubelet/pki/kubelet.crt"
@@ -93,72 +90,92 @@ type Handler struct {
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	method := http.MethodGet
-	if r.URL.Path == EvidencePath {
-		method = http.MethodPost
-	}
-	switch r.URL.Path {
-	case PodPath, MeasurementsPath, EvidencePath:
-	default:
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != method {
-		w.Header().Set("Allow", method)
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	var body any
 	switch r.URL.Path {
 	case PodPath:
-		pods, err := h.Pods(r.Context())
-		if err != nil {
-			http.Error(w, "kubelet unavailable", http.StatusServiceUnavailable)
-			return
+		if allow(w, r, http.MethodGet) {
+			h.servePod(w, r)
 		}
-		pod, err := findPod(pods, h.UID)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusNotFound)
-			return
-		}
-		body = pod
 	case MeasurementsPath:
-		digests, err := readJournal(h.Journal)
-		if err != nil {
-			http.Error(w, "measurements unavailable", http.StatusServiceUnavailable)
-			return
+		if allow(w, r, http.MethodGet) {
+			h.serveMeasurements(w)
 		}
-		body = Measurements{Digests: digests}
 	case EvidencePath:
-		var req credrelease.AttestRequest
-		dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&req); err != nil || len(req.Nonce) != 32 {
-			http.Error(w, "want {\"nonce\": <32 bytes, base64>}", http.StatusBadRequest)
-			return
+		if allow(w, r, http.MethodPost) {
+			h.serveEvidence(w, r)
 		}
-		key := credrelease.ServingKey(r.Context())
-		if key == nil {
-			http.Error(w, "no serving key for this connection", http.StatusInternalServerError)
-			return
-		}
-		rd, err := EvidenceReportData(key, req.Nonce)
-		if err != nil {
-			http.Error(w, "attestation unavailable", http.StatusInternalServerError)
-			return
-		}
-		// attestation-api zero-pads the 48 bytes back to rd's 64.
-		evidence, err := h.Evidence(r.Context(), rd[:sha512.Size384])
-		if err != nil {
-			http.Error(w, "attestation unavailable", http.StatusBadGateway)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set(BindingHeader, BindingVersion)
-		_, _ = w.Write(evidence)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func allow(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method == method {
+		return true
+	}
+	w.Header().Set("Allow", method)
+	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	return false
+}
+
+func (h Handler) servePod(w http.ResponseWriter, r *http.Request) {
+	pods, err := h.Pods(r.Context())
+	if err != nil {
+		http.Error(w, "kubelet unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	pod, err := findPod(pods, h.UID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	writeJSON(w, pod)
+}
+
+// serveMeasurements reads the journal as the serving cert does, so both list
+// the same digests. No journal means nothing was measured yet.
+func (h Handler) serveMeasurements(w http.ResponseWriter) {
+	digests, err := armtls.ReadRuntimeExtensions(h.Journal)
+	if err != nil {
+		http.Error(w, "measurements unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if digests == nil {
+		digests = []string{}
+	}
+	writeJSON(w, Measurements{Digests: digests})
+}
+
+func (h Handler) serveEvidence(w http.ResponseWriter, r *http.Request) {
+	var req credrelease.AttestRequest
+	dec := json.NewDecoder(io.LimitReader(r.Body, 4096))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil || len(req.Nonce) != 32 {
+		http.Error(w, "want {\"nonce\": <32 bytes, base64>}", http.StatusBadRequest)
+		return
+	}
+	key := credrelease.ServingKey(r.Context())
+	if key == nil {
+		http.Error(w, "no serving key for this connection", http.StatusInternalServerError)
+		return
+	}
+	rd, err := EvidenceReportData(key, req.Nonce)
+	if err != nil {
+		http.Error(w, "attestation unavailable", http.StatusInternalServerError)
+		return
+	}
+	// attestation-api zero-pads the 48 bytes back to rd's 64.
+	evidence, err := h.Evidence(r.Context(), rd[:sha512.Size384])
+	if err != nil {
+		http.Error(w, "attestation unavailable", http.StatusBadGateway)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set(BindingHeader, BindingVersion)
+	_, _ = w.Write(evidence)
+}
+
+func writeJSON(w http.ResponseWriter, body any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(body)
 }
@@ -174,33 +191,6 @@ func findPod(body []byte, uid string) (*corev1.Pod, error) {
 		}
 	}
 	return nil, fmt.Errorf("pod %s not running yet", uid)
-}
-
-// readJournal returns the journal's digests in extend order. No journal
-// means nothing was measured yet. A malformed line fails: the verifier
-// would only reject the list anyway.
-func readJournal(path string) ([]string, error) {
-	data, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return []string{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	digests := []string{}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		d, err := runtimemeasure.CanonicalDigest(line)
-		if err != nil || d != line {
-			return nil, fmt.Errorf("journal line %q is not a canonical digest", line)
-		}
-		digests = append(digests, d)
-	}
-	return digests, sc.Err()
 }
 
 // ServeConfig configures the guest service.
@@ -368,9 +358,9 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	// here and over the returned client, must present that key. Otherwise a
 	// host could answer the later reads from another pod CVM launched with
 	// the same launch key, whose certificate passes the same checks.
-	_, peer, _, err := doPeer(ctx, client, http.MethodGet, base+MeasurementsPath, nil)
+	before, peer, err := fetchDigests(ctx, client, base)
 	if err != nil {
-		return nil, nil, fmt.Errorf("measurements: %w", err)
+		return nil, nil, err
 	}
 	if client, err = pinServingKey(client, peer); err != nil {
 		return nil, nil, err
@@ -379,29 +369,24 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 	// A container may start between the quote and the list; read the list
 	// on both sides of the quote and retry until they agree.
 	var digests []string
-	var envelope, nonce, reportData []byte
+	var envelope, reportData []byte
 	for attempt := 0; ; attempt++ {
-		before, err := fetchDigests(ctx, client, base)
-		if err != nil {
-			return nil, nil, err
-		}
-		nonce = make([]byte, 32)
+		nonce := make([]byte, 32)
 		if _, err := rand.Read(nonce); err != nil {
 			return nil, nil, err
 		}
 		reqBody, _ := json.Marshal(credrelease.AttestRequest{Nonce: nonce})
-		var resp *evidenceResponse
-		if resp, err = postEvidence(ctx, client, base, reqBody); err != nil {
+		var peer crypto.PublicKey
+		if envelope, peer, err = postEvidence(ctx, client, base, reqBody); err != nil {
 			return nil, nil, fmt.Errorf("fresh evidence: %w", err)
 		}
-		envelope = resp.body
 		// The quote must bind this channel's certificate key and our nonce.
-		rd, err := EvidenceReportData(resp.peer, nonce)
+		rd, err := EvidenceReportData(peer, nonce)
 		if err != nil {
 			return nil, nil, err
 		}
 		reportData = rd[:]
-		if digests, err = fetchDigests(ctx, client, base); err != nil {
+		if digests, _, err = fetchDigests(ctx, client, base); err != nil {
 			return nil, nil, err
 		}
 		if slices.Equal(before, digests) {
@@ -410,6 +395,7 @@ func Attest(ctx context.Context, cfg AttestConfig) (*Report, *http.Client, error
 		if attempt == 2 {
 			return nil, nil, errors.New("measured digests kept changing during attestation; retry")
 		}
+		before = digests
 	}
 	res, err := verifyFresh(cfg.ImageManifestPath, pub, envelope, reportData, digests)
 	if err != nil {
@@ -477,16 +463,17 @@ func sameSet(a, b []string) bool {
 	return slices.Equal(slices.Compact(a), slices.Compact(b))
 }
 
-func fetchDigests(ctx context.Context, client *http.Client, base string) ([]string, error) {
-	body, err := do(ctx, client, http.MethodGet, base+MeasurementsPath, nil)
+// fetchDigests also returns the key of the certificate that served the list.
+func fetchDigests(ctx context.Context, client *http.Client, base string) ([]string, crypto.PublicKey, error) {
+	body, peer, _, err := doPeer(ctx, client, http.MethodGet, base+MeasurementsPath, nil)
 	if err != nil {
-		return nil, fmt.Errorf("measurements: %w", err)
+		return nil, nil, fmt.Errorf("measurements: %w", err)
 	}
 	var m Measurements
 	if err := json.Unmarshal(body, &m); err != nil {
-		return nil, fmt.Errorf("measurements: %w", err)
+		return nil, nil, fmt.Errorf("measurements: %w", err)
 	}
-	return m.Digests, nil
+	return m.Digests, peer, nil
 }
 
 func do(ctx context.Context, client *http.Client, method, url string, body []byte) ([]byte, error) {
@@ -494,20 +481,15 @@ func do(ctx context.Context, client *http.Client, method, url string, body []byt
 	return data, err
 }
 
-type evidenceResponse struct {
-	body []byte
-	peer crypto.PublicKey
-}
-
-func postEvidence(ctx context.Context, client *http.Client, base string, reqBody []byte) (*evidenceResponse, error) {
+func postEvidence(ctx context.Context, client *http.Client, base string, reqBody []byte) ([]byte, crypto.PublicKey, error) {
 	body, peer, binding, err := doPeer(ctx, client, http.MethodPost, base+EvidencePath, reqBody)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if binding != BindingVersion {
-		return nil, fmt.Errorf("guest evidence binding is %q, this client needs %q: guest and client c8s are different builds", binding, BindingVersion)
+		return nil, nil, fmt.Errorf("guest evidence binding is %q, this client needs %q: guest and client c8s are different builds", binding, BindingVersion)
 	}
-	return &evidenceResponse{body: body, peer: peer}, nil
+	return body, peer, nil
 }
 
 // doPeer also returns the public key of the certificate the server
@@ -551,8 +533,8 @@ func Get(ctx context.Context, cfg AttestConfig) ([]byte, error) {
 }
 
 func hostPort(node string) string {
-	if strings.Contains(node, ":") && !strings.HasPrefix(node, "[") && strings.Count(node, ":") == 1 {
+	if _, _, err := net.SplitHostPort(node); err == nil {
 		return node
 	}
-	return node + ":8443"
+	return net.JoinHostPort(strings.Trim(node, "[]"), "8443")
 }

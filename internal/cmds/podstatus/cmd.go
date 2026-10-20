@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // NewAttestCmd returns `pod-attest`.
@@ -23,11 +24,6 @@ rtmr3}. With --expect-digest, the measured set must equal the given set.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if !cmd.Flags().Changed("expect-digest") {
-				cfg.ExpectDigests = nil
-			} else if cfg.ExpectDigests == nil {
-				cfg.ExpectDigests = []string{}
-			}
 			report, client, err := Attest(cmd.Context(), cfg)
 			if err != nil {
 				return err
@@ -77,7 +73,7 @@ func newServeCmd() *cobra.Command {
 	f.StringVar(&cfg.KubeletURL, "kubelet-url", "https://127.0.0.1:10250", "loopback kubelet base URL")
 	f.StringVar(&cfg.KubeletCert, "kubelet-cert", KubeletCertPath, "the kubelet's self-signed serving certificate, pinned on every dial")
 	f.StringVar(&cfg.StagedPath, "staged", launchconfig.DefaultStagedPath, "staged launch configuration")
-	f.StringVar(&cfg.JournalPath, "journal", JournalPath, "RTMR[3] journal of measured workload digests")
+	f.StringVar(&cfg.JournalPath, "journal", armtls.PodJournal, "RTMR[3] journal of measured workload digests")
 	_ = cmd.MarkFlagRequired("platform")
 	return cmd
 }

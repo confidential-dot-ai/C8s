@@ -99,7 +99,10 @@ func TestGetValidatesInputsBeforeDialing(t *testing.T) {
 }
 
 func TestHostPort(t *testing.T) {
-	for in, want := range map[string]string{"10.0.0.5": "10.0.0.5:8443", "10.0.0.5:9443": "10.0.0.5:9443", "pod.local": "pod.local:8443"} {
+	for in, want := range map[string]string{
+		"10.0.0.5": "10.0.0.5:8443", "10.0.0.5:9443": "10.0.0.5:9443", "pod.local": "pod.local:8443",
+		"::1": "[::1]:8443", "[::1]": "[::1]:8443", "[::1]:9443": "[::1]:9443",
+	} {
 		if got := hostPort(in); got != want {
 			t.Fatalf("hostPort(%q) = %q, want %q", in, got, want)
 		}

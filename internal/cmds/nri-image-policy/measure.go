@@ -48,15 +48,12 @@ func (p *plugin) measureStarted(ctx context.Context, imageRef string) error {
 	if p.measurer == nil {
 		return nil
 	}
-	digest := extractDigest(imageRef)
+	digest, err := p.imageDigest(ctx, imageRef)
+	if err != nil {
+		return fmt.Errorf("measure: resolve image digest of %q: %w", imageRef, err)
+	}
 	if digest == "" {
-		resolved, err := p.containerd.Resolve(ctx, imageRef)
-		if err != nil {
-			return fmt.Errorf("measure: resolve image digest of %q: %w", imageRef, err)
-		}
-		if digest = extractDigest(resolved); digest == "" {
-			return fmt.Errorf("measure: no digest for %q", imageRef)
-		}
+		return fmt.Errorf("measure: no digest for %q", imageRef)
 	}
 	if _, err := p.measurer.MeasureOnce(digest); err != nil {
 		return fmt.Errorf("measure %s into RTMR[3]: %w", digest, err)

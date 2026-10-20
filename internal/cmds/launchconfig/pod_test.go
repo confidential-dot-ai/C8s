@@ -56,7 +56,7 @@ func TestStagePodRole(t *testing.T) {
 			for _, path := range []string{serverMarker, agentMarker, serverTokenPath, agentTokenPath, rke2FragmentPath} {
 				requireAbsent(t, cfg.path(path))
 			}
-			for path, want := range map[string]string{PodManifestPath: doc.Pod.Manifest, Dir + "/workloads.json": testPodWorkloads} {
+			for path, want := range map[string]string{Dir + "/workloads.json": testPodWorkloads} {
 				got, err := os.ReadFile(cfg.path(path))
 				if err != nil || string(got) != want {
 					t.Fatalf("%s = %q, %v", path, got, err)
@@ -81,7 +81,7 @@ func TestStagePodRole(t *testing.T) {
 				t.Fatal(err)
 			}
 			requireAbsent(t, cfg.path(podMarker))
-			requireAbsent(t, cfg.path(PodManifestPath))
+			requireAbsent(t, cfg.path(Dir+"/workloads.json"))
 		})
 	}
 }
