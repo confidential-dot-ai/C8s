@@ -156,6 +156,20 @@ func environment(ctx context.Context, line string) error {
 // harness chose, beside which a backend may run its pod agent (metal.sh).
 const annotationHarnessArgv = "c8s-conformance/harness-argv"
 
+// pinsLaunch reports whether an entry the scenario described pins the argv
+// or the mounts of the image at ref.
+func (w *world) pinsLaunch(ref string) bool {
+	free := func(p *argvPolicy) bool { return p == nil || p.is("any") }
+	for _, e := range w.entries {
+		for _, c := range e.containers() {
+			if c.Image == ref && (!free(c.Command) || !free(c.Args) || c.Mounts.Policy == "exact") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // deployOnNode applies the pod. The entries the scenario described must have
 // reached the plugin first, which only the applied sentence promises.
 func deployOnNode(ctx context.Context, name, node string) error {
@@ -194,8 +208,9 @@ func deployOnNode(ctx context.Context, name, node string) error {
 		}
 		args = append(args, "--annotation", annotationCW+"="+p.name, "--annotation", annotationRenewal+"="+renewal)
 	}
-	if !p.containers[0].stated {
-		// The backend may run more beside an argv the harness chose.
+	if !p.containers[0].stated && !w.pinsLaunch(p.containers[0].ref) {
+		// The backend may run more beside an argv the harness chose, unless
+		// an entry pins that argv or the mounts, which more would break.
 		args = append(args, "--annotation", annotationHarnessArgv+"=yes")
 	}
 	args = append(args, "--", p.name, p.namespace, k8sNode, p.containers[0].ref)
