@@ -231,6 +231,9 @@ jobs:
           # The pod role's containerd runs from a baked config, not RKE2's.
           go run ./node-guest-image/c8s/containerdcheck -config-dir "$dir" \
             -base node-guest-image/c8s/mkosi.extra/usr/lib/c8s/pod-runtime/containerd.toml
+          # Its unit tests also hold that config to RKE2's rendered base; ci.yml
+          # runs them only when Go files change, not the toml or the template.
+          go test -count=1 ./node-guest-image/c8s/containerdcheck
           # The same check must fail when RKE2's runtime auto-detection finds
           # another runtime on the node's PATH.
           if go run ./node-guest-image/c8s/containerdcheck -config-dir "$dir" \
