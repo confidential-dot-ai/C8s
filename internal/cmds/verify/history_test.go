@@ -118,6 +118,9 @@ func TestHistoryFlags(t *testing.T) {
 		{"fetch without seed", config{fetchAllowlists: t.TempDir()}, "--fetch-allowlists requires --operator-pkey"},
 		{"trust without keys", config{operatorPubkey: pubPath, trustOperator: true}, "requires --trust-operator-keys"},
 		{"keys without trust", config{operatorPubkey: pubPath, trustOperatorKeys: keysPath}, "requires --trust-operator"},
+		{"trust seed", config{operatorPubkey: pubPath, trustOperator: true, trustOperatorKeys: keysPath, trustSeeds: []string{testPolicyP}}, ""},
+		{"seed without trust", config{operatorPubkey: pubPath, pinPolicies: []string{testPolicyP}, trustSeeds: []string{testPolicyP}}, "--trust-seed requires --trust-operator"},
+		{"malformed seed", config{operatorPubkey: pubPath, trustOperator: true, trustOperatorKeys: keysPath, trustSeeds: []string{"sha256:ABC"}}, "--trust-seed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.cfg.imageManifest = writeTestManifest(t)
@@ -505,17 +508,22 @@ func TestTrustOperatorLeafPolicy(t *testing.T) {
 		meshCA      string
 		wantErr     string
 		wantPartial bool
+		trustSeeds  []string
 	}{
-		{"signed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "mesh-ca.pem", "", false},
-		{"signed stamp, unvouched", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", "", true},
-		{"unsigned stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
-		{"no stamp", &evidence{fresh: true, leaf: leaf}, signed, "", "", true},
-		{"no stamp, unsigned history", &evidence{fresh: true, leaf: leaf}, unsigned, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false},
-		{"unreadable stamp", &evidence{fresh: true, leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "", "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false},
-		{"malformed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: []byte{1, 2, 3}}}, signed, "", "policy_history_unsigned: " + malformedStamp, false},
+		{"signed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "mesh-ca.pem", "", false, nil},
+		{"signed stamp, unvouched", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: signedSum[:]}}, signed, "", "", true, nil},
+		{"unsigned stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false, nil},
+		{"no stamp", &evidence{fresh: true, leaf: leaf}, signed, "", "", true, nil},
+		{"no stamp, unsigned history", &evidence{fresh: true, leaf: leaf}, unsigned, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false, nil},
+		{"unreadable stamp", &evidence{fresh: true, leaf: leaf, workloadErr: errors.New("bad stamp")}, signed, "", "policy_history_unsigned: the leaf's issuing policy cannot be read: bad stamp", false, nil},
+		{"malformed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: []byte{1, 2, 3}}}, signed, "", "policy_history_unsigned: " + malformedStamp, false, nil},
+		// A leaf matched by the node image's seed names the seed, which no
+		// operator signs; --trust-seed accepts it.
+		{"trusted seed stamp", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "mesh-ca.pem", "", false, []string{unsigned}},
+		{"another seed trusted", &evidence{fresh: true, leaf: leaf, workload: &armtls.MatchedWorkload{AllowlistDigest: unsignedSum[:]}}, signed, "", "policy_history_unsigned: policy " + unsigned + " carries no operator signature", false, []string{signed}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, timeout: 5 * time.Second}
+			cfg := config{url: srv.URL, trustOperator: true, trustOperatorKeys: keysPath, trustSeeds: tc.trustSeeds, timeout: 5 * time.Second}
 			plan, _ := historyPlan(t, cfg)
 			cfg.meshCA = tc.meshCA
 			for _, partial := range []bool{false, true} {

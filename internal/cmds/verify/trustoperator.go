@@ -36,6 +36,14 @@ func checkHistoryFlags(cfg config, images []remote.ImagePin) ([]*ecdsa.PublicKey
 	if cfg.trustOperatorKeys != "" && !cfg.trustOperator {
 		return nil, fmt.Errorf("--trust-operator-keys requires --trust-operator")
 	}
+	for _, d := range cfg.trustSeeds {
+		if !policyDigestRE.MatchString(d) {
+			return nil, fmt.Errorf("--trust-seed %q is not sha256:<64 lowercase hex>", d)
+		}
+	}
+	if len(cfg.trustSeeds) > 0 && !cfg.trustOperator {
+		return nil, fmt.Errorf("--trust-seed requires --trust-operator: with --pin-policy, pin the seed's digest there")
+	}
 	var flag string
 	switch {
 	case len(cfg.pinPolicies) > 0:
@@ -264,7 +272,9 @@ func checkPolicyHistory(ctx context.Context, oc *Outcome, cfg config, ev *eviden
 				return false
 			}
 		}
-		if !cfg.trustOperator {
+		// A trusted seed is the measured node image's: the image measurement,
+		// not an operator signature, vouches for it.
+		if !cfg.trustOperator || slices.Contains(cfg.trustSeeds, digest) {
 			continue
 		}
 		token, err := fetchPolicy(ctx, object+"/signature", cfg.server, cfg.timeout)

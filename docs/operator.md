@@ -1192,7 +1192,15 @@ against `--trust-operator-keys` with `operatorauth.VerifyStored`.
 rejected. Only a document uploaded whole with a signed `PUT /allowlist`
 carries a token: a per-workload edit yields an unsigned policy, which fails
 `--trust-operator` until a signed upload of the same document stores a token
-for its digest. The documents authenticate
+for its digest.
+
+On a measured node image CDS keeps the image's allowlist seed as a layer of
+its own, and a leaf whose pod matched a seed entry is stamped with the seed's
+digest. The seed carries no operator signature: the node image measurement
+covers it. Pass that digest as `--trust-seed sha256:<hex>` (repeatable) to
+accept it without one. `verify` still fetches the seed and checks that it
+hashes to the digest. The digest is the SHA-256 of the seed's canonical bytes,
+which CDS serves under the same path. The documents authenticate
 themselves against the replayed digests, so any router replica may serve
 them. Each fetch, here and with `--fetch-allowlists`, has its own `--timeout`, and all of them together get four times
 `--timeout`; a fetch that times out or cannot
