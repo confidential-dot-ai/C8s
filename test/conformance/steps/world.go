@@ -33,6 +33,7 @@ type world struct {
 	mesh     meshState
 	secrets  secretsState
 	router   routerState
+	routes   routesState
 	// undo is what the scenario changed in the cluster beyond the node and
 	// the allowlist, put back last in, first out before those are restored.
 	undo []func() error
@@ -165,6 +166,7 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 		registerMesh(sc)
 		registerSecrets(sc)
 		registerRouter(sc)
+		registerRoutes(sc)
 	}
 }
 

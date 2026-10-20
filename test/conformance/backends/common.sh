@@ -186,12 +186,13 @@
 #                                    without a Go toolchain
 #   cert_paths                       the certificate and key paths of a pod
 #                                    carrying a workload ID, one per line
-#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key]
+#   cds_request <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    send the request to the CDS from here, as
-#                                    given (empty arguments are omitted);
-#                                    prints the status (000 when nothing
-#                                    answered), then the body
-#   router_request <method> <path> [body-file] [authorization]
+#                                    given (empty arguments are omitted; each
+#                                    header is "Name: value"); prints the
+#                                    status (000 when nothing answered), then
+#                                    the body
+#   router_request <method> <path> [body-file] [authorization] [client-cert] [client-key] [header...]
 #                                    the same to the router's public address
 #   router_headers <path>            GET path at the router; prints the status,
 #                                    then the response headers, one per line
@@ -586,13 +587,15 @@ router_request() {
     http_request "$url" "$@"
 }
 
-# http_request <base-url> <method> <route> [body-file] [authorization] [client-cert] [client-key]
+# http_request <base-url> <method> <route> [body-file] [authorization] [client-cert] [client-key] [header...]
 http_request() {
-    local url="$1" method="$2" route="$3" body="${4:-}" authorization="${5:-}" cert="${6:-}" key="${7:-}" answer
+    local url="$1" method="$2" route="$3" body="${4:-}" authorization="${5:-}" cert="${6:-}" key="${7:-}" answer h
     local -a opts=(-sk --max-time 30 -X "$method" -w $'\n%{http_code}')
     [ -z "$body" ] || opts+=(-H 'Content-Type: application/json' --data-binary "@$body")
     [ -z "$authorization" ] || opts+=(-H "Authorization: $authorization")
     [ -z "$cert" ] || opts+=(--cert "$cert" --key "$key")
+    shift "$(($# < 7 ? $# : 7))"
+    for h; do opts+=(-H "$h"); done
     answer="$(curl_paced "${opts[@]}" "$url$route")"
     echo "${answer##*$'\n'}"
     printf '%s' "${answer%$'\n'*}"

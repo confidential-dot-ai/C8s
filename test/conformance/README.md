@@ -166,6 +166,16 @@ ID that a secrets scenario (one tagged `@area:secrets`) deploys renews its
 leaf every two hours rather than the ten seconds an issuance scenario's pod
 does, so the leaf it obtained stays the one it holds.
 
+Route manifest scenarios write `PUT /routes` through `cds_request`, with an
+`If-Match` header where the scenario names a route digest, and reach the
+router through `router_request` with a `Host` header. Their hosts are logical:
+`app` is a name under the scenario's namespace. A manifest the router is to
+apply also routes a probe host named for its revision to a closed address
+backend, and the steps wait until the probe answers 502, which no earlier
+manifest gives it. The CDS removes no manifest, so after the scenario the
+steps write the one stored before it again, or an empty one, under a later
+revision.
+
 [`backends/common.sh`](backends/common.sh) states the interface: every
 function, its arguments, what it prints, and when it answers *unsupported*:
 exit status 77 (`UNSUPPORTED`), meaning "this environment cannot express

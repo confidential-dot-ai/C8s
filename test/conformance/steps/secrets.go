@@ -434,10 +434,11 @@ func (w *world) cdsRequest(method, route string, body []byte, auth, cert, key st
 }
 
 // httpRequest sends one request through a backend function that takes
-// cds_request's arguments (cds_request, router_request).
-func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string) (*answer, error) {
+// cds_request's arguments (cds_request, router_request), each header as
+// "Name: value".
+func (w *world) httpRequest(fn, method, route string, body []byte, auth, cert, key string, headers ...string) (*answer, error) {
 	send := func(bodyFile string) (string, error) {
-		return w.be.call(fn, method, route, bodyFile, auth, cert, key)
+		return w.be.call(fn, append([]string{method, route, bodyFile, auth, cert, key}, headers...)...)
 	}
 	var out string
 	var err error
