@@ -39,6 +39,11 @@ type WriteAuthorizer func(r *http.Request, body []byte) error
 // JSON. Emits a weak ETag from the store version; a matching If-None-Match
 // returns 304.
 func (h Handler) HandleList(w http.ResponseWriter, r *http.Request) {
+	if h.Layers != nil {
+		if seed := h.Layers.SeedDigest(); seed != "" {
+			w.Header().Set(pkgallowlist.SeedHeader, seed)
+		}
+	}
 	// Every enforcer polls this route on its refresh interval and is current
 	// almost every time, so settle the 304 on the single-row version read
 	// rather than loading every entry under the writers' lock.

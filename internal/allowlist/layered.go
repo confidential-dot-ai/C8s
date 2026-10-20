@@ -56,6 +56,13 @@ func (l *Layered) SeedObject(digest string) ([]byte, bool) {
 	return l.seedBytes, true
 }
 
+// SeedDigest returns "sha256:<hex>" of the seed layer, "" without one.
+func (l *Layered) SeedDigest() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.seedDigest
+}
+
 // LoadLayers returns the stored document and its version, from one store
 // read, and the seed layer (nil without one).
 func (l *Layered) LoadLayers() (stored *pkgallowlist.Allowlist, version string, seed *pkgallowlist.Allowlist, err error) {

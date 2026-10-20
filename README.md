@@ -358,8 +358,12 @@ c8s allowlist upload allowlist.json \
   --operator-key operator.key
 ```
 
-For a bare-metal install, pass `--cvm-mode bare-metal` to `allowlist upload`;
-its required component set uses the measured host attestation service. GKE, AKS,
+On a measured node image, CDS keeps the image's allowlist seed as a layer of
+its own and names it in the `C8s-Allowlist-Seed` header of `GET /allowlist`.
+The seed admits C8s's own components, so the uploaded file carries only
+application entries and `allowlist upload` checks no components. Otherwise,
+for a bare-metal install pass `--cvm-mode bare-metal` to `allowlist upload`; its
+required component set uses the measured host attestation service. GKE, AKS,
 and uploads without a mode require the attestation-api image. `--require`
 overrides the required set.
 

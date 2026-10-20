@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/confidential-dot-ai/c8s/internal/allowlist"
@@ -114,4 +116,30 @@ func mustDigest(t *testing.T, s string) types.Digest {
 		t.Fatal(err)
 	}
 	return d
+}
+
+// GET /allowlist names the seed layer in its header, so a client can tell
+// that the served document need not carry C8s's own entries.
+func TestHandleListNamesSeedLayer(t *testing.T) {
+	store, err := allowlist.OpenInMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	layers := allowlist.NewLayered(&store)
+	h := allowlist.Handler{Store: &store, Layers: layers}
+	get := func() string {
+		w := httptest.NewRecorder()
+		h.HandleList(w, httptest.NewRequest(http.MethodGet, "/allowlist", nil))
+		return w.Header().Get(pkgallowlist.SeedHeader)
+	}
+	if got := get(); got != "" {
+		t.Errorf("seed header %q without a seed layer", got)
+	}
+	if err := layers.SetSeed(doc(map[string]pkgallowlist.Workload{"cds": anyEntry(t, "cds", layerDigestB)})); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := get(), layers.SeedDigest(); got != want || want == "" {
+		t.Errorf("seed header %q, want %q", got, want)
+	}
 }
