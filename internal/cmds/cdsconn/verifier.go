@@ -8,6 +8,7 @@ import (
 	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/attestation-go/remote"
 	"github.com/confidential-dot-ai/c8s/internal/localverify"
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 // PinVerifier verifies evidence and enforces the endpoint's identity policy.
@@ -39,7 +40,7 @@ func (v ImagePinVerifier) Verify(ctx context.Context, platform string, evidence 
 	if result == nil {
 		return nil, fmt.Errorf("endpoint verifier returned no result")
 	}
-	if err := remote.EnforceImages(remote.VerifyResponse{Result: *result}, v.Images, teetypes.NormalizePlatform(platform)); err != nil {
+	if err := armtls.EnforceImages(remote.VerifyResponse{Result: *result}, v.Images, teetypes.NormalizePlatform(platform), params.RuntimeExtensions); err != nil {
 		return nil, fmt.Errorf("endpoint identity: %w", err)
 	}
 	return result, nil

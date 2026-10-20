@@ -90,9 +90,28 @@ proves possession of the corresponding private key in either path.
    TEEAttestation ::= SEQUENCE {
        teeType     INTEGER,      -- 1 = SEV-SNP, 2 = TDX
        report      OCTET STRING, -- evidence, two shapes (below)
-       certChain   OCTET STRING  -- optional inline VCEK chain
+       certChain   OCTET STRING, -- optional inline VCEK chain
+       runtimeExtensions [0] EXPLICIT SEQUENCE OF PrintableString OPTIONAL
+                                 -- TDX: the node's measured policies
    }
    ```
+
+   `runtimeExtensions` is omitted when empty, so verifiers predating it decode
+   the extension unchanged. On TDX it lists the allowlist policy digests the
+   node extended into RTMR[3] after the operator-key seed, read after the
+   quote; c8s's verifiers accept the seed followed by the longest prefix of
+   the list that replays. They do not judge which digests the list names
+   (see "What armTLS guarantees"). The list holds at most 256 entries, and
+   the journal is never pruned within a boot: a node past the cap sends no
+   list, and verifiers reject it until it reboots. cred-release also refuses
+   to start over the cap, since its operator-key check replays the journal.
+   Each distinct policy a node measures counts once per boot, so nodes that
+   booted together and follow the same rollouts reach the cap together: on
+   the 257th distinct policy since boot, every such node is rejected at once.
+   The only signal is one warning per producer, `evidence omits the measured
+   policies`. Reboot nodes, a few at a time, before their boot has seen 256
+   distinct policies. See
+   [Measured policy history](allowlist-and-capabilities.md#measured-policy-history).
 
 The full `1.3.6.1.4.1.66378.1` arc a C8s certificate may carry:
 
@@ -346,6 +365,24 @@ What it does **not** guarantee:
   good as the inventory's honesty about what it admitted. The gate is
   membership, not composition, so it does not say the pod runs one particular
   workload. Enforcing per-workload measurement at `/attest` is unimplemented.
+- **Which allowlist policies a TDX node measured.** c8s's verifiers (CDS
+  `/attest`, the armTLS mesh, router discovery, cred-release and
+  `c8s get-kubeconfig`) accept RTMR[3] as the seed followed by any prefix of
+  the node's list that replays. They do not check the digests against the
+  operator's policy history, and a workload-image digest replays as well as a
+  policy digest, since both use one event encoding. CDS copies the CSR's
+  armTLS extension, list included, into the leaf it issues, so armTLS-mode
+  verifiers of a CA-issued leaf replay the list too. CDS deliberately does
+  not compare the CSR's list with the request's `runtime_extensions`: it
+  replays the request's list against the fresh evidence, and every verifier
+  of the leaf replays the leaf's list against the leaf's own quote. The
+  journal may grow between the CSR and the request, so requiring the two
+  lists to agree would reject healthy nodes. This is
+  a non-goal: only code inside the measured image can extend RTMR[3], so a
+  list naming a digest the operator never approved requires a compromised
+  image, which the image pin already excludes. Judging the list is the job of
+  an external verifier that replays it against the operator-signed policy
+  history; `c8s verify` does not do so yet.
 - **Post-boot integrity.** The launch digest covers boot state; runtime
   compromise inside a measured node is out of scope for launch attestation.
 - **Availability.** A hostile host can always refuse service; armTLS turns
@@ -563,15 +600,25 @@ The node inventory is wired through NRI.
   `--node-ip`. Without the flag it writes the default-route interface's
   address, which a kubelet without `--node-ip` usually registers. k3s runs its
   kubelet inside the `k3s` process, so on a k3s node with more than one
-  interface set `nriImagePolicy.sandboxDigests.advertiseHost`. It
-  retries until an address exists and rewrites the file in place when it
-  changes, so a running pod's read-only mount of the file sees the new address;
-  when it has none, it empties the file. Until the file holds an address, the
+  interface set `nriImagePolicy.sandboxDigests.advertiseHost`. Once a kubelet
+  supplied the address, a recheck that finds no kubelet, as while it
+  restarts, keeps that address instead of the default route's. The plugin
+  logs the source of each address it publishes. It retries until an address
+  exists and rewrites the file in place when it changes, so a running pod's
+  read-only mount of the file sees the new address. It publishes a change
+  only once two rechecks a minute apart agree, so an address that alternates
+  between two values is never published. A restarted plugin replaces the file
+  on its first recheck when the kubelet or `advertiseHost` supplies the
+  address, and waits for the second when only the default route does. A
+  failed lookup or write leaves the file as it is, as does a default-route
+  address other pods cannot dial, such as a link-local one; only an
+  `advertiseHost` that is no dialable address empties it. Until the file holds an address, the
   token socket answers 503 and enforcement runs regardless. Once issuing, the
   plugin rechecks the file every minute and signs later tokens with the new
   address, under the key `/identity` already serves. Components that dial the
   attestation-api through `node-ip` reread it every 15 seconds and restart when
-  the address changes or goes away. On a node whose kubelet registers an address
+  it names another address; an empty or unreadable file keeps them on theirs.
+  A CDS restarted this way regenerates the mesh CA, as any CDS restart does. On a node whose kubelet registers an address
   neither source finds, such as one a hostname resolves to, set
   `nriImagePolicy.sandboxDigests.advertiseHost`, which overrides both. Route
   inference is the last resort and is wrong under the chart's own default,

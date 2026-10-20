@@ -3,14 +3,19 @@ package getkubeconfig
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
+	"log/slog"
+	"net"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/attestation-go/attestation/teetypes"
 	"github.com/confidential-dot-ai/c8s/internal/cmds/credrelease"
 	"github.com/confidential-dot-ai/c8s/internal/httputil"
 )
@@ -83,18 +88,40 @@ func Run(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	if exp.identity.Family() == teetypes.FamilyTDX {
+		exp.policies = &policyList{}
+	}
 
 	// 1. Verify the channel and a fresh nonce-bound report before releasing
 	// credentials. The certificate quote binds the TLS key, but may predate
 	// later workload extends; it cannot replace the fresh report.
 	httpClient := newARMTLSClient(cfg, exp)
 	defer httpClient.CloseIdleConnections()
+	releaseWait := cfg.ReleaseWait
+	var releaseDeadline time.Time // set when the pre-dial spends releaseWait
 	if cfg.AttestURL != "" {
+		var dialErr error
+		if exp.policies != nil {
+			// The report comes from elsewhere: record cred-release's list
+			// first. The dial and step 3 share one wait for cred-release.
+			releaseDeadline = time.Now().Add(cfg.ReleaseWait)
+			dialErr = dialRelease(ctx, cfg, releaseURL, exp)
+			if dialErr != nil {
+				slog.Warn("record cred-release measured policies", "error", dialErr)
+			}
+		}
 		attestCtx, cancel := context.WithTimeout(ctx, cfg.Timeout)
 		err = attestAndVerify(attestCtx, cfg.AttestURL, exp)
 		cancel()
+		switch {
+		case !errors.Is(err, errPoliciesDoNotReplay):
+		case dialErr != nil:
+			err = fmt.Errorf("%w (no list: the dial to cred-release failed: %v)", err, dialErr)
+		default:
+			err = fmt.Errorf("%w (the list from cred-release's certificate may predate the node's latest policy: retry after cred-release reissues its certificate, or omit --attest-url)", err)
+		}
 	} else {
-		err = httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+		err = retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
 			return attestCredentialRelease(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, exp)
 		})
 	}
@@ -117,8 +144,11 @@ func Run(ctx context.Context, cfg Config) error {
 	//    (newARMTLSClient): the serving cert's embedded quote must bind to the
 	//    cert key AND satisfy the same full measured-identity policy as the
 	//    attest gate, so the host can't MITM the channel.
+	if !releaseDeadline.IsZero() {
+		releaseWait = max(0, time.Until(releaseDeadline))
+	}
 	var resp *credrelease.ReleaseResponse
-	err = httputil.RetryConnectionRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+	err = retryRefused(ctx, cfg.Timeout, releaseWait, func(stepCtx context.Context) error {
 		var requestErr error
 		resp, requestErr = requestCredential(stepCtx, httpClient, cfg.ReleaseBaseURL, keyPEM, csrPEM, role)
 		return requestErr
@@ -171,4 +201,27 @@ func publicKeyPEMFromPrivate(keyPEM []byte) ([]byte, error) {
 		return nil, err
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}), nil
+}
+
+// retryRefused retries each cred-release step; tests replace it.
+var retryRefused = httputil.RetryConnectionRefused
+
+// dialRelease completes one armTLS handshake with cred-release, so the
+// verified leaf records its runtime extensions. Each attempt is bounded by
+// cfg.Timeout; cfg.ReleaseWait bounds retries of a refused dial. A failed dial
+// records nothing and leaves the gate to fail closed.
+func dialRelease(ctx context.Context, cfg Config, releaseURL *url.URL, exp platformVerifier) error {
+	port := releaseURL.Port()
+	if port == "" {
+		port = "443"
+	}
+	dialer := &tls.Dialer{Config: armTLSConfig(exp)}
+	return retryRefused(ctx, cfg.Timeout, cfg.ReleaseWait, func(stepCtx context.Context) error {
+		conn, err := dialer.DialContext(stepCtx, "tcp", net.JoinHostPort(releaseURL.Hostname(), port))
+		if err != nil {
+			// RetryConnectionRefused retries only a refused dial under a URL error.
+			return &url.Error{Op: "Dial", URL: releaseURL.String(), Err: err}
+		}
+		return conn.Close() // the handshake was the point
+	})
 }

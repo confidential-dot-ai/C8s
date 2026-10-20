@@ -23,6 +23,14 @@ type AttestRequest struct {
 	Nonce []byte `json:"nonce"`
 }
 
+// AttestResponse is the evidence envelope plus the RTMR[3] runtime extensions
+// this node journaled, read after the quote so the list may run ahead of it
+// but never lag it. The verified armTLS channel authenticates the list.
+type AttestResponse struct {
+	teetypes.AttestationEvidence
+	RuntimeExtensions []string `json:"runtime_extensions,omitempty"`
+}
+
 // localEvidenceGenerator fixes the upstream to the configured local API.
 type localEvidenceGenerator struct {
 	client attestclient.Client
@@ -58,7 +66,7 @@ func (h *Handler) serveAttest(w http.ResponseWriter, r *http.Request, body []byt
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return
 	}
-	response, err := json.Marshal(evidence)
+	response, err := json.Marshal(AttestResponse{AttestationEvidence: evidence, RuntimeExtensions: h.measuredPolicies.Policies()})
 	if err != nil {
 		http.Error(w, "attestation unavailable", http.StatusBadGateway)
 		return

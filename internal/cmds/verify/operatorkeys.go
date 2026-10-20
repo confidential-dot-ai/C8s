@@ -7,17 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/http"
 	"time"
 
-	"github.com/confidential-dot-ai/c8s/internal/readutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
-
-// maxOperatorKeysBytes caps the /operator-keys response. A pinned key bundle is
-// a handful of PEM blocks (~200 bytes each); 256 KiB is far beyond any real
-// bundle but bounds a misbehaving endpoint.
-const maxOperatorKeysBytes = 256 * 1024
 
 // fetchOperatorKeyFingerprints GETs <base>/operator-keys and returns a hex
 // SHA-256 fingerprint of each pinned operator public key (of its PKIX/SPKI DER,
@@ -28,13 +21,14 @@ const maxOperatorKeysBytes = 256 * 1024
 // A 404 sets note and returns the empty-set digest: the endpoint reports
 // allowlist writes disabled, which --operator-keys can still be checked against.
 func fetchOperatorKeyFingerprints(ctx context.Context, base, serverName, wantCertSHA256 string, timeout time.Duration) (fingerprints []string, digest []byte, note string, err error) {
-	resp, err := fetchAttested(ctx, base+"/operator-keys", serverName, wantCertSHA256, timeout)
+	resp, err := fetchAttested(ctx, base+operatorauth.PublishedKeysPath, serverName, wantCertSHA256, timeout)
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("fetch /operator-keys: %w", err)
+		return nil, nil, "", fmt.Errorf("fetch %s: %w", operatorauth.PublishedKeysPath, err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == http.StatusNotFound {
+	keys, err := operatorauth.ReadPublishedKeys(resp)
+	if errors.Is(err, operatorauth.ErrNoPublishedKeys) {
 		// Writes disabled — the empty set. Returning its digest lets
 		// --operator-keys distinguish "no keys" from "not fetched".
 		emptyDigest, err := operatorauth.KeySetDigest(nil)
@@ -43,21 +37,8 @@ func fetchOperatorKeyFingerprints(ctx context.Context, base, serverName, wantCer
 		}
 		return nil, emptyDigest, "endpoint reports no pinned operator keys (allowlist writes disabled)", nil
 	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", fmt.Errorf("/operator-keys returned %d", resp.StatusCode)
-	}
-
-	pemBytes, err := readutil.ReadAll(resp.Body, maxOperatorKeysBytes)
-	if errors.Is(err, readutil.ErrTooLarge) {
-		return nil, nil, "", fmt.Errorf("/operator-keys response exceeds %d bytes", maxOperatorKeysBytes)
-	}
 	if err != nil {
-		return nil, nil, "", fmt.Errorf("read /operator-keys: %w", err)
-	}
-
-	keys, err := operatorauth.ParsePublicKeysPEM(pemBytes)
-	if err != nil {
-		return nil, nil, "", fmt.Errorf("parse /operator-keys: %w", err)
+		return nil, nil, "", err
 	}
 	for _, pub := range keys {
 		der, err := x509.MarshalPKIXPublicKey(pub)

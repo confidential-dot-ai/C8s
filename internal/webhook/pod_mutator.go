@@ -96,7 +96,8 @@ const (
 	// by serial and names the directory the plaintext appears in under
 	// AnnotationVolumeDir. Setting it injects the volume fetcher sidecar.
 	AnnotationVolumes = "confidential.ai/c8s-volumes"
-	// AnnotationVolumeDir overrides where the volumes are mounted.
+	// AnnotationVolumeDir overrides where the volumes are mounted. It must sit
+	// at or below pkgallowlist.DataMountPrefix.
 	AnnotationVolumeDir = "confidential.ai/c8s-volume-dir"
 )
 
@@ -123,9 +124,9 @@ const discoveryPublicTLSModeWebPKI = "webpki"
 // webhook's container silently replace or collide with it.
 const reservedSecretContainerName = workloadclaims.SecretContainerName
 
-// defaultCertVolumeName is the injected cert volume when a pod does not name
-// its own with AnnotationCertVolume.
-const defaultCertVolumeName = "c8s-certs"
+// DefaultCertVolumeName is the injected memory-backed cert volume when a pod
+// does not name its own with AnnotationCertVolume.
+const DefaultCertVolumeName = "c8s-certs"
 
 // secretsVolumeName is the memory-backed volume the fetcher writes to and the
 // workload reads from.
@@ -135,8 +136,9 @@ const secretsVolumeName = "c8s-secrets"
 // sidecar's mount table exactly (the chart's c8s.injectedShapes), so a pod
 // cannot move them.
 const (
-	// certDir is where the cert volume is mounted.
-	certDir = "/etc/c8s/certs"
+	// CertDir is where every container of an injected pod mounts the cert
+	// volume.
+	CertDir = "/etc/c8s/certs"
 	// defaultSecretDir is where the fetcher writes, matching its own default.
 	defaultSecretDir = "/run/c8s/secrets"
 	// discoveryMountPath is where get-cert mounts the pod's discovery volume.
@@ -150,7 +152,7 @@ const (
 // pinnedDestinations are the annotations that used to move a sidecar mount.
 // Each is refused unless it names the fixed destination.
 var pinnedDestinations = []struct{ annotation, path string }{
-	{AnnotationCertDir, certDir},
+	{AnnotationCertDir, CertDir},
 	{AnnotationSecretDir, defaultSecretDir},
 	{AnnotationDiscoveryMountPath, discoveryMountPath},
 	{AnnotationReloadWatchMountPath, reloadWatchMountPath},
@@ -159,9 +161,6 @@ var pinnedDestinations = []struct{ annotation, path string }{
 // reservedVolumeContainerName is the injected volume fetcher. Reserved like the
 // cert containers.
 const reservedVolumeContainerName = workloadclaims.VolumeContainerName
-
-// defaultVolumeDir is where opened volumes are mounted, one directory each.
-const defaultVolumeDir = "/run/c8s/volumes"
 
 // reservedCertContainerName is the injected mesh-cert sidecar's name. It is
 // operator-reserved: a pod may not declare its own container under it. The
@@ -490,9 +489,9 @@ func (inj *injection) validate() error {
 		{AnnotationKeyFile, inj.Cert.KeyFile},
 		{AnnotationCAFile, inj.Cert.CAFile},
 	} {
-		if file.name != "" && !below(certPath(certDir, file.name), certDir) {
+		if file.name != "" && !below(certPath(CertDir, file.name), CertDir) {
 			return fmt.Errorf("%w: %s %q must name a file in %s, where the cert volume is mounted",
-				errInvalidInjectionAnnotation, file.annotation, file.name, certDir)
+				errInvalidInjectionAnnotation, file.annotation, file.name, CertDir)
 		}
 	}
 	if err := inj.Reload.validate(); err != nil {
@@ -566,8 +565,18 @@ func (v volumesSpec) validate() error {
 			return fmt.Errorf("%w: %s %q: %s", errInvalidInjectionAnnotation, AnnotationVolumes, name, err)
 		}
 	}
-	if v.Dir != "" && !strings.HasPrefix(v.Dir, "/") {
-		return fmt.Errorf("%w: %s must be an absolute path", errInvalidInjectionAnnotation, AnnotationVolumeDir)
+	if v.Dir == "" {
+		return nil
+	}
+	// A secrets grant needs every mount pinned by an exact rule, and a data
+	// rule can only name a destination below the data prefix.
+	dir, root := filepath.Clean(v.Dir), strings.TrimSuffix(pkgallowlist.DataMountPrefix, "/")
+	if dir != root && !below(dir, root) {
+		return fmt.Errorf("%w: %s must be an absolute path at or below %s, where an allowlist data rule can pin the mount",
+			errInvalidInjectionAnnotation, AnnotationVolumeDir, pkgallowlist.DataMountPrefix)
+	}
+	if dir == reloadWatchMountPath || below(dir, reloadWatchMountPath) {
+		return fmt.Errorf("%w: %s must not be inside %s", errInvalidInjectionAnnotation, AnnotationVolumeDir, reloadWatchMountPath)
 	}
 	return nil
 }
@@ -639,7 +648,7 @@ func (inj *injection) validateDiscoveryVolume() error {
 	}
 	certVolume := inj.Cert.Volume
 	if certVolume == "" {
-		certVolume = defaultCertVolumeName
+		certVolume = DefaultCertVolumeName
 	}
 	if name == certVolume || name == secretsVolumeName || strings.HasPrefix(name, volume.KubeVolumePrefix) {
 		return fmt.Errorf("%w: %s %q is reserved for c8s; name a volume of its own",
@@ -1086,9 +1095,9 @@ func (inj *injection) withDefaults(cfg Config) injection {
 		effective.SAN = effective.WorkloadID
 	}
 	if effective.Cert.Volume == "" {
-		effective.Cert.Volume = defaultCertVolumeName
+		effective.Cert.Volume = DefaultCertVolumeName
 	}
-	effective.Cert.Dir = certDir
+	effective.Cert.Dir = CertDir
 	effective.Secrets.Dir = defaultSecretDir
 	if effective.Discovery.Volume != "" {
 		effective.Discovery.MountPath = discoveryMountPath
@@ -1109,7 +1118,7 @@ func (inj *injection) withDefaults(cfg Config) injection {
 		effective.Cert.RenewInterval = cfg.CertRenewInterval
 	}
 	if effective.Volumes.Dir == "" {
-		effective.Volumes.Dir = defaultVolumeDir
+		effective.Volumes.Dir = volume.DefaultDir
 	}
 	if effective.Security.RunAsUser == nil {
 		effective.Security.RunAsUser = cfg.GetCertRunAsUser
@@ -1226,7 +1235,7 @@ func rejectEphemeralReservedMounts(pod *corev1.Pod) error {
 func reservedVolumeNames(pod *corev1.Pod) map[string]bool {
 	certVolume := strings.TrimSpace(pod.Annotations[AnnotationCertVolume])
 	if certVolume == "" {
-		certVolume = defaultCertVolumeName
+		certVolume = DefaultCertVolumeName
 	}
 	reserved := map[string]bool{secretsVolumeName: true, certVolume: true}
 	for _, c := range pod.Spec.InitContainers {

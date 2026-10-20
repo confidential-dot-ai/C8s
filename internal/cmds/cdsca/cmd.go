@@ -3,8 +3,8 @@
 //
 // The bundle is the anchor `--mesh-ca` takes on `c8s secrets put`,
 // `c8s volume create` and `c8s verify`. It is read from the same `GET /ca`
-// route that gate compares against, over the channel cdsconn builds — armTLS to
-// a direct CDS URL, a verified discovery document at a router front door.
+// route that gate compares against, over the armTLS channel cdsconn builds to a
+// direct CDS URL. A router front door does not relay /ca and is refused.
 package cdsca
 
 import (
@@ -46,7 +46,7 @@ func NewCmd() *cobra.Command { return newCmd(nil) }
 
 // newCmd is the injectable constructor behind NewCmd.
 func newCmd(verifier cdsconn.PinVerifier) *cobra.Command {
-	o := &cdsconn.Options{Verifier: verifier}
+	o := &cdsconn.Options{Verifier: verifier, DirectCDS: true}
 	var out string
 	cmd := &cobra.Command{
 		Use:   "ca",
@@ -57,10 +57,11 @@ or to stdout. This is the anchor 'c8s secrets put --mesh-ca',
 
 The read travels the attested connection those commands use and requires endpoint
 pins: use --image-policy-file for a complete image policy, or --measurements
-(or --measurements-file) for launch digests. Pin CDS for a direct URL, or the
-router for a front door. A launch measurement identifies the image, not the
-instance, so the SHA-256 of each certificate is printed on stderr — record it,
-and compare it on a later read or against a copy obtained another way.
+(or --measurements-file) for launch digests. A router front door does not
+relay /ca, so --url names CDS itself and the pins are CDS's. A launch
+measurement identifies the image, not the instance, so the SHA-256 of each
+certificate is printed on stderr — record it, and compare it on a later read or
+against a copy obtained another way.
 
 CDS generates its mesh CA in process, so a restart replaces it and the bundle
 has to be read again. The bundle carries the CAs CDS still signs against, newest

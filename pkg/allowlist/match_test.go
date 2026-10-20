@@ -225,3 +225,16 @@ func TestAdmitsContainerShadowRuleOnlyForAbsolutePinnedCommand(t *testing.T) {
 		t.Fatal("a relative command is not shadowed")
 	}
 }
+
+// An entry with mounts: any admits a pod that mounts a writable host path, so
+// a route to that name trusts the mount.
+func TestMatchWorkloadAnyMountsNamesHostPathPod(t *testing.T) {
+	c := exactly(t, dApp, "/serve")
+	c.Mounts = MountPolicy{Policy: PolicyAny}
+	al := &Allowlist{Schema: Schema, Workloads: map[string]Workload{"web": {Containers: []Container{c}}}}
+	pod := run(dApp, "/serve")
+	pod.Mounts = []ObservedMount{{Destination: "/srv", Class: MountHost, Storage: MountUnknown}}
+	if name, _, err := al.MatchWorkload([]RunningContainer{pod}); err != nil || name != "web" {
+		t.Fatalf("MatchWorkload(hostPath pod) = %q, %v, want web", name, err)
+	}
+}

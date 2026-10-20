@@ -59,121 +59,15 @@ Allows DNS hostnames and wildcards (e.g. *.example.com).
 {{- end -}}
 
 {{/*
-Validate that the protocol used for an upstream is only http or https
-*/}}
-{{- define "router.validateProtocol" -}}
-{{- if not (or (eq . "http") (eq . "https")) -}}
-{{- fail (printf "upstream.protocol must be 'http' or 'https', got: %s" .) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Derive an SNI/verification name from a host:port upstream address.
-*/}}
-{{- define "router.serverNameFromAddress" -}}
-{{- $serverName := regexReplaceAll `^\[([^\]]+)\](?::[0-9]+)?$` . "${1}" -}}
-{{- regexReplaceAll `^([^:]+)(?::[0-9]+)?$` $serverName "${1}" -}}
-{{- end -}}
-
-{{/*
-Validate the proxy TLS settings for an HTTPS backend (the default upstream or a
-route backend). Fails the render on values that would be silently ignored or
-break out of the generated nginx directives. Args: protocol, tls (dict),
-serverName, trustedCAPath, label.
-*/}}
-{{- define "router.validateProxyTLS" -}}
-{{- $tls := default dict .tls -}}
-{{- range $k := list "verify" "useCDSClientCert" -}}
-{{- if and (hasKey $tls $k) (not (kindIs "bool" (index $tls $k))) -}}
-{{- fail (printf "%s.tls.%s must be a boolean; do not set it via --set-string, got: %v" $.label $k (index $tls $k)) -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $tls "verifyDepth" -}}
-{{- if not (regexMatch `^[0-9]+$` (printf "%v" $tls.verifyDepth)) -}}
-{{- fail (printf "%s.tls.verifyDepth must be a non-negative integer, got: %v" $.label $tls.verifyDepth) -}}
-{{- end -}}
-{{- end -}}
-{{- if eq $.protocol "https" -}}
-{{- if not (regexMatch `^[^[:space:]{};/#]+$` $.serverName) -}}
-{{- fail (printf "%s.tls.serverName must not contain whitespace, semicolons, braces, slashes, or '#', got: %s" $.label $.serverName) -}}
-{{- end -}}
-{{- if (default false $tls.verify) -}}
-{{- if not (regexMatch `^/[^[:space:]{};]+$` $.trustedCAPath) -}}
-{{- fail (printf "%s.tls.trustedCAPath must be an absolute path without whitespace, semicolons, or braces, got: %s" $.label $.trustedCAPath) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-router.requireSecuredBackend fails the render on a proxied backend hop that is
-not authenticated: plaintext http, or https without tls.verify. A confidential
-platform has exactly two safe paths to a backend and this helper admits only
-them: an adopted workload (a mesh-wrapped headless Service, validated separately),
-or an https backend that terminates and verifies TLS itself (app-TLS). There is
-no plaintext-to-unattested escape hatch. Shared by the catch-all upstream and
-every route backend so the invariant lives in one place.
-Args: protocol, tls (dict), address, label, kind, suggest (leading hint prose,
-may be "").
-*/}}
-{{- define "router.requireSecuredBackend" -}}
-{{- $tls := default dict .tls -}}
-{{- $secured := and (eq .protocol "https") (default false $tls.verify) -}}
-{{- if not $secured -}}
-{{- fail (printf "VALIDATION_ERROR kind=%s: %s.address=%q is a plaintext http or unverified-https hop the chart cannot confirm the node mesh wraps. %sUse https with tls.verify=true so the backend authenticates itself (app-TLS)" .kind .label .address .suggest) -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Render nginx proxy TLS directives for an HTTPS backend.
-*/}}
-{{- define "router.proxySSLDirectives" -}}
-{{- if eq .protocol "https" -}}
-{{- $tls := default dict .tls -}}
-{{- if (default false $tls.useCDSClientCert) }}
-proxy_ssl_certificate {{ .tlsMountPath }}/cert.pem;
-proxy_ssl_certificate_key {{ .tlsMountPath }}/key.pem;
-{{- end }}
-proxy_ssl_server_name on;
-proxy_ssl_name {{ .serverName }};
-{{- if (default false $tls.verify) }}
-{{- $verifyDepth := 2 }}
-{{- if hasKey $tls "verifyDepth" }}{{- $verifyDepth = $tls.verifyDepth }}{{- end }}
-proxy_ssl_verify on;
-proxy_ssl_verify_depth {{ $verifyDepth }};
-proxy_ssl_trusted_certificate {{ .trustedCAPath }};
-{{- else }}
-proxy_ssl_verify off;
-{{- end }}
-{{- end -}}
-{{- end -}}
-
-{{/*
 Return true when the built-in /allowlist route renders: allowlist.enabled is a
-real bool set to true and no legacy typed route owns /allowlist. The nginx
-locations, the loopback proxy sidecar, and the Service traffic policy must all
-flip on this one predicate.
+real bool set to true. The nginx locations, the loopback proxy sidecar, and the
+Service traffic policy must all flip on this one predicate.
 */}}
 {{- define "router.renderAllowlistRoute" -}}
 {{- if not (kindIs "bool" .Values.router.allowlist.enabled) -}}
 {{- fail (printf "router.allowlist.enabled must be a boolean; do not set it via --set-string, got: %v" .Values.router.allowlist.enabled) -}}
 {{- end -}}
-{{- and .Values.router.allowlist.enabled (ne (include "router.hasExplicitAllowlistRoute" .) "true") -}}
-{{- end -}}
-
-{{/*
-Return true when a legacy typed route owns /allowlist. Such a route suppresses
-both the built-in nginx locations and their loopback proxy sidecar.
-*/}}
-{{- define "router.hasExplicitAllowlistRoute" -}}
-{{- $found := false -}}
-{{- range $route := .Values.router.routes -}}
-{{- $path := toString (default "" $route.path) -}}
-{{- if or (eq $path "/allowlist") (eq $path "/allowlist/") -}}
-{{- $found = true -}}
-{{- end -}}
-{{- end -}}
-{{- $found -}}
+{{- .Values.router.allowlist.enabled -}}
 {{- end -}}
 
 {{/*
@@ -251,26 +145,6 @@ Validate the global CORS configuration. Skips when disabled.
 {{- if hasKey $cors "maxAge" -}}
 {{- if not (regexMatch `^[0-9]+$` (printf "%v" $cors.maxAge)) -}}
 {{- fail (printf "router.cors.maxAge must be a non-negative integer, got: %v" $cors.maxAge) -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-{{- end -}}
-
-{{/*
-Validate a per-route CORS override. Only the `enabled` field is honored;
-shared knobs live on router.cors. Args: dict { "cors": route.cors, "label": ... }.
-*/}}
-{{- define "router.validateRouteCORS" -}}
-{{- if .cors -}}
-{{- $cors := .cors -}}
-{{- range $k, $_ := $cors -}}
-{{- if ne $k "enabled" -}}
-{{- fail (printf "%s.cors only supports the `enabled` field; remove %q (configure shared CORS knobs under router.cors)" $.label $k) -}}
-{{- end -}}
-{{- end -}}
-{{- if hasKey $cors "enabled" -}}
-{{- if not (kindIs "bool" $cors.enabled) -}}
-{{- fail (printf "%s.cors.enabled must be a boolean; do not set it via --set-string, got: %v" $.label $cors.enabled) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -480,18 +354,15 @@ challenge, and HTTP-01-issuable sanList entries.
 {{- end -}}
 
 {{/*
-"true" on a baked node: its signed launch file supplies the catch-all upstream
-and the public hostnames at runtime, through the files nodeservices writes
-under /run/c8s-node/router. The chart values they replace must stay unset, so
-a render never silently ignores them.
+"true" on a baked node: its signed launch file supplies the public hostnames
+and front-door mode at runtime, through the files nodeservices writes under
+/run/c8s-node/router. router.publicTLS.mode must stay cds, so a render never
+silently ignores it.
 */}}
 {{- define "router.launchDriven" -}}
 {{- if .Values.node.baked -}}
 {{- if ne (printf "%v" .Values.router.publicTLS.mode) "cds" -}}
 {{- fail "node.baked takes the public TLS mode from the launch file: leave router.publicTLS.mode at cds" -}}
-{{- end -}}
-{{- if .Values.router.upstream.address -}}
-{{- fail "node.baked takes the upstream from the launch file: leave router.upstream.address empty" -}}
 {{- end -}}
 {{- /* The launch file may select acme, so the :80 challenge path must be
        reachable; cvmMode=bare-metal is already required by validations.yaml. */ -}}
@@ -525,6 +396,21 @@ instead of a ConfigMap the control plane can edit.
 {{- define "router.configDir" -}}
 {{- if .Values.node.baked -}}{{ include "router.bakedNginxDir" . }}{{- else -}}/mnt/c8s-data/nginx{{- end -}}
 {{- end -}}
+
+{{/*
+Bytes in a Kubernetes quantity written as an integer with an optional k, M,
+G, T, Ki, Mi, Gi or Ti suffix; "" for any other form.
+*/}}
+{{- define "router.quantityBytes" -}}
+{{- $q := toString . -}}
+{{- $digits := regexFind `^[0-9]+` $q -}}
+{{- $units := dict "" 1 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 -}}
+{{- $suffix := trimPrefix $digits $q -}}
+{{- if and $digits (hasKey $units $suffix) -}}{{ mul ($digits | int64) (get $units $suffix) }}{{- end -}}
+{{- end -}}
+
+{{/* Where nginx spools tunnel request bodies (router.nginx.tunnelBodySpace). */}}
+{{- define "router.tunnelBodyDir" -}}/var/lib/c8s-tunnel-body{{- end -}}
 
 {{/* nodeservices.RouterTLSSnippetDir must equal it. */}}
 {{- define "router.bakedNginxDir" -}}/usr/lib/c8s/router-nginx{{- end -}}
@@ -609,8 +495,13 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- $v := $root.Values.router -}}
 {{- $launchDriven := eq (include "router.launchDriven" $root) "true" -}}
 {{- /* Loopback only: every endpoint (/healthz, /readyz, both attest routes,
-       /tunnel) sits on one listener; nginx proxies /readyz to it. */ -}}
-{{- $args := list "cds-attest" "--host=127.0.0.1" (printf "--port=%v" $v.attest.port) (printf "--platform=%v" $v.attest.platform) (printf "--generation=%v" $v.attest.generation) -}}
+       /tunnel) sits on one listener; nginx proxies /readyz to it. The routing
+       listener is loopback too: nginx terminates public TLS first. */ -}}
+{{- $args := list "cds-attest" "--host=127.0.0.1" (printf "--port=%v" $v.attest.port) -}}
+{{- if not $v.attest.enabled -}}
+{{- $args = append $args "--attest-endpoints=false" -}}
+{{- end -}}
+{{- $args = concat $args (list (printf "--platform=%v" $v.attest.platform) (printf "--generation=%v" $v.attest.generation)) -}}
 {{- $args = append $args (printf "--attestation-api-url=%s" (default (include "c8s.attestationApiURL" $root) $v.attest.attestationApiURL)) -}}
 {{- /* attest-lb needs a TEE-held serving key (cds, acme); webpki's
        host-visible Secret key stays attest-pq-only. */ -}}
@@ -628,45 +519,60 @@ router.cdsAttestArgs takes (dict "root" $ "expectedWorkload" <name>).
 {{- with .expectedWorkload -}}
 {{- $args = append $args (printf "--expected-workload=%s" .) -}}
 {{- end -}}
+{{- /* The NRI plugin's measured-policy journal, under the
+       attestation-api-socket mount. Passed whatever measurePolicies says:
+       RTMR[3] keeps its extends until reboot after measuring is turned off,
+       and an absent journal omits the list. */ -}}
+{{- if and $v.attest.enabled (include "c8s.attestationApiSocketPresent" $root) -}}
+{{- $args = append $args (printf "--measured-policies-file=%s/measured-policies" $root.Values.nriImagePolicy.hostPaths.runtimeDir) -}}
+{{- end -}}
 {{- /* The identity-bound PQ flow uses the TEE-held mesh credential, never the
        optional publicTLS Secret. */ -}}
 {{- $args = append $args (printf "--mesh-identity-cert-file=%s/cert.pem" $v.tlsMountPath) -}}
 {{- $args = append $args (printf "--mesh-identity-key-file=%s/key.pem" $v.tlsMountPath) -}}
 {{- $args = append $args (printf "--mesh-identity-ca-file=%s/ca.pem" $v.tlsMountPath) -}}
-{{- /* Terminate over-encryption here and forward to nginx's backend. No
-       upstream address: omit --upstream; the sidecar serves its echo backend. */ -}}
-{{- $address := $v.upstream.address -}}
-{{- if $launchDriven -}}
-{{- $args = append $args (printf "--upstream-file=%s/upstream" (include "router.launchDir" $root)) -}}
-{{- else if $address -}}
-{{- $args = append $args (printf "--upstream=%s://%s" $v.upstream.protocol $address) -}}
-{{- if eq $v.upstream.protocol "https" -}}
-{{- $args = append $args (printf "--upstream-ca=%s" (default (printf "%s/ca.pem" $v.tlsMountPath) $v.upstream.tls.trustedCAPath)) -}}
-{{- if $v.upstream.tls.useCDSClientCert -}}
-{{- $args = append $args (printf "--upstream-cert=%s/cert.pem" $v.tlsMountPath) -}}
-{{- $args = append $args (printf "--upstream-key=%s/key.pem" $v.tlsMountPath) -}}
+{{- /* Route by the operator-signed manifest polled from the verified CDS:
+       application requests from nginx on --routing-port, and requests
+       decrypted from the tunnel. */ -}}
+{{- $args = append $args (printf "--cds-url=%s" (include "c8s.cdsURL" $root)) -}}
+{{- $args = concat $args (include "router.cdsPinArgs" $root | fromJsonArray) -}}
+{{- /* Operator keys: the launch configuration on a baked node, else
+       cds.operatorKeys, else CDS's GET /operator-keys (route policy W6;
+       docs/operator.md, Route manifest). An unpinned CDS could be any
+       attested TEE, so cds-attest refuses that last source without the
+       opt-in. */ -}}
+{{- if $root.Values.node.baked -}}
+{{- $args = append $args "--operator-keys-file=/run/c8s-node/operator-pubkey" -}}
+{{- else if $root.Values.cds.operatorKeys -}}
+{{- $args = append $args "--operator-keys-file=/mnt/c8s-data/operator-keys/keys.pem" -}}
+{{- else if not (or $root.Values.cds.measurements $root.Values.cds.measurementsConfig) -}}
+{{- if not $v.routing.allowUnpinnedCDS -}}
+{{- fail "VALIDATION_ERROR kind=unpinned_route_source: the router would take its operator keys from an unpinned CDS. Pin CDS with `c8s install --measurements` or `--image-policy-file`, pin the operator keys with `--operator-keys`, or, on a development cluster only, set router.routing.allowUnpinnedCDS=true." -}}
 {{- end -}}
-{{- $args = append $args (printf "--upstream-server-name=%s" (default (include "router.serverNameFromAddress" $address) $v.upstream.tls.serverName)) -}}
+{{- $args = append $args "--allow-unpinned-cds" -}}
 {{- end -}}
+{{- $args = append $args (printf "--routes-poll-interval=%v" $v.routing.pollInterval) -}}
+{{- $args = append $args "--routing-host=127.0.0.1" -}}
+{{- $args = append $args (printf "--routing-port=%s" (include "router.routingPort" $root)) -}}
+{{- $args = append $args (printf "--backend-timeout=%v" $v.routing.backendTimeout) -}}
+{{- with $v.routing.tunnelBudget -}}
+{{- if not (regexMatch `^[1-9][0-9]*(Ki|Mi|Gi|Ti|k|M|G|T)?$` (toString .)) -}}
+{{- fail (printf "router.routing.tunnelBudget must be a quantity of bytes such as 64Gi, got: %v" .) -}}
+{{- end -}}
+{{- $args = append $args (printf "--tunnel-budget=%s" .) -}}
+{{- end -}}
+{{- $args = append $args (printf "--reserved-paths=%s" (include "router.reservedPaths" $root)) -}}
+{{- /* Serve the applied signed manifest at /.well-known/c8s/routes for
+       clients that check the route digest under pinned operator keys. */ -}}
+{{- if dig "routePublication" "enabled" false $v -}}
+{{- $args = append $args "--publish-routes" -}}
 {{- end -}}
 {{- $args | toJson -}}
 {{- end -}}
 
 {{- define "router.allowlistProxyArgs" -}}
 {{- $args := list "allowlist-proxy" "--host=127.0.0.1" (printf "--port=%s" (include "c8s.int" .Values.router.allowlist.proxyPort)) (printf "--cds-url=%s" (include "c8s.cdsURL" .)) (printf "--attestation-api-url=%s" (include "c8s.attestationApiURL" .)) -}}
-{{- if .Values.node.baked -}}
-{{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
-{{- else if .Values.cds.measurementsConfig -}}
-{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
-{{- else -}}
-{{- with .Values.cds.measurements -}}
-{{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}
-{{- end -}}
-{{- with .Values.cds.rtmrs -}}
-{{- $args = append $args (printf "--cds-rtmrs=%s" (join "," .)) -}}
-{{- end -}}
-{{- end -}}
-{{- $args | toJson -}}
+{{- concat $args (include "router.cdsPinArgs" . | fromJsonArray) | toJson -}}
 {{- end -}}
 
 {{- define "router.acmeArgs" -}}
@@ -726,11 +632,10 @@ router.defaultGate holds.
 
 {{/*
 "true" when an unset gate defaults on: it can render and be satisfied. The
-entry is seeded, cds-attest runs, hostPort is off, and the node inventory is
-reachable.
+entry is seeded, hostPort is off, and the node inventory is reachable.
 */}}
 {{- define "router.defaultGate" -}}
-{{- if and (not (kindIs "string" .Values.router.attest.expectedWorkload)) (eq (include "c8s.routerWorkloadSeeded" .) "true") .Values.router.attest.enabled (not .Values.router.hostPort.enabled) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
+{{- if and (not (kindIs "string" .Values.router.attest.expectedWorkload)) (eq (include "c8s.routerWorkloadSeeded" .) "true") (not .Values.router.hostPort.enabled) (or .Values.nriImagePolicy.enabled (eq .Values.attestationApi.cvmMode "bare-metal")) -}}
 true
 {{- end -}}
 {{- end -}}
@@ -820,17 +725,90 @@ list.
 {{- end }}
 
 {{/*
-router.meshWrappedUpstream — "true" when the address is an operator-managed
-headless Service (c8s-<id>.<ns>.svc.cluster.local:<port>, the exact
-webhook.WorkloadServiceFQDN form). c8s-<id> is a DNS-1035 label, <ns> a
-DNS-1123 label. That shape is the one upstream whose backing pod IPs churn, so
-it is dialed through a variable and re-resolved per request; every other
-address gets a static upstream block resolved once at startup. validations.yaml
-(kind=workload_https_upstream, kind=router_unsecured_upstream) branches on the
-same predicate. Call with the address string.
+The cds-attest routing listener's loopback port, validated against the other
+loopback and nginx ports it shares the pod network namespace with.
 */}}
-{{- define "router.meshWrappedUpstream" -}}
-{{- if regexMatch "^c8s-[a-z]([-a-z0-9]*[a-z0-9])?\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?\\.svc\\.cluster\\.local:[0-9]+$" . -}}
-true
+{{- define "router.routingPort" -}}
+{{- $port := include "c8s.int" .Values.router.routing.port | int -}}
+{{- if or (lt $port 1) (gt $port 65535) -}}
+{{- fail (printf "router.routing.port must be between 1 and 65535, got: %d" $port) -}}
 {{- end -}}
+{{- $others := dict "router.attest.port" .Values.router.attest.port "router.allowlist.proxyPort" .Values.router.allowlist.proxyPort "router.nginx.httpsPort" .Values.router.nginx.httpsPort -}}
+{{- if eq (include "router.acmeSidecar" .) "true" -}}
+{{- $_ := set $others "the ACME HTTP port" (include "router.acmeHTTPPort" .) -}}
+{{- $_ := set $others "the ACME challenge port" (include "router.acmeChallengePort" .) -}}
+{{- $_ := set $others "the ACME readiness port" (include "router.acmeReadyPort" .) -}}
+{{- end -}}
+{{- range $label, $other := $others -}}
+{{- if eq $port (include "c8s.int" $other | int) -}}
+{{- fail (printf "router.routing.port must differ from %s, got: %d" $label $port) -}}
+{{- end -}}
+{{- end -}}
+{{- $port -}}
+{{- end -}}
+
+{{/*
+The paths nginx serves itself, as a comma-separated list for cds-attest
+--reserved-paths: no manifest route under them is selected, on the public path
+or in the tunnel (route policy M6). Listed whether or not each endpoint is
+enabled, so a manifest selects the same routes under every chart setting.
+cds-attest matches each as a path prefix ending at a segment boundary, and
+refuses one that is not already normalized.
+*/}}
+{{- define "router.reservedPaths" -}}
+{{- $paths := list "/allowlist" "/.well-known/c8s/" "/.well-known/acme-challenge/" .Values.router.discovery.path .Values.router.discovery.cdsCertPath .Values.router.discovery.meshCAPath "/readyz" "/healthz" -}}
+{{- range $p := $paths -}}
+{{- if or (not (regexMatch `^(/[A-Za-z0-9._~-]+)+/?$` $p)) (regexMatch `/\.\.?(/|$)` $p) -}}
+{{- fail (printf "router.discovery paths must be absolute paths of letters, digits and ._~- segments, without . or .. segments, got: %s" $p) -}}
+{{- end -}}
+{{- end -}}
+{{- join "," (uniq $paths) -}}
+{{- end -}}
+
+{{/*
+The CDS measurement pins a router sidecar verifies the chart-managed CDS
+against, as a JSON list of container args: the node's signed policy on a baked node, else
+cds.measurementsConfig, else cds.measurements and cds.rtmrs. Shared by
+allowlist-proxy and cds-attest, so the relay and the route manifest poller
+trust the same CDS.
+*/}}
+{{- define "router.cdsPinArgs" -}}
+{{- $args := list -}}
+{{- if .Values.node.baked -}}
+{{- $args = append $args "--image-policy-file=/run/c8s-node/cds.json" -}}
+{{- else if .Values.cds.measurementsConfig -}}
+{{- $args = append $args "--image-policy-file=/mnt/c8s-data/measurements/cds.json" -}}
+{{- else -}}
+{{- with .Values.cds.measurements -}}
+{{- $args = append $args (printf "--cds-measurements=%s" (join "," .)) -}}
+{{- end -}}
+{{- with .Values.cds.rtmrs -}}
+{{- $args = append $args (printf "--cds-rtmrs=%s" (join "," .)) -}}
+{{- end -}}
+{{- end -}}
+{{- $args | toJson -}}
+{{- end -}}
+
+{{/*
+router.wellKnownProxyDirectives renders the directives every
+/.well-known/c8s/ location shares: CORS, the proxy to cds-attest with
+buffering on and no temp-file spill, and the forwarded headers. Inputs: root
+(the chart context) and readTimeout.
+*/}}
+{{- define "router.wellKnownProxyDirectives" -}}
+{{- $root := .root -}}
+{{- if default false $root.Values.router.cors.enabled -}}
+{{ include "router.corsLocationDirectives" $root.Values.router.cors | trim }}
+{{ else if eq (include "router.protocolCorsEnabled" $root) "true" -}}
+{{ include "router.protocolCorsLocationDirectives" $root | trim }}
+{{ end -}}
+proxy_pass http://127.0.0.1:{{ $root.Values.router.attest.port }};
+proxy_buffering on;
+proxy_request_buffering on;
+proxy_max_temp_file_size 0;
+proxy_read_timeout {{ .readTimeout }};
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
 {{- end -}}

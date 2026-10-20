@@ -102,6 +102,8 @@ type MountRule struct {
 	Kind        MountClass `json:"kind" yaml:"kind"`
 	Source      string     `json:"source,omitempty" yaml:"source,omitempty"`
 	ReadOnly    bool       `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
+	// VerityDigest is reserved for fs-verity and rejected for now.
+	VerityDigest string `json:"verityDigest,omitempty" yaml:"verityDigest,omitempty"`
 }
 
 // MountClass identifies who controls the content behind a bind mount.
@@ -112,7 +114,16 @@ const (
 	MountEmptyDir MountClass = "emptyDir"
 	MountData     MountClass = "data"
 	MountHost     MountClass = "host"
+	// MountNodeRootFile is a rule kind only: it admits a read-only host file
+	// bind that carries ProvenanceNodeRoot evidence. It is a kind rather than a
+	// field on a host rule so that an enforcer predating it refuses the served
+	// document instead of applying the rule as a plain host rule.
+	MountNodeRootFile MountClass = "nodeRootFile"
 )
+
+// ProvenanceNodeRoot is mount evidence for a regular file reached through the
+// node's measured, read-only dm-verity root.
+const ProvenanceNodeRoot = "node-root"
 
 // MountStorage records the storage guarantee established by the node.
 type MountStorage string
@@ -222,7 +233,7 @@ func ParseWorkloadJSON(data []byte) (*Workload, error) {
 
 var (
 	errGrantUnpinnedArgv   = fmt.Errorf("a secrets grant requires every container's command and args policy to be exact or deny")
-	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules")
+	errGrantUnpinnedMounts = fmt.Errorf("a secrets grant requires every container's mounts policy to be deny, or exact without host rules (read-only nodeRootFile rules are allowed)")
 )
 
 // Digests returns every container digest in the workload (init and main), for
@@ -269,13 +280,13 @@ func (w Workload) ArgvPinned() bool {
 }
 
 // MountsPinned reports whether every container's mounts policy is deny, or
-// exact with no host rule, so the host adds no mount and names no node path.
-// A data rule still mounts content the cluster chooses (a ConfigMap, a PVC)
-// at a destination the entry declares. A secrets grant requires it
-// (docs/secrets.md).
+// exact with no host rule other than a read-only nodeRootFile, so the host adds
+// no mount and chooses no content. A data rule still mounts content the cluster
+// chooses (a ConfigMap, a PVC) at a destination the entry declares. A secrets
+// grant requires it (docs/secrets.md).
 func (w Workload) MountsPinned() bool {
 	for _, c := range w.containers() {
-		if !(mountConstraint{policy: &c.Mounts}).hostIndependent() {
+		if !(mountConstraint{policy: &c.Mounts}).grantPinned() {
 			return false
 		}
 	}

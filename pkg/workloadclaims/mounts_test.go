@@ -130,6 +130,27 @@ func TestContainerKeyDistinguishesMissingEnvironment(t *testing.T) {
 	}
 }
 
+func TestProvenanceSurvivesInventoryAndChangesIdentity(t *testing.T) {
+	mount := allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: allowlist.ProvenanceNodeRoot}
+	c := SandboxContainer{Mounts: []allowlist.ObservedMount{mount}}
+	encoded, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded SandboxContainer
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Mounts[0].Provenance != mount.Provenance || decoded.Key() != c.Key() {
+		t.Fatal("lost provenance on inventory round trip")
+	}
+	changed := mount
+	changed.Provenance = ""
+	if (SandboxContainer{Mounts: []allowlist.ObservedMount{changed}}).Key() == c.Key() {
+		t.Fatal("provenance collapsed in history key")
+	}
+}
+
 func TestVariableEvidenceRoundTrip(t *testing.T) {
 	observation, err := allowlist.ObserveEnv([]string{"MODE=production", "GPU_SERIAL=device-1"})
 	if err != nil {

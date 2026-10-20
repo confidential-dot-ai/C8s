@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 )
 
 func TestNewCmdDefaultsAndHelp(t *testing.T) {
@@ -19,6 +21,7 @@ func TestNewCmdDefaultsAndHelp(t *testing.T) {
 		{"listen", ":8443"},
 		{"attestation-api-url", "http://127.0.0.1:8400"},
 		{"platform", ""},
+		{"measured-policies-file", armtls.NodeJournal},
 		{"client-ca-cert", defaultClientCACert},
 		{"client-ca-key", defaultClientCAKey},
 		{"server-ca-cert", defaultServerCACert},

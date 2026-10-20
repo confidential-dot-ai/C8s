@@ -16,6 +16,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	pkgallowlist "github.com/confidential-dot-ai/c8s/pkg/allowlist"
+	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 )
 
 func openJournaled(t *testing.T) *Store {
@@ -300,8 +301,8 @@ func TestConsumeToken(t *testing.T) {
 		}
 	}
 	for _, reuse := range []string{"t1", "h.p1.s1", "h.p1.s2"} {
-		if err := store.ConsumeToken(reuse); !errors.Is(err, ErrTokenReused) {
-			t.Fatalf("ConsumeToken(%q) = %v, want ErrTokenReused", reuse, err)
+		if err := store.ConsumeToken(reuse); !errors.Is(err, operatorauth.ErrTokenReused) {
+			t.Fatalf("ConsumeToken(%q) = %v, want operatorauth.ErrTokenReused", reuse, err)
 		}
 	}
 	if err := store.ConsumeToken("h.p2.s1"); err != nil {
@@ -310,7 +311,7 @@ func TestConsumeToken(t *testing.T) {
 }
 
 func TestReusedTokenIsConflict(t *testing.T) {
-	h := Handler{Store: openJournaled(t), WriteAuthorizer: func(*http.Request, []byte) error { return ErrTokenReused }}
+	h := Handler{Store: openJournaled(t), WriteAuthorizer: func(*http.Request, []byte) error { return operatorauth.ErrTokenReused }}
 	w := httptest.NewRecorder()
 	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")))
 	if w.Code != http.StatusConflict {
@@ -320,12 +321,12 @@ func TestReusedTokenIsConflict(t *testing.T) {
 
 func TestTokenBeforeStartIsExplained(t *testing.T) {
 	h := Handler{Store: openJournaled(t), WriteAuthorizer: func(*http.Request, []byte) error {
-		return fmt.Errorf("%w: detail", ErrTokenBeforeStart)
+		return fmt.Errorf("%w: detail", operatorauth.ErrTokenBeforeStart)
 	}}
 	w := httptest.NewRecorder()
 	h.HandleReplaceAll(w, httptest.NewRequest(http.MethodPut, "/allowlist", strings.NewReader("{}")))
-	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), ErrTokenBeforeStart.Error()) {
-		t.Fatalf("PUT /allowlist with a pre-start token = %d %q, want 401 naming ErrTokenBeforeStart", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized || !strings.Contains(w.Body.String(), operatorauth.ErrTokenBeforeStart.Error()) {
+		t.Fatalf("PUT /allowlist with a pre-start token = %d %q, want 401 naming operatorauth.ErrTokenBeforeStart", w.Code, w.Body.String())
 	}
 }
 

@@ -150,6 +150,17 @@ func TestHistoryMountEvidenceAndOwnership(t *testing.T) {
 	}
 }
 
+func TestHistoryRetainsDistinctProvenance(t *testing.T) {
+	var h History
+	for _, provenance := range []string{"", allowlist.ProvenanceNodeRoot} {
+		h.Record("same-id", "sha256:a", nil, nil, allowlist.ObservedMount{Destination: "/usr/bin/nvidia-smi", Class: allowlist.MountHost, ReadOnly: true, Provenance: provenance})
+	}
+	_, containers, err := h.Snapshot(nil)
+	if err != nil || len(containers) != 2 {
+		t.Fatalf("lost distinct provenance admissions: %v, %v", containers, err)
+	}
+}
+
 // observeAtLimits returns an environment at the per-record evidence limits:
 // 128 variables and 4 KiB of names.
 func observeAtLimits(t *testing.T, value string) *allowlist.EnvObservation {

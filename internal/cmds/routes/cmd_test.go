@@ -24,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/internal/httputil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 )
@@ -39,6 +40,8 @@ type fakeCDS struct {
 	ifMatch []string // If-Match of each PUT, "" when absent
 	// beforePut, when set, runs at the start of each PUT, as another writer.
 	beforePut func(*fakeCDS)
+	// refuse, when set, answers each verified PUT as CDS refusing its token.
+	refuse error
 }
 
 func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +63,10 @@ func (f *fakeCDS) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		if err := (operatorauth.Verifier{Keys: f.keys}).Authorize(r, body); err != nil {
 			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if f.refuse != nil {
+			httputil.RefuseOperatorToken(w, f.refuse)
 			return
 		}
 		m, err := pkgroutes.Parse(body)
@@ -272,6 +279,31 @@ func TestPutStaleRevisionGuidance(t *testing.T) {
 	_, err := h.run(t, "put", file)
 	if err == nil || !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "raise the file's revision") {
 		t.Fatalf("put stale revision: error = %v", err)
+	}
+}
+
+// A refused token asks for a fresh one, not a rebase.
+func TestPutRefusedTokenGuidance(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "routes.json")
+	if err := os.WriteFile(file, []byte(`{"schema":"c8s.routes/v1","revision":1,"notBefore":"2026-09-01T00:00:00Z","maxAgeSeconds":60,"hosts":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name   string
+		refuse error
+		want   string
+	}{
+		{"spent", operatorauth.ErrTokenReused, "mint a fresh token"},
+		{"not recorded", operatorauth.ErrTokenNotRecorded, "with a fresh token is safe"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.cds.refuse = tc.refuse
+			_, err := h.run(t, "put", file)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Contains(err.Error(), "raise the file's revision") {
+				t.Fatalf("put with refused token: error = %v, want %q and no rebase hint", err, tc.want)
+			}
+		})
 	}
 }
 

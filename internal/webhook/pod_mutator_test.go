@@ -494,7 +494,7 @@ func TestParseAnnotationsPinsSidecarDestinations(t *testing.T) {
 		ok                bool
 	}{
 		{AnnotationCertDir, "/tls", false},
-		{AnnotationCertDir, certDir, true},
+		{AnnotationCertDir, CertDir, true},
 		{AnnotationSecretDir, "/var/run/app-secrets", false},
 		{AnnotationSecretDir, defaultSecretDir, true},
 		{AnnotationDiscoveryMountPath, "/discovery", false},
@@ -538,7 +538,7 @@ func TestParseAnnotationsKeepsSidecarFilesInTheirMounts(t *testing.T) {
 		{"watch inside", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt", true},
 		{"watch elsewhere", reload, AnnotationReloadWatchPaths, reloadWatchMountPath + "/tls.crt,/edge-tls/tls.key", false},
 		{"cert file relative", nil, AnnotationCertFile, "server.crt", true},
-		{"cert file inside", nil, AnnotationCertFile, certDir + "/server.crt", true},
+		{"cert file inside", nil, AnnotationCertFile, CertDir + "/server.crt", true},
 		{"cert file elsewhere", nil, AnnotationCertFile, "/certs/tls.crt", false},
 		{"key file escaping", nil, AnnotationKeyFile, "../tls.key", false},
 		{"ca file elsewhere", nil, AnnotationCAFile, "/etc/ssl/ca.crt", false},
@@ -566,7 +566,7 @@ func TestParseAnnotationsRejectsDiscoveryVolumeAliases(t *testing.T) {
 		wantRefused bool
 	}{
 		{"own volume", "discovery", "", false},
-		{"default cert volume", defaultCertVolumeName, "", true},
+		{"default cert volume", DefaultCertVolumeName, "", true},
 		{"renamed cert volume", "edge-certs", "edge-certs", true},
 		{"secrets volume", secretsVolumeName, "", true},
 		{"encrypted volume", volume.KubeVolumePrefix + "data", "", true},

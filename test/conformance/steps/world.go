@@ -95,6 +95,9 @@ type container struct {
 	ref     string // reference the manifest uses
 	command []string
 	env     []string // NAME=VALUE the pod spec sets, beside what the image and the node add
+	// stated: the scenario gave the argv; otherwise the harness chose it (a
+	// placeholder sleep, a hello server, a datagram listener).
+	stated bool
 }
 
 type worldKey struct{}
@@ -143,6 +146,14 @@ func initializeScenario(be backend) func(*godog.ScenarioContext) {
 				return ctx, errors.Join(w.runUndo(), w.restoreNode(), w.restoreAllowlist())
 			}
 			return ctx, nil
+		})
+		// godog records a skip without its error; the attachment keeps the
+		// reason in the report.
+		sc.StepContext().After(func(ctx context.Context, _ *godog.Step, status godog.StepResultStatus, err error) (context.Context, error) {
+			if status == godog.StepSkipped && err != nil && err.Error() != godog.ErrSkip.Error() {
+				ctx = godog.Attach(ctx, godog.Attachment{FileName: "skip-reason", MediaType: "text/plain", Body: []byte(err.Error())})
+			}
+			return ctx, err
 		})
 		registerAdmission(sc)
 		registerAllowlist(sc)

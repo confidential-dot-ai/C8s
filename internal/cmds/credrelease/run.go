@@ -53,6 +53,10 @@ type Config struct {
 	AttestationAPIURL string
 	// Platform is the TEE platform ("tdx" or "snp"; no default).
 	Platform string
+	// MeasuredPoliciesFile is the node's measured-policy journal
+	// (armtls.NodeJournal). The operator-key binding check replays it, and the
+	// serving certificate and /attest responses list it. Empty lists none.
+	MeasuredPoliciesFile string
 	// ClientCACert / ClientCAKey locate the cluster's client-signing CA
 	// (defaults: the RKE2 paths; kubeadm works via /etc/kubernetes/pki/ca.{crt,key}).
 	ClientCACert string
@@ -109,7 +113,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	cfg.Platform = family.String()
 
-	operatorPub, err := LoadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL)
+	operatorPub, err := LoadMeasuredOperatorKey(ctx, cfg.AttestationAPIURL, cfg.MeasuredPoliciesFile)
 	if err != nil {
 		return fmt.Errorf("load measured operator key: %w", err)
 	}
@@ -125,6 +129,7 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	attestationClient := attestclient.NewClient("")
 	handler.attester = localEvidenceGenerator{client: attestationClient, apiURL: cfg.AttestationAPIURL}
+	handler.measuredPolicies = armtls.NewJournal(cfg.MeasuredPoliciesFile)
 
 	// armTLS serving config: the presented cert embeds a fresh TDX quote
 	// bound to its own public key, so the operator's armTLS client verifies
@@ -137,6 +142,8 @@ func Run(ctx context.Context, cfg Config) error {
 		Platform:   cfg.Platform,
 		AttestFunc: attestFunc,
 		Logger:     slog.Default(),
+
+		MeasuredPoliciesFile: cfg.MeasuredPoliciesFile,
 	})
 	if err != nil {
 		return fmt.Errorf("build armTLS config: %w", err)

@@ -80,7 +80,7 @@ func testLoader(t *testing.T, doc Document, pub string) {
 	old := loadMeasuredIdentity
 	t.Cleanup(func() { loadMeasuredIdentity = old })
 	measured := testMeasuredIdentity(t, doc, pub)
-	loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) {
+	loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
 		return measured, nil
 	}
 }
@@ -286,7 +286,7 @@ func TestKeylessAndFailedAttestationNeverStageARole(t *testing.T) {
 			doc, key, pub := testDocument(t, "snp", Server)
 			testLoader(t, doc, pub)
 			cfg := testConfig(t, doc, key)
-			loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) {
+			loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
 				measured := testMeasuredIdentity(t, doc, "")
 				measured.OperatorKeyErr = keyErr
 				return measured, nil
@@ -448,7 +448,9 @@ func TestMissingMeasuredImageCannotStageARole(t *testing.T) {
 			} else {
 				measured.Image = identityWithoutDigests{measured.Image}
 			}
-			loadMeasuredIdentity = func(context.Context, string, string) (credrelease.MeasuredIdentity, error) { return measured, nil }
+			loadMeasuredIdentity = func(context.Context, string, string, string) (credrelease.MeasuredIdentity, error) {
+				return measured, nil
+			}
 			cfg := testConfig(t, doc, key)
 			if err := Stage(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), "contains no "+missing) {
 				t.Fatalf("missing %s: %v", missing, err)

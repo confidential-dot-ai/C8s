@@ -184,11 +184,17 @@ func run(cfg config) error {
 	// set; an unseeded store would deny every worker pull until an operator
 	// populated it. Fail closed on any seed error.
 	if cfg.allowlistSeed != "" {
-		applied, err := seedStore(&allowlistStore, cfg.allowlistSeed)
+		seedCtx, stopSeed := context.WithCancel(ctx)
+		following, err := startSeed(seedCtx, &allowlistStore, cfg.allowlistSeed, cfg.followSeed)
 		if err != nil {
+			stopSeed()
 			return fmt.Errorf("seed allowlist: %w", err)
 		}
-		go followSeed(ctx, &allowlistStore, cfg.allowlistSeed, applied)
+		// Runs before the store's deferred Close.
+		defer func() {
+			stopSeed()
+			<-following
+		}()
 	}
 
 	// C6: there is no route seed; an empty store waits for an operator write.
@@ -201,13 +207,13 @@ func run(cfg config) error {
 	if err := allowlistStore.StartJournal(); err != nil {
 		return fmt.Errorf("start allowlist history: %w", err)
 	}
-	allowlistWriteAuthorizer := writeAuthorizer
+	operatorAuthorizer := writeAuthorizer
 	if cfg.operatorKeys != "" {
 		var started time.Time
 		if !cfg.allowlistPersistent {
 			started = time.Now()
 		}
-		allowlistWriteAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
+		operatorAuthorizer = singleUse(authorizeIssuedAt, &allowlistStore, started, time.Duration(cfg.jwtClockSkew)*time.Second)
 	}
 
 	if !cfg.allowlistPersistent {
@@ -247,14 +253,7 @@ func run(cfg config) error {
 		if mErr != nil {
 			return mErr
 		}
-		sandboxDigests, err = workloadclaims.NewDigestsClient(
-			ctx,
-			cfg.armtlsPlatform,
-			attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL),
-			cfg.attestationApiURL,
-			armtls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images},
-			cfg.requestTimeout,
-		)
+		sandboxDigests, err = workloadclaims.NewDigestsClient(ctx, digestsClientConfig(cfg, armtls.Pins{Measurements: measurementBytes, Registers: rtmrPins, Images: pinned.Images}))
 		if err != nil {
 			return err
 		}
@@ -287,7 +286,7 @@ func run(cfg config) error {
 		}
 		secretsOperator = &secrets.OperatorHandler{
 			Store:        store,
-			Authorize:    writeAuthorizer,
+			Authorize:    operatorAuthorizer,
 			MaxBodyBytes: allowlistWriteBodyCap,
 			Logger:       slog.Default(),
 		}
@@ -298,7 +297,7 @@ func run(cfg config) error {
 			Bindings:       sandboxBindings,
 			Policy:         policy,
 			InventoryHosts: inventoryHosts,
-			Authorize:      writeAuthorizer,
+			Authorize:      operatorAuthorizer,
 			Logger:         slog.Default(),
 		}
 		slog.Info("serving /secrets; release is gated on an allowlist entry carrying a secrets grant")
@@ -328,12 +327,12 @@ func run(cfg config) error {
 		},
 		AllowlistHandler: allowlist.Handler{
 			Store:             &allowlistStore,
-			WriteAuthorizer:   allowlistWriteAuthorizer,
+			WriteAuthorizer:   operatorAuthorizer,
 			MaxWriteBodyBytes: allowlistWriteBodyCap,
 		},
 		Routes: routeHandler{
 			Store:     &allowlistStore,
-			Authorize: allowlistWriteAuthorizer,
+			Authorize: operatorAuthorizer,
 			MeshCA:    mesh.Cert,
 		},
 		ReadyFn:           readinessFn(checker.Ready, mesh.Cert, cfg.minCAValidity),
@@ -359,21 +358,7 @@ func run(cfg config) error {
 	srv := newHTTPServer(addr, router, cfg)
 
 	if cfg.armtlsPlatform != "" {
-		attestFunc := attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
-		serverCfg := &armtls.ServerConfig{
-			Platform:   cfg.armtlsPlatform,
-			AttestFunc: attestFunc,
-			CertTTL:    cfg.armtlsCertTTL,
-			Logger:     slog.Default(),
-		}
-		// /secrets reads a CDS-stamped field out of the caller's leaf, so the
-		// chain has to be verified by crypto/tls against the mesh CA: the
-		// armTLS path would admit a self-signed peer whose sandbox-ID extension
-		// is whatever it chose. VerifyClientCertIfGiven keeps every other route
-		// reachable by a caller with no certificate.
-		serverCfg.ClientCAs = []*x509.Certificate{mesh.Cert}
-		serverCfg.ClientAuth = tls.VerifyClientCertIfGiven
-		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(serverCfg)
+		tlsCfg, certMgr, err := armtls.NewServerTLSConfig(servingConfig(cfg, mesh.Cert))
 		if err != nil {
 			return fmt.Errorf("armtls server config: %w", err)
 		}
@@ -435,6 +420,40 @@ func (serverLogFilter) Write(p []byte) (int, error) {
 		slog.Info(msg)
 	}
 	return len(p), nil
+}
+
+func armtlsAttestFunc(cfg config) func(context.Context, string) (string, error) {
+	return attestclient.MakeSNPARMTLSAttestFunc(attestclient.NewClient(""), cfg.attestationApiURL)
+}
+
+// servingConfig is CDS's armTLS serving certificate. /secrets reads a
+// CDS-stamped field out of the caller's leaf, so the chain has to be verified
+// by crypto/tls against the mesh CA: the armTLS path would admit a self-signed
+// peer whose sandbox-ID extension is whatever it chose. VerifyClientCertIfGiven
+// keeps every other route reachable by a caller with no certificate.
+func servingConfig(cfg config, meshCA *x509.Certificate) *armtls.ServerConfig {
+	return &armtls.ServerConfig{
+		Platform:             cfg.armtlsPlatform,
+		AttestFunc:           armtlsAttestFunc(cfg),
+		CertTTL:              cfg.armtlsCertTTL,
+		Logger:               slog.Default(),
+		ClientCAs:            []*x509.Certificate{meshCA},
+		ClientAuth:           tls.VerifyClientCertIfGiven,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
+	}
+}
+
+// digestsClientConfig is the client CDS calls node inventories back with for
+// a sandbox's container digests.
+func digestsClientConfig(cfg config, pins armtls.Pins) workloadclaims.DigestsClientConfig {
+	return workloadclaims.DigestsClientConfig{
+		Platform:             cfg.armtlsPlatform,
+		AttestFunc:           armtlsAttestFunc(cfg),
+		AttestationAPIURL:    cfg.attestationApiURL,
+		Pins:                 pins,
+		Timeout:              cfg.requestTimeout,
+		MeasuredPoliciesFile: cfg.measuredPolicies,
+	}
 }
 
 func normalizeHTTPServerConfig(cfg config) config {
@@ -528,6 +547,9 @@ func validateConfig(cfg config) error {
 	}
 	if cfg.readinessInterval <= 0 {
 		return fmt.Errorf("--readiness-interval must be positive")
+	}
+	if cfg.followSeed && cfg.allowlistSeed == "" {
+		return fmt.Errorf("--follow-seed needs --allowlist-seed")
 	}
 	if err := validateSecretsConfig(cfg); err != nil {
 		return err
