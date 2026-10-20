@@ -204,7 +204,7 @@ func seedDeclares(ctx context.Context, image string) error {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("the seed of the CDS does not declare %s here", digest)
 	}
 	return nil
 }

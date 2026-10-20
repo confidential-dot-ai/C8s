@@ -129,7 +129,7 @@ func allowlistRouteEnabled(ctx context.Context) error {
 			return err
 		}
 		if a.status != http.StatusOK {
-			return godog.ErrSkip
+			return skipf("the built-in allowlist route answers %d here", a.status)
 		}
 		return nil
 	}
@@ -139,7 +139,7 @@ func allowlistRouteEnabled(ctx context.Context) error {
 	_, exact := c.exact[allowlistRoute]
 	_, prefix := c.prefix[allowlistRoute+"/"]
 	if !exact || !prefix {
-		return godog.ErrSkip
+		return skipf("the router does not render the built-in allowlist route here")
 	}
 	return nil
 }
@@ -150,7 +150,7 @@ func discoveryEnabled(ctx context.Context) error {
 		return err
 	}
 	if c.published("application/json", "") == "" {
-		return godog.ErrSkip
+		return skipf("the router does not publish discovery here")
 	}
 	return nil
 }
@@ -161,7 +161,7 @@ func cdsCredentialSelected(ctx context.Context) error {
 		return err
 	}
 	if mode != "cds" {
-		return godog.ErrSkip
+		return skipf("the router presents its %s credential here, not the CDS-issued one", mode)
 	}
 	return nil
 }
