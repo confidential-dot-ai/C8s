@@ -1,8 +1,22 @@
+{{- /* c8s.cdsPodSpec renders the CDS pod spec. With .ha set (merge (dict
+       "ha" true) .) it is the HA replica on a cds-role node (cds-ha.yaml);
+       otherwise the singleton. */}}
 {{- define "c8s.cdsPodSpec" -}}
 # Keeps the env names fixed for the allowlist's env match (c8s.componentEnv).
 enableServiceLinks: false
 
 serviceAccountName: {{ include "c8s.cdsName" . }}
+{{- if .ha }}
+# The replica reads decrees and records their status.
+automountServiceAccountToken: true
+nodeSelector:
+  c8s.confidential.ai/role: cds
+tolerations:
+  - key: c8s.confidential.ai/role
+    operator: Equal
+    value: cds
+    effect: NoSchedule
+{{- else }}
 # The live node-list bound needs the API token; static CIDRs do not.
 automountServiceAccountToken: {{ empty .Values.cds.sandboxInventoryCIDRs }}
 {{- /* CDS is a singleton trust root reached over a node-local NodePort
@@ -28,6 +42,7 @@ nodeSelector:
 tolerations:
   {{- toYaml . | nindent 2 }}
 {{- end }}
+{{- end }}
 securityContext:
 
 {{ toYaml .Values.podSecurityContext | indent 2 }}
@@ -44,6 +59,10 @@ containers:
       - --attestation-api-url={{ include "c8s.attestationApiURL" . }}
       - --allowlist-db={{ .Values.cds.allowlistDB }}
       - --allowlist-persistent={{ .Values.cds.persistence.enabled }}
+      {{- if .ha }}
+      # A memory emptyDir need not report its sizeLimit to statfs.
+      - --allowlist-max-bytes={{ .Values.cds.ha.storeSizeLimit }}
+      {{- end }}
       {{- if .Values.node.baked }}
       - --allowlist-seed=/run/c8s-node/allowlist-seed.json
       {{- /* The measured image holds this seed, so following it publishes
@@ -109,15 +128,44 @@ containers:
       {{- if include "c8s.attestationApiSocketPresent" . }}
       - --measured-policies-file={{ .Values.nriImagePolicy.hostPaths.runtimeDir }}/measured-policies
       {{- end }}
-    {{- with (include "c8s.attestationApiHostIPEnv" .) }}
-    # cvmMode=bare-metal: expands $(HOST_IP) in --attestation-api-url to the node
-    # IP so this pod-netns pod reaches the node-baked host attestation-api.
+      {{- if .ha }}
+      # HA replica on a cds-role node: trust roots come from the signed
+      # launch document (cds-ha.json), never from these arguments.
+      - --ha-config=/run/c8s-node/cds-ha.json
+      - --ha-decree-namespace={{ .Values.cds.ha.decreeNamespace }}
+      - --ha-peers-dns={{ include "c8s.cdsName" . }}-peers.{{ .Release.Namespace }}.svc
+      - --ha-port={{ .Values.cds.ha.peerPort }}
+      - --ha-attestor=node
+      {{- else if .Values.node.baked }}
+      # The singleton exits when the launch document selects HA.
+      - --ha-yield-file=/run/c8s-node/cds-mode
+      {{- end }}
+    {{- $hostIPEnv := include "c8s.attestationApiHostIPEnv" . }}
+    {{- if or $hostIPEnv .ha }}
     env:
+      {{- with $hostIPEnv }}
       {{- . | nindent 6 }}
+      {{- end }}
+      {{- if .ha }}
+      # Replicas advertise their pod IP to each other, and hold one voter
+      # seat per node.
+      - name: POD_IP
+        valueFrom: {fieldRef: {fieldPath: status.podIP}}
+      - name: NODE_NAME
+        valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+      {{- with .Values.cds.ha.goMemLimit }}
+      - name: GOMEMLIMIT
+        value: {{ . | quote }}
+      {{- end }}
+      {{- end }}
     {{- end }}
     ports:
       - name: https
         containerPort: {{ .Values.cds.port }}
+      {{- if .ha }}
+      - name: peer
+        containerPort: {{ .Values.cds.ha.peerPort }}
+      {{- end }}
 
     readinessProbe:
       httpGet:
@@ -125,15 +173,33 @@ containers:
         port: https
         scheme: HTTPS
       initialDelaySeconds: 3
+      {{- if .ha }}
+      # A replica that stops serving (out of contact with the cluster, or
+      # its image evicted) must leave the Service endpoints quickly.
+      periodSeconds: 2
+      failureThreshold: 1
+      {{- end }}
     livenessProbe:
+      {{- if .ha }}
+      # An HA replica opens its main port only once it has joined the
+      # cluster, which may wait for a Genesis decree or a peer: probe the
+      # peer listener, which is up from the start.
+      tcpSocket:
+        port: peer
+      {{- else }}
       httpGet:
         path: /healthz
         port: https
         scheme: HTTPS
+      {{- end }}
       periodSeconds: 30
 
     resources:
+{{- if .ha }}
+{{ toYaml .Values.cds.ha.resources | indent 6 }}
+{{- else }}
 {{ toYaml .Values.cds.resources | indent 6 }}
+{{- end }}
     volumeMounts:
       - name: data
         mountPath: /mnt/c8s-data/cds
@@ -169,13 +235,17 @@ containers:
        node proves memory or encrypted, and tmpfs is that on every node. */}}
 volumes:
   - name: data
-    {{- if .Values.cds.persistence.enabled }}
+    {{- if and .Values.cds.persistence.enabled (not .ha) }}
     persistentVolumeClaim:
       claimName: {{ include "c8s.cdsName" . }}-data
     {{- else }}
     emptyDir:
       medium: Memory
+      {{- if .ha }}
+      sizeLimit: {{ required "cds.ha.storeSizeLimit is required" .Values.cds.ha.storeSizeLimit | toString | quote }}
+      {{- else }}
       sizeLimit: {{ required "cds.persistence.memorySizeLimit is required unless cds.persistence.enabled" .Values.cds.persistence.memorySizeLimit | toString | quote }}
+      {{- end }}
     {{- end }}
   {{- include "c8s.attestationApiSocketVolume" . | nindent 2 }}
   {{- include "c8s.nodeConfigVolume" . | nindent 2 }}

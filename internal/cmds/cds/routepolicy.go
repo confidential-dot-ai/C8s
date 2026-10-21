@@ -78,6 +78,10 @@ func (h routeHandler) handlePut(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error()+"; fetch the stored manifest and apply the change again", http.StatusPreconditionFailed)
 		return
 	}
+	if errors.Is(err, allowlist.ErrUnavailable) {
+		allowlist.WriteUnavailable(w)
+		return
+	}
 	if err != nil {
 		slog.Error("store route manifest", "err", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)

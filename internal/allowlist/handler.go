@@ -26,6 +26,9 @@ type Handler struct {
 	// MaxWriteBodyBytes caps mutation request bodies. Zero means
 	// DefaultMaxWriteBodyBytes; a non-positive value clamps to the default.
 	MaxWriteBodyBytes int64
+	// Full, when set, refuses writes while it returns an error: the store's
+	// volume is too full to take more history (see cds --allowlist-max-fill).
+	Full func() error
 }
 
 // WriteAuthorizer authorizes a mutation given the raw request body, so the
@@ -80,7 +83,7 @@ func (h Handler) HandleReplaceAll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.Store.ReplaceAll(al); err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 	// The token that wrote a canonical whole document is the operator's
@@ -118,7 +121,7 @@ func (h Handler) HandlePutWorkload(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 			return
 		}
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 
@@ -136,7 +139,7 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	name := chi.URLParam(r, "name")
 	found, err := h.Store.DeleteWorkload(name)
 	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
+		writeStoreError(w, err)
 		return
 	}
 	if !found {
@@ -148,9 +151,48 @@ func (h Handler) HandleDeleteWorkload(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// WriteUnavailable answers a write the replicated store could not commit:
+// 503, retryable, never 401 or 500.
+func WriteUnavailable(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", "1")
+	http.Error(w, ErrUnavailable.Error(), http.StatusServiceUnavailable)
+}
+
+// writeStoreError answers a failed store write.
+func writeStoreError(w http.ResponseWriter, err error) {
+	if errors.Is(err, ErrUnavailable) {
+		WriteUnavailable(w)
+		return
+	}
+	if storeFull(err) {
+		// The history keeps every document, so a store on a size-limited
+		// volume fills up; writes then fail until the operator acts.
+		slog.Error("allowlist write refused: the store is full", "err", err)
+		http.Error(w, "allowlist store is full: the allowlist history has filled its volume", http.StatusInsufficientStorage)
+		return
+	}
+	slog.Error("allowlist write failed", "err", err)
+	http.Error(w, "internal server error", http.StatusInternalServerError)
+}
+
+// storeFull reports SQLite's SQLITE_FULL. In HA the error comes back from
+// the replicated state machine as text, hence the message match.
+func storeFull(err error) bool {
+	var coded interface{ Code() int }
+	return (errors.As(err, &coded) && coded.Code()&0xff == 13) || strings.Contains(err.Error(), "database or disk is full")
+}
+
 // authorize reads the body (capped) and runs the configured authorizer.
 // On success returns the body for downstream decoding.
 func (h Handler) authorize(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	if h.Full != nil {
+		// Checked before the token is spent, which is a write too.
+		if err := h.Full(); err != nil {
+			slog.Warn("allowlist write refused", "reason", err)
+			http.Error(w, err.Error(), http.StatusInsufficientStorage)
+			return nil, false
+		}
+	}
 	cap := h.MaxWriteBodyBytes
 	if cap <= 0 {
 		cap = DefaultMaxWriteBodyBytes
@@ -172,6 +214,15 @@ func (a WriteAuthorizer) ReadAuthorized(w http.ResponseWriter, r *http.Request, 
 	}
 	if err := a(r, body); err != nil {
 		slog.Warn("write rejected", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "reason", err)
+		if errors.Is(err, ErrUnavailable) {
+			WriteUnavailable(w)
+			return nil, false
+		}
+		if storeFull(err) {
+			// Spending the token is a write too; a full store is not a bad key.
+			writeStoreError(w, err)
+			return nil, false
+		}
 		httputil.RefuseOperatorToken(w, err)
 		return nil, false
 	}

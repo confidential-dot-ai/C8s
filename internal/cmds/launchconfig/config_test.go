@@ -59,6 +59,19 @@ func testDocument(t *testing.T, platform string, role Role) (Document, *ecdsa.Pr
 	return doc, agentKey, agentPub
 }
 
+// testCDSDocument is testDocument for the cds role: a third launch key,
+// listed only in cdsOperatorPublicKeys, and a cdsHA block.
+func testCDSDocument(t *testing.T, platform string) (Document, *ecdsa.PrivateKey, string) {
+	t.Helper()
+	doc, _, _ := testDocument(t, platform, Agent)
+	cdsKey, cdsPub := testKey(t)
+	_, decreePub := testKey(t)
+	doc.Role = CDS
+	doc.CDSOperatorPublicKeys = []string{cdsPub}
+	doc.CDSHA = &CDSHA{DecreeKey: decreePub, Replicas: 3}
+	return doc, cdsKey, cdsPub
+}
+
 func testMeasuredIdentity(t *testing.T, doc Document, pub string) credrelease.MeasuredIdentity {
 	t.Helper()
 	image, err := runtimemeasure.IdentityFromResult(&teetypes.VerificationResult{
@@ -472,6 +485,69 @@ func TestAuthorizeKeyRejectsUnparsedServerKey(t *testing.T) {
 			}
 			if err := doc.authorizeKey([]byte(pub), &key.PublicKey); err == nil || !strings.Contains(err.Error(), "parse server operator public key") {
 				t.Fatalf("authorized a document with an invalid server key: %v", err)
+			}
+		})
+	}
+}
+
+// TestCDSRoleStagesAndKeysAreExclusive: a cds-role node joins as an agent with
+// its own launch key, is labelled and tainted, and gets the HA inputs. One
+// launch key authorizes exactly one role (phase-b review F2).
+func TestCDSRoleStagesAndKeysAreExclusive(t *testing.T) {
+	doc, key, pub := testCDSDocument(t, "tdx")
+	testLoader(t, doc, pub)
+	cfg := testConfig(t, doc, key)
+	if err := Stage(context.Background(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	fragment, err := os.ReadFile(cfg.path(rke2FragmentPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"server: https://10.0.0.1:9345", CDSNodeLabel, CDSNodeTaint} {
+		if !strings.Contains(string(fragment), want) {
+			t.Errorf("rke2 fragment lacks %q:\n%s", want, fragment)
+		}
+	}
+	if _, err := os.Stat(cfg.path(serverTokenPath)); !os.IsNotExist(err) {
+		t.Fatal("cds node staged the server token")
+	}
+	// cds.json (what CDS clients pin) covers the server and the cds key.
+	cds, err := os.ReadFile(cfg.path(Dir + "/cds.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pins, err := refvalues.Parse(cds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, img := range pins.Images {
+		names = append(names, img.Name)
+	}
+	if strings.Join(names, ",") != "server,cds-1" {
+		t.Fatalf("cds.json pins %v, want server and cds-1", names)
+	}
+
+	bad := []struct {
+		name   string
+		change func(*Document)
+		want   string
+	}{
+		{"agent doc signed by the cds key", func(d *Document) { d.Role = Agent }, "not in agentOperatorPublicKeys"},
+		{"cds key also an agent key", func(d *Document) { d.AgentOperatorPublicKeys = append(d.AgentOperatorPublicKeys, pub) }, "distinct"},
+		{"cds role without cdsHA", func(d *Document) { d.CDSHA = nil; d.CDSOperatorPublicKeys = nil }, "cdsHA"},
+		{"one replica", func(d *Document) { d.CDSHA.Replicas = 1 }, "replicas"},
+		{"bad decree key", func(d *Document) { d.CDSHA.DecreeKey = "nope" }, "decreeKey"},
+	}
+	for _, tc := range bad {
+		t.Run(tc.name, func(t *testing.T) {
+			d := doc
+			d.CDSHA = &CDSHA{DecreeKey: doc.CDSHA.DecreeKey, Replicas: doc.CDSHA.Replicas}
+			tc.change(&d)
+			signDocument(t, cfg, d, key)
+			if _, err := Verify(context.Background(), cfg); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("got %v, want %q", err, tc.want)
 			}
 		})
 	}

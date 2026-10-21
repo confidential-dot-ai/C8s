@@ -62,15 +62,48 @@ func TestNodeImageRender(t *testing.T) {
 			if err := cmd.Execute(); err != nil {
 				t.Fatal(err)
 			}
-			raw, err := os.ReadFile(filepath.Join(out, "c8s-integration.yaml"))
+			var raw []byte
+			for _, f := range []string{"c8s-integration.yaml", "c8s-cds-singleton.yaml", "c8s-cds-ha.yaml"} {
+				part, err := os.ReadFile(filepath.Join(out, f))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if f == "c8s-cds-ha.yaml" {
+					for _, want := range []string{"name: GOMEMLIMIT", "memory: 4Gi", "sizeLimit: 2Gi", "--allowlist-max-bytes=2Gi"} {
+						if !bytes.Contains(part, []byte(want)) {
+							t.Fatalf("HA replicas render without %q", want)
+						}
+					}
+				}
+				raw = append(raw, part...)
+			}
+			// The cds-role floor: the HA replica pinned to its exact argv, the
+			// DaemonSets kept, and no other chart image (the operator image
+			// carries the same c8s binary).
+			floorRaw, err := os.ReadFile(filepath.Join(out, "cds-floor.json"))
 			if err != nil {
 				t.Fatal(err)
+			}
+			floor, err := pkgallowlist.ParseJSON(floorRaw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			replica := floor.Workloads["cds-ha-replica"].Containers
+			if len(replica) != 1 || replica[0].Args.Policy != pkgallowlist.PolicyExact || !slices.Contains(replica[0].Args.Argv, "--ha-config=/run/c8s-node/cds-ha.json") {
+				t.Fatalf("cds floor does not pin the HA replica argv: %+v", replica)
+			}
+			for name, w := range floor.Workloads {
+				for _, c := range w.Containers {
+					if c.Digest.String() == testDigest {
+						t.Fatalf("cds floor admits the operator image (%s)", name)
+					}
+				}
 			}
 			docs := nodeImageDocuments(t, raw)
 			for _, key := range []string{
 				"Namespace/c8s-system", "Namespace/" + workloadclaims.RouterNamespace,
 				"CustomResourceDefinition/confidentialworkloads.confidential.ai",
-				"Deployment/c8s-operator", "Deployment/c8s-cds", "Deployment/c8s-router",
+				"Deployment/c8s-operator", "Deployment/c8s-cds", "DaemonSet/c8s-cds-ha", "Deployment/c8s-router",
 				"ConfigMap/c8s-cds-allowlist-seed", "MutatingWebhookConfiguration/c8s-pod-injector",
 				"ValidatingWebhookConfiguration/c8s-pod-validator",
 				"ValidatingAdmissionPolicy/c8s-deny-host-namespaces", "ValidatingAdmissionPolicyBinding/c8s-deny-host-namespaces",
@@ -103,7 +136,8 @@ func TestNodeImageRender(t *testing.T) {
 					if !named {
 						want = nodeImageNamespace
 					}
-					if object.Metadata.Namespace != want {
+					decrees := (object.Kind == "Role" || object.Kind == "RoleBinding") && object.Metadata.Namespace == nodeImageDecreeNamespace
+					if object.Metadata.Namespace != want && !decrees {
 						t.Errorf("%s namespace = %q, want %q", key, object.Metadata.Namespace, want)
 					}
 				default:
@@ -519,7 +553,7 @@ func TestNodeImageCollectPreservesCompleteResourcesAndConfigData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, after := nodeImageDocuments(t, []byte(fixture)), nodeImageDocuments(t, artifacts.integration)
+	before, after := nodeImageDocuments(t, []byte(fixture)), nodeImageDocuments(t, slices.Concat(artifacts.integration, artifacts.cdsSingleton, artifacts.cdsHA))
 	if after["ConfigMap/c8s-router-nginx"] != nil {
 		t.Error("integration manifests kept the router nginx ConfigMap the image ships as files")
 	}

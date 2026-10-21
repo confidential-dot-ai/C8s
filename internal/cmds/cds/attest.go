@@ -40,7 +40,10 @@ type AttestHandler struct {
 	AttestationClient remote.Client
 	CA                *issuer.CA
 	CAChainPEM        []byte
-	CertTTL           time.Duration
+	// CASource, when set, replaces CA and CAChainPEM: the HA replica's
+	// current mesh CA, or an error while it may not issue.
+	CASource func() (*issuer.CA, error)
+	CertTTL  time.Duration
 
 	// RequestTimeout caps how long /attest may spend on attestation
 	// verification + signing. Zero = no timeout.
@@ -290,7 +293,13 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		}
 		ttl = issuer.CapTTL(ttl, namedTTL)
 	}
-	certPEM, serial, err := h.CA.SignCSR(issuer.SignCSRParams{
+	ca, err := h.currentCA()
+	if err != nil {
+		slog.Warn("attest: no mesh CA to issue with", "err", err)
+		attestation.WriteError(w, http.StatusServiceUnavailable, types.ErrorCodeSignFailed, "mesh CA unavailable")
+		return
+	}
+	certPEM, serial, err := ca.SignCSR(issuer.SignCSRParams{
 		CSR:             csr,
 		TTL:             ttl,
 		Evidence:        evidenceJSON,
@@ -303,6 +312,9 @@ func (h AttestHandler) HandleAttest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	caChainPEM := h.caChainPEM()
+	if h.CASource != nil {
+		caChainPEM = certutil.EncodeCertPEM(ca.Cert.Raw) // the CA that signed, even across a rotation
+	}
 	if len(caChainPEM) == 0 {
 		slog.Error("in-process sign failed: CA chain unavailable")
 		attestation.WriteError(w, http.StatusInternalServerError, types.ErrorCodeSignFailed, "CA chain unavailable")
@@ -567,6 +579,13 @@ func (h AttestHandler) recordSandboxBinding(sandbox workloadclaims.VerifiedSandb
 		slog.Warn("sandbox is already bound to a different inventory; issuing anyway, but secrets will refuse it",
 			"sandbox_id", sandbox.SandboxID, "inventory_addr", sandbox.InventoryHost)
 	}
+}
+
+func (h AttestHandler) currentCA() (*issuer.CA, error) {
+	if h.CASource != nil {
+		return h.CASource()
+	}
+	return h.CA, nil
 }
 
 func (h AttestHandler) caChainPEM() []byte {

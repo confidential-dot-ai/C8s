@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -31,6 +33,12 @@ type Store struct {
 	// signal for a reader that memoizes a whole-document snapshot
 	// (internal/cmds/cds).
 	gen uint64
+	// repl, when set, makes every mutation a replicated command (CDS HA):
+	// the public write methods hand it to repl, and each replica applies it
+	// through Apply. at is the applying command's time (Unix ms), so the
+	// history every replica journals is identical.
+	repl Replicator
+	at   atomic.Int64
 }
 
 // roleInit / roleMain label the two container partitions in the digest index.
@@ -202,7 +210,7 @@ func (s *Store) Version() (string, error) {
 // records the mutation for snapshot-cache invalidation. Every write path goes
 // through it. Callers must hold s.mu.
 func (s *Store) commitTx(tx *sql.Tx) error {
-	if err := publishTx(tx); err != nil {
+	if err := publishTx(tx, s.now()); err != nil {
 		return fmt.Errorf("journal allowlist: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -210,6 +218,15 @@ func (s *Store) commitTx(tx *sql.Tx) error {
 	}
 	s.gen++
 	return nil
+}
+
+// now is the time a mutation is journaled at: the replicated command's when
+// one is being applied, the local clock otherwise.
+func (s *Store) now() time.Time {
+	if ms := s.at.Load(); ms != 0 {
+		return time.UnixMilli(ms)
+	}
+	return time.Now()
 }
 
 // Generation returns the number of mutations committed to this store in this
@@ -236,7 +253,7 @@ func bumpVersionTx(tx *sql.Tx) error {
 // everything else and idempotent: an existing entry is left untouched and the
 // version is bumped at most once, only when the set changed, so a re-seed that
 // changes nothing does not force every worker to re-pull.
-func (s *Store) SeedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
+func (s *Store) seedWorkloads(workloads map[string]pkgallowlist.Workload) (added, retired int, err error) {
 	if len(workloads) == 0 {
 		return 0, 0, nil
 	}
@@ -350,7 +367,7 @@ func seedWorkloadsTx(tx *sql.Tx, workloads map[string]pkgallowlist.Workload) (in
 // a single transaction, then bumps the version. The name and containers are
 // validated against the frozen allowlist rules; a rejection wraps
 // ErrInvalidWorkload.
-func (s *Store) PutWorkload(name string, w pkgallowlist.Workload) error {
+func (s *Store) putWorkload(name string, w pkgallowlist.Workload) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	norm, err := normalizeEntry(name, w)
@@ -375,7 +392,7 @@ func (s *Store) PutWorkload(name string, w pkgallowlist.Workload) error {
 
 // DeleteWorkload removes one named entry and its index rows, bumping the version
 // only when the entry existed. Returns false if absent.
-func (s *Store) DeleteWorkload(name string) (bool, error) {
+func (s *Store) deleteWorkload(name string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -407,7 +424,7 @@ func (s *Store) DeleteWorkload(name string) (bool, error) {
 
 // ReplaceAll atomically swaps the entire allowlist for the given document and
 // bumps the version. An empty document clears everything.
-func (s *Store) ReplaceAll(al *pkgallowlist.Allowlist) error {
+func (s *Store) replaceAll(al *pkgallowlist.Allowlist) error {
 	if al == nil {
 		return fmt.Errorf("allowlist is required")
 	}

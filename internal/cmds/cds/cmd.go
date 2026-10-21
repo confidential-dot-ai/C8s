@@ -73,6 +73,8 @@ func NewCmd() *cobra.Command {
 	flags.DurationVar(&cfg.minCAValidity, "min-ca-validity", time.Hour, "/readyz fails when the loaded mesh CA has less than this remaining lifetime")
 	flags.StringVar(&cfg.allowlistDB, "allowlist-db", "", "Path to the allowlist SQLite database")
 	flags.BoolVar(&cfg.allowlistPersistent, "allowlist-persistent", false, "whether --allowlist-db is on durable storage; false makes CDS warn at startup that operator-added digests, the allowlist history, spent operator tokens, the route manifest and the mesh CA do not survive a restart")
+	flags.Float64Var(&cfg.allowlistMaxFill, "allowlist-max-fill", 0, "refuse allowlist writes (507) once the --allowlist-db volume is this full (0-1; 0 = off, and 0.45 for an HA replica, so a replacement replica always has room to restore a full copy)")
+	flags.StringVar(&cfg.allowlistMaxBytes, "allowlist-max-bytes", "", "size of the --allowlist-db volume when the filesystem does not report it (a memory emptyDir's sizeLimit, e.g. 64Mi)")
 	flags.StringSliceVar(&cfg.inventoryCIDRs, "sandbox-inventory-cidr", nil, "CIDR(s) holding the node addresses CDS may dial for a sandbox's admission inventory (repeatable). It is what stops a workload pointing the callback at its own pod IP and answering as the inventory (docs/armtls.md). Unset, CDS derives one host route per node from the live node list and refuses sandbox tokens until that syncs")
 	flags.StringVar(&cfg.allowlistSeed, "allowlist-seed", "", "Path to a JSON allowlist (version + digests map) seeded into the store at startup before serving; missing entries are added, existing entries are left untouched (empty disables seeding)")
 	flags.BoolVar(&cfg.followSeed, "follow-seed", false, "reread --allowlist-seed every 30s and seed it again when its content changes. Whoever can write the seed file then publishes entries without an operator token, so set it only for a seed no one can change, such as the measured node image's")
@@ -92,6 +94,8 @@ func NewCmd() *cobra.Command {
 	flags.StringVar(&cfg.armtlsPlatform, "armtls-platform", "", "TEE platform for the armTLS serving cert (REQUIRED): sev-snp or tdx (snp/az-snp/gcp-snp and az-tdx/gcp-tdx aliases are normalized)")
 	flags.DurationVar(&cfg.armtlsCertTTL, "armtls-cert-ttl", 24*time.Hour, "")
 	flags.StringVar(&cfg.measuredPolicies, "measured-policies-file", armtls.NodeJournal, "the node's journal of allowlist policies extended into TDX RTMR[3]; the armTLS serving and sandbox-digests client certificates list it. Empty lists none")
+
+	bindHAFlags(flags, &cfg.ha)
 
 	_ = cmd.MarkFlagRequired("armtls-platform")
 	_ = cmd.MarkFlagRequired("attestation-api-url")
@@ -113,6 +117,7 @@ func NewCmd() *cobra.Command {
 	}))
 
 	cmd.AddCommand(cdsca.NewCmd())
+	cmd.AddCommand(newHACmd())
 
 	return cmd
 }
@@ -120,6 +125,7 @@ func NewCmd() *cobra.Command {
 type config struct {
 	host                string
 	port                int
+	ha                  haConfig
 	logLevel            string
 	attestationApiURL   string
 	caCommonName        string
@@ -146,6 +152,8 @@ type config struct {
 	minCAValidity       time.Duration
 	allowlistDB         string
 	allowlistPersistent bool
+	allowlistMaxFill    float64
+	allowlistMaxBytes   string
 	allowlistSeed       string
 	followSeed          bool
 	inventoryCIDRs      []string
@@ -171,6 +179,9 @@ type config struct {
 // Config directly.
 func validateARMTLSPlatformFlag(v string) error {
 	if strings.TrimSpace(v) == "" {
+		if allowPlainHTTP {
+			return nil // c8s_dev build: plain HTTP for the HA prototype
+		}
 		return fmt.Errorf("--armtls-platform must not be empty (armTLS is mandatory; tests construct Config directly)")
 	}
 	if _, err := teetypes.ParseFamily(v); err != nil {
