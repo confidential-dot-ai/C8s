@@ -1,9 +1,11 @@
 name: Conformance images
 
-# The conformance suite's reporter image (test/conformance/images/reporter):
-# model-server with the reporter as its sleep. Dispatched by hand when the
-# reporter or its base changes; test/conformance/backends/metal.sh pins the
-# digest the summary prints.
+# The conformance suite's images (test/conformance/images): model-server with
+# the reporter as its sleep (reporter), and tenant-app with the programs the
+# steps run in a tenant pod (tenant-app). Dispatched by hand when one of them
+# or its base changes; the backends pin the digests the summary prints
+# (model-server in test/conformance/backends/metal.sh, tenant-app in
+# common.sh).
 on:
   workflow_dispatch:
 
@@ -14,6 +16,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - image: model-server
+            context: reporter
+          - image: tenant-app
+            context: tenant-app
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -31,14 +40,15 @@ jobs:
         id: push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          context: test/conformance/images/reporter
+          context: test/conformance/images/${{ matrix.context }}
           platforms: linux/amd64
           push: true
           provenance: false
-          tags: ghcr.io/confidential-dot-ai/c8s-conformance-model-server:${{ github.sha }}
+          tags: ghcr.io/confidential-dot-ai/c8s-conformance-${{ matrix.image }}:${{ github.sha }}
 
       - name: Summary
         env:
+          IMAGE: ${{ matrix.image }}
           DIGEST: ${{ steps.push.outputs.digest }}
         run: |
-          echo "model-server: ghcr.io/confidential-dot-ai/c8s-conformance-model-server@$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          echo "$IMAGE: ghcr.io/confidential-dot-ai/c8s-conformance-$IMAGE@$DIGEST" >> "$GITHUB_STEP_SUMMARY"

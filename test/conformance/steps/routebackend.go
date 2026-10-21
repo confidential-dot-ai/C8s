@@ -2,7 +2,6 @@ package steps
 
 import (
 	"context"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,12 +16,6 @@ import (
 // echoPort is where a pod's echo API listens, over TLS under the leaf it
 // holds.
 const echoPort = 40443
-
-// echoServer is echo.py, run as python3 -c: the pod's image has python, and
-// a pod on metal takes no file from the harness.
-//
-//go:embed echo.py
-var echoServer string
 
 // echo is what a pod's echo API answered: the request it received.
 type echo struct {
@@ -78,7 +71,7 @@ func servesEcho(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("cert_paths answered %q", paths)
 	}
-	p.containers[0].command = []string{"python3", "-c", echoServer, crt, key, strconv.Itoa(echoPort)}
+	p.containers[0].command = []string{"c8s-echo-api", crt, key, strconv.Itoa(echoPort)}
 	return nil
 }
 

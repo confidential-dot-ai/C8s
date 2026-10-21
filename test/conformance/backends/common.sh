@@ -249,12 +249,15 @@ kubeconfig() { echo "$KUBECONFIG"; }
 # pod that runs a helper of its own; a backend whose node holds that image
 # out of the harness's reach answers unsupported from injected_image. The
 # steps copy the mesh peer (tools/armtls-dial, dialer_bin) into: an image with
-# tar for the copy, which no other logical image shares.
+# tar for the copy, which no other logical image shares. "tenant-app" is
+# images/tenant-app, Alpine's python with the programs the steps run in it
+# (built by conformance-images.yml), so pinned for every backend.
+TENANT_APP_IMAGE=ghcr.io/confidential-dot-ai/c8s-conformance-tenant-app@sha256:PENDING
 image_ref() {
     case "$1" in
         rogue) echo "docker.io/$CURL_IMAGE" ;;
         nginx) echo "docker.io/${NGINX_IMAGE:-$WORKLOAD_IMAGE}" ;;
-        tenant-app) echo "docker.io/library/python:3.12-alpine" ;;
+        tenant-app) echo "$TENANT_APP_IMAGE" ;;
         job-runner) echo "docker.io/library/alpine:3.20" ;;
         model-server) echo "docker.io/library/debian:bookworm-slim" ;;
         model-loader) echo "docker.io/library/busybox:1.35.0" ;;

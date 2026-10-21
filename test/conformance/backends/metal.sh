@@ -80,6 +80,15 @@ image_ref() {
     local pinned="${REPORTER_IMAGES[$1]:-}"
     if [ -n "$pinned" ]; then echo "$REPORTER_REPO$1@$pinned"; else common_image_ref "$1"; fi
 }
+# Whether the image is one of the reporter images; other conformance images
+# share their repository's prefix.
+reporter_image() {
+    local k
+    for k in "${!REPORTER_IMAGES[@]}"; do
+        [ "$1" != "$REPORTER_REPO$k@${REPORTER_IMAGES[$k]}" ] || return 0
+    done
+    return 1
+}
 
 # The node image keeps its state on encrypted scratch (docs/node-image.md).
 scratch_encrypted() { echo yes; }
@@ -328,7 +337,7 @@ pod_read() {
         (.spec.containers[0] | "\(.image) \(.name) \(((.command // []) + (.args // []))[0] // "-")"),
         ([.spec.initContainers[]? | select(.restartPolicy != "Always" and (.name | startswith("c8s-") | not))] | length)
     ' <<<"$spec" | paste -sd' ' -)
-    [[ "$image" == "$REPORTER_REPO"* ]] && [ "${argv0##*/}" = sleep ] && [ "$blocked" = 0 ] &&
+    reporter_image "$image" && [ "${argv0##*/}" = sleep ] && [ "$blocked" = 0 ] &&
         [ "$path" != "$CERT_VOLUME_PATH/tls.key" ] || return "$UNSUPPORTED"
     line="$(kubectl -n "$ns" logs "$pod" -c "$container" 2>/dev/null | grep -F "c8s-report $kind $path " | tail -1)"
     [ -n "$line" ] || { echo "backend: the reporter in $ns/$pod has printed no $kind for $path" >&2; return 1; }

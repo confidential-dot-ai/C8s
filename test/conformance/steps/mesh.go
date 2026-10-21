@@ -238,14 +238,9 @@ func servesSecondHello(ctx context.Context, name string) error {
 }
 
 // datagramListener receives UDP on the port and prints each datagram to its
-// log. It binds both families where the pod has an IPv6 stack (the kernel
-// lists its addresses in /proc/net/if_inet6), IPv4 alone otherwise. One line
-// of python, since the manifest renderer shell-quotes a container's command.
+// log (images/tenant-app/c8s-udp-listen).
 func datagramListener(port int) []string {
-	return []string{"python3", "-u", "-c", fmt.Sprintf("import os, socket; "+
-		"s = socket.socket(socket.AF_INET6 if os.path.exists('/proc/net/if_inet6') else socket.AF_INET, socket.SOCK_DGRAM); "+
-		"s.bind(('', %d)); "+
-		"[print(s.recvfrom(65535)[0].decode(errors='replace'), flush=True) for _ in iter(int, 1)]", port)}
+	return []string{"c8s-udp-listen", strconv.Itoa(port)}
 }
 
 func receivesDatagrams(ctx context.Context, name, which string) error {
@@ -1025,13 +1020,11 @@ func (w *world) sendDatagram(src, dest string, port int, sourcePort int) error {
 		return err
 	}
 	w.mesh.payload = fmt.Sprintf("datagram-%s-%d", w.suffix(), time.Now().UnixNano())
-	bind := ""
+	argv := []string{"c8s-udp-send", ip, strconv.Itoa(port), w.mesh.payload}
 	if sourcePort != 0 {
-		bind = fmt.Sprintf("s.bind((\"\", %d)); ", sourcePort)
+		argv = append(argv, strconv.Itoa(sourcePort))
 	}
-	_, err = w.exec(p, fmt.Sprintf("python3 -c 'import socket; ip = \"%s\"; "+
-		"s = socket.socket(socket.AF_INET6 if \":\" in ip else socket.AF_INET, socket.SOCK_DGRAM); "+
-		"%ss.sendto(b\"%s\", (ip, %d))'", ip, bind, w.mesh.payload, port))
+	_, err = w.exec(p, strings.Join(argv, " "))
 	return err
 }
 
