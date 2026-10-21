@@ -120,8 +120,7 @@ unix socket, and there are two separate threats:
 - **CDS** — verifies the evidence and the sandbox token, calls the inventory
   back for the sandbox's images, checks each against the allowlist store, signs
   the leaf with the mesh CA, stamps the sandbox ID.
-- **The verifier** — anyone doing `c8s verify --sandbox-id … --mesh-ca …`, or a
-  mesh peer pinning `VerifyPolicy.SandboxID`.
+- **The verifier** — anyone doing `c8s verify --sandbox-id … --mesh-ca …`.
 
 ---
 
@@ -168,8 +167,7 @@ unix socket, and there are two separate threats:
    requires the leaf to chain to the supplied mesh CA and to carry that exact
    sandbox ID. `--mesh-ca` is mandatory with `--sandbox-id`: the ID lives in the
    leaf's signed area, not in REPORTDATA, so CDS's signature is the only thing
-   that authenticates it. In-mesh, `VerifyPolicy.SandboxID` is enforced on the
-   CA-verified path only (`checkSandboxPin`).
+   that authenticates it.
 
 ---
 
