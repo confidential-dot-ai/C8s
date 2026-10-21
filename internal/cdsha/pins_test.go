@@ -2,6 +2,9 @@ package cdsha
 
 import (
 	"crypto/ecdsa"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"strings"
 	"testing"
 	"time"
@@ -101,6 +104,60 @@ func TestVerifyPinDecree(t *testing.T) {
 			cluster = "elsewhere"
 		}
 		if err := VerifyPinDecree(sd, cluster, pub); err == nil {
+			t.Fatalf("%s: accepted", name)
+		}
+	}
+}
+
+// Every refusal branch of the decree check, one decree each.
+func TestVerifyDecreeRefusals(t *testing.T) {
+	k, pub := operatorKey(t)
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	rsaDER, _ := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
+	img := testImage(1)
+	pin, _ := img.Pin()
+	tail := Core{ClusterID: testCluster, OperatorPubKey: pub, Epoch: 3, RootCert: []byte{1}, AppliedDecrees: []string{"done"}}
+	sign := func(d Decree) SignedDecree {
+		t.Helper()
+		if d.ClusterID == "" {
+			d.ClusterID = testCluster
+		}
+		if d.IntentID == "" {
+			d.IntentID = "i"
+		}
+		sd, err := SignDecree(d, k)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sd
+	}
+	ok := sign(Decree{BaseEpoch: 3, Kind: UpdateMeasurements, Measurements: []string{pin}, Images: []DecreeImage{img}})
+	if err := verifyDecree(ok, tail); err != nil {
+		t.Fatal(err)
+	}
+	noncanon := sign(Decree{BaseEpoch: 3, Kind: UpdateMeasurements, Measurements: []string{"a"}})
+	noncanon.Decree.Measurements = []string{"b", "a"}
+	cases := map[string]struct {
+		sd   SignedDecree
+		tail Core
+	}{
+		"no key":            {ok, Core{ClusterID: testCluster}},
+		"not PKIX":          {ok, Core{ClusterID: testCluster, OperatorPubKey: []byte("x")}},
+		"not ECDSA":         {ok, Core{ClusterID: testCluster, OperatorPubKey: rsaDER}},
+		"empty intent":      {func() SignedDecree { d := ok; d.Decree.IntentID = ""; return d }(), tail},
+		"already applied":   {sign(Decree{IntentID: "done", BaseEpoch: 3, Kind: RotateKey}), tail},
+		"empty set":         {sign(Decree{BaseEpoch: 3, Kind: UpdateMeasurements}), tail},
+		"genesis with key":  {sign(Decree{Kind: Genesis, BaseEpoch: 3, BootstrapNode: "n0"}), tail},
+		"restore no hash":   {sign(Decree{Kind: Restore, BaseEpoch: 3, BootstrapNode: "n0"}), Core{ClusterID: testCluster, OperatorPubKey: pub, Epoch: 3}},
+		"genesis no node":   {sign(Decree{Kind: Genesis, BaseEpoch: 3}), Core{ClusterID: testCluster, OperatorPubKey: pub, Epoch: 3}},
+		"node on rotate":    {sign(Decree{Kind: RotateKey, BaseEpoch: 3, BootstrapNode: "n0"}), tail},
+		"recover with set":  {sign(Decree{Kind: Recover, BaseEpoch: 3, BootstrapNode: "n0", Measurements: []string{pin}}), tail},
+		"unknown kind":      {sign(Decree{Kind: "Nope", BaseEpoch: 3}), tail},
+		"non-canonical":     {noncanon, tail},
+		"images on recover": {sign(Decree{Kind: Recover, BaseEpoch: 3, BootstrapNode: "n0", Images: []DecreeImage{img}}), tail},
+	}
+	for name, c := range cases {
+		if err := verifyDecree(c.sd, c.tail); err == nil {
 			t.Fatalf("%s: accepted", name)
 		}
 	}
