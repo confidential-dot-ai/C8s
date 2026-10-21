@@ -57,8 +57,8 @@ func (p *PodSpec) validate() error {
 			return fmt.Errorf("pod.manifest container %q image %q: %w", c.Name, c.Image, err)
 		}
 		for _, port := range c.Ports {
-			if port.HostPort != 0 {
-				return fmt.Errorf("pod.manifest container %q must not use a hostPort", c.Name)
+			if port.HostPort != 0 || port.HostIP != "" {
+				return fmt.Errorf("pod.manifest container %q must not use a hostPort or hostIP", c.Name)
 			}
 		}
 		if sc := c.SecurityContext; sc != nil && sc.Privileged != nil && *sc.Privileged {
