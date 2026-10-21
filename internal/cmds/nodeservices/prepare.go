@@ -69,7 +69,7 @@ func Prepare(rootDir string, d *launchconfig.Document) error {
 		outputs[CDSModeFile] = []byte(CDSModeHA + "\n")
 		// What the node's enforcer needs to follow the operator's signed
 		// CDS pin decrees across a CDS image rollout. Public.
-		info, err := json.Marshal(cmdsutil.CDSDecreesInfo{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey})
+		info, err := json.Marshal(cmdsutil.CDSDecreesInfo{ClusterID: d.ClusterID, DecreeKey: d.CDSHA.DecreeKey, PinFloor: d.CDSHA.PinFloor})
 		if err != nil {
 			return err
 		}

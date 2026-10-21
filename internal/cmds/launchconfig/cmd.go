@@ -82,7 +82,10 @@ HOST_DATA to SHA-256 of that node's pubkey file. See docs/operator.md,
 }
 
 func newAddAgentCmd() *cobra.Command {
-	var dir, name, serverAddress, manifest string
+	var (
+		dir, name, serverAddress, manifest string
+		pinFloor                           uint64
+	)
 	cmd := &cobra.Command{
 		Use:   "add-agent",
 		Short: "Add a signed agent document to an existing launch bundle",
@@ -93,15 +96,15 @@ already booted with changes.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			var err error
+			o := JoinOptions{Name: name, ServerAddress: serverAddress, PinFloor: pinFloor}
 			if manifest != "" {
-				var image Image
-				if image, err = imageFromManifest(manifest, 0); err == nil {
-					err = AddAgentOnImage(dir, name, serverAddress, image)
+				image, err := imageFromManifest(manifest, 0)
+				if err != nil {
+					return err
 				}
-			} else {
-				err = AddAgent(dir, name, serverAddress)
+				o.Image = &image
 			}
+			err := AddNode(dir, Agent, o)
 			if err != nil {
 				return err
 			}
@@ -113,6 +116,7 @@ already booted with changes.`,
 	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new'")
 	f.StringVar(&name, "name", "", "agent node name, an RFC1123 label")
 	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's, which must then be explicit)")
+	f.Uint64Var(&pinFloor, "pin-floor", 0, "HA CDS: the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
 	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a rollout): the build's manifest.json. The document still accepts the server's image for its peers")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
@@ -146,7 +150,10 @@ func newStageCmd() *cobra.Command {
 }
 
 func newAddCDSNodeCmd() *cobra.Command {
-	var dir, name, serverAddress, manifest string
+	var (
+		dir, name, serverAddress, manifest string
+		pinFloor                           uint64
+	)
 	cmd := &cobra.Command{
 		Use:   "add-cds-node",
 		Short: "Add a signed cds-role document to an existing launch bundle",
@@ -157,15 +164,15 @@ rebooted node cannot rejoin RKE2 under its old name.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			var err error
+			o := JoinOptions{Name: name, ServerAddress: serverAddress, PinFloor: pinFloor}
 			if manifest != "" {
-				var image Image
-				if image, err = imageFromManifest(manifest, 0); err == nil {
-					err = AddCDSNodeOnImage(dir, name, serverAddress, image)
+				image, err := imageFromManifest(manifest, 0)
+				if err != nil {
+					return err
 				}
-			} else {
-				err = AddCDSNode(dir, name, serverAddress)
+				o.Image = &image
 			}
+			err := AddNode(dir, CDS, o)
 			if err != nil {
 				return err
 			}
@@ -177,6 +184,7 @@ rebooted node cannot rejoin RKE2 under its old name.`,
 	f.StringVar(&dir, "bundle", "", "bundle directory created by 'launch-config new --cds-node'")
 	f.StringVar(&name, "name", "", "cds node name, an RFC1123 label")
 	f.StringVar(&serverAddress, "server-address", "", "server IPv4 address (default: the server document's)")
+	f.Uint64Var(&pinFloor, "pin-floor", 0, "the lowest CDS pin decree base epoch the node accepts; set it to base_epoch of the decree in force (GET /ha/pins)")
 	f.StringVar(&manifest, "image-manifest", "", "boot this image instead of the server's (a CDS rollout): the build's manifest.json. The document still accepts the server's image for its peers; follow with a signed pin decree for the new image")
 	for _, flag := range []string{"bundle", "name"} {
 		_ = cmd.MarkFlagRequired(flag)
