@@ -11,6 +11,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
 	"github.com/confidential-dot-ai/c8s/internal/routing"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -92,7 +94,9 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 		rs.lastHost <- r.Host
 		_, _ = io.WriteString(w, "web saw "+r.RequestURI)
 	}))
-	backend.TLS = &tls.Config{Certificates: []tls.Certificate{namedLeaf(t, ca, "web")}, ClientAuth: tls.RequireAnyClientCert}
+	// A member backend serves the mesh profile: its endpoint holds its leaf,
+	// answers the mesh protocol and carries plain HTTP inside it.
+	testutil.ServeMeshBackend(backend, namedLeaf(t, ca, "web"))
 	backend.StartTLS()
 	t.Cleanup(backend.Close)
 	rs.backend = strings.TrimPrefix(backend.URL, "https://")
@@ -136,6 +140,9 @@ func newRoutedServer(t *testing.T, opts ...func(*routing.ProxyConfig, *Config)) 
 	return rs
 }
 
+// testSandboxID is the workload instance a member leaf names.
+const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
+
 func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -150,7 +157,7 @@ func namedLeaf(t *testing.T, ca *issuer.CA, workload string) tls.Certificate {
 	if err != nil {
 		t.Fatal(err)
 	}
-	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, MatchedWorkload: &armtls.MatchedWorkload{
+	certPEM, _, err := ca.SignCSR(issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID, MatchedWorkload: &armtls.MatchedWorkload{
 		Name: workload, AllowlistVersion: "1", AllowlistDigest: bytes.Repeat([]byte{0x42}, 32),
 	}})
 	if err != nil {
@@ -435,10 +442,19 @@ func TestTunnelBudgetNeedsSession(t *testing.T) {
 			if status, err := bufio.NewReader(conn).ReadString('\n'); err != nil || !strings.Contains(status, tc.want) {
 				t.Fatalf("stalled tunnel upload = %q, %v, want%s", status, err, tc.want)
 			}
-			resp := postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}})
-			resp.Body.Close()
-			if resp.StatusCode != http.StatusOK {
-				t.Fatalf("tunnel beside a stalled refused upload = %d, want %d", resp.StatusCode, http.StatusOK)
+			// The previous subtest's request releases its budget after its
+			// response is on the wire; the stalled upload stays open throughout.
+			deadline := time.Now().Add(2 * time.Second)
+			for {
+				resp := postSealedTunnel(t, rs.ts.URL, channel, sessionID, types.TunnelRequest{Method: "GET", Path: "/", Headers: []types.HeaderField{{Name: "Host", Value: "app.example"}}})
+				resp.Body.Close()
+				if resp.StatusCode == http.StatusOK {
+					break
+				}
+				if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
+					t.Fatalf("tunnel beside a stalled refused upload = %d, want %d", resp.StatusCode, http.StatusOK)
+				}
+				time.Sleep(10 * time.Millisecond)
 			}
 		})
 	}
@@ -531,10 +547,25 @@ func TestW6OperatorKeySource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	present := filepath.Join(t.TempDir(), "operator-pubkey")
-	if err := os.WriteFile(present, []byte("keys"), 0o600); err != nil {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
 		t.Fatal(err)
 	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})
+	write := func(name string, b []byte) string {
+		p := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(p, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	present := write("operator-pubkey", keyPEM)
+	other := write("keys.pem", keyPEM)
+	empty := write("operator-pubkey", []byte("no keys"))
 	missing := filepath.Join(t.TempDir(), "operator-pubkey")
 	logger := slog.New(slog.DiscardHandler)
 	tests := []struct {
@@ -544,12 +575,17 @@ func TestW6OperatorKeySource(t *testing.T) {
 		want    routing.KeySource
 		wantErr bool
 	}{
-		{"W6 launch configuration present", routingConfig{operatorKeysFile: present}, true, routing.KeyFile(present), false},
-		{"W6 launch configuration absent", routingConfig{operatorKeysFile: missing}, true, cds, false},
-		{"W6 explicit file absent", routingConfig{operatorKeysFile: missing, operatorKeysFileSet: true}, true, nil, true},
-		{"unpinned CDS with keys file", routingConfig{operatorKeysFile: present}, false, routing.KeyFile(present), false},
-		{"unpinned CDS supplying keys", routingConfig{operatorKeysFile: missing}, false, nil, true},
-		{"unpinned CDS supplying keys, dev opt-in", routingConfig{operatorKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
+		{"W6 launch configuration", routingConfig{launchKeysFile: present}, true, routing.KeyFile(present), false},
+		{"W6 launch configuration over a configured file", routingConfig{launchKeysFile: present, operatorKeysFile: other}, true, routing.KeyFile(present), false},
+		{"W6 configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, true, routing.KeyFile(other), false},
+		{"W6 configured file absent", routingConfig{launchKeysFile: missing, operatorKeysFile: missing}, true, nil, true},
+		{"W6 CDS", routingConfig{launchKeysFile: missing}, true, cds, false},
+		{"unpinned CDS with launch keys", routingConfig{launchKeysFile: present}, false, routing.KeyFile(present), false},
+		{"unpinned CDS with a configured file", routingConfig{launchKeysFile: missing, operatorKeysFile: other}, false, routing.KeyFile(other), false},
+		{"W6 launch configuration without keys", routingConfig{launchKeysFile: empty}, true, nil, true},
+		{"W6 configured file without keys", routingConfig{launchKeysFile: missing, operatorKeysFile: empty}, true, nil, true},
+		{"unpinned CDS supplying keys", routingConfig{launchKeysFile: missing}, false, nil, true},
+		{"unpinned CDS supplying keys, dev opt-in", routingConfig{launchKeysFile: missing, allowUnpinnedCDS: true}, false, cds, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -572,7 +608,7 @@ func TestRoutingFlagDefaults(t *testing.T) {
 		{"routing-host", "127.0.0.1"},
 		{"backend-timeout", "1h0m0s"},
 		{"attest-endpoints", "true"},
-		{"operator-keys-file", nodeOperatorKeysFile},
+		{"operator-keys-file", ""},
 		{"allow-unpinned-cds", "false"},
 	} {
 		f := flags.Lookup(tc.flag)
@@ -635,5 +671,149 @@ func TestRunRoutingListenerBeforeFirstApply(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("run() did not stop after cancel")
+	}
+}
+
+// The router serves cluster workloads only, so a manifest naming an address
+// backend is refused when it is fetched, before anything applies it.
+func TestClusterWorkloadRoutesRefusesAnAddressBackend(t *testing.T) {
+	manifest := func(backend map[string]string) []byte {
+		t.Helper()
+		b, err := json.Marshal(map[string]any{
+			"schema": routes.Schema, "revision": 1, "notBefore": "2020-01-01T00:00:00Z", "maxAgeSeconds": 3600,
+			"hosts": map[string]any{"app.example": map[string]any{"routes": []any{
+				map[string]any{"path": "/", "match": "prefix", "backend": backend},
+			}}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	workload := clusterWorkloadRoutes{routes: fetchedRoutes{env: routes.Envelope{
+		Manifest: manifest(map[string]string{"address": "web.adopted.svc:8080", "workload": "web"}),
+	}}}
+	if _, err := workload.Routes(t.Context()); err != nil {
+		t.Fatalf("Routes() with a workload backend = %v, want nil", err)
+	}
+	external := clusterWorkloadRoutes{routes: fetchedRoutes{env: routes.Envelope{
+		Manifest: manifest(map[string]string{"address": "admin.ops.example:443", "serverName": "admin.ops.example", "ca": testAnchorPEM(t)}),
+	}}}
+	_, err := external.Routes(t.Context())
+	if err == nil {
+		t.Fatal("Routes() with an address backend = nil, want a refusal")
+	}
+	if !strings.Contains(err.Error(), "the router serves cluster workloads only") {
+		t.Fatalf("Routes() = %v, want the cluster-workloads refusal", err)
+	}
+}
+
+// fetchedRoutes serves one envelope, standing in for the verified CDS.
+type fetchedRoutes struct {
+	env routes.Envelope
+}
+
+func (f fetchedRoutes) Routes(context.Context) (routes.Envelope, error) {
+	return f.env, nil
+}
+
+// testAnchorPEM is a certificate an address backend's ca member can hold.
+func testAnchorPEM(t *testing.T) string {
+	t.Helper()
+	ca, err := issuer.NewCA("external", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(certutil.EncodeCertPEM(ca.Cert.Raw))
+}
+
+// The hop to a member backend takes its trust root from the credential
+// generation on this pod's own volume, at the compiled path. A CA an
+// argument names is the control plane's choice, so it anchors nothing: a
+// backend keyed to it is refused.
+func TestMemberBackendRefusesACAAnArgumentNames(t *testing.T) {
+	ca, err := issuer.NewCA("control plane", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := filepath.Join(t.TempDir(), "tls.crt")
+	if err := os.WriteFile(named, certutil.EncodeCertPEM(ca.Cert.Raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The argument's CA is not among the mesh CAs the member dial trusts.
+	cas, _ := memberMeshCAs()()
+	for _, trusted := range cas {
+		if trusted.Equal(ca.Cert) {
+			t.Fatalf("the member dial trusts the CA %q names", named)
+		}
+	}
+
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "reached")
+	}))
+	leaf := namedLeaf(t, ca, "web")
+	testutil.ServeMeshBackend(backend, leaf)
+	backend.StartTLS()
+	t.Cleanup(backend.Close)
+
+	transports := routing.NewTransports(routing.TransportConfig{
+		MeshCAs:           memberMeshCAs(),
+		ClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &leaf, nil },
+	})
+	address := strings.TrimPrefix(backend.URL, "https://")
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, "https://"+address+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := transports.For(routes.Backend{Address: address, Workload: "web"}).RoundTrip(request)
+	if err == nil {
+		response.Body.Close()
+		t.Fatal("a backend keyed by the CA an argument names answered the router")
+	}
+}
+
+// The verifier this router weighs CDS evidence with is the node's, and never
+// a plaintext endpoint this pod named: its connections into the cluster are
+// uncaptured, so such an endpoint could be a member pod. The node's own
+// address is compared as an address, after the expansion, so a host that
+// merely carries it is another host.
+func TestCheckVerifierEndpoint(t *testing.T) {
+	const node = "172.18.0.7"
+	nodeIPPath := filepath.Join(t.TempDir(), "node-ip")
+	if err := os.WriteFile(nodeIPPath, []byte(node+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := map[string]struct {
+		endpoint string
+		wantErr  bool
+	}{
+		"the node's socket":                     {"unix:///run/c8s/workload-claims/attestation-api.sock", false},
+		"the node's address":                    {"http://" + node + ":8400", false},
+		"the node's address, no port":           {"http://" + node, false},
+		"this pod's loopback":                   {"http://127.0.0.1:8400", false},
+		"this pod's loopback in brackets":       {"http://[::1]:8400", false},
+		"an https endpoint":                     {"https://verifier.example:8400", false},
+		"the node's address as userinfo":        {"http://" + node + "@evil.example:8400", true},
+		"the node's address as a suffix domain": {"http://" + node + ".evil.example:8400", true},
+		"another address":                       {"http://10.43.0.9:8400", true},
+		"a name, never resolved":                {"http://localhost:8400", true},
+		"a name of this node":                   {"http://node.cluster.local:8400", true},
+		"an IPv6 address of another host":       {"http://[fd00::9]:8400", true},
+		"a path on the node":                    {"http://" + node + ":8400/evidence", true},
+		"another scheme":                        {"ftp://" + node + ":8400", true},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			err := checkVerifierEndpoint(tc.endpoint, nodeIPPath)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("checkVerifierEndpoint(%q) = %v, wantErr %v", tc.endpoint, err, tc.wantErr)
+			}
+		})
+	}
+
+	// Without the enforcer's file there is no node address to admit, so a
+	// plaintext endpoint beyond this pod is refused whatever it names.
+	if err := checkVerifierEndpoint("http://"+node+":8400", filepath.Join(t.TempDir(), "absent")); err == nil {
+		t.Fatal("a plaintext verifier was admitted with no published node address")
 	}
 }

@@ -240,6 +240,21 @@ data:
   # Public key material — not a secret.
   keys.pem: {{ .Values.cds.operatorKeys | quote }}
 ---
+{{- if and .Values.router.enabled (not .Values.node.baked) }}
+# The router reads the same bundle from its own namespace, which a projected
+# volume cannot leave.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "c8s.cdsName" . }}-operator-keys
+  namespace: {{ include "c8s.routerMeshNamespace" . }}
+  labels:
+{{ include "c8s.commonLabels" . | indent 4 }}
+    app.kubernetes.io/component: cds
+data:
+  keys.pem: {{ .Values.cds.operatorKeys | quote }}
+---
+{{- end }}
 {{- end }}
 {{- if .Values.cds.persistence.enabled }}
 apiVersion: v1

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/confidential-dot-ai/c8s/internal/issuer"
+	"github.com/confidential-dot-ai/c8s/internal/testutil"
 	"github.com/confidential-dot-ai/c8s/pkg/armtls"
 	"github.com/confidential-dot-ai/c8s/pkg/certutil"
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
@@ -93,6 +94,9 @@ func caPEM(cas ...*issuer.CA) string {
 	return b.String()
 }
 
+// testSandboxID is the workload instance a member leaf names.
+const testSandboxID = "8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f6c2b1a0e8d9f"
+
 // issueLeaf mints a leaf the way CDS does, carrying the matched workload
 // extension when workload is non-empty.
 func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string) tls.Certificate {
@@ -112,7 +116,7 @@ func issueLeaf(t testing.TB, ca *issuer.CA, workload string, dnsNames ...string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	params := issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute}
+	params := issuer.SignCSRParams{CSR: csr, TTL: 30 * time.Minute, SandboxID: testSandboxID}
 	if workload != "" {
 		params.MatchedWorkload = &armtls.MatchedWorkload{
 			Name:             workload,
@@ -154,7 +158,8 @@ type seen struct {
 	remoteAddr string
 }
 
-// testBackend is a TLS backend serving leaf, answering with its name.
+// testBackend is a backend serving leaf on the mesh profile, answering with
+// its name.
 type testBackend struct {
 	name string
 	ts   *httptest.Server
@@ -176,9 +181,7 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 	b.ts = httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b.hits.Add(1)
 		s := seen{requestURI: r.RequestURI, host: r.Host, forwarded: r.Header.Get("X-Forwarded-For"), header: r.Header.Clone(), remoteAddr: r.RemoteAddr}
-		if len(r.TLS.PeerCertificates) > 0 {
-			s.clientCert = r.TLS.PeerCertificates[0]
-		}
+		s.clientCert = peerCertificate(r)
 		b.mu.Lock()
 		b.last = s
 		b.mu.Unlock()
@@ -219,7 +222,7 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 		w.Header().Set("X-Backend", name)
 		_, _ = w.Write([]byte(name))
 	}))
-	b.ts.TLS = &tls.Config{Certificates: []tls.Certificate{leaf}, ClientAuth: tls.RequireAnyClientCert}
+	testutil.ServeMeshBackend(b.ts, leaf)
 	for _, opt := range opts {
 		opt(b.ts.TLS)
 	}
@@ -228,7 +231,25 @@ func startBackend(t testing.TB, name string, leaf tls.Certificate, opts ...func(
 	return b
 }
 
-func (b *testBackend) addr() string { return strings.TrimPrefix(b.ts.URL, "https://") }
+// webPKI is the profile an address backend serves instead: a leaf for its
+// own name under its own CA, and no mesh protocol.
+func webPKI(cfg *tls.Config) {
+	cfg.MinVersion = tls.VersionTLS12
+	cfg.NextProtos = []string{"http/1.1"}
+}
+
+func (b *testBackend) addr() string {
+	return strings.TrimPrefix(b.ts.URL, "https://")
+}
+
+// peerCertificate is the leaf the client presented: the request's own on a
+// web-PKI connection, and the mesh connection's otherwise.
+func peerCertificate(r *http.Request) *x509.Certificate {
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		return r.TLS.PeerCertificates[0]
+	}
+	return testutil.MeshPeer(r)
+}
 
 func (b *testBackend) seen() seen {
 	b.mu.Lock()

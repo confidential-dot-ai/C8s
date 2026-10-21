@@ -537,7 +537,7 @@ func baseDeclares(ctx context.Context, node, image string) error {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("the base allowlist of node %q does not declare image %q here", node, image)
 	}
 	return nil
 }

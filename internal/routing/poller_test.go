@@ -193,7 +193,7 @@ func (d duringFetch) Routes(ctx context.Context) (routes.Envelope, error) {
 func TestB3PollRetiresPoolsOnBundleChangeDuringFetch(t *testing.T) {
 	f := newFixture(t)
 	external := newCA(t, "external")
-	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"))
+	b := startBackend(t, "admin", issueLeaf(t, external, "", "admin.ops.svc"), webPKI)
 	m := manifestSpec{revision: 1, hosts: map[string][]route{
 		testHost: {addressRoute("/", "prefix", b.addr(), "admin.ops.svc", caPEM(external))},
 	}}

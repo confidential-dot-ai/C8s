@@ -71,8 +71,32 @@ func injectedPod(p *api.PodSandbox) {
 	p.Annotations = map[string]string{workloadclaims.AnnotationInjected: "true"}
 }
 
+// injectedPinsMount turns the container into a sidecar carrying the CDS policy
+// mount sidecarAdjustment adds.
+func injectedPinsMount(c *api.Container) {
+	c.Name = workloadclaims.CertContainerName
+	c.Mounts = append(c.Mounts, &api.Mount{
+		Destination: workloadclaims.CDSPinsPath,
+		Type:        "bind",
+		Source:      "/run/c8s-node/cds.json",
+		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
+	})
+}
+
+// injectedAddressMount turns the container into a sidecar carrying the CDS
+// address mount sidecarAdjustment adds.
+func injectedAddressMount(c *api.Container) {
+	c.Name = workloadclaims.CertContainerName
+	c.Mounts = append(c.Mounts, &api.Mount{
+		Destination: workloadclaims.CDSAddressPath,
+		Type:        "bind",
+		Source:      "/var/run/nri-image-policy/cds-address",
+		Options:     []string{"rbind", "ro", "rprivate", "nosuid", "nodev", "noexec"},
+	})
+}
+
 // injectedSocketMount turns the container into a sidecar carrying the mount
-// socketDirAdjustment adds.
+// sidecarAdjustment adds.
 func injectedSocketMount(c *api.Container) {
 	c.Name = workloadclaims.CertContainerName
 	c.Mounts = append(c.Mounts, &api.Mount{
@@ -85,11 +109,13 @@ func injectedSocketMount(c *api.Container) {
 
 func TestSandboxViolations(t *testing.T) {
 	tests := []struct {
-		name      string
-		pod       func(*api.PodSandbox)
-		ctr       func(*api.Container)
-		ownSocket string
-		want      string // substring of the expected violation; empty means admitted
+		name       string
+		pod        func(*api.PodSandbox)
+		ctr        func(*api.Container)
+		ownSocket  string
+		ownPins    string
+		ownAddress string
+		want       string // substring of the expected violation; empty means admitted
 	}{
 		{
 			name: "ordinary pod",
@@ -99,6 +125,64 @@ func TestSandboxViolations(t *testing.T) {
 			pod:       injectedPod,
 			ctr:       injectedSocketMount,
 			ownSocket: "/run/nri-image-policy",
+		},
+		{
+			name:      "the node's own CDS policy mount",
+			pod:       injectedPod,
+			ctr:       injectedPinsMount,
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+		},
+		{
+			name:       "the node's own CDS address mount",
+			pod:        injectedPod,
+			ctr:        injectedAddressMount,
+			ownSocket:  "/var/run/nri-image-policy",
+			ownAddress: "/var/run/nri-image-policy/cds-address",
+		},
+		{
+			name: "a CDS address mount from a source the plugin does not own",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedAddressMount(c)
+				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-cds-address"
+			},
+			ownSocket:  "/var/run/nri-image-policy",
+			ownAddress: "/var/run/nri-image-policy/cds-address",
+			want:       "host path bind mount",
+		},
+		{
+			name: "a CDS policy mount from a source the plugin does not own",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedPinsMount(c)
+				c.Mounts[len(c.Mounts)-1].Source = "/tmp/attacker-pins.json"
+			},
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+			want:      "host path bind mount",
+		},
+		{
+			name: "a writable mount of the node's CDS policy",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedPinsMount(c)
+				c.Mounts[len(c.Mounts)-1].Options = []string{"rbind", "rw"}
+			},
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+			want:      "host path bind mount",
+		},
+		{
+			name: "the CDS policy mount in a container the webhook did not inject",
+			pod:  injectedPod,
+			ctr: func(c *api.Container) {
+				injectedPinsMount(c)
+				c.Name = "app"
+			},
+			ownSocket: "/var/run/nri-image-policy",
+			ownPins:   "/run/c8s-node/cds.json",
+			want:      "host path bind mount",
 		},
 		{
 			name: "a writable mount of the socket directory",
@@ -305,7 +389,12 @@ func TestSandboxViolations(t *testing.T) {
 			if tt.ctr != nil {
 				tt.ctr(ctr)
 			}
-			got := observeSandbox(pod, ctr, tt.ownSocket, nil, nil).violations()
+			own := nodeMounts{
+				socketDir:  tt.ownSocket,
+				cdsPins:    tt.ownPins,
+				cdsAddress: tt.ownAddress,
+			}
+			got := observeSandbox(pod, ctr, own, nil, nil).violations()
 			if tt.want == "" {
 				if len(got) != 0 {
 					t.Fatalf("observeSandbox(ordinary pod).violations() = %v, want none", got)
@@ -402,7 +491,7 @@ func TestCheckSandboxModes(t *testing.T) {
 			verdict := verdictAllow
 			reason := ""
 			if cfg.sandboxObserved() {
-				mounts := newMountObserver(nil, "").Observe(pod, ctr)
+				mounts := newMountObserver(nil, nodeMounts{}).Observe(pod, ctr)
 				verdict, reason = p.checkSandbox(context.Background(), cfg, pod, ctr, testFloorImage, containerEnv(ctr), mounts)
 			}
 			if verdict != tt.want {
@@ -548,7 +637,7 @@ func TestVerifiedFileBindIsNotHostBind(t *testing.T) {
 			admitted := func(m allowlist.ObservedMount) bool {
 				return m.Provenance == allowlist.ProvenanceNodeRoot && m.ReadOnly
 			}
-			got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds
+			got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted).HostBinds
 			if (len(got) > 0) != tc.hostBind {
 				t.Fatalf("observeSandbox(%s).HostBinds = %v, want host bind %t", tc.name, got, tc.hostBind)
 			}
@@ -631,10 +720,10 @@ func TestNodeRootBindMatchesEvidenceBySourceAndDestination(t *testing.T) {
 	// Evidence order differs from the container's mount order.
 	mounts := []allowlist.ObservedMount{verified, {Source: "/var/lib/kubelet/pods/" + testPodUID + "/etc-hosts", Destination: "/etc/hosts"}}
 	admitted := func(m allowlist.ObservedMount) bool { return m.Provenance == allowlist.ProvenanceNodeRoot }
-	if got := observeSandbox(pod, ctr, "", mounts, admitted).HostBinds; len(got) != 0 {
+	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts, admitted).HostBinds; len(got) != 0 {
 		t.Fatalf("observeSandbox(reordered evidence).HostBinds = %v, want none", got)
 	}
-	if got := observeSandbox(pod, ctr, "", mounts[1:], admitted).HostBinds; len(got) != 1 {
+	if got := observeSandbox(pod, ctr, nodeMounts{}, mounts[1:], admitted).HostBinds; len(got) != 1 {
 		t.Fatalf("observeSandbox(no evidence for the bind).HostBinds = %v, want the bind", got)
 	}
 }

@@ -29,15 +29,12 @@ var containerdRoots = []string{
 // being admitted. Handlers must compare these identifiers exactly; a path that
 // merely looks like kubelet or containerd state is untrusted.
 type MountContext struct {
-	PodUID    string
-	SandboxID string
-	Pod       *api.PodSandbox
-	Container *api.Container
-	Storage   mountStorageInspector
-	// SocketDir is the inventory socket directory this plugin bind-mounts into
-	// an injected pod's socket consumers itself; empty when the inventory is
-	// disabled.
-	SocketDir string
+	PodUID     string
+	SandboxID  string
+	Pod        *api.PodSandbox
+	Container  *api.Container
+	Storage    mountStorageInspector
+	NodeMounts nodeMounts
 }
 
 func (c MountContext) valid() bool {
@@ -51,23 +48,34 @@ type mountHandler interface {
 // mountObserver applies handlers in order. Each handler owns a disjoint,
 // readable piece of the node's mount contract; unmatched mounts are host-backed.
 type mountObserver struct {
-	handlers  []mountHandler
-	storage   mountStorageInspector
-	socketDir string
+	handlers []mountHandler
+	storage  mountStorageInspector
+	own      nodeMounts
 }
 
-func newMountObserver(storage mountStorageInspector, socketDir string) mountObserver {
-	return mountObserver{storage: defaultStorage(storage), socketDir: socketDir, handlers: []mountHandler{
-		injectedSocketMountHandler{},
-		platformMountHandler{},
-		emptyDirMountHandler{},
-		kubeletDataMountHandler{},
-		kubeletSubpathHandler{},
-	}}
+func newMountObserver(storage mountStorageInspector, own nodeMounts) mountObserver {
+	return mountObserver{
+		storage: defaultStorage(storage),
+		own:     own,
+		handlers: []mountHandler{
+			injectedNodeMountHandler{},
+			platformMountHandler{},
+			emptyDirMountHandler{},
+			kubeletDataMountHandler{},
+			kubeletSubpathHandler{},
+		},
+	}
 }
 
 func (o mountObserver) Observe(pod *api.PodSandbox, ctr *api.Container) []allowlist.ObservedMount {
-	ctx := MountContext{PodUID: pod.GetUid(), SandboxID: pod.GetId(), Pod: pod, Container: ctr, Storage: o.storage, SocketDir: o.socketDir}
+	ctx := MountContext{
+		PodUID:     pod.GetUid(),
+		SandboxID:  pod.GetId(),
+		Pod:        pod,
+		Container:  ctr,
+		Storage:    o.storage,
+		NodeMounts: o.own,
+	}
 	out := make([]allowlist.ObservedMount, 0, len(ctr.GetMounts()))
 	for _, m := range ctr.GetMounts() {
 		if carriesHostBytes(m) {
@@ -119,16 +127,11 @@ func defaultStorage(s mountStorageInspector) mountStorageInspector {
 	return newMountStorageInspector()
 }
 
-// injectedSocketMountHandler classifies the inventory socket directory this
-// plugin bind-mounts itself (socketDirAdjustment) as a platform mount. The
-// policy put it there, read-only, so no entry pins it: a host rule for it would
-// refuse every secrets grant (allowlist.Workload.PinnedForGrant), and hostBinds
-// already excuses the same bind. The source must be this plugin's own
-// directory; a tenant bind at the same destination stays a host mount.
-type injectedSocketMountHandler struct{}
+// injectedNodeMountHandler classifies read-only binds from this plugin's own sources.
+type injectedNodeMountHandler struct{}
 
-func (injectedSocketMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
-	if ctx.SocketDir == "" || !ctx.valid() || m.GetSource() != ctx.SocketDir || !isInjectedSocketMount(ctx.Pod, ctx.Container, m) {
+func (injectedNodeMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
+	if !ctx.valid() || !isInjectedNodeMount(ctx.Pod, ctx.Container, m, ctx.NodeMounts) {
 		return allowlist.ObservedMount{}, false
 	}
 	mount := observed(m, allowlist.MountPlatform, allowlist.MountUnknown)
@@ -185,17 +188,21 @@ func (emptyDirMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.O
 		// data. Classify them before that mount propagates into the pod, too.
 		class = allowlist.MountData
 	}
-	return observed(m, class, ctx.Storage.Inspect(m.GetSource())), true
+	mount := observed(m, class, ctx.Storage.Inspect(m.GetSource()))
+	mount.Volume = volumeName(volumePath)
+	return mount, true
 }
 
 type kubeletDataMountHandler struct{}
 
 func (kubeletDataMountHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.ObservedMount, bool) {
-	plugin, _, ok := currentPodVolume(ctx, m)
+	plugin, volumePath, ok := currentPodVolume(ctx, m)
 	if !ok || plugin == emptyDirPlugin {
 		return allowlist.ObservedMount{}, false
 	}
-	return observed(m, allowlist.MountData, ctx.Storage.Inspect(m.GetSource())), true
+	mount := observed(m, allowlist.MountData, ctx.Storage.Inspect(m.GetSource()))
+	mount.Volume = volumeName(volumePath)
+	return mount, true
 }
 
 func currentPodVolume(ctx MountContext, m *api.Mount) (plugin, volumePath string, ok bool) {
@@ -209,6 +216,14 @@ func currentPodVolume(ctx MountContext, m *api.Mount) (plugin, volumePath string
 		return "", "", false
 	}
 	return cutTwoOrMore(rest)
+}
+
+// volumeName is the pod volume a kubelet path stages, which is its first
+// segment: the rest of the path is a directory inside that volume, so a
+// mount of a descendant still names the volume it came out of.
+func volumeName(volumePath string) string {
+	name, _, _ := strings.Cut(volumePath, "/")
+	return name
 }
 
 type kubeletSubpathHandler struct{}
@@ -227,7 +242,9 @@ func (kubeletSubpathHandler) Observe(ctx MountContext, m *api.Mount) (allowlist.
 	if len(parts) != 3 || parts[0] == "" || parts[1] != ctx.Container.GetName() || parts[2] == "" {
 		return allowlist.ObservedMount{}, false
 	}
-	return observed(m, allowlist.MountData, ctx.Storage.Inspect(src)), true
+	mount := observed(m, allowlist.MountData, ctx.Storage.Inspect(src))
+	mount.Volume = parts[0]
+	return mount, true
 }
 
 func cutTwoOrMore(s string) (string, string, bool) {

@@ -140,14 +140,16 @@ func observedMounts(t *testing.T, spec corev1.PodSpec, c corev1.Container) []pkg
 		if !ok {
 			t.Fatalf("container %s mounts undeclared volume %q", c.Name, m.Name)
 		}
-		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
+		// The kubelet's host source for a pod volume ends in the volume's
+		// name, which is what an exact rule binds (pkg/allowlist).
+		mount := pkgallowlist.ObservedMount{Destination: m.MountPath, Source: podVolumeSource(m.Name), Volume: m.Name, Class: pkgallowlist.MountData, Storage: pkgallowlist.MountUnknown}
 		switch {
 		case v.HostPath != nil:
 			digest, err := pkgallowlist.HostSourceDigest(v.HostPath.Path)
 			if err != nil {
 				t.Fatalf("container %s volume %q: %v", c.Name, m.Name, err)
 			}
-			mount = pkgallowlist.ObservedMount{Destination: m.MountPath, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown, HostSourceDigest: digest, ReadOnly: m.ReadOnly}
+			mount = pkgallowlist.ObservedMount{Destination: m.MountPath, Source: v.HostPath.Path, Class: pkgallowlist.MountHost, Storage: pkgallowlist.MountUnknown, HostSourceDigest: digest, ReadOnly: m.ReadOnly}
 		case v.EmptyDir != nil:
 			mount.Class = pkgallowlist.MountEmptyDir
 			if v.EmptyDir.Medium == corev1.StorageMediumMemory {
@@ -174,6 +176,19 @@ type componentPin struct {
 // componentPins maps each component digest a render sets to its
 // componentPin, from the render's own --set arguments, the CDS digest
 // helmTemplate pins and the nginx digest the router renders.
+// renderedLaunch is the launch a node observes for a rendered component
+// container: its argv, its classified mount table and the environment it
+// starts with. It is what Index.RoleOf and AdmitsContainer are given.
+func renderedLaunch(t *testing.T, spec corev1.PodSpec, c corev1.Container, pin componentPin) pkgallowlist.RunningContainer {
+	t.Helper()
+	return pkgallowlist.RunningContainer{
+		Digest: digestOf(c.Image),
+		Argv:   runtimeArgv(c, pin.entrypoint),
+		Mounts: observedMounts(t, spec, c),
+		Env:    launchEnv(t, spec, c, pin.imageEnv),
+	}
+}
+
 func componentPins(t *testing.T, out string, args []string) map[string]componentPin {
 	t.Helper()
 	entrypoints, envs := componentPinValues(t), componentImageEnvValues(t)
@@ -264,6 +279,14 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 						if _, ok := pins[c.Digest.String()]; !ok {
 							continue
 						}
+						// A role entry grants a platform role; the enforcer
+						// matches it against a launch it knows the arguments
+						// of but not the mounts or the environment
+						// (Index.RoleOf), so it cannot pin either. The shape
+						// entries below are what admit these digests.
+						if c.Role != "" {
+							continue
+						}
 						if c.Env.Policy != pkgallowlist.PolicyMatch {
 							t.Errorf("%s entry %s leaves env %q", source, name, c.Env.Policy)
 						}
@@ -298,8 +321,13 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 						return launchEnv(t, w.spec, c, pin.imageEnv, extra...)
 					}
 					mounts := observedMounts(t, w.spec, c)
+					// A credential client of the router pod runs the
+					// invocation and mount table the webhook injects, so the
+					// injected shape admits it with the per-pod args that
+					// shape leaves open.
+					pinnedArgs := !workloadclaims.IsInjectedContainerName(c.Name)
 					for source, al := range sources {
-						checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, launch)
+						checkExactShape(t, source+" "+w.name+"/"+c.Name, al.BuildIndex(), digest, argv, mounts, pinnedArgs, launch)
 					}
 				}
 			}
@@ -310,8 +338,8 @@ func TestChartComponentShapesAreExact(t *testing.T) {
 	}
 }
 
-// A baked router reads its nginx configuration from the image, so the seed
-// refuses a ConfigMap swapped in over that directory.
+// A baked router reads its nginx configuration and its entrypoint from the
+// image, so the seed refuses a ConfigMap swapped in over that directory.
 func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	t.Parallel()
 	out, err := helmTemplate(t, bakedArgs...)
@@ -326,8 +354,8 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 	nginx := spec.Containers[i]
 	pin := componentPins(t, out, bakedArgs)[imageDigest(nginx.Image)]
 	argv := runtimeArgv(nginx, pin.entrypoint)
-	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/nginx.conf") {
-		t.Errorf("baked nginx argv = %q, want -c /usr/lib/c8s/router-nginx/nginx.conf", argv)
+	if !slices.Contains(argv, "/usr/lib/c8s/router-nginx/reload.sh") {
+		t.Errorf("baked nginx argv = %q, want the image's /usr/lib/c8s/router-nginx/reload.sh", argv)
 	}
 	index := renderedSeed(t, out).BuildIndex()
 	admits := func() bool {
@@ -352,7 +380,7 @@ func TestChartBakedNginxRefusesConfigMapConfig(t *testing.T) {
 // refuses it with an extra argument, without any one of its own mounts, with
 // one mount more, or with LD_PRELOAD set or PATH pointed elsewhere. launch
 // returns its launch environment with the given variables set over it.
-func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, digest string, argv []string, mounts []pkgallowlist.ObservedMount, launch func(...string) *pkgallowlist.EnvObservation) {
+func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, digest string, argv []string, mounts []pkgallowlist.ObservedMount, pinnedArgs bool, launch func(...string) *pkgallowlist.EnvObservation) {
 	t.Helper()
 	env := launch()
 	admits := func(argv []string, mounts []pkgallowlist.ObservedMount) bool {
@@ -367,7 +395,7 @@ func checkExactShape(t *testing.T, what string, index *pkgallowlist.Index, diges
 			t.Errorf("%s: admitted with %s", what, variable)
 		}
 	}
-	if admits(append(slices.Clone(argv), "--kubeconfig=/tmp/kubeconfig"), mounts) {
+	if pinnedArgs && admits(append(slices.Clone(argv), "--kubeconfig=/tmp/kubeconfig"), mounts) {
 		t.Errorf("%s: admitted with an extra argument", what)
 	}
 	extra := pkgallowlist.ObservedMount{Destination: "/extra", Class: pkgallowlist.MountEmptyDir, Storage: pkgallowlist.MountMemory}

@@ -131,7 +131,7 @@ func cdsVolatile(ctx context.Context) error {
 		return err
 	}
 	if answer != "yes" {
-		return godog.ErrSkip
+		return skipf("a CDS restart keeps the allowlist here (cds_volatile)")
 	}
 	return nil
 }

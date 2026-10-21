@@ -132,7 +132,7 @@ file, or a token the inventory did not redeem, with the reason on stderr.`,
 	pf.StringVar(&o.attestationURL, "attestation-api-url", "", "local attestation-api used to verify CDS's armTLS certificate (required)")
 	pf.StringSliceVar(&o.measurements, "measurements", nil, "SHA-384 hex launch measurement(s) CDS must present (repeatable)")
 	pf.StringSliceVar(&o.rtmrs, "rtmrs", nil, "TDX RTMR pin(s) <index>=<sha384-hex> CDS must additionally satisfy (repeatable)")
-	cmdsutil.BindImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "", "pins CDS; excludes --measurements and --rtmrs")
+	cmdsutil.BindImagePolicyFlags(pf, &o.policyFile, &o.policyJSON, "pins CDS; excludes --measurements and --rtmrs")
 	pf.StringVar(&o.certPath, "cert", "", "the pod's CDS-issued certificate, presented to CDS (required)")
 	pf.StringVar(&o.keyPath, "key", "", "private key for --cert (required)")
 	pf.StringVar(&o.socket, "socket", strings.TrimPrefix(workloadclaims.InventoryEndpoint(), "unix://"), "the inventory's token socket")

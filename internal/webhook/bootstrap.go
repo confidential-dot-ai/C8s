@@ -95,12 +95,22 @@ const MaxCABundleCerts = 16
 // unparseable entries are dropped, and the oldest pods' entries past
 // MaxCABundleCerts.
 func AppendCABundle(ctx context.Context, c client.Client, configName string, caPEM []byte) error {
+	return appendCABundle(ctx, c, fetchMutating, configName, caPEM)
+}
+
+// AppendValidatingCABundle is AppendCABundle for the pod validator's
+// ValidatingWebhookConfiguration.
+func AppendValidatingCABundle(ctx context.Context, c client.Client, configName string, caPEM []byte) error {
+	return appendCABundle(ctx, c, fetchValidating, configName, caPEM)
+}
+
+func appendCABundle(ctx context.Context, c client.Client, fetch webhookConfigFetcher, configName string, caPEM []byte) error {
 	ca, err := singleCert(caPEM)
 	if err != nil {
 		return err
 	}
 	now := time.Now()
-	return updateCABundles(ctx, c, configName, func(bundle []byte) ([]byte, error) {
+	return updateCABundles(ctx, c, fetch, configName, func(bundle []byte) ([]byte, error) {
 		var out []*x509.Certificate
 		replaced := false
 		for _, cert := range parseBundle(bundle) {
@@ -133,11 +143,21 @@ func AppendCABundle(ctx context.Context, c client.Client, configName string, caP
 // fails if caPEM is not in a bundle, rather than silently leaving the webhook
 // untrusted by the API server.
 func PruneCABundle(ctx context.Context, c client.Client, configName string, caPEM []byte) error {
+	return pruneCABundle(ctx, c, fetchMutating, configName, caPEM)
+}
+
+// PruneValidatingCABundle is PruneCABundle for the pod validator's
+// ValidatingWebhookConfiguration.
+func PruneValidatingCABundle(ctx context.Context, c client.Client, configName string, caPEM []byte) error {
+	return pruneCABundle(ctx, c, fetchValidating, configName, caPEM)
+}
+
+func pruneCABundle(ctx context.Context, c client.Client, fetch webhookConfigFetcher, configName string, caPEM []byte) error {
 	ca, err := singleCert(caPEM)
 	if err != nil {
 		return err
 	}
-	return updateCABundles(ctx, c, configName, func(bundle []byte) ([]byte, error) {
+	return updateCABundles(ctx, c, fetch, configName, func(bundle []byte) ([]byte, error) {
 		certs := parseBundle(bundle)
 		for i, cert := range certs {
 			if cert.Equal(ca) {
@@ -148,35 +168,60 @@ func PruneCABundle(ctx context.Context, c client.Client, configName string, caPE
 	})
 }
 
-// updateCABundles rewrites each webhook's caBundle on the named
-// MutatingWebhookConfiguration through edit, and skips the Update when
-// nothing changed. A conflict re-reads and re-edits: helm, an admission
-// controller or this operator's own pruner can write the object between the
-// Get and the Update, and failing setupManager on that would restart the pod
-// and mint yet another CA.
-func updateCABundles(ctx context.Context, c client.Client, configName string, edit func([]byte) ([]byte, error)) error {
+// webhookConfigFetcher reads one admission configuration and aliases the
+// client configs that carry its caBundle.
+type webhookConfigFetcher func(ctx context.Context, c client.Client, name string) (client.Object, []*admissionv1.WebhookClientConfig, error)
+
+func fetchMutating(ctx context.Context, c client.Client, name string) (client.Object, []*admissionv1.WebhookClientConfig, error) {
+	var cfg admissionv1.MutatingWebhookConfiguration
+	if err := c.Get(ctx, types.NamespacedName{Name: name}, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("get MutatingWebhookConfiguration %q: %w", name, err)
+	}
+	clients := clientConfigs(cfg.Webhooks, func(w *admissionv1.MutatingWebhook) *admissionv1.WebhookClientConfig {
+		return &w.ClientConfig
+	})
+	return &cfg, clients, nil
+}
+
+func fetchValidating(ctx context.Context, c client.Client, name string) (client.Object, []*admissionv1.WebhookClientConfig, error) {
+	var cfg admissionv1.ValidatingWebhookConfiguration
+	if err := c.Get(ctx, types.NamespacedName{Name: name}, &cfg); err != nil {
+		return nil, nil, fmt.Errorf("get ValidatingWebhookConfiguration %q: %w", name, err)
+	}
+	clients := clientConfigs(cfg.Webhooks, func(w *admissionv1.ValidatingWebhook) *admissionv1.WebhookClientConfig {
+		return &w.ClientConfig
+	})
+	return &cfg, clients, nil
+}
+
+// updateCABundles rewrites each webhook's caBundle on the named configuration
+// through edit, and skips the Update when nothing changed. A conflict
+// re-reads and re-edits: helm, an admission controller or this operator's own
+// pruner can write the object between the Get and the Update, and failing
+// setupManager on that would restart the pod and mint yet another CA.
+func updateCABundles(ctx context.Context, c client.Client, fetch webhookConfigFetcher, configName string, edit func([]byte) ([]byte, error)) error {
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-		var cfg admissionv1.MutatingWebhookConfiguration
-		if err := c.Get(ctx, types.NamespacedName{Name: configName}, &cfg); err != nil {
-			return fmt.Errorf("get MutatingWebhookConfiguration %q: %w", configName, err)
+		cfg, clients, err := fetch(ctx, c, configName)
+		if err != nil {
+			return err
 		}
 		changed := false
-		for i := range cfg.Webhooks {
-			bundle, err := edit(cfg.Webhooks[i].ClientConfig.CABundle)
+		for _, client := range clients {
+			bundle, err := edit(client.CABundle)
 			if err != nil {
-				return fmt.Errorf("MutatingWebhookConfiguration %q webhook %q: %w", configName, cfg.Webhooks[i].Name, err)
+				return fmt.Errorf("%T %q: %w", cfg, configName, err)
 			}
-			if bytes.Equal(cfg.Webhooks[i].ClientConfig.CABundle, bundle) {
+			if bytes.Equal(client.CABundle, bundle) {
 				continue
 			}
-			cfg.Webhooks[i].ClientConfig.CABundle = bundle
+			client.CABundle = bundle
 			changed = true
 		}
 		if !changed {
 			return nil
 		}
-		if err := c.Update(ctx, &cfg); err != nil {
-			return fmt.Errorf("update MutatingWebhookConfiguration %q: %w", configName, err)
+		if err := c.Update(ctx, cfg); err != nil {
+			return fmt.Errorf("update %T %q: %w", cfg, configName, err)
 		}
 		return nil
 	})
@@ -216,4 +261,13 @@ func encodeBundle(certs []*x509.Certificate) []byte {
 		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})...)
 	}
 	return out
+}
+
+// clientConfigs alias the webhooks' client configs, for amending in place.
+func clientConfigs[W any](webhooks []W, clientConfig func(*W) *admissionv1.WebhookClientConfig) []*admissionv1.WebhookClientConfig {
+	configs := make([]*admissionv1.WebhookClientConfig, 0, len(webhooks))
+	for i := range webhooks {
+		configs = append(configs, clientConfig(&webhooks[i]))
+	}
+	return configs
 }

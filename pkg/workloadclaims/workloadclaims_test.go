@@ -37,15 +37,20 @@ const testHost = "10.0.0.7"
 // fakeResolver is a SandboxResolver test double that records the peer PID the
 // inventory resolved.
 type fakeResolver struct {
-	pid        int
-	sandboxID  string
-	sandboxErr error
-	digests    map[string][]string // sandboxID -> digests
+	pid         int
+	sandboxID   string
+	sandboxErr  error
+	unprotected bool
+	digests     map[string][]string // sandboxID -> digests
 }
 
-func (r *fakeResolver) SandboxForPeer(peer Peer) (string, error) {
+func (r *fakeResolver) SandboxForPeer(peer Peer) (CallerSandbox, error) {
 	r.pid = peer.PID()
-	return r.sandboxID, r.sandboxErr
+	caller := CallerSandbox{SandboxID: r.sandboxID}
+	if r.unprotected {
+		caller.Refusal = errors.New("the enforcer verifies no protection for this sandbox")
+	}
+	return caller, r.sandboxErr
 }
 
 func (r *fakeResolver) DigestsForSandbox(sandboxID string) ([]string, []SandboxContainer, bool, error) {
@@ -172,6 +177,26 @@ func TestSandboxTokenRoute(t *testing.T) {
 	// A missing challenge fails closed rather than skipping the freshness check.
 	if _, err := token.Verify(signer.PublicKey(), &requester.PublicKey, nil); err == nil {
 		t.Fatal("token verified with no challenge")
+	}
+}
+
+// The enforcer's verification gates every assertion: a caller whose pod is not
+// a verified protected mesh member is refused, whatever nonce or consumer the
+// request is for.
+func TestTokenRouteRefusesAnUnverifiedCaller(t *testing.T) {
+	resolver := &fakeResolver{
+		sandboxID:   "sandbox-1",
+		unprotected: true,
+	}
+	sock := serveTokens(t, resolver, testSigner(t))
+	requester := testRequesterKey(t)
+
+	_, err := FetchSandboxToken(context.Background(), "unix://"+sock, 5*time.Second, &requester.PublicKey, testNonce)
+	if err == nil {
+		t.Fatal("an unverified caller was signed an assertion")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Fatalf("error = %v, want a 403 refusal", err)
 	}
 }
 
@@ -457,7 +482,7 @@ func TestInventoryAddrRejectsRequestForgeryTargets(t *testing.T) {
 // What gets dialed is rebuilt from the parsed IP and port, not passed through
 // from the caller's bytes.
 func TestParseInventoryHostNormalizes(t *testing.T) {
-	got, err := parseInventoryHost("2001:0db8:0000::1")
+	got, err := ParseInventoryHost("2001:0db8:0000::1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -793,6 +818,40 @@ func TestServeTokensRejectsMalformedRequests(t *testing.T) {
 	}
 }
 
+// A nonce the token cannot carry yields no assertion: the signer bounds what
+// it binds, so an oversized challenge is refused rather than truncated into a
+// token CDS would read as fresh.
+func TestServeTokensRefusesANonceItCannotBind(t *testing.T) {
+	sock := serveTokens(t, &fakeResolver{sandboxID: "sandbox-1"}, testSigner(t))
+	key, err := x509.MarshalPKIXPublicKey(&testRequesterKey(t).PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(SandboxTokenRequest{
+		PublicKey: key,
+		Nonce:     bytes.Repeat([]byte("n"), maxNonceLen+1),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := inventoryDo(context.Background(), "unix://"+sock, http.MethodPost, SandboxPath,
+		bytes.NewReader(body), 5*time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatal("an oversized challenge nonce yielded an assertion")
+	}
+	message, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(message), "nonce") {
+		t.Fatalf("body = %q, want it to name the nonce", message)
+	}
+}
+
 // The high-water mark deduplicates on SandboxContainer.Key, so the key must be
 // injective over (digest, argv): two distinct admissions that collide onto one
 // key erase each other from the sandbox's record, and the erasure is invisible
@@ -912,5 +971,54 @@ func TestDigestsClientCertificateListsMeasuredPolicies(t *testing.T) {
 	got := DigestsClientConfig{Platform: "tdx", MeasuredPoliciesFile: journal}.tlsConfig().MeasuredPoliciesFile
 	if got != journal {
 		t.Fatalf("tlsConfig().MeasuredPoliciesFile = %q, want %q", got, journal)
+	}
+}
+
+// The injector renders a probe target and the endpoint recovers it, so one
+// encoding carries the pod's probe shape between them.
+func TestMeshProbePathRoundTrip(t *testing.T) {
+	for _, tc := range []struct {
+		port int32
+		path string
+	}{
+		{8080, "/healthz"},
+		{8080, "/"},
+		{65535, "/-/ready"},
+		{1, "/api/v1/health_check"},
+	} {
+		rendered := MeshProbePath(tc.port, tc.path)
+		if !strings.HasPrefix(rendered, MeshProbePrefix) {
+			t.Fatalf("MeshProbePath(%d, %q) = %q, want the %s prefix", tc.port, tc.path, rendered, MeshProbePrefix)
+		}
+		port, path, err := ParseMeshProbePath(rendered)
+		if err != nil {
+			t.Fatalf("ParseMeshProbePath(%q): %v", rendered, err)
+		}
+		if port != tc.port || path != tc.path {
+			t.Errorf("ParseMeshProbePath(%q) = (%d, %q), want (%d, %q)", rendered, port, path, tc.port, tc.path)
+		}
+	}
+}
+
+func TestParseMeshProbePathRefusesUnrenderablePaths(t *testing.T) {
+	for _, rendered := range []string{
+		"", "/readyz", MeshProbePrefix, MeshProbePrefix + "8080", MeshProbePrefix + "http/healthz", MeshProbePrefix + "0/healthz", MeshProbePrefix + "70000/healthz",
+		"/probe/08080/healthz", "/probe/+8080/healthz", "/probe/8080/a,b", "/probe/8080/a//b", "/probe/8080//", "/probe/8080/a/../b", "/probe/8080/a%2Fb", "/probe/8080/a?b", "/probe/8080/a b",
+		MeshProbePath(MeshOutboundPort, "/"), MeshProbePath(MeshInboundPort, "/"), MeshProbePath(MeshHealthPort, "/"),
+	} {
+		if _, _, err := ParseMeshProbePath(rendered); err == nil {
+			t.Errorf("ParseMeshProbePath(%q) = nil error, want a refusal", rendered)
+		}
+	}
+}
+
+// The injector's value and the endpoint's reading of it are one format.
+func TestMeshProbesEnvRoundTrip(t *testing.T) {
+	paths := []string{MeshProbePath(8080, "/healthz"), MeshProbePath(9000, "/live")}
+	if got := SplitMeshProbePaths(JoinMeshProbePaths(paths)); !slices.Equal(got, paths) {
+		t.Fatalf("SplitMeshProbePaths(JoinMeshProbePaths(%v)) = %v", paths, got)
+	}
+	if got := SplitMeshProbePaths(""); got != nil {
+		t.Fatalf("SplitMeshProbePaths(\"\") = %v, want no paths", got)
 	}
 }

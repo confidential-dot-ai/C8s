@@ -12,7 +12,6 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -377,26 +376,40 @@ func csrBadSignature(ctx context.Context, name string) error {
 }
 
 // evidenceOver asks the node's local attestation service for evidence over
-// report data, as the envelope the CDS takes.
+// report data, as the envelope the CDS takes. The other two modes edit its
+// launch measurement: where the CDS checks the evidence's signature, so that
+// it no longer verifies; where it does not (a mock), to another digest.
 func (w *world) evidenceOver(r *requester, reportData []byte, mode evidenceMode) (json.RawMessage, error) {
-	rd := hex.EncodeToString(reportData)
-	var out string
-	var err error
+	var edit func([]byte)
 	switch mode {
 	case evidenceNoSignature:
-		out, err = w.be.call("evidence_unsigned", r.pod.namespace, r.pod.name, rd)
+		edit = func(m []byte) { m[0] ^= 0xFF }
 	case evidenceForeignDigest:
-		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd, strings.Repeat("aa", 48))
-	default:
-		out, err = w.be.call("evidence", r.pod.namespace, r.pod.name, rd)
+		edit = func(m []byte) { copy(m, bytes.Repeat([]byte{0xaa}, len(m))) }
 	}
+	if edit != nil {
+		signed, err := w.be.call("evidence_signed")
+		if err != nil {
+			return nil, err
+		}
+		switch {
+		case mode == evidenceNoSignature && signed != "yes":
+			return nil, skipf("the CDS checks no signature on this backend's evidence")
+		case mode == evidenceForeignDigest && signed == "yes":
+			return nil, skipf("signed evidence for another launch digest needs a second TEE")
+		}
+	}
+	out, err := w.be.call("evidence", r.pod.namespace, r.pod.name, base64.StdEncoding.EncodeToString(reportData))
 	if err != nil {
 		return nil, err
 	}
 	if !json.Valid([]byte(out)) {
 		return nil, fmt.Errorf("the evidence is not JSON: %q", out)
 	}
-	return json.RawMessage(out), nil
+	if edit == nil {
+		return json.RawMessage(out), nil
+	}
+	return withMeasurement([]byte(out), edit)
 }
 
 // otherPodAddress is the address of a pod that is not the requester and not

@@ -36,6 +36,7 @@ func attestedCertWithWindow(t *testing.T, notBefore, notAfter time.Time) *x509.C
 		Subject:         pkix.Name{CommonName: "windowed-armtls"},
 		NotBefore:       notBefore,
 		NotAfter:        notAfter,
+		ExtKeyUsage:     []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		ExtraExtensions: []pkix.Extension{ext},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
@@ -87,52 +88,21 @@ func TestVerifyCertEnforcesValidity(t *testing.T) {
 	})
 }
 
-// The dual verifier's armTLS fallback accepts a self-signed peer on its
-// evidence alone; the validity window is the only freshness bound that
-// evidence has, so an expired peer must be refused — and cheaply, before any
-// attestation-api round-trip.
-func TestDualVerifyPeerCallbackRejectsExpiredSelfSigned(t *testing.T) {
+// A peer proves itself with the evidence on its self-issued certificate, and
+// the validity window is the only freshness bound that evidence has, so an
+// expired peer must be refused — and cheaply, before any attestation-api
+// round-trip.
+func TestVerifyPeerCallbackRejectsExpiredSelfSigned(t *testing.T) {
 	stub := mockapi.New(t)
 	cert := attestedCertWithWindow(t, time.Now().Add(-2*time.Hour), time.Now().Add(-time.Hour))
-	_, caCert := generateCACert(t)
 
-	verify := dualVerifyPeerCallback(
-		&VerifyPolicy{AttestationApiURL: stub.URL()},
-		newSharedCACerts([]*x509.Certificate{caCert}),
-	)
+	verify := verifyPeerCallback(&VerifyPolicy{AttestationApiURL: stub.URL()}, x509.ExtKeyUsageClientAuth)
 	err := verify([][]byte{cert.Raw}, nil)
 	if !errors.Is(err, ErrCertValidity) {
 		t.Fatalf("err = %v, want errors.Is ErrCertValidity", err)
 	}
 	if got := len(stub.VerifyRequests()); got != 0 {
 		t.Fatalf("an expired peer consumed %d attestation-api call(s), want 0", got)
-	}
-}
-
-// The CA branch of the dual verifier delegates validity to x509.Verify at
-// time.Now. This pins that property: an expired leaf with an otherwise
-// perfect CA chain must not pass.
-func TestDualVerifyPeerCallbackRejectsExpiredCASigned(t *testing.T) {
-	caKey, caCert := generateCACert(t)
-	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	leafTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(601),
-		Subject:      pkix.Name{CommonName: "expired-leaf"},
-		NotBefore:    time.Now().Add(-2 * time.Hour),
-		NotAfter:     time.Now().Add(-time.Hour),
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, leafTmpl, caCert, &leafKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	verify := dualVerifyPeerCallback(&VerifyPolicy{}, newSharedCACerts([]*x509.Certificate{caCert}))
-	if err := verify([][]byte{der}, nil); err == nil {
-		t.Fatal("expired CA-signed peer was accepted")
 	}
 }
 
@@ -217,67 +187,6 @@ func TestGetOrProvisionRefusesNotYetValidCachedCert(t *testing.T) {
 	if _, err := s.getOrProvision(context.Background()); !errors.Is(err, provisionErr) {
 		t.Fatalf("err = %v, want the provisioning error (and never the not-yet-valid cert)", err)
 	}
-}
-
-// caSignedLeaf mints a leaf signed by ca with the given window.
-func caSignedLeaf(t *testing.T, caKey *ecdsa.PrivateKey, ca *x509.Certificate, notBefore, notAfter time.Time) []byte {
-	t.Helper()
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(603),
-		Subject:      pkix.Name{CommonName: "skewed-leaf"},
-		NotBefore:    notBefore,
-		NotAfter:     notAfter,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
-	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return der
-}
-
-// The two branches of the dual verifier must share one validity window.
-// x509.Verify grants no NotBefore skew of its own, so a CA-signed leaf minted
-// a few minutes into the verifier's future used to fail the chain branch and
-// fall through to armTLS — where the sandbox and workload pins are not
-// enforced at all. The skew is granted at the NotBefore end only.
-func TestDualVerifyPeerCallbackSharesTheSkewWindow(t *testing.T) {
-	caKey, caCert := generateCACert(t)
-	shared := newSharedCACerts([]*x509.Certificate{caCert})
-	now := time.Now()
-
-	t.Run("NotBefore within skew takes the chain branch", func(t *testing.T) {
-		der := caSignedLeaf(t, caKey, caCert, now.Add(2*time.Minute), now.Add(time.Hour))
-		if err := dualVerifyPeerCallback(&VerifyPolicy{}, shared)([][]byte{der}, nil); err != nil {
-			t.Fatalf("a within-skew CA-signed leaf was not accepted on the chain branch: %v", err)
-		}
-	})
-
-	t.Run("chain branch still enforces the pins", func(t *testing.T) {
-		der := caSignedLeaf(t, caKey, caCert, now.Add(2*time.Minute), now.Add(time.Hour))
-		policy := &VerifyPolicy{SandboxID: "pod-abc"}
-		err := dualVerifyPeerCallback(policy, shared)([][]byte{der}, nil)
-		if err == nil {
-			t.Fatal("a leaf with no sandbox-ID extension satisfied a sandbox pin")
-		}
-		// The chain branch's own rejection, not the armTLS fallback's "pin
-		// requires a CA-verified certificate" — that difference IS the bug.
-		if !strings.Contains(err.Error(), "CA-signed peer failed the sandbox-ID pin") {
-			t.Fatalf("err = %v, want the chain branch's pin rejection (the leaf fell through to armTLS)", err)
-		}
-	})
-
-	t.Run("the skew does not extend NotAfter", func(t *testing.T) {
-		der := caSignedLeaf(t, caKey, caCert, now.Add(-time.Hour), now.Add(-time.Minute))
-		err := dualVerifyPeerCallback(&VerifyPolicy{}, shared)([][]byte{der}, nil)
-		if err == nil {
-			t.Fatal("a leaf one minute past NotAfter was accepted")
-		}
-	})
 }
 
 // VerifyCert is the mesh's highest-traffic self-signed path and is exported

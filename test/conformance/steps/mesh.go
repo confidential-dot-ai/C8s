@@ -11,17 +11,17 @@ import (
 	"strings"
 	"time"
 
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 	"github.com/cucumber/godog"
 )
 
 // Sentences about the armTLS mesh: which pod traffic its proxies carry, what
 // its guards drop, and what the inbound proxy makes of a peer that connects
 // to it. Pods act through kubectl exec (the tenant image's wget, nc, ping and
-// python); a peer is the armtls-dial tool, copied into a pod of the
-// "mesh-dialer" image, which dials the inbound proxy presenting the
-// certificate the scenario described. The
-// proxies are observed through the counters of the node's mesh pod and its
-// ipsets, read by the backend.
+// python); a peer is the armtls-dial tool in a pod of the "mesh-dialer"
+// image, which dials the inbound proxy presenting the certificate the
+// scenario described. The proxies are observed through the counters of the
+// node's mesh pod and its ipsets, read by the backend.
 func registerMesh(sc *godog.ScenarioContext) {
 	sc.Step(`^the mesh proxy of node "([^"]*)" is running$`, meshRunning)
 	sc.Step(`^"([^"]*)" serves a hello API$`, servesHello)
@@ -176,27 +176,16 @@ func meshRunning(ctx context.Context, node string) error {
 	return nil
 }
 
-// The tenant image is python:3.12-alpine. Alpine's busybox ping sends its
-// echo request over an ICMP datagram socket, which the ping_group_range
-// sysctl admits without NET_RAW (the library busybox image's ping cannot,
-// and the chart's admission policy lets a tenant add back NET_BIND_SERVICE
-// only); its nc has no UDP mode and it has no httpd, so datagrams and the
-// hello API go through python.
-
-// helloSite writes the hello body where the hello API will serve it.
-func helloSite(port int) string {
-	return fmt.Sprintf("mkdir -p /tmp/www%d && echo %s > /tmp/www%d/index.html", port, hello, port)
-}
-
-// httpServer serves the hello directory on both address families, or IPv4
-// alone where the pod has no IPv6 stack to bind.
-func httpServer(port int) string {
-	dir := fmt.Sprintf("/tmp/www%d", port)
-	return fmt.Sprintf("python3 -m http.server -b :: -d %s %d || python3 -m http.server -d %s %d", dir, port, dir, port)
-}
+// The tenant image is images/tenant-app, on python:3.12-alpine. Alpine's
+// busybox ping sends its echo request over an ICMP datagram socket, which the
+// ping_group_range sysctl admits without NET_RAW (the library busybox image's
+// ping cannot, and the chart's admission policy lets a tenant add back
+// NET_BIND_SERVICE only); its nc has no UDP mode and it has no httpd, so the
+// hello API (c8s-hello-api) and datagrams (c8s-udp-listen, c8s-udp-send) are
+// the image's own programs.
 
 func helloServer(port int) []string {
-	return []string{"sh", "-c", fmt.Sprintf("%s && (%s)", helloSite(port), httpServer(port))}
+	return []string{"c8s-hello-api", strconv.Itoa(port), hello}
 }
 
 func servesHello(ctx context.Context, name string) error {
@@ -225,8 +214,8 @@ func servesSecondHello(ctx context.Context, name string) error {
 	if !p.deployed {
 		return fmt.Errorf("%q is not deployed; the second hello API starts in the running pod", name)
 	}
-	r, err := w.exec(p, fmt.Sprintf("%s && (setsid sh -c '%s' >/dev/null 2>&1 </dev/null &) && sleep 1 && wget -qO- -T 3 http://127.0.0.1:%d/ >/dev/null",
-		helloSite(secondHelloPort), httpServer(secondHelloPort), secondHelloPort))
+	r, err := w.exec(p, fmt.Sprintf("(setsid c8s-hello-api %d %s >/dev/null 2>&1 </dev/null &) && sleep 1 && wget -qO- -T 3 http://127.0.0.1:%d/ >/dev/null",
+		secondHelloPort, hello, secondHelloPort))
 	if err != nil {
 		return err
 	}
@@ -238,14 +227,9 @@ func servesSecondHello(ctx context.Context, name string) error {
 }
 
 // datagramListener receives UDP on the port and prints each datagram to its
-// log. It binds both families where the pod has an IPv6 stack (the kernel
-// lists its addresses in /proc/net/if_inet6), IPv4 alone otherwise. One line
-// of python, since the manifest renderer shell-quotes a container's command.
+// log (images/tenant-app/c8s-udp-listen).
 func datagramListener(port int) []string {
-	return []string{"python3", "-u", "-c", fmt.Sprintf("import os, socket; "+
-		"s = socket.socket(socket.AF_INET6 if os.path.exists('/proc/net/if_inet6') else socket.AF_INET, socket.SOCK_DGRAM); "+
-		"s.bind(('', %d)); "+
-		"[print(s.recvfrom(65535)[0].decode(errors='replace'), flush=True) for _ in iter(int, 1)]", port)}
+	return []string{"c8s-udp-listen", strconv.Itoa(port)}
 }
 
 func receivesDatagrams(ctx context.Context, name, which string) error {
@@ -259,7 +243,7 @@ func receivesDatagrams(ctx context.Context, name, which string) error {
 		port = 53
 		p.opts = append(p.opts, "--add-capability", "NET_BIND_SERVICE")
 	}
-	p.listener = firstContainer
+	p.listener = p.first
 	if len(p.hello) == 0 {
 		p.containers[0].command = datagramListener(port)
 	} else {
@@ -351,7 +335,7 @@ func excludedUID(ctx context.Context, name string) error {
 		return err
 	}
 	if len(excluded) == 0 {
-		return godog.ErrSkip
+		return skipf("the mesh excludes no UID here")
 	}
 	p.opts = append(p.opts, "--run-as-user", excluded[0])
 	return w.elsewhere(p, "host_namespace_ns")
@@ -495,7 +479,7 @@ func (w *world) addressOf(p *pod, family string) (string, error) {
 			return ip, nil
 		}
 	}
-	return "", godog.ErrSkip
+	return "", skipf("%q has no %s address", p.name, family)
 }
 
 func isFamily(ip, family string) bool {
@@ -675,7 +659,7 @@ func pinsSatisfied(ctx context.Context, node string) error {
 		return err
 	}
 	if out != "yes" {
-		return godog.ErrSkip
+		return skipf("the evidence of node %q does not satisfy the mesh pins here", k8sNode)
 	}
 	return nil
 }
@@ -693,7 +677,7 @@ func rolePresentsCDSLeaf(ctx context.Context, node string) error {
 		return err
 	}
 	if out != "cds" {
-		return godog.ErrSkip
+		return skipf("the mesh on node %q does not use CDS-issued certificates here (mesh_cert_mode %s)", k8sNode, out)
 	}
 	return nil
 }
@@ -704,8 +688,53 @@ func verifySetHoldsCA(ctx context.Context, node string) error {
 	if err != nil {
 		return err
 	}
-	_, err = w.be.call("mesh_chain_ready", k8sNode)
-	return err
+	mode, err := w.be.call("mesh_cert_mode", k8sNode)
+	if err != nil {
+		return err
+	}
+	if mode != "cds" {
+		return fmt.Errorf("the mesh proxy on %s presents no CDS leaf", k8sNode)
+	}
+	interval, err := w.meshDuration("ca-poll-interval", 5*time.Minute)
+	if err != nil {
+		return err
+	}
+	// A refresh is logged within --cds-op-timeout of its tick.
+	timeout, err := w.meshDuration("cds-op-timeout", 30*time.Second)
+	if err != nil {
+		return err
+	}
+	// A failure seen on the first look is waited out: the next tick decides.
+	for first := true; ; first = false {
+		log, err := w.be.call("mesh_proxy_log", k8sNode)
+		if err != nil {
+			return err
+		}
+		verdict, wait, err := caRefreshVerdict(log, interval, timeout+5*time.Second, time.Now())
+		switch {
+		case err != nil:
+			return err
+		case verdict == refreshOK:
+			return nil
+		case verdict == refreshFailed && !first:
+			return fmt.Errorf("the mesh proxy on %s failed its last CA refresh", k8sNode)
+		}
+		time.Sleep(wait)
+	}
+}
+
+// meshDuration is a duration flag of the mesh proxy, or its default when the
+// install leaves it unset.
+func (w *world) meshDuration(flag string, def time.Duration) (time.Duration, error) {
+	v, err := w.be.call("mesh_arg", flag)
+	if err != nil || v == "" {
+		return def, err
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return 0, fmt.Errorf("the mesh proxy's --%s %q: %w", flag, v, err)
+	}
+	return d, nil
 }
 
 // attestationUnreachable stops the node's local attestation service, as the
@@ -752,6 +781,9 @@ func ghostPod(ctx context.Context, name, node string) error {
 		return err
 	}
 	if w.mesh.realNode == "" {
+		if _, err := w.be.call("node_writes"); err != nil {
+			return err
+		}
 		w.onUndo(func() error {
 			_, err := kubectl(nil, "delete", "node", ghostNode, "--ignore-not-found", "--wait=false")
 			return err
@@ -846,7 +878,7 @@ func (w *world) unheldAddress(network *net.IPNet) (net.IP, error) {
 // printed and its exit status, which a failing command does not turn into
 // an error here.
 func (w *world) exec(p *pod, script string) (*execResult, error) {
-	out, err := w.podExec(p, firstContainer, "sh", "-c", script+"; echo \"rc=$?\"")
+	out, err := w.podExec(p, p.first, "sh", "-c", script+"; echo \"rc=$?\"")
 	if err != nil {
 		return nil, err
 	}
@@ -977,13 +1009,11 @@ func (w *world) sendDatagram(src, dest string, port int, sourcePort int) error {
 		return err
 	}
 	w.mesh.payload = fmt.Sprintf("datagram-%s-%d", w.suffix(), time.Now().UnixNano())
-	bind := ""
+	argv := []string{"c8s-udp-send", ip, strconv.Itoa(port), w.mesh.payload}
 	if sourcePort != 0 {
-		bind = fmt.Sprintf("s.bind((\"\", %d)); ", sourcePort)
+		argv = append(argv, strconv.Itoa(sourcePort))
 	}
-	_, err = w.exec(p, fmt.Sprintf("python3 -c 'import socket; ip = \"%s\"; "+
-		"s = socket.socket(socket.AF_INET6 if \":\" in ip else socket.AF_INET, socket.SOCK_DGRAM); "+
-		"%ss.sendto(b\"%s\", (ip, %d))'", ip, bind, w.mesh.payload, port))
+	_, err = w.exec(p, strings.Join(argv, " "))
 	return err
 }
 
@@ -1105,9 +1135,6 @@ func (w *world) dial(src, node, dest string, second bool) error {
 		args = append(args, "--rewrite-not-after", p.cert.rewriteNotAfter.String())
 	}
 	args = append(args, net.JoinHostPort(nodeAddr, inbound), target)
-	if err := w.ensureDialer(p); err != nil {
-		return err
-	}
 	if err := w.snapshot(); err != nil {
 		return err
 	}
@@ -1187,32 +1214,21 @@ func (w *world) mintCert(p *pod) error {
 	return nil
 }
 
-// dialerPath is where the mesh peer sits in the pod that runs it.
-const dialerPath = "/tmp/armtls-dial"
-
-// ensureDialer copies the binary the backend built into the pod's first
-// container, once per pod, so a dial's counter window holds only the dial.
-func (w *world) ensureDialer(p *pod) error {
-	if p.dialer {
-		return nil
-	}
-	bin, err := w.be.call("dialer_bin")
-	if err != nil {
-		return err
-	}
-	if _, err := kubectl(nil, "cp", bin, p.namespace+"/"+p.name+":"+dialerPath, "-c", firstContainer); err != nil {
-		return err
-	}
-	p.dialer = true
-	return nil
+// asDialer makes the pod's only container the mesh peer's, named as the
+// cds-attest sidecar an application may run itself in a pod marked injected:
+// the admission plugin binds the node's socket directory into it, so a peer
+// that mints its own certificate reaches the local attestation service there
+// (attestation_endpoint).
+func (p *pod) asDialer() {
+	p.first = workloadclaims.AttestContainerName
+	p.opts = append(p.opts, "--container-name", p.first,
+		"--supplemental-group", strconv.Itoa(workloadclaims.InventorySocketGID),
+		"--annotation", workloadclaims.AnnotationInjected+"=true")
 }
 
-// armtlsDial runs the mesh peer in the pod's first container.
+// armtlsDial runs the mesh peer, which the mesh-dialer image has on PATH.
 func (w *world) armtlsDial(p *pod, args ...string) (string, error) {
-	if err := w.ensureDialer(p); err != nil {
-		return "", err
-	}
-	return w.podExec(p, firstContainer, append([]string{dialerPath}, args...)...)
+	return w.podExec(p, p.first, append([]string{"armtls-dial"}, args...)...)
 }
 
 // --- Outcomes ---

@@ -32,6 +32,7 @@ import (
 	"github.com/confidential-dot-ai/c8s/pkg/operatorauth"
 	pkgroutes "github.com/confidential-dot-ai/c8s/pkg/routes"
 	"github.com/confidential-dot-ai/c8s/pkg/routesclient"
+	"github.com/confidential-dot-ai/c8s/pkg/workloadclaims"
 )
 
 var (
@@ -50,10 +51,14 @@ const flagOperatorKey = "operator-key"
 // routeHosts are the manifest hosts --upstream routes: the router.san
 // entries, lower-cased, that are valid manifest hosts (route policy D5).
 // skipped lists the others, such as wildcards and IPs.
-func routeHosts(values map[string]any, release, namespace string) (hosts, skipped []string) {
+//
+// The default repeats the chart's own: the router serves the namespace the
+// enforcer compiles in, wherever the release is installed, and a manifest
+// naming another host is one the router refuses.
+func routeHosts(values map[string]any, release string) (hosts, skipped []string) {
 	sans := stringsAtPath(values, "router.san")
 	if len(sans) == 0 {
-		sans = []string{fmt.Sprintf("%s.%s.svc", helmName(release+"-router"), namespace)}
+		sans = []string{fmt.Sprintf("%s.%s.svc", helmName(release+"-router"), workloadclaims.RouterNamespace)}
 	}
 	for _, san := range sans {
 		host := strings.ToLower(strings.TrimSuffix(san, "."))
@@ -482,7 +487,7 @@ func writeRoutesOut(manifest []byte) error {
 // cause that refuses the revision drops --revision from the add commands.
 func writeUpstreamRoutes(w io.Writer, u upstreamRoutes, cds cdsTarget, entries map[string]adoptedEntry, manifest []byte, cause error) error {
 	var status *operatorauth.StatusError
-	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict
+	badRevision := errors.As(cause, new(revisionError)) || errors.As(cause, &status) && status.Status == http.StatusConflict && !cliroutes.SpentToken(cause)
 	offerPut := manifest == nil && !errors.As(cause, new(storedManifestError))
 	if manifest == nil {
 		var err error

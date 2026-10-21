@@ -12,7 +12,7 @@ import (
 func secretsConfig() Config {
 	return Config{
 		GetCertImage:      "ghcr.io/confidential-dot-ai/c8s-operator:test",
-		CDSURL:            "https://cds.c8s-system.svc:8443",
+		MeshImage:         testMeshImage,
 		AttestationApiURL: "http://attestation-api.c8s-system.svc:8400",
 	}
 }
@@ -67,8 +67,8 @@ func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {
 	for _, c := range pod.Spec.InitContainers {
 		names = append(names, c.Name)
 	}
-	want := []string{reservedCertContainerName, reservedCertWaitContainerName, reservedSecretContainerName}
-	if !slices.Equal(names[:3], want) {
+	want := []string{reservedMeshContainerName, reservedCertContainerName, reservedCertWaitContainerName, reservedSecretContainerName}
+	if !slices.Equal(names[:4], want) {
 		t.Fatalf("init containers = %v, want %v first", names, want)
 	}
 
@@ -83,22 +83,17 @@ func TestFetcherIsANativeSidecarOrderedAfterCertWait(t *testing.T) {
 
 func TestFetcherArgs(t *testing.T) {
 	pod := podWithApp()
-	cfg := secretsConfig()
-	cfg.CDSMeasurements = []string{"aa", "bb"}
 	mutatePod(pod, &injection{
 		WorkloadID: "api",
 		Secrets:    secretsSpec{Specs: []string{"DB=/api/db", "HF=/api/hf"}},
-	}, cfg)
+	}, secretsConfig())
 
 	args := strings.Join(containerNamed(pod, reservedSecretContainerName).Args, " ")
 	for _, want := range []string{
 		"get-secret",
-		"--cds-url=https://cds.c8s-system.svc:8443",
 		"--secret=DB=/api/db",
 		"--secret=HF=/api/hf",
 		"--out-dir=" + defaultSecretDir,
-		"--measurements=aa",
-		"--measurements=bb",
 	} {
 		if !strings.Contains(args, want) {
 			t.Fatalf("args %q missing %q", args, want)
@@ -215,7 +210,7 @@ func TestSecretsAnnotationsRequireOptIn(t *testing.T) {
 	for _, name := range []string{AnnotationSecrets, AnnotationSecretDir} {
 		pod := podWithApp()
 		pod.Annotations = map[string]string{name: "DB=/api/db"}
-		if _, err := parseAnnotations(pod); err == nil {
+		if _, err := parseAnnotations(pod, ""); err == nil {
 			t.Fatalf("%s without %s was silently ignored", name, AnnotationWorkload)
 		}
 	}
@@ -227,7 +222,7 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 		AnnotationWorkload: "api",
 		AnnotationSecrets:  " DB=/api/db , HF=/api/hf ",
 	}
-	inj, err := parseAnnotations(pod)
+	inj, err := parseAnnotations(pod, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,23 +236,18 @@ func TestSecretsAnnotationParsing(t *testing.T) {
 // secret straight out of a live pod.
 func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		certVolume string
-		mount      string
-		ctrName    string
-		target     string
-		injected   bool
-		wantOK     bool
+		name     string
+		mount    string
+		ctrName  string
+		target   string
+		injected bool
+		wantOK   bool
 	}{
 		{name: "mounts secrets", mount: secretsVolumeName},
-		{name: "mounts certs", mount: DefaultCertVolumeName},
-		{name: "mounts a renamed cert volume", certVolume: "my-certs", mount: "my-certs"},
+		{name: "mounts certs", mount: CertVolumeName},
 		{name: "claims a reserved name", ctrName: reservedSecretContainerName, mount: "scratch"},
 		{name: "mounts something else", mount: "scratch", wantOK: true},
 		{name: "mounts nothing", wantOK: true},
-		// The pod renamed its cert volume, so the default name is no longer
-		// the one holding its key.
-		{name: "default name after a rename", certVolume: "my-certs", mount: DefaultCertVolumeName, wantOK: true},
 		// Every container of an injected pod mounts c8s material, and a target
 		// shares its process namespace.
 		{name: "targets the cert sidecar", injected: true, target: reservedCertContainerName},
@@ -270,9 +260,6 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			pod := podWithApp()
 			if tc.injected {
 				mutateWithSecrets(t, pod, []string{"DB=/api/db"})
-			}
-			if tc.certVolume != "" {
-				pod.Annotations = map[string]string{AnnotationCertVolume: tc.certVolume}
 			}
 			name := tc.ctrName
 			if name == "" {
@@ -297,7 +284,7 @@ func TestEphemeralContainerCannotMountReservedVolumes(t *testing.T) {
 			}
 			pod.Spec.EphemeralContainers = []corev1.EphemeralContainer{ec}
 
-			err := rejectEphemeralReservedMounts(pod)
+			err := rejectEphemeralReach(pod)
 			if tc.wantOK && err != nil {
 				t.Fatalf("rejected a harmless ephemeral container: %v", err)
 			}

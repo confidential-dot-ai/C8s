@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
-# Live-cluster verification of the cw-label integrity admission policy
-# (chart template cw-label-integrity-policy.yaml). Proves on a real API
-# server what the chart tests cannot: the CEL actually evaluates (a broken
-# expression with failurePolicy=Fail would deny ALL pod writes in covered
-# namespaces), out-of-band cw writes are denied, and ordinary pods are
-# unaffected.
+# Live-cluster verification of the pod validator's cw-label check
+# (internal/webhook). Proves on a real API server what the unit tests cannot:
+# the fail-closed webhook actually answers (a broken one would deny ALL pod
+# writes in covered namespaces), a label without its annotation is denied on
+# CREATE and on UPDATE, and ordinary pods are unaffected.
 #
 # Needs: kubectl pointed at a cluster with the C8s chart installed.
 set -euo pipefail
@@ -60,30 +59,22 @@ if ! err=$(kubectl run "$pod" --namespace "$ns" --image="$pause_image" \
 fi
 echo "ok: plain pod admitted"
 
-# Out-of-band writes on a running pod: the post-create mutation the
-# CREATE-only injection webhook cannot see, so the VAP is necessarily the
-# denier here (assert its name).
-expect_deny "post-create cw label" "cw-label-integrity" -- \
+# Out-of-band writes on a running pod: the validating webhook covers UPDATE,
+# so a label that no longer matches its annotation is refused there too.
+expect_deny "post-create cw label" "must match" -- \
   kubectl label pod "$pod" --namespace "$ns" confidential.ai/cw=spoof
-expect_deny "post-create cw annotation" "cw-label-integrity" -- \
-  kubectl annotate pod "$pod" --namespace "$ns" confidential.ai/cw=spoof
 
-# CREATE with the label but no matching annotation. Either guard is a correct
-# denial and both default on: the mutating webhook's CREATE-time
-# validateWorkloadLabel runs first (admission webhooks precede validating
-# admission policies), and the cw-label-integrity VAP covers the same CREATE
-# case when the webhook is down. Accept either. --dry-run=server still runs
-# admission.
+# CREATE with the label but no matching annotation: the validating webhook
+# refuses it. --dry-run=server still runs admission.
 expect_deny "pod created with cw label but no annotation" \
-  "cw-label-integrity\|must match the confidential.ai/cw annotation" -- \
+  "must match the confidential.ai/cw annotation" -- \
   kubectl run spoof --namespace "$ns" --image="$pause_image" \
     --restart=Never --labels=confidential.ai/cw=spoof --dry-run=server \
     --overrides="$(restricted_overrides spoof "$pause_image")"
 
-# An opted-in pod that smuggles its own container under the reserved c8s-cert
-# name to shadow the injected sidecar is denied by the webhook's reserved-name
-# guard (rejectReservedCertContainer). The webhook runs on CREATE and denies
-# before the pod is ever mutated, so this holds independent of the VAP.
+# A pod that smuggles its own container under the reserved c8s-cert name to
+# shadow the injected sidecar is denied by the webhook's reserved-name guard
+# (rejectReservedResources), before the pod is ever mutated.
 reserved_manifest=$(mktemp)
 cat >"$reserved_manifest" <<YAML
 apiVersion: v1

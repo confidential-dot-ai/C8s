@@ -69,20 +69,23 @@ if sed '/# BEGIN rke2 system images/,/# END rke2 system images/d' "$policy"     
 fi
 
 # The C8s node is normally nested in an outer RKE2 cluster: its pod
-# CIDR must not fall back to the outer cluster's default. Canal takes its
+# CIDR must not fall back to the outer cluster's default. Cilium takes its
 # pool from this setting.
 rke2_config="$ngi/c8s/mkosi.extra/etc/rancher/rke2/config.yaml"
-canal_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-canal-config.yaml"
 rke2_pod_cidr=$(sed -n 's/^cluster-cidr:[[:space:]]*//p' "$rke2_config")
 if [ -z "$rke2_pod_cidr" ] || [ "$rke2_pod_cidr" = "10.42.0.0/16" ]; then
   echo "::error::c8s RKE2 cluster-cidr must be explicit and must not overlap the outer RKE2 default"
   exit 1
 fi
 
-# armtls-mesh's cw inbound guard needs iptables-mode kube-proxy (Service DNAT
-# before FORWARD) and its jumps at the head of FORWARD, ahead of Felix's.
-# Localhost NodePorts stay off: they set route_localnet=1, exposing
-# loopback listeners such as the attestation-api.
+# The CNI is Cilium. kube-proxy stays in iptables mode: a member pod's
+# traffic is captured by its own namespace's ruleset, which Service DNAT
+# never reaches. Localhost NodePorts stay off: they set route_localnet=1,
+# exposing loopback listeners such as the attestation-api.
+if ! grep -qx 'cni: cilium' "$rke2_config"; then
+  echo "::error::$rke2_config must select the cilium CNI"
+  exit 1
+fi
 kube_proxy_arg() {
   awk -v want="  - $1" '/^kube-proxy-arg:/{c=1;next} c&&/^[^ ]/{c=0} c&&$0==want{f=1} END{exit !f}' "$rke2_config"
 }
@@ -93,18 +96,56 @@ if ! grep -qx 'disable-kube-proxy: false' "$rke2_config" \
   echo "::error::$rke2_config must run kube-proxy in iptables mode without localhost NodePorts"
   exit 1
 fi
-felix_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/canal-felix-config.yaml"
-if ! grep -qx 'kind: FelixConfiguration' "$felix_config" \
-   || ! grep -qx '  name: default' "$felix_config" \
-   || ! grep -qx '  chainInsertMode: Append' "$felix_config"; then
-  echo "::error::$felix_config must set Felix chainInsertMode: Append so armtls-mesh's jumps keep the chain head"
+
+# Cilium's pinned values: kube-proxy replacement and socket LB stay off
+# (they would rewrite the resolver address before the pod ruleset sees it),
+# the datapath stays on veth pairs (the mesh gate reads a pod's hooks from
+# inside its namespace), and no exec postStart may render (the sealed image
+# denies every runc exec).
+cilium_config="$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/rke2-cilium-config.yaml"
+if ! grep -qx 'kind: HelmChartConfig' "$cilium_config" \
+   || ! grep -qx '  name: rke2-cilium' "$cilium_config"; then
+  echo "::error::$cilium_config must be the rke2-cilium HelmChartConfig"
+  exit 1
+fi
+for required in \
+  '    kubeProxyReplacement: false' \
+  '    routingMode: tunnel' \
+  '    tunnelProtocol: vxlan' \
+  '    tunnelPort: 8473' \
+  '      datapathMode: veth' \
+  '      iptablesRemoveAWSRules: false' \
+  '      chainingMode: portmap'; do
+  if ! grep -qxF -- "$required" "$cilium_config"; then
+    echo "::error::$cilium_config must pin:$required"
+    exit 1
+  fi
+done
+if [ "$(grep -A1 -xF '    socketLB:' "$cilium_config" | tail -1)" != '      enabled: false' ]; then
+  echo "::error::$cilium_config must pin socketLB.enabled: false"
+  exit 1
+fi
+if grep -q postStart "$cilium_config"; then
+  echo "::error::$cilium_config must not render an exec postStart; the sealed image denies every runc exec"
+  exit 1
+fi
+if ! grep -q 'rke2-images-cilium\.linux-amd64\.tar\.zst' "$ngi/c8s/mkosi.sync" \
+   || ! grep -q '^RKE2_IMAGES_CILIUM_SHA256=' "$ngi/c8s/mkosi.sync" \
+   || grep -q 'rke2-images-canal' "$ngi/c8s/mkosi.sync"; then
+  echo "::error::$ngi/c8s/mkosi.sync must bake the cilium airgap bundle, not canal's"
   exit 1
 fi
 
-# The sealed image denies every runc exec, so an exec probe always fails.
-# The liveness override must drop the chart's exec handler, not add to it.
-if ! awk '/^    calico:$/{p=1;next} p&&/^ {0,4}[^ ]/{p=0} p&&/^      livenessProbe:$/{c=1;next} c&&/^ {0,6}[^ ]/{c=0} c&&/^        exec: null$/{e=1} c&&/^        httpGet:$/{h=1} END{exit !(e&&h)}' "$canal_config"; then
-  echo "::error::Canal's calico-node liveness probe must be httpGet with exec: null; exec probes cannot run on a sealed image"
+# No Canal artifact survives the switch: not its manifests, and not a
+# mention anywhere in the baked tree.
+for stale in rke2-canal-config.yaml canal-felix-config.yaml; do
+  if [ -e "$ngi/c8s/mkosi.extra/var/lib/rancher/rke2/server/manifests/$stale" ]; then
+    echo "::error::$stale is still baked; the CNI is cilium"
+    exit 1
+  fi
+done
+if grep -rniE 'canal|calico|flannel|felix' "$ngi/c8s/mkosi.extra"; then
+  echo "::error::a Canal mention survives under $ngi/c8s/mkosi.extra (above)"
   exit 1
 fi
 
@@ -182,7 +223,7 @@ fi
 # The wrapper execs the real runtime by absolute path; it is rke2's own runc,
 # extracted at first start under the bin symlink. Both sides pin it.
 real_runc=$(sed -n 's/^REAL_RUNC="\(.*\)"$/\1/p' "$ngi/c8s/mkosi.sync")
-if ! grep -qF "realRunc = \"$real_runc\"" internal/cmds/c8srunc/c8srunc.go; then
+if ! grep -qE "^[[:space:]]*realRunc[[:space:]]*= \"$real_runc\"$" internal/cmds/c8srunc/c8srunc.go; then
   echo "::error::the wrapper's compiled real-runtime path and mkosi.sync's REAL_RUNC ($real_runc) have drifted"
   exit 1
 fi

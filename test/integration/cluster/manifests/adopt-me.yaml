@@ -1,9 +1,8 @@
 # A plain workload with no C8s opt-in, adopted into the mesh by
-# `c8s install --workload-ref web=adopted/deployment/web:8443 --upstream web`
-# during the harness's upgrade step. The router reaches a workload backend only
-# over TLS on its get-cert leaf (route policy B1), so once adopted the pod
-# serves TLS on 8443 with the injected /etc/c8s/certs/tls.crt and tls.key.
-# Before adoption there is no leaf, and it serves plaintext on 8080.
+# `c8s install --workload-ref web=adopted/deployment/web:8080 --upstream web`
+# during the harness's upgrade step. It serves plaintext on 8080: the pod's
+# injected endpoint holds the mesh leaf and carries what the router sends,
+# and the workload itself reads no credentials.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -34,17 +33,11 @@ spec:
       containers:
         - name: app
           image: nginxinc/nginx-unprivileged@sha256:3af0c10d960cc2502427fe1219c52989d309e7d65596869c60a34fd2fa2406f0 # 1.30.5-alpine-slim
-          # Adoption injects c8s-cert-wait, which holds this container until
-          # the leaf exists, so the leaf's presence selects TLS. The config is
-          # written to /tmp rather than mounted: the only mount install's
-          # allowlist entry admits is the injected cert volume.
+          # The config is written to /tmp rather than mounted: the only mount
+          # install's allowlist entry admits is the injected cert volume.
           command: ["/bin/sh", "-c"]
           args:
             - |
-              listen='listen 8080;'
-              if [ -s /etc/c8s/certs/tls.crt ]; then
-                listen='listen 8443 ssl; ssl_certificate /etc/c8s/certs/tls.crt; ssl_certificate_key /etc/c8s/certs/tls.key;'
-              fi
               cat > /tmp/nginx.conf <<EOF
               pid /tmp/nginx.pid;
               events {}
@@ -55,13 +48,12 @@ spec:
                   fastcgi_temp_path /tmp/fastcgi_temp;
                   uwsgi_temp_path /tmp/uwsgi_temp;
                   scgi_temp_path /tmp/scgi_temp;
-                  server { $listen root /usr/share/nginx/html; }
+                  server { listen 8080; root /usr/share/nginx/html; }
               }
               EOF
               exec nginx -c /tmp/nginx.conf -g 'daemon off;'
           ports:
             - containerPort: 8080
-            - containerPort: 8443
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

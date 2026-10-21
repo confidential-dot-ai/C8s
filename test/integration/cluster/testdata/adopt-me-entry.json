@@ -12,13 +12,7 @@
         "policy": "any"
       },
       "mounts": {
-        "policy": "exact",
-        "rules": [
-          {
-            "destination": "/etc/c8s/certs",
-            "kind": "emptyDir"
-          }
-        ]
+        "policy": "deny"
       },
       "env": {
         "policy": "any"

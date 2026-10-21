@@ -139,7 +139,7 @@ func TestMatchedWorkload_UnmarshalRejectsBoundaries(t *testing.T) {
 
 // selfSignedWithExts mints a self-signed certificate carrying the given
 // extensions, for parser tests. Nothing here vouches for the extensions —
-// which is exactly what CheckWorkloadPin's chain requirement is about.
+// which is exactly why a stamp is read off a chain-verified leaf alone.
 func selfSignedWithExts(t *testing.T, exts ...pkix.Extension) *x509.Certificate {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -27,8 +27,8 @@ type backend struct {
 var constant = map[string]bool{
 	"node_name": true, "image_ref": true, "image_digest": true, "pull_interval": true, "cds_pod_url": true,
 	"cert_paths": true, "node_address": true, "mesh_ready": true, "mesh_port": true, "mesh_uids": true,
-	"mesh_platform": true, "excluded_namespace": true, "host_namespace_ns": true, "attestation_endpoint": true, "dialer_bin": true,
-	"pod_exec": true,
+	"mesh_platform": true, "excluded_namespace": true, "host_namespace_ns": true, "attestation_endpoint": true,
+	"pod_exec": true, "node_writes": true, "evidence_signed": true, "mesh_arg": true,
 }
 
 // newBackend finds the backend beside this package; `go test` runs with the
@@ -53,7 +53,12 @@ func newBackend(name string) (backend, error) {
 	return b, nil
 }
 
-// call returns the function's trimmed stdout. A 77 exit is godog.ErrSkip,
+// skipf is godog.ErrSkip with the reason the scenario cannot run here.
+func skipf(format string, args ...any) error {
+	return fmt.Errorf("%w: "+format, append([]any{godog.ErrSkip}, args...)...)
+}
+
+// call returns the function's trimmed stdout. An unsupported exit is godog.ErrSkip,
 // wrapped to name the function; any other failure is a harness error
 // carrying the function's stderr.
 func (b backend) call(fn string, args ...string) (string, error) {
@@ -74,7 +79,7 @@ func (b backend) call(fn string, args ...string) (string, error) {
 		}
 		return out, nil
 	case errors.As(err, &exit) && exit.ExitCode() == exitUnsupported:
-		return "", fmt.Errorf("%w: the backend cannot answer %s", godog.ErrSkip, fn)
+		return "", skipf("the backend cannot answer %s", fn)
 	default:
 		return "", fmt.Errorf("backend %s %s: %w\n%s", fn, strings.Join(args, " "), err, stderr.String())
 	}

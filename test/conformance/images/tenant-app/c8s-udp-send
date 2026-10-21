@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+# Sends one datagram (steps/mesh.go, sendDatagram), from the source port when
+# one is given, on the address the kernel routes the destination from.
+# Usage: c8s-udp-send <ip> <port> <payload> [<source-port>]
+import socket, sys
+ip, port, payload = sys.argv[1], int(sys.argv[2]), sys.argv[3].encode()
+family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+s = socket.socket(family, socket.SOCK_DGRAM)
+if len(sys.argv) > 4:
+    probe = socket.socket(family, socket.SOCK_DGRAM)
+    probe.connect((ip, port))
+    s.bind((probe.getsockname()[0], int(sys.argv[4])))
+    probe.close()
+s.sendto(payload, (ip, port))

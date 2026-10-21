@@ -2,10 +2,10 @@
 // public-TLS issuer for the acme front-door mode. It obtains one multi-SAN
 // WebPKI certificate for --domains via ACME HTTP-01 (nginx's :80 server
 // proxies /.well-known/acme-challenge/ to the loopback challenge listener),
-// writes key + chain under --cert-dir, renews at 2/3 lifetime, and reloads
-// nginx via SIGHUP after each install. Under a confidential runtime the
-// cert-dir is a Memory-medium emptyDir, so the serving key is TEE-held and
-// re-issued on pod recreation.
+// writes the chain and its key to the two directories below and renews at 2/3
+// lifetime; nginx's own entrypoint re-reads the files it serves. Under a
+// confidential runtime both are Memory-medium emptyDirs, so the serving key is
+// TEE-held and re-issued on pod recreation.
 package acme
 
 import (
@@ -30,8 +30,6 @@ import (
 	"github.com/confidential-dot-ai/c8s/internal/cmds/launchconfig"
 )
 
-var procRoot = "/proc"
-
 const letsEncryptDirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
 
 type config struct {
@@ -42,7 +40,7 @@ type config struct {
 	httpPort      int
 	readyPort     int
 	certDir       string
-	reloadNginx   bool
+	keyDir        string
 	logLevel      string
 
 	// Launch-driven inputs (node image): each file overrides its flag.
@@ -53,6 +51,14 @@ type config struct {
 	standbyCertDir   string
 }
 
+// The front door's issued credential, split so that a reader of the chain
+// never holds the key. The chart mounts these two paths and serves the pair
+// from them (internal/helmchart/c8s/templates/router-helpers.tpl).
+const (
+	certDir = "/etc/c8s-acme-tls"
+	keyDir  = "/etc/c8s-acme-key"
+)
+
 // NewCmd returns the acme subcommand.
 func NewCmd() *cobra.Command {
 	var cfg config
@@ -60,19 +66,21 @@ func NewCmd() *cobra.Command {
 		Use:   "acme",
 		Short: "Run the router in-guest ACME sidecar (acme front-door mode)",
 		Long: `acme runs beside nginx in the router pod and keeps one multi-SAN WebPKI
-certificate under --cert-dir: cert.pem (full chain) and key.pem. It includes
-configured domains whose public HTTP challenge paths reach this router.
+certificate: cert.pem (the full chain) in /etc/c8s-acme-tls and key.pem in
+/etc/c8s-acme-key. The front door mounts both; a program that needs only the
+leaf mounts the chain's directory alone. It includes configured domains whose
+public HTTP challenge paths reach this router.
 Unavailable domains do not block issuance for reachable domains. They are
 added when their challenge paths become reachable.
 Issuance uses ACME HTTP-01; nginx's :80 server proxies
 /.well-known/acme-challenge/ to the loopback challenge listener. The
-certificate is renewed at 2/3 of its lifetime, and nginx is reloaded via
-SIGHUP after each install (shareProcessNamespace: true). On start, a
+certificate is renewed at 2/3 of its lifetime, and nginx's own entrypoint
+reloads it after each install. On start, a
 self-signed placeholder is written when no certificate exists, so nginx —
 whose config names both files — can start and serve the challenge proxy the
 first issuance needs.
 
-The cert-dir also holds the ACME account key. On a Memory-medium emptyDir the
+The key's directory also holds the ACME account key. On a Memory-medium emptyDir the
 state is lost with the pod and re-issued on recreation; point
 --acme-directory-url at a staging directory when testing to stay clear of the
 CA's duplicate-certificate limits.
@@ -85,6 +93,8 @@ leaf exists.`,
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(_ *cobra.Command, _ []string) error {
+			cfg.certDir = certDir
+			cfg.keyDir = keyDir
 			return run(cfg)
 		},
 	}
@@ -94,15 +104,13 @@ leaf exists.`,
 	f.StringVar(&cfg.email, "acme-email", "", "contact email registered with the ACME account")
 	f.IntVar(&cfg.challengePort, "challenge-port", 8402, "loopback port answering ACME HTTP-01 challenges (nginx's :80 server proxies /.well-known/acme-challenge/ to it)")
 	f.IntVar(&cfg.httpPort, "http-port", 8080, "loopback port of nginx's :80 server, probed round-trip before each order so no validation is sent at a listener that is still starting")
-	f.IntVar(&cfg.readyPort, "ready-port", 0, "port serving GET /healthz, and GET /readyz, 200 once cert.pem and key.pem exist (0 disables it). nginx's startup probe uses it: a locked node image denies exec probes")
-	f.StringVar(&cfg.certDir, "cert-dir", "/etc/c8s-acme-tls", "directory for cert.pem, key.pem, and the ACME account key")
-	f.BoolVar(&cfg.reloadNginx, "reload-nginx", true, "SIGHUP nginx after a certificate install")
+	f.IntVar(&cfg.readyPort, "ready-port", 0, "port serving GET /healthz, and GET /readyz, 200 once the chain and its key are both written (0 disables it). nginx's startup probe uses it: a locked node image denies exec probes")
 	f.StringVar(&cfg.logLevel, "log-level", "info", "log level: debug, info, warn, error")
 	f.StringVar(&cfg.domainsFile, "domains-file", "", "file with one domain per line, read at start instead of --domains; empty file means no ACME (see --standby-cert-dir)")
 	f.StringVar(&cfg.emailFile, "acme-email-file", "", "file holding --acme-email; an empty file keeps the flag value")
 	f.StringVar(&cfg.directoryURLFile, "acme-directory-url-file", "", "file holding --acme-directory-url; an empty file keeps the flag value")
 	f.StringVar(&cfg.caFile, "acme-ca-file", "", "PEM roots trusted for the ACME directory's TLS besides the system roots; an empty file trusts the system roots only")
-	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the cert.pem and key.pem nginx serves instead")
+	f.StringVar(&cfg.standbyCertDir, "standby-cert-dir", "", "with an empty --domains-file, do no ACME: report ready once this directory holds the tls.crt and tls.key nginx serves instead")
 
 	return cmd
 }
@@ -137,6 +145,13 @@ func loadFiles(cfg *config) (standby bool, err error) {
 	return true, nil
 }
 
+// The member credential volume's file names, which the injector fixes
+// (internal/webhook/pod_mutator.go). The standby leaf is that pair.
+const (
+	standbyCertFile = "tls.crt"
+	standbyKeyFile  = "tls.key"
+)
+
 // runStandby is the sidecar with no ACME domain. nginx serves the certificate
 // in --standby-cert-dir (the mesh leaf), so this process only answers the
 // readiness probe that gates nginx's start, then waits for shutdown.
@@ -146,7 +161,7 @@ func runStandby(ctx context.Context, cfg config, logger *slog.Logger) error {
 	}
 	if cfg.readyPort != 0 {
 		addr := net.JoinHostPort("", strconv.Itoa(cfg.readyPort))
-		ready := readyHandler(filepath.Join(cfg.standbyCertDir, certFile), filepath.Join(cfg.standbyCertDir, keyFile))
+		ready := readyHandler(filepath.Join(cfg.standbyCertDir, standbyCertFile), filepath.Join(cfg.standbyCertDir, standbyKeyFile))
 		if _, err := cmdsutil.ServeInBackground(ctx, addr, ready, logger); err != nil {
 			return fmt.Errorf("--ready-port: %w", err)
 		}
@@ -248,28 +263,17 @@ func runWith(cfg config, probe *http.Client) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(cfg.certDir, 0o700); err != nil {
-		return err
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	reload := func() {
-		if !cfg.reloadNginx {
-			return
-		}
-		if err := cmdsutil.ReloadNginx(procRoot, logger); err != nil {
-			logger.Error("nginx reload failed", "error", err)
-		}
-	}
 	if standby {
 		return runStandby(ctx, cfg, logger)
 	}
 	if err := validateConfig(&cfg); err != nil {
 		return err
 	}
-	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.domains, logger, reload)
+	mgr := newManager(cfg.directoryURL, cfg.email, cfg.certDir, cfg.keyDir, cfg.domains, logger)
 	if mgr.directoryClient, err = directoryClient(cfg.caFile); err != nil {
 		return fmt.Errorf("--acme-ca-file: %w", err)
 	}
@@ -290,7 +294,7 @@ func runWith(cfg config, probe *http.Client) error {
 		}
 	}
 
-	logger.Info("acme sidecar running", "domains", cfg.domains, "cert_dir", cfg.certDir)
+	logger.Info("acme sidecar running", "domains", cfg.domains, "cert_dir", cfg.certDir, "key_dir", cfg.keyDir)
 	mgr.run(ctx)
 	logger.Info("shutting down")
 	return nil

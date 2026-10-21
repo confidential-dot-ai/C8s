@@ -41,9 +41,6 @@ func installPins() (digests [][]byte, registers map[int][]byte, helmArgs []strin
 	}
 	// The chart takes the file's content; helm reads the same path this
 	// command just validated.
-	helmArgs = []string{
-		"--set-file", "cds.measurementsConfig=" + path,
-		"--set-file", "armtlsMesh.measurementsConfig=" + path,
-	}
+	helmArgs = []string{"--set-file", "cds.measurementsConfig=" + path}
 	return set.Digests(), common, helmArgs, nil
 }
